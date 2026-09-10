@@ -598,7 +598,11 @@ fn contracts(a: &Admitted, b: &Admitted, loci: &Pairing, topics: &Pairing, map: 
 
 fn effects(a: &Admitted, b: &Admitted, fns: &Pairing) -> Value {
     let mut rows: Vec<Value> = Vec::new();
+    let mut paired_a: BTreeSet<&str> = BTreeSet::new();
+    let mut paired_b: BTreeSet<&str> = BTreeSet::new();
     for (na, nb) in &fns.pairs {
+        paired_a.insert(na.as_str());
+        paired_b.insert(nb.as_str());
         let ea = names(&a.v["effects"][na]);
         let eb = names(&b.v["effects"][nb]);
         let (dropped, gained) = set_delta(&ea, &eb);
@@ -614,6 +618,29 @@ fn effects(a: &Admitted, b: &Admitted, fns: &Pairing) -> Value {
         row.insert("dropped".into(), json!(dropped));
         rows.push(Value::Object(row));
     }
+    // A fn that exists on one side only, with a non-empty effect set,
+    // is an effect delta too: an added locus whose handler reaches a
+    // declared class widens what the program does, and a magnitude
+    // read from paired fns alone would miss it (GH #529 D3).
+    let sided = |art: &Admitted, paired: &BTreeSet<&str>, change: &str, key: &str| -> Vec<Value> {
+        let mut out = Vec::new();
+        if let Some(obj) = art.v["effects"].as_object() {
+            for (name, classes) in obj {
+                if paired.contains(name.as_str()) {
+                    continue;
+                }
+                let set: Vec<String> = names(classes).into_iter().collect();
+                if set.is_empty() {
+                    continue;
+                }
+                let (g, d) = if key == "gained" { (set, Vec::new()) } else { (Vec::new(), set) };
+                out.push(json!({"fn": name, "change": change, "gained": g, "dropped": d}));
+            }
+        }
+        out
+    };
+    rows.extend(sided(a, &paired_a, "removed", "dropped"));
+    rows.extend(sided(b, &paired_b, "added", "gained"));
     // fn-grained certificates (`@effects` asserts, `only:`
     // complements, `@budget`): keyed by (subject, form).
     let certs = |art: &Admitted| -> BTreeMap<(String, String), String> {
@@ -854,6 +881,17 @@ pub fn render_text(d: &Value) -> String {
     if !classes.is_empty() || !certs.is_empty() {
         o.push_str("effects:\n");
         for r in &classes {
+            match str_of(&r["change"]).as_str() {
+                "added" => {
+                    o.push_str(&format!("  + fn {} reaches {}\n", str_of(&r["fn"]), list(&r["gained"])));
+                    continue;
+                }
+                "removed" => {
+                    o.push_str(&format!("  - fn {} reached {}\n", str_of(&r["fn"]), list(&r["dropped"])));
+                    continue;
+                }
+                _ => {}
+            }
             let mut parts: Vec<String> = Vec::new();
             let g = list(&r["gained"]);
             if !g.is_empty() {

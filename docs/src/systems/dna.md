@@ -219,6 +219,35 @@ check is a failed Attempt carrying the diagnostics, never a
 candidate. The candidate commit is the gateway's business, not the
 editor's.
 
+### Evidence with receipts
+
+`HaleVerification { hale_bin, evidence_dir, recording }` runs the
+toolchain over a candidate's worktree — `hale fmt --check`, `hale
+check --json --dump-topology`, `hale verify --json`, `hale test`,
+`hale model diff <baseline> <candidate>`, and `hale replay --feed`
+when the project has a recording — and keeps every result as
+content-addressed evidence: the step's output goes to
+`.hale/dna/evidence/<sha256>.txt`, and an `evidence.<step>` event
+on the candidate commit carries the exit code and that digest
+(`hale dna history <candidate>` lists them). The `Evidence` the
+boundary and the Review read (`check_clean`, `verify_clean`,
+`tests_pass`, `replay_ok`) is therefore a set of facts with
+receipts. A project with no tests has no test evidence, only an
+exit code; a candidate that does not check has no artifact, no
+diff, and a default magnitude — and the report says so.
+
+`assess_structure` turns the semantic diff into the **magnitude
+vector** of #521, never a score: affected loci, parent-facing
+contract change, effects widened, law touched, placement or
+ownership change, state migration, external blast radius (a
+declared effect class newly reached), reversibility, and novelty
+against the accepted lineage (coarse for now: unprecedented until
+the lineage has applied anything). It is journaled as
+`evidence.magnitude` beside the tool receipts. For that vector to
+see an added locus that reaches a declared class, `hale model
+diff` now reports one-sided fns with effects as rows of their own
+(`+ fn Mailer::on_ping reaches mail`).
+
 ## In iris
 
 `hale dna run` hands iris three sources: the observation segment

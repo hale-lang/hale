@@ -886,6 +886,12 @@ law:
   + claim quiet: count publishers(topic Out) == 0  [violated]
 ```
 
+A fn present on one side only with a non-empty effect set is an
+effect row too: `+ fn Mailer::on_mail reaches outbound_email` for
+an added handler, `- fn … reached …` for a removed one, so an added
+locus that widens what the program does is not hidden behind the
+paired rows.
+
 Declarations are `persisted`, `moved`, `renamed`, `split`,
 `joined`, `added` or `removed`; a rename is reported only when
 exactly one added declaration has the removed one's shape, and

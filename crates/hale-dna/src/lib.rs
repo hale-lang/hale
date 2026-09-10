@@ -38,6 +38,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "review",
     "topics",
     "types",
+    "verification",
     "work_system",
     "workspace",
 ];

@@ -306,6 +306,14 @@ function renderDiffPanel() {
   if (classes.length || certs.length) {
     h += `<div class="sec">effects</div>`;
     for (const r of classes) {
+      if (r.change === "added") {
+        h += `<div class="row add">+ fn ${esc(r.fn)} reaches ${esc((r.gained || []).join(", "))}</div>`;
+        continue;
+      }
+      if (r.change === "removed") {
+        h += `<div class="row del">- fn ${esc(r.fn)} reached ${esc((r.dropped || []).join(", "))}</div>`;
+        continue;
+      }
       const parts = [];
       if ((r.gained || []).length) parts.push(`gains ${esc(r.gained.join(", "))}`);
       if ((r.dropped || []).length) parts.push(`drops ${esc(r.dropped.join(", "))}`);

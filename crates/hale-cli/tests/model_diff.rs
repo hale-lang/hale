@@ -281,6 +281,42 @@ fn contract_effect_and_law_deltas_are_per_entity_set_differences() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An added locus whose handler reaches a declared effect class is an
+/// effect delta even though no paired fn changed: the row carries
+/// `change: added` with the classes as `gained` (and a removed fn its
+/// classes as `dropped`), so a magnitude read from the diff sees the
+/// program widen (GH #529 D3).
+#[test]
+fn a_one_sided_fn_with_effects_is_an_effect_row() {
+    let dir = workdir("sided");
+    let a = dump(&dir, "a", BASE);
+    let with_mailer = BASE
+        .replace("type T { n: Int = 0; }", "effect mail;\ntype T { n: Int = 0; }")
+        .replace(
+            "group workers = { Worker };",
+            "locus Mailer {\n    bus { subscribe Evt as on_e; }\n    @effects(is: { mail })\n    fn on_e(t: T) { }\n}\ngroup workers = { Worker };",
+        )
+        .replace("params { w: Worker = Worker { }; }", "params { w: Worker = Worker { }; m: Mailer = Mailer { }; }");
+    let b = dump(&dir, "b", &with_mailer);
+    let d = diff_json(&a, &b);
+    let classes = rows(&d["effects"], "classes");
+    let added = classes.iter().find(|r| r["fn"] == "Mailer::on_e").expect("Mailer::on_e is an effect row");
+    assert_eq!(added["change"], "added", "{added}");
+    assert!(added["gained"].as_array().unwrap().iter().any(|c| c == "mail"), "{added}");
+    assert_eq!(added["dropped"], serde_json::json!([]));
+    assert!(!classes.iter().any(|r| r["fn"] == "Worker::on_e"), "an unchanged paired fn has no row: {}", d["effects"]);
+    assert_eq!(d["summary"]["effect_deltas"], 1, "{}", d["summary"]);
+    let text = diff_text(&a, &b);
+    assert!(text.contains("+ fn Mailer::on_e reaches mail"), "{text}");
+    // and the other direction: the same fn leaving is a dropped row
+    let back = diff_json(&b, &a);
+    let removed = rows(&back["effects"], "classes").iter().find(|r| r["fn"] == "Mailer::on_e").cloned().expect("removed row");
+    assert_eq!(removed["change"], "removed", "{removed}");
+    assert!(removed["dropped"].as_array().unwrap().iter().any(|c| c == "mail"), "{removed}");
+    assert!(diff_text(&b, &a).contains("- fn Mailer::on_e reached mail"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn an_edited_artifact_is_refused_and_the_diff_is_byte_deterministic() {
     let dir = workdir("refuse");
