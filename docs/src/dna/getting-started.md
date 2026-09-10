@@ -2,56 +2,54 @@
 
 ## What you need
 
-- A Hale application with a `main locus` that passes `hale check`.
-- A git repository around it. DNA proposes changes as commits and
-  rolls back with git.
-- A program that stays running. The organism answers you through
-  the running process; a program whose `run()` returns exits, and
-  takes the organism with it.
+- A Hale application that passes `hale check`.
+- A git repository around it. The record is a branch of it; changes
+  are commits; rollbacks are resets.
 - The `hale` binary on your `PATH`.
+- For a team, or for nodes: a remote. The record syncs through it.
+  Alone on one machine, none is needed.
 
 If you don't have an application yet, `hale dna new demo` makes one
-with the DNA already attached, and you can skip to [the first
+with its organization, and you can skip to [the first
 run](#the-first-run).
 
-## Attach it
+## Generate the organization
 
 ```text
 $ hale dna init .
 ok: 1 file(s) typechecked
-wrote   vendor/dna (13 file(s) written, 0 unchanged; hale.lock pins toolchain 0.19.2)
-cut     .hale/dna/baseline.topology (schema 1.19, shape 3853f0f14bbf1639, verdict clean)
-created dna/purpose.hl
-created dna/assembly.hl
-created dna_constitution.hl
-edited  main.hl (imports, `genome` param, `adopt Project`, membrane bindings)
-edited  hale.toml ([claims] base, [environments.local])
-seeded  .hale/dna/journal.jsonl (17 event(s): application.attached, structure.observed, responsibility.proposed, review.requested)
-edited  .gitignore (/vendor/, /.hale/)
+wrote   vendor/dna (14 file(s) written, 0 unchanged; hale.lock pins toolchain 0.19.2)
+cut     …/chat/.hale/dna/baseline.topology (schema 1.19, shape 3c9b9327e480d349, verdict clean)
+created …/chat/dna/org/purpose.hl
+created …/chat/dna/org/law.hl
+created …/chat/dna/org/main.hl
+kept    …/chat/main.hl (the application is not modified; the organization oversees it from dna/org)
+edited  …/chat/hale.toml ([claims] no_base, [environments.local], [environments.org])
+seeded  refs/dna/journal (7 event(s): application.attached, structure.observed, responsibility.proposed, review.requested)
 ```
 
-`init` refuses a program that does not check, and it never rewrites
-what you wrote — it adds. Here is what appeared, in the order you'll
-care about it:
+`init` refuses a program that does not check, and it does not touch
+your application. What appeared:
 
 | what | where | yours? |
 |---|---|---|
-| **Your purpose.** One sentence: what this program is for. The first review asks you to ratify it. | `dna/purpose.hl` | yes — edit it |
-| **Your settings.** How much autonomy, which review policy, which models. Ordinary Hale source; `hale check` validates it. | `dna/assembly.hl` | yes — edit it |
-| **The rules.** What the organism may never do, enforced by the compiler. Add to them; don't weaken them. | `dna_constitution.hl` | yes — extend it |
+| **The purpose.** One sentence: what this codebase is for. The first review asks you to ratify it. | `dna/org/purpose.hl` | yes — edit it |
+| **The organization.** The Board, the Leader and its grant, the models, the gateways. Ordinary Hale source; `hale check` validates it. | `dna/org/main.hl` | yes — edit it |
+| **The law.** What no position may ever do, enforced by the compiler against the wiring you actually built. Add to it; don't weaken it. | `dna/org/law.hl` | yes — extend it |
 | **The toolchain's part.** The DNA itself, pinned to your `hale` version. Ignored by git; `hale dna upgrade` refreshes it. | `vendor/dna/` | no |
-| **The organism's memory.** Its history, its evidence, its sandboxes. Ignored by git. Delete it and the organism forgets; your code is untouched. | `.hale/dna/` | no |
+| **The record.** Everything the organization does, one commit per event, plus receipts and leases. Not files: refs in your repository. | `refs/dna/*` | no — but it's git |
+| **Scratch.** Sockets, sandboxes, the toolchain's inputs, the status projection. Ignored by git; delete it and nothing is lost. | `.hale/dna/` | no |
 
-Your `main.hl` gained a few lines: two imports, a `genome` param
-(the organism lives inside your main locus, like any other child),
-`adopt Project;` in its claims, and three socket bindings — the
-door through which your verdicts and requests come in. You can read
-them; you won't need to touch them.
+Your `hale.toml` gained two environments — the application and the
+organization are two entrypoints, each checked against its own law
+— and `[claims] no_base = true`, because they deliberately share
+none.
 
-Commit it:
+Commit it, and if you have a remote, push the record with the code:
 
 ```sh
-git add -A && git commit -m "attach the DNA"
+git add -A && git commit -m "the organization"
+git push origin main 'refs/dna/*:refs/dna/*'
 ```
 
 ## Check nothing broke
@@ -59,9 +57,11 @@ git add -A && git commit -m "attach the DNA"
 ```text
 $ hale check --matrix .
 === ./. @ local ===
-ok: 2 file(s) typechecked
+ok: 1 file(s) typechecked
+=== ./dna/org @ org ===
+ok: 3 file(s) typechecked
 
-ok: 1 (entrypoint, environment) pair(s) checked
+ok: 2 (entrypoint, environment) pair(s) checked
 
 $ hale test .
 ok   ./tests/main_test.hl
@@ -69,42 +69,50 @@ ok   ./tests/main_test.hl
 1 passed, 0 failed
 ```
 
-Your program still checks, now against the rules too, and its tests
-still pass. Those tests matter twice from here on: every change the
-organism proposes will be verified against them.
+Your tests matter twice from here on: every change the organization
+proposes is verified against them.
 
 ## The first run
 
+On one machine, the organization and the application under one host:
+
 ```text
-$ hale dna run
-…
-hale dna run: organism chat (pid 1694293) from … under LOTUS_OBS=1
-hale dna run: membrane bound at …/.hale/dna
-hale dna run: iris at http://127.0.0.1:8787/  (l law · 4 review · 5 organism · m membrane)
+$ hale dna dev
+built: …/dna/org/org
+hale dna dev: organization (pid 1874960) from … under LOTUS_OBS=1
+hale dna dev: membrane bound at …/.hale/dna
+built: …/./chat
+hale dna dev: expression chat (pid 1874991) under LOTUS_OBS=1
+chat: 1 ping(s) echoed; membrane open
 ```
 
-Your program is running, with the organism inside it and iris
-watching. Leave this terminal open; it is the host, and it will
-rebuild and restart the program when a change is approved. In
-another terminal:
+Leave this terminal open; it is the host. It rebuilds and restarts
+the application when a change is approved and watches it. Under
+`hale dna run` only the organization runs here, and the application
+is expressed wherever it lives — [Operating the fleet](./operating.md).
+In another terminal:
 
 ```text
 $ hale dna status
 organism:   running (membrane bound)
-journal:    17 event(s), chain verified
-expression: attached ChatServer (shape 3853f0f14bbf1639) · current shape 8517c3db7499d3b3 · build 68c91b13f399
+journal:    7 event(s), chain verified
+expression: attached Chat (shape 3c9b9327e480d349) · current shape 3c9b9327e480d349 · build 812f3c9bd9e4
 intents:    0 offered, 0 refused
 tasks:      none
 reviews:    1 pending of 1
-  purpose [pending] needs maintainer — ratify the declared purpose?
+  purpose [pending] needs board — ratify the declared purpose?
 mutations:  0 (none applies before a human's verdict on the exact candidate)
 ```
 
+`hale dna ui` serves the same thing as a page — the Board's queue,
+the Reviews with their three views, the fleet, the history, and the
+forms — from the record alone, with or without the host up.
+
 ## The first review
 
-There is already something to decide: the organism wants you to
-ratify the purpose `init` wrote. Read `dna/purpose.hl`, change the
-sentence to what the program is actually for, and approve it:
+There is already something to decide: the organization wants you to
+ratify the purpose `init` wrote. Read `dna/org/purpose.hl`, change
+the sentence to what the codebase is actually for, and approve it:
 
 ```text
 $ hale dna review purpose approve --as riley --comment "ratified"
@@ -112,8 +120,10 @@ review purpose settled: approve by riley
 ```
 
 That is the whole review mechanism, on the smallest possible thing.
-Every change from now on goes through the same door: something is
-proposed, you are asked, you answer with your name on it, and the
-answer is recorded.
+`--as` is your name on the record; a verdict from the terminal
+carries the Board's authority unless you say otherwise. Every change
+from now on goes through the same door: something is proposed,
+someone with the authority is asked, they answer with their name on
+it, and the answer is a commit.
 
 Next: [Working with it](./working.md).

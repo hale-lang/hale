@@ -1,74 +1,84 @@
-# The host and the membrane
+# The host, the membrane, the nodes
 
 ```sh
+hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]
 hale dna run [project] [--port N] [--no-iris] [--observe <secs>]
+hale node <name> [--repo <clone>] [--fleet <name>] [--tick <ms>]
+hale dna ui [project] [--port N]
 ```
 
-`run` is a **stateless host**. It cuts a fresh artifact of what is
-about to run (`.hale/dna/current.topology`), builds, and execs the
-organism under `LOTUS_OBS=1` from the project root with `HALE_BIN`
-set to the toolchain that started it. It waits for the membrane
-sockets, attaches iris — the law view on the fresh artifact, the
-review view diffing it against the `init` baseline, the organism
-panel, the membrane form — and then supervises: it re-projects the
-Journal into `.hale/dna/status.json` once a second, and answers the
-organism's restart requests (see [Apply, restart, observe](./apply.md)).
-It holds no Task state. When the organism exits, the host reaps iris
-and exits with the organism's code.
+## The host
+
+`run` and `dev` are one **stateless host**. It cuts a fresh artifact
+of the application (`.hale/dna/current.topology`), builds the
+organization and execs it under `LOTUS_OBS=1` from the project root
+with `HALE_BIN` set to the toolchain that started it, waits for the
+membrane sockets, attaches iris, and then supervises. Each tick it
+syncs the record, mirrors GitHub when configured, relays the
+membrane rows in the record, re-projects `status.json`, and answers
+the organization's restart requests. It holds no Task state; when
+the organization exits, the host reaps iris and exits with its code.
+
+Under **`dev`** the application runs under the same host, and a
+restart request for it is answered here: rebuild, restart, watch the
+window, report — [Apply, express, observe](./apply.md). A restart
+request for the organization's own seed (`dna/org`, when the org
+chart changed) is answered under both verbs: the host rebuilds and
+restarts the organization and watches it.
+
+Under **`run`** the application is expressed elsewhere. With `[dna]
+fleet` in `hale.toml`, the host deploys through the record and
+watches the nodes' reports; with a deployment gateway wired in the
+organization, no host is asked; with neither, the host says so and
+nothing is expressed.
 
 ```text
 $ hale dna run . --no-iris
-…
-hale dna run: organism chat (pid 1694293) from /tmp/dna-docs-session/chat under LOTUS_OBS=1
-hale dna run: membrane bound at /tmp/dna-docs-session/chat/.hale/dna
+hale dna run: organization (pid 1874960) from … under LOTUS_OBS=1
+hale dna run: membrane bound at …/.hale/dna
+hale dna run: the fleet `production` (…/fleet.plan.json) is the expression; `hale node <name>` runs its nodes
 ```
-
-With iris attached the line before that names the URL; `l` is the
-law view, `4` the review view, `5` the organism, `m` the membrane
-form. See [Iris](../systems/iris.md).
-
-## The commands are projections
-
-`status`, `review`, `history` read the Journal and the receipts;
-`ask` and a verdict publish one typed fact through the embedded
-membrane client and read the organism's answer back from the
-Journal. None of them decides anything, and all but the two that
-publish work offline. [Working with it](./working.md) is their
-user-facing side.
 
 ## The membrane
 
-The organism binds three typed topics on unix sockets under
+The organization binds four typed topics on unix sockets under
 `.hale/dna/`:
 
 | topic | subject | who publishes |
 |---|---|---|
-| `ReviewVerdict` | `dna.review.verdict` | `hale dna review <id> <verdict>`, iris's membrane form |
-| `IntentOffered` | `dna.intent.offered` | `hale dna ask`, iris's membrane form |
-| `ExpressionObserved` | `dna.expression.observed` | `hale dna run`, after an observation window |
+| `ReviewVerdict` | `dna.review.verdict` | `hale dna review <id> <verdict>`, the page, iris; the host, relaying a `review.verdict` row |
+| `IntentOffered` | `dna.intent.offered` | `hale dna ask`, the page, iris; the host, relaying an `intent.requested` row |
+| `ExpressionObserved` | `dna.expression.observed` | the host, after an observation window |
+| `PressureRaised` | `dna.pressure.raised` | `hale dna pressure raise`, the page, a metrics relay |
 
-A verdict is admitted by the Review that owns it — the reviewer's
-authority, independence from the author, and the candidate digest
-are checked there, never by the transport. Intent goes through the
-membrane gate (`LocalHumanMembrane.offer`). The observation report
-is judged by the assembly against the Mutation's state. The sockets
-are how the outside gets *in*; nothing about a decision lives in
-them.
+A verdict is admitted by the Review that owns it — authority,
+independence from the author, and the candidate digest are checked
+there, never by the transport. Intent goes through the Board. The
+observation report is judged by the substrate against the Mutation's
+state. Pressure is counted by source. The sockets are how the
+outside gets *in*; nothing about a decision lives in them, and the
+same facts as rows in the record reach the same loci through the
+host's relay.
 
-## What the organism leaves behind
+## The nodes
 
-```text
-.hale/dna/
-  journal.jsonl                the Journal (the authority)
-  baseline.topology            the artifact `init` cut
-  current.topology             the artifact of what is running now
-  previous.topology            the artifact before the last restart
-  status.json                  the projection, re-written every second while running
-  hale-dna.*.sock              the three membrane sockets
-  worktrees/<id>/              one git worktree per open Mutation
-  evidence/<sha256>.txt        one receipt per verification step
-  evidence/<id>.base.topology.json, <id>.candidate.topology.json, <id>.diff.json, <id>.diff.txt
-```
+A node is the host's counterpart on a machine that runs instances.
+It owns a clone and a name, ticks like the host, and expresses what
+the record's latest `fleet.deploy` says: fetch the revision, check
+it out, build and restart the instances the plan assigns to it that
+the deploy touches, and append `instance.up` and `instance.exited`
+in its own name. `.hale/node/<name>/` holds its pid files and
+artifacts. It never decides — [Operating the
+fleet](./operating.md).
 
-Delete the directory and you delete the organism's memory. The
-genome is untouched: it is your repository.
+## The surface
+
+`hale dna ui` is a Hale program from the toolchain cache serving one
+page and a small API. Every request runs one offline verb of `hale
+dna` in the project root and returns what it printed; the forms send
+a verdict, an intent or a pressure signal the way the CLI does and
+do not wait. It reads nothing itself and decides nothing, so with or
+without a host it shows what the CLI shows. Iris stays the observer:
+attached to the organization's process it renders the org as the
+live topology it is, with the status projection as a third source
+beside the segment and the artifact.

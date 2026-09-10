@@ -1,24 +1,24 @@
 # Autonomy: the vector and the rules
 
-Autonomy is a **boundary grant**, given by a parent to one child,
-and never widened by the child. In the generated Genome the parent
-is you and the child is the application:
+Autonomy is a **boundary grant**, given by the Board to one position,
+and never widened by the position. In the generated organization the
+Board is you and the position is the Leader, over the codebase:
 
 ```hale,fragment
 boundary: dna::AutonomyBoundary {
     child: "chat",
     grant: dna::Grant { child: "chat", classes: "refactor docs", max_magnitude: 4, review: "pre" }
 },
-review_policy: dna::HumanBeforeApply { },
+review_policy: dna::OrgPolicy { },
 ```
 
-A `Grant` says which change classes the child may apply
+A `Grant` says which change classes may be decided inside it
 (`classes`), a ceiling on the sum of the magnitude vector
 (`max_magnitude`), and when review happens (`pre`, `post`,
 `sampled`, `audit`). `may_expand_self` exists on the type so a test
-can prove it stays false: a request to widen the grant that does
-not come from the parent — whatever parent it names — is refused
-and audited.
+can prove it stays false: a request to widen the grant that does not
+come from the parent — whatever parent it names — is refused and
+audited.
 
 ## The magnitude vector
 
@@ -40,14 +40,28 @@ boundary it must never cancel:
 
 Some dimensions are **hard boundaries** the grant can never cover:
 touching law, widening effects, crossing ownership, or an
-irreversible external blast. Those go to Review whatever the
+irreversible external blast. Those go to the Board whatever the
 evidence says.
+
+## The evidence
+
+Counted, not rated: `check_clean` 1, `verify_clean` 1, `tests_pass`
+2, `replay_ok` 2, `rollback_rehearsed` 2, and 2 per independent
+review. Two more facts gate before any of that counts:
+`fleet_clean` — every plan the workspace declares composes and holds
+its claims with the candidate's artifacts (true when it declares
+none) — and `topology_changed` — the candidate's diff names a plan
+or the manifest. A candidate that does not check is `mutation.deny`;
+one that breaks the fleet is `mutation.deny` with the witness in
+its receipt; one that changes the fleet's shape is re-classed
+`topology` (`mutation.topology`) whatever it was asked as, which
+makes it the Board's.
 
 ## The disposition
 
 `dispose(grant, class, magnitude, evidence)` is a pure function
-(`dna/core/types.hl`), and the boundary journals every assessment
-in its audit:
+(`dna/core/types.hl`), and the boundary journals every assessment in
+its audit:
 
 1. a hard boundary → **review**;
 2. the class is not in the grant → **escalate** (the current parent
@@ -57,18 +71,21 @@ in its audit:
    (verified, not applied);
 5. `review: "pre"` → **review**; otherwise → **release**.
 
-Evidence is counted, not rated: `check_clean` 1, `verify_clean` 1,
-`tests_pass` 2, `replay_ok` 2, `rollback_rehearsed` 2, and 2 per
-independent review. A first change in a fresh lineage needs 3 + 6 =
-9 points and cannot have them, which is deliberate: nothing is
-released on its first day.
+A first change in a fresh lineage needs 3 + 6 = 9 points and cannot
+have them, which is deliberate: nothing is released on its first
+day. Every disposition but a release blocks on a verdict, and the
+disposition is recorded (`mutation.review`, `mutation.stage`,
+`mutation.escalate`) so the reviewer sees why they were asked.
 
-In this phase **every disposition but a release still blocks on a
-human** — the verdict is the assurance the grant cannot supply —
-and the disposition is recorded (`mutation.review`,
-`mutation.stage`, `mutation.escalate`) so the reviewer sees why
-they were asked. A candidate that does not even check is
-`mutation.deny` and never a candidate.
+## Who is asked
+
+`OrgPolicy` turns a disposition into a required authority: `board`
+when the vector touched law, widened effects or crossed ownership;
+`board` for the Board classes — `organization`, `constitutional`,
+`process-policy`, `topology`; `leader` for everything else inside
+the grant. A `Review` requiring `leader` is answered by the Leader
+position with a model, and by anyone of higher rank who gets there
+first.
 
 ## Post-review autonomy
 
@@ -83,48 +100,49 @@ boundary: dna::AutonomyBoundary {
 ```
 
 Now a `refactor` inside the grant, with no hard boundary and
-sufficient evidence — check, verify, the rollback rehearsal, and a
-lineage that has accepted something before — is a **release**: it
-is applied first (`mutation.release`, the boundary's audit says so),
-the host restarts and observes, and the Review follows with the
-question `post-review: applied m4 (refactor): …?`. A `reviewer`
-suffices for a refactor; a maintainer is still needed when law or
-effects moved. A rejection after the fact rolls the candidate back
-and asks the old expression back.
+sufficient evidence, is a **release**: it is applied first
+(`mutation.release`, the boundary's audit says so), expressed and
+observed, and the Review follows with the question `post-review:
+applied m4 (refactor): …?`. A `reviewer` suffices for a refactor; the
+Board is still needed when law or effects moved. A rejection after
+the fact rolls the candidate back and asks the old expression back.
 
 That is the whole shape of autonomy here: nothing about it is a
-runtime flag. The policy is a locus the Genome constructs, the
-grant is data the parent owns, and `hale check` sees both.
+runtime flag. The policy is a locus the organization constructs, the
+grant is data the Board owns, and `hale check` sees both.
 
-## What a child cannot do
+## What a position cannot do
 
 - **Expand its own grant.** `boundary.expand(requested_by, parent,
   …)` is refused when the requester is the child, or is not the
   parent it names; the refusal is an audit row.
 - **Widen its effects quietly.** An added handler that reaches a
   declared effect class is an effect row in the semantic diff, a
-  hard boundary in the vector, and a Review whatever the grant
+  hard boundary in the vector, and the Board's whatever the grant
   says.
-- **Apply.** The performers group — including the source editor —
-  is forbidden by law from reaching `genome_apply`; only the
-  assembly's gate does, and only after a settled Review.
+- **Apply.** The positions group — including the source editor and
+  the Leader — is forbidden by law from reaching `genome_apply`
+  except through the substrate, and the substrate applies only after
+  a settled Review.
 
-## Pressure, and appendages
+## Pressure, and growth
 
 Pressure is a typed fact (`PressureRaised { source, what, count }`).
-The assembly journals every raise (`pressure.raised`), and when one
+The substrate journals every raise (`pressure.raised`), and when one
 source has raised it `appendage_threshold` times (default 3) it
-journals `appendage.proposed` and notifies the membrane: *an organ
-for `what` is proposed, not created*. Nothing is grown. Growing is
-a Mutation like any other — asked for as intent, edited under a
-grant, verified, reviewed. The organism never adds a limb to itself
-because a metric said so.
+journals `appendage.proposed` and notifies the Board: *an organ for
+`what` is proposed, not grown*. With `initiative: true`, the proposal
+becomes an `organization` mutation in a sandbox on the org's own
+seed — `appendage.candidate` — verified like any other and reviewed
+by the Board. Approval restarts the organization with the position
+in it. Without initiative, growing is asked for as intent, like any
+change.
 
 After a Mutation is retained or rolled back, the pressure that
-motivated it is re-measured against the fitness signals the
-proposal declared (`pressure.remeasured`). In this phase the
-measurement is what the observation window saw; a project's own
-fitness signals are the next thing to wire in.
+motivated it is re-measured against the fitness signals the proposal
+declared (`pressure.remeasured`). The measurement is what the
+observation window saw; a project's own fitness signals are the next
+thing to wire in.
 
 ## Workflow definitions are versioned
 

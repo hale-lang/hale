@@ -1,36 +1,34 @@
-# The twelve steps, with the Journal
+# The twelve steps, with the record
 
-[Working with it](./working.md) shows this session as a user sees
-it. This is the same session with the Journal beside every step, on
-the chat server that ships in the hale repository as the acceptance
-application
-(`dna/acceptance/chat-server`). The organism's editor runs on
-scripted models here — the same run with a hosted model behind
-`OPENAI_API_KEY` is the same commands and the same Journal, with
-`adapter: hosted` in the evidence. The twelve steps are the
-acceptance scenario of the DNA design; `crates/hale-cli/tests/dna_twelve_steps.rs`
-runs them in CI in about ten seconds.
+[Working with it](./working.md) shows a session as a user sees it.
+This is the same session with the record beside every step, on the
+demo application `hale dna new` makes, with the editor on scripted
+models — the same run with a hosted model behind `OPENAI_API_KEY` is
+the same commands and the same record, with `adapter: hosted` in the
+evidence. The twelve steps are the acceptance scenario of the DNA
+design; `crates/hale-cli/tests/dna_twelve_steps.rs` runs them on the
+chat server in CI.
 
-## 1. Attach, and lose nothing
+## 1. Generate, and lose nothing
 
 ```sh
 hale check . && hale test .          # before
 hale dna init .
-hale check --matrix . && hale test . # after: 1 pair checked, 1 passed
-git add -A && git commit -m "attach the DNA"
+hale check --matrix . && hale test . # after: 2 pairs checked, 1 passed
+git add -A && git commit -m "the organization"
 ```
 
-[How attaching works](./attach.md) shows what `init` wrote. The
-application's own tests are what every candidate will later be
-verified against, so they matter twice.
+[What init makes](./attach.md) shows what was written. The
+application's own tests are what every candidate is verified
+against, so they matter twice.
 
-## 2. Start the organism
+## 2. Start the organization
 
 ```text
-$ hale dna run . --observe 5
-hale dna run: organism chat (pid 1694293) from … under LOTUS_OBS=1
-hale dna run: membrane bound at …/.hale/dna
-hale dna run: iris at http://127.0.0.1:8787/  (l law · 4 review · 5 organism · m membrane)
+$ hale dna dev . --observe 5
+hale dna dev: organization (pid 1874960) from … under LOTUS_OBS=1
+hale dna dev: membrane bound at …/.hale/dna
+hale dna dev: expression chat (pid 1874991) under LOTUS_OBS=1
 ```
 
 ## 3 and 4. Ask; a Task is born
@@ -40,151 +38,152 @@ $ hale dna ask document the chat server in main.hl
 task t1 born for intent i1a08c0786c5 [pending]
 ```
 
-The membrane accepted the intent (`intent.offered`), the Metabolism
+The Board admitted the intent (`intent.offered`), the Metabolism
 birthed a durable Task (`task.born`), and its Workflow made a Step
-whose Work is routed back to the assembly as source-editing Work.
+whose Work is routed back to the substrate as source-editing Work.
 That Work takes seconds, so the Task's live pass settles `pending`
-and the assembly settles it in the Journal when the Work is done:
-
-```text
-   17  intent.offered         i1a08c0786c5   document the chat server in main.hl
-   18  task.born              t1             i1a08c0786c5: document the chat server in main.hl
-   19  task.pending           t1             t1/wf1/s0=pending {t1/wf1/s0/w0=pending[routed:in-flight ] }
-```
+and the substrate settles it in the record when the Work is done.
+In the session below the change was proposed directly, so the
+lineage starts at step 5.
 
 ## 5 and 6. The Attempt, under its grant, in its own worktree
 
 ```text
-   20  mutation.proposed      m1             task t1 application: document the chat server in main.hl () at 4319af28…
-   23  mutation.worktree      m1             opened .hale/dna/worktrees/m1 at 4319af28…
-   24  mutation.located       m1             main.hl under read edit fmt check @.hale/dna/worktrees/m1
-   27  mutation.candidate     m1             dbbb49f550f3f021f390710803e48f1b3d1593ff
-   39  model.called           m1/a0          {"adapter": "fake", "backend": "quick", …, "tool_grant": "read edit fmt check @.hale/dna/worktrees/m1", …}
-   40  model.called           m1/a0          {"adapter": "fake", "backend": "deep", …}
+    7  mutation.proposed      m1             task t1 docs: document the chat server in main.hl (main.hl) at 232dc8f1…
+    8  effect.requested       worktree.open:m1   232dc8f1…
+    9  effect.result          worktree.open:m1   ok
+   10  mutation.worktree      m1             opened .hale/dna/worktrees/m1 at 232dc8f1…
+   11  model.called           m1/a0          {"adapter": "fake", "backend": "quick", …, "tool_grant": "read edit fmt check @.hale/dna/worktrees/m1", …}
+   12  model.called           m1/a0          {"adapter": "fake", "backend": "deep", …}
+   13  effect.requested       commit:m1:a0   docs: document the chat server in main.hl
+   14  effect.result          commit:m1:a0   ok
+   15  mutation.candidate     m1             bf94e503c1c002f277248b14b6afd1910bb8ce6f
 ```
 
 The gateway opened a worktree at the genome's head. The editor's
 grant was pointed at it — `read edit fmt check @<worktree>` is the
-whole of what the Attempt can do, and the constitution makes
-anything more a build failure. It located the file the objective
-names, asked the quick tier for the rewrite and the deep tier for
-the fitness signals the change should move, formatted, checked, and
-the gateway committed the candidate. Two model calls under one
-attempt id; each carries the grant as evidence.
+whole of what the Attempt can do, and the law makes anything more a
+build failure. It planned the files the objective names, asked the
+quick tier for the rewrite and the deep tier for the fitness signals
+the change should move, formatted, checked, and the gateway
+committed the candidate. Two model calls under one attempt id; each
+carries the grant as evidence.
 
 ## 7. Evidence, with receipts
 
 ```text
-   28  evidence.base          dbbb49f5…   {"mutation_id": "m1", "step": "base", "ok": true, "code": 0, "output_digest": "e607a8e2…"}
-   29  evidence.fmt           dbbb49f5…   {…"step": "fmt", "ok": true, "code": 0, …}
-   30  evidence.check         dbbb49f5…   {…"step": "check", …}
-   31  evidence.verify        dbbb49f5…   {…"step": "verify", …}
-   32  evidence.test          dbbb49f5…   {…"step": "test", …}
-   33  evidence.rollback      dbbb49f5…   {…"step": "rollback", …}
-   34  evidence.diff          dbbb49f5…   {…"step": "diff", …}
-   35  evidence.magnitude     dbbb49f5…   {"loci": 0, "contract_change": false, "effects_widened": false, "law_touched": false, …, "novelty": 3}
+   16  evidence.base          bf94e503…      {"mutation_id": "m1", "step": "base", "ok": true, "code": 0, "output_digest": "b676facc…"}
+   17  evidence.fmt           bf94e503…      {…"step": "fmt", "ok": true, "code": 0, …}
+   18  evidence.check         bf94e503…      {…"step": "check", …}
+   19  evidence.verify        bf94e503…      {…"step": "verify", …}
+   20  evidence.test          bf94e503…      {…"step": "test", …}
+   21  evidence.fleet         bf94e503…      {…"step": "fleet", …}
+   22  evidence.rollback      bf94e503…      {…"step": "rollback", …}
+   23  evidence.diff          bf94e503…      {…"step": "diff", …}
+   24  evidence.magnitude     bf94e503…      {"loci": 0, "contract_change": false, "effects_widened": false, "law_touched": false, …, "novelty": 3}
 ```
 
-Every step's output is on disk under its own sha256 in
-`.hale/dna/evidence/`, and the event on the candidate carries the
-exit code and the digest. The base artifact is cut from the genome's
-seed at the same moment as the candidate's, so the semantic diff is
-against what the candidate actually changed. The rollback step is a
-rehearsal: the worktree is stepped back to the base and forward
-again, so "reversible" is a fact, not a hope.
+Every step's output is a blob under `refs/dna/receipts/` by its
+sha256, and the event on the candidate carries the exit code and the
+digest. The base artifact is cut from the genome's seed at the same
+moment as the candidate's, so the semantic diff is against what the
+candidate actually changed. The fleet step composes every plan the
+workspace declares from the candidate's own artifacts. The rollback
+step is a rehearsal: the worktree is stepped back to the base and
+forward again, so "reversible" is a fact, not a hope.
 
 ## 8. The boundary decides; the Review blocks
 
 ```text
-   36  mutation.escalate      m1             application candidate dbbb49f550f3…
-   37  review.requested       review:m1      {"question": "apply m1 (application): document the chat server in main.hl?", "subject_digest": "dbbb49f5…", "required_authority": "maintainer", …}
-   38  task.done              t1             t1/wf1/s0/w0 by editor: m1: review
+   25  mutation.stage         m1             docs candidate bf94e503…
+   26  review.requested       review:m1      {"question": "apply m1 (docs): document the chat server in main.hl?", "subject_digest": "bf94e503…", "required_authority": "leader", …}
 ```
 
-The grant says `refactor docs`; an `application` change is outside
-it, so the boundary's disposition is `escalate`. Every disposition
-still blocks on a human in this phase — the verdict is the
-assurance the grant cannot supply — and the request carries
-everything a reviewer decides on.
+The grant says `refactor docs`; a `docs` change is inside it, and a
+first change in a fresh lineage does not have the evidence to
+release, so the disposition is `stage` and the Review is the
+Leader's. Every disposition but a release still blocks on a verdict,
+and the request carries everything a reviewer decides on.
 
-## 9. The same Review, in the terminal and in iris
+## 9. The same Review, everywhere
 
 ```text
 $ hale dna review
 2 pending review(s) of 2
-  m1 needs maintainer — apply m1 (application): document the chat server in main.hl?
-      application · candidate dbbb49f550f3 · evidence fmt=0 check=0 verify=0 test=0 diff=0 rollback=0 · disposition escalate
-  purpose needs maintainer — ratify the declared purpose?
+  m1 needs leader — apply m1 (docs): document the chat server in main.hl?
+      docs · candidate bf94e503c1c0 · evidence fmt=0 check=0 verify=0 test=0 diff=0 rollback=0 fleet=0 · disposition stage
+  purpose needs board — ratify the declared purpose?
 ```
 
-`hale dna review m1` renders the source diff, the semantic diff,
-the evidence table and the magnitude — the next chapter,
-[The Review in detail](./review.md), shows it in full. Iris's organism panel
-shows the same pending Review from the same projection, and its
-membrane form sends the same typed verdict.
+`hale dna review m1` renders the source diff, the semantic diff, the
+evidence table and the magnitude — [The Review in
+detail](./review.md) shows it in full. The page, iris's organism
+panel, a teammate's clone after `hale dna sync`, and a pull request
+when GitHub is configured all show the same Review from the same
+record.
 
 ## 10. Approve: exactly this candidate
 
 ```text
-$ hale dna review m1 approve --as riley --comment "the rooms stay the only way"
+$ hale dna review purpose approve --as riley --comment "ratified"
+review purpose settled: approve by riley
+$ hale dna review m1 approve --as riley --comment "fine"
 review m1 settled: approve by riley
 ```
 
 ```text
-   41  review.settled         m1             approve by riley
-   42  effect.requested       apply:dbbb49f5…   m1
-   43  effect.result          apply:dbbb49f5…   ok
-   44  mutation.applied       m1             dbbb49f550f3f021f390710803e48f1b3d1593ff
-   45  expression.restart_requested m1       apply dbbb49f5… fitness guests_greeted +
+   27  review.settled         purpose        approve by riley
+   28  review.settled         m1             approve by riley
+   29  effect.requested       apply:bf94e503…   m1
+   30  effect.result          apply:bf94e503…   ok
+   31  mutation.applied       m1             bf94e503c1c002f277248b14b6afd1910bb8ce6f
+   32  expression.restart_requested m1       apply bf94e503… seed . fitness docs_coverage +
 ```
 
-The assembly checked the worktree's head against the pinned
-commit, took the Mutation's lease, and applied through the gateway
-under the candidate's own idempotency key. `git log` now reads:
+The substrate checked the worktree's head against the pinned commit,
+took the Mutation's lease, and applied through the gateway under the
+candidate's own idempotency key. `git log` now reads:
 
 ```text
-dbbb49f application: document the chat server in main.hl
-4319af2 attach the DNA
-d084733 the chat server
+bf94e50 docs: document the chat server in main.hl
+232dc8f the organization
 ```
 
 ## 11. Express it, watch it, measure the pressure
 
 ```text
-hale dna run: m1 requests a restart (apply dbbb49f5… fitness guests_greeted +)
-hale dna run: organism restarted (pid 1694392) as 8517c3db7499d3b3 build b1ac50c8c3ef
-hale dna run: m1 observed healthy for 5s as 8517c3db7499d3b3
+hale dna dev: m1 requests a restart (apply bf94e503… seed . fitness docs_coverage +)
+hale dna dev: expression restarted (pid 1875137) as 3c9b9327e480d349 build 7a489ad3e72c
+hale dna dev: m1 observed healthy for 5s as 3c9b9327e480d349
 ```
 
 ```text
-   46  expression.restarted   m1             8517c3db7499d3b3 build b1ac50c8c3ef
-   47  expression.observed    m1             healthy 8517c3db7499d3b3 up for 5s
-   48  pressure.remeasured    m1             task t1 fitness guests_greeted +: healthy up for 5s
+   33  expression.restarted   m1             3c9b9327e480d349 build 7a489ad3e72c
+   34  expression.observed    m1             healthy 3c9b9327e480d349 up for 5s
+   35  pressure.remeasured    m1             task t1 fitness docs_coverage +: healthy up for 5s
 ```
 
-The host rebuilt, restarted the organism with the Mutation's id in
-its environment — the new expression journaled `expression.restarted`
-itself, at birth — relaunched iris with the diff from the previous
-artifact, and watched the window. Then it reported on the membrane,
-and the organism re-measured the originating pressure against the
-fitness signals the proposal declared.
+The host rebuilt, restarted the application with the Mutation's id
+in its environment, and watched the window. Then it reported on the
+membrane, and the organization re-measured the originating pressure
+against the fitness signals the proposal declared. On a fleet the
+same step is a `fleet.deploy` row, `instance.up` from every touched
+node, and the window over all of them.
 
 ## 12. Retained
 
 ```text
-   49  mutation.retained      m1             observed healthy as 8517c3db7499d3b3
-   50  mutation.worktree      m1             removed
+   36  mutation.retained      m1             observed healthy as 3c9b9327e480d349
 ```
 
 ```text
 $ hale dna status
 …
-mutations:  2 (none applies before a human's verdict on the exact candidate)
-  m1 [retained] application: document the chat server in main.hl · task t1 · candidate dbbb49f550f3
-  m2 [rejected] application: document the chat server in main.hl · task t2 · candidate 5e1ba1ea0276
+mutations:  1 (none applies before a human's verdict on the exact candidate)
+  m1 [retained] docs: document the chat server in main.hl (main.hl) · task t1 · candidate bf94e503c1c0
 ```
 
-`m2` is a second intent, rejected: `git log` did not move, the
-running expression did not change, and the Mutation with its
-candidate, its Attempt and its evidence stays in the Journal.
-`hale dna history m1` is the whole lineage above, in one listing.
+A rejected change leaves `git log` unmoved and the running
+expression unchanged, and the Mutation with its candidate, its
+Attempt and its evidence stays in the record. `hale dna history m1`
+is the whole lineage above, in one listing, from any clone.

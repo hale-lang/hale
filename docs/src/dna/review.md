@@ -1,66 +1,84 @@
 # The Review in detail
 
 A Review is a locus, not a flag. It owns the exact question, the
-candidate's digest at decision time, the authority required, and
-the verdicts it received with their provenance. It settles only on
-a verdict that names the exact candidate, comes from a reviewer
-whose claimed authority satisfies the requirement, and is
-independent of the authoring Attempt. A capable performer with the
-wrong authority does not settle it, and neither does the transport.
+candidate's digest at decision time, the authority required, and the
+verdicts it received with their provenance. It settles only on a
+verdict that names the exact candidate, comes from a reviewer whose
+authority satisfies the requirement, and is independent of the
+authoring Attempt. A capable position with the wrong authority does
+not settle it, and neither does the transport.
 
 ```sh
 hale dna review              # the pending Reviews, one line each
 hale dna review m1           # source diff · semantic diff · evidence table · magnitude
-hale dna review m1 --iris    # the same diff in iris [4], beside the status and the membrane form
+hale dna review m1 --iris    # the same diff in iris, beside the status and the membrane form
 hale dna review m1 approve --as riley --comment "fine"
-hale dna review m1 approve --digest dbbb49f550f3   # name the candidate you looked at
+hale dna review m1 approve --digest bf94e503c1c0   # name the candidate you looked at
+hale dna review m1 approve --no-wait               # send it; the answer lands in the record
 ```
 
-The render works **offline** — it reads the Journal and the
-receipts — so a reviewer can look before the organism is even
-running, and a Review requested by an organism that has since been
-restarted is still there to answer (pending mutation Reviews are
-re-born from the Journal at birth).
+The render works **offline** — it reads the record and the
+receipts — so a reviewer can look from any clone, before the
+organization is even running, and a Review requested by an
+organization that has since been restarted is still there to answer
+(pending mutation Reviews are re-born from the record at birth).
+
+## Who may answer
+
+| authority | rank | held by |
+|---|---|---|
+| `board` (also `maintainer`) | 4 | a person: `--as` from the terminal, the page, a GitHub login in `dna.github.board` |
+| `leader` | 3 | the Leader position, deciding with a model inside the grant |
+| `supervisor` | 2 | a position the org chart grows, over one part of the codebase |
+| `reviewer` | 1 | a GitHub review from a login not on the Board; a post-review refactor's answer |
+
+A verdict satisfies a requirement when its rank is at least the
+required rank, so the Board can always answer, and the Leader can
+answer what a supervisor or reviewer could. `OrgPolicy` decides what
+each Review requires: `leader` inside the grant; `board` for
+Board-class changes and for anything that touches law, widens
+effects or crosses ownership.
 
 ## What a reviewer sees
 
 ```text
 $ hale dna review m1
-review m1 [pending]: apply m1 (application): document the chat server in main.hl?
-  needs maintainer · candidate dbbb49f550f3f021f390710803e48f1b3d1593ff
-  mutation m1 (application) by editor · disposition under the grant: escalate · shape 8517c3db7499d3b3
+review m1 [pending]: apply m1 (docs): document the chat server in main.hl?
+  needs leader · candidate bf94e503c1c002f277248b14b6afd1910bb8ce6f
+  mutation m1 (docs) by editor · disposition under the grant: stage · shape 3c9b9327e480d349
   magnitude: novelty 3
 
-source diff (git 4319af28e30e .. dbbb49f550f3):
+source diff (git 232dc8f18dde .. bf94e503c1c0):
    main.hl | 1 +
    1 file changed, 1 insertion(+)
 
   diff --git a/main.hl b/main.hl
   --- a/main.hl
   +++ b/main.hl
-  @@ -110,3 +110,4 @@ main locus ChatServer {
-       }
+  @@ -28,3 +28,4 @@ main locus Chat {
+   fn main() {
+       Chat { };
    }
-   fn main() { ChatServer { }; }
-  +// documented by the organism: the rooms are the only way to the signer
+  +// documented by the organism: Echo answers every Ping
 
 semantic diff (hale model diff, baseline .. candidate):
-  classification: source-only  (shape_hash 8517c3db7499d3b3 -> 8517c3db7499d3b3)
+  classification: source-only  (shape_hash 3c9b9327e480d349 -> 3c9b9327e480d349)
   legend: + added  - removed  ~ renamed  > moved  * split/joined  ? ambiguous  ! changed in place
   no semantic differences
 
-evidence (fmt=0 check=0 verify=0 test=0 diff=0 rollback=0):
+evidence (fmt=0 check=0 verify=0 test=0 diff=0 rollback=0 fleet=0):
   step       ok     code  receipt        bytes
-  base       yes    0     e607a8e25cfc   26
-  fmt        yes    0     e3b0c44298fc   0
-  check      yes    0     e3b0c44298fc   0
-  verify     yes    0     e3b0c44298fc   0
-  test       yes    0     184a3407ce31   67
-  rollback   yes    0     a06effb044d9   96
-  diff       yes    0     0dfce6838a75   70257
-  receipts under .hale/dna/evidence
+  base       yes    0 b676facc8c41   26
+  fmt        yes    0 e3b0c44298fc   0
+  check      yes    0 e3b0c44298fc   0
+  verify     yes    0 e3b0c44298fc   0
+  test       yes    0 184a3407ce31   67
+  fleet      yes    0 b33b2e832b21   277
+  rollback   yes    0 89978376be81   96
+  diff       yes    0 8b0b8da30d3a   3002
+  receipts: refs/dna/receipts/<digest> (git cat-file -p)
 
-decide: hale dna review m1 approve|revise|reject|abstain [--as <you>] [--comment <c>] [--digest dbbb49f550f3]
+decide: hale dna review m1 approve|revise|reject|abstain [--as <you>] [--comment <c>] [--digest bf94e503c1c0]
 ```
 
 Three views, always together, because each sees something the
@@ -76,33 +94,38 @@ others cannot:
   When a law goes from `holds` to `violated`, it is one line here
   and a page of reasoning from the source.
 - **The evidence table** is what the toolchain established, with a
-  receipt per row. A row that says `NO` is why the disposition is
-  what it is.
+  receipt per row. `fleet` is every plan the workspace declares,
+  composed with the candidate's artifacts. A row that says `NO` is
+  why the disposition is what it is.
+
+The Leader reads the same three views. Its verdict is a model call
+in the record (`model.called` with the deep tier, the digests of what
+it read, the cost) and a `review.verdict` with `authority: leader`.
 
 The kill test that shaped this — two rounds of reviewers deciding
 from the semantic diff alone, the source diff alone, and both — is
 recorded in `dna/kill-test/WALKTHROUGH.md`. Its short form: the
 source diff and the combined view decided every case; the semantic
 diff alone completed the law-backed cases and correctly held on the
-rest. So the combined view is the product, and the semantic view is
-never offered as a standalone approval interface.
+rest. So the combined view is the product, for people and for the
+Leader alike, and the semantic view is never offered as a standalone
+approval interface.
 
 The magnitude line is the boundary's vector, never a score:
 affected loci, contract change, effects widened, law touched,
 placement or ownership change, state migration, external blast
-radius, reversibility, novelty against the accepted lineage. Here
-the change moved nothing in the model, so only `novelty 3` shows —
-nothing had been accepted into this lineage yet.
+radius, reversibility, novelty against the accepted lineage.
 
 ## The verdict
 
 ```text
-$ hale dna review m1 approve --as riley --comment "the rooms stay the only way"
+$ hale dna review m1 approve --as riley --comment "fine"
 review m1 settled: approve by riley
 ```
 
-The verdict is a typed `ReviewVerdict` published on the membrane
-and keyed to this Review. What the Review checks, in this order:
+The verdict is a typed `ReviewVerdict` keyed to this Review — over
+the membrane when the organization is here, as a `review.verdict`
+row in the record otherwise. What the Review checks, in order:
 
 1. **The digest.** The verdict names the candidate the reviewer
    looked at — by default the one the request pinned, or the one
@@ -110,27 +133,38 @@ and keyed to this Review. What the Review checks, in this order:
    `review.refused: digest mismatch`. This is the pin against a
    candidate that changed after the reviewer looked; the apply path
    checks it again against the worktree's actual head.
-2. **The authority.** `--authority` defaults to `maintainer`. A
-   verdict whose authority does not satisfy the requirement is
-   refused by name: `authority agent does not satisfy maintainer`.
+2. **The authority.** A verdict whose rank does not reach the
+   requirement is refused by name:
+   `authority reviewer does not satisfy board`.
 3. **Independence.** The author of the candidate cannot review it.
 
-Every answer is a Journal event: `review.settled` with the outcome
-and the reviewer, or `review.refused` with the reason. `revise` and
-`reject` settle the Review too, and leave the genome and the
-expression untouched. `abstain` is recorded and leaves the Review
-open.
+Every answer is a row: `review.settled` with the outcome and the
+reviewer, or `review.refused` with the reason. `revise` and `reject`
+settle the Review too, and leave the genome and the expression
+untouched. `abstain` is recorded and leaves the Review open.
 
 An `approve` on a mutation Review is also the apply. The next
 chapter is what that does.
 
-## In iris
+## On GitHub
 
-`hale dna run` attaches iris with the organism's status projection,
-so the same pending Review is in the organism panel (`5`) with its
-evidence line and the candidate the verdict must name, and the
-membrane form (`m`) sends the same typed verdict the CLI does. For
-the diff itself, `hale dna review m1 --iris` opens the review
-perspective (`4`) on the Mutation's semantic diff document beside
-the status and the form. Either way the organism decides; iris only
-publishes.
+With `git config dna.github owner/repo`, the host (and `hale dna
+github sync`) mirrors every pending mutation Review to a pull
+request: the candidate pushed to `dna/<id>`, the three views above
+as the body, `github.pr` in the record. Every GitHub review on it
+becomes a `review.verdict` row in the reviewer's login — `board` when
+`dna.github.board` lists the login, `reviewer` otherwise — once, keyed
+by login, commit and state, and the Review admits or refuses it
+exactly as above. The settlement goes back as a comment
+(`github.commented`), and an approval pushes the genome so GitHub
+sees the merge. GitHub is a projection of the record and the record
+wins.
+
+## On the page and in iris
+
+`hale dna ui` renders this same text under *Review* and sends the
+verdict form the way the CLI does. Iris, attached by the host, shows
+the pending Review in its organism panel with the candidate the
+verdict must name, and `hale dna review m1 --iris` opens the review
+perspective on the Mutation's semantic diff document. Either way the
+Review decides; the surfaces only publish.
