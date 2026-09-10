@@ -132,12 +132,15 @@ pub fn run(args: &[String]) -> ExitCode {
             let (dir, rest) = project_arg(&args[1..], true);
             host_exec("status", &dir, &rest)
         }
-        Some("ask") => report(ask(&args[1..])),
+        Some("ask") => host_exec("ask", Path::new("."), &args[1..]),
         Some("history") => {
             let (dir, rest) = project_arg(&args[1..], false);
             host_exec("history", &dir, &rest)
         }
-        Some("sync") => report(sync_cmd(&args[1..])),
+        Some("sync") => {
+            let (dir, rest) = project_arg(&args[1..], true);
+            host_exec("sync", &dir, &rest)
+        }
         Some("board") => {
             let (dir, rest) = project_arg(&args[1..], true);
             host_exec("board", &dir, &rest)
@@ -146,20 +149,19 @@ pub fn run(args: &[String]) -> ExitCode {
             let (dir, rest) = project_arg(&args[1..], true);
             host_exec("report", &dir, &rest)
         }
-        Some("pressure") if args.get(1).map(|a| a == "raise").unwrap_or(false) => report(pressure(&args[1..])),
+        Some("pressure") if args.get(1).map(|a| a == "raise").unwrap_or(false) => host_exec("raise", Path::new("."), &args[2..]),
         Some("pressure") => host_exec("pressure", Path::new("."), &args[1..]),
-        Some("github") => report(github_cmd(&args[1..])),
+        Some("github") => host_exec("github", Path::new("."), &args[1..]),
         Some("fleet") => {
             let (dir, rest) = project_arg(&args[1..], true);
             host_exec("fleet", &dir, &rest)
         }
         Some("ui") => ui_cmd(&args[1..]),
-        Some("deploy") => report(deploy_cmd(&args[1..], false)),
-        Some("rollback") => report(deploy_cmd(&args[1..], true)),
-        // a list or a render is the host's; a verdict stays here until the
-        // writers move (GH #566 F8)
-        Some("review") if args[1..].iter().filter(|a| !a.starts_with("--")).count() < 2 && !args[1..].iter().any(|a| matches!(a.as_str(), "--as" | "--authority" | "--comment" | "--digest")) => host_exec("review", Path::new("."), &args[1..]),
-        Some("review") => report(review(&args[1..])),
+        Some("deploy") => host_exec("deploy", Path::new("."), &args[1..]),
+        Some("rollback") => host_exec("rollback", Path::new("."), &args[1..]),
+        // a list or a render, or a verdict: the host's (GH #566 F8)
+        Some("review") if args[1..].iter().filter(|a| !a.starts_with("--")).count() >= 2 => host_exec("verdict", Path::new("."), &args[1..]),
+        Some("review") => host_exec("review", Path::new("."), &args[1..]),
         Some("--help") | Some("-h") | None => usage(if args.is_empty() { 2 } else { 0 }),
         Some(other) => {
             eprintln!("hale dna: unknown subcommand `{other}`");

@@ -55,6 +55,25 @@ fn word(a: Args, n: Int) -> String {
     return "";
 }
 
+// positionals joined by spaces
+fn join_words(words: String) -> String {
+    let mut out = "";
+    let mut rest = words;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let w = if nl < 0 { rest } else { rest[0..nl] };
+        if len(w) > 0 { out = out + (if len(out) > 0 { " " } else { "" }) + w; }
+        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+    }
+    return out;
+}
+
+fn drop_first_word(words: String) -> String {
+    let nl = std::str::index_of(words, "\n");
+    if nl < 0 { return ""; }
+    return words[(nl + 1)..len(words)];
+}
+
 fn parse_args(raw: String, valued: String) -> Args {
     let mut a = Args { flags: "\n" };
     let mut rest = raw;
@@ -107,6 +126,21 @@ fn main() {
             if verb == "pressure" { ans = pressure_list(p); }
             if verb == "fleet" { ans = fleet_list(p, fleet, plan); }
         }
+    }
+    if verb == "ask" {
+        ans = ask_verb(root, join_words(a.words), flag(a, "--to"), has_flag(a, "--no-wait"));
+    } else if verb == "verdict" {
+        ans = verdict_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--as"), flag(a, "--authority"), flag(a, "--comment"), flag(a, "--digest"), has_flag(a, "--no-wait"));
+    } else if verb == "raise" {
+        ans = pressure_raise(root, word(a, 0), join_words(drop_first_word(a.words)));
+    } else if verb == "sync" {
+        ans = sync_verb(root);
+    } else if verb == "deploy" {
+        ans = deploy_verb(root, fleet, plan, word(a, 0), false);
+    } else if verb == "rollback" {
+        ans = deploy_verb(root, fleet, plan, word(a, 0), true);
+    } else if verb == "github" {
+        ans = github_verb(root, seed, word(a, 0));
     }
     if ans.ok {
         print(ans.text);
