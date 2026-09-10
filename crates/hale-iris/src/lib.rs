@@ -110,9 +110,19 @@ pub fn materialize_into(root: &Path) -> io::Result<()> {
         if let Some(parent) = p.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let tmp = p.with_extension("tmp-materialize");
+        // a tmp name per writer: two commands materializing one cache at
+        // once renamed the same tmp, and the loser's rename found nothing
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let tmp = p.with_extension(format!("tmp-materialize-{}-{}", std::process::id(), SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         std::fs::write(&tmp, content)?;
-        std::fs::rename(&tmp, &p)?;
+        if let Err(e) = std::fs::rename(&tmp, &p) {
+            let _ = std::fs::remove_file(&tmp);
+            // the other writer won with the same bytes: fine
+            if std::fs::read_to_string(&p).map(|now| now == content).unwrap_or(false) {
+                continue;
+            }
+            return Err(e);
+        }
     }
     Ok(())
 }
@@ -129,6 +139,28 @@ pub fn materialize() -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Several commands materialize one cache at once on a fresh
+    /// machine (a host, two nodes and a CLI in one test): every writer
+    /// must succeed, and the files must be whole.
+    #[test]
+    fn concurrent_materialization_never_fails_a_writer() {
+        let dir = std::env::temp_dir().join(format!("hale-iris-materialize-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let d = dir.clone();
+                std::thread::spawn(move || materialize_into(&d))
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap().expect("a writer lost the race and failed");
+        }
+        for (path, content) in all_files() {
+            assert_eq!(std::fs::read_to_string(dir.join(path)).unwrap(), content, "{path} is whole");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn every_embedded_file_is_nonempty_and_unique() {
