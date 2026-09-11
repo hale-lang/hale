@@ -99,6 +99,30 @@ use crate::codegen::{
 };
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// GH #577: what `get` hands back is OWNED. A vec slot holds a
+    /// pointer to the element (a String's blob, a struct with its
+    /// blobs), and `set` retires the replaced element; a `get` that
+    /// returned that same pointer left the caller holding memory a
+    /// later `set` freed — two items swapped through `get` and `set`
+    /// segfaulted. So a heap-bearing element is deep-copied into the
+    /// caller's current arena on read (the same clone-on-read a
+    /// serialized hashmap does); scalars and locus refs pass through.
+    pub(crate) fn emit_vec_get_owned(
+        &mut self,
+        loaded: BasicValueEnum<'ctx>,
+        elem_ty: &CodegenTy,
+        locus_name: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        if !matches!(elem_ty, CodegenTy::String | CodegenTy::Bytes | CodegenTy::TypeRef(_)) {
+            return Ok(loaded);
+        }
+        let dest = self.current_arena_ptr()?;
+        let _ = locus_name;
+        // always a copy: a child form's arena can be the caller's own,
+        // and a same-arena pass-through would hand the slot's pointer back
+        self.emit_owned_store_copy_ptr(loaded, elem_ty, dest)
+    }
+
     /// v1.x-FORM-2 PR6 (PR5 finale): inline-lower a synthesized
     /// @form(vec) fallible method (get, pop) as-if it were a
     /// fallible-ABI call. The C runtime returns 1=OK / 0=err;
@@ -266,6 +290,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             &format!("{}.vec.get.bce.elem", locus_name),
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let loaded = self.emit_vec_get_owned(loaded, &elem_ty, locus_name)?;
                     self.builder
                         .build_store(out_val_slot_opt.unwrap(), loaded)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -383,6 +408,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         &format!("{}.vec.get.elem", locus_name),
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let loaded = self.emit_vec_get_owned(loaded, &elem_ty, locus_name)?;
                 self.builder
                     .build_store(out_val_slot_opt.unwrap(), loaded)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -480,12 +506,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         CodegenError::LlvmEmit(e.to_string())
                     })?
                     .into_pointer_value();
-                let val = self.emit_cross_arena_store_deep_copy_ptr(
-                    val,
-                    &elem_ty,
-                    dest_arena,
-                    &format!("{}.vec_set", locus_name),
-                )?;
+                // GH #577: the vec owns what it stores — always a copy, so
+                // no two slots share a struct the retire below could free
+                let val = self.emit_owned_store_copy_ptr(val, &elem_ty, dest_arena)?;
                 // FORM-vec hot-path inline (replaces the opaque
                 // lotus_vec_set C call). The vec slot is the inline
                 // struct `{ usize cap, usize len, ptr buf }`. The
@@ -1765,12 +1788,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         CodegenError::LlvmEmit(e.to_string())
                     })?
                     .into_pointer_value();
-                let arg_val = self.emit_cross_arena_store_deep_copy_ptr(
-                    arg_val,
-                    &slot.elem_ty,
-                    dest_arena,
-                    &format!("{}.vec_push", locus_name),
-                )?;
+                // GH #577: the vec owns what it stores — always a copy (see set)
+                let arg_val = self.emit_owned_store_copy_ptr(arg_val, &slot.elem_ty, dest_arena)?;
                 // Materialize the (now arena-anchored) arg in an
                 // alloca so we can hand its address to
                 // lotus_vec_push. The runtime memcpys elem_size

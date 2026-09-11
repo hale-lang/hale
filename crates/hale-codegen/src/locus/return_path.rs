@@ -130,6 +130,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(phi.as_basic_value())
     }
 
+    /// GH #577: a store that always OWNS. `emit_cross_arena_store_deep_copy_ptr`
+    /// passes a pointer through when it already lives in `dest_arena`;
+    /// for a container whose `set` retires the replaced element that
+    /// pass-through let two slots share one struct (a value read from
+    /// the same vec, or one value pushed twice), and retiring one freed
+    /// the other's. A vec's elements are the vec's: a heap-bearing value
+    /// is copied into `dest_arena` on every push and set, whatever
+    /// arena it came from; scalars and locus refs pass through.
+    pub(crate) fn emit_owned_store_copy_ptr(
+        &mut self,
+        value: BasicValueEnum<'ctx>,
+        ty: &CodegenTy,
+        dest_arena: PointerValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        match ty {
+            CodegenTy::String | CodegenTy::Bytes | CodegenTy::TypeRef(_) | CodegenTy::Tuple(_) | CodegenTy::Array(_, _) => {
+                self.emit_return_value_deep_copy(value, ty, dest_arena)
+            }
+            _ => Ok(value),
+        }
+    }
+
     pub(crate) fn emit_return_value_deep_copy(
         &mut self,
         value: BasicValueEnum<'ctx>,
