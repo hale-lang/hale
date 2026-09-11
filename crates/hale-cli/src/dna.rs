@@ -555,11 +555,15 @@ fn run_organism(args: &[String], dev: bool) -> ExitCode {
     // GH #566 F5: under `run`, the fleet `[dna] fleet` names is the
     // expression — this host deploys through the record and watches the
     // window over every instance the change touches
-    let fleet = match crate::pkg::read_dna_fleet(&root.join("hale.toml")) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("hale dna {verb}: {e}");
-            None
+    let fleet = if dev {
+        None
+    } else {
+        match crate::pkg::read_dna_fleet(&root.join("hale.toml")) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("hale dna {verb}: {e}");
+                None
+            }
         }
     };
     if let Some((name, plan)) = &fleet {
