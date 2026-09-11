@@ -1,0 +1,31 @@
+// GH #529 D2: the source-editing Attempt is confined BY CONSTRUCTION.
+// Its tool grant reads, edits, formats and checks inside one worktree;
+// it holds no repository, no worktree gateway, no deployment, no
+// Knowledge. The constitution says so, and this wiring satisfies it.
+import "../../../core" as dna;
+
+group editors = { dna::SourceEditor, dna::WorktreeTools };
+group knowledge = { dna::Knowledge };
+group performers = { dna::AgentPerformer, dna::HumanWorkGateway, dna::ServicePerformer, dna::ScriptedPerformer, dna::SourceEditor };
+
+constitution Editing {
+    editors_never_commit: forbid reaches(editors, effects(repo_write));
+    editors_never_touch_worktrees: forbid reaches(editors, effects(worktree_io));
+    editors_never_apply: forbid reaches(editors, effects(genome_apply));
+    editors_never_learn: forbid reaches(editors, knowledge);
+    performers_never_apply: forbid reaches(performers, effects(genome_apply));
+}
+
+main locus App {
+    params {
+        editor: dna::SourceEditor = dna::SourceEditor {
+            models: dna::ModelRouter { quick: dna::FakeModel { answer: "fn main() { }\n" } },
+            tools: dna::WorktreeTools { root: "/tmp/nowhere" }
+        };
+    }
+    claims { adopt Editing; }
+    run() {
+        let r = self.editor.perform(dna::WorkRequest { work_id: "w1", objective: "noop", target: "main.hl" });
+    }
+}
+fn main() { App { }; }

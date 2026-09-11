@@ -1,0 +1,221 @@
+// dna/core/verification.hl — evidence collection (GH #529 D3).
+//
+// `HaleVerification` runs the toolchain over a candidate worktree —
+// `hale fmt --check`, `hale check --json --dump-topology`, `hale
+// verify --json`, `hale test`, `hale model diff <base> <candidate>`
+// and, where the project has a recording, `hale replay --feed` — and
+// keeps each result as CONTENT-ADDRESSED evidence: the output is
+// written under `evidence_dir/<sha256>.txt` and an `evidence.<step>`
+// event is appended to the Journal on the candidate commit, carrying
+// the exit code and the output digest. The Evidence a Review reads
+// is therefore a set of facts with receipts, never a self-report.
+//
+// `assess_structure` turns the semantic diff into the magnitude
+// VECTOR of #521 (never a score): affected loci, parent-facing
+// contract change, effects widened, law touched, placement or
+// ownership change, state migration, external blast radius,
+// reversibility, novelty against the accepted lineage.
+
+type VerificationReport {
+    mutation_id: String = "";
+    candidate: String = ""; // the candidate commit
+    candidate_shape: String = ""; // the candidate artifact's shape hash ("" when it did not check)
+    evidence: Evidence = Evidence { };
+    magnitude: Magnitude = Magnitude { };
+    steps: String = ""; // "fmt=0 check=0 verify=0 test=0 diff=0"
+    candidate_topology: String = ""; // path
+    diff_json: String = ""; // path ("" when there was no candidate artifact)
+    diff_text: String = "";
+}
+
+fn count_declarations(diff: String, kind: String) -> Int {
+    let mut n = 0;
+    let mut it = std::json::array_first(std::json::find_field_raw(diff, "declarations"));
+    while !it.done {
+        if std::json::find_string_field(it.element, "kind") == kind && std::json::find_string_field(it.element, "change") != "persisted" {
+            n = n + 1;
+        }
+        it = std::json::array_next(it);
+    }
+    return n;
+}
+
+fn has_facet(diff: String, facet: String) -> Bool {
+    let mut it = std::json::array_first(std::json::find_field_raw(diff, "contracts"));
+    while !it.done {
+        if std::json::find_string_field(it.element, "facet") == facet { return true; }
+        it = std::json::array_next(it);
+    }
+    return false;
+}
+
+// Effect classes the change newly reaches: "" when none, else the
+// space-separated names. Intrinsic classes (alloc, publish) count as
+// widening; a declared class (a user's `effect outbound_email;`) is
+// what external blast radius is read from.
+@unbounded
+fn gained_classes(diff: String) -> String {
+    let mut out = "";
+    let mut it = std::json::array_first(std::json::find_field_raw(std::json::find_field_raw(diff, "effects"), "classes"));
+    while !it.done {
+        let mut g = std::json::array_first(std::json::find_field_raw(it.element, "gained"));
+        while !g.done {
+            out = out + std::json::unescape_string(g.element) + " ";
+            g = std::json::array_next(g);
+        }
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+fn is_intrinsic_class(c: String) -> Bool {
+    return c == "alloc" || c == "publish" || c == "subscribe" || c == "spawn" || c == "";
+}
+
+// The magnitude vector of a semantic diff (`hale model diff --json`).
+// `lineage_applied` is how many mutations this lineage has applied
+// before: novelty is coarse — 3 with none, 1 with some — until
+// accepted lineage carries change classes to compare against.
+@unbounded
+fn assess_structure(diff: String, lineage_applied: Int) -> Magnitude {
+    let summary = std::json::find_field_raw(diff, "summary");
+    let gained = gained_classes(diff);
+    let mut blast = 0;
+    let mut widened = false;
+    let mut p = 0;
+    let n = len(gained);
+    let mut word = "";
+    while p < n {
+        let ch = gained[p..(p + 1)];
+        if ch == " " {
+            if len(word) > 0 { widened = true; if !is_intrinsic_class(word) { blast = 2; } }
+            word = "";
+        } else {
+            word = word + ch;
+        }
+        p = p + 1;
+    }
+    let params_moved = has_facet(diff, "params");
+    let removed = std::json::find_int_field(summary, "removed");
+    return Magnitude {
+        loci: count_declarations(diff, "locus"),
+        contract_change: std::json::find_int_field(summary, "contract_deltas") > 0,
+        effects_widened: widened,
+        law_touched: std::json::find_int_field(summary, "law_deltas") > 0,
+        placement_change: has_facet(diff, "placement"),
+        ownership_crossed: has_facet(diff, "ownership"),
+        state_migration: params_moved,
+        external_blast: blast,
+        irreversible: params_moved || removed > 0,
+        novelty: if lineage_applied == 0 { 3 } else { 1 }
+    };
+}
+
+fn magnitude_json(m: Magnitude) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.int_field("loci", m.loci);
+    b.bool_field("contract_change", m.contract_change);
+    b.bool_field("effects_widened", m.effects_widened);
+    b.bool_field("law_touched", m.law_touched);
+    b.bool_field("placement_change", m.placement_change);
+    b.bool_field("ownership_crossed", m.ownership_crossed);
+    b.bool_field("state_migration", m.state_migration);
+    b.int_field("external_blast", m.external_blast);
+    b.bool_field("irreversible", m.irreversible);
+    b.int_field("novelty", m.novelty);
+    b.end_object();
+    return b.result();
+}
+
+locus HaleVerification {
+    params {
+        hale_bin: String = "hale";
+        evidence_dir: String = ".hale/dna/evidence";
+        recording: String = ""; // a LOTUS_OBS_RECORD recording; "" = no replay step
+        journal: Journal = MemJournal { };
+        runs: Int = 0;
+        last: VerificationReport = VerificationReport { };
+    }
+    // One step's receipt: the output content-addressed on disk, the
+    // event on the candidate. Returns the exit code. (Per-run
+    // allocation, bounded by the runs a Review asks for.)
+    @unbounded
+    fn record(candidate: String, mutation_id: String, step: String, r: RunResult) -> Int {
+        let text = r.stdout + r.stderr;
+        let digest = hex(std::crypto::sha256(std::bytes::from_string(text)));
+        std::io::fs::write_file(self.evidence_dir + "/" + digest + ".txt", text) or discard;
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("mutation_id", mutation_id);
+        b.string_field("step", step);
+        b.bool_field("ok", r.code == 0);
+        b.int_field("code", r.code);
+        b.string_field("output_digest", digest);
+        b.int_field("bytes", len(text));
+        b.end_object();
+        let j = self.journal.append(self.journal.revision(), "evidence." + step, candidate, b.result());
+        return r.code;
+    }
+    fn lineage_applied() -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        let total = self.journal.revision();
+        while i < total {
+            if self.journal.read(i).kind == "mutation.applied" { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    // The toolchain over the candidate's worktree; `base_topology` is
+    // the artifact the genome was expressed from (the organism's
+    // baseline), the diff's `a` side.
+    @effects(is: { toolchain_run })
+    fn verify(m: Mutation, base_topology: String) -> VerificationReport {
+        self.runs = self.runs + 1;
+        std::io::fs::mkdir(self.evidence_dir) or discard;
+        let wt = m.worktree;
+        let cand = m.candidate_commit;
+        let topo = self.evidence_dir + "/" + m.id + ".candidate.topology.json";
+        let fmt = self.record(cand, m.id, "fmt", run_tool(self.hale_bin + "\nfmt\n--check\n" + wt));
+        let check = self.record(cand, m.id, "check", run_tool(self.hale_bin + "\ncheck\n" + wt + "\n--json\n--dump-topology=" + topo));
+        let verify = self.record(cand, m.id, "verify", run_tool(self.hale_bin + "\nverify\n" + wt + "\n--json"));
+        let tests = run_tool(self.hale_bin + "\ntest\n" + wt);
+        let test = self.record(cand, m.id, "test", tests);
+        let mut replay_ok = false;
+        if len(self.recording) > 0 {
+            let rp = self.record(cand, m.id, "replay", run_tool(self.hale_bin + "\nreplay\n" + self.recording + "\n" + wt + "\n--feed"));
+            replay_ok = rp == 0;
+        }
+        let mut diff = -1;
+        let mut diff_json = "";
+        let mut diff_text = "";
+        let mut shape = "";
+        let mut mag = Magnitude { };
+        if check == 0 {
+            let dj = run_tool(self.hale_bin + "\nmodel\ndiff\n" + base_topology + "\n" + topo + "\n--json");
+            diff = self.record(cand, m.id, "diff", dj);
+            if diff == 0 {
+                diff_json = self.evidence_dir + "/" + m.id + ".diff.json";
+                std::io::fs::write_file(diff_json, dj.stdout) or discard;
+                let dt = run_tool(self.hale_bin + "\nmodel\ndiff\n" + base_topology + "\n" + topo + "\n--text");
+                diff_text = self.evidence_dir + "/" + m.id + ".diff.txt";
+                std::io::fs::write_file(diff_text, dt.stdout) or discard;
+                shape = std::json::find_string_field(std::json::find_field_raw(dj.stdout, "b"), "shape_hash");
+                mag = assess_structure(dj.stdout, self.lineage_applied());
+                let j = self.journal.append(self.journal.revision(), "evidence.magnitude", cand, magnitude_json(mag));
+            }
+        }
+        // a project with no tests has no test evidence, only an exit code
+        let tested = test == 0 && std::str::contains(tests.stdout, ", 0 failed");
+        self.last = VerificationReport {
+            mutation_id: m.id, candidate: cand, candidate_shape: shape,
+            evidence: Evidence { check_clean: check == 0, verify_clean: verify == 0, tests_pass: tested, replay_ok: replay_ok },
+            magnitude: mag,
+            steps: "fmt=" + to_string(fmt) + " check=" + to_string(check) + " verify=" + to_string(verify) + " test=" + to_string(test) + " diff=" + to_string(diff),
+            candidate_topology: if check == 0 { topo } else { "" },
+            diff_json: diff_json, diff_text: diff_text
+        };
+        return self.last;
+    }
+}

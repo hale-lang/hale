@@ -1,0 +1,79 @@
+// dna/tests/editing_test.hl — GH #529 D2: the source-editing Attempt.
+//
+// A worktree under /tmp holding one program; a SourceEditor whose
+// "models" are scripted (the quick tier returns the rewritten file,
+// the deep tier the fitness assessment); a tool grant confined to
+// that directory. One Attempt rewrites the file, formats and checks
+// it with the real toolchain, and hands back a MutationProposal. The
+// grant refuses paths outside the worktree, and a proposal that does
+// not check is a failed Attempt with the diagnostics as its evidence.
+//
+// The toolchain is HALE_BIN when set (the Rust suite passes its own
+// build), else `hale` on PATH.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+main locus App {
+    params {
+        root: String = "";
+        editor: dna::SourceEditor = dna::SourceEditor { };
+        breaker: dna::SourceEditor = dna::SourceEditor { };
+    }
+    run() {
+        let root = "/tmp/dna-edit-" + to_string(std::process::pid());
+        std::io::fs::mkdir(root) or discard;
+        std::io::fs::write_file(root + "/main.hl", "fn main() { println(\"v1\"); }\n") or discard;
+        self.editor = dna::SourceEditor {
+            name: "editor",
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: "fn main() {\n    println(\"v2\");\n}\n" },
+                deep: dna::FakeModel { name: "deep", answer: "startup_prints +" }
+            },
+            tools: dna::WorktreeTools { root: root, hale_bin: toolchain() }
+        };
+
+        // ---- one Attempt: edit, fmt, check, propose ---------------------
+        let r = self.editor.perform(dna::WorkRequest {
+            work_id: "w1", task_id: "t1", objective: "print v2 instead of v1", target: "main.hl", data_class: "internal"
+        });
+        std::test::assert_eq_str(r.disposition, "done", "attempt done: " + r.narrative);
+        std::test::assert_eq_str(r.performer, "editor", "performer");
+        std::test::assert(std::str::contains(r.evidence, "fmt=0 check=0"), "toolchain evidence: " + r.evidence);
+        std::test::assert(std::str::contains(r.evidence, "backends=quick,deep"), "two tiers under one attempt: " + r.evidence);
+        std::test::assert_eq_str(std::json::find_string_field(r.result, "files_changed"), "main.hl", "files changed");
+        std::test::assert_eq_str(std::json::find_string_field(r.result, "fitness_signals"), "startup_prints +", "fitness signals");
+        std::test::assert(std::str::contains(r.result, "\"check_clean\": true") || std::str::contains(r.result, "\"check_clean\":true"), "check clean in the proposal: " + r.result);
+        let after = std::io::fs::read_file(root + "/main.hl") or "";
+        std::test::assert(std::str::contains(after, "v2"), "the worktree holds the edit");
+        std::test::assert_eq_int(self.editor.tools.reads, 1, "one read");
+        std::test::assert_eq_int(self.editor.tools.edits, 1, "one edit");
+        std::test::assert_eq_int(self.editor.models.calls, 2, "edit + assess");
+
+        // ---- the grant is confined -----------------------------------------
+        let out = self.editor.perform(dna::WorkRequest { work_id: "w2", objective: "x", target: "../etc/passwd" });
+        std::test::assert_eq_str(out.disposition, "failed", "outside path refused");
+        std::test::assert(std::str::contains(out.narrative, "outside the worktree"), "refusal names the reason: " + out.narrative);
+        let abs = self.editor.perform(dna::WorkRequest { work_id: "w3", objective: "x", target: "/tmp/x.hl" });
+        std::test::assert_eq_str(abs.disposition, "failed", "absolute path refused");
+        std::test::assert_eq_int(self.editor.tools.refused, 2, "two refusals");
+        std::test::assert_eq_int(self.editor.tools.edits, 1, "no edit outside");
+
+        // ---- a proposal that does not check is a failed Attempt ------------
+        self.breaker = dna::SourceEditor {
+            name: "breaker",
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: "fn main() { let x: Int = \"no\"; }\n" } },
+            tools: dna::WorktreeTools { root: root, hale_bin: toolchain() }
+        };
+        let bad = self.breaker.perform(dna::WorkRequest { work_id: "w4", objective: "break it", target: "main.hl" });
+        std::test::assert_eq_str(bad.disposition, "failed", "unchecked proposal fails");
+        std::test::assert(std::str::contains(bad.evidence, "fmt=0 check=1"), "check failed in evidence: " + bad.evidence);
+        std::test::assert(std::str::contains(bad.narrative, "type error"), "diagnostics travel with the attempt: " + bad.narrative);
+        std::test::assert_eq_int(self.editor.attempts, 3, "three attempts on the first editor");
+    }
+}
+fn main() { App { }; }

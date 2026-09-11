@@ -533,9 +533,14 @@ The output is a versioned document (`TOPOLOGY_DIFF_SCHEMA`, now
   locus on the topic. These facets are read from the artifact's
   `contracts` and `topics` sections (schema 1.18+), the per-locus
   regrouping of facts the model already holds.
-- **`effects`** — per paired fn, classes `gained` / `dropped`; and
-  per fn-grained certificate (`lowered` rows keyed by subject and
-  form), `added` / `removed` / `result` changed.
+- **`effects`** — per paired fn, classes `gained` / `dropped`; per
+  fn present on one side only with a non-empty effect set, a row
+  with `change: added` (its classes as `gained`) or `change:
+  removed` (as `dropped`) — an added locus whose handler reaches a
+  declared class widens what the program does, and the paired rows
+  alone would miss it; and per fn-grained certificate (`lowered`
+  rows keyed by subject and form), `added` / `removed` / `result`
+  changed.
 - **`law`** — per paired claim, `form` / `result` / `verdict` /
   `family` changes; claims added and removed with their result;
   `adequacy` changes per family; the overall `verdict` when it

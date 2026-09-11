@@ -14,6 +14,7 @@ effect genome_apply; // a candidate becomes the genome (commit/merge/deploy)
 effect journal_io; // the durable journal's own file I/O
 effect worktree_io; // a worktree is created or removed on disk (GH #529 D1)
 effect repo_write; // the repository's history is written (a commit, a merge)
+effect toolchain_run; // the toolchain is run as a subprocess (fmt, check, verify, test, model diff)
 
 // A bounded outcome offered downward (supersystem -> subsystem).
 type Intent {
@@ -46,6 +47,7 @@ type WorkRequest {
     output_contract: String = ""; // e.g. "ReviewVerdict", "Patch", "Assessment"
     data_class: String = "internal"; // "public" | "internal" | "customer"
     requires: String = ""; // capability words, space-separated
+    target: String = ""; // what the Work is about: a file inside the worktree, a locus, ""
     cost_ceiling: Int = 0;
     attempt_no: Int = 0;
 }
@@ -179,4 +181,18 @@ type Mutation {
     change_class: String = "";
     rationale: String = "";
     disposition: String = ""; // "proposed" | "staged" | "reviewed" | "applied" | "rejected" | "rolled_back" | "dissolved"
+}
+
+// What a source-editing Attempt hands back (GH #529 D2): the files it
+// changed inside its worktree, why, and the fitness signals it expects
+// the change to move. Never the diff itself — the repository has that,
+// pinned by the candidate commit the gateway records.
+type MutationProposal {
+    work_id: String = "";
+    files_changed: String = ""; // space-separated, worktree-relative
+    rationale: String = "";
+    fitness_signals: String = ""; // "checkout_failures -", space-separated "<signal> <direction>"
+    fmt_clean: Bool = false;
+    check_clean: Bool = false;
+    check_output: String = ""; // the toolchain's diagnostics when !check_clean
 }

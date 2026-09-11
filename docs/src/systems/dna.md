@@ -183,6 +183,71 @@ Attempt's lease on `mutation:<id>`, so a stale fencing token is
 refused rather than applied. `hale dna history m1` shows the
 worktree, candidate and apply events of a Mutation.
 
+### The Attempt that edits
+
+`SourceEditor` is the performer that changes source. Its hands are
+`WorktreeTools { root, hale_bin }`: `read` and `edit` of
+worktree-relative paths (an absolute path or a `..` segment is
+refused and counted), and `fmt` and `check`, which run the toolchain
+against the worktree (effect class `toolchain_run`). That is the
+whole grant. The editor holds no repository, no worktree gateway, no
+deployment and no Knowledge — not as a runtime check but by
+construction, and a constitution says so:
+
+```hale,fragment
+group editors = { dna::SourceEditor, dna::WorktreeTools };
+group knowledge = { dna::Knowledge };
+constitution Editing {
+    editors_never_commit: forbid reaches(editors, effects(repo_write));
+    editors_never_touch_worktrees: forbid reaches(editors, effects(worktree_io));
+    editors_never_apply: forbid reaches(editors, effects(genome_apply));
+    editors_never_learn: forbid reaches(editors, knowledge);
+}
+```
+
+A wiring that hands the editor a `LocalGit` fails `hale check` with
+the witness path (`dna/tests/law/editor_confined_fail`).
+
+One `perform` is two model calls under one attempt id — the quick
+tier rewrites the target file to the objective, the deep tier says
+which fitness signals the change should move — then `fmt`, then
+`check`. The result is a `MutationProposal` in `WorkResult.result`:
+the files changed, the rationale, the expected fitness signals, and
+whether the proposal formats and checks; the toolchain's exit codes
+and the two backends are the `evidence`. A proposal that does not
+check is a failed Attempt carrying the diagnostics, never a
+candidate. The candidate commit is the gateway's business, not the
+editor's.
+
+### Evidence with receipts
+
+`HaleVerification { hale_bin, evidence_dir, recording }` runs the
+toolchain over a candidate's worktree — `hale fmt --check`, `hale
+check --json --dump-topology`, `hale verify --json`, `hale test`,
+`hale model diff <baseline> <candidate>`, and `hale replay --feed`
+when the project has a recording — and keeps every result as
+content-addressed evidence: the step's output goes to
+`.hale/dna/evidence/<sha256>.txt`, and an `evidence.<step>` event
+on the candidate commit carries the exit code and that digest
+(`hale dna history <candidate>` lists them). The `Evidence` the
+boundary and the Review read (`check_clean`, `verify_clean`,
+`tests_pass`, `replay_ok`) is therefore a set of facts with
+receipts. A project with no tests has no test evidence, only an
+exit code; a candidate that does not check has no artifact, no
+diff, and a default magnitude — and the report says so.
+
+`assess_structure` turns the semantic diff into the **magnitude
+vector** of #521, never a score: affected loci, parent-facing
+contract change, effects widened, law touched, placement or
+ownership change, state migration, external blast radius (a
+declared effect class newly reached), reversibility, and novelty
+against the accepted lineage (coarse for now: unprecedented until
+the lineage has applied anything). It is journaled as
+`evidence.magnitude` beside the tool receipts. For that vector to
+see an added locus that reaches a declared class, `hale model
+diff` now reports one-sided fns with effects as rows of their own
+(`+ fn Mailer::on_ping reaches mail`).
+
 ## In iris
 
 `hale dna run` hands iris three sources: the observation segment

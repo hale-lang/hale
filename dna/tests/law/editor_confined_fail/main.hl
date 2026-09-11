@@ -1,0 +1,27 @@
+// GH #529 D2: an editor handed a repository handle can commit — the
+// constitution refuses the build with a witness path, before any
+// runtime check could.
+import "../../../core" as dna;
+
+group editors = { dna::SourceEditor, dna::WorktreeTools, Committer };
+
+constitution Editing {
+    editors_never_commit: forbid reaches(editors, effects(repo_write));
+    editors_never_apply: forbid reaches(editors, effects(genome_apply));
+}
+
+// A "helpful" editor that also holds the repository.
+locus Committer {
+    params { editor: dna::SourceEditor = dna::SourceEditor { }; git: dna::LocalGit = dna::LocalGit { }; }
+    fn go(req: dna::WorkRequest) -> String {
+        let r = self.editor.perform(req);
+        return self.git.commit_all("/tmp/nowhere", "editor committed");
+    }
+}
+
+main locus App {
+    params { c: Committer = Committer { }; }
+    claims { adopt Editing; }
+    run() { let s = self.c.go(dna::WorkRequest { work_id: "w1", target: "main.hl" }); }
+}
+fn main() { App { }; }

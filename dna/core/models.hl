@@ -72,6 +72,10 @@ locus FakeModel {
         model: String = "fake-1";
         max_bytes: Int = 100000;
         price_micros: Int = 10;
+        // A scripted answer (GH #529 D2): when set, `complete` returns
+        // it verbatim, so an editing Attempt can be exercised without
+        // a model — the "model" is the test's own text.
+        answer: String = "";
         calls: Int = 0;
     }
     fn identity() -> String { return self.name; }
@@ -83,6 +87,9 @@ locus FakeModel {
         self.calls = self.calls + 1;
         if !self.allows(req.data_class) {
             return ModelResult { ok: false, backend: self.name, model: self.model, refused: "data class " + req.data_class };
+        }
+        if len(self.answer) > 0 {
+            return ModelResult { ok: true, backend: self.name, model: self.model, output: self.answer, tokens: len(self.answer) / 4, cost_micros: self.price_micros };
         }
         return fake_answer(self.name, self.model, req, self.max_bytes, self.price_micros);
     }
