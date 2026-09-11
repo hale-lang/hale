@@ -15,6 +15,7 @@ effect journal_io; // the durable journal's own file I/O
 effect worktree_io; // a worktree is created or removed on disk (GH #529 D1)
 effect repo_write; // the repository's history is written (a commit, a merge)
 effect toolchain_run; // the toolchain is run as a subprocess (fmt, check, verify, test, model diff)
+effect harness_run; // an installed coding harness runs as a subprocess with its own tools (GH #583 M3)
 
 // A bounded outcome offered downward (supersystem -> subsystem).
 type Intent {

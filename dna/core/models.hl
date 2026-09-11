@@ -19,6 +19,8 @@ type ModelRequest {
     knowledge_bindings: String = ""; // ids the context came from, for the evidence
     tool_grant: String = "";
     target: String = ""; // the file the request is about, when it is about one (GH #566 F3)
+    workspace: String = ""; // an EXPORT the backend may work in with its own tools (GH #583 M3); "" = answer only
+    mask: String = ""; // paths the backend's process must not reach, newline-separated (the genome)
     retry_of: String = "";
     data_class: String = "internal";
     needs_tools: Bool = false;
@@ -41,6 +43,10 @@ interface ModelBackend {
     fn model_name() -> String;
     fn allows(data_class: String) -> Bool;
     fn capacity_bytes() -> Int;
+    // True for a backend that edits files in the request's workspace
+    // with its own tools (a harness) rather than answering with text;
+    // the editor exports the worktree for it and imports the diff.
+    fn works_in_place() -> Bool;
     fn complete(req: ModelRequest) -> ModelResult;
 }
 
@@ -101,6 +107,7 @@ locus FakeModel {
     fn model_name() -> String { return self.model; }
     fn allows(data_class: String) -> Bool { return data_class != "customer"; }
     fn capacity_bytes() -> Int { return self.max_bytes; }
+    fn works_in_place() -> Bool { return false; }
     // The scripted answer for a request about a file, by try then by file.
     fn scripted_for(req: ModelRequest) -> String {
         if len(self.answers_dir) == 0 || len(req.target) == 0 || req.role != "edit" { return ""; }
@@ -163,6 +170,7 @@ locus LocalFakeModel {
     fn model_name() -> String { return self.model; }
     fn allows(data_class: String) -> Bool { return true; }
     fn capacity_bytes() -> Int { return self.max_bytes; }
+    fn works_in_place() -> Bool { return false; }
     fn complete(req: ModelRequest) -> ModelResult {
         self.calls = self.calls + 1;
         return fake_answer(self.name, self.model, req, self.max_bytes, self.price_micros);
@@ -327,6 +335,7 @@ locus OpenAiChat {
     // cleanly instead of the wire failing.
     fn allows(data_class: String) -> Bool { return data_class != "customer" && self.credential.ready(); }
     fn capacity_bytes() -> Int { return self.max_bytes; }
+    fn works_in_place() -> Bool { return false; }
     @effects(is: { external_model })
     fn complete(req: ModelRequest) -> ModelResult {
         self.calls = self.calls + 1;
@@ -442,6 +451,7 @@ locus AnthropicMessages {
     fn model_name() -> String { return self.model; }
     fn allows(data_class: String) -> Bool { return data_class != "customer" && self.credential.ready(); }
     fn capacity_bytes() -> Int { return self.max_bytes; }
+    fn works_in_place() -> Bool { return false; }
     @effects(is: { external_model })
     fn complete(req: ModelRequest) -> ModelResult {
         self.calls = self.calls + 1;
@@ -508,6 +518,7 @@ locus LocalModel {
     fn model_name() -> String { return self.model; }
     fn allows(data_class: String) -> Bool { return true; }
     fn capacity_bytes() -> Int { return self.max_bytes; }
+    fn works_in_place() -> Bool { return false; }
     fn complete(req: ModelRequest) -> ModelResult {
         self.calls = self.calls + 1;
         let mut ev = ModelEvidence {
@@ -597,6 +608,18 @@ locus ModelRouter {
         calls: Int = 0;
         last_backend: String = "";
     }
+    // Whether the backend this request would go to works in place (a
+    // harness): the editor asks before it exports a worktree.
+    fn in_place(req: ModelRequest) -> Bool {
+        let quick_ok = self.quick.allows(req.data_class) && self.quick.capacity_bytes() >= req.context_bytes;
+        let deep_ok = self.deep.allows(req.data_class) && self.deep.capacity_bytes() >= req.context_bytes;
+        let private_ok = self.private.allows(req.data_class) && self.private.capacity_bytes() >= req.context_bytes;
+        let cls = self.selection.select(req, quick_ok, deep_ok, private_ok);
+        if cls == "deep" { return self.deep.works_in_place(); }
+        if cls == "private" { return self.private.works_in_place(); }
+        if cls == "" { return false; }
+        return self.quick.works_in_place();
+    }
     // The router returns DATA. Which backend answered is recorded, not hidden.
     fn ask(req: ModelRequest) -> ModelResult {
         let quick_ok = self.quick.allows(req.data_class) && self.quick.capacity_bytes() >= req.context_bytes;
@@ -611,6 +634,211 @@ locus ModelRouter {
         else { self.quick.complete(req) };
         self.spent_micros = self.spent_micros + r.cost_micros;
         return r;
+    }
+}
+
+// ---- the harness adapter (GH #583 M3) ----------------------------------
+//
+// An installed coding harness (`claude`, `codex`) run per request, with
+// its own tools on, in the request's EXPORT of the worktree as its cwd
+// — a plain directory, never `.git`, never `.hale/dna`. The DNA has no
+// opinion about how the work gets done; its law is about reach, and
+// what it guarantees is that the genome is unreachable from the
+// harness process: a `Confinement` masks the repository (Bubblewrap on
+// Linux; `None` is refused unless the org chart allows it), and the
+// editor checks that nothing moved during the call. Outside the genome
+// the harness has exactly the operator's account, which is what
+// running it by hand has. Evidence is one `model.called` row per call
+// with the harness's own cost summary, the grant as `harness @export`,
+// and the confinement kind.
+
+interface Confinement {
+    fn kind() -> String;
+    fn available() -> Bool;
+    // The argv to run so that `argv` executes with `cwd` as its working
+    // directory and none of the `mask` paths (newline-separated) reachable.
+    fn wrap(argv: String, cwd: String, mask: String) -> String;
+}
+
+// No boundary: the process runs as the operator, in `cwd`. Refused by
+// a HarnessModel unless `allow_unconfined` says otherwise.
+locus NoConfinement {
+    params { uses: Int = 0; }
+    fn kind() -> String { return "none"; }
+    fn available() -> Bool { return true; }
+    fn wrap(argv: String, cwd: String, mask: String) -> String {
+        self.uses = self.uses + 1;
+        return "sh\n-c\ncd \"$0\" && exec \"$@\"\n" + cwd + "\n" + argv;
+    }
+}
+
+// Bubblewrap (Linux): the whole filesystem as the operator sees it —
+// the harness's own home state, the toolchain, the network — with
+// every masked path replaced by an empty tmpfs, so the genome does not
+// exist for the process.
+locus Bubblewrap {
+    params { command: String = "bwrap"; uses: Int = 0; }
+    fn kind() -> String { return "bubblewrap"; }
+    fn available() -> Bool {
+        let r = run_tool(self.command + "\n--version");
+        return r.code == 0;
+    }
+    @unbounded
+    fn wrap(argv: String, cwd: String, mask: String) -> String {
+        self.uses = self.uses + 1;
+        let mut out = self.command + "\n--dev-bind\n/\n/\n--die-with-parent";
+        let mut rest = mask;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let path = if nl < 0 { rest } else { rest[0..nl] };
+            if len(path) > 0 { out = out + "\n--tmpfs\n" + path; }
+            if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+        }
+        return out + "\n--chdir\n" + cwd + "\n--\n" + argv;
+    }
+}
+
+// "0.0123" (dollars, as the harness prints it) -> 12300 micro-dollars.
+fn usd_to_micros(raw: String) -> Int {
+    let t = trim_nl(raw);
+    if len(t) == 0 { return 0; }
+    let dot = std::str::index_of(t, ".");
+    let whole = if dot < 0 { t } else { t[0..dot] };
+    let mut frac = if dot < 0 { "" } else { t[(dot + 1)..len(t)] };
+    while len(frac) < 6 { frac = frac + "0"; }
+    frac = frac[0..6];
+    let w = std::str::parse_int(if len(whole) > 0 { whole } else { "0" }) or 0;
+    let f = std::str::parse_int(frac) or 0;
+    return w * 1000000 + f;
+}
+
+type HarnessOutcome {
+    ok: Bool = false;
+    text: String = "";
+    cost_micros: Int = 0;
+    input_tokens: Int = 0;
+    output_tokens: Int = 0;
+    refused: String = "";
+}
+
+// `claude -p --output-format json` prints one result object:
+// {"type":"result","subtype":"success","is_error":false,"result":"…",
+//  "total_cost_usd":0.0123,"usage":{"input_tokens":N,"output_tokens":M},…}.
+// `text` mode takes stdout as the answer and knows no cost.
+fn parse_harness(output: String, code: Int, stdout: String, stderr: String) -> HarnessOutcome {
+    if code != 0 {
+        let why = trim_nl(if len(stderr) > 0 { stderr } else { stdout });
+        return HarnessOutcome { refused: "exit " + to_string(code) + ": " + first_line(why) };
+    }
+    if output != "json" { return HarnessOutcome { ok: true, text: trim_nl(stdout) }; }
+    let text = std::json::find_string_field(stdout, "result");
+    let usage = std::json::find_field_raw(stdout, "usage");
+    let out = HarnessOutcome {
+        ok: true, text: text,
+        cost_micros: usd_to_micros(std::json::find_field_raw(stdout, "total_cost_usd")),
+        input_tokens: std::json::find_int_field(usage, "input_tokens"),
+        output_tokens: std::json::find_int_field(usage, "output_tokens")
+    };
+    if std::json::find_bool_field(stdout, "is_error") { return HarnessOutcome { refused: "harness error: " + first_line(text), cost_micros: out.cost_micros }; }
+    if len(text) == 0 && len(std::json::find_field_raw(stdout, "result")) == 0 { return HarnessOutcome { refused: "no result object in the harness's output: " + first_line(trim_nl(stdout)) }; }
+    return out;
+}
+
+locus HarnessModel {
+    params {
+        name: String = "quick";
+        adapter: String = "harness";
+        command: String = "claude"; // the harness on PATH
+        // flags before the prompt, newline-separated; the prompt is the
+        // last argument (the `claude -p … <prompt>` shape)
+        argv: String = "-p\n--output-format\njson\n--dangerously-skip-permissions";
+        output: String = "json"; // "json": the result object above; "text": stdout is the answer
+        model: String = ""; // "" = the harness's default; else passed as `--model <model>`
+        confinement: Confinement = Bubblewrap { };
+        allow_unconfined: Bool = false; // the org chart's word: may the harness run with no boundary?
+        max_bytes: Int = 4000000;
+        present: Bool = false;
+        calls: Int = 0;
+        last: ModelEvidence = ModelEvidence { };
+    }
+    bus { publish ModelCalled; }
+    birth() {
+        let r = run_tool("sh\n-c\ncommand -v \"$0\"\n" + self.command);
+        self.present = r.code == 0;
+    }
+    fn identity() -> String { return self.name; }
+    fn model_name() -> String { return if len(self.model) > 0 { self.command + " " + self.model } else { self.command }; }
+    // A harness sends the prompt and whatever it reads to its own
+    // hosted model: customer data never; and nothing without the binary.
+    fn allows(data_class: String) -> Bool { return data_class != "customer" && self.present; }
+    fn capacity_bytes() -> Int { return self.max_bytes; }
+    fn works_in_place() -> Bool { return true; }
+    // A boundary is in force when the confinement is a real one and is
+    // available here; otherwise only the org chart's leave lets it run.
+    fn confined() -> Bool {
+        if self.confinement.kind() == "none" { return self.allow_unconfined; }
+        return self.confinement.available() || self.allow_unconfined;
+    }
+    @effects(is: { external_model, harness_run })
+    fn complete(req: ModelRequest) -> ModelResult {
+        self.calls = self.calls + 1;
+        let kind = if self.confinement.kind() != "none" && self.confinement.available() { self.confinement.kind() } else { "none" };
+        let mut ev = ModelEvidence {
+            attempt_id: req.attempt_id, adapter: self.adapter, backend: self.name,
+            endpoint: self.command, requested_model: self.model_name(),
+            params: "confinement=" + kind + " output=" + self.output,
+            prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
+            context_digest: digest_of(req.context),
+            knowledge_bindings: req.knowledge_bindings,
+            tool_grant: if len(req.workspace) > 0 { "harness @export" } else { "harness" },
+            retry_of: req.retry_of, data_class: req.data_class
+        };
+        if !self.allows(req.data_class) {
+            ev.refused = if self.present { "data class " + req.data_class } else { "harness `" + self.command + "` not on PATH" };
+            self.last = ev;
+            ModelCalled <- ev;
+            return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: ev.refused };
+        }
+        if !self.confined() {
+            ev.refused = "unconfined harness not allowed (" + self.confinement.kind() + " unavailable; `allow_unconfined` is the org chart's word)";
+            self.last = ev;
+            ModelCalled <- ev;
+            return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: ev.refused };
+        }
+        // an answer-only request runs in an empty directory of its own:
+        // the harness's tools have nothing to reach there either
+        let mut cwd = req.workspace;
+        let mut scratch = "";
+        if len(cwd) == 0 {
+            let t = run_tool("mktemp\n-d\n/tmp/hale-dna-harness.XXXXXX");
+            scratch = trim_nl(t.stdout);
+            cwd = scratch;
+        }
+        let prompt = if len(req.context) > 0 { req.context + "\n\n" + req.prompt } else { req.prompt };
+        let mut argv = self.command + "\n" + self.argv;
+        if len(self.model) > 0 { argv = argv + "\n--model\n" + self.model; }
+        argv = argv + "\n" + prompt;
+        let t0 = std::time::monotonic();
+        let r = run_tool(self.confinement.wrap(argv, cwd, req.mask));
+        ev.elapsed = to_string(std::time::monotonic() - t0);
+        if len(scratch) > 0 { let rm = run_tool("rm\n-rf\n" + scratch); }
+        let out = parse_harness(self.output, r.code, r.stdout, r.stderr);
+        ev.ok = out.ok;
+        ev.refused = out.refused;
+        ev.reported_model = self.model_name();
+        ev.input_tokens = out.input_tokens;
+        ev.output_tokens = out.output_tokens;
+        ev.cost_micros = out.cost_micros;
+        ev.response_digest = digest_of(out.text);
+        self.last = ev;
+        ModelCalled <- ev;
+        if !out.ok {
+            return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: out.refused, cost_micros: out.cost_micros };
+        }
+        return ModelResult {
+            ok: true, backend: self.name, model: self.model_name(), output: out.text,
+            tokens: out.input_tokens + out.output_tokens, cost_micros: out.cost_micros
+        };
     }
 }
 

@@ -46,9 +46,9 @@ for what is there, then says so:
 
 ```text
 created …/chat/dna/org/models.hl
-models  found   ANTHROPIC_API_KEY set, ollama on PATH (llama3)
+models  found   ANTHROPIC_API_KEY set, ollama on PATH (llama3), claude on PATH
 models  frontier = claude-opus-5 · fast = claude-haiku-4-5-20251001 (ANTHROPIC_API_KEY) · desk = llama3 (ollama at 127.0.0.1:11434)
-models  leader, editor, agent: deep = frontier, quick = fast, private = desk · budget 25.00 USD a day (`hale dna models` probes them)
+models  editor, agent: quick = harness (claude), deep = frontier · leader: deep = frontier, quick = fast · private = desk · budget 25.00 USD a day (`hale dna models` probes them)
 ```
 
 With `ANTHROPIC_API_KEY` the hosted backends are `AnthropicMessages`
@@ -56,11 +56,14 @@ with the strongest models; with `OPENAI_API_KEY` alone, `OpenAiChat`
 to OpenAI; with neither, the catalog still names OpenAI with the
 key's name as a placeholder, the hosted backends are simply not
 permitted until it is set, and every review waits for the Board. `ollama` on `PATH` makes its first listed model
-the desk model. Re-running `init` keeps a catalog you have edited;
+the desk model. `claude` (else `codex`) on `PATH` becomes
+`harness()`: the editor's and the agent's quick tier, and with no key
+at all every model-backed slot, so a laptop with a harness and no key
+still edits, reviews and decides. Re-running `init` keeps a catalog you have edited;
 `hale dna upgrade` writes one for an organization from before the
 catalog and tells you what to point at it.
 
-## Four backends
+## Five backends
 
 - **`OpenAiChat`** — a prompt leaves the process for an endpoint
   speaking the OpenAI chat shape (OpenAI, OpenRouter, vLLM, Ollama).
@@ -78,6 +81,12 @@ catalog and tells you what to point at it.
   has `scheme: "x-api-key"`; the credential, not the adapter, knows
   how the key is presented — `bearer` for everything OpenAI-shaped —
   so no adapter ever composes a header with the material in it.
+- **`HarnessModel`** — an installed coding harness (`claude`, or
+  `codex` with `output: "text"`), run per request with its own tools
+  on. It does not answer with a file: it *works in place*, and the
+  editor treats it accordingly (below). Customer-classed data never
+  goes to it, and it is not a permitted backend when the binary is
+  not on `PATH`.
 - **`LocalModel`** — the same wire to a local endpoint: no
   credential, no `external_model`, any data class.
 - **`FakeModel`** — scripted. `answer` (or `answer_file`, or an
@@ -88,6 +97,49 @@ catalog and tells you what to point at it.
   rehearse a session before spending money. It leaves the same
   evidence a hosted call does, with `adapter: fake`.
 
+## The harness works in an export
+
+The DNA has no opinion about how a change gets made; its law is
+about reach. So a harness runs with all its tools, but in an
+**export** of the Mutation's worktree: a plain directory with the
+same files and no `.git`, no `.hale`. The editor gives it the whole
+objective in one prompt, waits, and then imports the export's diff
+back under the grant — a changed or new file is written through the
+same tools a chat model's edit goes through, a deleted one is
+removed, and anything the harness touched outside the grant is
+counted and left behind. `files_changed` comes from that diff, never
+from what the harness said. Then the usual fmt, check, a retry with
+the diagnostics in the next prompt, and the assessment.
+
+The export is a boundary on what DNA accepts, not a sandbox: a
+process whose working directory is the export can still reach
+whatever your account can. What DNA guarantees is narrower and
+enforced: **the genome is unreachable from the harness process.**
+That is a `Confinement`:
+
+```hale,fragment
+fn harness() -> dna::HarnessModel {
+    return dna::HarnessModel { name: "quick", command: "claude", confinement: dna::Bubblewrap { } };
+}
+```
+
+`Bubblewrap` (Linux) runs the harness with the filesystem as you see
+it — its own settings and login, the toolchain, the network — and
+the repository and the worktree replaced by empty mounts, so the
+genome does not exist for it. With no confinement available the
+harness is refused, unless you say `allow_unconfined: true`; the
+evidence records which it was (`confinement=bubblewrap`,
+`confinement=none`). And on every platform the organization checks
+that neither the repository's head nor the worktree's moved while an
+attempt ran, and fails the Mutation by the record if they did. Outside
+the genome the harness has exactly your account, which is what
+running it by hand has.
+
+Evidence is one `model.called` row per call, with the harness's own
+cost summary, `tool_grant: harness @export`, and the confinement.
+The Leader can use a harness too: an answer-only call runs in an
+empty directory of its own.
+
 ## Probing the catalog
 
 ```text
@@ -97,6 +149,7 @@ backend     slot      model                         answer
 frontier    deep      claude-opus-5                 ok  1.2s  1230 micro-dollars  "ready"
 fast        quick     claude-haiku-4-5-20251001     ok  412ms  38 micro-dollars  "Ready."
 desk        private   llama3                        refused: http 0 connect connection refused
+harness     quick     claude                        ok  6.1s  4100 micro-dollars  "ready"
 ```
 
 One line per backend the catalog names, one small request to each

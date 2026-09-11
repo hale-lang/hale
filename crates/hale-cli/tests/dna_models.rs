@@ -138,6 +138,63 @@ fn init_writes_the_catalog_from_what_the_machine_has_and_the_org_takes_its_route
     assert!(!out.contains("models  found"), "no discovery report when the catalog is kept:\n{out}");
 }
 
+/// A stand-in `claude` on PATH: prints the result object `claude -p
+/// --output-format json` prints, with a cost.
+fn fake_claude_dir(tag: &str) -> PathBuf {
+    let bin = workdir(tag).join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let script = "#!/bin/sh\nprintf '{\"type\": \"result\", \"subtype\": \"success\", \"is_error\": false, \"result\": \"ready\", \"total_cost_usd\": 0.002, \"usage\": {\"input_tokens\": 4, \"output_tokens\": 1}}\\n'\n";
+    std::fs::write(bin.join("claude"), script).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+#[test]
+fn a_harness_on_path_becomes_the_editors_quick_tier_and_the_probe_runs_it() {
+    let bin = fake_claude_dir("harness");
+    let path = format!("{}:{}", bin.display(), bare_path());
+    let d = workdir("harnessed");
+    // no key: the harness fills every model-backed slot
+    let (ok, out) = hale_env(&["dna", "new", "harnessed"], &d, &[("PATH", &path)], NO_KEYS);
+    assert!(ok, "{out}");
+    let app = d.join("harnessed");
+    let catalog = std::fs::read_to_string(app.join("dna/org/models.hl")).unwrap();
+    assert!(out.contains("models  found   no API key in the environment, no ollama on PATH, claude on PATH"), "{out}");
+    assert!(out.contains("models  editor, agent, leader: quick = harness (claude), deep = harness (claude) · private = desk"), "{out}");
+    assert!(catalog.contains("fn harness() -> dna::HarnessModel {\n    return dna::HarnessModel { name: \"quick\", command: \"claude\", confinement: dna::Bubblewrap { } };"), "{catalog}");
+    assert!(catalog.contains("fn editor_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: harness(), deep: harness(), private: desk() };"), "{catalog}");
+    assert!(catalog.contains("fn leader_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: harness(), deep: harness(), private: desk() };"), "{catalog}");
+    assert!(catalog.contains("dna::probe(\"harness\", harness())"), "{catalog}");
+    // with a key: the harness is the editor's quick tier, the frontier decides
+    let d2 = workdir("harnessed-keyed");
+    let (ok, out) = hale_env(&["dna", "new", "keyed"], &d2, &[("PATH", &path), ("OPENAI_API_KEY", "sk-test")], &["ANTHROPIC_API_KEY"]);
+    assert!(ok, "{out}");
+    let catalog = std::fs::read_to_string(d2.join("keyed/dna/org/models.hl")).unwrap();
+    assert!(out.contains("models  editor, agent: quick = harness (claude), deep = frontier · leader: deep = frontier, quick = fast · private = desk"), "{out}");
+    assert!(catalog.contains("fn editor_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: harness(), deep: frontier(), private: desk() };"), "{catalog}");
+    assert!(catalog.contains("fn leader_models() -> dna::ModelRouter {\n    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };"), "{catalog}");
+    // the organization checks and builds with the harness wired
+    let (ok, out) = hale_env(&["check", "--matrix", "."], &app, &[], &[]);
+    assert!(ok, "matrix: {out}");
+    // the probe runs the harness (an answer-only call in a directory of
+    // its own; the stand-in needs no confinement, so the org chart's
+    // leave is given in the probe's copy of the catalog)
+    let probed = catalog.replace("confinement: dna::Bubblewrap { } };", "confinement: dna::NoConfinement { }, allow_unconfined: true };");
+    std::fs::write(app.join("dna/org/models.hl"), probed).unwrap();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
+    c.args(["dna", "models"]).current_dir(&app).env("PATH", &path);
+    for k in NO_KEYS {
+        c.env_remove(k);
+    }
+    let out = c.output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(out.status.success(), "{stdout}{}", String::from_utf8_lossy(&out.stderr));
+    let harness_line = stdout.lines().find(|l| l.starts_with("harness ")).unwrap_or_else(|| panic!("a harness line:\n{stdout}"));
+    assert!(harness_line.starts_with("harness     quick     claude                        ok  ") && harness_line.contains("  2000 micro-dollars  \"ready\""), "{stdout}");
+    assert!(stdout.lines().any(|l| l.starts_with("frontier    deep      gpt-4o ") && l.contains("not permitted")), "{stdout}");
+}
+
 #[test]
 fn upgrade_gives_an_older_organization_a_catalog_and_says_what_to_point_at_it() {
     let d = workdir("upgrade");
