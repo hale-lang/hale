@@ -2118,7 +2118,30 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     let inner_init = self.params_init_initialized.take();
                     self.params_init_initialized =
                         prev_params_init_initialized.clone();
-                    let r = self.lower_expr(expr, scope)?;
+                    // GH #583 (dna/FRICTION.md F.17): a fresh-factory
+                    // call written as a locus- or interface-typed
+                    // FIELD of this literal is owned by the literal —
+                    // `Router { quick: make("q") }` inside another
+                    // factory. Without this the GH #402 hook registered
+                    // the result as a temporary of the enclosing frame
+                    // and dissolved it at that frame's exit while the
+                    // field (a fat pointer, for an interface slot)
+                    // still pointed at it; the organization's catalog
+                    // read garbage from its backends. Same rule as a
+                    // `let` RHS and an `=` into a locus slot: the
+                    // owner of the next call is already decided.
+                    let field_owns_locus_rhs = matches!(expr, Expr::Call { .. })
+                        && matches!(
+                            info.fields.get(fname.as_str()).map(|(_, t)| t),
+                            Some(CodegenTy::LocusRef(_)) | Some(CodegenTy::Interface(_))
+                        );
+                    let prev_sft = self.suppress_fresh_temp;
+                    if field_owns_locus_rhs {
+                        self.suppress_fresh_temp = true;
+                    }
+                    let r = self.lower_expr(expr, scope);
+                    self.suppress_fresh_temp = prev_sft;
+                    let r = r?;
                     self.params_init_initialized = inner_init;
                     self.in_params_default = inner_ipd;
                     self.params_init_self = inner_pis;
@@ -2151,7 +2174,20 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                             // method-body current_self.
                             let saved_ipd = self.in_params_default;
                             self.in_params_default = true;
-                            let r = self.lower_expr(e, scope)?;
+                            // the same ownership rule for a default
+                            // that is a factory call (F.17)
+                            let field_owns_locus_rhs = matches!(e, Expr::Call { .. })
+                                && matches!(
+                                    info.fields.get(fname.as_str()).map(|(_, t)| t),
+                                    Some(CodegenTy::LocusRef(_)) | Some(CodegenTy::Interface(_))
+                                );
+                            let prev_sft = self.suppress_fresh_temp;
+                            if field_owns_locus_rhs {
+                                self.suppress_fresh_temp = true;
+                            }
+                            let r = self.lower_expr(e, scope);
+                            self.suppress_fresh_temp = prev_sft;
+                            let r = r?;
                             self.in_params_default = saved_ipd;
                             let owned = !self.instantiating_for_parent_field;
                             self.instantiating_for_parent_field =

@@ -1,0 +1,62 @@
+// GH #583 (dna/FRICTION.md F.17) — a fresh-factory call written as a
+// locus- or interface-typed FIELD of a locus literal inside another
+// factory is owned by the literal. `Router { quick: make("q") }` used
+// to register `make`'s result as a temporary of `make_router`'s frame
+// and dissolve it at that frame's exit while the field — a fat pointer,
+// for an interface slot — still pointed at it: the organization's
+// catalog read garbage from its backends. The same shape as a `let`
+// RHS and an `=` into a locus slot: the owner of the call is decided.
+
+interface Backend { fn name() -> String; fn cap() -> Int; }
+
+locus Inner {
+    params { n: String = "inner"; max: Int = 7; }
+    fn name() -> String { return self.n; }
+    fn cap() -> Int { return self.max; }
+}
+
+locus Wrap {
+    params { label: String = "w"; inner: Backend = Inner { n: "default" }; }
+    fn name() -> String { return self.label + ":" + self.inner.name(); }
+    fn cap() -> Int { return self.inner.cap(); }
+}
+
+locus Router {
+    params { quick: Backend = Inner { }; deep: Backend = Inner { }; }
+    fn who() -> String { return self.quick.name() + "/" + self.deep.name() + " " + to_string(self.quick.cap() + self.deep.cap()); }
+}
+
+fn make(label: String) -> Wrap {
+    return Wrap { label: label, inner: Inner { n: "from-" + label, max: 3 } };
+}
+
+// factory inside factory: the fields own what `make` hands back
+fn make_router() -> Router {
+    return Router { quick: make("q"), deep: make("d") };
+}
+
+locus Holder { params { r: Router = make_router(); } }
+
+fn churn(n: Int) -> String {
+    let mut s = "";
+    let mut i = 0;
+    while i < n { s = s + "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz" + to_string(i); i = i + 1; }
+    return s;
+}
+
+main locus App {
+    params { h: Holder = Holder { }; }
+    run() {
+        let mut i = 0;
+        while i < 100 {
+            let j = churn(400);
+            std::test::assert_eq_str(self.h.r.who(), "q:from-q/d:from-d 6", "the backends survive the factory frames, under churn");
+            i = i + 1;
+        }
+        // the same shape as a param default of a literal, not a factory
+        let direct = Router { quick: make("x"), deep: make("y") };
+        std::test::assert_eq_str(direct.who(), "x:from-x/y:from-y 6", "a literal in a body owns its factory fields too");
+    }
+}
+
+fn main() { App { }; }
