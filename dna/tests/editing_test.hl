@@ -54,6 +54,21 @@ main locus App {
         let after = std::io::fs::read_file(root + "/main.hl") or "";
         std::test::assert(std::str::contains(after, "v2"), "the worktree holds the edit");
         std::test::assert_eq_int(self.editor.tools.reads, 1, "one read");
+        // a hosted model's habit: the file inside a fence, with a remark
+        // on each side — the fence is not the file (GH #566 F7)
+        let fenced = dna::SourceEditor {
+            name: "fenced",
+            tools: dna::WorktreeTools { root: root, hale_bin: toolchain() },
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: "Here is the rewritten file:\n\n```hale\nfn main() {\n    println(\"v3\");\n}\n```\n\nI kept the structure.\n" },
+                deep: dna::FakeModel { name: "deep", answer: "Looking at the change, I would expect:\n\nstartup_prints +\nlatency_p99 -\n\nNothing else moves." }
+            }
+        };
+        let r3 = fenced.perform(dna::WorkRequest { work_id: "w3", task_id: "t1", objective: "print v3", target: "main.hl", requires: "edit", attempt_no: 0 });
+        std::test::assert_eq_str(r3.disposition, "done", "a fenced answer is the file inside the fence: " + r3.narrative);
+        let after3 = std::io::fs::read_file(root + "/main.hl") or "";
+        std::test::assert(std::str::contains(after3, "v3") && !std::str::contains(after3, "```") && !std::str::contains(after3, "Here is"), "the worktree holds the file, not the fence or the remarks: " + after3);
+        std::test::assert_eq_str(std::json::find_string_field(r3.result, "fitness_signals"), "startup_prints +\nlatency_p99 -", "only the well-formed signal lines count: " + r3.result);
         std::test::assert_eq_int(self.editor.tools.edits, 1, "one edit");
         std::test::assert_eq_int(self.editor.models.calls, 2, "edit + assess");
 

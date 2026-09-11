@@ -100,7 +100,10 @@ others cannot:
 
 The Leader reads the same three views. Its verdict is a model call
 in the record (`model.called` with the deep tier, the digests of what
-it read, the cost) and a `review.verdict` with `authority: leader`.
+it read, the cost), and its reasoning — the model's answer in full —
+is the `review.reasoned` row right after the settlement, which
+`hale dna review <id>` renders as `why:`. A person's `--comment` lands
+the same way.
 
 The kill test that shaped this — two rounds of reviewers deciding
 from the semantic diff alone, the source diff alone, and both — is

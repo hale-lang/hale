@@ -71,6 +71,7 @@ main locus App {
         std::test::assert(std::str::contains(ev.response_digest, "sha256:"), "response digest");
         std::test::assert_eq_str(ev.knowledge_bindings, "kb1 kb2", "knowledge bindings used");
         std::test::assert(std::str::contains(ev.params, "max_tokens=64"), "parameters as sent: " + ev.params);
+        std::test::assert(std::str::contains(ev.params, "temperature=default"), "no temperature unless set — some models refuse the parameter (GH #566 F7): " + ev.params);
         std::test::assert(ev.output_tokens == 3, "output tokens from usage");
         std::test::assert(len(ev.elapsed) > 0, "wall time recorded");
         std::test::assert(ev.cost_micros > 0, "cost from the price table");

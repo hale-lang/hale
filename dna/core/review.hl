@@ -55,6 +55,7 @@ locus Review {
         settled: Bool = false;
         outcome: String = ""; // "approve" | "revise" | "reject" | ""
         decided_by: String = "";
+        comment: String = ""; // the deciding verdict's comment
         refused: Int = 0; // verdicts refused (wrong digest / authority / independence)
         last_refusal: String = "";
     }
@@ -82,7 +83,7 @@ locus Review {
     fn on_verdict(v: Verdict) {
         let admitted = self.consider(v);
         if admitted && self.settled {
-            ReviewSettled <- ReviewSettlement { review_id: self.review_id, outcome: self.outcome, decided_by: self.decided_by };
+            ReviewSettled <- ReviewSettlement { review_id: self.review_id, outcome: self.outcome, decided_by: self.decided_by, comment: self.comment };
         }
         if !admitted {
             ReviewSettled <- ReviewSettlement { review_id: self.review_id, refusal: self.last_refusal };
@@ -115,6 +116,7 @@ locus Review {
         self.settled = true;
         self.outcome = v.verdict;
         self.decided_by = v.reviewer;
+        self.comment = v.comment;
         return true;
     }
     fn verdict_count() -> Int { return self.verdicts.len(); }

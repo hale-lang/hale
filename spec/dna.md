@@ -70,7 +70,10 @@ Deleting it loses nothing the record holds.
 `expression.deployed`, `expression.restarted`, `expression.observed`,
 `expression.crashed`, `pressure.raised`, `pressure.remeasured`,
 `appendage.proposed`, `model.called`, `github.pr`, `github.commented`,
-`mutation.topology`, `fleet.deploy`, `instance.up`, `instance.exited`. Their bodies are documented in the guide's reference
+`mutation.topology`, `fleet.deploy`, `instance.up`, `instance.exited`,
+`review.reasoned` (the deciding verdict's comment — a person's note or
+the Leader's reasoning — right after `review.settled`; `hale dna
+review <id>` renders it as `why:`). Their bodies are documented in the guide's reference
 chapter; the set grows by ordinary change, and a reader that meets an
 unknown kind must keep walking.
 

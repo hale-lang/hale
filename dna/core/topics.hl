@@ -67,6 +67,7 @@ type ReviewSettlement {
     outcome: String = ""; // "approve" | "revise" | "reject" | "" when a verdict was refused
     decided_by: String = "";
     refusal: String = ""; // non-empty when a verdict was refused, with the reason
+    comment: String = ""; // the deciding verdict's comment: a person's note, a model's reasoning (GH #566 F7)
 }
 topic ReviewSettled { payload: ReviewSettlement; subject: "dna.review.settled"; }
 

@@ -8,6 +8,16 @@ behavior.
 
 ## Unreleased
 
+### DNA: the dogfood (GH #566 F7)
+
+- One real ask end to end on the acceptance chat server under `hale dna dev`, the editor on a hosted quick tier and the Leader on a hosted deep tier (Anthropic's OpenAI-compatible endpoint): the candidate proposed, verified, approved by the Leader with its reasoning, applied, restarted, observed healthy, retained — about 1.2¢ of model calls. What it found, fixed:
+  - a hosted model wraps the file it returns in a code fence however it is asked: the editor now takes the file inside the fence (`unfence`) and asks for plain text; `max_tokens` defaults to 4096 so a whole-file rewrite is not truncated (three 1024-token tries were);
+  - some models refuse `temperature` outright (HTTP 400): the hosted and local adapters send it only when set (`temperature_milli` < 0 is the provider's default; the evidence says `temperature=default`);
+  - the fitness assessor was asked about a change it could not see and answered at length; it now sees the objective and the files as edited, and only well-formed `<signal> <+|->` lines count;
+  - the Leader's reasoning was dropped at settlement: the deciding verdict's comment is now the `review.reasoned` row right after `review.settled` (a person's `--comment` too), rendered as `why:` by `hale dna review <id>` and carried in the status projection;
+  - a Mutation in flight when the organization stopped stayed `located` forever: rehydrate now fails it in the record (`in flight (located) when the organization stopped`) and removes its worktree;
+  - a quick editor rewriting a whole file drops comments it was not asked about (the Leader caught it and revised, with the reason on the record): the editor's prompt now says to change only what the objective requires and keep every other line.
+
 ### DNA: the Book section, written for the organization (GH #566 F6)
 
 - The Book gains a DNA section — a user guide (a governed codebase, getting started, working with it, the organization, operating the fleet, shaping it, what it will and won't do, troubleshooting) and an under-the-hood section (what init makes, the record, the host / the membrane / the nodes, the twelve steps with the record, the Review in detail, apply / express / observe, autonomy, models and credentials, reference) — every transcript from one real session on the demo application. The old single chapter under Systems is replaced; iris's chapter links the new section.

@@ -44,9 +44,10 @@ review_policy: dna::OrgPolicy { },
 
 A change of a class in the grant and under its size is the Leader's
 to decide. It reads the source diff and the semantic diff with the
-deep model tier, answers `approve`, `revise` or `reject` with a
-comment, and the record has the call: which model, what it cost,
-the digests. The Board can answer first, or overrule nothing — a
+deep model tier, answers `approve`, `revise` or `reject` with its
+reasoning, and the record has both: the call (which model, what it
+cost, the digests) and the reasoning in full (`review.reasoned`,
+rendered as `why:` by `hale dna review <id>`). The Board can answer first, or overrule nothing — a
 settled Review is settled — but it widens or narrows the grant in a
 reviewed commit, and the record shows who did.
 
