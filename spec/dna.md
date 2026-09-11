@@ -263,13 +263,37 @@ one arrangement of it:
   record: every instance of the plan, its node, whether it is up, the
   revision and model hash it last came up at, and the last deploy.
 
+## The host is a Hale program
+
+Everything `hale dna` does beside the compiler that is DNA behaviour
+rather than manifest or scaffolding is `dna/host`, a Hale seed
+embedded in the toolchain beside the core, the membrane client and
+the surface, built once into the toolchain cache. `hale dna <verb>`
+resolves the project from the manifest (the root, the application's
+seed, the fleet and its plan under `[dna]`) and execs the host:
+`host <verb> <root> <seed> <fleet> <plan> …`, with `HALE_BIN` (the
+toolchain), `HALE_DNA_MEMBRANE` (the membrane client's binary) and
+`HALE_DNA_TOOLCHAIN` in the environment. The host owns the
+projections (`status`, `history`, `review`, `board`, `report`,
+`pressure`, `fleet`), the writers (`ask`, a verdict, `pressure raise`,
+`sync`, `deploy`, `rollback`, `github sync`), the supervision (`run`,
+`dev`) and the node agent (`hale node`). It reads the record through
+the core's `GitJournal`, appends in a person's or a node's name with
+the ref compare-and-swapped, and starts every child — the
+organization, the application, iris, an instance — through `sh`,
+detached, with its pid, its exit code and its log as files under
+`.hale/dna/` or `.hale/node/<name>/`, echoing the log to the terminal
+a tick at a time. The compiler keeps `init` / `new` / `upgrade` (they
+embed the sources), `hale fleet check` and the plan schema, and the
+exec shims. The host decides nothing.
+
 ## The surface
 
 `hale dna ui [project] [--port N]` serves the DNA surface in a browser
 from the record alone: a Hale program (`dna/ui`, embedded in the
-toolchain like the core and the membrane client, built once into the
-toolchain cache) that answers every request by running one offline
-verb of `hale dna` in the project root and returning what it printed
+toolchain like the core, the host and the membrane client, built once
+into the toolchain cache) that answers every request by running one
+offline verb of `hale dna` in the project root and returning what it printed
 — the status projection (`/api/status`), the Board's queue
 (`/api/board`), the pending Reviews and one Review's three views
 (`/api/reviews`, `/api/review/<id>`), the fleet (`/api/fleet`), the

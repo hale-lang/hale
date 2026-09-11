@@ -166,11 +166,13 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
     assert!(log.contains("pr create --repo o/r --base main --head dna/m1 --title"), "the pull request was opened:\n{log}");
     assert!(log.contains("source diff (git") && log.contains("evidence ("), "the body is the review's three views:\n{log}");
     let pr = rows.iter().find(|(k, e, _)| k == "github.pr" && e == "m1").unwrap();
-    assert!(pr.2.contains("\"number\":7") && pr.2.contains("dna/m1"), "{}", pr.2);
+    let prb: serde_json::Value = serde_json::from_str(&pr.2).unwrap();
+    assert!(prb["number"] == 7 && prb["head"] == "dna/m1", "{}", pr.2);
     assert_eq!(git(&["rev-parse", "refs/heads/dna/m1"], &bare), cand, "the candidate is on origin as dna/m1");
     assert!(settled, "the GitHub review became the verdict and settled:\n{dump}");
     let verdict = rows.iter().find(|(k, e, _)| k == "review.verdict" && e == "m1").expect("a verdict row");
-    assert!(verdict.2.contains("\"reviewer\":\"octocat\"") && verdict.2.contains("\"authority\":\"board\"") && verdict.2.contains(&format!("\"github\":\"octocat@{cand}@APPROVED\"")), "{}", verdict.2);
+    let vb: serde_json::Value = serde_json::from_str(&verdict.2).unwrap();
+    assert!(vb["reviewer"] == "octocat" && vb["authority"] == "board" && vb["github"] == format!("octocat@{cand}@APPROVED"), "{}", verdict.2);
     assert!(rows.iter().any(|(k, e, b)| k == "review.settled" && e == "m1" && b == "approve by octocat"), "{dump}");
     assert!(rows.iter().filter(|(k, e, _)| k == "review.verdict" && e == "m1").count() == 1, "the same GitHub review is not read twice:\n{dump}");
     assert!(told && log.contains("pr comment 7 --repo o/r --body dna: review m1 settled: approve by octocat"), "the settlement went back:\n{log}");

@@ -1,0 +1,160 @@
+// dna/host — the host: what `hale dna` does beside the compiler, as a
+// Hale program (GH #566 F8). `hale dna <verb>` builds it once into the
+// toolchain cache and execs it with the project resolved:
+//
+//   host <verb> <root> <seed> <fleet> <plan> [args…]
+//
+// with HALE_BIN (the toolchain), HALE_DNA_MEMBRANE (the membrane
+// client binary) and HALE_DNA_TOOLCHAIN (its version) in the
+// environment. It prints what the verb answers and exits with its
+// status. It decides nothing.
+
+import "../core" as dna;
+
+fn arg(i: Int) -> String { return std::env::arg_or(i, ""); }
+
+fn rest_args(from: Int) -> String {
+    let mut out = "";
+    let mut i = from;
+    while i < std::env::args_count() {
+        out = out + std::env::arg(i) + "\n";
+        i = i + 1;
+    }
+    return out;
+}
+
+// `--flag value` and positionals from the verb's args, newline-separated.
+type Args {
+    words: String = ""; // positionals, newline-separated
+    flags: String = ""; // "\n--name\nvalue" pairs, newline-separated
+}
+
+fn has_flag(a: Args, name: String) -> Bool {
+    return std::str::contains(a.flags, "\n" + name + "\n");
+}
+
+fn flag(a: Args, name: String) -> String {
+    let i = std::str::index_of(a.flags, "\n" + name + "\n");
+    if i < 0 { return ""; }
+    let rest = a.flags[(i + len(name) + 2)..len(a.flags)];
+    let nl = std::str::index_of(rest, "\n");
+    if nl < 0 { return rest; }
+    return rest[0..nl];
+}
+
+fn word(a: Args, n: Int) -> String {
+    let mut rest = a.words;
+    let mut k = 0;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let w = if nl < 0 { rest } else { rest[0..nl] };
+        if k == n { return w; }
+        k = k + 1;
+        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+    }
+    return "";
+}
+
+// positionals joined by spaces
+fn join_words(words: String) -> String {
+    let mut out = "";
+    let mut rest = words;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let w = if nl < 0 { rest } else { rest[0..nl] };
+        if len(w) > 0 { out = out + (if len(out) > 0 { " " } else { "" }) + w; }
+        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+    }
+    return out;
+}
+
+fn drop_first_word(words: String) -> String {
+    let nl = std::str::index_of(words, "\n");
+    if nl < 0 { return ""; }
+    return words[(nl + 1)..len(words)];
+}
+
+fn parse_args(raw: String, valued: String) -> Args {
+    let mut a = Args { flags: "\n" };
+    let mut rest = raw;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let w = if nl < 0 { rest } else { rest[0..nl] };
+        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+        if std::str::starts_with(w, "--") && std::str::contains(valued, " " + w + " ") {
+            let nl2 = std::str::index_of(rest, "\n");
+            let v = if nl2 < 0 { rest } else { rest[0..nl2] };
+            if nl2 < 0 { rest = ""; } else { rest = rest[(nl2 + 1)..len(rest)]; }
+            a.flags = a.flags + w + "\n" + v + "\n";
+        } else if std::str::starts_with(w, "--") {
+            a.flags = a.flags + w + "\n\n";
+        } else if len(w) > 0 {
+            a.words = a.words + w + "\n";
+        }
+    }
+    return a;
+}
+
+fn main() {
+    let verb = arg(1);
+    let root = arg(2);
+    let seed = arg(3);
+    let fleet = arg(4);
+    let plan = arg(5);
+    let toolchain = std::env::var("HALE_DNA_TOOLCHAIN");
+    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick ");
+    let mut ans = Answer { ok: false, text: "unknown verb `" + verb + "`" };
+    if (verb == "board" || verb == "review") && !membrane_up(root) { let s = sync_record(root); }
+    if verb == "fleet" { let s = sync_record(root); }
+    if verb == "status" {
+        ans = status_verb(root, seed, toolchain, has_flag(a, "--json"));
+    } else if verb == "history" {
+        ans = history_verb(root, word(a, 0));
+    } else if verb == "review" {
+        if len(record_head(root)) == 0 { ans = fail(no_record(root)); }
+        else {
+            let p = open_projection(root, seed, toolchain);
+            let id = word(a, 0);
+            if len(id) == 0 { ans = review_list(p); } else { ans = render_review(p, id, has_flag(a, "--iris")); }
+        }
+    } else if verb == "board" || verb == "report" || verb == "pressure" || verb == "fleet" {
+        if len(record_head(root)) == 0 { ans = fail(no_record(root)); }
+        else {
+            let p = open_projection(root, seed, toolchain);
+            if verb == "board" { ans = board_verb(p); }
+            if verb == "report" { ans = report_verb(p); }
+            if verb == "pressure" { ans = pressure_list(p); }
+            if verb == "fleet" { ans = fleet_list(p, fleet, plan); }
+        }
+    }
+    if verb == "run" || verb == "dev" {
+        host_main(verb, root, seed, fleet, plan, toolchain, a);
+        return;
+    }
+    if verb == "node" {
+        let tick = flag(a, "--tick");
+        node_main(word(a, 0), root, flag(a, "--fleet"), if len(tick) > 0 { std::str::parse_int(tick) or 1000 } else { 1000 });
+        return;
+    }
+    if verb == "ask" {
+        ans = ask_verb(root, join_words(a.words), flag(a, "--to"), has_flag(a, "--no-wait"));
+    } else if verb == "verdict" {
+        ans = verdict_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--as"), flag(a, "--authority"), flag(a, "--comment"), flag(a, "--digest"), has_flag(a, "--no-wait"));
+    } else if verb == "raise" {
+        ans = pressure_raise(root, word(a, 0), join_words(drop_first_word(a.words)));
+    } else if verb == "sync" {
+        ans = sync_verb(root);
+    } else if verb == "deploy" {
+        ans = deploy_verb(root, fleet, plan, word(a, 0), false);
+    } else if verb == "rollback" {
+        ans = deploy_verb(root, fleet, plan, word(a, 0), true);
+    } else if verb == "github" {
+        ans = github_verb(root, seed, word(a, 0));
+    }
+    if ans.ok {
+        print(ans.text);
+        return;
+    }
+    eprintln("hale dna: ", ans.text);
+    std::process::exit(1);
+}

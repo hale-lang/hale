@@ -1,0 +1,262 @@
+// dna/host/record.hl — the record as the host reads and writes it
+// (GH #566 F8). The Journal is `refs/dna/journal` in the governed
+// repository; the core's `GitJournal` reads it, and the host appends
+// in a person's or a node's name, syncs it with the remote, and reads
+// receipts by digest. Nothing here decides.
+
+import "../core" as dna;
+
+const RECORD_REF: String = "refs/dna/journal";
+const REMOTE_TRACK: String = "refs/dna/remote/journal";
+const VERDICT_SOCK: String = "hale-dna.review.verdict.sock";
+const INTENT_SOCK: String = "hale-dna.intent.offered.sock";
+const OBSERVED_SOCK: String = "hale-dna.expression.observed.sock";
+const PRESSURE_SOCK: String = "hale-dna.pressure.raised.sock";
+
+// `git -C <repo> <args…>`; argv newline-separated.
+fn git(repo: String, args: String) -> dna::RunResult {
+    return dna::run_tool("git\n-C\n" + repo + "\n" + args);
+}
+
+fn git_ok(repo: String, args: String) -> Bool {
+    return git(repo, args).code == 0;
+}
+
+// stdout without the trailing newline, "" when the command failed.
+fn git_out(repo: String, args: String) -> String {
+    let r = git(repo, args);
+    if r.code != 0 { return ""; }
+    return dna::trim_nl(r.stdout);
+}
+
+fn git_err(repo: String, args: String) -> String {
+    let r = git(repo, args);
+    if r.code == 0 { return ""; }
+    let e = dna::trim_nl(r.stderr);
+    if len(e) == 0 { return "git " + args + " failed"; }
+    return e;
+}
+
+// write_file as a Bool, so a caller can act on failure.
+fn write_text(path: String, text: String) -> Bool fallible(IoError) {
+    std::io::fs::write_file(path, text) or raise;
+    return true;
+}
+
+fn record_head(repo: String) -> String {
+    return git_out(repo, "rev-parse\n-q\n--verify\n" + RECORD_REF);
+}
+
+// The remote the record syncs with ("" when the repository has none).
+fn record_remote(repo: String) -> String {
+    let named = git_out(repo, "config\ndna.remote");
+    let name = if len(named) == 0 { "origin" } else { named };
+    if !git_ok(repo, "remote\nget-url\n" + name) { return ""; }
+    return name;
+}
+
+fn membrane_up(root: String) -> Bool {
+    let d = root + "/.hale/dna/";
+    return std::io::fs::file_exists(d + VERDICT_SOCK) && std::io::fs::file_exists(d + INTENT_SOCK);
+}
+
+fn short(s: String) -> String {
+    if len(s) > 12 { return s[0..12]; }
+    return s;
+}
+
+fn shape_of(path: String) -> String {
+    let t = std::io::fs::read_file(path) or "";
+    return std::json::find_string_field(t, "shape_hash");
+}
+
+// The receipt filed under a digest, or absent.
+type Receipt {
+    present: Bool = false;
+    text: String = "";
+}
+
+fn receipt_read(repo: String, digest: String) -> Receipt {
+    let r = git(repo, "cat-file\n-p\nrefs/dna/receipts/" + digest);
+    if r.code != 0 { return Receipt { }; }
+    return Receipt { present: true, text: r.stdout };
+}
+
+// The last non-empty line of a text.
+fn last_line(text: String) -> String {
+    let mut rest = text;
+    let mut last = "";
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        if len(dna::trim_nl(line)) > 0 { last = line; }
+        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+    }
+    return last;
+}
+
+fn count_lines(text: String) -> Int {
+    let mut rest = text;
+    let mut n = 0;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        if len(dna::trim_nl(line)) > 0 { n = n + 1; }
+        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+    }
+    return n;
+}
+
+// Append one event to the record in `author`'s name ("" = git's
+// identity for whoever runs this): one commit on the ref,
+// compare-and-swapped, re-appended at the new tail when the ref moved.
+@unbounded
+fn append_as(repo: String, kind: String, entity: String, body: String, author: String) -> Bool {
+    let dna_dir = repo + "/.hale/dna";
+    std::io::fs::mkdir(repo + "/.hale") or discard;
+    std::io::fs::mkdir(dna_dir) or discard;
+    let pid = to_string(std::process::pid());
+    let tmp = dna_dir + "/journal.host." + pid + ".tmp";
+    let idx = dna_dir + "/index.host." + pid + ".tmp";
+    let user = git_out(repo, "config\nuser.name");
+    let identity = if len(user) == 0 { "-c\nuser.name=host\n-c\nuser.email=host@dna\n" } else { "" };
+    let who = if len(author) > 0 { author } else { if len(user) > 0 { user } else { "host" } };
+    let mut tries = 0;
+    while tries < 3 {
+        tries = tries + 1;
+        let head = record_head(repo);
+        let mut text = "";
+        if len(head) > 0 {
+            let r = git(repo, "show\n" + RECORD_REF + ":journal.jsonl");
+            if r.code != 0 { return false; }
+            text = dna::trim_nl(r.stdout) + "\n";
+        }
+        let seq = count_lines(text);
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.int_field("seq", seq);
+        b.string_field("kind", kind);
+        b.string_field("entity", entity);
+        b.string_field("body", body);
+        b.string_field("author", who);
+        b.end_object();
+        let wrote = write_text(tmp, text + b.result() + "\n") or false;
+        if !wrote { return false; }
+        let blob = git_out(repo, "hash-object\n-w\n" + tmp);
+        if len(blob) == 0 { return false; }
+        std::io::fs::unlink(idx) or discard;
+        let withidx = "env\nGIT_INDEX_FILE=" + idx + "\ngit\n-C\n" + repo + "\n";
+        let rt = dna::run_tool(withidx + (if len(head) > 0 { "read-tree\n" + head } else { "read-tree\n--empty" }));
+        if rt.code != 0 { return false; }
+        let ui = dna::run_tool(withidx + "update-index\n--add\n--cacheinfo\n100644," + blob + ",journal.jsonl");
+        if ui.code != 0 { return false; }
+        let wt = dna::run_tool(withidx + "write-tree");
+        if wt.code != 0 { return false; }
+        let tree = dna::trim_nl(wt.stdout);
+        let parent = if len(head) > 0 { "-p\n" + head + "\n" } else { "" };
+        let commit = git_out(repo, identity + "commit-tree\n" + tree + "\n" + parent + "-m\n" + kind + " " + entity);
+        if len(commit) == 0 { return false; }
+        if git_ok(repo, "update-ref\n" + RECORD_REF + "\n" + commit + "\n" + head) {
+            std::io::fs::unlink(tmp) or discard;
+            std::io::fs::unlink(idx) or discard;
+            return true;
+        }
+        // the ref moved under us: re-read and re-append at the new tail
+    }
+    return false;
+}
+
+type SyncResult {
+    ok: Bool = true;
+    summary: String = "";
+}
+
+fn sync_failed(why: String) -> SyncResult {
+    return SyncResult { ok: false, summary: why };
+}
+
+// Fetch, reconcile, push (GH #566 F1). Local ahead: push. Remote ahead:
+// fast-forward. Diverged: the local-only events are re-appended on top
+// of the remote's head, bodies and authors unchanged, then pushed.
+@unbounded
+fn sync_record(repo: String) -> SyncResult {
+    let remote = record_remote(repo);
+    if len(remote) == 0 { return SyncResult { ok: true, summary: "no remote: the record is local" }; }
+    let f = git(repo, "fetch\n-q\n" + remote + "\n+" + RECORD_REF + ":" + REMOTE_TRACK + "\n+refs/dna/receipts/*:refs/dna/receipts/*");
+    if f.code != 0 {
+        // a remote with no record yet is not an error
+        if !std::str::contains(f.stderr, "ouldn't find remote ref") { return sync_failed("fetch " + remote + ": " + dna::trim_nl(f.stderr)); }
+    }
+    let mut summary = "";
+    let mut round = 0;
+    while round < 3 {
+        round = round + 1;
+        let local = record_head(repo);
+        let remote_head = git_out(repo, "rev-parse\n-q\n--verify\n" + REMOTE_TRACK);
+        if len(local) == 0 || len(remote_head) == 0 {
+            if len(local) == 0 && len(remote_head) > 0 {
+                if !git_ok(repo, "update-ref\n" + RECORD_REF + "\n" + remote_head) { return sync_failed("update-ref failed"); }
+                summary = "pulled the record";
+            }
+            return SyncResult { ok: true, summary: summary };
+        }
+        if local == remote_head {
+            if len(summary) == 0 { summary = "up to date"; }
+            return SyncResult { ok: true, summary: summary };
+        }
+        if git_ok(repo, "merge-base\n--is-ancestor\n" + remote_head + "\n" + local) {
+            // local ahead: push below
+            summary = "pushed " + git_out(repo, "rev-list\n--count\n" + remote_head + ".." + local) + " event(s)";
+        } else if git_ok(repo, "merge-base\n--is-ancestor\n" + local + "\n" + remote_head) {
+            if !git_ok(repo, "update-ref\n" + RECORD_REF + "\n" + remote_head + "\n" + local) { return sync_failed("update-ref failed"); }
+            summary = "pulled " + git_out(repo, "rev-list\n--count\n" + local + ".." + remote_head) + " event(s)";
+            return SyncResult { ok: true, summary: summary };
+        } else {
+            // diverged: re-append the local-only events on top of the remote
+            let mine = git_out(repo, "rev-list\n--reverse\n" + remote_head + ".." + local) + "\n";
+            if !git_ok(repo, "update-ref\n" + RECORD_REF + "\n" + remote_head + "\n" + local) { return sync_failed("update-ref failed"); }
+            let mut n = 0;
+            let mut rest = mine;
+            while len(rest) > 0 {
+                let nl = std::str::index_of(rest, "\n");
+                let c = if nl < 0 { rest } else { rest[0..nl] };
+                if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+                if len(c) == 0 { continue; }
+                let text = git_out(repo, "show\n" + c + ":journal.jsonl");
+                let line = last_line(text);
+                if len(line) == 0 { continue; }
+                let ok = append_as(repo, std::json::find_string_field(line, "kind"), std::json::find_string_field(line, "entity"), std::json::find_string_field(line, "body"), std::json::find_string_field(line, "author"));
+                if !ok { return sync_failed("re-append failed"); }
+                n = n + 1;
+            }
+            summary = "re-appended " + to_string(n) + " local event(s) onto the remote's " + git_out(repo, "rev-list\n--count\n" + local + ".." + remote_head);
+        }
+        if git_ok(repo, "push\n-q\n" + remote + "\n" + RECORD_REF + ":" + RECORD_REF + "\nrefs/dna/receipts/*:refs/dna/receipts/*") {
+            let h = record_head(repo);
+            git_ok(repo, "update-ref\n" + REMOTE_TRACK + "\n" + h);
+            return SyncResult { ok: true, summary: summary };
+        }
+        // the remote moved again: fetch and go round
+        if !git_ok(repo, "fetch\n-q\n" + remote + "\n+" + RECORD_REF + ":" + REMOTE_TRACK) { return sync_failed("fetch failed"); }
+    }
+    return SyncResult { ok: true, summary: summary };
+}
+
+// The membrane client, exec'd with routes to this project's sockets:
+// one typed fact published, the organization decides.
+fn publish_on_membrane(root: String, kind: String, body: String) -> String {
+    let bin = std::env::var("HALE_DNA_MEMBRANE");
+    if len(bin) == 0 { return "no membrane client (HALE_DNA_MEMBRANE unset)"; }
+    let d = root + "/.hale/dna/";
+    let conf = "/tmp/hale-dna-membrane-" + to_string(std::process::pid()) + ".conf";
+    let text = "dna.review.verdict = unix://" + d + VERDICT_SOCK + " : connect\n"
+        + "dna.intent.offered = unix://" + d + INTENT_SOCK + " : connect\n"
+        + "dna.expression.observed = unix://" + d + OBSERVED_SOCK + " : connect\n"
+        + "dna.pressure.raised = unix://" + d + PRESSURE_SOCK + " : connect\n";
+    let wrote = write_text(conf, text) or false;
+    if !wrote { return "cannot write " + conf; }
+    let r = dna::run_tool("env\nLOTUS_BUS_CONFIG=" + conf + "\n" + bin + "\n" + kind + "\n" + body);
+    std::io::fs::unlink(conf) or discard;
+    if r.code != 0 { return "membrane client failed: " + r.stderr; }
+    return "";
+}

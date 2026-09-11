@@ -9,7 +9,13 @@ hale dna ui [project] [--port N]
 
 ## The host
 
-`run` and `dev` are one **stateless host**. It cuts a fresh artifact
+`run` and `dev` are one **stateless host** — a Hale program,
+`dna/host`, that ships in the toolchain beside the core and that
+`hale dna` execs with the project resolved. Every child it starts —
+the organization, the application, iris, on a node an instance — runs
+detached through `sh`, with its pid, its exit code and its log as
+files beside it, and the host echoes the logs to the terminal a tick
+at a time. It cuts a fresh artifact
 of the application (`.hale/dna/current.topology`), builds the
 organization and execs it under `LOTUS_OBS=1` from the project root
 with `HALE_BIN` set to the toolchain that started it, waits for the

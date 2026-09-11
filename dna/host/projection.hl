@@ -1,0 +1,589 @@
+// dna/host/projection.hl — the status projection: everything the record
+// can vouch for, as `hale dna status` prints it, `status.json` carries
+// it, and the surface and iris render it (GH #566 F8).
+
+import "../core" as dna;
+
+type TaskRow {
+    id: String = "";
+    outcome: String = "";
+    state: String = "active";
+    detail: String = "";
+    since: Int = 0;
+}
+
+type ReviewRow {
+    id: String = "";
+    state: String = "pending";
+    question: String = "";
+    required_authority: String = "";
+    subject_digest: String = "";
+    refusals: String = ""; // one per line
+    refusal_count: Int = 0;
+    settled: String = "";
+    reasoned: String = "";
+    has_reasoned: Bool = false;
+    mutation_id: String = "";
+    is_mutation: Bool = false;
+    change_class: String = "";
+    seed: String = "";
+    disposition: String = "";
+    base_commit: String = "";
+    candidate_commit: String = "";
+    candidate_shape: String = "";
+    evidence: String = "";
+    magnitude_raw: String = "";
+    diff_text: String = "";
+    diff_json: String = "";
+    author: String = "";
+}
+
+type MutationRow {
+    id: String = "";
+    task: String = "";
+    class: String = "";
+    objective: String = "";
+    disposition: String = "";
+    detail: String = "";
+    candidate: String = "";
+    worktree: String = "";
+    events: String = ""; // space-separated
+}
+
+fn str_lt(a: String, b: String) -> Bool {
+    let n = if len(a) < len(b) { len(a) } else { len(b) };
+    let mut i = 0;
+    while i < n {
+        let x = std::str::byte_at_unchecked(a, i);
+        let y = std::str::byte_at_unchecked(b, i);
+        if x != y { return x < y; }
+        i = i + 1;
+    }
+    return len(a) < len(b);
+}
+
+// A sorted "\n"-separated id list: insert keeping order.
+fn insert_sorted(list: String, id: String) -> String {
+    if std::str::contains(list, "\n" + id + "\n") { return list; }
+    let mut out = "\n";
+    let mut placed = false;
+    let mut rest = list[1..len(list)];
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let w = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if !placed && str_lt(id, w) { out = out + id + "\n"; placed = true; }
+        out = out + w + "\n";
+    }
+    if !placed { out = out + id + "\n"; }
+    return out;
+}
+
+fn list_len(list: String) -> Int {
+    let mut n = 0;
+    let mut rest = list[1..len(list)];
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        rest = rest[(nl + 1)..len(rest)];
+        n = n + 1;
+    }
+    return n;
+}
+
+fn nth(list: String, k: Int) -> String {
+    let mut i = 0;
+    let mut rest = list[1..len(list)];
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let w = rest[0..nl];
+        if i == k { return w; }
+        rest = rest[(nl + 1)..len(rest)];
+        i = i + 1;
+    }
+    return "";
+}
+
+// The projection over one loaded record. Rows are derived on demand
+// from the record — a scan per lookup, never a mutable table (F.16 in
+// dna/FRICTION.md: a vec form's `set` with a value read from the same
+// vec crashes the process).
+locus Projection {
+    params {
+        root: String = ".";
+        seed: String = "."; // the application's seed, relative to the root
+        toolchain: String = "";
+        j: dna::GitJournal = dna::GitJournal { };
+    }
+    fn rows() -> Int { return self.j.revision(); }
+    fn row(i: Int) -> dna::Event { return self.j.read(i); }
+    fn build() { }
+    fn review_id_of(e: dna::Event) -> String {
+        if std::str::starts_with(e.entity, "review:") { return e.entity[7..len(e.entity)]; }
+        return e.entity;
+    }
+    // ids, sorted, as the projection always listed them
+    @unbounded
+    fn task_ids() -> String {
+        let mut ids = "\n";
+        let mut i = 0;
+        while i < self.rows() {
+            let e = self.row(i);
+            if e.kind == "task.born" { ids = insert_sorted(ids, e.entity); }
+            i = i + 1;
+        }
+        return ids;
+    }
+    @unbounded
+    fn review_ids() -> String {
+        let mut ids = "\n";
+        let mut i = 0;
+        while i < self.rows() {
+            let e = self.row(i);
+            if e.kind == "review.requested" { ids = insert_sorted(ids, self.review_id_of(e)); }
+            i = i + 1;
+        }
+        return ids;
+    }
+    @unbounded
+    fn mutation_ids() -> String {
+        let mut ids = "\n";
+        let mut i = 0;
+        while i < self.rows() {
+            let e = self.row(i);
+            if std::str::starts_with(e.kind, "mutation.") { ids = insert_sorted(ids, e.entity); }
+            i = i + 1;
+        }
+        return ids;
+    }
+    fn task_of(id: String) -> TaskRow {
+        let mut t = TaskRow { };
+        let mut i = 0;
+        while i < self.rows() {
+            let e = self.row(i);
+            if e.entity == id {
+                if e.kind == "task.born" { t = TaskRow { id: id, outcome: e.body, state: "active", since: e.seq }; }
+                else if std::str::starts_with(e.kind, "task.") && len(t.id) > 0 { t.state = e.kind[5..len(e.kind)]; t.detail = e.body; }
+            }
+            i = i + 1;
+        }
+        return t;
+    }
+    @unbounded
+    fn review_of(id: String) -> ReviewRow {
+        let mut r = ReviewRow { };
+        let mut i = 0;
+        while i < self.rows() {
+            let e = self.row(i);
+            if self.review_id_of(e) == id {
+                if e.kind == "review.requested" {
+                    let b = e.body;
+                    let mid = std::json::find_string_field(b, "mutation_id");
+                    r = ReviewRow {
+                        id: id, state: "pending",
+                        question: std::json::find_string_field(b, "question"),
+                        required_authority: std::json::find_string_field(b, "required_authority"),
+                        subject_digest: std::json::find_string_field(b, "subject_digest"),
+                        mutation_id: mid, is_mutation: len(mid) > 0,
+                        change_class: std::json::find_string_field(b, "change_class"),
+                        seed: std::json::find_string_field(b, "seed"),
+                        disposition: std::json::find_string_field(b, "disposition"),
+                        base_commit: std::json::find_string_field(b, "base_commit"),
+                        candidate_commit: std::json::find_string_field(b, "candidate_commit"),
+                        candidate_shape: std::json::find_string_field(b, "candidate_shape"),
+                        evidence: std::json::find_string_field(b, "evidence"),
+                        magnitude_raw: std::json::find_field_raw(b, "magnitude"),
+                        diff_text: std::json::find_string_field(b, "diff_text"),
+                        diff_json: std::json::find_string_field(b, "diff_json"),
+                        author: std::json::find_string_field(b, "author")
+                    };
+                } else if len(r.id) > 0 {
+                    if e.kind == "review.settled" { r.state = "settled"; r.settled = e.body; }
+                    if e.kind == "review.reasoned" { r.reasoned = e.body; r.has_reasoned = true; }
+                    if e.kind == "review.refused" { r.refusals = r.refusals + e.body + "\n"; r.refusal_count = r.refusal_count + 1; }
+                }
+            }
+            i = i + 1;
+        }
+        return r;
+    }
+    @unbounded
+    fn mutation_of(id: String) -> MutationRow {
+        let mut m = MutationRow { id: id };
+        let mut i = 0;
+        while i < self.rows() {
+            let e = self.row(i);
+            if e.entity == id && std::str::starts_with(e.kind, "mutation.") {
+                let kind = e.kind[9..len(e.kind)];
+                if kind == "proposed" {
+                    // "task <id> <class>: <objective> (<target>) at <base>"
+                    let rest = if std::str::starts_with(e.body, "task ") { e.body[5..len(e.body)] } else { e.body };
+                    let sp = std::str::index_of(rest, " ");
+                    let task = if sp < 0 { "" } else { rest[0..sp] };
+                    let rest2 = if sp < 0 { rest } else { rest[(sp + 1)..len(rest)] };
+                    let col = std::str::index_of(rest2, ": ");
+                    let class = if col < 0 { rest2 } else { rest2[0..col] };
+                    let rest3 = if col < 0 { "" } else { rest2[(col + 2)..len(rest2)] };
+                    let at = last_index_of(rest3, " at ");
+                    m.task = task;
+                    m.class = class;
+                    m.objective = if at < 0 { rest3 } else { rest3[0..at] };
+                    m.disposition = "proposed";
+                } else if kind == "worktree" {
+                    m.worktree = e.body;
+                } else if kind == "candidate" {
+                    m.candidate = e.body;
+                } else {
+                    m.disposition = kind;
+                    m.detail = e.body;
+                }
+                m.events = m.events + kind + " ";
+            }
+            i = i + 1;
+        }
+        // a settled Review moves its mutation on: reviewed (approve) or
+        // rejected — unless the assembly already took it further
+        i = 0;
+        while i < self.rows() {
+            let e = self.row(i);
+            if e.kind == "review.settled" && e.entity == id {
+                let d = m.disposition;
+                if d == "" || d == "proposed" || d == "review" || d == "stage" || d == "escalate" || d == "release" {
+                    m.disposition = if std::str::starts_with(e.body, "approve") { "reviewed" } else { "rejected" };
+                    m.detail = e.body;
+                }
+            }
+            i = i + 1;
+        }
+        return m;
+    }
+    fn count(kind: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.rows() {
+            if self.row(i).kind == kind { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    fn last_of(kind: String) -> dna::Event {
+        let mut i = self.rows() - 1;
+        while i >= 0 {
+            let e = self.row(i);
+            if e.kind == kind { return e; }
+            i = i - 1;
+        }
+        return dna::Event { seq: -1 };
+    }
+    fn first_of(kind: String) -> dna::Event {
+        let mut i = 0;
+        while i < self.rows() {
+            let e = self.row(i);
+            if e.kind == kind { return e; }
+            i = i + 1;
+        }
+        return dna::Event { seq: -1 };
+    }
+    @unbounded
+    fn pending_reviews() -> Int {
+        let ids = self.review_ids();
+        let n = list_len(ids);
+        let mut pending = 0;
+        let mut i = 0;
+        while i < n {
+            if self.review_of(nth(ids, i)).state == "pending" { pending = pending + 1; }
+            i = i + 1;
+        }
+        return pending;
+    }
+    fn review_count() -> Int { return list_len(self.review_ids()); }
+    fn chain_ok() -> Bool {
+        let c = git_out(self.root, "rev-list\n--count\n" + RECORD_REF);
+        if len(c) == 0 { return self.rows() == 0; }
+        return (std::str::parse_int(c) or - 1) == self.rows();
+    }
+    fn organism_line() -> String {
+        if membrane_up(self.root) { return "running (membrane bound)"; }
+        return "not running — reading the Journal";
+    }
+    fn seed_dir() -> String {
+        if self.seed == "." || self.seed == "" { return self.root; }
+        return self.root + "/" + self.seed;
+    }
+    fn app_binary() -> String {
+        let d = self.seed_dir();
+        let sl = last_index_of(d, "/");
+        let name = if sl < 0 { d } else { d[(sl + 1)..len(d)] };
+        return d + "/" + name;
+    }
+    // sha256 of the built application, "" when not built.
+    fn build_digest() -> String {
+        let bin = self.app_binary();
+        if !std::io::fs::file_exists(bin) { return ""; }
+        let r = dna::run_tool("sha256sum\n" + bin);
+        if r.code != 0 { return ""; }
+        let sp = std::str::index_of(r.stdout, " ");
+        if sp < 0 { return dna::trim_nl(r.stdout); }
+        return r.stdout[0..sp];
+    }
+    // `status.json`, as the surface and iris read it.
+    @unbounded
+    fn json() -> String {
+        self.build();
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("organism", self.organism_line());
+        b.begin_object_field("journal");
+        b.string_field("ref", RECORD_REF);
+        b.int_field("revision", self.rows());
+        b.string_field("chain", if self.chain_ok() { "verified" } else { "BROKEN" });
+        b.end_object();
+        b.begin_object_field("expression");
+        let attached = self.first_of("application.attached");
+        if attached.seq >= 0 { b.field("attached", attached.body); } else { b.null_field("attached"); }
+        let current = std::io::fs::read_file(self.root + "/.hale/dna/current.topology") or "";
+        if len(current) > 0 {
+            b.begin_object_field("current");
+            b.string_field("shape_hash", std::json::find_string_field(current, "shape_hash"));
+            b.string_field("artifact_digest", std::json::find_string_field(current, "artifact_digest"));
+            b.string_field("verdict", std::json::find_string_field(current, "verdict"));
+            b.end_object();
+        } else {
+            b.null_field("current");
+        }
+        let bd = self.build_digest();
+        if len(bd) > 0 { b.string_field("build_digest", bd); } else { b.null_field("build_digest"); }
+        b.string_field("toolchain", self.toolchain);
+        b.int_field("restarts", self.count("expression.restarted"));
+        let rr = self.last_of("expression.restart_requested");
+        if rr.seq >= 0 {
+            b.begin_object_field("last_restart_request");
+            b.string_field("mutation", rr.entity);
+            b.string_field("what", rr.body);
+            b.int_field("seq", rr.seq);
+            b.end_object();
+        } else {
+            b.null_field("last_restart_request");
+        }
+        let lo = self.last_observed();
+        if lo.seq >= 0 {
+            b.begin_object_field("last_observed");
+            b.string_field("mutation", lo.entity);
+            b.string_field("what", lo.kind[11..len(lo.kind)] + " " + lo.body);
+            b.int_field("seq", lo.seq);
+            b.end_object();
+        } else {
+            b.null_field("last_observed");
+        }
+        b.end_object();
+        b.begin_object_field("intents");
+        b.int_field("offered", self.count("intent.offered"));
+        b.begin_array_field("refused");
+        let mut i = 0;
+        while i < self.rows() {
+            let e = self.row(i);
+            if e.kind == "intent.refused" {
+                b.begin_object();
+                b.string_field("id", e.entity);
+                b.string_field("reason", e.body);
+                b.end_object();
+            }
+            i = i + 1;
+        }
+        b.end_array();
+        b.end_object();
+        b.begin_array_field("tasks");
+        let task_ids = self.task_ids();
+        let ntasks = list_len(task_ids);
+        i = 0;
+        while i < ntasks {
+            let t = self.task_of(nth(task_ids, i));
+            b.begin_object();
+            b.string_field("id", t.id);
+            b.string_field("outcome", t.outcome);
+            b.string_field("state", t.state);
+            b.int_field("since", t.since);
+            if len(t.detail) > 0 { b.string_field("detail", t.detail); }
+            b.end_object();
+            i = i + 1;
+        }
+        b.end_array();
+        b.begin_array_field("reviews");
+        let review_ids = self.review_ids();
+        let nreviews = list_len(review_ids);
+        i = 0;
+        while i < nreviews {
+            let r = self.review_of(nth(review_ids, i));
+            b.begin_object();
+            b.string_field("id", r.id);
+            b.string_field("state", r.state);
+            b.string_field("question", r.question);
+            b.string_field("required_authority", r.required_authority);
+            b.string_field("subject_digest", r.subject_digest);
+            b.begin_array_field("refusals");
+            let mut rest = r.refusals;
+            while len(rest) > 0 {
+                let nl = std::str::index_of(rest, "\n");
+                let line = if nl < 0 { rest } else { rest[0..nl] };
+                if len(line) > 0 { b.string_value(line); }
+                if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+            }
+            b.end_array();
+            if r.state == "settled" { b.string_field("settled", r.settled); }
+            if r.has_reasoned { b.string_field("reasoned", r.reasoned); }
+            if r.is_mutation {
+                b.string_field("mutation_id", r.mutation_id);
+                b.string_field("change_class", r.change_class);
+                b.string_field("seed", r.seed);
+                b.string_field("disposition", r.disposition);
+                b.string_field("base_commit", r.base_commit);
+                b.string_field("candidate_commit", r.candidate_commit);
+                b.string_field("candidate_shape", r.candidate_shape);
+                b.string_field("evidence", r.evidence);
+                if len(r.magnitude_raw) > 0 { b.field("magnitude", r.magnitude_raw); } else { b.null_field("magnitude"); }
+                b.string_field("diff_text", r.diff_text);
+                b.string_field("diff_json", r.diff_json);
+                b.string_field("author", r.author);
+            }
+            b.end_object();
+            i = i + 1;
+        }
+        b.end_array();
+        b.begin_array_field("mutations");
+        let mutation_ids = self.mutation_ids();
+        let nmut = list_len(mutation_ids);
+        i = 0;
+        while i < nmut {
+            let m = self.mutation_of(nth(mutation_ids, i));
+            b.begin_object();
+            b.string_field("id", m.id);
+            b.string_field("candidate", m.candidate);
+            b.string_field("disposition", m.disposition);
+            b.string_field("class", m.class);
+            b.string_field("task", m.task);
+            b.string_field("objective", m.objective);
+            if len(m.detail) > 0 { b.string_field("detail", m.detail); }
+            if len(m.worktree) > 0 { b.string_field("worktree", m.worktree); }
+            b.begin_array_field("events");
+            let mut rest = m.events;
+            while len(rest) > 0 {
+                let sp = std::str::index_of(rest, " ");
+                let w = if sp < 0 { rest } else { rest[0..sp] };
+                if len(w) > 0 { b.string_value(w); }
+                if sp < 0 { rest = ""; } else { rest = rest[(sp + 1)..len(rest)]; }
+            }
+            b.end_array();
+            b.end_object();
+            i = i + 1;
+        }
+        b.end_array();
+        b.begin_array_field("law_deferred");
+        i = 0;
+        while i < self.rows() {
+            let e = self.row(i);
+            if e.kind == "law.deferred" { b.value(e.body); }
+            i = i + 1;
+        }
+        b.end_array();
+        b.begin_object_field("model_calls");
+        b.int_field("total", self.count("model.called"));
+        b.begin_array_field("recent");
+        let mut taken = 0;
+        i = self.rows() - 1;
+        while i >= 0 && taken < 8 {
+            let e = self.row(i);
+            if e.kind == "model.called" {
+                // the evidence object with the attempt and seq added
+                let inner = dna::trim_nl(e.body);
+                let open = std::str::index_of(inner, "{");
+                let close = last_index_of(inner, "}");
+                if open >= 0 && close > open {
+                    let fields = inner[(open + 1)..close];
+                    let sep = if len(std::str::trim(fields)) > 0 { ", " } else { "" };
+                    b.value("{" + fields + sep + "\"attempt\": " + quote(e.entity) + ", \"seq\": " + to_string(e.seq) + "}");
+                    taken = taken + 1;
+                }
+            }
+            i = i - 1;
+        }
+        b.end_array();
+        b.end_object();
+        b.string_field("pressure", "not journaled in Phase 1");
+        b.int_field("projected_at", std::time::now());
+        b.end_object();
+        return b.result();
+    }
+    fn last_observed() -> dna::Event {
+        let mut i = self.rows() - 1;
+        while i >= 0 {
+            let e = self.row(i);
+            if e.kind == "expression.observed" || e.kind == "expression.crashed" { return e; }
+            i = i - 1;
+        }
+        return dna::Event { seq: -1 };
+    }
+    // `hale dna status`, as text.
+    @unbounded
+    fn text() -> String {
+        self.build();
+        let mut out = "organism:   " + self.organism_line() + "\n";
+        out = out + "journal:    " + to_string(self.rows()) + " event(s), chain " + (if self.chain_ok() { "verified" } else { "BROKEN" }) + "\n";
+        let attached = self.first_of("application.attached");
+        let current = std::io::fs::read_file(self.root + "/.hale/dna/current.topology") or "";
+        let cur_shape = std::json::find_string_field(current, "shape_hash");
+        let bd = self.build_digest();
+        out = out + "expression: attached " + std::json::find_string_field(attached.body, "main") + " (shape " + std::json::find_string_field(attached.body, "shape_hash") + ") · current shape " + (if len(cur_shape) > 0 { cur_shape } else { "not cut" }) + " · build " + (if len(bd) > 0 { short(bd) } else { "not built" }) + "\n";
+        out = out + "intents:    " + to_string(self.count("intent.offered")) + " offered, " + to_string(self.count("intent.refused")) + " refused\n";
+        let task_ids = self.task_ids();
+        let ntasks = list_len(task_ids);
+        out = out + "tasks:      " + (if ntasks == 0 { "none" } else { to_string(ntasks) }) + "\n";
+        let mut i = 0;
+        while i < ntasks {
+            let t = self.task_of(nth(task_ids, i));
+            out = out + "  " + t.id + " [" + t.state + "] " + t.outcome + "\n";
+            i = i + 1;
+        }
+        let review_ids = self.review_ids();
+        let nreviews = list_len(review_ids);
+        out = out + "reviews:    " + to_string(self.pending_reviews()) + " pending of " + to_string(nreviews) + "\n";
+        i = 0;
+        while i < nreviews {
+            let r = self.review_of(nth(review_ids, i));
+            let why = if r.state == "pending" { "needs " + r.required_authority + " — " + r.question } else { "settled " + r.settled };
+            let ref = if r.refusal_count > 0 { " (" + to_string(r.refusal_count) + " verdict(s) refused)" } else { "" };
+            out = out + "  " + r.id + " [" + r.state + "] " + why + ref + "\n";
+            i = i + 1;
+        }
+        let mutation_ids = self.mutation_ids();
+        let nmut = list_len(mutation_ids);
+        out = out + "mutations:  " + to_string(nmut) + " (none applies before a human's verdict on the exact candidate)\n";
+        i = 0;
+        while i < nmut {
+            let m = self.mutation_of(nth(mutation_ids, i));
+            let task = if len(m.task) > 0 { " · task " + m.task } else { "" };
+            let cand = if len(m.candidate) > 0 { " · candidate " + short(m.candidate) } else { "" };
+            out = out + "  " + m.id + " [" + m.disposition + "] " + m.class + ": " + m.objective + task + cand + "\n";
+            i = i + 1;
+        }
+        let deferred = self.count("law.deferred");
+        if deferred > 0 { out = out + "law:        " + to_string(deferred) + " clause(s) deferred at init (see dna_constitution.hl)\n"; }
+        return out;
+    }
+}
+
+fn quote(s: String) -> String {
+    let b = std::json::Builder { };
+    return b.quote(s);
+}
+
+fn last_index_of(s: String, needle: String) -> Int {
+    let mut last = -1;
+    let mut from = 0;
+    while from <= len(s) - len(needle) {
+        let rest = s[from..len(s)];
+        let i = std::str::index_of(rest, needle);
+        if i < 0 { return last; }
+        last = from + i;
+        from = from + i + 1;
+    }
+    return last;
+}

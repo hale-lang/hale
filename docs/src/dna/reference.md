@@ -140,8 +140,12 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `topics.hl` | the typed topics, including the four membrane topics |
 | `types.hl` | `Intent`, `WorkRequest`, `Grant`, `Magnitude`, `Evidence`, `Disposition`, `Mutation`, `dispose` |
 
-Beside the core, `dna/membrane` (the client `hale dna` publishes
-through) and `dna/ui` (the surface) ship in the toolchain the same
-way. The contract the library and the commands promise is
+Beside the core, `dna/host` (the host: the projections, the writers,
+`run` / `dev`, the node agent — everything `hale dna` does that is DNA
+behaviour rather than manifest or scaffolding), `dna/membrane` (the
+client it publishes through) and `dna/ui` (the surface) ship in the
+toolchain the same way; `hale dna` resolves the project and execs the
+host. The compiler keeps `init` / `new` / `upgrade`, `hale fleet
+check` and the plan schema. The contract the library and the commands promise is
 `spec/dna.md`. Friction the DNA has logged against the language and
 the toolchain, with reproducers, is `dna/FRICTION.md`.

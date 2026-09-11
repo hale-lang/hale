@@ -1,0 +1,471 @@
+// dna/host/writers.hl — the verbs that put a fact into the world
+// (GH #566 F8): an intent, a verdict, a pressure signal, a sync, a
+// deploy row, the GitHub mirror. Each goes the way it always did:
+// onto the membrane when an organization is bound here, into the
+// record otherwise, in the name of whoever asked. Nothing here
+// decides.
+
+import "../core" as dna;
+
+fn who_am_i() -> String {
+    let u = std::env::var("USER");
+    if len(u) == 0 { return "human"; }
+    return u;
+}
+
+fn hex(n: Int) -> String {
+    if n == 0 { return "0"; }
+    let digits = "0123456789abcdef";
+    let mut v = n;
+    let mut out = "";
+    while v > 0 {
+        let d = v % 16;
+        out = digits[d..(d + 1)] + out;
+        v = v / 16;
+    }
+    return out;
+}
+
+fn millis() -> Int {
+    return std::time::monotonic_ns() / 1000000;
+}
+
+fn no_organism(root: String) -> String {
+    return "the organism is not running here (no membrane under " + root + "/.hale/dna) and the repository has no remote to reach one through; start it with `hale dna run`";
+}
+
+// An event after `from` of one of `kinds` (space-separated) naming `entity`.
+fn find_after(p: Projection, from: Int, kinds: String, entity: String) -> dna::Event {
+    let mut i = from;
+    while i < p.rows() {
+        let e = p.row(i);
+        if e.entity == entity && std::str::contains(kinds, " " + e.kind + " ") { return e; }
+        i = i + 1;
+    }
+    return dna::Event { seq: -1 };
+}
+
+// ---- ask ------------------------------------------------------------
+
+@unbounded
+fn ask_verb(root: String, outcome: String, to: String, no_wait: Bool) -> Answer {
+    if len(outcome) == 0 { return fail("ask: say what should happen — `hale dna ask \"<intent>\"`"); }
+    let s0 = sync_record(root);
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let p = open_projection(root, ".", "");
+    let before = p.rows();
+    let intent_id = "i" + hex(millis());
+    let who = who_am_i();
+    let local = membrane_up(root);
+    let b = std::json::Builder { };
+    b.begin_object();
+    if local { b.string_field("intent_id", intent_id); }
+    b.string_field("outcome", outcome);
+    b.string_field("from", who);
+    b.string_field("to", to);
+    b.end_object();
+    if local {
+        let e = publish_on_membrane(root, "intent", b.result());
+        if len(e) > 0 { return fail(e); }
+    } else {
+        // no organism here: the intent goes into the record, and the host
+        // beside the organism relays it (GH #566 F1)
+        if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
+        if !append_as(root, "intent.requested", intent_id, b.result(), "") { return fail("the record refused the append"); }
+        let s = sync_record(root);
+        if !s.ok { return fail(s.summary); }
+        if no_wait { return answer("intent " + intent_id + " requested in the record; the organism answers there (`hale dna sync`, then `status`)\n"); }
+    }
+    // the organism's answer, from the record
+    let deadline = std::time::now() + (if local { 10 } else { 60 });
+    while true {
+        if !local { let s = sync_record(root); }
+        let q = open_projection(root, ".", "");
+        let refused = find_after(q, before, " intent.refused ", intent_id);
+        if refused.seq >= 0 { return answer("refused: " + refused.body + "\n"); }
+        let offered = find_after(q, before, " intent.offered ", intent_id);
+        if offered.seq >= 0 {
+            let mut i = before;
+            while i < q.rows() {
+                let t = q.row(i);
+                if t.kind == "task.born" && i >= offered.seq {
+                    let mut state = "active";
+                    let mut k = i + 1;
+                    while k < q.rows() {
+                        let x = q.row(k);
+                        if x.entity == t.entity && std::str::starts_with(x.kind, "task.") && x.kind != "task.born" { state = x.kind[5..len(x.kind)]; }
+                        k = k + 1;
+                    }
+                    return answer("task " + t.entity + " born for intent " + intent_id + " [" + state + "]\n");
+                }
+                i = i + 1;
+            }
+        }
+        if std::time::now() > deadline { return fail("published intent " + intent_id + ", but the organism journaled no answer in time (record revision " + to_string(q.rows()) + ")"); }
+        std::time::sleep(if local { 150ms } else { 1000ms });
+    }
+    return fail("unreachable");
+}
+
+// ---- a verdict ------------------------------------------------------
+
+@unbounded
+fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewer_flag: String, authority_flag: String, comment: String, digest_flag: String, no_wait: Bool) -> Answer {
+    if !(verdict == "approve" || verdict == "revise" || verdict == "reject" || verdict == "abstain") {
+        return fail("review: verdict `" + verdict + "` is not one of approve | revise | reject | abstain");
+    }
+    let local = membrane_up(root);
+    if !local { let s = sync_record(root); }
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let p = open_projection(root, seed, "");
+    let r = p.review_of(id);
+    if len(r.id) == 0 { return fail("no `review.requested` for `" + id + "` in the Journal (pending: " + pending_ids(p) + ")"); }
+    if !local && len(record_remote(root)) == 0 { return fail("the organism is not running here (no membrane) and the repository has no remote to reach one through; start it with `hale dna run`"); }
+    let reviewer = if len(reviewer_flag) > 0 { reviewer_flag } else { who_am_i() };
+    let authority = if len(authority_flag) > 0 { authority_flag } else { "board" };
+    // the verdict names the candidate the reviewer LOOKED AT
+    let named = if len(digest_flag) > 0 { digest_flag } else { r.subject_digest };
+    let before = p.rows();
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("review_id", id);
+    b.string_field("subject_digest", named);
+    b.string_field("verdict", verdict);
+    b.string_field("reviewer", reviewer);
+    b.string_field("authority", authority);
+    b.string_field("comment", comment);
+    b.end_object();
+    if local {
+        let e = publish_on_membrane(root, "verdict", b.result());
+        if len(e) > 0 { return fail(e); }
+    } else {
+        // a row in the record, in the reviewer's name; the host beside the
+        // organism relays it, and the Review answers in the record
+        if !append_as(root, "review.verdict", id, b.result(), "") { return fail("the record refused the append"); }
+        let s = sync_record(root);
+        if !s.ok { return fail(s.summary); }
+    }
+    if no_wait { return answer("verdict " + verdict + " on " + id + " by " + reviewer + " sent " + (if local { "over the membrane" } else { "into the record" }) + "; the Review answers in the record\n"); }
+    let deadline = std::time::now() + (if local { 10 } else { 60 });
+    while true {
+        if !local { let s = sync_record(root); }
+        let q = open_projection(root, seed, "");
+        let e = find_after(q, before, " review.settled review.refused ", id);
+        if e.seq >= 0 {
+            if e.kind == "review.settled" { return answer("review " + id + " settled: " + e.body + "\n"); }
+            return answer("review " + id + " refused the verdict: " + e.body + "\n");
+        }
+        if std::time::now() > deadline { return fail("published the verdict, but the organism journaled no answer for `" + id + "` in time"); }
+        std::time::sleep(if local { 150ms } else { 1000ms });
+    }
+    return fail("unreachable");
+}
+
+// ---- pressure -------------------------------------------------------
+
+fn pressure_raise(root: String, source: String, what: String) -> Answer {
+    if len(source) == 0 || len(what) == 0 { return fail("pressure raise needs a <source> and what"); }
+    if !membrane_up(root) { return fail("the organization is not running here (no membrane); pressure is a live signal"); }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("source", source);
+    b.string_field("what", what);
+    b.int_field("count", 1);
+    b.end_object();
+    let e = publish_on_membrane(root, "pressure", b.result());
+    if len(e) > 0 { return fail(e); }
+    return answer("pressure raised on " + source + ": " + what + "\n");
+}
+
+// ---- sync -----------------------------------------------------------
+
+fn sync_verb(root: String) -> Answer {
+    let s = sync_record(root);
+    if !s.ok { return fail(s.summary); }
+    let n = if len(record_head(root)) == 0 { 0 } else { open_projection(root, ".", "").rows() };
+    return answer("record " + RECORD_REF + ": " + s.summary + "; " + to_string(n) + " event(s)\n");
+}
+
+// ---- the fleet's deploy row ----------------------------------------
+
+// Fold `.` and `..` out of a path, so a plan's `seed` (relative to the
+// plan) and a mutation's seed (relative to the root) compare as the
+// same directory.
+@unbounded
+fn normalize(path: String) -> String {
+    let mut out = "";
+    let mut rest = path + "/";
+    while len(rest) > 0 {
+        let sl = std::str::index_of(rest, "/");
+        let c = rest[0..sl];
+        rest = rest[(sl + 1)..len(rest)];
+        if c == "" || c == "." { continue; }
+        if c == ".." {
+            let last = last_index_of(out, "/");
+            out = if last < 0 { "" } else { out[0..last] };
+            continue;
+        }
+        out = out + "/" + c;
+    }
+    return out;
+}
+
+fn plan_dir_of(plan_rel: String) -> String {
+    let sl = last_index_of(plan_rel, "/");
+    if sl < 0 { return ""; }
+    return plan_rel[0..sl];
+}
+
+type Deploy {
+    ok: Bool = false;
+    error: String = "";
+    seq: Int = 0;
+    revision: String = "";
+    touched: String = ""; // space-separated instance ids
+}
+
+// The instances a change to `seed` touches: every instance a node
+// expresses whose seed is that directory; every one when the seed is "".
+@unbounded
+fn touched_by(root: String, plan_rel: String, plan: String, seed: String) -> String {
+    let plan_dir = plan_dir_of(plan_rel);
+    let want = if len(seed) == 0 { "" } else { normalize(root + "/" + seed) };
+    let mut out = "";
+    let mut it = std::json::array_first(std::json::find_field_raw(plan, "instances"));
+    while !it.done {
+        let node = std::json::find_string_field(it.element, "node");
+        let iseed = std::json::find_string_field(it.element, "seed");
+        let id = std::json::find_string_field(it.element, "id");
+        if len(node) > 0 {
+            let hit = if len(want) == 0 { true } else { len(iseed) > 0 && normalize(root + "/" + plan_dir + "/" + iseed) == want };
+            if hit { out = out + (if len(out) > 0 { " " } else { "" }) + id; }
+        }
+        it = std::json::array_next(it);
+    }
+    return out;
+}
+
+fn touched_json(touched: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_array();
+    let mut rest = touched + " ";
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let w = rest[0..sp];
+        rest = rest[(sp + 1)..len(rest)];
+        if len(w) > 0 { b.string_value(w); }
+    }
+    b.end_array();
+    return b.result();
+}
+
+// Ask the fleet to express `rev`: the revision pushed where every node
+// fetches from (`refs/dna/revisions/<rev>`), then one `fleet.deploy` row.
+@unbounded
+fn fleet_deploy(root: String, fleet: String, plan_rel: String, rev_in: String, seed: String, entity: String, reason: String) -> Deploy {
+    let rev = git_out(root, "rev-parse\n--verify\n" + rev_in + "^{commit}");
+    if len(rev) == 0 { return Deploy { error: "no such revision: " + rev_in }; }
+    let plan = git_out(root, "show\n" + rev + ":" + plan_rel);
+    if len(plan) == 0 { return Deploy { error: "no plan " + plan_rel + " at " + short(rev) }; }
+    let touched = touched_by(root, plan_rel, plan, seed);
+    let remote = record_remote(root);
+    if len(remote) > 0 {
+        let e = git_err(root, "push\n-q\n-f\n" + remote + "\n" + rev + ":refs/dna/revisions/" + rev);
+        if len(e) > 0 { return Deploy { error: e }; }
+    }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("plan", fleet);
+    b.string_field("revision", rev);
+    b.string_field("seed", seed);
+    b.field("touched", touched_json(touched));
+    b.string_field("reason", reason);
+    b.end_object();
+    if !append_as(root, "fleet.deploy", entity, b.result(), "") { return Deploy { error: "the record refused the append" }; }
+    let s = sync_record(root);
+    let p = open_projection(root, ".", "");
+    let mut seq = 0;
+    let mut i = p.rows() - 1;
+    while i >= 0 && seq == 0 {
+        let e = p.row(i);
+        if e.kind == "fleet.deploy" && e.entity == entity { seq = e.seq; }
+        i = i - 1;
+    }
+    return Deploy { ok: true, seq: seq, revision: rev, touched: touched };
+}
+
+fn base_of(p: Projection, id: String) -> String {
+    let r = p.review_of(id);
+    return r.base_commit;
+}
+
+fn deploy_verb(root: String, fleet: String, plan_rel: String, what: String, rollback: Bool) -> Answer {
+    let verb = if rollback { "rollback" } else { "deploy" };
+    if len(what) == 0 { return fail("usage: hale dna " + verb + " <" + (if rollback { "mutation id" } else { "revision" }) + ">"); }
+    let s0 = sync_record(root);
+    if len(fleet) == 0 { return fail("no `[dna] fleet = \"<name>\"` in hale.toml: the DNA expresses no fleet here"); }
+    let mut rev = what;
+    let mut entity = "";
+    let mut reason = "deploy by operator";
+    if rollback {
+        if len(record_head(root)) == 0 { return fail(no_record(root)); }
+        let base = base_of(open_projection(root, ".", ""), what);
+        if len(base) == 0 { return fail(what + ": no Review in the record names its base"); }
+        rev = base;
+        entity = what;
+        reason = "rollback " + what + " by operator";
+    } else {
+        let full = git_out(root, "rev-parse\n--verify\n" + what + "^{commit}");
+        if len(full) == 0 { return fail("no such revision: " + what); }
+        rev = full;
+        entity = short(full);
+    }
+    let d = fleet_deploy(root, fleet, plan_rel, rev, "", entity, reason);
+    if !d.ok { return fail(d.error); }
+    return answer("fleet.deploy #" + to_string(d.seq) + ": " + fleet + " at " + short(d.revision) + " touching " + (if len(d.touched) == 0 { "no instance (none has a node)" } else { d.touched }) + "\n");
+}
+
+// ---- GitHub as a membrane -------------------------------------------
+
+fn gh(args: String) -> dna::RunResult {
+    return dna::run_tool("gh\n" + args);
+}
+
+fn github_repo(root: String) -> String {
+    return git_out(root, "config\ndna.github");
+}
+
+// The pull request opened for a Review, "" when none.
+fn pr_of(p: Projection, id: String) -> String {
+    let mut i = p.rows() - 1;
+    while i >= 0 {
+        let e = p.row(i);
+        if e.kind == "github.pr" && e.entity == id { return e.body; }
+        i = i - 1;
+    }
+    return "";
+}
+
+fn has_row(p: Projection, kind: String, entity: String, needle: String) -> Bool {
+    let mut i = 0;
+    while i < p.rows() {
+        let e = p.row(i);
+        if e.kind == kind && e.entity == entity && (len(needle) == 0 || std::str::contains(e.body, needle)) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// One pass: every pending mutation Review without a pull request gets
+// one; every open pull request's GitHub reviews become verdicts in the
+// reviewer's login, once each; every settled Review with a pull
+// request gets the outcome as a comment, and an approval pushes the
+// genome. GitHub is a projection of the record, never the record.
+@unbounded
+fn github_sync(root: String, seed: String) -> Answer {
+    let repo = github_repo(root);
+    if len(repo) == 0 { return fail("no `dna.github` in git config"); }
+    let board = "," + std::str::replace(git_out(root, "config\ndna.github.board"), " ", "") + ",";
+    let remote_named = record_remote(root);
+    let remote = if len(remote_named) == 0 { "origin" } else { remote_named };
+    let branch_named = git_out(root, "symbolic-ref\n--short\nHEAD");
+    let branch = if len(branch_named) == 0 { "main" } else { branch_named };
+    let mut out = "";
+    let p = open_projection(root, seed, "");
+    let ids = p.review_ids();
+    let n = list_len(ids);
+    // 1. out: a pull request per pending mutation Review
+    let mut i = 0;
+    while i < n {
+        let r = p.review_of(nth(ids, i));
+        if r.state == "pending" && r.is_mutation && len(pr_of(p, r.id)) == 0 {
+            let head = "dna/" + r.id;
+            let e = git_err(root, "push\n-q\n-f\n" + remote + "\n" + r.candidate_commit + ":refs/heads/" + head);
+            if len(e) > 0 { return fail(e); }
+            let body = render_review(p, r.id, false);
+            let c = gh("pr\ncreate\n--repo\n" + repo + "\n--base\n" + branch + "\n--head\n" + head + "\n--title\n" + r.question + "\n--body\n" + body.text);
+            if c.code != 0 { return fail("gh pr: " + dna::trim_nl(c.stderr)); }
+            let url = dna::trim_nl(c.stdout);
+            let sl = last_index_of(url, "/");
+            let number = std::str::parse_int(if sl < 0 { url } else { url[(sl + 1)..len(url)] }) or 0;
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.int_field("number", number);
+            b.string_field("url", url);
+            b.string_field("head", head);
+            b.string_field("candidate", r.candidate_commit);
+            b.end_object();
+            if !append_as(root, "github.pr", r.id, b.result(), "") { return fail("the record refused the append"); }
+            out = out + r.id + ": pull request #" + to_string(number) + " opened (" + url + ")\n";
+        }
+        i = i + 1;
+    }
+    // 2. in: GitHub reviews on open pull requests become verdicts, once each
+    i = 0;
+    while i < n {
+        let r = p.review_of(nth(ids, i));
+        let pr = pr_of(p, r.id);
+        if r.state == "pending" && r.is_mutation && len(pr) > 0 {
+            let number = to_string(std::json::find_int_field(pr, "number"));
+            let v = gh("pr\nview\n" + number + "\n--repo\n" + repo + "\n--json\nstate,headRefOid,reviews");
+            if v.code != 0 { return fail("gh pr view: " + dna::trim_nl(v.stderr)); }
+            let doc = v.stdout;
+            let head_oid = std::json::find_string_field(doc, "headRefOid");
+            let mut it = std::json::array_first(std::json::find_field_raw(doc, "reviews"));
+            while !it.done {
+                let state = std::json::find_string_field(it.element, "state");
+                let verdict = if state == "APPROVED" { "approve" } else { if state == "CHANGES_REQUESTED" { "revise" } else { "" } };
+                if len(verdict) > 0 {
+                    let login = std::json::find_string_field(std::json::find_field_raw(it.element, "author"), "login");
+                    let oid_named = std::json::find_string_field(std::json::find_field_raw(it.element, "commit"), "oid");
+                    let oid = if len(oid_named) > 0 { oid_named } else { head_oid };
+                    let key = login + "@" + oid + "@" + state;
+                    let q = open_projection(root, seed, "");
+                    if !has_row(q, "review.verdict", r.id, "\"github\": \"" + key + "\"") {
+                        let authority = if std::str::contains(board, "," + login + ",") { "board" } else { "reviewer" };
+                        let b = std::json::Builder { };
+                        b.begin_object();
+                        b.string_field("review_id", r.id);
+                        b.string_field("subject_digest", oid);
+                        b.string_field("verdict", verdict);
+                        b.string_field("reviewer", login);
+                        b.string_field("authority", authority);
+                        b.string_field("comment", "github review #" + number);
+                        b.string_field("github", key);
+                        b.end_object();
+                        if !append_as(root, "review.verdict", r.id, b.result(), "") { return fail("the record refused the append"); }
+                        out = out + r.id + ": " + verdict + " by " + login + " (" + authority + ") from pull request #" + number + "\n";
+                    }
+                }
+                it = std::json::array_next(it);
+            }
+        }
+        i = i + 1;
+    }
+    // 3. back: settlements as comments; an approval pushes the genome
+    i = 0;
+    while i < n {
+        let r = p.review_of(nth(ids, i));
+        let pr = pr_of(p, r.id);
+        if r.state == "settled" && r.is_mutation && len(pr) > 0 && !has_row(p, "github.commented", r.id, "") {
+            let number = to_string(std::json::find_int_field(pr, "number"));
+            if std::str::starts_with(r.settled, "approve") { let pushed = git(root, "push\n-q\n" + remote + "\n" + branch + ":" + branch); }
+            let c = gh("pr\ncomment\n" + number + "\n--repo\n" + repo + "\n--body\ndna: review " + r.id + " settled: " + r.settled);
+            if c.code != 0 { return fail("gh pr comment: " + dna::trim_nl(c.stderr)); }
+            if !append_as(root, "github.commented", r.id, "#" + number + ": " + r.settled, "") { return fail("the record refused the append"); }
+            out = out + r.id + ": pull request #" + number + " told: " + r.settled + "\n";
+        }
+        i = i + 1;
+    }
+    return answer(out);
+}
+
+fn github_verb(root: String, seed: String, sub: String) -> Answer {
+    if sub != "sync" { return fail("usage: hale dna github sync"); }
+    let s0 = sync_record(root);
+    let a = github_sync(root, seed);
+    if !a.ok { return a; }
+    let s1 = sync_record(root);
+    if len(a.text) == 0 { return answer("github: nothing to mirror\n"); }
+    return a;
+}

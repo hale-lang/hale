@@ -132,8 +132,9 @@ fn the_surface_serves_the_record_and_a_verdict_from_the_form_lands_in_it() {
     assert!(answer.contains("verdict reject on m1 by riley sent into the record"), "{answer}");
     let rows = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
     let rows = String::from_utf8_lossy(&rows.stdout).to_string();
-    let verdict = rows.lines().find(|l| l.contains("\"kind\":\"review.verdict\"")).unwrap_or_else(|| panic!("a verdict row:\n{rows}"));
-    assert!(verdict.contains("\"author\":\"riley\"") && verdict.contains("reviewer") && verdict.contains("not like this") && verdict.contains("reject"), "{verdict}");
+    let verdict = rows.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).find(|v| v["kind"] == "review.verdict").unwrap_or_else(|| panic!("a verdict row:\n{rows}"));
+    let body = verdict["body"].as_str().unwrap_or("");
+    assert!(verdict["author"] == "riley" && body.contains("reviewer") && body.contains("not like this") && body.contains("reject"), "{verdict}");
     let ask = http(port, "POST", "/api/ask", r#"{"outcome":"greet twice","to":""}"#).unwrap_or_default();
     assert!(ask.contains("requested in the record"), "{ask}");
     let bad = http(port, "POST", "/api/ask", r#"{"outcome":""}"#).unwrap_or_default();

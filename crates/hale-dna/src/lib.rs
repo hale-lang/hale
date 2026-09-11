@@ -71,6 +71,24 @@ pub const UI_HTML: EmbeddedFile = EmbeddedFile {
 pub const UI_SEED: &str = "dna/ui";
 pub const UI_BIN: &str = "dna/ui/ui";
 
+macro_rules! host {
+    ($($name:literal),* $(,)?) => {
+        &[$(EmbeddedFile {
+            path: concat!("dna/host/", $name, ".hl"),
+            content: include_str!(concat!("../../../dna/host/", $name, ".hl")),
+        }),*]
+    };
+}
+
+/// The host (`dna/host`, GH #566 F8): what `hale dna` does beside the
+/// compiler — the projections, the record's sync and appends in a
+/// person's name, the membrane relay, the supervision — as a Hale
+/// program `hale dna` builds once into the toolchain cache and execs
+/// with the project resolved.
+pub const HOST_FILES: &[EmbeddedFile] = host!["host", "main", "node", "procs", "projection", "record", "verbs", "writers"];
+pub const HOST_SEED: &str = "dna/host";
+pub const HOST_BIN: &str = "dna/host/host";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,5 +114,11 @@ mod tests {
         }
         assert!(MEMBRANE_CLIENT.content.contains("main locus Client"));
         assert!(UI_MAIN.content.contains("std::http::Server") && UI_HTML.content.contains("<title>hale dna</title>"));
+        let host_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dna/host");
+        let mut host_on_disk: Vec<String> = std::fs::read_dir(&host_dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.ends_with(".hl")).collect();
+        host_on_disk.sort();
+        let mut host_embedded: Vec<String> = HOST_FILES.iter().map(|f| f.path.rsplit('/').next().unwrap().to_string()).collect();
+        host_embedded.sort();
+        assert_eq!(host_embedded, host_on_disk, "a dna/host file was added or removed without updating hale-dna");
     }
 }
