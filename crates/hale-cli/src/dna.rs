@@ -212,6 +212,10 @@ pub fn run(args: &[String]) -> ExitCode {
             host_exec("fleet", &dir, &rest)
         }
         Some("ui") => ui_cmd(&args[1..]),
+        Some("models") => {
+            let (dir, rest) = project_arg(&args[1..], true);
+            host_exec("models", &dir, &rest)
+        }
         Some("deploy") => host_exec("deploy", Path::new("."), &args[1..]),
         Some("rollback") => host_exec("rollback", Path::new("."), &args[1..]),
         // a list or a render, or a verdict: the host's (GH #566 F8)
@@ -229,6 +233,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("usage: hale dna init [app-dir]      attach the DNA to an existing application");
     eprintln!("       hale dna new <name>          a greenfield application with its DNA");
     eprintln!("       hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain");
+    eprintln!("       hale dna models [project]    the catalog (dna/org/models.hl): every backend, and one small request to each");
     eprintln!("       hale dna run [project] [--port N] [--no-iris]");
     eprintln!("                                    build and run the organization (dna/org) with iris attached; hold the membrane");
     eprintln!("       hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]");
@@ -460,6 +465,13 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     let org_dir = app.root.join(ORG_SEED);
     created(&mut out, &org_dir.join("purpose.hl"), &purpose_hl(&purpose_text))?;
     created(&mut out, &org_dir.join("law.hl"), &org_law_hl())?;
+    // GH #583 M1: the catalog, from what this machine has
+    let found = discover();
+    if created(&mut out, &org_dir.join("models.hl"), &models_hl(&found))? {
+        for line in found.report() {
+            out.push(format!("models  {line}"));
+        }
+    }
     created(&mut out, &org_dir.join("main.hl"), &org_hl(&app.project, &purpose_digest, &app.seed_rel))?;
     out.push(format!("kept    {} (the application is not modified; the organization oversees it from {})", app.main_file.display(), ORG_SEED));
     // 5. the manifest's environments: the application's, and the organization's
@@ -522,10 +534,243 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         return Err(format!("{} has no DNA (no vendor/dna or dna/); run `hale dna init` first", root.display()));
     }
     let (w, same) = materialize_vendor(&root)?;
-    Ok(vec![format!(
+    let mut out = vec![format!(
         "vendor/dna: {} file(s) rewritten, {} unchanged; hale.lock pins toolchain {}. dna/ untouched.",
         w, same, TOOLCHAIN
-    )])
+    )];
+    // GH #583 M1: an organization from before the catalog gets one; its
+    // main is the project's and is told, not edited
+    let org_dir = root.join(ORG_SEED);
+    let catalog = org_dir.join("models.hl");
+    if org_dir.join("main.hl").is_file() && !catalog.is_file() {
+        let found = discover();
+        fs::write(&catalog, models_hl(&found)).map_err(|e| format!("write {}: {e}", catalog.display()))?;
+        out.push(format!("created {}", catalog.display()));
+        for line in found.report() {
+            out.push(format!("models  {line}"));
+        }
+        let main = fs::read_to_string(org_dir.join("main.hl")).unwrap_or_default();
+        if main.contains("dna::HostedModel") || main.contains("dna::ModelRouter {") {
+            out.push(format!(
+                "note    {}/main.hl wires its routers inline (dna::HostedModel is now dna::OpenAiChat); point each position at the catalog: `models: leader_models()`, `editor_models()`, `agent_models()`, and `budget: dna::Budget {{ policy: org_budget() }}` on the substrate",
+                ORG_SEED
+            ));
+        }
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------
+// the catalog (GH #583 M1)
+// ---------------------------------------------------------------
+
+/// What this machine has for models: keys in the environment, servers
+/// and harnesses on `PATH`. Nothing found is fine — the catalog is
+/// still written, every hosted backend simply is not permitted until a
+/// key is set, and every Review waits for the Board.
+struct Discovery {
+    openai: bool,
+    anthropic: bool,
+    ollama: Option<String>, // the first model `ollama list` names, when ollama is on PATH
+    harnesses: Vec<String>, // `claude`, `codex` on PATH (backends in a later toolchain)
+}
+
+fn on_path(bin: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file()))
+        .unwrap_or(false)
+}
+
+fn discover() -> Discovery {
+    let key = |v: &str| std::env::var(v).map(|s| !s.trim().is_empty()).unwrap_or(false);
+    let ollama = if on_path("ollama") {
+        let first = Command::new("ollama")
+            .arg("list")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .skip(1)
+                    .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+                    .next()
+            });
+        Some(first.unwrap_or_else(|| "llama3".to_string()))
+    } else {
+        None
+    };
+    Discovery {
+        openai: key("OPENAI_API_KEY"),
+        anthropic: key("ANTHROPIC_API_KEY"),
+        ollama,
+        harnesses: ["claude", "codex"].iter().filter(|b| on_path(b)).map(|b| b.to_string()).collect(),
+    }
+}
+
+/// A hosted backend as the catalog writes it: provider, model, key,
+/// price per 1k tokens in micro-dollars.
+struct Hosted {
+    model: &'static str,
+    endpoint: &'static str,
+    env_var: &'static str,
+    input_micros_per_1k: u32,
+    output_micros_per_1k: u32,
+}
+
+impl Discovery {
+    /// The provider the hosted backends speak to: Anthropic when its key
+    /// is present (the strongest models), else OpenAI (its key, or a
+    /// placeholder until one is set).
+    fn hosted(&self) -> (Hosted, Hosted, &'static str) {
+        if self.anthropic {
+            (
+                Hosted { model: "claude-opus-5", endpoint: "https://api.anthropic.com/v1/chat/completions", env_var: "ANTHROPIC_API_KEY", input_micros_per_1k: 15000, output_micros_per_1k: 75000 },
+                Hosted { model: "claude-haiku-4-5-20251001", endpoint: "https://api.anthropic.com/v1/chat/completions", env_var: "ANTHROPIC_API_KEY", input_micros_per_1k: 1000, output_micros_per_1k: 5000 },
+                "ANTHROPIC_API_KEY",
+            )
+        } else {
+            (
+                Hosted { model: "gpt-4o", endpoint: "https://api.openai.com/v1/chat/completions", env_var: "OPENAI_API_KEY", input_micros_per_1k: 2500, output_micros_per_1k: 10000 },
+                Hosted { model: "gpt-4o-mini", endpoint: "https://api.openai.com/v1/chat/completions", env_var: "OPENAI_API_KEY", input_micros_per_1k: 150, output_micros_per_1k: 600 },
+                "OPENAI_API_KEY",
+            )
+        }
+    }
+    fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        parts.push(match (self.anthropic, self.openai) {
+            (true, true) => "ANTHROPIC_API_KEY and OPENAI_API_KEY set (Anthropic chosen)".to_string(),
+            (true, false) => "ANTHROPIC_API_KEY set".to_string(),
+            (false, true) => "OPENAI_API_KEY set".to_string(),
+            (false, false) => "no API key in the environment".to_string(),
+        });
+        parts.push(match &self.ollama {
+            Some(m) => format!("ollama on PATH ({m})"),
+            None => "no ollama on PATH".to_string(),
+        });
+        if !self.harnesses.is_empty() {
+            parts.push(format!("{} on PATH", self.harnesses.join(" and ")));
+        }
+        parts.join(", ")
+    }
+    /// What `init` prints: what each position was given.
+    fn report(&self) -> Vec<String> {
+        let (frontier, fast, key) = self.hosted();
+        let desk = self.ollama.clone().unwrap_or_else(|| "llama3".to_string());
+        let mut out = vec![
+            format!("found   {}", self.summary()),
+            format!(
+                "frontier = {} · fast = {} ({}{}) · desk = {} (ollama at 127.0.0.1:11434{})",
+                frontier.model,
+                fast.model,
+                key,
+                if self.anthropic || self.openai { "" } else { ", not set: hosted backends are not permitted until it is" },
+                desk,
+                if self.ollama.is_some() { "" } else { ", not found" }
+            ),
+            "leader, editor, agent: deep = frontier, quick = fast, private = desk · budget 25.00 USD a day (`hale dna models` probes them)".to_string(),
+        ];
+        for h in &self.harnesses {
+            out.push(format!("found   {h} on PATH; a harness is not a backend in this toolchain yet"));
+        }
+        out
+    }
+}
+
+/// `dna/org/models.hl`: the catalog as source (GH #583 M1). Backend
+/// constructor functions by name, a router function per position
+/// composed from them, one budget policy, and the probe `hale dna
+/// models` runs.
+fn models_hl(found: &Discovery) -> String {
+    let (frontier, fast, _) = found.hosted();
+    let desk_model = found.ollama.clone().unwrap_or_else(|| "llama3".to_string());
+    let hosted = |name: &str, h: &Hosted| {
+        format!(
+            "dna::OpenAiChat {{ name: \"{name}\", model: \"{}\", endpoint: \"{}\", credential: dna::HostedCredential {{ env_var: \"{}\" }}, input_micros_per_1k: {}, output_micros_per_1k: {} }}",
+            h.model, h.endpoint, h.env_var, h.input_micros_per_1k, h.output_micros_per_1k
+        )
+    };
+    format!(
+        r#"// dna/org/models.hl — the model catalog (project-owned; generated by
+// `hale dna init` from what this machine had: {summary}).
+//
+// The catalog is source. A backend is a constructor function; a
+// position's router is a function composed from them; the budget is
+// one policy the substrate owns. Add a backend by adding a function,
+// switch a provider by editing one, give a new position its own
+// router by adding one more: `hale check` validates all of it and the
+// law keeps the concrete types at every boundary. `hale dna models`
+// lists the catalog and sends one small request to each backend.
+
+import "vendor/dna" as dna;
+
+// ---- backends ------------------------------------------------------
+//
+// A hosted backend speaks the OpenAI chat shape (OpenAI, OpenRouter,
+// vLLM, Anthropic's compatibility endpoint) and presents its key from
+// a sealed locus that never returns it; without the key it is not a
+// permitted backend and the router refuses before the wire. Prices
+// are micro-dollars per 1k tokens, for the evidence and the budget.
+
+// The strongest model: the Leader's decisions, the editor's assessments.
+fn frontier() -> dna::OpenAiChat {{
+    return {frontier};
+}}
+
+// A fast, cheap model: classification, drafts, retries.
+fn fast() -> dna::OpenAiChat {{
+    return {fast};
+}}
+
+// A model on this machine: customer-classed data never leaves it. No
+// key, no `external_model` effect.
+fn desk() -> dna::LocalModel {{
+    return dna::LocalModel {{ name: "private", endpoint: "http://127.0.0.1:11434/v1/chat/completions", model: "{desk}" }};
+}}
+
+// ---- positions -----------------------------------------------------
+//
+// Each position's router: `deep` decides and assesses, `quick` drafts
+// and classifies, `private` takes what may not leave the machine.
+// They may differ — the judgement of what gets applied on the
+// strongest model, the production of candidates on a cheaper one.
+
+fn leader_models() -> dna::ModelRouter {{
+    return dna::ModelRouter {{ quick: fast(), deep: frontier(), private: desk() }};
+}}
+
+fn editor_models() -> dna::ModelRouter {{
+    return dna::ModelRouter {{ quick: fast(), deep: frontier(), private: desk() }};
+}}
+
+fn agent_models() -> dna::ModelRouter {{
+    return dna::ModelRouter {{ quick: fast(), deep: frontier(), private: desk() }};
+}}
+
+// ---- the budget ----------------------------------------------------
+//
+// One allowance for the whole organization per window ("day", "week"
+// or "none"), in micro-dollars. The substrate owns the counter: every
+// model call is accounted from its evidence, the counter is rehydrated
+// from the record on a restart, and on an exhausted window intent is
+// refused and Reviews wait for the Board.
+
+fn org_budget() -> dna::BudgetPolicy {{
+    return dna::BudgetPolicy {{ window: "day", allowance_micros: 25000000 }};
+}}
+
+// ---- the probe (`hale dna models`) ---------------------------------
+
+fn probe_catalog() -> String {{
+    return dna::probe("frontier", frontier()) + dna::probe("fast", fast()) + dna::probe("desk", desk());
+}}
+"#,
+        summary = found.summary(),
+        frontier = hosted("deep", &frontier),
+        fast = hosted("quick", &fast),
+        desk = desk_model,
+    )
 }
 
 // ---------------------------------------------------------------
@@ -914,7 +1159,9 @@ fn org_hl(project: &str, purpose_digest: &str, seed: &str) -> String {
 //   Leader      the model-backed position holding the project's grant:
 //               decides the Reviews inside it, leaves the Board's
 //   core        the substrate: the record, the gateways, verification,
-//               the editing position, the Reviews
+//               the editing position, the Reviews, the budget
+//   models.hl   the catalog: which model each position calls, and the
+//               organization's allowance (`hale dna models` probes it)
 //
 // The application ({seed}) is not part of this program. It carries its
 // own law and is observed like any Hale binary; this organization
@@ -929,21 +1176,16 @@ main locus Org {{
             // and leases as refs beside it. Every clone that fetches
             // refs/dna/* has the whole history of what this organization did.
             journal: dna::GitJournal {{ repo: "." }},
-            // Models: hosted adapters present a credential from a sealed
-            // locus (set OPENAI_API_KEY; the material never enters this
-            // tree) and are not permitted backends without one; the
-            // private slot is a local OpenAI-compatible endpoint. Every
-            // call journals its evidence, never the prompt.
+            // Models: every position's router comes from the catalog in
+            // models.hl (a backend is a constructor function there; a
+            // hosted one presents its credential from a sealed locus and
+            // is not a permitted backend without it). Every call journals
+            // its evidence, never the prompt.
             work: dna::WorkSystem {{
-                agent: dna::AgentPerformer {{
-                    name: "agent",
-                    models: dna::ModelRouter {{
-                        quick: dna::HostedModel {{ name: "quick", model: "gpt-4o-mini", credential: dna::HostedCredential {{ env_var: "OPENAI_API_KEY" }} }},
-                        deep: dna::HostedModel {{ name: "deep", model: "gpt-4o", credential: dna::HostedCredential {{ env_var: "OPENAI_API_KEY" }}, input_micros_per_1k: 2500, output_micros_per_1k: 10000 }},
-                        private: dna::LocalModel {{ name: "private", endpoint: "http://127.0.0.1:11434/v1/chat/completions", model: "llama3" }}
-                    }}
-                }}
+                agent: dna::AgentPerformer {{ name: "agent", models: agent_models() }}
             }},
+            // The organization's spend: one policy (models.hl), one owner.
+            budget: dna::Budget {{ policy: org_budget() }},
             // The Leader's grant, owned by the Board: what the organization
             // may decide on its own terms. An `application` change is outside
             // this grant and escalates to the Board; widen it here, in a
@@ -962,14 +1204,7 @@ main locus Org {{
             verification: dna::HaleVerification {{ receipts: dna::GitReceipts {{ repo: "." }}, scratch: ".hale/dna/scratch", repo: ".", seed: "{seed}" }},
             // The editing position: read, edit, fmt and check inside one
             // worktree — the law says so.
-            editor: dna::SourceEditor {{
-                name: "editor",
-                models: dna::ModelRouter {{
-                    quick: dna::HostedModel {{ name: "quick", model: "gpt-4o-mini", credential: dna::HostedCredential {{ env_var: "OPENAI_API_KEY" }} }},
-                    deep: dna::HostedModel {{ name: "deep", model: "gpt-4o", credential: dna::HostedCredential {{ env_var: "OPENAI_API_KEY" }}, input_micros_per_1k: 2500, output_micros_per_1k: 10000 }},
-                    private: dna::LocalModel {{ name: "private", endpoint: "http://127.0.0.1:11434/v1/chat/completions", model: "llama3" }}
-                }}
-            }},
+            editor: dna::SourceEditor {{ name: "editor", models: editor_models() }},
             genome_seed: "{seed}"
         }};
         // The Leader: decides the Reviews inside the grant, with the deep
@@ -977,11 +1212,7 @@ main locus Org {{
         // decision is a model call with evidence in the record.
         leader: dna::Leader = dna::Leader {{
             name: "leader",
-            models: dna::ModelRouter {{
-                quick: dna::HostedModel {{ name: "quick", model: "gpt-4o-mini", credential: dna::HostedCredential {{ env_var: "OPENAI_API_KEY" }} }},
-                deep: dna::HostedModel {{ name: "deep", model: "gpt-4o", credential: dna::HostedCredential {{ env_var: "OPENAI_API_KEY" }}, input_micros_per_1k: 2500, output_micros_per_1k: 10000 }},
-                private: dna::LocalModel {{ name: "private", endpoint: "http://127.0.0.1:11434/v1/chat/completions", model: "llama3" }}
-            }},
+            models: leader_models(),
             receipts: dna::GitReceipts {{ repo: "." }},
             source: dna::SourceReader {{ repo: "." }}
         }};

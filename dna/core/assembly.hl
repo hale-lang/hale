@@ -183,6 +183,10 @@ locus Dna {
         gateway: MutationGateway = MutationGateway { };
         verification: HaleVerification = HaleVerification { };
         editor: SourceEditor = SourceEditor { };
+        // GH #583 M1: the organization's spend has ONE owner. The catalog
+        // declares the policy; every model.called row is accounted here;
+        // rehydrated from the record at birth.
+        budget: Budget = Budget { };
         genome_seed: String = "."; // the genome's seed, relative to the repository
         org_seed: String = "dna/org"; // the organization's own seed (GH #566 F3): what an `organization` change edits
         initiative: Bool = true; // persistent pressure becomes a growth Mutation, not only a note
@@ -262,8 +266,29 @@ locus Dna {
         b.string_field("data_class", ev.data_class);
         b.bool_field("ok", ev.ok);
         b.string_field("refused", ev.refused);
+        let now = std::time::now();
+        b.int_field("at", now);
         b.end_object();
         let x = self.journal.append(self.journal.revision(), "model.called", ev.attempt_id, b.result());
+        self.budget.account(ev.cost_micros, now);
+    }
+    // The window's allowance is spent: journaled once per window, the
+    // membrane told; the caller refuses or waits.
+    fn budget_exhausted(now: Int) -> Bool {
+        if !self.budget.exhausted(now) { return false; }
+        if self.budget.announce() {
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("detail", self.budget.describe(now));
+            b.int_field("spent_micros", self.budget.spent_micros);
+            b.int_field("allowance_micros", self.budget.policy.allowance_micros);
+            b.string_field("window", self.budget.policy.window);
+            b.int_field("at", now);
+            b.end_object();
+            let x = self.journal.append(self.journal.revision(), "budget.exhausted", "budget", b.result());
+            self.membrane.notify("budget", "exhausted: " + self.budget.describe(now) + "; model-backed work waits for the next window, Reviews wait for the Board");
+        }
+        return true;
     }
     // The Review decided; the Journal records it (the file
     // `hale dna status` and `history` read).
@@ -547,6 +572,13 @@ locus Dna {
             let x = self.journal.append(self.journal.revision(), "intent.refused", i.id, gate);
             return gate;
         }
+        // GH #583 M1: no model-backed work is routed on an exhausted budget
+        let now = std::time::now();
+        if self.budget_exhausted(now) {
+            let why = "refused: budget exhausted (" + self.budget.describe(now) + ")";
+            let x = self.journal.append(self.journal.revision(), "intent.refused", i.id, why);
+            return why;
+        }
         self.asked = self.asked + 1;
         let born = self.journal.append(self.journal.revision(), "intent.offered", i.id, i.outcome);
         if !born.ok { return "refused: journal " + born.error; }
@@ -723,11 +755,16 @@ locus Dna {
         b.end_object();
         let y = self.journal.append(self.journal.revision(), "review.requested", "review:" + m.id, b.result());
         self.membrane.notify("review", authority + " needed for " + m.id + " (" + name + "): " + m.candidate_commit);
-        ReviewRequested <- ReviewRequest {
-            review_id: m.id, question: question, subject_digest: m.candidate_commit, required_authority: authority,
-            mutation_id: m.id, change_class: m.change_class, seed: m.seed, disposition: name, base_commit: m.base_commit,
-            diff_text: r.diff_text, evidence: r.steps, magnitude: magnitude_json(r.magnitude)
-        };
+        // GH #583 M1: a model-backed position decides only while there is
+        // budget; on an exhausted window the Review waits for the Board
+        // (`hale dna review`), which needs no model.
+        if !self.budget_exhausted(std::time::now()) {
+            ReviewRequested <- ReviewRequest {
+                review_id: m.id, question: question, subject_digest: m.candidate_commit, required_authority: authority,
+                mutation_id: m.id, change_class: m.change_class, seed: m.seed, disposition: name, base_commit: m.base_commit,
+                diff_text: r.diff_text, evidence: r.steps, magnitude: magnitude_json(r.magnitude)
+            };
+        }
         return if post { "release" } else { "review" };
     }
     // Pending mutation Reviews, re-born from the Journal: every
@@ -769,6 +806,7 @@ locus Dna {
         }
         self.metabolism.resume(tasks);
         if mutations > self.mutations_minted { self.mutations_minted = mutations; }
+        self.budget.rehydrate(self.journal, std::time::now());
         self.fail_in_flight();
     }
     // A Mutation whose last word in the record is `proposed`, `worktree`

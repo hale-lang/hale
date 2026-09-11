@@ -18,13 +18,22 @@ bytes cannot be bound. Move the checkout somewhere shorter.
 
 **`task t1 born … [failed]`**, and `history t1` says
 `credential not present`. The editor's hosted model has no key. Set
-`OPENAI_API_KEY`, or point the router at a local or scripted model —
-[Shaping it](./shaping.md).
+the key the catalog names (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`;
+`hale dna models` shows which backends are permitted), or point the
+editor's router at a local or scripted model in `dna/org/models.hl`
+— [Shaping it](./shaping.md).
 
 **`needs leader`, and nothing happens.** The Leader decides with a
 model; with no key it cannot, and the review waits. Answer it as the
 Board (`hale dna review m1 approve --as you`), or give the Leader a
-model.
+model. The same happens when the budget is spent: `history` shows
+`budget.exhausted`, `ask` is refused with the spend, and the review
+is yours until the next window.
+
+**`refused: budget exhausted (spent … of … micro-dollars this
+day …)`** from `ask`. The organization's allowance for the window is
+spent; nothing model-backed is routed until the next one. Raise
+`allowance_micros` in `org_budget()` (`dna/org/models.hl`), or wait.
 
 **`needs board`** on every review. Requests through `ask` are
 `application` changes, and the default grant is `refactor docs`.

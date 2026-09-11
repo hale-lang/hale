@@ -150,6 +150,8 @@ fn main() {
         ans = deploy_verb(root, fleet, plan, word(a, 0), true);
     } else if verb == "github" {
         ans = github_verb(root, seed, word(a, 0));
+    } else if verb == "models" {
+        ans = models_verb(root, std::env::var("HALE_BIN"));
     }
     if ans.ok {
         print(ans.text);
