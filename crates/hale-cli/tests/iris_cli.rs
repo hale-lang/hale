@@ -174,39 +174,47 @@ fn iris_diff_pair_rides_into_the_snapshot() {
         assert!(art.is_file(), "artifact {name}: {}", String::from_utf8_lossy(&out.stderr));
         artifacts.push(art);
     }
-    let (mut child, port) = spawn_iris(&cache, &["--diff", &artifacts[0].to_string_lossy(), &artifacts[1].to_string_lossy()]);
-    let deadline = Instant::now() + Duration::from_secs(300);
+    // On a loaded CI shard the server has exited 1 within seconds of
+    // `fuse-hl: listening`, printing nothing (GH #578); a workstation
+    // never sees it. A server that dies before the diff loads is
+    // retried on a fresh port, with what it printed kept; a server that
+    // lives and never loads the diff is the failure this test is for.
     let mut body = String::new();
-    while Instant::now() < deadline {
-        if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) {
-            let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
-            let _ = s.write_all(b"GET /snapshot HTTP/1.0\r\nHost: x\r\n\r\n");
-            let mut buf = String::new();
-            let _ = s.read_to_string(&mut buf);
-            // the diff loads on the 1 Hz discovery tick
-            if buf.contains("\"state\":\"loaded\"") {
-                body = buf;
+    let mut attempts: Vec<String> = Vec::new();
+    for attempt in 0..3 {
+        let (mut child, port) = spawn_iris(&cache, &["--diff", &artifacts[0].to_string_lossy(), &artifacts[1].to_string_lossy()]);
+        let deadline = Instant::now() + Duration::from_secs(300);
+        let mut exited: Option<String> = None;
+        while Instant::now() < deadline {
+            if let Ok(Some(st)) = child.try_wait() {
+                exited = Some(format!("{st}"));
                 break;
             }
+            if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) {
+                let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
+                let _ = s.write_all(b"GET /snapshot HTTP/1.0\r\nHost: x\r\n\r\n");
+                let mut buf = String::new();
+                let _ = s.read_to_string(&mut buf);
+                // the diff loads on the 1 Hz discovery tick
+                if buf.contains("\"state\":\"loaded\"") {
+                    body = buf;
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(250));
         }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-    let exited = child.try_wait().ok().flatten().map(|st| format!("{st}")).unwrap_or_else(|| "still running".into());
-    let _ = child.kill();
-    let _ = child.wait();
-    let json_start = body.find("{\"ts\"").unwrap_or_else(|| {
-        // the last snapshot seen and what the server said, for a failure
-        // a loaded shard produces and a workstation never does
-        let last = TcpStream::connect(("127.0.0.1", port)).ok().and_then(|mut s| {
-            let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
-            let _ = s.write_all(b"GET /snapshot HTTP/1.0\r\nHost: x\r\n\r\n");
-            let mut b = String::new();
-            let _ = s.read_to_string(&mut b);
-            Some(b)
-        });
+        let _ = child.kill();
+        let _ = child.wait();
         let log = std::fs::read_to_string(cache.join(format!("iris-{port}.stderr"))).unwrap_or_default();
-        panic!("no loaded diff in the snapshot within 300s (server {exited})\nlast snapshot: {last:?}\nserver log:\n{log}");
-    });
+        if !body.is_empty() {
+            break;
+        }
+        attempts.push(format!("attempt {attempt} on {port}: server {}\n{log}", exited.as_deref().unwrap_or("still running, never loaded the diff")));
+        if exited.is_none() {
+            break;
+        }
+    }
+    let json_start = body.find("{\"ts\"").unwrap_or_else(|| panic!("no loaded diff in the snapshot:\n{}", attempts.join("\n")));
     let v: serde_json::Value = serde_json::from_str(&body[json_start..]).expect("snapshot is JSON");
     assert_eq!(v["diff"]["state"], "loaded", "{body}");
     let doc = &v["diff"]["document"];
