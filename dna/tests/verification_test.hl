@@ -48,7 +48,7 @@ main locus App {
         std::io::fs::write_file(root + "/wt/main.hl", CANDIDATE) or discard;
         let base = sh(toolchain() + "\ncheck\n" + root + "/genome\n--dump-topology=" + root + "/baseline.topology");
         std::test::assert_eq_int(base.code, 0, "baseline artifact: " + base.stderr);
-        self.v = dna::HaleVerification { hale_bin: toolchain(), evidence_dir: root + "/evidence" };
+        self.v = dna::HaleVerification { hale_bin: toolchain(), receipts: dna::FileReceipts { dir: root + "/evidence" }, scratch: root + "/scratch" };
 
         // ---- a candidate that checks ---------------------------------------
         let r = self.v.verify(self.journal, dna::Mutation { id: "m1", worktree: root + "/wt", candidate_commit: "cand1" }, root + "/baseline.topology");
@@ -62,9 +62,9 @@ main locus App {
         std::test::assert_eq_int(r.magnitude.external_blast, 2, "a declared effect class is external blast");
         std::test::assert(!r.magnitude.law_touched, "no law in the fixture");
         std::test::assert_eq_int(r.magnitude.novelty, 3, "nothing applied in this lineage yet");
-        let dj = std::io::fs::read_file(r.diff_json) or "";
-        std::test::assert(std::str::contains(dj, "\"classification\""), "diff json on disk");
-        let dt = std::io::fs::read_file(r.diff_text) or "";
+        let dj = self.v.receipts.read(r.diff_json);
+        std::test::assert(std::str::contains(dj, "\"classification\""), "diff json is a receipt");
+        let dt = self.v.receipts.read(r.diff_text);
         std::test::assert(std::str::contains(dt, "Mailer"), "diff text names the new locus: " + dt);
 
         // ---- receipts: journal events on the candidate, outputs by digest --

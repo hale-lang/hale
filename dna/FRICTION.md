@@ -495,10 +495,12 @@ process, where the reply arrives at drain, the Task still settles
 hot-path lint), F.6 (release dispatch by child type alone — memory
 corruption).
 
-**Compiler bugs open, reproducers under `dna/friction/`:** F.11
-(SOUNDNESS: `forbid reaches` through an interface-typed field follows
-the declaration default, not the constructor override — fail-open on
-the assembly shape itself; fix this first), F.1 (enum match across
+**Compiler bugs fixed since:** F.11 (SOUNDNESS: `forbid reaches`
+through an interface-typed field followed the declaration default —
+fixed in #538 by fanning to every conformer; per-field narrowing is
+the open follow-up).
+
+**Compiler bugs open, reproducers under `dna/friction/`:** F.1 (enum match across
 seeds: checker and codegen), F.10 (perspectives do not cross seeds),
 F.8 (`or` on an infallible stdlib path accepted by check), F.9
 (`write_file_append` Int vs Unit, misleading diagnostics). F.1 and

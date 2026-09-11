@@ -33,7 +33,7 @@ fn git(args: &[&str], cwd: &Path) -> String {
 }
 
 fn journal(app: &Path) -> Vec<(String, String, String)> {
-    let text = std::fs::read_to_string(app.join(".hale/dna/journal.jsonl")).unwrap_or_default();
+    let text = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
     text.lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .map(|v| {

@@ -75,12 +75,12 @@ main locus App {
         std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
         let base = self.head();
         self.dna = dna::Dna {
-            journal: dna::FileJournal { path: repo + "/.hale/dna/journal.jsonl" },
+            journal: dna::GitJournal { repo: repo },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), evidence_dir: repo + "/.hale/dna/evidence", repo: repo },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
             editor: dna::SourceEditor {
                 models: dna::ModelRouter {
                     quick: dna::FakeModel { name: "quick", answer: CANDIDATE },
