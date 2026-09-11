@@ -67,9 +67,9 @@ Deleting it loses nothing the record holds.
 `mutation.failed`, `effect.requested`, `effect.result`,
 `evidence.<step>`, `evidence.magnitude`, `review.requested`,
 `review.settled`, `review.refused`, `expression.restart_requested`,
-`expression.restarted`, `expression.observed`, `expression.crashed`,
-`pressure.raised`, `pressure.remeasured`, `appendage.proposed`,
-`model.called`. Their bodies are documented in the guide's reference
+`expression.deployed`, `expression.restarted`, `expression.observed`,
+`expression.crashed`, `pressure.raised`, `pressure.remeasured`,
+`appendage.proposed`, `model.called`, `github.pr`, `github.commented`. Their bodies are documented in the guide's reference
 chapter; the set grows by ordinary change, and a reader that meets an
 unknown kind must keep walking.
 
@@ -168,4 +168,33 @@ in all (default 3). Each try is an attempt id (`<work>/a<n>`), so
 every try's model calls are evidence in the record. The result names
 the files changed and the tries taken; a proposal that does not check
 within the bound is a failed Attempt with the last diagnostics.
+
+## Backends by role
+
+The assembly names what fills each role; `hale check` sees the wiring.
+
+- **Record** — `Journal`: `GitJournal` (the branch), `MemJournal` (tests).
+- **Membrane** — where humans see and decide: `Board` /
+  `LocalHumanMembrane` over the unix sockets on one machine; the record
+  itself across clones (`intent.requested`, `review.verdict` rows,
+  relayed by the host); GitHub, mirrored by the host when `git config
+  dna.github` names `owner/repo`: every pending mutation Review becomes
+  a pull request (`github.pr`; the candidate pushed to `dna/<id>`, the
+  three views as the body), every GitHub review on it becomes a
+  `review.verdict` row in the reviewer's login (authority `board` when
+  `dna.github.board` lists the login, else `reviewer`; each review
+  once, keyed by login, commit and state), every settlement goes back
+  as a comment (`github.commented`) and an approval pushes the genome.
+  GitHub is a projection of the record and the record wins: a review
+  whose head moved is refused here and shows as refused there.
+- **Deployment** — `Deployment`: `NoDeployment` (a host expresses:
+  `hale dna dev`), `ShellDeployment { command, seed }` (the command
+  owns expressing and judging: `express <candidate> <seed>` returning 0
+  means up and healthy, `rollback <base> <seed>` restores; the exit
+  code is the observation, `expression.deployed` records it), and
+  `LocalApplyDeployment` (tests). With a gateway wired, an approval
+  expresses and judges in the organization's own handler and no host
+  is asked; without one, `expression.restart_requested` asks the host.
+- **Observation** — for a shell gateway, the command's exit; for a
+  host, the window it watches; for a fleet, F5.
 

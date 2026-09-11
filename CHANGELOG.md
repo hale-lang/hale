@@ -8,6 +8,11 @@ behavior.
 
 ## Unreleased
 
+### DNA: backends by role — a shell deployment gateway, GitHub as a membrane (GH #566 F4)
+
+- `Deployment` gains `rollback(base)`; `ShellDeployment { command, seed }` runs `<command> express <candidate> <seed>` on approval and `<command> rollback <base> <seed>` after a bad window or a rejection; the command owns expressing and judging, and its exit code is the observation (`expression.deployed`, then the usual `expression.observed`, `mutation.retained` / `mutation.rolled_back`) with no host asked. Test: `dna/tests/deployment_test.hl` (a scripted command: an approval expresses and retains with nothing asked of a host; a command that fails rolls the genome back and restores the base through the same command).
+- GitHub as a membrane: with `git config dna.github owner/repo` (and `dna.github.board` naming the logins that count as the Board), the host — and `hale dna github sync` — mirrors every pending mutation Review to a pull request (`github.pr`; the candidate pushed to `dna/<id>`, the three views as the body), reads every GitHub review back as a `review.verdict` row in the reviewer's login (once, keyed by login, commit and state), comments the settlement back (`github.commented`) and pushes the genome on approval. Via `gh`; a projection of the record, never the record. Test: `dna_github_membrane` with a fake `gh` on PATH — a pull request opened with the review's body, an APPROVED review by `octocat` becoming `approve by octocat` in the record, the comment back, origin's `main` at the candidate.
+
 ### DNA: the organization evolves (GH #566 F3)
 
 - The `organization` change class edits the organization's own seed: `Mutation.seed`, the editing position confined to it, verification of that seed with its own base artifact, the semantic diff of the organization, a Review that is the Board's. A restart request names the seed; the host answers one for `dna/org` by rebuilding and restarting the organization itself (which records `expression.restarted`), watches the window, and accounts for a crash of the new organization by resetting to the base and restarting the old one.

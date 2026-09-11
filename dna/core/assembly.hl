@@ -101,9 +101,47 @@ locus PostReviewRefactors {
 // ---- deployment gateway (an EFFECT, behind an attributed gate) -----
 
 interface Deployment {
-    fn apply(candidate_digest: String) -> Bool;
+    fn apply(candidate_digest: String) -> Bool; // express the candidate; true when it is up and judged healthy
+    fn rollback(base: String) -> Bool; // express the base again after a bad window or a rejection
     fn kind() -> String;
     fn applied() -> Int;
+}
+
+// A deployment gateway that shells out (GH #566 F4): the command owns
+// expressing and judging. `<command> express <candidate> <seed>` must
+// return 0 once the candidate is up and healthy (it owns the window);
+// `<command> rollback <base> <seed>` restores the base. Everything it
+// does is outside this process — a pipeline, an orchestrator, ssh —
+// and its exit code is the fact the record keeps.
+locus ShellDeployment {
+    params {
+        command: String = "";
+        seed: String = ".";
+        applied_n: Int = 0;
+        rolled_back: Int = 0;
+        last_code: Int = 0;
+        last_output: String = "";
+    }
+    @effects(is: { genome_apply })
+    fn apply(candidate_digest: String) -> Bool {
+        let r = run_tool(self.command + "\nexpress\n" + candidate_digest + "\n" + self.seed);
+        self.last_code = r.code;
+        self.last_output = trim_nl(r.stdout + r.stderr);
+        if r.code != 0 { return false; }
+        self.applied_n = self.applied_n + 1;
+        return true;
+    }
+    @effects(is: { genome_apply })
+    fn rollback(base: String) -> Bool {
+        let r = run_tool(self.command + "\nrollback\n" + base + "\n" + self.seed);
+        self.last_code = r.code;
+        self.last_output = trim_nl(r.stdout + r.stderr);
+        if r.code != 0 { return false; }
+        self.rolled_back = self.rolled_back + 1;
+        return true;
+    }
+    fn kind() -> String { return "shell"; }
+    fn applied() -> Int { return self.applied_n; }
 }
 
 // A deployment that DOES apply (simulated): the one method carries
@@ -112,6 +150,7 @@ locus LocalApplyDeployment {
     params { applied_n: Int = 0; last: String = ""; }
     @effects(is: { genome_apply })
     fn apply(candidate_digest: String) -> Bool { self.applied_n = self.applied_n + 1; self.last = candidate_digest; return true; }
+    fn rollback(base: String) -> Bool { self.last = base; return true; }
     fn kind() -> String { return "local-apply"; }
     fn applied() -> Int { return self.applied_n; }
 }
@@ -120,6 +159,7 @@ locus LocalApplyDeployment {
 locus NoDeployment {
     params { refused: Int = 0; }
     fn apply(candidate_digest: String) -> Bool { self.refused = self.refused + 1; return false; }
+    fn rollback(base: String) -> Bool { return false; }
     fn kind() -> String { return "none"; }
     fn applied() -> Int { return 0; }
 }
@@ -330,6 +370,15 @@ locus Dna {
         let req = self.request_of(mutation_id);
         let fitness = std::json::find_string_field(req, "fitness_signals");
         let seed = std::json::find_string_field(req, "seed");
+        // GH #566 F4: a deployment gateway expresses the candidate itself
+        // and owns the window; its exit is the observation. Without one,
+        // the host is asked to rebuild and restart.
+        if self.deployment.kind() != "none" {
+            let up = self.deployment.apply(candidate);
+            let d = self.journal.append(self.journal.revision(), "expression.deployed", mutation_id, (if up { "expressed " } else { "failed " }) + candidate + " via " + self.deployment.kind());
+            self.on_observed(Observation { mutation_id: mutation_id, outcome: if up { "healthy" } else { "build_failed" }, model_hash: candidate, detail: "deployment " + self.deployment.kind() });
+            return "applied";
+        }
         let x = self.journal.append(self.journal.revision(), "expression.restart_requested", mutation_id, "apply " + candidate + " seed " + seed + " fitness " + fitness);
         self.membrane.notify("restart", mutation_id + " applied as " + candidate + "; rebuild and restart requested");
         return "applied";
@@ -346,6 +395,12 @@ locus Dna {
         if !r.ok {
             let y = self.journal.append(self.journal.revision(), "mutation.failed", mutation_id, "rollback: " + r.refused);
             self.membrane.notify("mutation", mutation_id + " rollback failed: " + r.refused);
+            return;
+        }
+        if self.deployment.kind() != "none" {
+            let back = self.deployment.rollback(base);
+            let d = self.journal.append(self.journal.revision(), "expression.deployed", mutation_id, (if back { "restored " } else { "failed to restore " }) + base + " via " + self.deployment.kind() + " after " + why);
+            self.membrane.notify("restart", mutation_id + " rolled back to " + base + " after " + why + (if back { "" } else { " — the deployment did not restore it" }));
             return;
         }
         self.restarts_requested = self.restarts_requested + 1;
