@@ -80,3 +80,49 @@ chain verification), `Coordination` (leases with fencing tokens) and
 `Receipts` (content-addressed store and read) are interfaces in the
 core. The git-backed implementations are the ones an assembly wires
 for an organism; the in-memory ones exist for tests.
+
+## The organization
+
+The organism is an organization written in Hale (GH #566 F2): a
+program at `dna/org` that `hale dna init` generates and `hale dna run`
+runs. The application it oversees is not modified by `init` and
+contains none of it; it is observed like any Hale binary. The
+manifest declares two environments, the application's and the
+organization's (`[claims] no_base = true`; each adopts its own law).
+
+- **Positions are loci; routing is the bus.** `Board` (the human
+  authority: intent enters through it, escalations and reports leave
+  through it, it owns every grant), `Leader` (a model-backed position
+  holding the project's grant: it decides the Reviews inside the grant
+  by reading the source diff and the semantic diff, and its verdict is
+  a model call with evidence), and the substrate `Dna` (the record,
+  the gateways, verification, the editing position, the Reviews). A
+  Review is announced as a typed `ReviewRequested` fact carrying what
+  a deciding position needs.
+- **Authorities are ranked**: `board` (4, `maintainer` is its older
+  name), `leader` (3), `supervisor` (2), `reviewer` (1). A claimed
+  authority satisfies a requirement of its rank or below; an unknown
+  name satisfies only itself.
+- **Who decides.** `OrgPolicy`: a change that touches law, widens
+  effects or crosses ownership, or is of class `organization`,
+  `constitutional`, `process-policy` or `topology`, requires the
+  Board; a change outside the grant (disposition `escalate`) requires
+  the Board; everything else inside the grant requires the Leader.
+- **The foundational law** (`dna/org/law.hl`, generated, extendable,
+  never weakened): nothing applies except through the substrate
+  (`forbid reaches(positions, effects(genome_apply)) avoiding
+  substrate`); the editing position reaches neither `repo_write`,
+  `worktree_io`, `genome_apply` nor the Knowledge; the Leader's
+  verdict reaches the genome only through the substrate; credentials
+  are sealed. The claim engine follows bus edges, so a position that
+  could reach an effect through a published fact is a build failure
+  with the path as its witness.
+- **Hosts.** `hale dna run` builds and runs the organization with iris
+  attached; `hale dna dev` runs the application under the same host
+  too, rebuilds and restarts it on an apply, records
+  `expression.restarted` in the host's name, watches the window and
+  reports on the membrane. The host writes `org.pid` and `app.pid`
+  under `.hale/dna`. Under `run` alone a restart request is logged,
+  not answered: expressing an application deployed elsewhere is a
+  deployment gateway's job.
+

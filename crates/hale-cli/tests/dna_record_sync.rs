@@ -77,7 +77,11 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
     let finish = |host: &mut std::process::Child| {
         let _ = host.kill();
         let _ = host.wait();
-        let _ = Command::new("pkill").args(["-x", "orgsync"]).status();
+        for f in ["org.pid", "app.pid"] {
+            if let Ok(pid) = std::fs::read_to_string(a.join(".hale/dna").join(f)) {
+                let _ = Command::new("kill").args(["-9", pid.trim()]).status();
+            }
+        }
         for s in ["hale-dna.review.verdict.sock", "hale-dna.intent.offered.sock", "hale-dna.expression.observed.sock"] {
             let _ = std::fs::remove_file(a.join(".hale/dna").join(s));
         }

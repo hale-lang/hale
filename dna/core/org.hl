@@ -1,0 +1,111 @@
+// dna/core/org.hl — positions of the organization (GH #566 F2).
+//
+// An org chart is a Hale program: positions are loci, routing is the
+// bus, a position's capabilities are its effect contract, and a
+// mis-wired org fails to build. The substrate (`Dna`) owns the record,
+// the gateways, the verification and the Reviews; positions decide
+// through typed facts on the bus, never by reaching into it.
+//
+// The Board is in assembly.hl (it is the membrane's human side). Here:
+// the Leader — the model-backed position that holds the project's
+// grant and decides the Reviews inside it. Its verdicts are model
+// calls with evidence (`model.called`), its authority is `leader`, and
+// a Review that needs the Board is not its to answer.
+
+// What the Leader reads before it decides: the source diff, without
+// holding a repository handle that could write. Reading is not an
+// effect the law names; committing and applying are.
+locus SourceReader {
+    params { repo: String = "."; reads: Int = 0; }
+    fn diff(base: String, candidate: String) -> String {
+        self.reads = self.reads + 1;
+        let r = run_tool("git\n-C\n" + self.repo + "\ndiff\n" + base + "\n" + candidate);
+        if r.code != 0 { return ""; }
+        return r.stdout;
+    }
+}
+
+locus Leader {
+    params {
+        name: String = "leader";
+        models: ModelRouter = ModelRouter { };
+        receipts: Receipts = FileReceipts { };
+        source: SourceReader = SourceReader { };
+        decisions: Int = 0;
+        approved: Int = 0;
+        revised: Int = 0;
+        escalated: Int = 0; // Reviews the Board must answer, seen and left
+        last: String = "";
+    }
+    bus {
+        subscribe ReviewRequested as on_requested;
+        publish ReviewVerdict;
+    }
+    // One decision per Review the org announces; bounded by the
+    // Mutations proposed.
+    @unbounded
+    fn on_requested(req: ReviewRequest) {
+        if !authority_satisfies("leader", req.required_authority) {
+            self.escalated = self.escalated + 1;
+            self.last = req.review_id + ": the Board's";
+            return;
+        }
+        let source = self.source.diff(req.base_commit, req.subject_digest);
+        let semantic = self.receipts.read(req.diff_text);
+        let prompt = "You are the leader of this project. Decide the change under review.\n"
+            + "Question: " + req.question + "\n"
+            + "Class: " + req.change_class + " · disposition under the grant: " + req.disposition + "\n"
+            + "Evidence: " + req.evidence + "\nMagnitude: " + req.magnitude + "\n"
+            + "Answer with one word first — approve, revise or reject — then why.";
+        let r = self.models.ask(ModelRequest {
+            attempt_id: req.review_id + "/review", role: "review", assurance: 2,
+            prompt: prompt,
+            context: "SOURCE DIFF\n" + source + "\nSEMANTIC DIFF\n" + semantic,
+            context_bytes: len(source) + len(semantic) + len(prompt),
+            data_class: "internal"
+        });
+        self.decisions = self.decisions + 1;
+        let verdict = if !r.ok { "abstain" } else { first_word(r.output) };
+        let v = if verdict == "approve" || verdict == "revise" || verdict == "reject" { verdict } else { "abstain" };
+        if v == "approve" { self.approved = self.approved + 1; }
+        if v == "revise" { self.revised = self.revised + 1; }
+        self.last = req.review_id + ": " + v + " (" + r.backend + ")";
+        ReviewVerdict <- Verdict {
+            review_id: req.review_id, subject_digest: req.subject_digest, verdict: v,
+            reviewer: self.name, authority: "leader",
+            comment: if r.ok { "model " + r.backend + ": " + trim_nl(r.output) } else { "model refused: " + r.refused }
+        };
+    }
+}
+
+// The first word of a model's answer, lower-cased, punctuation dropped.
+@unbounded
+fn first_word(text: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < len(text) {
+        let c = text[i..(i + 1)];
+        if c == " " || c == "\n" || c == "." || c == "," || c == ":" || c == "!" {
+            if len(out) > 0 { return lower_ascii(out); }
+        } else {
+            out = out + c;
+        }
+        i = i + 1;
+    }
+    return lower_ascii(out);
+}
+
+@unbounded
+fn lower_ascii(s: String) -> String {
+    let up = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let lo = "abcdefghijklmnopqrstuvwxyz";
+    let mut out = "";
+    let mut i = 0;
+    while i < len(s) {
+        let c = s[i..(i + 1)];
+        let k = std::str::index_of(up, c);
+        out = out + (if k >= 0 { lo[k..(k + 1)] } else { c });
+        i = i + 1;
+    }
+    return out;
+}

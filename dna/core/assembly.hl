@@ -38,6 +38,25 @@ locus LocalHumanMembrane {
     fn notifications() -> Int { return self.notified; }
 }
 
+// The Board (GH #566 F2): the human authority at the top of the org
+// chart. Intent enters through it, escalations and reports leave
+// through it; it owns every grant. It is the membrane's human side
+// under its organizational name.
+locus Board {
+    params { who: String = "board"; offered: Int = 0; notified: Int = 0; escalations: Int = 0; last: String = ""; }
+    fn offer(i: Intent) -> String {
+        if i.outcome == "" { return "refused: empty intent"; }
+        self.offered = self.offered + 1;
+        return "accepted";
+    }
+    fn notify(kind: String, msg: String) {
+        self.notified = self.notified + 1;
+        if kind == "review" && std::str::contains(msg, "board needed") { self.escalations = self.escalations + 1; }
+        self.last = kind + ": " + msg;
+    }
+    fn notifications() -> Int { return self.notified; }
+}
+
 // ---- governance policy (evolvable genome, bounded by law) -----------
 
 interface ReviewPolicy {
@@ -53,6 +72,20 @@ locus HumanBeforeApply {
     fn required_authority(change_class: String, m: Magnitude) -> String { return "maintainer"; }
     fn blocking(change_class: String) -> Bool { return true; }
     fn name() -> String { return "human-before-apply"; }
+}
+
+// The organization's policy (GH #566 F2): a change that touches law,
+// widens effects or crosses ownership, or is of a Board-class
+// (`organization`, `constitutional`, `process-policy`, `topology`), is
+// the Board's; everything else inside the grant is the Leader's.
+locus OrgPolicy {
+    fn required_authority(change_class: String, m: Magnitude) -> String {
+        if m.law_touched || m.effects_widened || m.ownership_crossed { return "board"; }
+        if change_class == "organization" || change_class == "constitutional" || change_class == "process-policy" || change_class == "topology" { return "board"; }
+        return "leader";
+    }
+    fn blocking(change_class: String) -> Bool { return true; }
+    fn name() -> String { return "org"; }
 }
 
 // Post-review for reversible internal refactors; everything else blocks.
@@ -156,6 +189,9 @@ locus Dna {
         subscribe TaskSettled as on_task_settled;
         subscribe PressureRaised as on_pressure;
         publish WorkDone;
+        // GH #566 F2: a Review is announced as a typed fact, so a position
+        // in the org (the Leader) can decide it inside its grant
+        publish ReviewRequested;
     }
     // Every model call's evidence, journaled (never the prompt).
     @unbounded
@@ -549,7 +585,9 @@ locus Dna {
         let d = self.boundary.assess(m.change_class, r.magnitude, r.evidence);
         let name = disposition_name(d);
         let x = self.journal.append(self.journal.revision(), "mutation." + name, m.id, m.change_class + " candidate " + m.candidate_commit);
-        let authority = self.review_policy.required_authority(m.change_class, r.magnitude);
+        // Outside the grant nobody below the Board decides (escalate);
+        // inside it, the policy names the authority.
+        let authority = if name == "escalate" { "board" } else { self.review_policy.required_authority(m.change_class, r.magnitude) };
         // Post-review autonomy (GH #529 D7 extension 2): inside the grant,
         // no hard boundary, evidence sufficient, and a policy that does
         // not block this class — the candidate is applied NOW and the
@@ -587,6 +625,11 @@ locus Dna {
         b.end_object();
         let y = self.journal.append(self.journal.revision(), "review.requested", "review:" + m.id, b.result());
         self.membrane.notify("review", authority + " needed for " + m.id + " (" + name + "): " + m.candidate_commit);
+        ReviewRequested <- ReviewRequest {
+            review_id: m.id, question: question, subject_digest: m.candidate_commit, required_authority: authority,
+            mutation_id: m.id, change_class: m.change_class, disposition: name, base_commit: m.base_commit,
+            diff_text: r.diff_text, evidence: r.steps, magnitude: magnitude_json(r.magnitude)
+        };
         return if post { "release" } else { "review" };
     }
     // Pending mutation Reviews, re-born from the Journal: every

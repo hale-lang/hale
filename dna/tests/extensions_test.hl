@@ -70,7 +70,7 @@ main locus App {
         return n;
     }
     fn verdict(id: String, digest: String, v: String) {
-        dna::ReviewVerdict <- dna::Verdict { review_id: id, subject_digest: digest, verdict: v, reviewer: "riley", authority: "maintainer reviewer" };
+        dna::ReviewVerdict <- dna::Verdict { review_id: id, subject_digest: digest, verdict: v, reviewer: "riley", authority: "board" };
         std::time::sleep(150ms);
     }
     run() {

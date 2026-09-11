@@ -14,6 +14,28 @@
 // magnitude vector and the evidence (pure fn `dispose` in types.hl),
 // contracts on failure, and never expands on the child's say-so.
 
+// ---- authority -----------------------------------------------------
+//
+// GH #566 F2: authorities are ranked, board over leader over
+// supervisor over reviewer, and a claimed authority satisfies a
+// requirement of its rank or below. `maintainer` is the board's older
+// name and ranks with it. An unknown name satisfies only itself.
+fn authority_rank(name: String) -> Int {
+    if name == "board" || name == "maintainer" { return 4; }
+    if name == "leader" { return 3; }
+    if name == "supervisor" { return 2; }
+    if name == "reviewer" { return 1; }
+    return 0;
+}
+
+fn authority_satisfies(claimed: String, required: String) -> Bool {
+    if claimed == required { return true; }
+    let c = authority_rank(claimed);
+    let r = authority_rank(required);
+    if c == 0 || r == 0 { return std::str::contains(claimed, required); }
+    return c >= r;
+}
+
 // ---- Review -------------------------------------------------------
 
 @form(vec)
@@ -78,7 +100,7 @@ locus Review {
             self.refused = self.refused + 1;
             return false;
         }
-        if !std::str::contains(v.authority, self.required_authority) {
+        if !authority_satisfies(v.authority, self.required_authority) {
             self.last_refusal = "authority " + v.authority + " does not satisfy " + self.required_authority;
             self.refused = self.refused + 1;
             return false;

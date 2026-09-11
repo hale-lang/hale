@@ -96,9 +96,9 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     assert!(ok && out.contains("1 passed, 0 failed"), "after init, the app's own tests: {out}");
     // the organism's editor runs on scripted models in CI: the Genome
     // is project-owned, so the test edits it like a maintainer would
-    let assembly_path = app.join("dna/assembly.hl");
+    let assembly_path = app.join("dna/org/main.hl");
     let assembly = std::fs::read_to_string(&assembly_path).unwrap();
-    let start = assembly.find("editor: dna::SourceEditor {").expect("the Genome wires an editor");
+    let start = assembly.find("editor: dna::SourceEditor {").expect("the organization wires an editor");
     let end = assembly[start..].find("genome_seed:").expect("genome_seed follows the editor") + start;
     let scripted = "editor: dna::SourceEditor {\n                name: \"editor\",\n                models: dna::ModelRouter {\n                    quick: dna::FakeModel { name: \"quick\", answer_file: \".hale/dna/scripted-edit.hl\", answer_role: \"edit\" },\n                    deep: dna::FakeModel { name: \"deep\", answer: \"guests_greeted +\" }\n                }\n            },\n            ";
     std::fs::write(&assembly_path, format!("{}{}{}", &assembly[..start], scripted, &assembly[end..])).unwrap();
@@ -113,7 +113,7 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     // 2. a local governed session (iris reads the same status projection)
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
     let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .args(["dna", "run", ".", "--no-iris", "--observe", "2"])
+        .args(["dna", "dev", ".", "--no-iris", "--observe", "2"])
         .current_dir(&app)
         .env("XDG_CACHE_HOME", &cache)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
@@ -126,10 +126,15 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     while Instant::now() < dl && !up(&app) {
         std::thread::sleep(Duration::from_millis(200));
     }
+    // the host, then the processes it started (their pids are in .hale/dna)
     let finish = |host: &mut std::process::Child| {
         let _ = host.kill();
         let _ = host.wait();
-        let _ = Command::new("pkill").args(["-x", "orgtwelve"]).status();
+        for f in ["org.pid", "app.pid"] {
+            if let Ok(pid) = std::fs::read_to_string(app.join(".hale/dna").join(f)) {
+                let _ = Command::new("kill").args(["-9", pid.trim()]).status();
+            }
+        }
     };
     if !up(&app) {
         finish(&mut host);
@@ -195,7 +200,7 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     assert!(rows.iter().any(|(k, e, b)| k == "model.called" && e.starts_with("m1/a0") && b.contains("read edit fmt check @")), "5: the model calls carry the tool grant:\n{dump}");
     let req = rows.iter().find(|(k, e, _)| k == "review.requested" && e == "review:m1").unwrap();
     assert!(req.2.contains("\"disposition\": \"escalate\"") || req.2.contains("\"disposition\": \"review\"") || req.2.contains("\"disposition\": \"stage\""), "8: a blocking Review: {}", req.2);
-    assert!(ok1 && list.contains("m1 needs maintainer"), "9 cli list: {list}");
+    assert!(ok1 && list.contains("m1 needs board"), "9 cli list: {list}");
     assert!(ok2 && view.contains("source diff (git") && view.contains("+// documented by the organism") && view.contains("semantic diff (hale model diff") && view.contains("evidence (") && view.contains("check      yes"), "9 cli render: {view}");
     let st: serde_json::Value = serde_json::from_str(&st).expect("status --json");
     assert!(ok3 && st["reviews"].as_array().unwrap().iter().any(|r| r["mutation_id"] == "m1" && r["state"] == "pending" && r["evidence"].as_str().unwrap_or("").contains("check=0")), "9 the projection iris reads: {st}");
@@ -225,6 +230,10 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     }
     assert!(still_up, "the restarted organism is up");
     assert!(ok10, "the applied genome still checks: {after}");
+    // the application binary carries none of the organization (GH #566 F2)
+    let bin = std::fs::read(app.join("orgtwelve")).expect("the application binary");
+    let needle = b"vendor_dna";
+    assert!(!bin.windows(needle.len()).any(|w| w == needle), "the application binary contains DNA symbols");
     assert!(ok11 && tests_after.contains("1 passed, 0 failed"), "and its tests pass: {tests_after}");
     let _ = std::fs::remove_dir_all(&d);
 }

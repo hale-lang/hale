@@ -65,9 +65,9 @@ fn init_attaches_the_dna_and_the_application_still_checks_builds_and_runs() {
     for f in [
         "vendor/dna/assembly.hl",
         "vendor/dna/topics.hl",
-        "dna/assembly.hl",
-        "dna_constitution.hl",
-        "dna/purpose.hl",
+        "dna/org/main.hl",
+        "dna/org/law.hl",
+        "dna/org/purpose.hl",
         ".hale/dna/baseline.topology",
         "hale.lock",
     ] {
@@ -76,20 +76,15 @@ fn init_attaches_the_dna_and_the_application_still_checks_builds_and_runs() {
     let lock = std::fs::read_to_string(app.join("hale.lock")).unwrap();
     assert!(lock.contains("[dna]") && lock.contains("toolchain = "), "hale.lock pins the toolchain: {lock}");
     let manifest = std::fs::read_to_string(app.join("hale.toml")).unwrap();
-    assert!(manifest.contains("base = \"Project\"") && manifest.contains("[environments.local]"), "{manifest}");
+    assert!(manifest.contains("no_base = true") && manifest.contains("[environments.local]") && manifest.contains("[environments.org]"), "{manifest}");
 
-    // The locus graph is untouched: every original line survives.
+    // The application is not touched at all (GH #566 F2): the organization
+    // oversees it from dna/org.
     let after = std::fs::read_to_string(app.join("main.hl")).unwrap();
-    for line in before.lines().filter(|l| !l.trim().is_empty()) {
-        // the one-line params block gains the genome param in place
-        let probe = line.trim().trim_end_matches('}').trim_end();
-        assert!(after.contains(probe), "original line kept: {line}");
-    }
-    assert!(after.contains("genome: genome::Genome = genome::Genome { }"), "{after}");
-    assert!(after.contains("adopt Project;"), "{after}");
-    assert!(after.contains("dna::ReviewVerdict: unix(\".hale/dna/hale-dna.review.verdict.sock\", role: listen)"), "{after}");
-    let law = std::fs::read_to_string(app.join("dna_constitution.hl")).unwrap();
-    assert!(law.contains("group organism = { App };"), "{law}");
+    assert_eq!(after, before, "init leaves the application's source exactly as it was");
+    assert!(!app.join("dna_constitution.hl").exists(), "no law is written into the application");
+    let org = std::fs::read_to_string(app.join("dna/org/main.hl")).unwrap();
+    assert!(org.contains("dna::ReviewVerdict: unix(\".hale/dna/hale-dna.review.verdict.sock\", role: listen)"), "the organization binds the membrane: {org}");
 
     // …and it still passes its previous checks, plus the matrix, and builds.
     let (ok, out) = hale(&["check", "."], &app);
@@ -146,32 +141,12 @@ fn the_journal_is_seeded_from_the_model_with_provenance_kept_distinct() {
     let review = body(rows.last().unwrap());
     assert_eq!(review["provenance"], "declared");
     assert!(review["subject_digest"].as_str().unwrap().starts_with("sha256:"));
-    let purpose = std::fs::read_to_string(app.join("dna/assembly.hl")).unwrap();
-    assert!(purpose.contains(review["subject_digest"].as_str().unwrap()), "the Review in the assembly pins the same digest");
-    // the chain is intact
+    let purpose = std::fs::read_to_string(app.join("dna/org/main.hl")).unwrap();
+    assert!(purpose.contains(review["subject_digest"].as_str().unwrap()), "the Review in the organization pins the same digest");
+    // the record is ordered (its chain is git's: one commit per event)
     for (i, r) in rows.iter().enumerate() {
         assert_eq!(r["seq"].as_u64().unwrap() as usize, i);
-        if i > 0 {
-            assert_eq!(r["prev"], rows[i - 1]["digest"], "row {i} chains to its predecessor");
-        }
     }
-    let _ = std::fs::remove_dir_all(app.parent().unwrap());
-}
-
-#[test]
-fn a_law_the_application_cannot_certify_is_deferred_with_its_reason() {
-    let app = pipeline_app("deferred");
-    let (ok, out) = hale(&["dna", "init", "."], &app);
-    assert!(ok, "{out}");
-    assert!(out.contains("`organism_gated` is deferred") && out.contains("call_it"), "{out}");
-    let law = std::fs::read_to_string(app.join("dna_constitution.hl")).unwrap();
-    assert!(law.contains("// organism_gated: forbid reaches(organism, effects(genome_apply)) avoiding dna_gate;"), "{law}");
-    assert!(law.contains("apply_gated: forbid reaches(genome, effects(genome_apply)) avoiding dna_gate;"), "the assembly-scoped clause stays active: {law}");
-    let deferred: Vec<serde_json::Value> = journal_rows(&app).into_iter().filter(|r| r["kind"] == "law.deferred").collect();
-    assert_eq!(deferred.len(), 1, "one deferred clause, journaled");
-    let b: serde_json::Value = serde_json::from_str(deferred[0]["body"].as_str().unwrap()).unwrap();
-    assert_eq!(b["provenance"], "inferred");
-    assert!(b["reason"].as_str().unwrap().contains("call_it"));
     let _ = std::fs::remove_dir_all(app.parent().unwrap());
 }
 
@@ -180,7 +155,7 @@ fn upgrade_rematerializes_vendor_without_touching_the_project_seed() {
     let app = pipeline_app("upgrade");
     let (ok, out) = hale(&["dna", "init", "."], &app);
     assert!(ok, "{out}");
-    let assembly = app.join("dna/assembly.hl");
+    let assembly = app.join("dna/org/main.hl");
     std::fs::write(&assembly, "// mine\n").unwrap();
     let vendored = app.join("vendor/dna/topics.hl");
     std::fs::write(&vendored, "// tampered\n").unwrap();

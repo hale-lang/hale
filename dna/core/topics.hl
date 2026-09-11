@@ -35,6 +35,16 @@ type ReviewRequest {
     question: String = "";
     subject_digest: String = ""; // exact candidate under review (TOCTOU pin)
     required_authority: String = "";
+    // GH #566 F2: what a position deciding it needs — the mutation, its
+    // class and disposition under the grant, the base to diff from, the
+    // receipts (by digest) and the evidence line
+    mutation_id: String = "";
+    change_class: String = "";
+    disposition: String = "";
+    base_commit: String = "";
+    diff_text: String = "";
+    evidence: String = "";
+    magnitude: String = "";
 }
 topic ReviewRequested { payload: ReviewRequest; subject: "dna.review.requested"; }
 

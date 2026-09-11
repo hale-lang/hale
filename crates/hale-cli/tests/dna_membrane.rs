@@ -265,11 +265,13 @@ fn the_membrane_edge_is_a_declared_route_in_the_fleet_model() {
     let (ok, out) = plan(routes, claims);
     assert!(ok, "the membrane routes and their laws hold:\n{out}");
     // A route with a phantom producer — the observer declares the
-    // topic (it imports the core) but never publishes it — is refused.
+    // topic (it imports the core) but nobody publishes it — is refused.
+    // (`ReviewRequested` is published by the assembly since GH #566 F2;
+    // `ConcernRaised` is still declared and unpublished.)
     let phantom = r#"[
-    {"id": "requests", "transport": "unix",
-     "publishers":  [{"instance": "iris-0",     "topic": "dna::ReviewRequested"}],
-     "subscribers": [{"instance": "organism-0", "topic": "dna::ReviewRequested"}]}]"#;
+    {"id": "concerns", "transport": "unix",
+     "publishers":  [{"instance": "iris-0",     "topic": "dna::ConcernRaised"}],
+     "subscribers": [{"instance": "organism-0", "topic": "dna::ConcernRaised"}]}]"#;
     let (ok, out) = plan(phantom, "[]");
     assert!(!ok, "a phantom producer must be refused:\n{out}");
     let _ = std::fs::remove_dir_all(&dir);
