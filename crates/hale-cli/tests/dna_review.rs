@@ -142,7 +142,20 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
     let (ok1, out1) = hale(&["dna", "review", "m1", "approve", "--as", "riley", "--digest", "0000000000000000000000000000000000000000"], &app);
     // the maintainer's verdict on the exact candidate settles it
     let (ok2, out2) = hale(&["dna", "review", "m1", "approve", "--as", "riley", "--comment", "fine"], &app);
-    let (ok3, out3) = hale(&["dna", "status"], &app);
+    // the settle answers first; the apply follows in the organization's
+    // own handler, a moment later on a loaded shard
+    let mut ok3 = false;
+    let mut out3 = String::new();
+    let dl = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < dl {
+        let (o, s) = hale(&["dna", "status"], &app);
+        ok3 = o;
+        out3 = s;
+        if out3.contains("m1 [applied]") || out3.contains("m1 [retained]") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
     let (ok4, out4) = hale(&["dna", "history", "m1"], &app);
     finish(&mut host);
     assert!(ok1 && out1.contains("refused the verdict: digest mismatch"), "wrong digest:\n{out1}");
