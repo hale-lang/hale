@@ -214,6 +214,10 @@ fn iris_diff_pair_rides_into_the_snapshot() {
             break;
         }
     }
+    if !attempts.is_empty() {
+        // a retried attempt is evidence for GH #578 even when a later one passed
+        eprintln!("iris_diff_pair: retried after a server died before the diff loaded:\n{}", attempts.join("\n"));
+    }
     let json_start = body.find("{\"ts\"").unwrap_or_else(|| panic!("no loaded diff in the snapshot:\n{}", attempts.join("\n")));
     let v: serde_json::Value = serde_json::from_str(&body[json_start..]).expect("snapshot is JSON");
     assert_eq!(v["diff"]["state"], "loaded", "{body}");
