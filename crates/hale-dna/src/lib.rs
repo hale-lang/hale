@@ -38,6 +38,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "topics",
     "types",
     "work_system",
+    "workspace",
 ];
 
 /// The seed path, relative to the materialization root.

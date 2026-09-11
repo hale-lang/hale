@@ -157,6 +157,32 @@ walks the Journal from an intent, Task or Review id through the
 rows that link to it. None of these decide anything: the host
 publishes and reads.
 
+## Where a mutation edits
+
+Phase 2 (Track D) lets an Attempt change the genome. Two gateways in
+the core carry that, each with the effect class the law reasons
+about:
+
+- `IsolatedWorktrees { repo, root }` — one `git worktree` per
+  Mutation, named by its id under `.hale/dna/worktrees`, detached at
+  the base commit; removed when the Mutation dissolves. Carries
+  `worktree_io`. The base is recorded as the commit *and* the
+  `exec_digest` of the checked build it was expressed as.
+- `LocalGit { repo }` — `commit_all`, `diff`, `contains`, and
+  `apply`. `apply` fast-forwards the repository to the exact reviewed
+  candidate (a non-descendant is merged) and is the one method
+  carrying `genome_apply` beside `repo_write`, so the constitution
+  can forbid every path to it except through the assembly's gate.
+
+`MutationGateway` puts every operation behind the Journal and a
+lease: journaled before dispatch under an idempotency key
+(`worktree.open:<id>`, `commit:<id>:<step>`, `apply:<candidate>`),
+the result appended once, so a crashed and retried apply reads the
+recorded result and never commits twice; and fenced by the
+Attempt's lease on `mutation:<id>`, so a stale fencing token is
+refused rather than applied. `hale dna history m1` shows the
+worktree, candidate and apply events of a Mutation.
+
 ## In iris
 
 `hale dna run` hands iris three sources: the observation segment

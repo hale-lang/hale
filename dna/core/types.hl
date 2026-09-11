@@ -12,6 +12,8 @@
 effect external_model; // a prompt leaves the process for a hosted model
 effect genome_apply; // a candidate becomes the genome (commit/merge/deploy)
 effect journal_io; // the durable journal's own file I/O
+effect worktree_io; // a worktree is created or removed on disk (GH #529 D1)
+effect repo_write; // the repository's history is written (a commit, a merge)
 
 // A bounded outcome offered downward (supersystem -> subsystem).
 type Intent {
@@ -159,4 +161,22 @@ fn dispose(g: Grant, change_class: String, m: Magnitude, e: Evidence) -> Disposi
     if have < required { return Disposition::Stage; }
     if g.review == "pre" { return Disposition::Review; }
     return Disposition::Release;
+}
+
+// ---- a Mutation (GH #529): a proposed change to the genome -----------
+// Durable identity and the facts every applied Mutation must name
+// (#521 principle 8): its base, the exact candidate, and what became
+// of it. The evidence and the review are Journal events keyed by id;
+// the worktree is the Mutation's scratch space, removed on dissolution.
+type Mutation {
+    id: String = "";
+    task_id: String = ""; // the Task whose Attempt proposed it
+    base_commit: String = "";
+    base_exec_digest: String = ""; // the checked build the base was expressed as
+    worktree: String = ""; // path while open, "" once removed
+    candidate_commit: String = "";
+    candidate_digest: String = ""; // what a Review pins (sha256 of the candidate's artifact, or the commit)
+    change_class: String = "";
+    rationale: String = "";
+    disposition: String = ""; // "proposed" | "staged" | "reviewed" | "applied" | "rejected" | "rolled_back" | "dissolved"
 }
