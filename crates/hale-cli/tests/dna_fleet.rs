@@ -122,6 +122,11 @@ impl Fleet {
             let _ = p.kill();
             let _ = p.wait();
         }
+        // the pid that ran `hale dna run` / `hale node` was the host itself
+        // (it execs in place), so nothing of ours keeps ticking after the kill
+        std::thread::sleep(Duration::from_millis(300));
+        let left = Command::new("pgrep").args(["-f", &format!("host (run|node) {}", self.d.display())]).output().map(|o| String::from_utf8_lossy(&o.stdout).lines().count()).unwrap_or(0);
+        assert_eq!(left, 0, "host processes survived their shim's death");
         for f in ["org.pid", "app.pid"] {
             if let Ok(pid) = std::fs::read_to_string(self.app.join(".hale/dna").join(f)) {
                 let _ = Command::new("kill").args(["-9", pid.trim()]).status();

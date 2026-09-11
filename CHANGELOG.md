@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### `hale dna` and `hale node` exec the host in place
+
+- The shim that resolved the project and started the Hale host waited on it as a child, so a signal to the pid that ran `hale dna run` or `hale node` — a supervisor's, a test's — killed the shim and orphaned the host, which kept ticking; dozens of `host node` agents survived their tests on a workstation and loaded it. The shim now execs the host (and `hale dna ui` its surface) in place: the pid is the host. The fleet test asserts nothing of its own survives its teardown.
+
 ### A vec form owns its elements; `hale run` names a signal (GH #577)
 
 - `@form(vec)`: `get` returns the caller's copy of a heap-bearing element, and `set` / `push` store the vec's own copy whatever arena the value came from. Before, `get` handed back the slot's pointer and `set` passed a pointer already in the arena straight through, so two slots could share one struct and `set`'s retire of the replaced element freed memory the other slot — or a value read earlier — still held: two items swapped through `get` and `set` segfaulted. Scalars and locus refs are unchanged. Test: `tests/hale/form_vec_owned_elements_test.hl`.
