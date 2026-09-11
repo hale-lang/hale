@@ -38,6 +38,14 @@ fn run_tool(argv: String) -> RunResult {
     return RunResult { code: out.code, stdout: out.stdout, stderr: out.stderr };
 }
 
+// The regular files under `dir`, relative and one per line, sorted;
+// vendor, `.git` (a worktree's is a FILE, so it is named as well as
+// its tree) and `.hale` are never part of a change (GH #583 M3/M4).
+fn list_files(dir: String) -> String {
+    let r = run_tool("sh\n-c\ncd \"$0\" && find . -type f ! -path \"./vendor/*\" ! -path \"./.git\" ! -path \"./.git/*\" ! -path \"./.hale\" ! -path \"./.hale/*\" | sed \"s|^./||\" | sort\n" + dir);
+    return if r.code == 0 { r.stdout } else { "" };
+}
+
 fn trim_nl(s: String) -> String {
     let mut e = len(s);
     while e > 0 && (s[(e - 1)..e] == "\n" || s[(e - 1)..e] == "\r" || s[(e - 1)..e] == " ") { e = e - 1; }

@@ -1,0 +1,18 @@
+{"schema": "1.2", "name": "production",
+ "instances": [
+  {"id": "gateway-0", "seed": ".", "node": "edge-1", "labels": ["gateway"]},
+  {"id": "gateway-1", "seed": ".", "node": "edge-2", "labels": ["gateway"]},
+  {"id": "api-0", "seed": "api", "node": "edge-1", "labels": ["api"]},
+  {"id": "worker-0", "seed": "worker", "node": "edge-2", "labels": ["worker"]}],
+ "routes": [
+  {"id": "orders",
+   "publishers": [{"instance": "gateway-0", "topic": "Orders"}, {"instance": "gateway-1", "topic": "Orders"}],
+   "subscribers": [{"instance": "api-0", "topic": "Orders"}]},
+  {"id": "fulfil",
+   "publishers": [{"instance": "api-0", "topic": "Fulfil"}],
+   "subscribers": [{"instance": "worker-0", "topic": "Fulfil"}]}],
+ "groups": {"gateway": {"labels": ["gateway"]}, "api": {"labels": ["api"]}, "worker": {"labels": ["worker"]}},
+ "claims": [
+  {"name": "the_gateway_takes_orders", "require_publishes": {"group": "gateway", "subject": "trio.orders"}},
+  {"name": "the_api_fulfils", "require_publishes": {"group": "api", "subject": "trio.fulfil"}},
+  {"name": "orders_pass_the_api", "forbid_reaches": {"from": "gateway", "to": "worker", "avoiding": "api"}}]}

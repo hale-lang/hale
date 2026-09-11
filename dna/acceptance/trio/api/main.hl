@@ -1,0 +1,39 @@
+// dna/acceptance/trio/api — the api: takes the gateway's orders and
+// asks the worker to fulfil them.
+
+type Order { id: Int = 0; total: Int = 0; }
+type Fulfilment { order: Int = 0; }
+topic Orders { payload: Order; subject: "trio.orders"; }
+topic Fulfil { payload: Fulfilment; subject: "trio.fulfil"; }
+
+locus Intake {
+    params { accepted: Int = 0; }
+    bus { subscribe Orders as on_order; publish Fulfil; }
+    fn on_order(o: Order) {
+        self.accepted = self.accepted + 1;
+        Fulfil <- Fulfilment { order: o.id };
+    }
+}
+
+// The api's own count of what it asked for.
+locus Tally {
+    params { asked: Int = 0; }
+    bus { subscribe Fulfil as on_fulfil; }
+    fn on_fulfil(f: Fulfilment) { self.asked = self.asked + 1; }
+}
+
+main locus TrioApi {
+    params { intake: Intake = Intake { }; tally: Tally = Tally { }; }
+    bus { publish Orders; }
+    run() {
+        Orders <- Order { id: 1, total: 10 };
+        std::time::sleep(100ms);
+        println("api: ", self.intake.accepted, " accepted, ", self.tally.asked, " fulfilment(s) asked");
+        if std::env::var_exists("HALE_DNA_ONESHOT") { return; }
+        while true { std::time::sleep(100ms); }
+    }
+}
+
+fn main() {
+    TrioApi { };
+}

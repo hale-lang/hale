@@ -1,0 +1,43 @@
+// dna/acceptance/trio.fixture/catalog.hl — the fixture's catalog (GH #583 M4):
+// the recorded fixture installs it as dna/org/models.hl. Every
+// backend is a RecordedModel over the real adapter; the mode comes
+// from HALE_DNA_TAPE (`replay` unless it says `record`) and the tape
+// from HALE_DNA_TAPE_DIR, both read by the model itself at birth. Replayed keyless in CI; re-recorded with a
+// key when the organization's behaviour changes on purpose.
+
+import "vendor/dna" as dna;
+
+// The tape and the mode are named by environment variable and read by
+// the RecordedModel itself at birth: a catalog function computes no
+// string, so nothing it hands a constructor can dangle (F.17).
+fn frontier() -> dna::RecordedModel {
+    return dna::RecordedModel { name: "deep", dir: ".hale/dna/tape", dir_env: "HALE_DNA_TAPE_DIR", mode_env: "HALE_DNA_TAPE", inner: dna::AnthropicMessages { name: "deep", model: "claude-sonnet-5", input_micros_per_1k: 3000, output_micros_per_1k: 15000 } };
+}
+
+fn fast() -> dna::RecordedModel {
+    return dna::RecordedModel { name: "quick", dir: ".hale/dna/tape", dir_env: "HALE_DNA_TAPE_DIR", mode_env: "HALE_DNA_TAPE", inner: dna::AnthropicMessages { name: "quick", model: "claude-sonnet-5", input_micros_per_1k: 3000, output_micros_per_1k: 15000 } };
+}
+
+fn desk() -> dna::LocalModel {
+    return dna::LocalModel { name: "private", endpoint: "http://127.0.0.1:11434/v1/chat/completions", model: "llama3" };
+}
+
+fn leader_models() -> dna::ModelRouter {
+    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };
+}
+
+fn editor_models() -> dna::ModelRouter {
+    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };
+}
+
+fn agent_models() -> dna::ModelRouter {
+    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };
+}
+
+fn org_budget() -> dna::BudgetPolicy {
+    return dna::BudgetPolicy { window: "none", allowance_micros: 5000000 };
+}
+
+fn probe_catalog() -> String {
+    return dna::probe("frontier", frontier()) + dna::probe("fast", fast()) + dna::probe("desk", desk());
+}

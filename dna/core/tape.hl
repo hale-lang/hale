@@ -1,0 +1,279 @@
+// dna/core/tape.hl — the tape (GH #583 M4).
+//
+// `RecordedModel { dir, mode, inner }` wraps any backend. `record`
+// forwards to `inner` and writes what came back under a key made of
+// the fields that identify a request: role, the backend's name and
+// model, the prompt and context digests, the data class, the grant
+// (normalized: its path is not part of the request) and, for a
+// backend that works in place, the digest of the workspace's starting
+// tree; for such a call it also writes the PATCH of what the backend
+// changed in the workspace — the harness's output before import
+// filtering — so a replay reproduces the edit and everything after it
+// (the import, the grant, fmt, check) runs for real. `replay` answers
+// from the directory, applies the patch to the workspace, and refuses
+// a miss naming the request and, when an entry shares the prompt
+// digest, the fields that differed. Replay is pure; record reaches
+// whatever `inner` reaches. Anything that varies between runs must
+// stay out of the key, and recording finds what does. The tape is a
+// checked-in fixture, not a store. It proves how the organization
+// handles recorded outcomes; model quality is only ever tested by a
+// fresh run.
+
+// "read edit fmt check @/some/worktree" -> "read edit fmt check @grant":
+// the grant's path is where it ran, not what it was.
+fn normalize_grant(g: String) -> String {
+    let at = std::str::index_of(g, "@");
+    if at < 0 { return g; }
+    return g[0..at] + "@grant";
+}
+
+// A short digest of a directory's files: every path with its content's
+// sha256, in listing order, hashed. "" for no directory. Bounded by
+// the files of one workspace.
+@unbounded
+fn tree_digest(dir: String) -> String {
+    if len(dir) == 0 { return ""; }
+    let acc = std::str::builder_new();
+    let mut lines = list_files(dir);
+    while len(lines) > 0 {
+        let nl = std::str::index_of(lines, "\n");
+        let rel = if nl < 0 { lines } else { lines[0..nl] };
+        if nl < 0 { lines = ""; } else { lines = lines[(nl + 1)..len(lines)]; }
+        if len(rel) == 0 { continue; }
+        let content = std::io::fs::read_file(dir + "/" + rel) or "";
+        std::str::builder_append(acc, rel + " " + hex(std::crypto::sha256(std::bytes::from_string(content))) + "\n");
+    }
+    let all = std::str::builder_finish(acc);
+    return hex(std::crypto::sha256(std::bytes::from_string(all)))[0..16];
+}
+
+type TapeEntry {
+    present: Bool = false;
+    key: String = "";
+    role: String = "";
+    backend: String = "";
+    model: String = "";
+    prompt_digest: String = "";
+    context_digest: String = "";
+    data_class: String = "";
+    grant: String = "";
+    tree: String = "";
+    ok: Bool = false;
+    output: String = "";
+    refused: String = "";
+    tokens: Int = 0;
+    cost_micros: Int = 0;
+    patched: Bool = false;
+}
+
+locus RecordedModel {
+    params {
+        name: String = "recorded";
+        dir: String = ""; // the tape: one `<key>.json` (and `<key>.patch`) per request
+        mode: String = "replay"; // "replay" | "record"
+        // The NAMES of environment variables that supply `dir` and `mode`
+        // at birth, when set: how a catalog says "the tape the fixture
+        // points at, in the mode the run asks for" without computing a
+        // string in a constructor function (see dna/FRICTION.md F.17).
+        dir_env: String = "";
+        mode_env: String = "";
+        inner: ModelBackend = FakeModel { };
+        calls: Int = 0;
+        hits: Int = 0;
+        misses: Int = 0;
+        recorded: Int = 0;
+        last_key: String = "";
+        last_miss: String = "";
+        last: ModelEvidence = ModelEvidence { };
+    }
+    bus { publish ModelCalled; }
+    birth() {
+        if len(self.dir_env) > 0 && std::env::var_exists(self.dir_env) { self.dir = std::env::var(self.dir_env); }
+        if len(self.mode_env) > 0 && std::env::var_exists(self.mode_env) { self.mode = std::env::var(self.mode_env); }
+    }
+    fn identity() -> String { return self.inner.identity(); }
+    fn model_name() -> String { return self.inner.model_name(); }
+    // Replay is permitted whatever the inner would say: an entry that
+    // recorded a refusal replays the refusal, and a miss is refused.
+    fn allows(data_class: String) -> Bool {
+        if self.mode == "record" { return self.inner.allows(data_class); }
+        return true;
+    }
+    fn capacity_bytes() -> Int { return self.inner.capacity_bytes(); }
+    fn works_in_place() -> Bool { return self.inner.works_in_place(); }
+    // The request's identity, one field per line, in key order.
+    fn fields(req: ModelRequest) -> String {
+        return "role=" + req.role
+            + "\nbackend=" + self.inner.identity()
+            + "\nmodel=" + self.inner.model_name()
+            + "\nprompt_digest=" + (if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) })
+            + "\ncontext_digest=" + digest_of(req.context)
+            + "\ndata_class=" + req.data_class
+            + "\ngrant=" + normalize_grant(req.tool_grant)
+            + "\ntree=" + tree_digest(req.workspace)
+            + "\n";
+    }
+    fn key_of(fields: String) -> String {
+        return hex(std::crypto::sha256(std::bytes::from_string(fields)));
+    }
+    fn entry_path(key: String) -> String { return self.dir + "/" + key + ".json"; }
+    fn patch_path(key: String) -> String { return self.dir + "/" + key + ".patch"; }
+    fn read_entry(key: String) -> TapeEntry {
+        let t = std::io::fs::read_file(self.entry_path(key)) or "";
+        if len(t) == 0 { return TapeEntry { }; }
+        return TapeEntry {
+            present: true, key: key,
+            role: std::json::find_string_field(t, "role"),
+            backend: std::json::find_string_field(t, "backend"),
+            model: std::json::find_string_field(t, "model"),
+            prompt_digest: std::json::find_string_field(t, "prompt_digest"),
+            context_digest: std::json::find_string_field(t, "context_digest"),
+            data_class: std::json::find_string_field(t, "data_class"),
+            grant: std::json::find_string_field(t, "grant"),
+            tree: std::json::find_string_field(t, "tree"),
+            ok: std::json::find_bool_field(t, "ok"),
+            output: std::json::find_string_field(t, "output"),
+            refused: std::json::find_string_field(t, "refused"),
+            tokens: std::json::find_int_field(t, "tokens"),
+            cost_micros: std::json::find_int_field(t, "cost_micros"),
+            patched: std::json::find_bool_field(t, "patched")
+        };
+    }
+    fn write_entry(e: TapeEntry) -> Bool {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("key", e.key);
+        b.string_field("role", e.role);
+        b.string_field("backend", e.backend);
+        b.string_field("model", e.model);
+        b.string_field("prompt_digest", e.prompt_digest);
+        b.string_field("context_digest", e.context_digest);
+        b.string_field("data_class", e.data_class);
+        b.string_field("grant", e.grant);
+        b.string_field("tree", e.tree);
+        b.bool_field("ok", e.ok);
+        b.string_field("output", e.output);
+        b.string_field("refused", e.refused);
+        b.int_field("tokens", e.tokens);
+        b.int_field("cost_micros", e.cost_micros);
+        b.bool_field("patched", e.patched);
+        b.end_object();
+        std::io::fs::mkdir(self.dir) or discard;
+        std::io::fs::write_file(self.entry_path(e.key), b.result() + "\n") or self.write_failed(err);
+        return true;
+    }
+    fn write_failed(e: IoError) { self.last_miss = "cannot write the tape: " + e.kind; }
+    // The nearest entry on a miss: one that shares the prompt digest,
+    // and which of the other fields differed. Bounded by the tape.
+    @unbounded
+    fn nearest(prompt_digest: String, mine: TapeEntry) -> String {
+        let n = std::io::fs::list_dir_count(self.dir) or 0;
+        let mut i = 0;
+        while i < n {
+            let name = std::io::fs::list_dir_at(self.dir, i) or "";
+            i = i + 1;
+            if !std::str::ends_with(name, ".json") { continue; }
+            let e = self.read_entry(name[0..(len(name) - 5)]);
+            if !e.present || e.prompt_digest != prompt_digest { continue; }
+            let mut diff = "";
+            if e.role != mine.role { diff = diff + " role"; }
+            if e.backend != mine.backend { diff = diff + " backend"; }
+            if e.model != mine.model { diff = diff + " model"; }
+            if e.context_digest != mine.context_digest { diff = diff + " context_digest"; }
+            if e.data_class != mine.data_class { diff = diff + " data_class"; }
+            if e.grant != mine.grant { diff = diff + " grant"; }
+            if e.tree != mine.tree { diff = diff + " tree"; }
+            return "nearest " + e.key[0..12] + " differs in:" + (if len(diff) == 0 { " nothing (the same request)" } else { diff });
+        }
+        return "no entry shares this prompt digest";
+    }
+    // The request as a TapeEntry (its identity; no answer yet).
+    fn identity_of(req: ModelRequest, key: String) -> TapeEntry {
+        return TapeEntry {
+            key: key, role: req.role, backend: self.inner.identity(), model: self.inner.model_name(),
+            prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
+            context_digest: digest_of(req.context), data_class: req.data_class,
+            grant: normalize_grant(req.tool_grant), tree: tree_digest(req.workspace)
+        };
+    }
+    fn complete(req: ModelRequest) -> ModelResult {
+        self.calls = self.calls + 1;
+        let f = self.fields(req);
+        let key = self.key_of(f);
+        self.last_key = key;
+        if self.mode == "record" { return self.record(req, key); }
+        return self.replay(req, key);
+    }
+    // Forward to the inner (its evidence is the call's), then write the
+    // answer and, for a workspace, the patch of what changed in it.
+    fn record(req: ModelRequest, key: String) -> ModelResult {
+        let mut snap = "";
+        if len(req.workspace) > 0 {
+            let t = run_tool("mktemp\n-d\n/tmp/hale-dna-tape.XXXXXX");
+            snap = trim_nl(t.stdout);
+            let cp = run_tool("sh\n-c\nmkdir -p \"$0/a\" && cp -r \"$1/.\" \"$0/a\"\n" + snap + "\n" + req.workspace);
+        }
+        let r = self.inner.complete(req);
+        let mut e = self.identity_of(req, key);
+        e.ok = r.ok;
+        e.output = r.output;
+        e.refused = r.refused;
+        e.tokens = r.tokens;
+        e.cost_micros = r.cost_micros;
+        if len(snap) > 0 {
+            let cp = run_tool("sh\n-c\nmkdir -p \"$0/b\" && cp -r \"$1/.\" \"$0/b\"\n" + snap + "\n" + req.workspace);
+            let d = run_tool("sh\n-c\ncd \"$0\" && diff -ruN -x vendor -x .hale -x .git a b\n" + snap);
+            if d.code == 1 && len(d.stdout) > 0 {
+                std::io::fs::write_file(self.patch_path(key), d.stdout) or self.write_failed(err);
+                e.patched = true;
+            }
+            let rm = run_tool("rm\n-rf\n" + snap);
+        }
+        let w = self.write_entry(e);
+        self.recorded = self.recorded + 1;
+        return r;
+    }
+    // Answer from the tape; the evidence says so.
+    fn replay(req: ModelRequest, key: String) -> ModelResult {
+        let e = self.read_entry(key);
+        let mut ev = ModelEvidence {
+            attempt_id: req.attempt_id, adapter: "recorded", backend: self.inner.identity(),
+            endpoint: "tape://" + self.name, requested_model: self.inner.model_name(),
+            params: "tape=" + key[0..12] + " mode=replay",
+            prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
+            context_digest: digest_of(req.context),
+            knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
+            retry_of: req.retry_of, data_class: req.data_class
+        };
+        if !e.present {
+            self.misses = self.misses + 1;
+            let mine = self.identity_of(req, key);
+            self.last_miss = "tape miss " + key[0..12] + " (role " + mine.role + ", backend " + mine.backend + ", model " + mine.model
+                + ", data class " + mine.data_class + ", grant `" + mine.grant + "`" + (if len(mine.tree) > 0 { ", tree " + mine.tree } else { "" }) + "): "
+                + self.nearest(mine.prompt_digest, mine);
+            ev.refused = self.last_miss;
+            self.last = ev;
+            ModelCalled <- ev;
+            return ModelResult { ok: false, backend: self.inner.identity(), model: self.inner.model_name(), refused: self.last_miss };
+        }
+        self.hits = self.hits + 1;
+        if e.patched && len(req.workspace) > 0 {
+            let p = run_tool("patch\n-p1\n-s\n-N\n-E\n-d\n" + req.workspace + "\n-i\n" + self.patch_path(key));
+            if p.code != 0 {
+                ev.refused = "tape patch " + key[0..12] + " did not apply: " + trim_nl(p.stderr + p.stdout);
+                self.last = ev;
+                ModelCalled <- ev;
+                return ModelResult { ok: false, backend: e.backend, model: e.model, refused: ev.refused };
+            }
+        }
+        ev.ok = e.ok;
+        ev.refused = e.refused;
+        ev.reported_model = e.model;
+        ev.output_tokens = e.tokens;
+        ev.cost_micros = e.cost_micros;
+        ev.response_digest = digest_of(e.output);
+        self.last = ev;
+        ModelCalled <- ev;
+        return ModelResult { ok: e.ok, backend: e.backend, model: e.model, output: e.output, tokens: e.tokens, cost_micros: e.cost_micros, refused: e.refused };
+    }
+}

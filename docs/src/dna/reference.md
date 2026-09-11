@@ -136,6 +136,7 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `review.hl` | `Review`, `AutonomyBoundary`, authority ranks |
 | `models.hl` | `ModelRouter`, `OpenAiChat`, `AnthropicMessages`, `HarnessModel`, `LocalModel`, `FakeModel`, `HostedCredential` (with its `scheme`), `Confinement` (`Bubblewrap`, `NoConfinement`), `probe` |
 | `budget.hl` | `BudgetPolicy`, `Budget` (the substrate's one counter) |
+| `tape.hl` | `RecordedModel` (record and replay over any backend) |
 | `knowledge.hl` | semantic memory: ideas, edges, bindings |
 | `workspace.hl` | `IsolatedWorktrees`, `LocalGit`, `MutationGateway` |
 | `editing.hl` | `WorktreeTools`, `SourceEditor` |

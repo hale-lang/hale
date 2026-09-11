@@ -558,7 +558,7 @@ locus Dna {
             // the Board's to decide (an `organization` change always is)
             if self.initiative {
                 let out = self.mutate("pressure:" + p.source, "organization",
-                    "grow a position in main.hl for `" + p.what + "` (pressure from " + p.source + ")", "", std::time::now());
+                    "grow a position in main.hl for `" + p.what + "` (pressure from " + p.source + "): a dna::Leader beside the existing one, named for what it oversees, with `models: leader_models()` from the catalog", "", std::time::now());
                 let z = self.journal.append(self.journal.revision(), "appendage.candidate", p.source, out);
             }
         }
@@ -837,13 +837,18 @@ locus Dna {
             if e.kind == "mutation.proposed" {
                 let id = e.entity;
                 let mut last = "proposed";
+                let mut removed = false;
                 let mut k = i + 1;
                 while k < n {
                     let s = self.journal.read(k);
-                    if s.entity == id && std::str::starts_with(s.kind, "mutation.") { last = s.kind[9..len(s.kind)]; }
+                    if s.entity == id && std::str::starts_with(s.kind, "mutation.") {
+                        last = s.kind[9..len(s.kind)];
+                        removed = s.kind == "mutation.worktree" && std::str::starts_with(s.body, "removed");
+                    }
                     k = k + 1;
                 }
-                if last == "proposed" || last == "worktree" || last == "located" {
+                // `mutation.worktree … removed` is the worktree GONE, not opened
+                if last == "proposed" || (last == "worktree" && !removed) || last == "located" {
                     let x = self.journal.append(self.journal.revision(), "mutation.failed", id, "in flight (" + last + ") when the organization stopped; nothing resumes an attempt");
                     let y = self.gateway.workspaces.remove(id);
                 }

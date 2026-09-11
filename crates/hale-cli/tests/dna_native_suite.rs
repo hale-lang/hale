@@ -89,6 +89,7 @@ fn dna_fixture_set_is_complete() {
             "openai_chat_test.hl",
             "org_test.hl",
             "performers_test.hl",
+            "recorded_model_test.hl",
             "recursion_settlement_test.hl",
             "review_authority_test.hl",
             "verification_test.hl",
