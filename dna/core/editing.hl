@@ -78,6 +78,7 @@ locus SourceEditor {
         name: String = "editor";
         models: ModelRouter = ModelRouter { };
         tools: WorktreeTools = WorktreeTools { };
+        max_tries: Int = 3; // a proposal that does not check is retried with the diagnostics, this many times in all
         attempts: Int = 0;
         last: MutationProposal = MutationProposal { };
     }
@@ -127,61 +128,131 @@ locus SourceEditor {
         if len(name) > 0 && std::str::contains(listing, name + "\n") { return name; }
         return "";
     }
-    // Bounded by the attempt cap of the Work that owns this performer.
+    // The files an objective is about (GH #566 F3): every listed file the
+    // objective names, else the quick tier's plan from the listing, one
+    // per line — only listed files are ever targets. Space-separated.
+    @unbounded
+    fn plan(objective: String) -> String {
+        let listing = self.files();
+        let mut named = "";
+        let mut rest = objective;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            let mut tok = if sp < 0 { rest } else { rest[0..sp] };
+            if len(tok) > 0 && (tok[0..1] == "(" || tok[0..1] == "`") { tok = tok[1..len(tok)]; }
+            while len(tok) > 0 && (tok[(len(tok) - 1)..len(tok)] == ")" || tok[(len(tok) - 1)..len(tok)] == "," || tok[(len(tok) - 1)..len(tok)] == "." || tok[(len(tok) - 1)..len(tok)] == "`" || tok[(len(tok) - 1)..len(tok)] == "?") {
+                tok = tok[0..(len(tok) - 1)];
+            }
+            if len(tok) > 3 && std::str::contains(listing, tok + "\n") && !std::str::contains(named, tok + " ") { named = named + tok + " "; }
+            if sp < 0 { rest = ""; } else { rest = rest[(sp + 1)..len(rest)]; }
+        }
+        if len(named) > 0 { return trim_nl(named); }
+        let pick = self.models.ask(ModelRequest {
+            attempt_id: "plan", role: "plan",
+            prompt: "Which of these files should change so that: " + objective + "\nAnswer with file names only, one per line.",
+            context: listing, context_bytes: len(listing) + len(objective),
+            tool_grant: self.grant(), data_class: "internal"
+        });
+        if !pick.ok { return ""; }
+        let mut out = "";
+        let mut lines = pick.output + "\n";
+        while len(lines) > 0 {
+            let nl = std::str::index_of(lines, "\n");
+            let name = trim_nl(if nl < 0 { lines } else { lines[0..nl] });
+            if len(name) > 0 && std::str::contains(listing, name + "\n") && !std::str::contains(out, name + " ") { out = out + name + " "; }
+            if nl < 0 { lines = ""; } else { lines = lines[(nl + 1)..len(lines)]; }
+        }
+        return trim_nl(out);
+    }
+    // One edit of one file on one try: read, ask, write. The diagnostics
+    // of the previous try, when any, travel in the prompt.
+    @unbounded
+    fn edit_one(attempt: String, file: String, objective: String, diagnostics: String, data_class: String) -> ModelResult {
+        let refused_before = self.tools.refused;
+        let current = self.tools.read(file);
+        if self.tools.refused > refused_before { return ModelResult { ok: false, refused: self.tools.last_refusal }; }
+        let mut prompt = "Rewrite " + file + " so that: " + objective + "\nReturn the whole file.";
+        if len(diagnostics) > 0 { prompt = prompt + "\nThe previous attempt did not check. hale check said:\n" + diagnostics; }
+        let edit = self.models.ask(ModelRequest {
+            attempt_id: attempt, role: "edit", target: file,
+            prompt: prompt, context: current, context_bytes: len(current) + len(prompt),
+            tool_grant: self.grant(), data_class: data_class,
+            retry_of: if len(diagnostics) > 0 { attempt + ":edit" } else { "" }
+        });
+        if !edit.ok { return edit; }
+        if !self.tools.edit(file, edit.output) { return ModelResult { ok: false, backend: edit.backend, refused: self.tools.last_refusal }; }
+        return edit;
+    }
+    // Bounded by the attempt cap of the Work that owns this performer
+    // and by `max_tries` (GH #566 F3): a proposal that does not check
+    // is tried again with the diagnostics fed back, then fails.
     @unbounded
     fn perform(req: WorkRequest) -> WorkResult {
         self.attempts = self.attempts + 1;
-        let attempt = req.work_id + "/a" + to_string(req.attempt_no);
-        if len(req.target) == 0 {
+        let files = if len(req.target) > 0 { req.target } else { self.plan(req.objective) };
+        if len(files) == 0 {
             return WorkResult { disposition: "failed", narrative: "no target file in the request", performer: self.name };
         }
-        let current = self.tools.read(req.target);
-        if len(current) == 0 && len(self.tools.last_refusal) > 0 {
-            return WorkResult { disposition: "failed", narrative: self.tools.last_refusal, performer: self.name };
+        let mut tries = 0;
+        let mut diagnostics = "";
+        let mut backends = "";
+        let mut fmt_code = 1;
+        let mut check_code = 1;
+        let mut done = false;
+        while tries < self.max_tries && !done {
+            let attempt = req.work_id + "/a" + to_string(req.attempt_no + tries);
+            let mut rest = files + " ";
+            let mut failed = "";
+            while len(rest) > 0 && len(failed) == 0 {
+                let sp = std::str::index_of(rest, " ");
+                let file = rest[0..sp];
+                rest = rest[(sp + 1)..len(rest)];
+                if len(file) == 0 { continue; }
+                let e = self.edit_one(attempt, file, req.objective, diagnostics, req.data_class);
+                if !e.ok { failed = "edit of " + file + " refused: " + e.refused; }
+                backends = e.backend;
+            }
+            if len(failed) > 0 {
+                return WorkResult { disposition: "failed", narrative: failed, performer: self.name };
+            }
+            let f = self.tools.fmt();
+            let c = self.tools.check();
+            fmt_code = f.code;
+            check_code = c.code;
+            tries = tries + 1;
+            if c.code == 0 { done = true; } else { diagnostics = trim_nl(c.stderr); }
         }
-        let edit = self.models.ask(ModelRequest {
-            attempt_id: attempt, role: "edit",
-            prompt: "Rewrite " + req.target + " so that: " + req.objective + "\nReturn the whole file.",
-            context: current, context_bytes: len(current) + len(req.objective),
-            tool_grant: self.grant(), data_class: req.data_class
-        });
-        if !edit.ok {
-            return WorkResult { disposition: "failed", narrative: "edit refused: " + edit.refused, performer: self.name };
-        }
-        if !self.tools.edit(req.target, edit.output) {
-            return WorkResult { disposition: "failed", narrative: self.tools.last_refusal, performer: self.name };
-        }
-        let f = self.tools.fmt();
-        let c = self.tools.check();
+        let attempt = req.work_id + "/a" + to_string(req.attempt_no + tries - 1);
         // The assessment is the deep tier's (assurance 2): it is what the
         // Review reads, so it is not the quick model's guess.
         let assess = self.models.ask(ModelRequest {
             attempt_id: attempt, role: "assess", assurance: 2,
             prompt: "Which fitness signals should this change move, and which way? One per line: <signal> <+|->",
-            context: edit.output, context_bytes: len(edit.output),
+            context: files, context_bytes: len(files) + 64,
             tool_grant: self.grant(), data_class: req.data_class, retry_of: attempt + ":edit"
         });
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("work_id", req.work_id);
-        b.string_field("files_changed", req.target);
+        b.string_field("files_changed", files);
         b.string_field("rationale", req.objective);
         b.string_field("fitness_signals", if assess.ok { assess.output } else { "" });
-        b.bool_field("fmt_clean", f.code == 0);
-        b.bool_field("check_clean", c.code == 0);
-        b.string_field("check_output", if c.code == 0 { "" } else { trim_nl(c.stderr) });
+        b.bool_field("fmt_clean", fmt_code == 0);
+        b.bool_field("check_clean", check_code == 0);
+        b.int_field("tries", tries);
+        b.string_field("check_output", if check_code == 0 { "" } else { diagnostics });
         b.end_object();
         self.last = MutationProposal {
-            work_id: req.work_id, files_changed: req.target, rationale: req.objective,
+            work_id: req.work_id, files_changed: files, rationale: req.objective,
             fitness_signals: if assess.ok { assess.output } else { "" },
-            fmt_clean: f.code == 0, check_clean: c.code == 0,
-            check_output: if c.code == 0 { "" } else { trim_nl(c.stderr) }
+            fmt_clean: fmt_code == 0, check_clean: check_code == 0,
+            check_output: if check_code == 0 { "" } else { diagnostics }
         };
         return WorkResult {
-            disposition: if c.code == 0 { "done" } else { "failed" },
+            disposition: if check_code == 0 { "done" } else { "failed" },
             result: b.result(),
-            narrative: if c.code == 0 { "proposal checks clean" } else { "proposal does not check: " + trim_nl(c.stderr) },
-            evidence: "fmt=" + to_string(f.code) + " check=" + to_string(c.code) + " backends=" + edit.backend + "," + assess.backend,
+            narrative: if check_code == 0 { "proposal checks clean after " + to_string(tries) + " try(ies)" } else { "proposal does not check after " + to_string(tries) + " try(ies): " + diagnostics },
+            evidence: "fmt=" + to_string(fmt_code) + " check=" + to_string(check_code) + " tries=" + to_string(tries) + " backends=" + backends + "," + assess.backend,
             performer: self.name
         };
     }

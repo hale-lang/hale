@@ -102,6 +102,7 @@ main locus App {
             },
             // post-review for reversible internal refactors; everything else blocks
             review_policy: dna::PostReviewRefactors { },
+            initiative: false, // scenario 4 asserts the proposal alone; growth is dna_org_evolves (Rust)
             boundary: dna::AutonomyBoundary {
                 child: "app",
                 grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 12, review: "post" }
@@ -166,7 +167,8 @@ main locus App {
         // the human disagrees after the fact: rolled back, old expression asked for
         self.verdict("m4", cand4, "reject");
         std::test::assert_eq_str(self.head(), cand1, "rolled back to m4's base");
-        std::test::assert(std::str::contains(self.last("expression.restart_requested", "m4"), "rollback " + cand1 + " after review reject"), self.last("expression.restart_requested", "m4"));
+        let rb = self.last("expression.restart_requested", "m4");
+        std::test::assert(std::str::contains(rb, "rollback " + cand1) && std::str::contains(rb, "after review reject"), rb);
 
         // ---- 3. widening effects crosses a hard boundary; the child cannot self-authorize
         let widened = self.dna.review_mutation(

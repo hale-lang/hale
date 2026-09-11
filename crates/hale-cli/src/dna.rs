@@ -49,6 +49,7 @@ const BASELINE_REL: &str = ".hale/dna/baseline.topology";
 const VERDICT_SOCK_REL: &str = ".hale/dna/hale-dna.review.verdict.sock";
 const INTENT_SOCK_REL: &str = ".hale/dna/hale-dna.intent.offered.sock";
 const OBSERVED_SOCK_REL: &str = ".hale/dna/hale-dna.expression.observed.sock";
+const PRESSURE_SOCK_REL: &str = ".hale/dna/hale-dna.pressure.raised.sock";
 
 pub fn run(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
@@ -70,6 +71,9 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("ask") => report(ask(&args[1..])),
         Some("history") => report(history(&args[1..])),
         Some("sync") => report(sync_cmd(&args[1..])),
+        Some("board") => report(board(&args[1..])),
+        Some("report") => report(file_report(&args[1..])),
+        Some("pressure") => report(pressure(&args[1..])),
         Some("review") => report(review(&args[1..])),
         Some("--help") | Some("-h") | None => usage(if args.is_empty() { 2 } else { 0 }),
         Some(other) => {
@@ -94,6 +98,10 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    offer intent over the membrane; prints the Task born or the refusal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
     eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");
+    eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
+    eprintln!("       hale dna report [project]    file a report from the record since the last one (report.filed)");
+    eprintln!("       hale dna pressure [raise <source> <what…>]");
+    eprintln!("                                    pressure raised and answered; `raise` publishes one signal on the membrane");
     eprintln!("       hale dna review              the pending Reviews");
     eprintln!("       hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence (works offline)");
     eprintln!("       hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>]");
@@ -468,7 +476,7 @@ fn run_organism(args: &[String], dev: bool) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    for sock in [crate::iris::MEMBRANE_VERDICT_SOCK, crate::iris::MEMBRANE_INTENT_SOCK, crate::iris::MEMBRANE_OBSERVED_SOCK] {
+    for sock in [crate::iris::MEMBRANE_VERDICT_SOCK, crate::iris::MEMBRANE_INTENT_SOCK, crate::iris::MEMBRANE_OBSERVED_SOCK, crate::iris::MEMBRANE_PRESSURE_SOCK] {
         let _ = fs::remove_file(dna_dir.join(sock));
     }
     let mut org = match spawn_process(&org_bin, &root, &me, None) {
@@ -556,11 +564,70 @@ fn run_organism(args: &[String], dev: bool) -> ExitCode {
         if let Some((seq, id, body)) = pending_restart(&root, &handled) {
             handled.insert(seq);
             let rollback = body.starts_with("rollback ");
-            if !dev {
+            let seed_named = body.split(" seed ").nth(1).and_then(|r| r.split(' ').next()).unwrap_or("").to_string();
+            if !dev && seed_named != ORG_SEED {
                 eprintln!("hale dna run: {id} requests a restart ({body}); no expression is under this host — `hale dna dev`, or a deployment gateway, expresses it");
                 continue;
             }
-            eprintln!("hale dna dev: {id} requests a restart ({body})");
+            eprintln!("hale dna {verb}: {id} requests a restart ({body})");
+            // GH #566 F3: `seed <s>` names what changed; the organization's own
+            // seed means the org restarts, not the application
+            let seed_of = body.split(" seed ").nth(1).and_then(|r| r.split(' ').next()).unwrap_or("").to_string();
+            if seed_of == ORG_SEED {
+                match restart_org(&me, &root, &org_seed, &dna_dir, &id, rollback, &mut org) {
+                    Ok(bound_again) => {
+                        let _ = fs::write(dna_dir.join("org.pid"), org.id().to_string());
+                        write_status(&root, &status_path);
+                        if !rollback && bound_again {
+                            let end = std::time::Instant::now() + std::time::Duration::from_secs(observe_secs);
+                            let mut crashed: Option<i32> = None;
+                            while std::time::Instant::now() < end {
+                                if let Ok(Some(st)) = org.try_wait() {
+                                    crashed = Some(st.code().unwrap_or(-1));
+                                    break;
+                                }
+                                let _ = sync_record(&root);
+                                write_status(&root, &status_path);
+                                std::thread::sleep(std::time::Duration::from_millis(250));
+                            }
+                            let shape = shape_of(&dna_dir.join("org.topology"));
+                            match crashed {
+                                None => {
+                                    let body = serde_json::json!({"mutation_id": id, "outcome": "healthy", "model_hash": shape, "detail": format!("organization up for {observe_secs}s")}).to_string();
+                                    match publish_on_membrane(&root, "observed", &body) {
+                                        Ok(()) => eprintln!("hale dna dev: {id} organization observed healthy for {observe_secs}s"),
+                                        Err(e) => eprintln!("hale dna dev: could not report on the membrane: {e}"),
+                                    }
+                                }
+                                Some(code) => {
+                                    // nobody is left to decide: the host accounts for it, resets
+                                    // the genome to the base and restarts the old organization
+                                    eprintln!("hale dna dev: {id}: the organization exited ({code}) inside the window; rolling back");
+                                    let base = base_of(&root, &id);
+                                    let _ = append_journal(&root, "expression.crashed", &id, &format!("organization exited {code} in the observation window"));
+                                    let reset = Command::new("git").args(["-C", &root.to_string_lossy(), "reset", "-q", "--keep", &base]).status();
+                                    if matches!(reset, Ok(s) if s.success()) {
+                                        let _ = append_journal(&root, "mutation.rolled_back", &id, &format!("{base} by host after the organization crashed"));
+                                    }
+                                    if let Err(e) = restart_org(&me, &root, &org_seed, &dna_dir, &id, true, &mut org) {
+                                        eprintln!("hale dna dev: the base organization does not come back: {e}");
+                                        break 1;
+                                    }
+                                    let _ = fs::write(dna_dir.join("org.pid"), org.id().to_string());
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("hale dna dev: {id}: the organization does not express: {e}");
+                        if !rollback {
+                            let body = serde_json::json!({"mutation_id": id, "outcome": "build_failed", "model_hash": "", "detail": e}).to_string();
+                            let _ = publish_on_membrane(&root, "observed", &body);
+                        }
+                    }
+                }
+                continue;
+            }
             let previous = dna_dir.join("previous.topology");
             let _ = fs::copy(&current, &previous);
             match express(&me, &seed, &current) {
@@ -1002,6 +1069,154 @@ fn relay_record_membrane(root: &Path, relayed: &mut BTreeSet<u64>) -> usize {
     n
 }
 
+/// Rebuild the organization and restart it for a Mutation of its own
+/// seed (GH #566 F3): sockets down, the new org up with the Mutation in
+/// its environment (it records `expression.restarted` itself), the
+/// membrane waited for. Returns whether the membrane came up.
+fn restart_org(me: &Path, root: &Path, org_seed: &Path, dna_dir: &Path, id: &str, rollback: bool, org: &mut std::process::Child) -> Result<bool, String> {
+    let art = dna_dir.join("org.topology");
+    let bin = express(me, org_seed, &art)?;
+    let shape = shape_of(&art);
+    let expression = format!("{}{} build {}", if rollback { "rollback " } else { "" }, shape, crate::sign::sha256_file(&bin).map(|d| d[..12].to_string()).unwrap_or_default());
+    terminate(org);
+    for sock in [crate::iris::MEMBRANE_VERDICT_SOCK, crate::iris::MEMBRANE_INTENT_SOCK, crate::iris::MEMBRANE_OBSERVED_SOCK, crate::iris::MEMBRANE_PRESSURE_SOCK] {
+        let _ = fs::remove_file(dna_dir.join(sock));
+    }
+    *org = spawn_process(&bin, root, me, Some((id, &expression)))?;
+    eprintln!("hale dna: organization restarted (pid {}) as {}", org.id(), expression);
+    Ok(wait_membrane(dna_dir, org, 20))
+}
+
+/// A Mutation's base commit, from its `review.requested` body.
+fn base_of(root: &Path, id: &str) -> String {
+    read_journal(root)
+        .ok()
+        .and_then(|rows| {
+            rows.iter()
+                .rev()
+                .find(|r| r.kind == "review.requested" && r.entity == format!("review:{id}"))
+                .and_then(|r| serde_json::from_str::<Value>(&r.body).ok())
+                .and_then(|b| b["base_commit"].as_str().map(|s| s.to_string()))
+        })
+        .unwrap_or_default()
+}
+
+/// `hale dna board`: the Board's queue (GH #566 F3) — the Reviews only it
+/// can settle, the escalations, the organ proposals, the reports filed.
+fn board(args: &[String]) -> Result<Vec<String>, String> {
+    let dir = args.first().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let (root, _) = project(&dir)?;
+    if !membrane_up(&root) {
+        let _ = sync_record(&root);
+    }
+    let rows = read_journal(&root)?;
+    let st = status_projection(&root)?;
+    let s = |v: &Value| v.as_str().unwrap_or("").to_string();
+    let mut out = Vec::new();
+    let reviews = st["reviews"].as_array().cloned().unwrap_or_default();
+    let mine: Vec<&Value> = reviews.iter().filter(|r| r["state"] == "pending" && matches!(r["required_authority"].as_str(), Some("board") | Some("maintainer"))).collect();
+    out.push(format!("board: {} review(s) need your verdict", mine.len()));
+    for r in &mine {
+        let why = if r["mutation_id"].is_string() {
+            format!(" — {} · {} · disposition {}", s(&r["change_class"]), if s(&r["seed"]).is_empty() { "the application".to_string() } else { s(&r["seed"]) }, s(&r["disposition"]))
+        } else {
+            String::new()
+        };
+        out.push(format!("  {}  {}{}", s(&r["id"]), s(&r["question"]), why));
+    }
+    let leaders: Vec<&Value> = reviews.iter().filter(|r| r["state"] == "pending" && r["required_authority"] == "leader").collect();
+    if !leaders.is_empty() {
+        out.push(format!("leader: {} review(s) inside the grant, being decided", leaders.len()));
+    }
+    let proposals: Vec<&Row> = rows.iter().filter(|r| r.kind == "appendage.proposed").collect();
+    if !proposals.is_empty() {
+        out.push(format!("proposals: {}", proposals.len()));
+        for p in proposals {
+            let cand = rows.iter().find(|r| r.kind == "appendage.candidate" && r.entity == p.entity).map(|r| format!(" → {}", r.body)).unwrap_or_default();
+            out.push(format!("  {}: {}{}", p.entity, p.body, cand));
+        }
+    }
+    let reports: Vec<&Row> = rows.iter().filter(|r| r.kind == "report.filed").collect();
+    if let Some(last) = reports.last() {
+        out.push(format!("last report (#{}): {}", last.seq, last.body));
+    }
+    let grant = rows.iter().filter(|r| r.kind == "grant.changed").count();
+    if grant > 0 {
+        out.push(format!("grant changes: {grant}"));
+    }
+    out.push("decide with `hale dna review <id> approve|revise|reject`; `hale dna review <id>` renders one".into());
+    Ok(out)
+}
+
+/// `hale dna report`: a report from the record since the last one —
+/// what was proposed, decided, applied, retained, rolled back, by whom,
+/// what the models cost, what pressure was raised — appended as
+/// `report.filed` in the name of whoever asked.
+fn file_report(args: &[String]) -> Result<Vec<String>, String> {
+    let dir = args.first().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let (root, _) = project(&dir)?;
+    let rows = read_journal(&root)?;
+    let since = rows.iter().rev().find(|r| r.kind == "report.filed").map(|r| r.seq as usize + 1).unwrap_or(0);
+    let window: Vec<&Row> = rows.iter().skip(since).collect();
+    let count = |k: &str| window.iter().filter(|r| r.kind == k).count();
+    let settled: Vec<String> = window.iter().filter(|r| r.kind == "review.settled").map(|r| format!("{} {}", r.entity, r.body)).collect();
+    let cost: i64 = window
+        .iter()
+        .filter(|r| r.kind == "model.called")
+        .filter_map(|r| serde_json::from_str::<Value>(&r.body).ok())
+        .filter_map(|b| b["cost_micros"].as_i64())
+        .sum();
+    let body = format!(
+        "since #{since}: proposed {} · reviewed {} · applied {} · retained {} · rolled back {} · rejected {} · escalated {} · pressure {} · proposals {} · model calls {} ({} µ$) · settled: {}",
+        count("mutation.proposed"),
+        count("review.requested"),
+        count("mutation.applied"),
+        count("mutation.retained"),
+        count("mutation.rolled_back"),
+        count("mutation.rejected"),
+        window.iter().filter(|r| r.kind == "review.requested" && r.body.contains("\"required_authority\": \"board\"")).count(),
+        count("pressure.raised"),
+        count("appendage.proposed"),
+        count("model.called"),
+        cost,
+        if settled.is_empty() { "none".to_string() } else { settled.join(", ") }
+    );
+    let id = format!("r{}", rows.len());
+    append_journal(&root, "report.filed", &id, &body)?;
+    let _ = sync_record(&root);
+    Ok(vec![format!("report {id} filed: {body}")])
+}
+
+/// `hale dna pressure [raise <source> <what…>]`: what pressure the record
+/// holds, or one signal published on the membrane (an operator's, or a
+/// metrics relay's).
+fn pressure(args: &[String]) -> Result<Vec<String>, String> {
+    let (root, _) = project(Path::new("."))?;
+    if args.first().map(|a| a == "raise").unwrap_or(false) {
+        let source = args.get(1).cloned().ok_or("pressure raise needs a <source> and what")?;
+        let what = args[2..].join(" ");
+        if what.is_empty() {
+            return Err("pressure raise needs a <source> and what".into());
+        }
+        if !membrane_up(&root) {
+            return Err("the organization is not running here (no membrane); pressure is a live signal".into());
+        }
+        let body = serde_json::json!({"source": source, "what": what, "count": 1}).to_string();
+        publish_on_membrane(&root, "pressure", &body)?;
+        return Ok(vec![format!("pressure raised on {source}: {what}")]);
+    }
+    let rows = read_journal(&root)?;
+    let raised: Vec<&Row> = rows.iter().filter(|r| r.kind == "pressure.raised").collect();
+    let mut out = vec![format!("pressure: {} signal(s) raised", raised.len())];
+    for r in raised.iter().rev().take(10) {
+        out.push(format!("  {:>5}  {}  {}", r.seq, r.entity, r.body));
+    }
+    for r in rows.iter().filter(|r| r.kind == "appendage.proposed" || r.kind == "appendage.candidate" || r.kind == "pressure.remeasured") {
+        out.push(format!("  {:>5}  {:<20} {}  {}", r.seq, r.kind, r.entity, r.body));
+    }
+    Ok(out)
+}
+
 /// Re-project the Journal into `status.json` (atomically: write beside,
 /// rename over) when it changed.
 fn write_status(root: &Path, path: &Path) {
@@ -1086,7 +1301,7 @@ fn status_projection(root: &Path) -> Result<Value, String> {
                 let mut v = serde_json::json!({"id": id, "state": "pending", "question": b["question"], "required_authority": b["required_authority"], "subject_digest": b["subject_digest"], "refusals": []});
                 // a mutation's Review carries what a reviewer renders (GH #529 D4)
                 if b["mutation_id"].is_string() {
-                    for k in ["mutation_id", "change_class", "disposition", "base_commit", "candidate_commit", "candidate_shape", "evidence", "magnitude", "diff_text", "diff_json", "author"] {
+                    for k in ["mutation_id", "change_class", "seed", "disposition", "base_commit", "candidate_commit", "candidate_shape", "evidence", "magnitude", "diff_text", "diff_json", "author"] {
                         v[k] = b[k].clone();
                     }
                 }
@@ -1355,13 +1570,15 @@ fn publish_on_membrane(root: &Path, kind: &str, body: &str) -> Result<(), String
     fs::write(
         &conf,
         format!(
-            "dna.review.verdict = unix://{}/{} : connect\ndna.intent.offered = unix://{}/{} : connect\ndna.expression.observed = unix://{}/{} : connect\n",
+            "dna.review.verdict = unix://{}/{} : connect\ndna.intent.offered = unix://{}/{} : connect\ndna.expression.observed = unix://{}/{} : connect\ndna.pressure.raised = unix://{}/{} : connect\n",
             dna_dir.display(),
             crate::iris::MEMBRANE_VERDICT_SOCK,
             dna_dir.display(),
             crate::iris::MEMBRANE_INTENT_SOCK,
             dna_dir.display(),
-            crate::iris::MEMBRANE_OBSERVED_SOCK
+            crate::iris::MEMBRANE_OBSERVED_SOCK,
+            dna_dir.display(),
+            crate::iris::MEMBRANE_PRESSURE_SOCK
         ),
     )
     .map_err(|e| e.to_string())?;
@@ -1881,6 +2098,7 @@ main locus Org {{
         dna::ReviewVerdict: unix("{verdict}", role: listen);
         dna::IntentOffered: unix("{intent}", role: listen);
         dna::ExpressionObserved: unix("{observed}", role: listen);
+        dna::PressureRaised: unix("{pressure}", role: listen);
     }}
     run() {{
         if std::env::var_exists("HALE_DNA_ONESHOT") {{ return; }}
@@ -1895,6 +2113,7 @@ fn main() {{
         verdict = VERDICT_SOCK_REL,
         intent = INTENT_SOCK_REL,
         observed = OBSERVED_SOCK_REL,
+        pressure = PRESSURE_SOCK_REL,
     )
 }
 

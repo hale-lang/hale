@@ -126,3 +126,46 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   not answered: expressing an application deployed elsewhere is a
   deployment gateway's job.
 
+## The organization evolves
+
+A change of class `organization` edits the organization's own seed
+(`Mutation.seed`, `dna/org`), through the same pipeline as a change
+to the application: a worktree, the editing position confined to that
+seed, verification of that seed (its own base artifact cut at the same
+moment), the semantic diff of the organization (positions are loci,
+routes are subscriptions and publications, capabilities are effect
+classes), a Review that is the Board's. Applying it restarts the
+organization (the restart request names the seed; the host answers
+one for `dna/org` by rebuilding and restarting the organization
+itself, which records `expression.restarted` at birth); the window
+then judges the new organization.
+
+Growth is initiative, not reflex: when one source raises pressure
+`appendage_threshold` times, the assembly journals
+`appendage.proposed` and — with `initiative` on — proposes a growth
+Mutation of the organization's seed (`appendage.candidate` names
+it). Nothing is grown until the Board approves the candidate commit.
+
+`hale dna board` is the Board's queue: the Reviews only it can settle,
+the proposals, the last report. `hale dna report` appends
+`report.filed`, in the name of whoever asked, summarizing the record
+since the previous report (proposed, reviewed, applied, retained,
+rolled back, rejected, escalated, pressure, proposals, model calls and
+cost, settlements). `hale dna pressure` lists the pressure raised and
+answered; `hale dna pressure raise <source> <what>` publishes one
+signal on the membrane's fourth topic, `PressureRaised`
+(`dna.pressure.raised`).
+
+## The editing position
+
+`SourceEditor.perform` plans the files an objective is about — every
+listed file the objective names, else the quick tier's plan from the
+listing, one file per line; only a listed file is ever a target —
+edits each (one model call per file, the request naming the file as
+`target`), formats and checks the seed, and, when the check fails,
+tries again with the diagnostics in the prompt, up to `max_tries`
+in all (default 3). Each try is an attempt id (`<work>/a<n>`), so
+every try's model calls are evidence in the record. The result names
+the files changed and the tries taken; a proposal that does not check
+within the bound is a failed Attempt with the last diagnostics.
+

@@ -183,7 +183,7 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     let (ok10, after) = hale(&["check", "."], &app);
     let (ok11, tests_after) = hale(&["test", "."], &app);
 
-    let kinds: Vec<String> = rows.iter().map(|(k, e, b)| format!("{k} {e} {}", &b[..b.len().min(70)])).collect();
+    let kinds: Vec<String> = rows.iter().map(|(k, e, b)| format!("{k} {e} {}", b.chars().take(70).collect::<String>())).collect();
     let dump = kinds.join("\n");
     assert!(asked, "3: {ask}");
     assert!(has(&rows, "intent.offered", "i1") || rows.iter().any(|(k, _, _)| k == "intent.offered"), "4: {dump}");

@@ -23,6 +23,9 @@ main locus App {
         root: String = "";
         editor: dna::SourceEditor = dna::SourceEditor { };
         breaker: dna::SourceEditor = dna::SourceEditor { };
+        multi: dna::SourceEditor = dna::SourceEditor { };
+        retrier: dna::SourceEditor = dna::SourceEditor { };
+        bounded: dna::SourceEditor = dna::SourceEditor { };
     }
     run() {
         let root = "/tmp/dna-edit-" + to_string(std::process::pid());
@@ -74,6 +77,63 @@ main locus App {
         std::test::assert(std::str::contains(bad.evidence, "fmt=0 check=1"), "check failed in evidence: " + bad.evidence);
         std::test::assert(std::str::contains(bad.narrative, "type error"), "diagnostics travel with the attempt: " + bad.narrative);
         std::test::assert_eq_int(self.editor.attempts, 3, "three attempts on the first editor");
+
+        // ---- several files from one ask (GH #566 F3) -----------------------
+        let root2 = "/tmp/dna-edit2-" + to_string(std::process::pid());
+        std::io::fs::mkdir(root2) or discard;
+        std::io::fs::mkdir(root2 + "/answers") or discard;
+        std::io::fs::write_file(root2 + "/main.hl", "fn main() { println(add(1, 2)); }\n") or discard;
+        std::io::fs::write_file(root2 + "/util.hl", "fn add(a: Int, b: Int) -> Int { return a + b; }\n") or discard;
+        std::io::fs::write_file(root2 + "/answers/main.hl", "// prints a sum\nfn main() { println(add(1, 2)); }\n") or discard;
+        std::io::fs::write_file(root2 + "/answers/util.hl", "// adds\nfn add(a: Int, b: Int) -> Int { return a + b; }\n") or discard;
+        self.multi = dna::SourceEditor {
+            name: "editor",
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answers_dir: root2 + "/answers" },
+                deep: dna::FakeModel { name: "deep", answer: "readability +" }
+            },
+            tools: dna::WorktreeTools { root: root2, hale_bin: toolchain() }
+        };
+        let both = self.multi.perform(dna::WorkRequest { work_id: "w5", objective: "document main.hl and util.hl", data_class: "internal" });
+        std::test::assert_eq_str(both.disposition, "done", "two files from one ask: " + both.narrative);
+        std::test::assert_eq_str(std::json::find_string_field(both.result, "files_changed"), "main.hl util.hl", "both files named");
+        std::test::assert(std::str::contains(both.evidence, "tries=1"), both.evidence);
+        std::test::assert(std::str::contains(std::io::fs::read_file(root2 + "/util.hl") or "", "// adds"), "util.hl edited");
+        std::test::assert(std::str::contains(std::io::fs::read_file(root2 + "/main.hl") or "", "// prints a sum"), "main.hl edited");
+        std::test::assert_eq_int(self.multi.tools.edits, 2, "two edits");
+
+        // ---- a proposal that fails check twice and passes on the third try
+        let root3 = "/tmp/dna-edit3-" + to_string(std::process::pid());
+        std::io::fs::mkdir(root3) or discard;
+        std::io::fs::mkdir(root3 + "/answers") or discard;
+        std::io::fs::write_file(root3 + "/main.hl", "fn main() { println(\"v1\"); }\n") or discard;
+        std::io::fs::write_file(root3 + "/answers/main.hl@a0", "fn main() { let x: Int = \"no\"; }\n") or discard;
+        std::io::fs::write_file(root3 + "/answers/main.hl@a1", "fn main() { let y: Bool = 1; }\n") or discard;
+        std::io::fs::write_file(root3 + "/answers/main.hl@a2", "fn main() { println(\"v2\"); }\n") or discard;
+        self.retrier = dna::SourceEditor {
+            name: "editor",
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answers_dir: root3 + "/answers" },
+                deep: dna::FakeModel { name: "deep", answer: "startup_prints +" }
+            },
+            tools: dna::WorktreeTools { root: root3, hale_bin: toolchain() }
+        };
+        let third = self.retrier.perform(dna::WorkRequest { work_id: "w6", objective: "print v2 instead of v1", target: "main.hl", data_class: "internal" });
+        std::test::assert_eq_str(third.disposition, "done", "passes on the third try: " + third.narrative);
+        std::test::assert(std::str::contains(third.evidence, "tries=3"), third.evidence);
+        std::test::assert(std::str::contains(third.narrative, "after 3 try(ies)"), third.narrative);
+        std::test::assert_eq_int(self.retrier.models.calls, 4, "three edits and one assessment");
+        std::test::assert(std::str::contains(std::io::fs::read_file(root3 + "/main.hl") or "", "v2"), "the third answer stands");
+        // the fourth would be one too many: the bound holds
+        self.bounded = dna::SourceEditor {
+            name: "editor", max_tries: 2,
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answers_dir: root3 + "/answers" }, deep: dna::FakeModel { name: "deep", answer: "x" } },
+            tools: dna::WorktreeTools { root: root3, hale_bin: toolchain() }
+        };
+        std::io::fs::write_file(root3 + "/main.hl", "fn main() { println(\"v1\"); }\n") or discard;
+        let gave_up = self.bounded.perform(dna::WorkRequest { work_id: "w7", objective: "print v2", target: "main.hl", data_class: "internal" });
+        std::test::assert_eq_str(gave_up.disposition, "failed", "two tries were not enough, and it says so");
+        std::test::assert(std::str::contains(gave_up.evidence, "tries=2"), gave_up.evidence);
     }
 }
 fn main() { App { }; }

@@ -18,6 +18,7 @@ type ModelRequest {
     context_bytes: Int = 0;
     knowledge_bindings: String = ""; // ids the context came from, for the evidence
     tool_grant: String = "";
+    target: String = ""; // the file the request is about, when it is about one (GH #566 F3)
     retry_of: String = "";
     data_class: String = "internal";
     needs_tools: Bool = false;
@@ -78,6 +79,11 @@ locus FakeModel {
         answer: String = "";
         answer_file: String = ""; // when set, `answer` is read from this file at birth
         answer_role: String = ""; // when set, the scripted answer applies to this role only
+        // A directory of scripted answers by target (GH #566 F3): for a
+        // request about `main.hl` on attempt `…/a2`, `<dir>/main.hl@a2`
+        // if present, else `<dir>/main.hl`. Tests script a multi-file
+        // change and a retry with it.
+        answers_dir: String = "";
         calls: Int = 0;
     }
     // A fake leaves the same evidence a hosted call does (GH #529 D7):
@@ -91,6 +97,16 @@ locus FakeModel {
     fn model_name() -> String { return self.model; }
     fn allows(data_class: String) -> Bool { return data_class != "customer"; }
     fn capacity_bytes() -> Int { return self.max_bytes; }
+    // The scripted answer for a request about a file, by try then by file.
+    fn scripted_for(req: ModelRequest) -> String {
+        if len(self.answers_dir) == 0 || len(req.target) == 0 || req.role != "edit" { return ""; }
+        let a = std::str::index_of(req.attempt_id, "/a");
+        if a >= 0 {
+            let by_try = std::io::fs::read_file(self.answers_dir + "/" + req.target + "@" + req.attempt_id[(a + 1)..len(req.attempt_id)]) or "";
+            if len(by_try) > 0 { return by_try; }
+        }
+        return std::io::fs::read_file(self.answers_dir + "/" + req.target) or "";
+    }
     @effects(is: { external_model })
     fn complete(req: ModelRequest) -> ModelResult {
         self.calls = self.calls + 1;
@@ -107,7 +123,10 @@ locus FakeModel {
             ModelCalled <- ev;
             return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused };
         }
-        let r = if len(self.answer) > 0 && (self.answer_role == "" || self.answer_role == req.role) {
+        let scripted = self.scripted_for(req);
+        let r = if len(scripted) > 0 {
+            ModelResult { ok: true, backend: self.name, model: self.model, output: scripted, tokens: len(scripted) / 4, cost_micros: self.price_micros }
+        } else if len(self.answer) > 0 && (self.answer_role == "" || self.answer_role == req.role) {
             ModelResult { ok: true, backend: self.name, model: self.model, output: self.answer, tokens: len(self.answer) / 4, cost_micros: self.price_micros }
         } else {
             fake_answer(self.name, self.model, req, self.max_bytes, self.price_micros)

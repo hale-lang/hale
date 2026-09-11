@@ -40,6 +40,7 @@ type ReviewRequest {
     // receipts (by digest) and the evidence line
     mutation_id: String = "";
     change_class: String = "";
+    seed: String = ""; // the seed the change edits ("" = the genome's)
     disposition: String = "";
     base_commit: String = "";
     diff_text: String = "";

@@ -149,9 +149,10 @@ locus HaleVerification {
         last: VerificationReport = VerificationReport { };
     }
     birth() { self.hale_bin = resolve_toolchain(self.hale_bin); }
-    fn seed_in(wt: String) -> String {
-        if self.seed == "." || self.seed == "" { return wt; }
-        return wt + "/" + self.seed;
+    fn seed_in(wt: String) -> String { return self.seed_of(wt, self.seed); }
+    fn seed_of(wt: String, seed: String) -> String {
+        if seed == "." || seed == "" { return wt; }
+        return wt + "/" + seed;
     }
     // One step's receipt: the output content-addressed on disk, the
     // event on the candidate. Returns the exit code. (Per-run
@@ -191,13 +192,16 @@ locus HaleVerification {
     fn verify(j: Journal, m: Mutation, base_topology: String) -> VerificationReport {
         self.runs = self.runs + 1;
         std::io::fs::mkdir(self.scratch) or discard;
-        let wt = self.seed_in(m.worktree);
+        // the seed the mutation edits (GH #566 F3): the genome's, or the
+        // organization's own
+        let seed = if len(m.seed) > 0 { m.seed } else { self.seed };
+        let wt = self.seed_of(m.worktree, seed);
         let cand = m.candidate_commit;
         let topo = self.scratch + "/" + m.id + ".candidate.topology.json";
         let mut base = base_topology;
         if len(base) == 0 {
             base = self.scratch + "/" + m.id + ".base.topology.json";
-            let cut = self.record(j, cand, m.id, "base", run_tool(self.hale_bin + "\ncheck\n" + self.seed_in(self.repo) + "\n--dump-topology=" + base));
+            let cut = self.record(j, cand, m.id, "base", run_tool(self.hale_bin + "\ncheck\n" + self.seed_of(self.repo, seed) + "\n--dump-topology=" + base));
         }
         let fmt = self.record(j, cand, m.id, "fmt", run_tool(self.hale_bin + "\nfmt\n--check\n" + wt));
         let check = self.record(j, cand, m.id, "check", run_tool(self.hale_bin + "\ncheck\n" + wt + "\n--json\n--dump-topology=" + topo));

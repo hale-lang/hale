@@ -144,6 +144,8 @@ locus Dna {
         verification: HaleVerification = HaleVerification { };
         editor: SourceEditor = SourceEditor { };
         genome_seed: String = "."; // the genome's seed, relative to the repository
+        org_seed: String = "dna/org"; // the organization's own seed (GH #566 F3): what an `organization` change edits
+        initiative: Bool = true; // persistent pressure becomes a growth Mutation, not only a note
         baseline: String = ""; // the diff's base artifact; "" = cut from the genome's seed per mutation
         asked: Int = 0;
         last_task: String = "";
@@ -325,8 +327,10 @@ locus Dna {
         if r.replayed { return "applied (replayed)"; }
         self.applied = self.applied + 1;
         self.restarts_requested = self.restarts_requested + 1;
-        let fitness = std::json::find_string_field(self.request_of(mutation_id), "fitness_signals");
-        let x = self.journal.append(self.journal.revision(), "expression.restart_requested", mutation_id, "apply " + candidate + " fitness " + fitness);
+        let req = self.request_of(mutation_id);
+        let fitness = std::json::find_string_field(req, "fitness_signals");
+        let seed = std::json::find_string_field(req, "seed");
+        let x = self.journal.append(self.journal.revision(), "expression.restart_requested", mutation_id, "apply " + candidate + " seed " + seed + " fitness " + fitness);
         self.membrane.notify("restart", mutation_id + " applied as " + candidate + "; rebuild and restart requested");
         return "applied";
     }
@@ -345,7 +349,7 @@ locus Dna {
             return;
         }
         self.restarts_requested = self.restarts_requested + 1;
-        let y = self.journal.append(self.journal.revision(), "expression.restart_requested", mutation_id, "rollback " + base + " after " + why);
+        let y = self.journal.append(self.journal.revision(), "expression.restart_requested", mutation_id, "rollback " + base + " seed " + std::json::find_string_field(req, "seed") + " after " + why);
         self.membrane.notify("restart", mutation_id + " rolled back to " + base + " after " + why);
     }
     @unbounded
@@ -462,8 +466,16 @@ locus Dna {
         let x = self.journal.append(self.journal.revision(), "pressure.raised", p.source, p.what + " x" + to_string(seen));
         if seen >= self.appendage_threshold && !proposed {
             let y = self.journal.append(self.journal.revision(), "appendage.proposed", p.source,
-                "an organ for `" + p.what + "` is proposed, not created: pressure raised " + to_string(seen) + " times; ask for it as intent and it is a Mutation under review");
+                "an organ for `" + p.what + "` is proposed, not created: pressure raised " + to_string(seen) + " times");
             self.membrane.notify("appendage", p.source + ": " + p.what + " persists; an organ is proposed, not grown");
+            // GH #566 F3: initiative — the proposal is a candidate commit to
+            // the organization's own seed, verified like any change and
+            // the Board's to decide (an `organization` change always is)
+            if self.initiative {
+                let out = self.mutate("pressure:" + p.source, "organization",
+                    "grow a position in main.hl for `" + p.what + "` (pressure from " + p.source + ")", "", std::time::now());
+                let z = self.journal.append(self.journal.revision(), "appendage.candidate", p.source, out);
+            }
         }
     }
     // Intent enters through the membrane and births a durable Task;
@@ -524,19 +536,26 @@ locus Dna {
     // inside it, commit the candidate, verify it with receipts, and put
     // it under a blocking Review pinned to the exact candidate commit.
     // Returns "<id>: review" or "<id>: failed: <why>".
+    // Which seed a change class edits: the organization's own for an
+    // `organization` change, the genome's for the rest.
+    fn seed_for(change_class: String) -> String {
+        if change_class == "organization" { return self.org_seed; }
+        return self.genome_seed;
+    }
     @unbounded
     fn mutate(task_id: String, change_class: String, objective: String, target: String, now: Int) -> String {
         self.mutations_minted = self.mutations_minted + 1;
         let id = "m" + to_string(self.mutations_minted);
         self.last_mutation = id;
+        let seed = self.seed_for(change_class);
         let base = self.gateway.head();
         let x0 = self.journal.append(self.journal.revision(), "mutation.proposed", id, "task " + task_id + " " + change_class + ": " + objective + " (" + target + ") at " + base);
         let lease = self.gateway.take(id, "dna", now);
         let opened = self.gateway.open(self.journal, id, base, lease.token, now);
         if !opened.ok { return self.mutation_failed(id, "worktree: " + opened.refused); }
         let wt = opened.value;
-        // the grant is the genome's seed inside THIS worktree
-        self.editor.confine(if self.genome_seed == "." || self.genome_seed == "" { wt } else { wt + "/" + self.genome_seed });
+        // the grant is the seed this change edits, inside THIS worktree
+        self.editor.confine(if seed == "." || seed == "" { wt } else { wt + "/" + seed });
         let mut file = target;
         if len(file) == 0 {
             // step 5: the Attempt inspects the listing under its grant
@@ -559,7 +578,7 @@ locus Dna {
         let m = Mutation {
             id: id, task_id: task_id, base_commit: base, worktree: wt,
             candidate_commit: committed.value, candidate_digest: committed.value,
-            change_class: change_class, rationale: objective,
+            change_class: change_class, seed: seed, rationale: objective,
             fitness_signals: std::json::find_string_field(r.result, "fitness_signals"),
             disposition: "proposed"
         };
@@ -612,6 +631,7 @@ locus Dna {
         b.string_field("mutation_id", m.id);
         b.string_field("task_id", m.task_id);
         b.string_field("change_class", m.change_class);
+        b.string_field("seed", m.seed);
         b.string_field("disposition", name);
         b.string_field("base_commit", m.base_commit);
         b.string_field("candidate_commit", m.candidate_commit);
@@ -627,7 +647,7 @@ locus Dna {
         self.membrane.notify("review", authority + " needed for " + m.id + " (" + name + "): " + m.candidate_commit);
         ReviewRequested <- ReviewRequest {
             review_id: m.id, question: question, subject_digest: m.candidate_commit, required_authority: authority,
-            mutation_id: m.id, change_class: m.change_class, disposition: name, base_commit: m.base_commit,
+            mutation_id: m.id, change_class: m.change_class, seed: m.seed, disposition: name, base_commit: m.base_commit,
             diff_text: r.diff_text, evidence: r.steps, magnitude: magnitude_json(r.magnitude)
         };
         return if post { "release" } else { "review" };
