@@ -1,0 +1,172 @@
+// dna/tests/knowledge_context_test.hl — GH #583 K2: knowledge changes
+// later work, and concerns become proposals.
+//
+// A fake knowledge service in this same program answers the package
+// for a target. One Dna over a real repository runs a Mutation: its
+// owner asks the service for the target's package, journals
+// `knowledge.consulted`, folds the ratified practice into the
+// objective the editor gets, and names the package on the request —
+// so the editor's `model.called` rows carry the package's digest and
+// the practice's id, while the editor itself holds no line to the
+// service. A concern raised three times from one source becomes a
+// knowledge proposal by that source, bound to its parent (a concern
+// by the tower rule), for the Board; a source with no parent is
+// refused, saying so.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
+
+const BASE: String = "type Ping { n: Int = 0; }\ntopic Pings { payload: Ping; subject: \"t.pings\"; }\nlocus A { params { seen: Int = 0; } bus { subscribe Pings as on_ping; } fn on_ping(p: Ping) { self.seen = self.seen + 1; } }\nmain locus App { params { a: A = A { }; } bus { publish Pings; } run() { Pings <- Ping { n: 1 }; } }\nfn main() { App { }; }\n";
+const CANDIDATE: String = "// the pings, counted\ntype Ping { n: Int = 0; }\ntopic Pings { payload: Ping; subject: \"t.pings\"; }\nlocus A { params { seen: Int = 0; } bus { subscribe Pings as on_ping; } fn on_ping(p: Ping) { self.seen = self.seen + 1; } }\nmain locus App { params { a: A = A { }; } bus { publish Pings; } run() { Pings <- Ping { n: 1 }; } }\nfn main() { App { }; }\n";
+
+// The service, as the organization sees it: one practice ratified for
+// org/app (and so for everything under it), nothing for anyone else.
+locus FakeKnowledge {
+    params { asked: Int = 0; }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        self.asked = self.asked + 1;
+        if !std::str::starts_with(req.path, "/context") { return std::http::Response { status: 404, body: "no" }; }
+        let under_app = std::str::contains(req.path, "target=org%2Fapp");
+        if !under_app {
+            return std::http::Response { status: 200, content_type: "application/json", body: "{\"target\": \"other\", \"revision\": 7, \"digest\": \"sha256:empty\", \"included\": \"\", \"included_n\": 0, \"ideas\": []}" };
+        }
+        return std::http::Response {
+            status: 200, content_type: "application/json",
+            body: "{\"target\": \"org/app\", \"revision\": 7, \"digest\": \"sha256:pkg7\", \"included\": \"sha256:idea1\", \"included_n\": 1, \"ideas\": [{\"id\": \"sha256:idea1\", \"kind\": \"practice\", \"text\": \"keep every comment a full sentence\", \"author\": \"org\", \"ratified_seq\": 5}]}"
+        };
+    }
+}
+
+main locus App {
+    params {
+        srv: std::http::Server = std::http::Server { port: 47393, handler: FakeKnowledge { } };
+        dna: dna::Dna = dna::Dna { };
+        client: dna::KnowledgeClient = dna::KnowledgeClient { url: "http://127.0.0.1:47393" };
+        blind: dna::KnowledgeClient = dna::KnowledgeClient { };
+    }
+    placement { srv: cooperative(pool = io); }
+    bus { publish dna::ConcernRaised; }
+    @unbounded
+    fn rows(kind: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.dna.journal.revision() {
+            if self.dna.journal.read(i).kind == kind { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn last(kind: String, entity: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.dna.journal.revision() {
+            let e = self.dna.journal.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    run() {
+        std::time::sleep(200ms);
+        // ---- the client alone
+        let p = self.client.package_for("org/app/main");
+        std::test::assert_eq_int(p.included_n, 1, "one idea for a path under the app: " + p.error);
+        std::test::assert_eq_str(p.digest, "sha256:pkg7", "the service's digest");
+        std::test::assert_eq_int(p.revision, 7, "the service's revision");
+        std::test::assert_eq_str(p.text, "- practice: keep every comment a full sentence (org)\n", "rendered for an objective");
+        std::test::assert(std::str::contains(dna::objective_with("document it", p), "PRACTICES (ratified knowledge for org/app/main, package sha256:pkg7):\n- practice: keep every comment"), "folded into the objective");
+        std::test::assert_eq_str(dna::bindings_of(p), "package:sha256:pkg7 sha256:idea1", "what the evidence names");
+        let none = self.client.package_for("org/other");
+        std::test::assert(none.included_n == 0 && dna::objective_with("x", none) == "x" && dna::bindings_of(none) == "", "nothing for another wing, the objective untouched");
+        let off = self.blind.package_for("org/app");
+        std::test::assert(!self.blind.ready() && off.included_n == 0 && off.error == "no knowledge service", "no service: an empty package that says so");
+        std::test::assert_eq_str(dna::knowledge_target("application", "app", "."), "org/app", "an application's path");
+        std::test::assert_eq_str(dna::knowledge_target("application", "app", "api"), "org/app/api", "a seed inside it");
+        std::test::assert_eq_str(dna::knowledge_target("organization", "app", "dna/org"), "org", "the organization's own");
+        std::test::assert_eq_str(dna::parent_path("org/app/echo"), "org/app", "a parent");
+        std::test::assert_eq_str(dna::parent_path("root"), "", "a root has none");
+
+        // ---- the genome and its organization, with the client
+        let repo = "/tmp/dna-ctx-" + to_string(std::process::pid());
+        std::io::fs::mkdir(repo) or discard;
+        std::io::fs::mkdir(repo + "/.hale") or discard;
+        std::io::fs::mkdir(repo + "/.hale/dna") or discard;
+        std::io::fs::write_file(repo + "/main.hl", BASE) or discard;
+        std::io::fs::write_file(repo + "/.gitignore", "/.hale/\n") or discard;
+        let init = sh("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        let add = sh("git\n-C\n" + repo + "\nadd\n-A");
+        let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
+        let cut = sh(toolchain() + "\ncheck\n" + repo + "\n--dump-topology=" + repo + "/.hale/dna/baseline.topology");
+        std::test::assert_eq_int(cut.code, 0, "baseline: " + cut.stderr);
+        self.dna = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees", base_exec_digest: "exec:base" },
+                repo: dna::LocalGit { repo: repo }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            editor: dna::SourceEditor {
+                name: "editor",
+                models: dna::ModelRouter {
+                    quick: dna::FakeModel { name: "quick", answer: CANDIDATE },
+                    deep: dna::FakeModel { name: "deep", answer: "docs_coverage +" }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            knowledge_client: dna::KnowledgeClient { url: "http://127.0.0.1:47393" },
+            membrane: dna::Board { who: "board" },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } }
+        };
+        let out = self.dna.mutate("t1", "docs", "document the pings", "main.hl", 1);
+        std::test::assert(std::str::contains(out, ": review"), "the mutation reaches its Review: " + out);
+        std::time::sleep(200ms);
+        // the owner consulted the service, and the record says what it got
+        let consulted = self.last("knowledge.consulted", "m1");
+        std::test::assert(std::str::contains(consulted, "\"target\": \"org/app\"") && std::str::contains(consulted, "\"digest\": \"sha256:pkg7\"") && std::str::contains(consulted, "\"included_n\": 1"), "consulted: " + consulted);
+        // the editor got the practice in its objective…
+        std::test::assert(std::str::contains(self.dna.editor.last.rationale, "PRACTICES (ratified knowledge for org/app, package sha256:pkg7)") && std::str::contains(self.dna.editor.last.rationale, "keep every comment a full sentence"), "the objective the editor got: " + self.dna.editor.last.rationale);
+        std::test::assert(std::str::starts_with(self.dna.editor.last.rationale, "document the pings"), "the objective first");
+        // …and its evidence names the package and the practice
+        let ev = self.last("model.called", "m1/a0");
+        std::test::assert(std::str::contains(ev, "\"knowledge_bindings\": \"package:sha256:pkg7 sha256:idea1\""), "the evidence names the package: " + ev);
+        std::test::assert(self.dna.knowledge_client.answered >= 1, "the owner's client answered");
+        std::test::assert_eq_int(self.dna.editor.attempts, 1, "one attempt");
+        // the record's objective is the asked one, not the folded one
+        std::test::assert(std::str::contains(self.last("mutation.proposed", "m1"), "docs: document the pings (main.hl)") && !std::str::contains(self.last("mutation.proposed", "m1"), "PRACTICES"), "the record keeps the ask");
+
+        // ---- concerns: three from one source become a proposal
+        let mut k = 0;
+        while k < 3 {
+            dna::ConcernRaised <- dna::Concern { source: "org/app/echo", what: "pings arrive twice under load", severity: 2 };
+            std::time::sleep(150ms);
+            k = k + 1;
+        }
+        std::test::assert_eq_int(self.rows("concern.raised"), 3, "three raised");
+        std::test::assert(std::str::contains(self.last("concern.raised", "org/app/echo"), "x3 severity 2"), self.last("concern.raised", "org/app/echo"));
+        std::test::assert_eq_int(self.rows("concern.proposed"), 1, "proposed once");
+        let proposed = self.last("knowledge.proposed", "");
+        std::test::assert(std::str::contains(proposed, "\"class\": \"concern\"") && std::str::contains(proposed, "\"author\": \"org/app/echo\"") && std::str::contains(proposed, "\"target\": \"org/app\""), "a concern by the tower rule, bound to the parent: " + proposed);
+        std::test::assert(std::str::contains(self.last("review.requested", ""), "\"required_authority\": \"board\"") && std::str::contains(self.last("review.requested", ""), "pings arrive twice under load"), "the Board's to ratify");
+        dna::ConcernRaised <- dna::Concern { source: "org/app/echo", what: "pings arrive twice under load", severity: 2 };
+        std::time::sleep(150ms);
+        std::test::assert_eq_int(self.rows("concern.proposed"), 1, "a fourth raise does not propose again");
+        // a root source has no parent to bind to
+        let mut r = 0;
+        while r < 3 {
+            dna::ConcernRaised <- dna::Concern { source: "root", what: "nowhere to bind", severity: 1 };
+            std::time::sleep(150ms);
+            r = r + 1;
+        }
+        std::test::assert(std::str::contains(self.last("knowledge.refused", "concern:root"), "has none"), "refused, saying so: " + self.last("knowledge.refused", "concern:root"));
+        let rm = sh("rm\n-rf\n" + repo);
+    }
+}
+
+fn main() { App { }; }

@@ -29,6 +29,8 @@ hale dna history [<entity>]  walk the record by causal links (offline)
 hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*)
 hale dna board [project]     the Board's queue: verdicts needed, escalations, proposals, reports
 hale dna report [project]    file a report from the record since the last one
+hale dna concern raise <source> <what…> [--severity N]
+                             a concern from a locus path about the part above it; three become a proposal
 hale dna pressure [raise <source> <what…>]
                              pressure raised and answered; `raise` publishes one signal
 hale dna github sync         mirror pending Reviews to pull requests, read reviews back as verdicts

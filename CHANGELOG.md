@@ -16,6 +16,12 @@ behavior.
 - `hale dna models`: the catalog probed — one line per backend with one small request to each that is permitted; the organization is not started and nothing is journaled.
 - `HostedModel` is `OpenAiChat` (`adapter: openai-chat`), named for what it speaks; `FakeModel { fail_after }` refuses after that many calls, for tests that fail an Attempt on cue.
 
+### DNA: knowledge changes later work; concerns become proposals (GH #583 K2)
+
+- `KnowledgeClient`: the substrate's line to the knowledge service (`url_env: "HALE_DNA_KNOWLEDGE_URL"` in the generated organization; the host sets it under `dev`). When a Mutation opens, the owner asks for the package of the change's target in the tower (`org`, `org/<child>`, `org/<child>/<seed>`), journals `knowledge.consulted`, folds the ratified ideas into the objective the editor receives (a `PRACTICES (…, package <digest>)` block; the record keeps the ask), and names the package on the request, so every model call of the attempt carries `knowledge_bindings: package:<digest> <id>…`. The editor never reaches the service: `group knowledge` in the generated law now names the client.
+- `ConcernRaised` is live: `hale dna concern raise <source> <what…> [--severity N]` publishes it on the membrane (a fifth socket), the substrate journals `concern.raised`, and three from one source become a knowledge proposal by that source bound to its parent — a concern by the tower rule — for the Board (`concern.proposed`); a source with no parent is refused.
+- Tests: `knowledge_context_test.hl` (a fake service; the consult, the folded objective, the evidence naming the package, no service is an empty package; concerns threshold, once, refused at a root), `dna_knowledge.rs` (under `dev`: an ask consults the service for `org/knowing` and finds the ratified practice; `concern raise` three times makes a Board Review).
+
 ### DNA: the knowledge graph as a service (GH #583 K1)
 
 - The record's half: `Dna.propose_knowledge(idea, target)` files the proposal's canonical document as a receipt, appends `knowledge.proposed <digest>` and births a Board Review pinned to the digest (`k:<12 hex>`); the tower rule classifies the binding (goal / concern / initiative) and refuses a lateral one. The Board's approval is one `knowledge.ratified <digest>` row, the authoritative event; anything else `knowledge.declined`. A pending knowledge Review is re-born at birth.

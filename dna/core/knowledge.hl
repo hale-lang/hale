@@ -39,6 +39,8 @@ type ContextPackage {
     included_n: Int = 0;
     omitted_n: Int = 0; // what this projection left out, stated
     data_class: String = "";
+    text: String = ""; // the ideas rendered, one per line, for an objective (GH #583 K2)
+    error: String = ""; // why the service could not answer, when it could not
 }
 
 fn is_ancestor(a: String, b: String) -> Bool {
@@ -176,4 +178,101 @@ fn knowledge_document(i: Idea, target: String) -> String {
 fn knowledge_review_id(digest: String) -> String {
     let d = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
     return "k:" + d[0..12];
+}
+
+// ---- the client (GH #583 K2) ------------------------------------------
+//
+// What a position's OWNER holds to ask the knowledge service for a
+// bounded package: never the editor, which the law keeps away from
+// knowledge (`editors_never_learn`). The owner folds the package into
+// the objective it hands down and names the package on the request, so
+// the editor's `model.called` rows carry its digest and bindings. The
+// URL comes from the environment by NAME (`url_env`; the host sets
+// HALE_DNA_KNOWLEDGE_URL under `dev`), read at birth. Without a service
+// the package is empty and says so; nothing waits on it.
+locus KnowledgeClient {
+    params {
+        url: String = "";
+        url_env: String = "";
+        budget: Int = 8;
+        asked: Int = 0;
+        answered: Int = 0;
+        last_error: String = "";
+    }
+    birth() {
+        if len(self.url_env) > 0 && std::env::var_exists(self.url_env) { self.url = std::env::var(self.url_env); }
+    }
+    fn ready() -> Bool { return len(self.url) > 0; }
+    // Called once per package request: bounded by the Mutations opened.
+    @unbounded
+    fn fetch_failed(e: std::http::HttpError) -> std::http::ClientResponse {
+        self.last_error = e.kind + " " + e.detail;
+        return std::http::ClientResponse { status: 0, body: b"" };
+    }
+    // The package for a locus path: the ids, the digest and the revision
+    // the service computed, and the ideas rendered for an objective.
+    @unbounded
+    fn package_for(target: String) -> ContextPackage {
+        if !self.ready() { return ContextPackage { target: target, error: "no knowledge service" }; }
+        self.asked = self.asked + 1;
+        self.last_error = "";
+        let resp = std::http::get(self.url + "/context?target=" + std::str::replace(target, "/", "%2F") + "&budget=" + to_string(self.budget)) or self.fetch_failed(err);
+        if resp.status != 200 {
+            if len(self.last_error) == 0 { self.last_error = "http " + to_string(resp.status); }
+            return ContextPackage { target: target, error: self.last_error };
+        }
+        let body = std::str::from_bytes(resp.body);
+        self.answered = self.answered + 1;
+        let out = std::str::builder_new();
+        let ideas = std::json::find_field_raw(body, "ideas");
+        if len(ideas) > 0 {
+            let mut it = std::json::array_first(ideas);
+            while !it.done {
+                std::str::builder_append(out, "- " + std::json::find_string_field(it.element, "kind") + ": " + std::json::find_string_field(it.element, "text") + " (" + std::json::find_string_field(it.element, "author") + ")\n");
+                it = std::json::array_next(it);
+            }
+        }
+        return ContextPackage {
+            target: target,
+            revision: std::json::find_int_field(body, "revision"),
+            digest: std::json::find_string_field(body, "digest"),
+            included: std::json::find_string_field(body, "included"),
+            included_n: std::json::find_int_field(body, "included_n"),
+            data_class: "internal",
+            text: std::str::builder_finish(out)
+        };
+    }
+}
+
+// The objective a position hands down, with the package folded in: the
+// practices the organization ratified for this target, named by the
+// package's digest so the receipt says what the model was given.
+fn objective_with(objective: String, p: ContextPackage) -> String {
+    if p.included_n == 0 { return objective; }
+    return objective + "\n\nPRACTICES (ratified knowledge for " + p.target + ", package " + p.digest + "):\n" + p.text;
+}
+
+// What the evidence names: the package, then the ids it included.
+fn bindings_of(p: ContextPackage) -> String {
+    if p.included_n == 0 { return ""; }
+    return "package:" + p.digest + " " + p.included;
+}
+
+// The locus path a change is about, in the tower: the organization's
+// own seed is `org`; an application is `org/<child>` and a seed inside
+// it `org/<child>/<seed>`. Knowledge bound to `org` reaches everything.
+fn knowledge_target(change_class: String, child: String, seed: String) -> String {
+    if change_class == "organization" { return "org"; }
+    if seed == "." || seed == "" { return "org/" + child; }
+    return "org/" + child + "/" + seed;
+}
+
+// The parent of a locus path, "" for a root: where a concern binds.
+fn parent_path(path: String) -> String {
+    let mut i = len(path);
+    while i > 0 {
+        if path[(i - 1)..i] == "/" { return path[0..(i - 1)]; }
+        i = i - 1;
+    }
+    return "";
 }

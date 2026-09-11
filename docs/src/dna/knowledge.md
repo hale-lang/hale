@@ -78,6 +78,49 @@ bound to its locus path or to any path above it (goals flow down;
 initiatives stay where they were made), capped by a budget, with a
 digest over the target, the store's revision and the ids — the thing
 a model call's evidence names. A sibling's package does not carry
-your wing's practice. What is not yet here — the bus surface for an
-application's observations, the package folded into the editor's
-objective, retrieval by similarity — is the rest of Track K.
+your wing's practice.
+
+## How it reaches the work
+
+The editor never talks to the service; the law says so
+(`editors_never_learn`). Its owner does. When a change opens, the
+substrate asks for the package of the change's place in the tower —
+`org` for the organization's own source, `org/<app>` for the
+application, `org/<app>/<seed>` for a seed inside it — writes
+`knowledge.consulted` in the record, and hands the editor the ask
+with the practices under it:
+
+```text
+document the Gateway locus in main.hl
+
+PRACTICES (ratified knowledge for org/trio, package sha256:4f7f…):
+- practice: retry a mail send once before raising pressure (org)
+```
+
+The record, the commit message and the Review keep the ask itself.
+Every model call of that attempt names the package it was given:
+
+```text
+   23  model.called   m1/a0   {…, "knowledge_bindings": "package:sha256:4f7f… sha256:8f17…", …}
+```
+
+So what was ratified today is in the prompt tomorrow, and the
+receipt says which package. With no service running, the package is
+empty and says so; nothing waits.
+
+## Concerns
+
+A **concern** is a child's signal about the part above it. An
+application raises one on the membrane, or you do:
+
+```text
+$ hale dna concern raise org/trio/worker mail backlog behind fulfilment --severity 2
+concern raised by org/trio/worker: mail backlog behind fulfilment
+```
+
+Each is `concern.raised` in the record. Three from one source and it
+becomes a proposal — by that source, bound to its parent, a concern
+by the tower rule — and lands in your queue for ratification. A
+source with no parent has nothing to bind to and is refused, saying
+so. What is not yet here — retrieval by similarity, the application
+publishing its own observations — is the rest of Track K.

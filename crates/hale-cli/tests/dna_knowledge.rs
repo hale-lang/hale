@@ -6,7 +6,10 @@
 //! the record: a proposal ratified by the Board becomes a context
 //! package for the position it binds to, with a digest and the record
 //! revision, over HTTP. `hale dna knowledge` runs the same service in
-//! the foreground and refuses without a DSN.
+//! the foreground and refuses without a DSN. K2: an ask makes the
+//! organization consult the service and fold the practice into the
+//! editor's objective (`knowledge.consulted`); three concerns from one
+//! path become a proposal bound to its parent, the Board's to ratify.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -37,6 +40,30 @@ fn body(resp: &str) -> String {
     resp.split("\r\n\r\n").nth(1).unwrap_or("").to_string()
 }
 
+fn journal(app: &Path) -> Vec<(String, String, String)> {
+    let out = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .map(|v| {
+            let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
+            (s("kind"), s("entity"), s("body"))
+        })
+        .collect()
+}
+
+fn wait_row(app: &Path, secs: u64, kind: &str, entity: &str) -> bool {
+    let dl = Instant::now() + Duration::from_secs(secs);
+    while Instant::now() < dl {
+        if journal(app).iter().any(|(k, e, _)| k == kind && e == entity) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    false
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
@@ -50,7 +77,10 @@ fn main() {
         verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, repo: "." },
         membrane: dna::Board { who: "board" }
     };
-    let d = core.propose_knowledge(dna::Idea { id: "p1", kind: "practice", text: "retry a mail send once before raising pressure", author: "org/leader" }, "org/leader/worker");
+    // the Board's practice for the application: `org` is the root, the
+    // application is `org/knowing`, so it is a goal that reaches every
+    // path under the application
+    let d = core.propose_knowledge(dna::Idea { id: "p1", kind: "practice", text: "retry a mail send once before raising pressure", author: "org" }, "org/knowing");
     println(d);
 }
 "#;
@@ -106,9 +136,12 @@ fn init_writes_compose_and_dev_runs_the_knowledge_service_that_tails_the_record(
     };
     let dl = Instant::now() + Duration::from_secs(120);
     let mut summary = String::new();
+    // the service comes up before the organization (its environment
+    // names the service), so wait for the membrane as well
+    let membrane = app.join(".hale/dna/hale-dna.review.verdict.sock");
     while Instant::now() < dl {
         let s = body(&http(kport, "GET / HTTP/1.0\r\nHost: x\r\n\r\n"));
-        if s.contains("\"store\": \"memory\"") && s.contains("\"ideas\": 1") {
+        if s.contains("\"store\": \"memory\"") && s.contains("\"ideas\": 1") && membrane.exists() {
             summary = s;
             break;
         }
@@ -125,7 +158,7 @@ fn init_writes_compose_and_dev_runs_the_knowledge_service_that_tails_the_record(
     }
     assert!(std::fs::read_to_string(app.join(".hale/dna/knowledge.dsn")).unwrap().trim() == "memory", "the host recorded the DSN it used");
     // proposed, not ratified: no package yet
-    let pkg = body(&http(kport, "GET /context?target=org/leader/worker/mailer&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
+    let pkg = body(&http(kport, "GET /context?target=org%2Fknowing%2Fmailer&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
     assert!(pkg.contains("\"included_n\": 0"), "nothing ratified yet: {pkg}");
     // the Board ratifies the exact digest
     let (ok, out) = hale(&["dna", "review", &format!("k:{}", &digest[7..19]), "approve", "--as", "riley", "--authority", "board", "--comment", "a good practice"], &app, &[]);
@@ -133,20 +166,45 @@ fn init_writes_compose_and_dev_runs_the_knowledge_service_that_tails_the_record(
     let dl = Instant::now() + Duration::from_secs(60);
     let mut pkg = String::new();
     while Instant::now() < dl {
-        pkg = body(&http(kport, "GET /context?target=org/leader/worker/mailer&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
+        pkg = body(&http(kport, "GET /context?target=org%2Fknowing%2Fmailer&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
         if pkg.contains("\"included_n\": 1") {
             break;
         }
         std::thread::sleep(Duration::from_millis(300));
     }
     let idea = body(&http(kport, &format!("GET /idea/{digest} HTTP/1.0\r\nHost: x\r\n\r\n")));
-    let sibling = body(&http(kport, "GET /context?target=org/leader/api&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
+    let sibling = body(&http(kport, "GET /context?target=org%2Fother&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
+
+    // ---- K2: knowledge changes later work. An ask on the application:
+    // the organization consults the service for org/knowing and folds the
+    // ratified practice into the editor's objective (the editor here has
+    // no key, so the attempt fails after — the consult is what is asserted)
+    let (ok, out) = hale(&["dna", "ask", "document", "the", "Echo", "locus", "in", "main.hl"], &app, &[]);
+    assert!(ok, "ask: {out}");
+    let consulted = wait_row(&app, 60, "knowledge.consulted", "m1");
+    // ---- K2: a concern raised three times from a path under the
+    // application becomes a proposal by that path, bound to its parent
+    for _ in 0..3 {
+        let (ok, out) = hale(&["dna", "concern", "raise", "org/knowing/echo", "pings", "arrive", "twice", "under", "load", "--severity", "2"], &app, &[]);
+        assert!(ok && out.contains("concern raised by org/knowing/echo"), "{out}");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let proposed = wait_row(&app, 60, "concern.proposed", "org/knowing/echo");
+    let rows = journal(&app);
+    let (ok, reviews) = hale(&["dna", "review"], &app, &[]);
     let log = std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default();
     stop(&mut host);
+    assert!(consulted, "the organization consulted the service for the ask:\n{}", rows.iter().map(|(k, e, b)| format!("{k} {e} {}", b.chars().take(120).collect::<String>())).collect::<Vec<_>>().join("\n"));
+    let c = rows.iter().find(|(k, e, _)| k == "knowledge.consulted" && e == "m1").unwrap();
+    assert!(c.2.contains("\"target\": \"org/knowing\"") && c.2.contains("\"included_n\": 1") && c.2.contains(&format!("\"included\": \"{digest}\"")), "the package for the application, with the ratified practice: {}", c.2);
+    assert!(proposed, "three concerns became a proposal");
+    let kp = rows.iter().filter(|(k, _, b)| k == "knowledge.proposed" && b.contains("\"class\": \"concern\"")).count();
+    assert_eq!(kp, 1, "one concern proposed, by the source, bound to org/knowing");
+    assert!(ok && reviews.contains("pings arrive twice under load") && reviews.contains("needs board"), "the concern's Review is the Board's:\n{reviews}");
     // the package: the ratified practice reaches the target's children,
     // with a digest and the revision, and the idea's text and author
     assert!(pkg.contains("\"included_n\": 1") && pkg.contains(&format!("\"included\": \"{digest}\"")) && pkg.contains("\"digest\": \"sha256:") && pkg.contains("\"revision\": "), "the package after ratification:\n{pkg}\n{log}");
-    assert!(pkg.contains("\"text\": \"retry a mail send once before raising pressure\"") && pkg.contains("\"author\": \"org/leader\""), "{pkg}");
+    assert!(pkg.contains("\"text\": \"retry a mail send once before raising pressure\"") && pkg.contains("\"author\": \"org\""), "{pkg}");
     assert!(idea.contains("\"accepted\": true") && idea.contains("\"provenance\": \"ratified\""), "{idea}");
     assert!(sibling.contains("\"included_n\": 0"), "a sibling position sees nothing: {sibling}");
     assert!(log.contains("knowledge service (pid") && log.contains("over an in-memory store"), "{log}");

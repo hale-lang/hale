@@ -147,6 +147,7 @@ locus SourceEditor {
         refused_outside: Int = 0; // files the harness changed outside the grant, left behind
         last_export: String = ""; // the last export's path (removed after the import)
         last_summary: String = ""; // the harness's one-line answer
+        bindings: String = ""; // the package the owner named on this attempt's request (GH #583 K2)
     }
     fn kind() -> String { return "agent"; }
     fn identity() -> String { return self.name; }
@@ -197,7 +198,7 @@ locus SourceEditor {
             attempt_id: "locate", role: "locate",
             prompt: "Which one of these files should change so that: " + objective + "\nAnswer with the file name only.",
             context: listing, context_bytes: len(listing) + len(objective),
-            tool_grant: self.grant(), data_class: "internal"
+            tool_grant: self.grant(), data_class: "internal", knowledge_bindings: self.bindings
         });
         if !pick.ok { return ""; }
         let name = trim_nl(pick.output);
@@ -227,7 +228,7 @@ locus SourceEditor {
             attempt_id: "plan", role: "plan",
             prompt: "Which of these files should change so that: " + objective + "\nAnswer with file names only, one per line.",
             context: listing, context_bytes: len(listing) + len(objective),
-            tool_grant: self.grant(), data_class: "internal"
+            tool_grant: self.grant(), data_class: "internal", knowledge_bindings: self.bindings
         });
         if !pick.ok { return ""; }
         let mut out = "";
@@ -254,7 +255,7 @@ locus SourceEditor {
         let edit = self.models.ask(ModelRequest {
             attempt_id: attempt, role: "edit", target: file,
             prompt: prompt, context: current, context_bytes: len(current) + len(prompt),
-            tool_grant: self.grant(), data_class: data_class,
+            tool_grant: self.grant(), data_class: data_class, knowledge_bindings: self.bindings,
             retry_of: if len(diagnostics) > 0 { attempt + ":edit" } else { "" }
         });
         if !edit.ok { return edit; }
@@ -335,7 +336,7 @@ locus SourceEditor {
         let r = self.models.ask(ModelRequest {
             attempt_id: attempt, role: "edit", prompt: prompt, context_bytes: len(prompt),
             workspace: dir, mask: self.repo + "\n" + self.worktree,
-            tool_grant: "harness @export", data_class: data_class,
+            tool_grant: "harness @export", data_class: data_class, knowledge_bindings: self.bindings,
             retry_of: if len(diagnostics) > 0 { attempt + ":edit" } else { "" }
         });
         if r.ok { self.last_summary = trim_nl(r.output); }
@@ -389,7 +390,7 @@ locus SourceEditor {
             attempt_id: attempt, role: "assess", assurance: 2,
             prompt: "Which fitness signals should this change move, and which way? One per line, nothing else: <signal> <+|->",
             context: "OBJECTIVE\n" + req.objective + "\n\nFILES AS EDITED\n" + changed, context_bytes: len(changed) + len(req.objective) + 64,
-            tool_grant: self.grant(), data_class: req.data_class, retry_of: attempt + ":edit"
+            tool_grant: self.grant(), data_class: req.data_class, knowledge_bindings: self.bindings, retry_of: attempt + ":edit"
         });
         let b = std::json::Builder { };
         b.begin_object();
@@ -424,6 +425,7 @@ locus SourceEditor {
     @unbounded
     fn perform(req: WorkRequest) -> WorkResult {
         self.attempts = self.attempts + 1;
+        self.bindings = req.knowledge_bindings;
         // a backend that works in place gets the whole objective and an
         // export (GH #583 M3); everything else is asked file by file
         if self.in_place(req.data_class) {
@@ -475,7 +477,7 @@ locus SourceEditor {
             attempt_id: attempt, role: "assess", assurance: 2,
             prompt: "Which fitness signals should this change move, and which way? One per line, nothing else: <signal> <+|->",
             context: "OBJECTIVE\n" + req.objective + "\n\nFILES AS EDITED\n" + changed, context_bytes: len(changed) + len(req.objective) + 64,
-            tool_grant: self.grant(), data_class: req.data_class, retry_of: attempt + ":edit"
+            tool_grant: self.grant(), data_class: req.data_class, knowledge_bindings: self.bindings, retry_of: attempt + ":edit"
         });
         let b = std::json::Builder { };
         b.begin_object();

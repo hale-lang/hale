@@ -12,6 +12,7 @@ const VERDICT_SOCK: String = "hale-dna.review.verdict.sock";
 const INTENT_SOCK: String = "hale-dna.intent.offered.sock";
 const OBSERVED_SOCK: String = "hale-dna.expression.observed.sock";
 const PRESSURE_SOCK: String = "hale-dna.pressure.raised.sock";
+const CONCERN_SOCK: String = "hale-dna.concern.raised.sock";
 
 // `git -C <repo> <args…>`; argv newline-separated.
 fn git(repo: String, args: String) -> dna::RunResult {
@@ -252,7 +253,8 @@ fn publish_on_membrane(root: String, kind: String, body: String) -> String {
     let text = "dna.review.verdict = unix://" + d + VERDICT_SOCK + " : connect\n"
         + "dna.intent.offered = unix://" + d + INTENT_SOCK + " : connect\n"
         + "dna.expression.observed = unix://" + d + OBSERVED_SOCK + " : connect\n"
-        + "dna.pressure.raised = unix://" + d + PRESSURE_SOCK + " : connect\n";
+        + "dna.pressure.raised = unix://" + d + PRESSURE_SOCK + " : connect\n"
+        + "dna.concern.raised = unix://" + d + CONCERN_SOCK + " : connect\n";
     let wrote = write_text(conf, text) or false;
     if !wrote { return "cannot write " + conf; }
     let r = dna::run_tool("env\nLOTUS_BUS_CONFIG=" + conf + "\n" + bin + "\n" + kind + "\n" + body);

@@ -70,7 +70,8 @@ Deleting it loses nothing the record holds.
 `expression.deployed`, `expression.restarted`, `expression.observed`,
 `expression.crashed`, `pressure.raised`, `pressure.remeasured`,
 `appendage.proposed`, `model.called`, `budget.exhausted`, `knowledge.proposed`,
-`knowledge.ratified`, `knowledge.declined`, `knowledge.refused`, `github.pr`, `github.commented`,
+`knowledge.ratified`, `knowledge.declined`, `knowledge.refused`, `knowledge.consulted`,
+`concern.raised`, `concern.proposed`, `github.pr`, `github.commented`,
 `mutation.topology`, `fleet.deploy`, `instance.up`, `instance.exited`,
 `review.reasoned` (the deciding verdict's comment — a person's note or
 the Leader's reasoning — right after `review.settled`; `hale dna
@@ -390,10 +391,40 @@ authority.
   exactly which it needs and runs without a knowledge service. `hale
   dna run` starts no service: beyond one machine the service is an
   instance in the plan against a Postgres of the operator's.
-- **Not yet (K2–K4):** the bus surface (an application publishes
-  observations and concerns; a position asks for a package), the
-  owner-requests-package path into the editor's objective, the
-  projections and retrieval ranking, the learning scenario.
+- **Knowledge changes later work (K2).** The substrate holds a
+  `KnowledgeClient` (`url`, or `url_env` read at birth — the host
+  sets `HALE_DNA_KNOWLEDGE_URL` under `dev`; `budget`), the owner's
+  line to the service; the editor never holds one, which the law
+  states (`group knowledge = { dna::Knowledge, dna::KnowledgeClient
+  }`, `editors_never_learn`). When a Mutation opens, the substrate
+  asks the service for the package of the change's target in the
+  tower — `org` for an organization change, `org/<child>` for the
+  application, `org/<child>/<seed>` for a seed inside it — and
+  journals `knowledge.consulted <mutation>` (`target`, `digest`,
+  `revision`, `included_n`, `included`, `error`) whenever a client is
+  configured, answer or not. The package's ideas are folded into the
+  objective the editor receives (`objective_with`: the ask, then a
+  `PRACTICES (ratified knowledge for <target>, package <digest>):`
+  block, one idea per line) — the record, the commit message and the
+  Mutation keep the ask itself — and the request names the package
+  (`context_digest`, `knowledge_bindings: package:<digest> <id>…`),
+  which every model call of the attempt carries into its `model.called`
+  row. No service, or a service that does not answer, is an empty
+  package that says so; nothing waits on it.
+- **Concerns (K2).** `ConcernRaised` (`source`, `what`, `severity`) is
+  a child's live signal about the part above it: an application or
+  `hale dna concern raise <source> <what…> [--severity N]` publishes
+  it on the membrane (`hale-dna.concern.raised.sock`), the substrate
+  journals `concern.raised <source>` (`<what> x<n> severity <s>`), and
+  when one source has raised it `concern_threshold` times (3) it
+  becomes a knowledge proposal by that source bound to its parent
+  path — a concern by the tower rule — through `propose_knowledge`,
+  with `concern.proposed <source>` naming the digest, once. A source
+  with no parent (no `/`) is refused with `knowledge.refused
+  concern:<source>`.
+- **Not yet (K3–K4):** the projections and retrieval ranking with
+  `pgvector`; the application side and the learning scenario in the
+  fixture.
 
 ## Backends by role
 

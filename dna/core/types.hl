@@ -46,6 +46,7 @@ type WorkRequest {
     step_id: String = "";
     objective: String = "";
     context_digest: String = ""; // ContextPackage digest, never the bytes
+    knowledge_bindings: String = ""; // the package and the ids it included ("package:<digest> <id>…"), for the evidence (GH #583 K2)
     output_contract: String = ""; // e.g. "ReviewVerdict", "Patch", "Assessment"
     data_class: String = "internal"; // "public" | "internal" | "customer"
     requires: String = ""; // capability words, space-separated

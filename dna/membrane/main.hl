@@ -23,6 +23,7 @@ main locus Client {
         publish dna::ReviewVerdict;
         publish dna::ExpressionObserved;
         publish dna::PressureRaised;
+        publish dna::ConcernRaised;
     }
     run() {
         if self.kind == "intent" {
@@ -54,8 +55,14 @@ main locus Client {
                 what: std::json::find_string_field(self.body, "what"),
                 count: std::json::find_int_field(self.body, "count")
             };
+        } else if self.kind == "concern" {
+            dna::ConcernRaised <- dna::Concern {
+                source: std::json::find_string_field(self.body, "source"),
+                what: std::json::find_string_field(self.body, "what"),
+                severity: std::json::find_int_field(self.body, "severity")
+            };
         } else {
-            println("membrane: unknown kind `", self.kind, "` (intent | verdict | observed | pressure)");
+            println("membrane: unknown kind `", self.kind, "` (intent | verdict | observed | pressure | concern)");
             return;
         }
         // let the connect-role fanout flush before the process ends
