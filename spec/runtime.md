@@ -1091,7 +1091,11 @@ and modes; specific transports come from stdlib (`std::bus::*`).
 top-level `topic Foo { payload: T; subject: "..."; }` decls
 (with optional `: Parent` for hierarchical wire subjects);
 deployment-time bindings live in the `main` locus's
-`bindings { Topic: <transport>; }` block. Two transport shapes
+`bindings { Topic: <transport>; }` block — the program's OWN entry
+main: a `main locus` that arrives through `import` (a test seed
+importing the application it tests) keeps its `bindings { }` inert,
+so a test binary never binds, or unlinks, the sockets of the running
+application (GH #529 D7). Two transport shapes
 ship: substrate-provided `unix("/path", role: ...)` and
 user-supplied adapter loci named directly on the right-hand
 side (any locus satisfying `__StdBusAdapter` —

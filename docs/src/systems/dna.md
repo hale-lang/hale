@@ -356,6 +356,73 @@ organism rolls back the same way.
 restarts; `hale dna history m1` is the whole lineage of one
 Mutation, receipts included.
 
+### The twelve steps, in CI
+
+`dna/acceptance/chat-server` is the site's chat server kept in the
+repository as the small application the acceptance scenario governs
+(`crates/hale-cli/tests/dna_twelve_steps.rs`, about ten seconds):
+
+1. `hale dna init` attaches the DNA; `hale check --matrix` and the
+   app's own tests still pass.
+2. `hale dna run` holds the organism and its membrane (iris reads
+   the same status projection the test asserts on).
+3. `hale dna ask "document the chat server in main.hl"`.
+4. The membrane accepts the intent and births Task `t1`
+   (`intent.offered`, `task.born`).
+5. Its Workflow makes a Step whose Work is routed back to the
+   assembly as source-editing Work; the editor's Attempt locates the
+   file under its grant (`mutation.located`, and every model call's
+   evidence carries the grant).
+6. The Attempt proposes the Mutation in its own worktree
+   (`mutation.worktree`, `mutation.candidate`).
+7. The receipts: `base`, `fmt`, `check`, `verify`, `test`,
+   `rollback` (rehearsed in the worktree), `diff`, `magnitude`.
+8. The boundary's disposition (`escalate` here: `application` is
+   outside a `refactor docs` grant) and the blocking Review.
+9. `hale dna review` and `hale dna review m1` render it; `hale dna
+   status --json` is what iris shows.
+10. `approve` applies the exact candidate; a second intent rejected
+    leaves `git log` where it was.
+11. The host rebuilds and restarts; the new expression journals
+    itself; the window is observed and the originating pressure
+    re-measured (`pressure.remeasured`, against the fitness signals
+    the proposal declared).
+12. `mutation.retained`; `hale dna history m1` is the whole lineage.
+
+Two things the run found. An imported `main locus` used to bind its
+`bindings { }` in whatever program imported it — the application's
+own tests, run by the DNA's verification, took the organism's
+membrane sockets from under it; bindings now belong to the
+program's own entry main only. And behind a bound organism's
+off-thread bus, a routed Work cannot await its answer (FRICTION
+F.15): the Task's live pass settles `pending`, and the assembly
+settles the durable Task in the Journal when the Work is done.
+
+### The four extensions
+
+`dna/tests/extensions_test.hl` runs them in one process:
+
+- **Evolve the Workflow definition** (`Metabolism.evolve_workflow`)
+  while a Task is active: the Task finishes under the revision it
+  was born with (`Settled.revision`); the next Task adopts the new
+  one.
+- **Post-review autonomy** for a reversible internal refactor:
+  under a `review: "post"` grant with `PostReviewRefactors`, a
+  candidate inside the grant with no hard boundary and sufficient
+  evidence is applied first (`mutation.release`, the boundary's
+  audit says so) and reviewed after; a rejection rolls it back.
+- **Widening the child's effects** crosses a hard boundary: review,
+  never release, whatever the grant; and the child cannot expand its
+  own grant (`expand` from the child is refused and audited).
+- **A second persistent pressure** (`PressureRaised` from one source
+  past the threshold) journals `appendage.proposed` and notifies the
+  membrane; nothing is grown. An organ is asked for as intent and
+  becomes a Mutation under review like any other.
+
+The dogfood run on a real, larger application (the track names its
+candidate) is a maintainer's session, not CI: the same commands, a
+hosted model behind `OPENAI_API_KEY`, and the human in the loop.
+
 ## In iris
 
 `hale dna run` hands iris three sources: the observation segment

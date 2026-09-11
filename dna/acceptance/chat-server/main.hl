@@ -1,0 +1,101 @@
+// dna/acceptance/chat-server — the site's "A chat server that runs
+// itself" example, kept in-repo as the small application the Track D
+// acceptance scenario (GH #529 D7) governs in CI: `hale dna init`
+// attaches the DNA to it, an intent becomes a Mutation, a human's
+// verdict applies it, the host restarts it, the window judges it.
+//
+// One difference from the page: `run()` holds the process up (the
+// organism keeps its membrane open) unless HALE_DNA_ONESHOT is set.
+
+type ChatLine { room: Int; who: String; text: String; }
+type Join { room: Int; who: String; }
+
+topic RoomTalk { payload: ChatLine; keyed_by room; }
+topic Joins { payload: Join; }
+
+@sealed
+locus SessionSigner {
+    params { key: Int = 40961; }
+    @effects(is: { secret_use })
+    fn stamp(room: Int) -> Int { return room * 31 + self.key % 997; }
+}
+
+locus Room {
+    params { room: Int = 0; lines: Int = 0; s: SessionSigner = SessionSigner { }; }
+    bus {
+        subscribe RoomTalk as post where key == self.room;
+    }
+    fn post(line: ChatLine) {
+        self.lines = self.lines + 1;
+        let tag = self.s.stamp(line.room);
+        println("[room ", line.room, " #", tag, "] ", line.who, ": ", line.text);
+    }
+}
+
+locus SpamGuard {
+    params { warmups: Int = 0; }
+    closure warmed_up {
+        self.warmups ~~ 1 within 0;
+        epoch birth;
+    }
+    birth() {
+        self.warmups = self.warmups + 1;
+        println("~ spam guard warm (attempt ", self.warmups, ")");
+    }
+}
+
+locus Doorman {
+    params { seen: Int = 0; }
+    bus { subscribe Joins as greet; }
+    fn greet(j: Join) {
+        self.seen = self.seen + 1;
+        println("* ", j.who, " joined room ", j.room);
+    }
+}
+
+locus Participant {
+    params { name: String = "guest"; room: Int = 0; }
+    bus { publish RoomTalk; publish Joins; }
+    run() {
+        Joins <- Join { room: self.room, who: self.name };
+        RoomTalk <- ChatLine { room: self.room, who: self.name, text: "hello" };
+        RoomTalk <- ChatLine { room: self.room, who: self.name, text: "anyone here?" };
+    }
+}
+
+group participants = { Participant };
+group rooms = { Room };
+
+// The page writes this claim inline in the main locus; here it is a
+// constitution the main adopts, because an importer (the app's own
+// tests, the DNA's verification) checks an imported main's inline
+// claims without the seed's group declarations (dna/FRICTION.md F.14)
+// while an adopted constitution resolves them in its own scope.
+constitution Chat {
+    guests_sign_only_via_rooms: forbid reaches(participants, effects(secret_use)) avoiding rooms;
+}
+
+main locus ChatServer {
+    params {
+        lobby: Room = Room { room: 0 };
+        dev: Room = Room { room: 1 };
+        door: Doorman = Doorman { };
+        guard: SpamGuard = SpamGuard { warmups: -1 };
+        ada: Participant = Participant { name: "ada", room: 0 };
+        lin: Participant = Participant { name: "lin", room: 1 };
+        alan: Participant = Participant { name: "alan", room: 0 };
+    }
+    on_failure(g: SpamGuard, err: ClosureViolation) {
+        println("! ", err.closure, " failed on ", err.locus, " — restarting");
+        restart (g);
+    }
+    claims {
+        adopt Chat;
+    }
+    run() {
+        std::time::sleep(100ms);
+        if std::env::var_exists("HALE_DNA_ONESHOT") { return; }
+        while true { std::time::sleep(100ms); }
+    }
+}
+fn main() { ChatServer { }; }

@@ -95,7 +95,7 @@ main locus App {
         std::test::assert_eq_str(std::json::find_string_field(requested, "mutation_id"), "m1", "the request names the mutation");
         std::test::assert_eq_str(std::json::find_string_field(requested, "disposition"), "review", "effects widened: a hard boundary, so review: " + requested);
         std::test::assert(std::str::contains(requested, "\"external_blast\": 2"), "the magnitude travels with the request: " + requested);
-        std::test::assert_eq_int(evidence, 7, "seven receipts: base fmt check verify test diff magnitude");
+        std::test::assert_eq_int(evidence, 8, "eight receipts: base fmt check verify test rollback diff magnitude");
         std::test::assert(self.dna.journal.verify_chain(), "chain intact");
 
         // ---- 2. a verdict naming another digest is refused BY THE REVIEW ---

@@ -875,8 +875,14 @@ fn status_projection(root: &Path) -> Result<Value, String> {
         let m = mutations.entry(r.entity.clone()).or_insert_with(|| serde_json::json!({"id": r.entity, "candidate": "", "disposition": "", "class": "", "events": []}));
         match kind.as_str() {
             "proposed" => {
-                m["class"] = Value::String(r.body.split(':').next().unwrap_or("").to_string());
-                m["objective"] = Value::String(r.body.clone());
+                // "task <id> <class>: <objective> (<target>) at <base>"
+                let rest = r.body.strip_prefix("task ").unwrap_or(&r.body);
+                let (task, rest) = rest.split_once(' ').unwrap_or(("", rest));
+                let (class, rest) = rest.split_once(": ").unwrap_or((rest, ""));
+                let objective = rest.rsplit_once(" at ").map(|(o, _)| o).unwrap_or(rest);
+                m["task"] = Value::String(task.to_string());
+                m["class"] = Value::String(class.to_string());
+                m["objective"] = Value::String(objective.to_string());
                 m["disposition"] = Value::String("proposed".into());
             }
             "worktree" => m["worktree"] = Value::String(r.body.clone()),
@@ -1000,11 +1006,14 @@ fn status(args: &[String]) -> Result<Vec<String>, String> {
     out.push(format!("mutations:  {} (none applies before a human's verdict on the exact candidate)", muts.len()));
     for m in &muts {
         let cand = s(&m["candidate"]);
+        let task = s(&m["task"]);
         out.push(format!(
-            "  {} [{}] {}{}",
+            "  {} [{}] {}: {}{}{}",
             s(&m["id"]),
             s(&m["disposition"]),
+            s(&m["class"]),
             m["objective"].as_str().unwrap_or(""),
+            if task.is_empty() { String::new() } else { format!(" · task {task}") },
             if cand.is_empty() { String::new() } else { format!(" · candidate {}", &cand[..cand.len().min(12)]) }
         ));
     }

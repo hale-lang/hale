@@ -76,7 +76,16 @@ locus FakeModel {
         // it verbatim, so an editing Attempt can be exercised without
         // a model — the "model" is the test's own text.
         answer: String = "";
+        answer_file: String = ""; // when set, `answer` is read from this file at birth
+        answer_role: String = ""; // when set, the scripted answer applies to this role only
         calls: Int = 0;
+    }
+    // A fake leaves the same evidence a hosted call does (GH #529 D7):
+    // the attempt, the digests, the tool grant — so a scripted run's
+    // Journal reads like a real one, minus the wire.
+    bus { publish ModelCalled; }
+    birth() {
+        if len(self.answer_file) > 0 { self.answer = std::io::fs::read_file(self.answer_file) or ""; }
     }
     fn identity() -> String { return self.name; }
     fn model_name() -> String { return self.model; }
@@ -85,13 +94,31 @@ locus FakeModel {
     @effects(is: { external_model })
     fn complete(req: ModelRequest) -> ModelResult {
         self.calls = self.calls + 1;
+        let mut ev = ModelEvidence {
+            attempt_id: req.attempt_id, adapter: "fake", backend: self.name, endpoint: "fake://" + self.name,
+            requested_model: self.model, reported_model: self.model,
+            prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
+            context_digest: digest_of(req.context),
+            knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
+            retry_of: req.retry_of, data_class: req.data_class
+        };
         if !self.allows(req.data_class) {
-            return ModelResult { ok: false, backend: self.name, model: self.model, refused: "data class " + req.data_class };
+            ev.refused = "data class " + req.data_class;
+            ModelCalled <- ev;
+            return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused };
         }
-        if len(self.answer) > 0 {
-            return ModelResult { ok: true, backend: self.name, model: self.model, output: self.answer, tokens: len(self.answer) / 4, cost_micros: self.price_micros };
-        }
-        return fake_answer(self.name, self.model, req, self.max_bytes, self.price_micros);
+        let r = if len(self.answer) > 0 && (self.answer_role == "" || self.answer_role == req.role) {
+            ModelResult { ok: true, backend: self.name, model: self.model, output: self.answer, tokens: len(self.answer) / 4, cost_micros: self.price_micros }
+        } else {
+            fake_answer(self.name, self.model, req, self.max_bytes, self.price_micros)
+        };
+        ev.ok = r.ok;
+        ev.refused = r.refused;
+        ev.output_tokens = r.tokens;
+        ev.cost_micros = r.cost_micros;
+        ev.response_digest = digest_of(r.output);
+        ModelCalled <- ev;
+        return r;
     }
 }
 
