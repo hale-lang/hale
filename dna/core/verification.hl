@@ -111,6 +111,15 @@ fn assess_structure(diff: String, lineage_applied: Int) -> Magnitude {
     };
 }
 
+// The toolchain a locus runs: its param when given, else HALE_BIN
+// (the host sets it to the binary that started the organism), else
+// `hale` on PATH.
+fn resolve_toolchain(given: String) -> String {
+    if len(given) > 0 { return given; }
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
 fn magnitude_json(m: Magnitude) -> String {
     let b = std::json::Builder { };
     b.begin_object();
@@ -130,18 +139,24 @@ fn magnitude_json(m: Magnitude) -> String {
 
 locus HaleVerification {
     params {
-        hale_bin: String = "hale";
+        hale_bin: String = ""; // "" = HALE_BIN when set, else `hale` on PATH
         evidence_dir: String = ".hale/dna/evidence";
         recording: String = ""; // a LOTUS_OBS_RECORD recording; "" = no replay step
-        journal: Journal = MemJournal { };
+        repo: String = "."; // the repository the worktrees belong to
+        seed: String = "."; // the genome's seed, relative to the worktree
         runs: Int = 0;
         last: VerificationReport = VerificationReport { };
+    }
+    birth() { self.hale_bin = resolve_toolchain(self.hale_bin); }
+    fn seed_in(wt: String) -> String {
+        if self.seed == "." || self.seed == "" { return wt; }
+        return wt + "/" + self.seed;
     }
     // One step's receipt: the output content-addressed on disk, the
     // event on the candidate. Returns the exit code. (Per-run
     // allocation, bounded by the runs a Review asks for.)
     @unbounded
-    fn record(candidate: String, mutation_id: String, step: String, r: RunResult) -> Int {
+    fn record(j: Journal, candidate: String, mutation_id: String, step: String, r: RunResult) -> Int {
         let text = r.stdout + r.stderr;
         let digest = hex(std::crypto::sha256(std::bytes::from_string(text)));
         std::io::fs::write_file(self.evidence_dir + "/" + digest + ".txt", text) or discard;
@@ -154,37 +169,44 @@ locus HaleVerification {
         b.string_field("output_digest", digest);
         b.int_field("bytes", len(text));
         b.end_object();
-        let j = self.journal.append(self.journal.revision(), "evidence." + step, candidate, b.result());
+        let x = j.append(j.revision(), "evidence." + step, candidate, b.result());
         return r.code;
     }
-    fn lineage_applied() -> Int {
+    fn lineage_applied(j: Journal) -> Int {
         let mut n = 0;
         let mut i = 0;
-        let total = self.journal.revision();
+        let total = j.revision();
         while i < total {
-            if self.journal.read(i).kind == "mutation.applied" { n = n + 1; }
+            if j.read(i).kind == "mutation.applied" { n = n + 1; }
             i = i + 1;
         }
         return n;
     }
-    // The toolchain over the candidate's worktree; `base_topology` is
-    // the artifact the genome was expressed from (the organism's
-    // baseline), the diff's `a` side.
+    // The toolchain over the candidate's worktree. `base_topology` is
+    // the diff's `a` side: the artifact given, or — when "" — the
+    // genome's, cut now from the repository's own seed (the base the
+    // worktree was opened at), so the diff is always against what the
+    // candidate actually changed, never a file from an earlier life.
     @effects(is: { toolchain_run })
-    fn verify(m: Mutation, base_topology: String) -> VerificationReport {
+    fn verify(j: Journal, m: Mutation, base_topology: String) -> VerificationReport {
         self.runs = self.runs + 1;
         std::io::fs::mkdir(self.evidence_dir) or discard;
-        let wt = m.worktree;
+        let wt = self.seed_in(m.worktree);
         let cand = m.candidate_commit;
         let topo = self.evidence_dir + "/" + m.id + ".candidate.topology.json";
-        let fmt = self.record(cand, m.id, "fmt", run_tool(self.hale_bin + "\nfmt\n--check\n" + wt));
-        let check = self.record(cand, m.id, "check", run_tool(self.hale_bin + "\ncheck\n" + wt + "\n--json\n--dump-topology=" + topo));
-        let verify = self.record(cand, m.id, "verify", run_tool(self.hale_bin + "\nverify\n" + wt + "\n--json"));
+        let mut base = base_topology;
+        if len(base) == 0 {
+            base = self.evidence_dir + "/" + m.id + ".base.topology.json";
+            let cut = self.record(j, cand, m.id, "base", run_tool(self.hale_bin + "\ncheck\n" + self.seed_in(self.repo) + "\n--dump-topology=" + base));
+        }
+        let fmt = self.record(j, cand, m.id, "fmt", run_tool(self.hale_bin + "\nfmt\n--check\n" + wt));
+        let check = self.record(j, cand, m.id, "check", run_tool(self.hale_bin + "\ncheck\n" + wt + "\n--json\n--dump-topology=" + topo));
+        let verify = self.record(j, cand, m.id, "verify", run_tool(self.hale_bin + "\nverify\n" + wt + "\n--json"));
         let tests = run_tool(self.hale_bin + "\ntest\n" + wt);
-        let test = self.record(cand, m.id, "test", tests);
+        let test = self.record(j, cand, m.id, "test", tests);
         let mut replay_ok = false;
         if len(self.recording) > 0 {
-            let rp = self.record(cand, m.id, "replay", run_tool(self.hale_bin + "\nreplay\n" + self.recording + "\n" + wt + "\n--feed"));
+            let rp = self.record(j, cand, m.id, "replay", run_tool(self.hale_bin + "\nreplay\n" + self.recording + "\n" + wt + "\n--feed"));
             replay_ok = rp == 0;
         }
         let mut diff = -1;
@@ -193,17 +215,17 @@ locus HaleVerification {
         let mut shape = "";
         let mut mag = Magnitude { };
         if check == 0 {
-            let dj = run_tool(self.hale_bin + "\nmodel\ndiff\n" + base_topology + "\n" + topo + "\n--json");
-            diff = self.record(cand, m.id, "diff", dj);
+            let dj = run_tool(self.hale_bin + "\nmodel\ndiff\n" + base + "\n" + topo + "\n--json");
+            diff = self.record(j, cand, m.id, "diff", dj);
             if diff == 0 {
                 diff_json = self.evidence_dir + "/" + m.id + ".diff.json";
                 std::io::fs::write_file(diff_json, dj.stdout) or discard;
-                let dt = run_tool(self.hale_bin + "\nmodel\ndiff\n" + base_topology + "\n" + topo + "\n--text");
+                let dt = run_tool(self.hale_bin + "\nmodel\ndiff\n" + base + "\n" + topo + "\n--text");
                 diff_text = self.evidence_dir + "/" + m.id + ".diff.txt";
                 std::io::fs::write_file(diff_text, dt.stdout) or discard;
                 shape = std::json::find_string_field(std::json::find_field_raw(dj.stdout, "b"), "shape_hash");
-                mag = assess_structure(dj.stdout, self.lineage_applied());
-                let j = self.journal.append(self.journal.revision(), "evidence.magnitude", cand, magnitude_json(mag));
+                mag = assess_structure(dj.stdout, self.lineage_applied(j));
+                let x = j.append(j.revision(), "evidence.magnitude", cand, magnitude_json(mag));
             }
         }
         // a project with no tests has no test evidence, only an exit code

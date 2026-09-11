@@ -17,6 +17,7 @@ fn sh(argv: String) -> dna::RunResult {
 main locus App {
     params {
         repo: String = "";
+        journal: dna::Journal = dna::MemJournal { };
         gate: dna::MutationGateway = dna::MutationGateway { };
     }
     run() {
@@ -43,33 +44,33 @@ main locus App {
         // ---- the Attempt takes the lease and opens its worktree --------
         let lease = self.gate.take("m1", "attempt-a", 10);
         std::test::assert(lease.present, "lease taken");
-        let refused = self.gate.open("m1", base, 999, 10);
+        let refused = self.gate.open(self.journal, "m1", base, 999, 10);
         std::test::assert(!refused.ok && refused.refused == "stale or missing lease", "a wrong token opens nothing: " + refused.refused);
-        let opened = self.gate.open("m1", base, lease.token, 11);
+        let opened = self.gate.open(self.journal, "m1", base, lease.token, 11);
         std::test::assert(opened.ok, "worktree opened: " + opened.refused);
         std::test::assert_eq_str(opened.value, repo + "/.wt/m1", "named by the Mutation");
         let head_wt = git.head(opened.value);
         std::test::assert_eq_str(head_wt, base, "detached at the base");
-        let again = self.gate.open("m1", base, lease.token, 12);
+        let again = self.gate.open(self.journal, "m1", base, lease.token, 12);
         std::test::assert(again.ok && again.replayed, "a retried open replays the recorded path");
 
         // ---- edit, commit a candidate ------------------------------------
         std::io::fs::write_file(opened.value + "/main.hl", "fn main() { println(\"v2\"); }\n") or discard;
-        let cand = self.gate.commit("m1", "s1", "v2: say v2", lease.token, 13);
+        let cand = self.gate.commit(self.journal, "m1", "s1", "v2: say v2", lease.token, 13);
         std::test::assert(cand.ok && len(cand.value) == 40, "candidate committed: " + cand.refused);
         std::test::assert(cand.value != base, "a new commit");
         let d = git.diff(opened.value, base, cand.value);
         std::test::assert(std::str::contains(d, "+fn main() { println(\"v2\"); }"), "the diff is the edit: " + d);
         std::test::assert(!git.contains(repo, cand.value), "not applied yet");
-        let cand2 = self.gate.commit("m1", "s1", "v2: say v2", lease.token, 14);
+        let cand2 = self.gate.commit(self.journal, "m1", "s1", "v2: say v2", lease.token, 14);
         std::test::assert(cand2.ok && cand2.replayed && cand2.value == cand.value, "a retried commit replays the same sha");
 
         // ---- apply the exact candidate; a retry does not commit twice ---
-        let applied = self.gate.apply("m1", cand.value, lease.token, 15);
+        let applied = self.gate.apply(self.journal, "m1", cand.value, lease.token, 15);
         std::test::assert(applied.ok && !applied.replayed, "applied: " + applied.refused);
         std::test::assert_eq_str(git.head(repo), cand.value, "the repository IS the candidate");
         let log1 = sh("git\n-C\n" + repo + "\nrev-list\n--count\nHEAD");
-        let retry = self.gate.apply("m1", cand.value, lease.token, 16);
+        let retry = self.gate.apply(self.journal, "m1", cand.value, lease.token, 16);
         std::test::assert(retry.ok && retry.replayed, "a crashed-and-retried apply reads the Journal");
         let log2 = sh("git\n-C\n" + repo + "\nrev-list\n--count\nHEAD");
         std::test::assert_eq_str(dna::trim_nl(log2.stdout), dna::trim_nl(log1.stdout), "exactly one commit landed");
@@ -78,19 +79,19 @@ main locus App {
         // ---- fencing: an expired lease's token is refused -----------------
         let late = self.gate.take("m1", "attempt-b", 200);
         std::test::assert(late.present && late.token > lease.token, "re-acquired after expiry");
-        let stale = self.gate.remove("m1", lease.token, 201);
+        let stale = self.gate.remove(self.journal, "m1", lease.token, 201);
         std::test::assert(!stale.ok, "the late writer's stale token is refused");
-        let removed = self.gate.remove("m1", late.token, 202);
+        let removed = self.gate.remove(self.journal, "m1", late.token, 202);
         std::test::assert(removed.ok, "the holder removes the worktree: " + removed.refused);
         let gone = sh("git\n-C\n" + repo + "\nworktree\nlist");
         std::test::assert(!std::str::contains(gone.stdout, ".wt/m1"), "worktree gone");
 
         // ---- the Journal is the record -----------------------------------
-        std::test::assert(self.gate.journal.verify_chain(), "chain intact");
+        std::test::assert(self.journal.verify_chain(), "chain intact");
         let mut kinds = "";
         let mut i = 0;
-        while i < self.gate.journal.revision() {
-            kinds = kinds + self.gate.journal.read(i).kind + " ";
+        while i < self.journal.revision() {
+            kinds = kinds + self.journal.read(i).kind + " ";
             i = i + 1;
         }
         std::test::assert(std::str::contains(kinds, "effect.requested effect.result mutation.worktree"), kinds);

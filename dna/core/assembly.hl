@@ -104,9 +104,29 @@ locus Dna {
         review_policy: ReviewPolicy = HumanBeforeApply { };
         deployment: Deployment = NoDeployment { };
         membrane: Membrane = LocalHumanMembrane { };
+        // Phase 2 (GH #529): where a mutation edits, how it is verified,
+        // and who edits. The gateway and the verification journal
+        // through THIS assembly's Journal (handed to them per call).
+        gateway: MutationGateway = MutationGateway { };
+        verification: HaleVerification = HaleVerification { };
+        editor: SourceEditor = SourceEditor { };
+        genome_seed: String = "."; // the genome's seed, relative to the repository
+        baseline: String = ""; // the diff's base artifact; "" = cut from the genome's seed per mutation
         asked: Int = 0;
         last_task: String = "";
+        mutations_minted: Int = 0;
+        last_mutation: String = "";
+        reviews_open: Int = 0; // live mutation Reviews (accepted children)
+        rehydrated: Int = 0; // Reviews re-born from the Journal at birth
     }
+    // A mutation's Review is a child of the assembly: born when the
+    // candidate is verified, keyed on its review id so a verdict from
+    // the membrane reaches exactly it. The Journal is the authority:
+    // a pending mutation Review is re-born from it at birth, so an
+    // organism restarted mid-review can still be answered.
+    accept(r: Review) { self.reviews_open = self.reviews_open + 1; }
+    release (r: Review) { self.reviews_open = self.reviews_open - 1; }
+    birth() { self.rehydrate(); }
     // GH #527 B6: intent crossing the membrane on the typed channel
     // (`hale dna ask`, Iris) enters through the SAME gate as a local
     // `ask` — the membrane decides, the Metabolism births the Task,
@@ -215,10 +235,129 @@ locus Dna {
             Disposition::Deny -> name,
         };
     }
+    // ---- Phase 2: a Mutation, end to end up to its Review (GH #529 D4)
+    // Open a worktree at the genome's head, let the editor propose
+    // inside it, commit the candidate, verify it with receipts, and put
+    // it under a blocking Review pinned to the exact candidate commit.
+    // Returns "<id>: review" or "<id>: failed: <why>".
+    @unbounded
+    fn mutate(task_id: String, change_class: String, objective: String, target: String, now: Int) -> String {
+        self.mutations_minted = self.mutations_minted + 1;
+        let id = "m" + to_string(self.mutations_minted);
+        self.last_mutation = id;
+        let base = self.gateway.head();
+        let x0 = self.journal.append(self.journal.revision(), "mutation.proposed", id, change_class + ": " + objective + " (" + target + ") at " + base);
+        let lease = self.gateway.take(id, "dna", now);
+        let opened = self.gateway.open(self.journal, id, base, lease.token, now);
+        if !opened.ok { return self.mutation_failed(id, "worktree: " + opened.refused); }
+        let wt = opened.value;
+        self.editor.confine(wt);
+        let r = self.editor.perform(WorkRequest {
+            work_id: id, task_id: task_id, objective: objective, target: target, data_class: "internal"
+        });
+        if r.disposition != "done" {
+            let x = self.gateway.remove(self.journal, id, lease.token, now);
+            return self.mutation_failed(id, "attempt: " + r.narrative);
+        }
+        let committed = self.gateway.commit(self.journal, id, "a0", change_class + ": " + objective, lease.token, now);
+        if !committed.ok { return self.mutation_failed(id, "commit: " + committed.refused); }
+        let m = Mutation {
+            id: id, task_id: task_id, base_commit: base, worktree: wt,
+            candidate_commit: committed.value, candidate_digest: committed.value,
+            change_class: change_class, rationale: objective, disposition: "proposed"
+        };
+        let report = self.verification.verify(self.journal, m, self.baseline);
+        if !report.evidence.check_clean {
+            let x = self.journal.append(self.journal.revision(), "mutation.deny", id, "candidate does not check (" + report.steps + ")");
+            return id + ": denied: candidate does not check";
+        }
+        let d = self.review_mutation(m, report, self.editor.identity());
+        return id + ": " + d;
+    }
+    fn mutation_failed(id: String, why: String) -> String {
+        let x = self.journal.append(self.journal.revision(), "mutation.failed", id, why);
+        self.membrane.notify("mutation", id + " failed: " + why);
+        return id + ": failed: " + why;
+    }
+    // Assess under the boundary, record the disposition, and — Phase 2,
+    // whatever the grant says — block on a human Review pinned to the
+    // exact candidate. The request carries everything a reviewer
+    // renders: the evidence steps, the magnitude, where the diffs are.
+    @unbounded
+    fn review_mutation(m: Mutation, r: VerificationReport, author: String) -> String {
+        let d = self.boundary.assess(m.change_class, r.magnitude, r.evidence);
+        let name = disposition_name(d);
+        let x = self.journal.append(self.journal.revision(), "mutation." + name, m.id, m.change_class + " candidate " + m.candidate_commit);
+        let authority = self.review_policy.required_authority(m.change_class, r.magnitude);
+        let question = "apply " + m.id + " (" + m.change_class + "): " + m.rationale + "?";
+        Review {
+            review_id: m.id, question: question, subject_digest: m.candidate_commit,
+            required_authority: authority, author: author
+        };
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("question", question);
+        b.string_field("subject_digest", m.candidate_commit);
+        b.string_field("required_authority", authority);
+        b.string_field("author", author);
+        b.string_field("mutation_id", m.id);
+        b.string_field("task_id", m.task_id);
+        b.string_field("change_class", m.change_class);
+        b.string_field("disposition", name);
+        b.string_field("base_commit", m.base_commit);
+        b.string_field("candidate_commit", m.candidate_commit);
+        b.string_field("candidate_shape", r.candidate_shape);
+        b.string_field("worktree", m.worktree);
+        b.string_field("evidence", r.steps);
+        b.field("magnitude", magnitude_json(r.magnitude));
+        b.string_field("diff_text", r.diff_text);
+        b.string_field("diff_json", r.diff_json);
+        b.end_object();
+        let y = self.journal.append(self.journal.revision(), "review.requested", "review:" + m.id, b.result());
+        self.membrane.notify("review", authority + " needed for " + m.id + " (" + name + "): " + m.candidate_commit);
+        return "review";
+    }
+    // Pending mutation Reviews, re-born from the Journal: every
+    // `review.requested` that names a mutation and has no settlement.
+    // The purpose Review is the Genome's own static child, never
+    // rehydrated here.
+    @unbounded
+    fn rehydrate() {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "review.requested" && std::str::contains(e.body, "\"mutation_id\"") {
+                let id = std::json::find_string_field(e.body, "mutation_id");
+                let mut settled = false;
+                let mut k = i + 1;
+                while k < n {
+                    let s = self.journal.read(k);
+                    if s.kind == "review.settled" && s.entity == id { settled = true; }
+                    k = k + 1;
+                }
+                if !settled {
+                    Review {
+                        review_id: id,
+                        question: std::json::find_string_field(e.body, "question"),
+                        subject_digest: std::json::find_string_field(e.body, "subject_digest"),
+                        required_authority: std::json::find_string_field(e.body, "required_authority"),
+                        author: std::json::find_string_field(e.body, "author")
+                    };
+                    self.rehydrated = self.rehydrated + 1;
+                }
+            }
+            i = i + 1;
+        }
+    }
     fn status() -> String {
         let b = std::json::Builder { };
         b.begin_object();
         b.int_field("asked", self.asked);
+        b.int_field("mutations", self.mutations_minted);
+        b.string_field("last_mutation", self.last_mutation);
+        b.int_field("reviews_open", self.reviews_open);
+        b.int_field("rehydrated", self.rehydrated);
         b.int_field("journal_revision", self.journal.revision());
         b.int_field("tasks_settled", self.metabolism.settled_count());
         b.int_field("work_requests", self.work.requests);

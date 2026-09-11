@@ -387,10 +387,15 @@ function renderOrganismPanel() {
     const why = r.state === "pending" ? `needs ${esc(r.required_authority)} — ${esc(r.question)}` : `settled ${esc(r.settled)}`;
     const refusals = (r.refusals || []).length;
     h += `<div class="row"><span class="${r.state === "pending" ? "pend" : "ok"}">${esc(r.id)} [${esc(r.state)}]</span> ${why}${refusals ? ` <span class="dim">(${refusals} verdict(s) refused)</span>` : ""}</div>`;
+    // a mutation's Review: the evidence steps and the candidate the verdict must name
+    if (r.mutation_id) h += `<div class="row dim">   ${esc(r.change_class)} · ${esc(r.evidence)} · disposition ${esc(r.disposition)} · candidate ${esc(String(r.candidate_commit || "").slice(0, 12))} — verdict digest = ${esc(r.subject_digest)}</div>`;
   }
   const muts = st.mutations || [];
-  h += `<div class="sec">mutations · ${muts.length} (every one stops at stage in Phase 1)</div>`;
-  for (const m of muts) h += `<div class="row">${esc(m.candidate)} <span class="pend">${esc(m.disposition)}</span> ${esc(m.class)}</div>`;
+  h += `<div class="sec">mutations · ${muts.length} (none applies before a human's verdict on the exact candidate)</div>`;
+  for (const m of muts) {
+    const cls = m.disposition === "reviewed" || m.disposition === "applied" ? "ok" : (m.disposition === "failed" || m.disposition === "rejected" || m.disposition === "deny" ? "bad" : "pend");
+    h += `<div class="row">${esc(m.id || m.candidate)} <span class="${cls}">${esc(m.disposition)}</span> ${esc(m.objective || m.class || "")}${m.candidate ? ` <span class="dim">candidate ${esc(String(m.candidate).slice(0, 12))}</span>` : ""}</div>`;
+  }
   const mc = st.model_calls || {};
   h += `<div class="sec">model calls · ${esc(mc.total || 0)}</div>`;
   for (const c of mc.recent || []) {

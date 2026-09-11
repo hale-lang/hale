@@ -1,0 +1,136 @@
+// dna/tests/mutation_review_test.hl — GH #529 D4: a Mutation, end to
+// end up to its blocking Review.
+//
+// One Dna over a real git repository: `mutate` opens a worktree at
+// the genome's head, the editor (scripted models) rewrites the target
+// inside it, the gateway commits the candidate, verification leaves
+// its receipts, and the assembly births a Review pinned to the exact
+// candidate commit. A verdict naming another digest is refused by the
+// Review itself; a maintainer's verdict naming the candidate settles
+// it, and both answers are Journal events. A second Dna born over the
+// same file Journal re-births the still-pending Review from it.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
+
+const BASE: String = "effect mail;\ntype Ping { n: Int = 0; }\ntopic Pings { payload: Ping; subject: \"t.pings\"; }\nlocus A { params { seen: Int = 0; } bus { subscribe Pings as on_ping; } fn on_ping(p: Ping) { self.seen = self.seen + 1; } }\nmain locus App { params { a: A = A { }; } bus { publish Pings; } run() { Pings <- Ping { n: 1 }; } }\nfn main() { App { }; }\n";
+const CANDIDATE: String = "effect mail;\ntype Ping { n: Int = 0; }\ntopic Pings { payload: Ping; subject: \"t.pings\"; }\nlocus A { params { seen: Int = 0; } bus { subscribe Pings as on_ping; } fn on_ping(p: Ping) { self.seen = self.seen + 1; } }\nlocus Mailer { bus { subscribe Pings as on_ping; } @effects(is: { mail }) fn on_ping(p: Ping) { } }\nmain locus App { params { a: A = A { }; m: Mailer = Mailer { }; } bus { publish Pings; } run() { Pings <- Ping { n: 1 }; } }\nfn main() { App { }; }\n";
+
+main locus App {
+    params {
+        repo: String = "";
+        dna: dna::Dna = dna::Dna { };
+        refused_seen: Int = 0;
+        settled_seen: Int = 0;
+    }
+    bus {
+        publish dna::ReviewVerdict;
+        subscribe dna::ReviewSettled as on_settled;
+    }
+    fn on_settled(s: dna::ReviewSettlement) {
+        if s.refusal != "" { self.refused_seen = self.refused_seen + 1; } else { self.settled_seen = self.settled_seen + 1; }
+    }
+    run() {
+        // ---- the genome: a repository with one commit and its baseline
+        let repo = "/tmp/dna-mut-" + to_string(std::process::pid());
+        std::io::fs::mkdir(repo) or discard;
+        std::io::fs::mkdir(repo + "/.hale") or discard;
+        std::io::fs::mkdir(repo + "/.hale/dna") or discard;
+        std::io::fs::write_file(repo + "/main.hl", BASE) or discard;
+        std::io::fs::write_file(repo + "/.gitignore", "/.hale/\n") or discard;
+        let init = sh("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        let add = sh("git\n-C\n" + repo + "\nadd\n-A");
+        let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
+        std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
+        let cut = sh(toolchain() + "\ncheck\n" + repo + "\n--dump-topology=" + repo + "/.hale/dna/baseline.topology");
+        std::test::assert_eq_int(cut.code, 0, "baseline: " + cut.stderr);
+        let journal_path = repo + "/.hale/dna/journal.jsonl";
+
+        self.dna = dna::Dna {
+            journal: dna::FileJournal { path: journal_path },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees", base_exec_digest: "exec:base" },
+                repo: dna::LocalGit { repo: repo }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), evidence_dir: repo + "/.hale/dna/evidence", repo: repo },
+            editor: dna::SourceEditor {
+                name: "editor",
+                models: dna::ModelRouter {
+                    quick: dna::FakeModel { name: "quick", answer: CANDIDATE },
+                    deep: dna::FakeModel { name: "deep", answer: "mail_delivered +" }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            boundary: dna::AutonomyBoundary {
+                child: "app",
+                grant: dna::Grant { child: "app", classes: "feature refactor", max_magnitude: 40, review: "pre" }
+            },
+            baseline: ""
+        };
+
+        // ---- 1. the pipeline up to the Review ------------------------------
+        let out = self.dna.mutate("t1", "feature", "notify mail on every ping", "main.hl", 100);
+        std::test::assert_eq_str(out, "m1: review", "the mutation is under review: " + out);
+        std::test::assert_eq_int(self.dna.reviews_open, 1, "one Review child");
+        let mut requested = "";
+        let mut candidate = "";
+        let mut evidence = 0;
+        let mut i = 0;
+        let n = self.dna.journal.revision();
+        while i < n {
+            let e = self.dna.journal.read(i);
+            if e.kind == "review.requested" { requested = e.body; }
+            if e.kind == "mutation.candidate" { candidate = e.body; }
+            if std::str::contains(e.kind, "evidence.") { evidence = evidence + 1; }
+            i = i + 1;
+        }
+        std::test::assert_eq_int(len(candidate), 40, "a candidate commit: " + candidate);
+        std::test::assert_eq_str(std::json::find_string_field(requested, "subject_digest"), candidate, "the Review pins the candidate commit");
+        std::test::assert_eq_str(std::json::find_string_field(requested, "mutation_id"), "m1", "the request names the mutation");
+        std::test::assert_eq_str(std::json::find_string_field(requested, "disposition"), "review", "effects widened: a hard boundary, so review: " + requested);
+        std::test::assert(std::str::contains(requested, "\"external_blast\": 2"), "the magnitude travels with the request: " + requested);
+        std::test::assert_eq_int(evidence, 7, "seven receipts: base fmt check verify test diff magnitude");
+        std::test::assert(self.dna.journal.verify_chain(), "chain intact");
+
+        // ---- 2. a verdict naming another digest is refused BY THE REVIEW ---
+        dna::ReviewVerdict <- dna::Verdict { review_id: "m1", subject_digest: "0000000000000000000000000000000000000000", verdict: "approve", reviewer: "riley", authority: "maintainer" };
+        std::time::sleep(100ms);
+        std::test::assert_eq_int(self.refused_seen, 1, "the refusal is published");
+        let mut refused_body = "";
+        i = 0;
+        while i < self.dna.journal.revision() {
+            let e = self.dna.journal.read(i);
+            if e.kind == "review.refused" && e.entity == "m1" { refused_body = e.body; }
+            i = i + 1;
+        }
+        std::test::assert(std::str::contains(refused_body, "digest mismatch"), "journaled as refused by digest: " + refused_body);
+
+        // ---- 3. the maintainer's verdict on the exact candidate settles it -
+        dna::ReviewVerdict <- dna::Verdict { review_id: "m1", subject_digest: candidate, verdict: "approve", reviewer: "riley", authority: "maintainer", comment: "ship it" };
+        std::time::sleep(100ms);
+        std::test::assert_eq_int(self.settled_seen, 1, "settled once");
+        let mut settled_body = "";
+        i = 0;
+        while i < self.dna.journal.revision() {
+            let e = self.dna.journal.read(i);
+            if e.kind == "review.settled" && e.entity == "m1" { settled_body = e.body; }
+            i = i + 1;
+        }
+        std::test::assert_eq_str(settled_body, "approve by riley", "settled in the Journal");
+
+        // ---- 4. a second mutation stays pending; a new Dna re-births it ----
+        let out2 = self.dna.mutate("t2", "feature", "again", "main.hl", 200);
+        std::test::assert_eq_str(out2, "m2: review", out2);
+        let second = dna::Dna { journal: dna::FileJournal { path: journal_path } };
+        std::test::assert_eq_int(second.rehydrated, 1, "only the pending Review is re-born (m1 settled)");
+        std::test::assert_eq_int(second.reviews_open, 1, "and it is a live child");
+        std::test::assert(std::str::contains(second.status(), "\"rehydrated\": 1"), second.status());
+    }
+}
+fn main() { App { }; }
