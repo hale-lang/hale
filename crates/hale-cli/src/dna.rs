@@ -70,7 +70,12 @@ fn host_exec(verb: &str, dir: &Path, args: &[String]) -> ExitCode {
         let host = crate::iris::ensure_built_in(&cache, hale_dna::HOST_SEED, hale_dna::HOST_BIN, "the host")?;
         let membrane = crate::iris::ensure_built_in(&cache, hale_dna::MEMBRANE_SEED, hale_dna::MEMBRANE_BIN, "the membrane client")?;
         let me = std::env::current_exe().map_err(|e| e.to_string())?;
-        let st = Command::new(&host)
+        // exec in place: the pid that ran `hale dna <verb>` IS the host,
+        // so a signal to it — a supervisor's, a test's — reaches the host
+        // rather than an orphaned child that keeps ticking (dozens of
+        // `host node` processes survived their tests before this)
+        use std::os::unix::process::CommandExt;
+        let e = Command::new(&host)
             .arg(verb)
             .arg(&root)
             .arg(&seed_rel)
@@ -81,9 +86,8 @@ fn host_exec(verb: &str, dir: &Path, args: &[String]) -> ExitCode {
             .env("HALE_BIN", &me)
             .env("HALE_DNA_MEMBRANE", &membrane)
             .env("HALE_DNA_TOOLCHAIN", TOOLCHAIN)
-            .status()
-            .map_err(|e| format!("hale dna {verb}: {e}"))?;
-        Ok(st.code().unwrap_or(1))
+            .exec();
+        Err(format!("hale dna {verb}: {e}"))
     };
     match run() {
         Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
@@ -750,8 +754,10 @@ fn ui_cmd(args: &[String]) -> ExitCode {
         let bin = crate::iris::ensure_built_in(&cache, hale_dna::UI_SEED, hale_dna::UI_BIN, "the surface")?;
         let me = std::env::current_exe().map_err(|e| e.to_string())?;
         let _ = sync_record(&root);
-        let st = Command::new(&bin).arg(&port).arg(cache.join(hale_dna::UI_HTML.path)).current_dir(&root).env("HALE_BIN", &me).status().map_err(|e| format!("hale dna ui: {e}"))?;
-        Ok(st.code().unwrap_or(1))
+        // exec in place, for the same reason as the host: the pid is the surface
+        use std::os::unix::process::CommandExt;
+        let e = Command::new(&bin).arg(&port).arg(cache.join(hale_dna::UI_HTML.path)).current_dir(&root).env("HALE_BIN", &me).exec();
+        Err(format!("hale dna ui: {e}"))
     };
     match run() {
         Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
