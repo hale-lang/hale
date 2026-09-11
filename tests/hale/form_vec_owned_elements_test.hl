@@ -1,0 +1,57 @@
+// GH #577 — a vec form owns its elements: what `get` returns is the
+// caller's copy, what `set` and `push` store is the vec's copy. Two
+// items swapped through `get` and `set` used to segfault: `get` handed
+// back the slot's pointer and `set` retired the replaced element's
+// strings under it.
+
+type Row { id: String = ""; state: String = "pending"; note: String = ""; }
+@form(vec)
+locus Rows { capacity { heap items of Row; } }
+
+locus Keeper {
+    params { rows: Rows = Rows { }; }
+    fn swap() {
+        self.rows.push(Row { id: "purpose", note: "first" });
+        self.rows.push(Row { id: "m1", note: "second" });
+        let a = self.rows.get(0) or Row { };
+        let b = self.rows.get(1) or Row { };
+        self.rows.set(0, b) or discard;
+        self.rows.set(1, a) or discard;
+    }
+    fn touch() {
+        let mut r = self.rows.get(0) or Row { };
+        r.state = "settled";
+        self.rows.set(0, r) or discard;
+    }
+    fn twice() {
+        let v = Row { id: "shared", note: "one value, two slots" };
+        self.rows.push(v);
+        self.rows.push(v);
+        self.rows.set(2, Row { id: "replaced", note: "the other slot must survive" }) or discard;
+    }
+}
+
+fn main() {
+    let k = Keeper { };
+    k.swap();
+    let r0 = k.rows.get(0) or Row { };
+    let r1 = k.rows.get(1) or Row { };
+    std::test::assert_eq_str(r0.id, "m1", "swapped: slot 0 is m1");
+    std::test::assert_eq_str(r0.note, "second", "slot 0 carries m1's note");
+    std::test::assert_eq_str(r1.id, "purpose", "swapped: slot 1 is purpose");
+    std::test::assert_eq_str(r1.note, "first", "slot 1 carries purpose's note");
+    k.touch();
+    let t0 = k.rows.get(0) or Row { };
+    std::test::assert_eq_str(t0.state, "settled", "read-modify-write lands");
+    std::test::assert_eq_str(t0.note, "second", "and keeps the other fields");
+    // a copy from `get` outlives a `set` of its slot
+    let before = k.rows.get(1) or Row { };
+    k.rows.set(1, Row { id: "new", note: "n" }) or discard;
+    std::test::assert_eq_str(before.id, "purpose", "the copy read before the set is still whole");
+    std::test::assert_eq_str(before.note, "first", "including its strings");
+    k.twice();
+    let s3 = k.rows.get(3) or Row { };
+    std::test::assert_eq_str(s3.id, "shared", "one value pushed twice: the other slot survives a set");
+    std::test::assert_eq_str(s3.note, "one value, two slots", "with its strings");
+    std::test::assert_eq_int(k.rows.len(), 4, "four rows");
+}

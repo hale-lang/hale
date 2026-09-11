@@ -429,11 +429,19 @@ vec.set(i, x)         or noop(err);   # swallow OOB
 > freelist immediately, and the deep-copy allocation consults that
 > freelist — steady-state `set` churn ping-pongs between reused
 > blocks instead of growing the arena (~33 B/set and a
-> progressively slower containment walk, pre-fix). Single-owner
-> caveat: a value obtained from `.get` is invalidated by a later
-> `set` to the same slot — holding a get result across a mutation
-> of its slot is out of contract (the same single-owner rule the
-> hashmap forms document).
+> progressively slower containment walk, pre-fix).
+>
+> **The vec owns its elements (GH #577).** `get` returns the
+> CALLER's copy of a heap-bearing element (a String, Bytes, a
+> struct with such fields), allocated in the caller's current arena;
+> `set` and `push` store the VEC's own copy, whatever arena the value
+> came from — a value read from the same vec, or one value pushed
+> twice, never leaves two slots sharing one struct. So a `get` result
+> stays whole across a later `set` of its slot, and the retire above
+> frees only what the vec held. Scalars and locus refs are copied by
+> value as before. (Before this, `get` handed back the slot's pointer
+> and a same-arena value passed through `set` uncopied; two items
+> swapped through `get` and `set` segfaulted.)
 
 ```hale,fragment
 ```

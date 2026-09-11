@@ -4698,6 +4698,23 @@ fn compile_and_exec(
     let _ = std::fs::remove_file(&bin);
     match status {
         Ok(s) => {
+            // GH #577: a program killed by a signal says so — a segfault
+            // that printed nothing used to look like `exit 1`
+            use std::os::unix::process::ExitStatusExt;
+            if let Some(sig) = s.signal() {
+                let name = match sig {
+                    libc::SIGSEGV => "SIGSEGV",
+                    libc::SIGABRT => "SIGABRT",
+                    libc::SIGBUS => "SIGBUS",
+                    libc::SIGFPE => "SIGFPE",
+                    libc::SIGILL => "SIGILL",
+                    libc::SIGKILL => "SIGKILL",
+                    libc::SIGTERM => "SIGTERM",
+                    _ => "signal",
+                };
+                eprintln!("hale run: the program was killed by {name} (signal {sig})");
+                return ExitCode::from((128 + sig).clamp(0, 255) as u8);
+            }
             ExitCode::from(s.code().unwrap_or(1).clamp(0, 255) as u8)
         }
         Err(e) => {

@@ -566,3 +566,7 @@ sorts an id list built by string insertion.
 
 Two frictions in one: the aliasing, and the silence — a segfault in
 a `hale run` program prints nothing, not even that it died by signal.
+
+**FIXED** (GH #577): a vec form owns its elements — `get` returns the
+caller's copy and `set` / `push` store the vec's copy, whatever arena
+the value came from — and `hale run` reports a death by signal.
