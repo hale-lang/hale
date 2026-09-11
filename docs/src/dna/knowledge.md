@@ -108,6 +108,41 @@ So what was ratified today is in the prompt tomorrow, and the
 receipt says which package. With no service running, the package is
 empty and says so; nothing waits.
 
+## What the graph knows besides ideas
+
+The service also projects two things the record already holds. The
+code's **structure** as `init` observed it — loci, topics, bindings,
+effect classes, claims — by kind and name, so an idea has something
+to bind to; and the fleet's **signals**, every `pressure.raised` and
+`concern.raised`, counted per source:
+
+```text
+$ curl -s localhost:8791/structure
+{"rows": 9, "loci": 3, "topics": 2, "bindings": 0, "effect_classes": 1, "claims": 2, "loci_names": "Gateway Ledger TrioGateway", "topic_names": "Orders"}
+$ curl -s localhost:8791/signals
+{"signals": [{"kind": "concern", "source": "org/trio/worker", "what": "mail backlog behind fulfilment", "count": 3, "last_seq": 58}]}
+```
+
+## Ranking inside the bound
+
+A package is bounded first: only ideas bound to the target or above
+it, never a sibling's. Inside that set, the objective ranks. The
+substrate sends what the work is about as the query, and the budget
+keeps the most relevant:
+
+```text
+$ curl -s 'localhost:8791/context?target=org/trio/worker&budget=1&query=retry the mail send'
+{"target": "org/trio/worker", …, "included_n": 1, "ranked": true, "ideas": [{…"text": "retry a mail send once before raising pressure"…}]}
+```
+
+The embedding is deliberately small: a hashed bag of words, the same
+on every machine, rendered as a pgvector literal so Postgres ranks
+with `<=>` and the in-memory store with the same cosine. It cannot
+tell synonyms apart; it can tell a mail objective from an archive
+one, which is what a budget of eight over a wing's practices needs.
+A hosted embedder is the same shape, text in and a vector out, when
+one is worth its cost.
+
 ## Concerns
 
 A **concern** is a child's signal about the part above it. An
@@ -122,5 +157,5 @@ Each is `concern.raised` in the record. Three from one source and it
 becomes a proposal — by that source, bound to its parent, a concern
 by the tower rule — and lands in your queue for ratification. A
 source with no parent has nothing to bind to and is refused, saying
-so. What is not yet here — retrieval by similarity, the application
-publishing its own observations — is the rest of Track K.
+so. What is not yet here — the application publishing its own
+observations, and the learning scenario end to end — is K4.

@@ -762,7 +762,7 @@ locus Dna {
         // organization ratified for this target and folds it into the
         // objective; the editor never reaches knowledge, it receives a
         // package by way of its owner, and its evidence names the package
-        let pkg = self.knowledge_client.package_for(knowledge_target(change_class, self.boundary.child, seed));
+        let pkg = self.knowledge_client.package_for(knowledge_target(change_class, self.boundary.child, seed), objective);
         if self.knowledge_client.ready() {
             let kb = std::json::Builder { };
             kb.begin_object();

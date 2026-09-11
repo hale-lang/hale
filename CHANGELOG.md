@@ -16,6 +16,12 @@ behavior.
 - `hale dna models`: the catalog probed — one line per backend with one small request to each that is permitted; the organization is not started and nothing is journaled.
 - `HostedModel` is `OpenAiChat` (`adapter: openai-chat`), named for what it speaks; `FakeModel { fail_after }` refuses after that many calls, for tests that fail an Attempt on cue.
 
+### DNA: the projections, and ranking inside the bound (GH #583 K3)
+
+- The tail projects the record's `structure.observed` rows into the store by kind and name and its `pressure.raised` / `concern.raised` rows into signals counted per source; `GET /structure` and `GET /signals` answer them.
+- Ranking inside the bound: the client sends the objective as `&query=`, and the bounded set (accepted ideas bound to the target or above it — nothing outside it is retrieved) is ranked by similarity so the budget keeps the most relevant (`ranked_ids`; `ranked: true` in the package). The embedding is lexical (`embed_text`: a hashed, normalized bag of words in 64 dimensions, a pgvector literal); `Pq` ranks with `<=>` over `vector(64)` and creates the extension at open; `Mem` with the same `cosine`.
+- Tests: the store test ranks two practices by a mail and an archive objective (in memory and on Postgres), projects three structure rows into two and counts signals; the context test sends the objective encoded; the CLI test reads the application's loci and topics, the three concerns counted, and a ranked package.
+
 ### DNA: knowledge changes later work; concerns become proposals (GH #583 K2)
 
 - `KnowledgeClient`: the substrate's line to the knowledge service (`url_env: "HALE_DNA_KNOWLEDGE_URL"` in the generated organization; the host sets it under `dev`). When a Mutation opens, the owner asks for the package of the change's target in the tower (`org`, `org/<child>`, `org/<child>/<seed>`), journals `knowledge.consulted`, folds the ratified ideas into the objective the editor receives (a `PRACTICES (…, package <digest>)` block; the record keeps the ask), and names the package on the request, so every model call of the attempt carries `knowledge_bindings: package:<digest> <id>…`. The editor never reaches the service: `group knowledge` in the generated law now names the client.

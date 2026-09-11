@@ -190,6 +190,11 @@ fn init_writes_compose_and_dev_runs_the_knowledge_service_that_tails_the_record(
         std::thread::sleep(Duration::from_millis(300));
     }
     let proposed = wait_row(&app, 60, "concern.proposed", "org/knowing/echo");
+    // ---- K3: the projections and ranking, from the service
+    std::thread::sleep(Duration::from_millis(500));
+    let structure = body(&http(kport, "GET /structure HTTP/1.0\r\nHost: x\r\n\r\n"));
+    let signals = body(&http(kport, "GET /signals HTTP/1.0\r\nHost: x\r\n\r\n"));
+    let ranked = body(&http(kport, "GET /context?target=org%2Fknowing%2Fmailer&budget=1&query=retry%20the%20mail%20send HTTP/1.0\r\nHost: x\r\n\r\n"));
     let rows = journal(&app);
     let (ok, reviews) = hale(&["dna", "review"], &app, &[]);
     let log = std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default();
@@ -201,6 +206,12 @@ fn init_writes_compose_and_dev_runs_the_knowledge_service_that_tails_the_record(
     let kp = rows.iter().filter(|(k, _, b)| k == "knowledge.proposed" && b.contains("\"class\": \"concern\"")).count();
     assert_eq!(kp, 1, "one concern proposed, by the source, bound to org/knowing");
     assert!(ok && reviews.contains("pings arrive twice under load") && reviews.contains("needs board"), "the concern's Review is the Board's:\n{reviews}");
+    // the code's structure as init observed it, projected by kind and name
+    assert!(structure.contains("\"loci_names\": \"") && structure.contains("Echo") && structure.contains("\"topic_names\": \"") && structure.contains("Pings"), "the application's loci and topics: {structure}");
+    // the concerns, counted per source
+    assert!(signals.contains("\"kind\": \"concern\", \"source\": \"org/knowing/echo\", \"what\": \"pings arrive twice under load\", \"count\": 3"), "three concerns counted: {signals}");
+    // ranked inside the bound, by what the work is about
+    assert!(ranked.contains("\"ranked\": true") && ranked.contains("\"included_n\": 1") && ranked.contains(&digest), "ranked: {ranked}");
     // the package: the ratified practice reaches the target's children,
     // with a digest and the revision, and the idea's text and author
     assert!(pkg.contains("\"included_n\": 1") && pkg.contains(&format!("\"included\": \"{digest}\"")) && pkg.contains("\"digest\": \"sha256:") && pkg.contains("\"revision\": "), "the package after ratification:\n{pkg}\n{log}");

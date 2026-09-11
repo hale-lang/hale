@@ -1,0 +1,140 @@
+// dna/knowledge/embed.hl — a lexical embedding for ranking inside the
+// bound (GH #583 K3).
+//
+// Retrieval is by binding and provenance first: the bounded set is the
+// accepted ideas bound to the target or above it, and nothing outside
+// it is ever retrieved. Inside that set, when the caller says what the
+// work is about (the objective), the ideas are RANKED by similarity so
+// the budget keeps the most relevant. The embedding here is a hashed
+// bag of words — no model, deterministic, the same on every machine —
+// rendered as a pgvector literal so Postgres ranks with `<=>` and the
+// in-memory store with the same cosine. A hosted embedder is the same
+// shape later: text in, a literal of DIM floats out.
+
+const DIM: Int = 64;
+
+@form(vec)
+locus Floats { capacity { heap rows of Float; } }
+@form(vec)
+locus Words { capacity { heap rows of String; } }
+
+// `[0.1,-0.2,…]`: the literal pgvector reads and writes.
+@unbounded
+fn render_vector(v: Floats) -> String {
+    let out = std::str::builder_new();
+    std::str::builder_append(out, "[");
+    let mut i = 0;
+    while i < v.len() {
+        if i > 0 { std::str::builder_append(out, ","); }
+        std::str::builder_append(out, to_string(v.get(i) or 0.0));
+        i = i + 1;
+    }
+    std::str::builder_append(out, "]");
+    return std::str::builder_finish(out);
+}
+
+// The literal back into floats; a malformed literal is all zeros.
+@unbounded
+fn parse_vector(lit: String, into: Floats) {
+    let mut i = 0;
+    while i < DIM { into.push(0.0); i = i + 1; }
+    if len(lit) < 2 || lit[0..1] != "[" { return; }
+    let mut rest = lit[1..(len(lit) - 1)];
+    let mut k = 0;
+    while len(rest) > 0 && k < DIM {
+        let c = std::str::index_of(rest, ",");
+        let f = if c < 0 { rest } else { rest[0..c] };
+        into.set(k, std::str::parse_float(f) or 0.0) or discard;
+        if c < 0 { rest = ""; } else { rest = rest[(c + 1)..len(rest)]; }
+        k = k + 1;
+    }
+}
+
+// Each word lands in two buckets with a sign from its hash; the vector
+// is normalized. Empty text is the zero vector.
+@unbounded
+fn embed_text(text: String) -> String {
+    let v = Floats { };
+    let mut i = 0;
+    while i < DIM { v.push(0.0); i = i + 1; }
+    let words = Words { };
+    std::text::tokenize_words_into(std::str::lower(text), words);
+    let mut w = 0;
+    while w < words.len() {
+        let word = words.get(w) or "";
+        w = w + 1;
+        if len(word) < 2 { continue; }
+        let h = std::crypto::sha256(std::bytes::from_string(word));
+        let b1 = (std::bytes::at(h, 0) or 0) % DIM;
+        let b2 = (std::bytes::at(h, 1) or 0) % DIM;
+        let sign = if (std::bytes::at(h, 2) or 0) % 2 == 0 { 1.0 } else { 0.0 - 1.0 };
+        v.set(b1, (v.get(b1) or 0.0) + sign) or discard;
+        v.set(b2, (v.get(b2) or 0.0) + sign * 0.5) or discard;
+    }
+    let mut sum = 0.0;
+    let mut j = 0;
+    while j < DIM { let x = v.get(j) or 0.0; sum = sum + x * x; j = j + 1; }
+    if sum > 0.0 {
+        let norm = std::math::sqrt(sum);
+        let mut k = 0;
+        while k < DIM { v.set(k, (v.get(k) or 0.0) / norm) or discard; k = k + 1; }
+    }
+    return render_vector(v);
+}
+
+// Cosine similarity of two literals; 0 when either is the zero vector.
+@unbounded
+fn cosine(a: String, b: String) -> Float {
+    let va = Floats { };
+    let vb = Floats { };
+    parse_vector(a, va);
+    parse_vector(b, vb);
+    let mut dot = 0.0;
+    let mut na = 0.0;
+    let mut nb = 0.0;
+    let mut i = 0;
+    while i < DIM {
+        let x = va.get(i) or 0.0;
+        let y = vb.get(i) or 0.0;
+        dot = dot + x * y;
+        na = na + x * x;
+        nb = nb + y * y;
+        i = i + 1;
+    }
+    if na == 0.0 || nb == 0.0 { return 0.0; }
+    return dot / (std::math::sqrt(na) * std::math::sqrt(nb));
+}
+
+// `%XX` back to bytes, `+` to a space: what the service reads from a
+// query string the client encoded.
+@unbounded
+fn url_decode(s: String) -> String {
+    let out = std::str::builder_new();
+    let mut i = 0;
+    let n = len(s);
+    while i < n {
+        let c = s[i..(i + 1)];
+        if c == "+" { std::str::builder_append(out, " "); i = i + 1; continue; }
+        if c == "%" && i + 2 < n + 0 && i + 3 <= n {
+            let hx = s[(i + 1)..(i + 3)];
+            let v = hex_pair(hx);
+            if v >= 0 { std::str::builder_append(out, std::str::from_bytes(std::bytes::from_int(v))); i = i + 3; continue; }
+        }
+        std::str::builder_append(out, c);
+        i = i + 1;
+    }
+    return std::str::builder_finish(out);
+}
+
+fn hex_digit(c: String) -> Int {
+    let i = std::str::index_of("0123456789abcdef", std::str::lower(c));
+    return i;
+}
+
+fn hex_pair(hx: String) -> Int {
+    if len(hx) != 2 { return -1; }
+    let a = hex_digit(hx[0..1]);
+    let b = hex_digit(hx[1..2]);
+    if a < 0 || b < 0 { return -1; }
+    return a * 16 + b;
+}

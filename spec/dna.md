@@ -422,9 +422,29 @@ authority.
   with `concern.proposed <source>` naming the digest, once. A source
   with no parent (no `/`) is refused with `knowledge.refused
   concern:<source>`.
-- **Not yet (K3–K4):** the projections and retrieval ranking with
-  `pgvector`; the application side and the learning scenario in the
-  fixture.
+- **Projections and ranking (K3).** The tail also projects the
+  record's `structure.observed` rows (init's loci, topics, bindings,
+  effect classes and claims) into the store by kind and name, the
+  latest row winning, and its `pressure.raised` and `concern.raised`
+  rows into signals counted per (kind, source, what) with the last
+  row's seq: `GET /structure` (counts by kind, the loci and topic
+  names) and `GET /signals` answer them, so the graph has what ideas
+  bind to and what the fleet is saying. Retrieval is by binding and
+  provenance first: the bounded set is the accepted ideas bound to
+  the target or above it, and nothing outside it is retrieved. Inside
+  it, a query — the objective, which the client sends URL-encoded as
+  `&query=` and the substrate passes from the ask — ranks by
+  similarity so the budget keeps the most relevant
+  (`KnowledgeStore.ranked_ids(target, budget, query_vec)`; the package
+  says `ranked: true`; no query is ratification order). The embedding
+  is lexical — `embed_text`: a hashed bag of words in 64 dimensions,
+  normalized, deterministic, rendered as a pgvector literal — so `Pq`
+  ranks with `<=>` over a `vector(64)` column (the store creates the
+  `vector` extension at open and says so when the Postgres has none)
+  and `Mem` with the same `cosine`; a hosted embedder is the same
+  shape later.
+- **Not yet (K4):** the application side and the learning scenario in
+  the fixture.
 
 ## Backends by role
 
