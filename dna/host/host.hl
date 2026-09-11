@@ -90,6 +90,8 @@ locus Host {
         app_log: Int = 0;
         app_bin: String = "";
         observer: Proc = Proc { };
+        knowledge: Proc = Proc { }; // GH #583 K1: the knowledge service, under `dev`
+        knowledge_dsn: String = "";
         handled: String = "\n";
         relayed: String = "\n";
         app_gone_reported: Bool = false;
@@ -129,6 +131,45 @@ locus Host {
         let mut e = "LOTUS_OBS=1\nHALE_BIN=" + self.hale;
         if len(restart_for) > 0 { e = e + "\nHALE_DNA_RESTART_FOR=" + restart_for + "\nHALE_DNA_EXPRESSION=" + expression; }
         return e;
+    }
+    // ---- the knowledge graph's environment (GH #583 K1) ----------------
+    // `dev` relies on docker compose: dna/compose.yaml names the graph's
+    // Postgres; the host brings it up, waits for it, derives the DSN and
+    // runs the knowledge service against it. HALE_DNA_KNOWLEDGE_DSN set
+    // by the operator wins (a Postgres of their own, or `memory`). With
+    // neither compose nor a DSN the host says exactly which it needs and
+    // runs without a knowledge service.
+    fn compose_dsn() -> String {
+        let compose = self.root + "/dna/compose.yaml";
+        if !std::io::fs::file_exists(compose) { return ""; }
+        let have = dna::run_tool("docker\ncompose\nversion");
+        if have.code != 0 { self.say("dna/compose.yaml is here but `docker compose` is not on PATH; set HALE_DNA_KNOWLEDGE_DSN to a Postgres of your own (or `memory`) to run the knowledge service"); return ""; }
+        let up = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nup\n-d\n--wait\nknowledge-db");
+        if up.code != 0 { self.say("docker compose up failed: " + dna::trim_nl(up.stderr)); return ""; }
+        let port = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nport\nknowledge-db\n5432");
+        let hp = dna::trim_nl(port.stdout);
+        let colon = std::str::index_of(hp, ":");
+        if port.code != 0 || colon < 0 { self.say("cannot read the database's port from compose: " + dna::trim_nl(port.stderr)); return ""; }
+        let p = hp[(colon + 1)..len(hp)];
+        return "postgres://dna:dna@127.0.0.1:" + p + "/dna?sslmode=disable";
+    }
+    fn start_knowledge() {
+        let bin = std::env::var("HALE_DNA_KNOWLEDGE_BIN");
+        if len(bin) == 0 { return; }
+        let mut dsn = if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") { std::env::var("HALE_DNA_KNOWLEDGE_DSN") } else { "" };
+        if len(dsn) == 0 { dsn = self.compose_dsn(); }
+        if len(dsn) == 0 {
+            if !std::io::fs::file_exists(self.root + "/dna/compose.yaml") { self.say("no dna/compose.yaml and no HALE_DNA_KNOWLEDGE_DSN: the knowledge service is not running (`hale dna upgrade` writes the compose file)"); }
+            return;
+        }
+        self.knowledge_dsn = dsn;
+        std::io::fs::unlink(self.dna_dir + "/knowledge.log") or discard;
+        let port = if std::env::var_exists("HALE_DNA_KNOWLEDGE_PORT") { std::env::var("HALE_DNA_KNOWLEDGE_PORT") } else { "8791" };
+        self.knowledge = start(self.dna_dir, "knowledge", self.root, self.child_envs("", "") + "\nHALE_DNA_KNOWLEDGE_DSN=" + dsn, bin + "\n" + self.root + "\n" + port);
+        if self.knowledge.pid <= 0 { self.say("cannot start the knowledge service"); return; }
+        let kw = write_text(self.dna_dir + "/knowledge.pid", to_string(self.knowledge.pid)) or false;
+        let kd = write_text(self.dna_dir + "/knowledge.dsn", dsn) or false;
+        self.say("knowledge service (pid " + to_string(self.knowledge.pid) + ") at :" + port + " over " + (if dsn == "memory" { "an in-memory store" } else { "postgres" }));
     }
     fn remove_sockets() {
         std::io::fs::unlink(self.dna_dir + "/" + VERDICT_SOCK) or discard;
@@ -433,8 +474,9 @@ locus Host {
         let bound = self.wait_membrane(20);
         if bound { self.say("membrane bound at " + self.dna_dir); }
         else if exit_code(self.org) == -2 { self.say("the membrane did not come up within 20s; the organization runs unobserved"); }
-        // 4. dev: the application too, under this host
+        // 4. dev: the knowledge service and the application too, under this host
         if self.verb == "dev" {
+            self.start_knowledge();
             let bin = self.build_seed(self.seed_dir());
             if len(bin) == 0 { stop_proc(self.org); std::process::exit(1); }
             self.app_bin = bin;
@@ -461,6 +503,7 @@ locus Host {
         }
         self.org_log = drain_log(self.org, self.org_log);
         if self.observer.pid > 0 { stop_proc(self.observer); }
+        if self.knowledge.pid > 0 { stop_proc(self.knowledge); std::io::fs::unlink(self.dna_dir + "/knowledge.pid") or discard; }
         if self.app.pid > 0 { stop_proc(self.app); }
         std::io::fs::unlink(self.dna_dir + "/org.pid") or discard;
         std::io::fs::unlink(self.dna_dir + "/app.pid") or discard;

@@ -1,0 +1,196 @@
+// dna/knowledge/service — the knowledge service (GH #583 K1).
+//
+// A Hale program that owns the graph: it tails the record
+// (`knowledge.*` rows from its watermark on, each digest resolved to
+// its receipt) into a KnowledgeStore and answers over HTTP. Git is the
+// sole authority; the store is the live, shared, queryable half. Run
+// by `hale dna dev` beside the organization (the DSN from compose) or
+// as an instance in the plan with a node; `hale dna knowledge` asks it.
+//
+//   knowledge <root> <port>   with HALE_DNA_KNOWLEDGE_DSN in the environment
+//                             ("memory" runs the in-memory store: dev with nothing)
+//
+// Every request applies the record first (the reader sees it as it is
+// now), so there is no tick to fall behind.
+// GET /            a summary: store kind, watermark, counts
+// GET /context?target=<locus path>&budget=<n>
+//                  the bounded ContextPackage a position would receive
+// GET /idea/<digest>
+//                  one idea with its ratification row
+// POST /apply      tail the record and report what was applied
+
+import "../../core" as dna;
+import ".." as know;
+
+fn arg(i: Int) -> String { return std::env::arg_or(i, ""); }
+
+fn count_words(s: String) -> Int {
+    let mut n = 0;
+    let mut rest = s + " ";
+    while len(rest) > 1 {
+        let sp = std::str::index_of(rest, " ");
+        if sp > 0 { n = n + 1; }
+        rest = rest[(sp + 1)..len(rest)];
+    }
+    return n;
+}
+
+fn json(body: String) -> std::http::Response {
+    return std::http::Response { status: 200, content_type: "application/json", headers: "Cache-Control: no-store", body: body };
+}
+
+locus Service {
+    params {
+        root: String = ".";
+        store: know::KnowledgeStore = know::Mem { };
+        j: dna::GitJournal = dna::GitJournal { repo: ".", author: "knowledge" };
+        receipts: dna::GitReceipts = dna::GitReceipts { repo: "." };
+        applied: Int = 0;
+        last_error: String = "";
+        ticks: Int = 0;
+    }
+    // Tail the record: fetch is the host's job; this reads what the
+    // repository has now (another process — the organization, a CLI —
+    // may have moved the ref since the last read).
+    fn apply() -> know::Applied {
+        let moved = self.j.refresh();
+        let r = know::apply_record(self.store, self.j, self.receipts);
+        self.applied = self.applied + r.ratified + r.proposed + r.declined;
+        self.last_error = r.error;
+        return r;
+    }
+    fn summary() -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("store", self.store.kind());
+        b.int_field("watermark", self.store.watermark());
+        b.int_field("record", self.j.revision());
+        b.int_field("ideas", self.store.count("ideas"));
+        b.int_field("ratified", self.store.count("ratified"));
+        b.int_field("bindings", self.store.count("bindings"));
+        b.int_field("ticks", self.ticks);
+        b.string_field("error", self.last_error);
+        b.end_object();
+        return b.result();
+    }
+    fn package(target: String, budget: Int) -> String {
+        let ids = self.store.context_ids(target, budget);
+        let n = if len(ids) == 0 { 0 } else { count_words(ids) };
+        let d = dna::digest_of(target + "@" + to_string(self.store.watermark()) + ":" + ids);
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("target", target);
+        b.int_field("revision", self.store.watermark());
+        b.string_field("digest", d);
+        b.string_field("included", ids);
+        b.int_field("included_n", n);
+        b.begin_array_field("ideas");
+        let mut rest = ids + " ";
+        while len(rest) > 1 {
+            let sp = std::str::index_of(rest, " ");
+            let id = rest[0..sp];
+            rest = rest[(sp + 1)..len(rest)];
+            if len(id) == 0 { continue; }
+            let s = self.store.idea(id);
+            let ib = std::json::Builder { };
+            ib.begin_object();
+            ib.string_field("id", s.idea.id);
+            ib.string_field("kind", s.idea.kind);
+            ib.string_field("text", s.idea.text);
+            ib.string_field("author", s.idea.author);
+            ib.int_field("ratified_seq", s.ratified_seq);
+            ib.end_object();
+            b.value(ib.result());
+        }
+        b.end_array();
+        b.end_object();
+        return b.result();
+    }
+    // Every request applies the record first: the reader sees the
+    // record as it is now, and the one Service the server holds is the
+    // one that tails — no second instance to keep in step.
+    fn handle(req: std::http::Request) -> std::http::Response {
+        self.ticks = self.ticks + 1;
+        let fresh = self.apply();
+        let ctx = std::http::build_context(req);
+        if std::http::is_route(ctx, "GET", "/") { return json(self.summary()); }
+        if std::http::is_route(ctx, "GET", "/context") {
+            let target = std::str::replace(std::http::query_param(ctx.params, "target"), "%2F", "/");
+            let b = std::http::query_param(ctx.params, "budget");
+            let budget = if len(b) > 0 { std::str::parse_int(b) or 8 } else { 8 };
+            return json(self.package(target, budget));
+        }
+        if std::str::starts_with(req.path, "/idea/") && req.method == "GET" {
+            let s = self.store.idea(req.path[6..len(req.path)]);
+            if !s.present { return std::http::Response { status: 404, content_type: "application/json", body: "{\"error\": \"no such idea\"}" }; }
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("id", s.idea.id);
+            b.string_field("kind", s.idea.kind);
+            b.string_field("text", s.idea.text);
+            b.string_field("author", s.idea.author);
+            b.string_field("provenance", s.idea.provenance);
+            b.bool_field("accepted", s.idea.accepted);
+            b.int_field("ratified_seq", s.ratified_seq);
+            b.end_object();
+            return json(b.result());
+        }
+        if std::http::is_route(ctx, "POST", "/apply") {
+            let r = self.apply();
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.int_field("rows", r.rows);
+            b.int_field("ratified", r.ratified);
+            b.int_field("proposed", r.proposed);
+            b.int_field("declined", r.declined);
+            b.int_field("watermark", r.watermark);
+            b.string_field("error", r.error);
+            b.end_object();
+            return json(b.result());
+        }
+        return std::http::Response { status: 404, content_type: "application/json", body: "{\"error\": \"no such route\"}" };
+    }
+}
+
+main locus Knowledge {
+    params {
+        root: String = ".";
+        port: Int = 8791;
+        dsn: String = "";
+        srv: std::http::Server = std::http::Server { port: 8791, handler: Service { } };
+    }
+    placement { srv: cooperative(pool = io); }
+    run() {
+        // the server's Service applies the record on every request; this
+        // loop only holds the process up (and returns once under ONESHOT)
+        while true {
+            if std::env::var_exists("HALE_DNA_ONESHOT") { return; }
+            std::time::sleep(1s);
+        }
+    }
+}
+
+fn main() {
+    let root = if len(arg(1)) > 0 { arg(1) } else { "." };
+    let port = std::str::parse_int(arg(2)) or 8791;
+    let dsn = if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") { std::env::var("HALE_DNA_KNOWLEDGE_DSN") } else { "" };
+    if len(dsn) == 0 {
+        eprintln("hale dna knowledge: HALE_DNA_KNOWLEDGE_DSN is not set (a postgres:// URL, or `memory` for a store that lives only as long as this process)");
+        std::process::exit(2);
+    }
+    if dsn == "memory" {
+        eprintln("hale dna knowledge: in-memory store at :", port, " over ", root, " (nothing durable; set a postgres:// DSN for a shared graph)");
+        Knowledge {
+            root: root, port: port, dsn: dsn,
+            srv: std::http::Server { port: port, handler: Service { root: root, store: know::Mem { }, j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root } } }
+        };
+        return;
+    }
+    let d = know::parse_dsn(dsn);
+    if !d.ok { eprintln("hale dna knowledge: HALE_DNA_KNOWLEDGE_DSN: ", d.why); std::process::exit(2); }
+    eprintln("hale dna knowledge: postgres at ", d.host, ":", d.port, "/", d.database, ", serving :", port, " over ", root);
+    Knowledge {
+        root: root, port: port, dsn: dsn,
+        srv: std::http::Server { port: port, handler: Service { root: root, store: know::Pq { conn: know::pq_conn(d) }, j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root } } }
+    };
+}

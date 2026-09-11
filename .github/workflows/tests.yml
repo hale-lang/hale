@@ -129,6 +129,25 @@ jobs:
       fail-fast: false
       matrix:
         partition: [1, 2, 3, 4]
+    # GH #583 K1: the knowledge store's Postgres half runs against a
+    # service container; `dna/tests/knowledge_store_test.hl` reads the
+    # DSN and skips the half when it is unset (a laptop without one).
+    services:
+      knowledge-db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: dna
+          POSTGRES_PASSWORD: dna
+          POSTGRES_DB: dna
+        ports:
+          - 5480:5432
+        options: >-
+          --health-cmd "pg_isready -U dna"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      HALE_DNA_KNOWLEDGE_DSN: postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable
     steps:
       - uses: actions/checkout@v4
 

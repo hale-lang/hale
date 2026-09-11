@@ -27,6 +27,8 @@ models  found   OPENAI_API_KEY set, no ollama on PATH
 models  frontier = gpt-4o · fast = gpt-4o-mini (OPENAI_API_KEY) · desk = llama3 (ollama at 127.0.0.1:11434, not found)
 models  leader, editor, agent: deep = frontier, quick = fast, private = desk · budget 25.00 USD a day (`hale dna models` probes them)
 created …/chat/dna/org/main.hl
+created …/chat/dna/compose.yaml
+knowledge dna/compose.yaml: `hale dna dev` brings its Postgres up and runs the knowledge service against it (docker compose on PATH); `hale dna run` needs HALE_DNA_KNOWLEDGE_DSN
 kept    …/chat/main.hl (the application is not modified; the organization oversees it from dna/org)
 edited  …/chat/hale.toml ([claims] no_base, [environments.local], [environments.org])
 seeded  refs/dna/journal (7 event(s): application.attached, structure.observed, responsibility.proposed, review.requested)
@@ -40,6 +42,7 @@ your application. What appeared:
 | **The purpose.** One sentence: what this codebase is for. The first review asks you to ratify it. | `dna/org/purpose.hl` | yes — edit it |
 | **The organization.** The Board, the Leader and its grant, the gateways. Ordinary Hale source; `hale check` validates it. | `dna/org/main.hl` | yes — edit it |
 | **The catalog.** Which model each position calls, and the budget, written from what your machine had. `hale dna models` probes it. | `dna/org/models.hl` | yes — edit it |
+| **The knowledge graph's environment.** Its Postgres, for `hale dna dev` through docker compose. | `dna/compose.yaml` | yes — edit it |
 | **The law.** What no position may ever do, enforced by the compiler against the wiring you actually built. Add to it; don't weaken it. | `dna/org/law.hl` | yes — extend it |
 | **The toolchain's part.** The DNA itself, pinned to your `hale` version. Ignored by git; `hale dna upgrade` refreshes it. | `vendor/dna/` | no |
 | **The record.** Everything the organization does, one commit per event, plus receipts and leases. Not files: refs in your repository. | `refs/dna/*` | no — but it's git |

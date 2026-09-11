@@ -1,0 +1,86 @@
+// pond/pq/stream — dual-transport dispatch (plaintext TCP vs TLS).
+//
+// std::io::tls exposes only flat path-calls (connect/upgrade/send_bytes/
+// recv_bytes/recv_into/close/...) — there is NO tls Stream locus, and a
+// TLS handle is an index into an opaque handle table, NOT a kernel fd.
+// Handing a TLS handle to std::io::tcp::Stream would treat that table
+// index as a raw fd and corrupt/crash. So every pq I/O site routes
+// through these helpers, branching on the PgConn's `tls` flag between
+// the TLS handle API and the plaintext TCP API.
+//
+// The recon spike (daydream-0v2) confirmed std::io::tls and std::io::tcp
+// recv collapse EOF/error/timeout to a length-0 Bytes IDENTICALLY, so
+// pq's rx_buf/recv_chunk accumulation loop transfers unchanged over TLS.
+//
+// TRANSPORT CHOICE (deviation from the keepalive.hl precedent — proven
+// on this hale toolchain, see FRICTION.log): the plaintext branch uses
+// the std::io::tcp::Stream LOCUS methods (send_bytes/recv_bytes), the
+// same proven path pq has always used and the SCRAM live gates exercise.
+// keepalive.hl's TCP branch calls the free functions
+// std::io::tcp::__send_bytes / __recv_bytes instead — but on the pinned
+// hale binary those SEGFAULT natively (verified in isolation: a raw-fd
+// __send_bytes returns 0 and the following __recv_bytes crashes, whereas
+// the Stream locus round-trips cleanly). The TLS branch has no Stream
+// locus to fall back on, so it uses the flat std::io::tls calls, which
+// DO work natively (also verified end to end against a TLS postgres).
+//
+// `handle` is the PgConn.sock field: a raw fd when tls=false, a TLS
+// handle (g_tls_entries index) when tls=true.
+//
+// SCHEDULER CAVEAT (spike finding, daydream-0v2): std::io::tls has NO
+// async_io integration — its recv does a blocking SSL_read that parks
+// the OS thread, whereas std::io::tcp yields on an async_io pool.
+// Harmless for pq's documented ordinary-cooperative-pool placement
+// (where recv blocks either way), but a TLS PgConn/PgPool must NOT be
+// placed on an async_io pool until hale grows non-blocking TLS reads —
+// it would starve sibling coros that plain TCP would not.
+
+// __send_raw — send `b` over the connection's transport. The send byte
+// count is unreliable across transports on this toolchain (both tls and
+// Stream sends can report 0 while still delivering), so nothing is
+// returned; a failed send surfaces as a length-0 recv downstream, the
+// same contract the rx loop already handles.
+//
+// No SHORT WRITE risk (B5): discarding the count is safe because neither
+// transport can partially send. std::io::tls::send_bytes
+// (lotus_tls_send_bytes) LOOPS on SSL_write, advancing until the whole
+// buffer is written, and returns success only when 0 bytes remain (or -1
+// on error) — it never reports a short write, so a large pgwire message
+// (e.g. big exec_params args) can't be misframed. The plaintext Stream
+// send delivers the whole buffer likewise. A wholly-failed send is what
+// surfaces downstream as the length-0 recv.
+fn __send_raw(handle: Int, is_tls: Bool, b: Bytes) {
+    if is_tls {
+        std::io::tls::send_bytes(handle, b);
+    } else {
+        // owns_fd: false is LOAD-BEARING — a default (owning) Stream
+        // closes conn_fd on dissolve, which fires when this transient
+        // wrapper drops at fn-return, killing the connection before the
+        // next recv. The PgConn owns self.sock and closes it explicitly
+        // (close()/open()-teardown via __close_handle), so this wrapper
+        // must BORROW.
+        let s = std::io::tcp::Stream { conn_fd: handle, owns_fd: false };
+        // hale#210 surface: a send failure is deliberately swallowed here —
+        // per the contract above, it surfaces downstream as the length-0 recv.
+        s.send_bytes(b) or discard;
+    }
+}
+
+// __recv_raw — read up to `max_bytes`. A length-0 return means
+// EOF/error/retryable collapsed (identical contract on both transports).
+fn __recv_raw(handle: Int, is_tls: Bool, max_bytes: Int) -> Bytes {
+    if is_tls { return std::io::tls::recv_bytes(handle, max_bytes); }
+    // owns_fd: false — borrow, do not close on dissolve (see __send_raw).
+    let s = std::io::tcp::Stream { conn_fd: handle, owns_fd: false };
+    return s.recv_bytes(max_bytes) or b""; // hale#210: errors collapse to length-0
+}
+
+// __close_handle — close the connection via the right transport. For TLS
+// this SSL_free's the session AND closes the underlying fd; for plain TCP
+// it closes the fd. A negative handle is a no-op (never opened / already
+// torn down). std::io::tcp::__close_fd is the free fn pq has always used
+// for teardown (proven), unlike the send/recv free fns above.
+fn __close_handle(handle: Int, is_tls: Bool) {
+    if handle < 0 { return; }
+    if is_tls { std::io::tls::close(handle); } else { std::io::tcp::__close_fd(handle); }
+}

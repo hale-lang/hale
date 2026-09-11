@@ -7,6 +7,8 @@ hale dna init [app-dir]      generate the organization (dna/org) for an existing
 hale dna new <name>          a greenfield application with its organization
 hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain (and write a catalog for an organization from before it)
 hale dna models [project]    the catalog (dna/org/models.hl): every backend, one small request to each
+hale dna knowledge [project] [--port N]
+                             the knowledge service in the foreground (HALE_DNA_KNOWLEDGE_DSN: postgres://…, or memory)
 hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]
                              the organization AND the application under one host: rebuild and
                              restart the application on an apply, watch the window, report back
@@ -137,6 +139,8 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `models.hl` | `ModelRouter`, `OpenAiChat`, `AnthropicMessages`, `HarnessModel`, `LocalModel`, `FakeModel`, `HostedCredential` (with its `scheme`), `Confinement` (`Bubblewrap`, `NoConfinement`), `probe` |
 | `budget.hl` | `BudgetPolicy`, `Budget` (the substrate's one counter) |
 | `tape.hl` | `RecordedModel` (record and replay over any backend) |
+
+Beside the core, `dna/knowledge` (the `KnowledgeStore` interface, `Pq`, `Mem`, `apply_record`), `dna/knowledge/service` (the service `hale dna knowledge` and `hale dna dev` run) and `dna/pond` (pond's `db` and `pq`, pinned):
 | `knowledge.hl` | semantic memory: ideas, edges, bindings |
 | `workspace.hl` | `IsolatedWorktrees`, `LocalGit`, `MutationGateway` |
 | `editing.hl` | `WorktreeTools`, `SourceEditor` |

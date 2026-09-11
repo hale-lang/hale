@@ -1,0 +1,75 @@
+// dna/knowledge/tail.hl — the record applied into the store (GH #583 K1).
+//
+// The service is a CONSUMER of the record: it reads `knowledge.*` rows
+// from the store's watermark on, resolves each ratified digest to its
+// receipt (the canonical document), and upserts by digest. Git is the
+// sole authority: nothing in the store becomes ratified except from a
+// `knowledge.ratified` row, and after a crash the tail resumes from
+// the watermark and converges. The proposed and declined tiers are
+// kept too, so the graph shows what was asked and what was refused.
+
+type Applied {
+    rows: Int = 0; // rows walked
+    ratified: Int = 0;
+    proposed: Int = 0;
+    declined: Int = 0;
+    watermark: Int = 0; // the next seq to apply
+    error: String = "";
+}
+
+// The document a digest names, as an Idea whose id IS the digest.
+fn idea_of(digest: String, doc: String, provenance: String, accepted: Bool, revision: Int) -> dna::Idea {
+    return dna::Idea {
+        id: digest,
+        kind: std::json::find_string_field(doc, "kind"),
+        text: std::json::find_string_field(doc, "text"),
+        author: std::json::find_string_field(doc, "author"),
+        provenance: provenance, revision: revision, accepted: accepted
+    };
+}
+
+// Apply every knowledge row from the watermark to the record's end.
+// Bounded by the record.
+@unbounded
+fn apply_record(store: KnowledgeStore, j: dna::Journal, receipts: dna::Receipts) -> Applied {
+    let mut out = Applied { watermark: store.watermark() };
+    let n = j.revision();
+    let mut i = out.watermark;
+    while i < n {
+        let e = j.read(i);
+        out.rows = out.rows + 1;
+        if e.kind == "knowledge.ratified" || e.kind == "knowledge.proposed" || e.kind == "knowledge.declined" {
+            let digest = e.entity;
+            let raw = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+            let doc = receipts.read(raw);
+            if len(doc) == 0 {
+                out.error = "no receipt for " + digest + " (row " + to_string(i) + ")";
+                return out;
+            }
+            let target = std::json::find_string_field(doc, "target");
+            let class = std::json::find_string_field(e.body, "class");
+            if e.kind == "knowledge.ratified" {
+                if !store.upsert(idea_of(digest, doc, "ratified", true, i), i) { out.error = store.last_error(); return out; }
+                if !store.bind(dna::KnowledgeBinding { idea: digest, target: target, author: std::json::find_string_field(doc, "author"), class: class }) { out.error = store.last_error(); return out; }
+                out.ratified = out.ratified + 1;
+            } else if e.kind == "knowledge.proposed" {
+                let have = store.idea(digest);
+                // a proposal never overwrites its own ratification (replay order is the record's, but be safe)
+                if !have.present || !have.idea.accepted {
+                    if !store.upsert(idea_of(digest, doc, "proposed", false, i), 0) { out.error = store.last_error(); return out; }
+                }
+                out.proposed = out.proposed + 1;
+            } else {
+                let have = store.idea(digest);
+                if !have.present || !have.idea.accepted {
+                    if !store.upsert(idea_of(digest, doc, "declined", false, i), 0) { out.error = store.last_error(); return out; }
+                }
+                out.declined = out.declined + 1;
+            }
+        }
+        i = i + 1;
+        if !store.set_watermark(i) { out.error = store.last_error(); return out; }
+        out.watermark = i;
+    }
+    return out;
+}

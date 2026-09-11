@@ -1,0 +1,37 @@
+// pond/db — bind parameters for parameterized queries.
+//
+// Args is an ordered list of bind values for the extended-query
+// protocol ($1, $2, ... placeholders). Values are carried as
+// their text representation (postgres text-format params parse
+// "123"->int, "0.1"->numeric, "t"->bool, etc); NULL is a distinct
+// marker, not the empty string. Build with add() / add_null(),
+// pass to driver.exec_params / query_params.
+//
+//   let a = db::Args { };
+//   a.add("KKN:S:btc-usd"); a.add("0.1"); a.add_null();
+//   driver.exec_params("INSERT INTO contract (symbol,min_tick,note) VALUES ($1,$2,$3)", a);
+
+type ArgVal {
+    val: String = "";
+    is_null: Bool = false;
+}
+
+@form(vec)
+locus Args {
+    params {
+        n: Int = 0; // tracked count (don't rely on synthesized len shape)
+    }
+    capacity { heap data of ArgVal; }
+
+    fn add(s: String) {
+        self.push(ArgVal { val: s, is_null: false });
+        self.n = self.n + 1;
+    }
+    fn add_null() {
+        self.push(ArgVal { val: "", is_null: true });
+        self.n = self.n + 1;
+    }
+    fn count() -> Int { return self.n; }
+    fn val_at(i: Int) -> String { let a = self.get(i) or ArgVal { }; return a.val; }
+    fn null_at(i: Int) -> Bool { let a = self.get(i) or ArgVal { }; return a.is_null; }
+}

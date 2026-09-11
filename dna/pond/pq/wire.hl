@@ -1,0 +1,374 @@
+// pond/pq/wire — PostgreSQL frontend/backend protocol v3 codec.
+//
+// Pure-Hale pgwire over std::io::tcp — no FFI. Covers the subset
+// the DbDriver surface needs: StartupMessage, simple Query ('Q'),
+// and parsing the backend's RowDescription ('T') / DataRow ('D')
+// / CommandComplete ('C') / ErrorResponse ('E') / ReadyForQuery
+// ('Z') / Authentication ('R') / ParameterStatus ('S') /
+// BackendKeyData ('K') / NoticeResponse ('N').
+//
+// Auth: trust (server sends AuthenticationOk immediately) and
+// SCRAM-SHA-256 (AuthenticationSASL exchange; the crypto core lives
+// in scram.hl, the framing below, the sequencing in pq.hl's
+// __sasl_exchange). MD5 auth is still unsupported.
+//
+// v0 assumptions:
+//   - simple query protocol (text result format). Values come
+//     back as text; we join columns with \t, rows with \n.
+//   - BE ints via arithmetic (x - (x/256)*256 for mod 256), same
+//     idiom as pond/websocket/frame.hl. (Hale v1 DOES have bitwise
+//     ops — see crypto/util.hl / scram.hl — but the arithmetic form
+//     is kept here for consistency with the rest of the codec.)
+
+// ===== big-endian int helpers =====
+
+// be32_append — append `n` as 4 big-endian bytes to a builder.
+fn be32_append(b: std::bytes::BytesBuilder, n: Int) {
+    let b3 = (n / 16777216) - ((n / 16777216) / 256) * 256;
+    let b2 = (n / 65536) - ((n / 65536) / 256) * 256;
+    let b1 = (n / 256) - ((n / 256) / 256) * 256;
+    let b0 = n - (n / 256) * 256;
+    b.append(std::bytes::from_int(b3));
+    b.append(std::bytes::from_int(b2));
+    b.append(std::bytes::from_int(b1));
+    b.append(std::bytes::from_int(b0));
+}
+
+fn be16_append(b: std::bytes::BytesBuilder, n: Int) {
+    let b1 = (n / 256) - ((n / 256) / 256) * 256;
+    let b0 = n - (n / 256) * 256;
+    b.append(std::bytes::from_int(b1));
+    b.append(std::bytes::from_int(b0));
+}
+
+fn byte_at(buf: Bytes, i: Int) -> Int {
+    return std::bytes::at(buf, i) or 0;
+}
+
+fn read_be32(buf: Bytes, off: Int) -> Int {
+    return byte_at(buf, off) * 16777216
+        + byte_at(buf, off + 1) * 65536
+        + byte_at(buf, off + 2) * 256
+        + byte_at(buf, off + 3);
+}
+
+fn read_be16(buf: Bytes, off: Int) -> Int {
+    return byte_at(buf, off) * 256 + byte_at(buf, off + 1);
+}
+
+// ===== outbound messages =====
+
+// build_startup — the v3.0 StartupMessage. No type byte (startup
+// is special): [Int32 len][Int32 196608][k\0v\0...\0].
+fn build_startup(user: String, database: String) -> Bytes {
+    let body = std::bytes::BytesBuilder { initial_cap: 128 };
+    // protocol 3.0 = 196608 (0x00030000)
+    be32_append(body, 196608);
+    __append_cstr(body, "user");
+    __append_cstr(body, user);
+    __append_cstr(body, "database");
+    __append_cstr(body, database);
+    body.append(std::bytes::from_int(0)); // terminating empty key
+    let payload = body.snapshot();
+    let total = len(payload) + 4; // +4 for the length field itself
+
+    let out = std::bytes::BytesBuilder { initial_cap: total + 4 };
+    be32_append(out, total);
+    out.append(payload);
+    return out.finish();
+}
+
+// build_query — simple Query: [Byte 'Q'][Int32 len][sql\0].
+fn build_query(sql: String) -> Bytes {
+    let sql_bytes = std::bytes::from_string(sql);
+    let body_len = len(sql_bytes) + 1 + 4; // sql + NUL + length field
+    let out = std::bytes::BytesBuilder { initial_cap: body_len + 1 };
+    out.append(std::bytes::from_int(81)); // 'Q' = 0x51 = 81
+    be32_append(out, body_len);
+    out.append(sql_bytes);
+    out.append(std::bytes::from_int(0)); // NUL terminator
+    return out.finish();
+}
+
+// build_terminate — [Byte 'X'][Int32 4]. Graceful close.
+fn build_terminate() -> Bytes {
+    let out = std::bytes::BytesBuilder { initial_cap: 5 };
+    out.append(std::bytes::from_int(88)); // 'X' = 88
+    be32_append(out, 4);
+    return out.finish();
+}
+
+// build_ssl_request — the pgwire SSLRequest preamble. UNLIKE every other
+// frontend message this has NO type byte: it is exactly 8 raw bytes —
+// [Int32 8][Int32 80877103] — sent over the PLAINTEXT socket immediately
+// after connect(), before StartupMessage. 80877103 (0x04D2162F) is the
+// reserved "protocol version" that means "please negotiate SSL". The
+// server replies with a SINGLE byte, unframed: 'S' (83) = TLS accepted
+// (upgrade the fd), 'N' (78) = TLS not available. See pq.hl
+// __negotiate_tls for the reply handling.
+fn build_ssl_request() -> Bytes {
+    let out = std::bytes::BytesBuilder { initial_cap: 8 };
+    be32_append(out, 8); // length, includes the length field itself
+    be32_append(out, 80877103); // SSLRequest magic (1234 << 16 | 5679)
+    return out.finish();
+}
+
+// ===== SASL (SCRAM-SHA-256) outbound messages =====
+
+// build_sasl_initial — SASLInitialResponse:
+//   ['p'][Int32 len]["SCRAM-SHA-256"\0][Int32 client-first-len][client-first]
+// The mechanism name is a NUL-terminated cstr; the client-first bytes
+// are length-prefixed (Int32) and NOT NUL-terminated. `client_first`
+// is the full "n,,n=,r=<nonce>" (gs2 header + client-first-bare).
+fn build_sasl_initial(client_first: String) -> Bytes {
+    let cf = std::bytes::from_string(client_first);
+    let body = std::bytes::BytesBuilder { initial_cap: len(cf) + 32 };
+    __append_cstr(body, "SCRAM-SHA-256");
+    be32_append(body, len(cf));
+    body.append(cf);
+    let payload = body.snapshot();
+    let out = std::bytes::BytesBuilder { initial_cap: len(payload) + 5 };
+    out.append(std::bytes::from_int(112)); // 'p' = 112
+    be32_append(out, len(payload) + 4);
+    out.append(payload);
+    return out.finish();
+}
+
+// build_sasl_response — SASLResponse:
+//   ['p'][Int32 len][client-final]
+// The body is the raw client-final-message "c=biws,r=<nonce>,p=<proof>"
+// — no mechanism, no length prefix (unlike the initial response).
+fn build_sasl_response(client_final: String) -> Bytes {
+    let cf = std::bytes::from_string(client_final);
+    let out = std::bytes::BytesBuilder { initial_cap: len(cf) + 5 };
+    out.append(std::bytes::from_int(112)); // 'p' = 112
+    be32_append(out, len(cf) + 4);
+    out.append(cf);
+    return out.finish();
+}
+
+// ===== Authentication ('R') message parsers =====
+
+// sasl_r_code — the Int32 sub-code of an Authentication ('R') message,
+// located right after the type byte + length field (offset 5):
+//   0 = AuthenticationOk, 10 = AuthenticationSASL,
+//   11 = AuthenticationSASLContinue, 12 = AuthenticationSASLFinal.
+fn sasl_r_code(body: Bytes) -> Int {
+    return read_be32(body, 5);
+}
+
+// sasl_r_text — the text payload of a SASLContinue/SASLFinal message:
+// everything after the Int32 sub-code (offset 9) to the end of the
+// frame (`total`). Code 11 -> server-first-message; code 12 ->
+// server-final-message ("v=<ServerSignature>").
+fn sasl_r_text(body: Bytes, total: Int) -> String {
+    return std::str::from_bytes(std::bytes::slice(body, 9, total));
+}
+
+// ===== AuthenticationSASL ('R' code 10) mechanism list =====
+//
+// The body of an AuthenticationSASL message is:
+//   ['R'][Int32 len][Int32 10][mech-1\0][mech-2\0]...[\0]
+// i.e. after the Int32 sub-code (offset 9) a sequence of NUL-terminated
+// mechanism-name cstrs, terminated by an empty string (a lone NUL). The
+// server advertises which SASL mechanisms it will accept; the client
+// MUST pick one it supports (RFC 4422). pq speaks only plain
+// SCRAM-SHA-256 (no channel binding, so never -PLUS — advertising 'y'
+// against a -PLUS server would be a mandatory reject per RFC 5802 §6),
+// so before starting the exchange pq.hl verifies the server actually
+// offered SCRAM-SHA-256 via sasl_offers_scram_sha256; if not it fails
+// with a clear "no mutually supported SASL mechanism" error naming what
+// the server DID offer (sasl_mechanisms) rather than an opaque
+// auth_failed deep in the handshake.
+
+// cstr_end — the index of the NUL terminating the cstr that starts at
+// `off`, or `limit` if none is found before it. Advances by BYTES (never
+// a String round-trip), so it is UTF-8-length-exact. The single shared
+// walker for stepping over NUL-terminated fields: the SASL mechanism
+// list below AND pq.hl's ErrorResponse field walk (__parse_error_fields)
+// both use it (pq.hl is a sibling in this seed, so it sees this free fn
+// without import).
+fn cstr_end(buf: Bytes, off: Int, limit: Int) -> Int {
+    let mut e = off;
+    while e < limit {
+        if byte_at(buf, e) == 0 { return e; }
+        e = e + 1;
+    }
+    return limit;
+}
+
+// sasl_mechanisms — the advertised mechanism names from an
+// AuthenticationSASL body, joined with ", " for a diagnostic error
+// detail. Empty string if none are present.
+// @unbounded: concatenates the server's advertised mechanism list, bounded by the message.
+@unbounded
+fn sasl_mechanisms(body: Bytes, total: Int) -> String {
+    let mut off = 9;
+    let mut out = "";
+    let mut first = true;
+    while off < total {
+        let end = cstr_end(body, off, total);
+        if end <= off { off = total; } // lone NUL: list terminator
+        else {
+            let name = std::str::from_bytes(std::bytes::slice(body, off, end));
+            if !first { out = out + ", "; }
+            out = out + name;
+            first = false;
+            off = end + 1;
+        }
+    }
+    return out;
+}
+
+// sasl_offers_scram_sha256 — whether the exact mechanism "SCRAM-SHA-256"
+// is among those advertised in an AuthenticationSASL body. A server
+// offering only "SCRAM-SHA-256-PLUS" (channel binding) returns false:
+// -PLUS is a distinct mechanism pq cannot speak.
+fn sasl_offers_scram_sha256(body: Bytes, total: Int) -> Bool {
+    let mut off = 9;
+    while off < total {
+        let end = cstr_end(body, off, total);
+        if end <= off { return false; } // list terminator, not found
+        let name = std::str::from_bytes(std::bytes::slice(body, off, end));
+        if name == "SCRAM-SHA-256" { return true; }
+        off = end + 1;
+    }
+    return false;
+}
+
+// ===== SASL exchange failure classification (retry contract) =====
+//
+// A read failure (peer close) mid-__sasl_exchange (pq.hl) is a
+// TRANSIENT cold-dial condition per FRICTION.log — observed against a
+// perfectly healthy postgres server — not a definitive auth outcome,
+// so it MUST be retryable. A definitive outcome (server ErrorResponse,
+// a server-signature mismatch, a bad/foreign nonce, or a protocol
+// violation like "expected SASLContinue") must NOT be retried blindly
+// against a hostile/misconfigured server, so open()'s retry loop
+// (pq.hl) treats a small fixed set of `db::DbError.kind` values as
+// fail-fast.
+//
+// This pair of pure functions is the single source of truth for that
+// contract. It lives here rather than in pq.hl so the
+// retry/fail-fast classification stays unit-testable offline: the
+// "classification level" test for a behaviour that's otherwise
+// awkward to exercise without a live socket dropping mid-handshake.
+fn sasl_retryable_kind() -> String { return "io"; }
+
+fn is_fail_fast_kind(kind: String) -> Bool {
+    return kind == "auth_failed" || kind == "unsupported"
+        || kind == "startup_rejected" || kind == "tls";
+}
+
+// ===== sslmode / TLS negotiation policy =====
+//
+// The caller-facing knob (on PgConn + PgPool) is `sslmode`, mirroring
+// libpq's four load-bearing values:
+//   disable      — never send SSLRequest; dial plaintext (pre-TLS pq).
+//   prefer       — send SSLRequest; TLS if the server offers it ('S'),
+//                  else fall back to plaintext ('N'). This is the
+//                  DEFAULT (libpq's own default): opportunistic TLS that
+//                  keeps every existing plaintext-only consumer working.
+//   require      — encrypt but do NOT authenticate the peer (no cert
+//                  chain/hostname check). Fail closed if the server
+//                  refuses TLS ('N'). The whole sorcery fleet's posture
+//                  against RDS (whose CA is not in system trust stores).
+//   verify-full  — require + authenticate: hostname + chain verified
+//                  against the system trust store. Needs the CA present.
+//
+// These pure predicates keep the policy offline-testable and are the
+// single source of truth consumed by pq.hl's __negotiate_tls.
+
+fn is_valid_sslmode(mode: String) -> Bool {
+    return mode == "disable" || mode == "prefer"
+        || mode == "require" || mode == "verify-full";
+}
+
+// sslmode_wants_tls — send the SSLRequest preamble (everything but disable).
+fn sslmode_wants_tls(mode: String) -> Bool {
+    return mode != "disable";
+}
+
+// sslmode_requires_tls — on a server 'N' (TLS refused), must we fail closed
+// rather than downgrade to plaintext? require + verify-full: yes.
+fn sslmode_requires_tls(mode: String) -> Bool {
+    return mode == "require" || mode == "verify-full";
+}
+
+// sslmode_verify — pass verify=true to std::io::tls::upgrade (authenticate
+// the peer). Only verify-full; require encrypts without verifying.
+fn sslmode_verify(mode: String) -> Bool {
+    return mode == "verify-full";
+}
+
+// classify_ssl_reply — pure decision table for the single unframed reply
+// byte to SSLRequest (build_ssl_request). __negotiate_tls (pq.hl) is the
+// sole consumer; extracted here (wire.hl has no db dependency, unlike
+// pq.hl, which needs the vendored `db` seed to compile — see
+// FRICTION.log § pond/pq "In-repo build vs check") so the FULL
+// byte x sslmode truth table is unit-testable offline, not just the
+// 'S'/'N' happy paths a live server ever actually sends.
+//
+// Returns one of:
+//   "upgrade"        — 'S' (83): the server offers TLS. Upgrade the fd
+//                       (verify per sslmode_verify). Valid for every
+//                       sslmode that reaches __negotiate_tls at all
+//                       (prefer/require/verify-full — disable never sends
+//                       SSLRequest in the first place).
+//   "plaintext"       — 'N' (78) under sslmode=prefer: the server has no
+//                       TLS; opportunistic fallback, continue unencrypted.
+//   "refuse"          — 'N' (78) under sslmode=require/verify-full: the
+//                       server has no TLS but the caller demanded it —
+//                       fail closed, never silently downgrade.
+//   "protocol_error"  — any other byte: SSLRequest's reply contract is
+//                       exactly one byte, 'S' or 'N' — anything else is a
+//                       protocol violation (a peer-close BEFORE any byte
+//                       arrives is handled separately in __negotiate_tls
+//                       as the transient "io" case, not here).
+fn classify_ssl_reply(reply_byte: Int, sslmode: String) -> String {
+    if reply_byte == 83 { return "upgrade"; }
+    if reply_byte == 78 {
+        if sslmode_requires_tls(sslmode) { return "refuse"; }
+        return "plaintext";
+    }
+    return "protocol_error";
+}
+
+// ===== PgPool TLS-transport homogeneity (F1) =====
+//
+// PgPool derives ONE `pool_tls` from connection 0 (pool.hl `open()`) and
+// threads that single flag into every subsequent pooled PgConn
+// reconstruction (pool.hl stores raw handles, not per-slot transport
+// tags). That assumes every pooled connection negotiates the SAME
+// transport. Under sslmode=disable/require/verify-full that assumption
+// is structurally guaranteed: disable never calls __negotiate_tls at all
+// (always tls=false), and require/verify-full fail closed on any 'N'
+// (a successful open() can only ever have settled tls=true). Only
+// sslmode=prefer can violate it — a load-balanced/proxied endpoint could
+// let connection 0 negotiate TLS while connection N lands on a peer that
+// answers 'N' (or vice versa). If unnoticed, that connection's handle
+// would later be driven through the WRONG transport family
+// (stream.hl's dispatch), corrupting the shared TLS handle table
+// silently. pool.hl's open() calls this after every c.open() for
+// connections after the first and fails the whole pool closed on a
+// mismatch (tears down the offending connection AND every
+// already-opened one) rather than risk that corruption.
+
+fn pool_tls_mismatch(conn_tls: Bool, pool_tls: Bool) -> Bool {
+    return conn_tls != pool_tls;
+}
+
+// pool_tls_mismatch_detail — human-readable detail for the db::DbError
+// pool.hl raises on a homogeneity violation. `idx` is the 0-based index
+// of the offending connection within this open() call.
+fn pool_tls_mismatch_detail(idx: Int, conn_tls: Bool, pool_tls: Bool) -> String {
+    return "pool connection " + to_string(idx) + " negotiated tls=" + to_string(conn_tls)
+        + " but the pool already settled tls=" + to_string(pool_tls)
+        + " from connection 0 -- refusing a heterogeneous pool (possible "
+        + "load-balanced/proxied endpoint behind sslmode=prefer)";
+}
+
+fn __append_cstr(b: std::bytes::BytesBuilder, s: String) {
+    b.append(std::bytes::from_string(s));
+    b.append(std::bytes::from_int(0));
+}

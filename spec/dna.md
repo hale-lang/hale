@@ -69,7 +69,8 @@ Deleting it loses nothing the record holds.
 `review.settled`, `review.refused`, `expression.restart_requested`,
 `expression.deployed`, `expression.restarted`, `expression.observed`,
 `expression.crashed`, `pressure.raised`, `pressure.remeasured`,
-`appendage.proposed`, `model.called`, `budget.exhausted`, `github.pr`, `github.commented`,
+`appendage.proposed`, `model.called`, `budget.exhausted`, `knowledge.proposed`,
+`knowledge.ratified`, `knowledge.declined`, `knowledge.refused`, `github.pr`, `github.commented`,
 `mutation.topology`, `fleet.deploy`, `instance.up`, `instance.exited`,
 `review.reasoned` (the deciding verdict's comment — a person's note or
 the Leader's reasoning — right after `review.settled`; `hale dna
@@ -314,6 +315,85 @@ The organization's models are a catalog in source (GH #583 M1):
   `refused: …`; or `not permitted (no credential present)`. The
   organization is not started, its membrane not touched, and nothing
   is journaled: a probe is nobody's Attempt.
+
+## Knowledge
+
+The knowledge graph is a service (GH #583 K1). Two halves, one
+authority.
+
+- **The record holds the decided half.** A proposal is a document —
+  canonical JSON with a fixed field order (`kind`, `text`, `author`,
+  `target`, `provenance`) — filed as a receipt under its sha256, so a
+  digest in the record always resolves to recoverable content.
+  `Dna.propose_knowledge(idea, target)` files the receipt, appends
+  `knowledge.proposed <digest>` (body: `digest`, `review_id`, `kind`,
+  `author`, `target`, `class`, `at`), and births a Review pinned to
+  that digest (`review_id` = `k:` + the digest's first twelve hex
+  digits; `required_authority: board` — ratified knowledge is the
+  organization's; the `review.requested` body carries
+  `knowledge_digest`). The tower rule classifies the binding from who
+  proposes and where it binds — a parent's idea bound to a child is a
+  `goal`, a child's bound to a parent a `concern`, one's own an
+  `initiative` — and a lateral proposal (siblings) is refused with
+  `knowledge.refused` and no Review. A verdict naming another digest
+  is refused by the Review; a Leader's does not satisfy the Board's
+  requirement. **The authoritative event is `knowledge.ratified
+  <digest>`**, appended by the assembly on `review.settled` with
+  `approve` (body: `digest`, `review_id`, `outcome`, `decided_by`,
+  `kind`, `target`, `class`, `at`); any other outcome appends
+  `knowledge.declined`. A pending knowledge Review is re-born from the
+  record at birth like a mutation's.
+- **The store holds the live half.** `dna/knowledge` (embedded in the
+  toolchain beside the core, with pond's Postgres driver pinned under
+  `dna/pond`) declares `KnowledgeStore`: `open`, `watermark` /
+  `set_watermark` (the next record seq to apply; it only advances),
+  `upsert(idea, ratified_seq)` (idempotent by id, which is the
+  digest), `bind`, `link`, `idea(id)`, `context_ids(target, budget)`
+  (accepted ideas bound to the target or any prefix of its path —
+  goals flow down, initiatives stay local — in ratification order),
+  `count(what)`. `Pq` is Postgres (four tables: `knowledge_meta`,
+  `knowledge_ideas`, `knowledge_bindings`, `knowledge_edges`; the
+  schema migrated at `open`; every write an upsert); `Mem` is the
+  same contract in memory. **The service is a consumer of the
+  record**: `apply_record(store, journal, receipts)` walks
+  `knowledge.*` rows from the watermark, resolves each digest to its
+  receipt, upserts (`ratified` accepted with its binding; `proposed`
+  and `declined` kept as such, never over a ratification), and
+  advances the watermark row by row, so after a crash it resumes and
+  converges. Nothing in the store becomes ratified except from a
+  `knowledge.ratified` row: git is the sole authority; the store can
+  lag, never disagree. The observed and inferred tier (K3) lives only
+  in Postgres and is backed up like any Postgres; the ratified tier
+  rebuilds from git.
+- **The service program.** `dna/knowledge/service` (`hale dna
+  knowledge [project] [--port N]`, default 8791): applies the record
+  on every request (the reader sees it as it is now) and answers over
+  HTTP — `GET /` (store kind,
+  watermark, record revision, counts), `GET
+  /context?target=<locus path>&budget=<n>` (the bounded package: the
+  ids included, their ideas with text, author and `ratified_seq`, and
+  a digest over target, watermark and ids), `GET /idea/<digest>`,
+  `POST /apply`. `HALE_DNA_KNOWLEDGE_DSN` names the store: a
+  `postgres://user:password@host:port/database?sslmode=…` URL, or
+  `memory` for a store that lives only as long as the process; unset
+  is a refusal that says so.
+- **Dev relies on docker compose.** `init` writes `dna/compose.yaml`
+  (the `knowledge-db` service, `pgvector/pgvector:pg16`, a named
+  volume `hale-dna-<project>-knowledge`, a host port in 54xx from the
+  project's name); it is part of the genome. `hale dna dev` runs
+  `docker compose -f dna/compose.yaml up -d --wait knowledge-db`,
+  derives the DSN from the published port, starts the knowledge
+  service beside the organization (`knowledge.pid`, `knowledge.dsn`,
+  `knowledge.log` under `.hale/dna`; `HALE_DNA_KNOWLEDGE_PORT`), and
+  stops it with the rest. An operator's `HALE_DNA_KNOWLEDGE_DSN`
+  wins. With compose not on PATH, or no compose file, the host says
+  exactly which it needs and runs without a knowledge service. `hale
+  dna run` starts no service: beyond one machine the service is an
+  instance in the plan against a Postgres of the operator's.
+- **Not yet (K2–K4):** the bus surface (an application publishes
+  observations and concerns; a position asks for a package), the
+  owner-requests-package path into the editor's objective, the
+  projections and retrieval ranking, the learning scenario.
 
 ## Backends by role
 
