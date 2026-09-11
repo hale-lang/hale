@@ -51,28 +51,33 @@ models  frontier = claude-opus-5 · fast = claude-haiku-4-5-20251001 (ANTHROPIC_
 models  leader, editor, agent: deep = frontier, quick = fast, private = desk · budget 25.00 USD a day (`hale dna models` probes them)
 ```
 
-With `ANTHROPIC_API_KEY` the hosted backends speak to Anthropic's
-OpenAI-compatible endpoint with the strongest models; with
-`OPENAI_API_KEY` alone, to OpenAI; with neither, the catalog still
-names OpenAI with the key's name as a placeholder, the hosted
-backends are simply not permitted until it is set, and every review
-waits for the Board. `ollama` on `PATH` makes its first listed model
+With `ANTHROPIC_API_KEY` the hosted backends are `AnthropicMessages`
+with the strongest models; with `OPENAI_API_KEY` alone, `OpenAiChat`
+to OpenAI; with neither, the catalog still names OpenAI with the
+key's name as a placeholder, the hosted backends are simply not
+permitted until it is set, and every review waits for the Board. `ollama` on `PATH` makes its first listed model
 the desk model. Re-running `init` keeps a catalog you have edited;
 `hale dna upgrade` writes one for an organization from before the
 catalog and tells you what to point at it.
 
-## Three backends
+## Four backends
 
 - **`OpenAiChat`** — a prompt leaves the process for an endpoint
-  speaking the OpenAI chat shape (OpenAI, OpenRouter, vLLM,
-  Anthropic's compatibility endpoint). `complete` carries the
-  `external_model` effect class, so a claim can keep customer data
-  away from it structurally, and the router already refuses
-  `data_class: "customer"` for it. The API key is read from the
-  environment into a **sealed** `HostedCredential` that presents it
-  on the wire and never returns it; without a credential the model
-  is not a permitted backend, and the router refuses before the
-  wire.
+  speaking the OpenAI chat shape (OpenAI, OpenRouter, vLLM, Ollama).
+  `complete` carries the `external_model` effect class, so a claim
+  can keep customer data away from it structurally, and the router
+  already refuses `data_class: "customer"` for it. The API key is
+  read from the environment into a **sealed** `HostedCredential`
+  that presents it on the wire and never returns it; without a
+  credential the model is not a permitted backend, and the router
+  refuses before the wire.
+- **`AnthropicMessages`** — the native Messages API, on the same
+  seam with the same evidence: the context travels as `system`, the
+  prompt as the user message, `max_tokens` is always sent (the API
+  requires it), the reply's text blocks are joined. Its credential
+  has `scheme: "x-api-key"`; the credential, not the adapter, knows
+  how the key is presented — `bearer` for everything OpenAI-shaped —
+  so no adapter ever composes a header with the material in it.
 - **`LocalModel`** — the same wire to a local endpoint: no
   credential, no `external_model`, any data class.
 - **`FakeModel`** — scripted. `answer` (or `answer_file`, or an
@@ -172,4 +177,6 @@ inside it, so no holder can read the key back, and the generated law
 requires it (`credentials_sealed: require sealed(all credentials)`).
 It takes the *name* of a source (`env_var`), never the bytes, and
 loads at birth, so there is no construction site at which anything
-held the material. See [Claims & the law](../claims.md) on `@sealed`.
+held the material. Its `scheme` says how the wire wants the key —
+`bearer` or `x-api-key` — and the credential composes that header
+itself; an adapter hands it only its own headers. See [Claims & the law](../claims.md) on `@sealed`.

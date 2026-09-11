@@ -1,0 +1,135 @@
+// dna/tests/anthropic_messages_test.hl — GH #583 M2: the native
+// Anthropic Messages adapter, and the credential's scheme.
+//
+// A fake Messages endpoint in this same program (io pool) insists on
+// `x-api-key` and `anthropic-version`, reads `system` and `messages`,
+// and answers with content blocks and usage. The adapter presents the
+// credential from the sealed locus per its scheme (the test never sees
+// it), records the same evidence OpenAiChat does, refuses customer data
+// and a missing credential before the wire, and reports an API error
+// by its message.
+
+import "../core" as dna;
+
+// The handler is reached through `std::http::Handler`, so what it saw
+// comes back in the reply: the text is "the answer" only for the body
+// the API wants, and names the body otherwise.
+fn body_as_the_api_wants(body: String) -> Bool {
+    return std::str::contains(body, "\"max_tokens\": 64")
+        && std::str::contains(body, "\"system\": \"the diff\"")
+        && std::str::contains(body, "\"messages\": [{\"role\": \"user\", \"content\": \"decide\"}]")
+        && std::str::contains(body, "\"temperature\": 0.200");
+}
+
+locus FakeAnthropic {
+    params { seen: Int = 0; }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        if req.path != "/v1/messages" { return std::http::Response { status: 404, body: "no" }; }
+        if !std::str::contains(req.headers, "x-api-key: ") || std::str::contains(req.headers, "Authorization: Bearer") {
+            return std::http::Response { status: 401, content_type: "application/json", body: "{\"type\": \"error\", \"error\": {\"type\": \"authentication_error\", \"message\": \"x-api-key required\"}}" };
+        }
+        if !std::str::contains(req.headers, "anthropic-version: 2023-06-01") {
+            return std::http::Response { status: 400, content_type: "application/json", body: "{\"type\": \"error\", \"error\": {\"type\": \"invalid_request_error\", \"message\": \"anthropic-version required\"}}" };
+        }
+        self.seen = self.seen + 1;
+        let model = std::json::find_string_field(req.body, "model");
+        if model == "overloaded-model" {
+            return std::http::Response { status: 529, content_type: "application/json", body: "{\"type\": \"error\", \"error\": {\"type\": \"overloaded_error\", \"message\": \"Overloaded\"}}" };
+        }
+        let n = len(req.body) / 4;
+        let second = if body_as_the_api_wants(req.body) { "answer" } else { "unexpected body: " + std::json::escape_string(req.body) };
+        return std::http::Response {
+            status: 200, content_type: "application/json",
+            body: "{\"id\": \"msg_1\", \"type\": \"message\", \"role\": \"assistant\", \"model\": \"" + model + "-20260101\", \"content\": [{\"type\": \"text\", \"text\": \"the \"}, {\"type\": \"text\", \"text\": \"" + second + "\"}], \"stop_reason\": \"end_turn\", \"usage\": {\"input_tokens\": " + to_string(n) + ", \"output_tokens\": 3}}"
+        };
+    }
+}
+
+main locus App {
+    params {
+        srv: std::http::Server = std::http::Server { port: 47392, handler: FakeAnthropic { } };
+        hosted: dna::AnthropicMessages = dna::AnthropicMessages {
+            name: "deep", model: "test-model",
+            endpoint: "http://127.0.0.1:47392/v1/messages",
+            // any present env var stands in for the API key; the server only checks presence
+            credential: dna::HostedCredential { env_var: "HOME", scheme: "x-api-key" },
+            max_tokens: 64, temperature_milli: 200
+        };
+        keyless: dna::AnthropicMessages = dna::AnthropicMessages {
+            name: "deep", model: "test-model",
+            endpoint: "http://127.0.0.1:47392/v1/messages",
+            credential: dna::HostedCredential { env_var: "HALE_DNA_NO_SUCH_KEY_7f3b", scheme: "x-api-key" }
+        };
+        overloaded: dna::AnthropicMessages = dna::AnthropicMessages {
+            name: "deep", model: "overloaded-model",
+            endpoint: "http://127.0.0.1:47392/v1/messages",
+            credential: dna::HostedCredential { env_var: "HOME", scheme: "x-api-key" }
+        };
+        // a bearer credential on the Anthropic wire: the scheme is the
+        // credential's, and the endpoint refuses it
+        wrong_scheme: dna::AnthropicMessages = dna::AnthropicMessages {
+            name: "deep", model: "test-model",
+            endpoint: "http://127.0.0.1:47392/v1/messages",
+            credential: dna::HostedCredential { env_var: "HOME" }
+        };
+        core: dna::Dna = dna::Dna { };
+    }
+    placement { srv: cooperative(pool = io); }
+    run() {
+        std::time::sleep(200ms);
+        // 1. a call: the key travels as x-api-key, the version beside it;
+        //    system and messages as the API wants; blocks joined; usage read
+        let r = self.hosted.complete(dna::ModelRequest {
+            attempt_id: "w1/a0", role: "review", prompt: "decide", context: "the diff",
+            context_bytes: 8, knowledge_bindings: "kb1", data_class: "internal"
+        });
+        std::test::assert(r.ok, "messages call succeeded: " + r.refused);
+        // the blocks joined; and "answer" only for the body the API wants:
+        // max_tokens sent (required), the context as `system`, the prompt
+        // as the user message, the temperature as set
+        std::test::assert_eq_str(r.output, "the answer", "content blocks joined, body as the API wants: " + r.output);
+        std::test::assert_eq_str(r.model, "test-model-20260101", "the model the endpoint REPORTED");
+        std::test::assert(r.tokens > 3, "tokens from usage");
+        let ev = self.hosted.last;
+        std::test::assert_eq_str(ev.adapter, "anthropic-messages", "adapter identity");
+        std::test::assert_eq_str(ev.requested_model, "test-model", "requested model");
+        std::test::assert_eq_str(ev.reported_model, "test-model-20260101", "reported model");
+        std::test::assert(std::str::contains(ev.credential, "fp:"), "credential recorded as a fingerprint, never bytes: " + ev.credential);
+        std::test::assert(std::str::contains(ev.params, "temperature=0.200 max_tokens=64"), "parameters as sent: " + ev.params);
+        std::test::assert(ev.output_tokens == 3, "output tokens from usage");
+        std::test::assert(ev.cost_micros > 0, "cost from the price table");
+        std::test::assert(std::str::contains(ev.response_digest, "sha256:"), "response digest");
+        // 2. customer data never reaches it; no wire call is made
+        let c = self.hosted.complete(dna::ModelRequest { attempt_id: "w1/a1", prompt: "leak?", data_class: "customer" });
+        std::test::assert(!c.ok && std::str::contains(c.refused, "data class customer"), c.refused);
+        std::test::assert_eq_int(self.hosted.calls, 2, "counted, not sent");
+        // 3. no credential: not a permitted backend, refused before the wire
+        std::test::assert(!self.keyless.allows("internal"), "a keyless backend is not permitted");
+        let k = self.keyless.complete(dna::ModelRequest { attempt_id: "w1/a2", prompt: "x" });
+        std::test::assert(std::str::contains(k.refused, "credential not present"), k.refused);
+        // 4. an API error is reported by its message, and is evidence
+        let o = self.overloaded.complete(dna::ModelRequest { attempt_id: "w1/a3", prompt: "x" });
+        std::test::assert(!o.ok && o.refused == "http 529 Overloaded", "the API's message: " + o.refused);
+        std::test::assert(!self.overloaded.last.ok && self.overloaded.last.refused == "http 529 Overloaded", "in the evidence too");
+        // 5. the scheme is the credential's: a bearer credential on this
+        //    wire is refused by the endpoint, and the adapter says so
+        let w = self.wrong_scheme.complete(dna::ModelRequest { attempt_id: "w1/a4", prompt: "x" });
+        std::test::assert(!w.ok && w.refused == "http 401 x-api-key required", "the wrong scheme is the endpoint's refusal: " + w.refused);
+        // 6. every call was journaled by the assembly as model.called evidence
+        std::time::sleep(100ms);
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.core.journal.revision() {
+            if self.core.journal.read(i).kind == "model.called" { n = n + 1; }
+            i = i + 1;
+        }
+        std::test::assert_eq_int(n, 5, "five calls, five evidence rows");
+        let first = self.core.journal.read(0);
+        std::test::assert(std::str::contains(first.body, "\"adapter\": \"anthropic-messages\""), "evidence body: " + first.body);
+        std::test::assert(!std::str::contains(first.body, "decide"), "the prompt itself is never journaled");
+    }
+}
+
+fn main() {
+    App { };
+}

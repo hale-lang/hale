@@ -263,9 +263,13 @@ fn parse_chat(status: Int, body: String) -> ChatOutcome {
 // A hosted credential: read from the environment at birth, presented
 // on the wire from inside this sealed locus, never returned. The only
 // things that leave are a readiness bit, a fingerprint (a correlation
-// handle over a high-entropy token), and HTTP responses.
+// handle over a high-entropy token), and HTTP responses. The `scheme`
+// says how the wire wants it (GH #583 M2): `bearer` (an
+// `Authorization: Bearer` header: OpenAI and everything that speaks
+// its shape) or `x-api-key` (Anthropic's native API); no adapter
+// composes a header with the material in it.
 @sealed locus HostedCredential {
-    params { env_var: String = "OPENAI_API_KEY"; value: Bytes = b""; }
+    params { env_var: String = "OPENAI_API_KEY"; scheme: String = "bearer"; value: Bytes = b""; }
     birth() {
         if len(self.env_var) > 0 && std::env::var_exists(self.env_var) {
             self.value = std::bytes::from_string(std::env::var(self.env_var));
@@ -278,14 +282,21 @@ fn parse_chat(status: Int, body: String) -> ChatOutcome {
         let h = hex(std::crypto::sha256(self.value));
         return "fp:" + h[0..16];
     }
-    // POST a JSON body with the bearer credential attached HERE.
+    // POST a JSON body with the credential attached HERE, per its
+    // scheme; `extra` is the adapter's own headers (CRLF-terminated
+    // lines, e.g. `anthropic-version`), which never name the material.
     @effects(is: { secret_use, external_model })
-    fn post_json(url: String, body: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+    fn post_json(url: String, body: String, extra: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
         let u = std::http::parse_url(url) or raise;
+        let presented = if self.scheme == "x-api-key" {
+            "x-api-key: " + std::str::from_bytes(self.value)
+        } else {
+            "Authorization: Bearer " + std::str::from_bytes(self.value)
+        };
         let req = std::http::ClientRequest {
             method: "POST",
             url: u,
-            headers: "Content-Type: application/json\r\nAuthorization: Bearer " + std::str::from_bytes(self.value),
+            headers: "Content-Type: application/json\r\n" + extra + presented,
             body: std::bytes::from_string(body)
         };
         return std::http::request(req) or raise;
@@ -337,9 +348,124 @@ locus OpenAiChat {
         }
         let body = openai_chat_body(self.model, req, self.temperature_milli, self.max_tokens);
         let t0 = std::time::monotonic();
-        let resp = self.credential.post_json(self.endpoint, body) or self.transport_failed(err);
+        let resp = self.credential.post_json(self.endpoint, body, "") or self.transport_failed(err);
         ev.elapsed = to_string(std::time::monotonic() - t0);
         let out = parse_chat(resp.status, std::str::from_bytes(resp.body));
+        ev.ok = out.ok;
+        ev.refused = out.refused;
+        ev.reported_model = out.reported_model;
+        ev.input_tokens = out.input_tokens;
+        ev.output_tokens = out.output_tokens;
+        ev.response_digest = digest_of(out.text);
+        ev.cost_micros = (out.input_tokens * self.input_micros_per_1k + out.output_tokens * self.output_micros_per_1k) / 1000;
+        self.last = ev;
+        ModelCalled <- ev;
+        if !out.ok {
+            return ModelResult { ok: false, backend: self.name, model: self.model, refused: out.refused };
+        }
+        return ModelResult {
+            ok: true, backend: self.name, model: out.reported_model, output: out.text,
+            tokens: out.input_tokens + out.output_tokens, cost_micros: ev.cost_micros
+        };
+    }
+    fn transport_failed(e: std::http::HttpError) -> std::http::ClientResponse {
+        return std::http::ClientResponse { status: 0, body: std::bytes::from_string("{\"error\": {\"message\": " + jq(e.kind + " " + e.detail) + "}}") };
+    }
+}
+
+// ---- the Anthropic adapter (GH #583 M2) --------------------------------
+//
+// The native Messages API: `system` beside `messages`, `max_tokens`
+// required, the reply as content blocks, the key as `x-api-key` with
+// an `anthropic-version`. Same seam, same evidence, same sealed
+// credential as OpenAiChat — the credential's scheme is the only
+// thing that knows how the key travels.
+
+fn anthropic_messages_body(model: String, req: ModelRequest, temperature_milli: Int, max_tokens: Int) -> String {
+    let mut b = "{\"model\": " + jq(model) + ", \"max_tokens\": " + to_string(if max_tokens > 0 { max_tokens } else { 4096 });
+    if len(req.context) > 0 { b = b + ", \"system\": " + jq(req.context); }
+    if temperature_milli >= 0 { b = b + ", \"temperature\": " + to_string(temperature_milli / 1000) + "." + pad3(temperature_milli % 1000); }
+    return b + ", \"messages\": [{\"role\": \"user\", \"content\": " + jq(req.prompt) + "}]}";
+}
+
+// The text blocks of a Messages reply, concatenated; "" when the
+// shape is not a message.
+@unbounded
+fn anthropic_text(body: String) -> String {
+    let content = std::json::find_field_raw(body, "content");
+    if len(content) == 0 { return ""; }
+    let out = std::str::builder_new();
+    let mut it = std::json::array_first(content);
+    while !it.done {
+        let t = std::json::find_string_field(it.element, "text");
+        if len(t) > 0 { std::str::builder_append(out, t); }
+        it = std::json::array_next(it);
+    }
+    return std::str::builder_finish(out);
+}
+
+fn parse_messages(status: Int, body: String) -> ChatOutcome {
+    if status != 200 {
+        let why = std::json::find_string_field(std::json::find_field_raw(body, "error"), "message");
+        return ChatOutcome { status: status, refused: "http " + to_string(status) + " " + why };
+    }
+    let text = anthropic_text(body);
+    if len(text) == 0 { return ChatOutcome { status: status, refused: "no message in the response" }; }
+    let usage = std::json::find_field_raw(body, "usage");
+    return ChatOutcome {
+        ok: true, status: status, text: text,
+        reported_model: std::json::find_string_field(body, "model"),
+        input_tokens: std::json::find_int_field(usage, "input_tokens"),
+        output_tokens: std::json::find_int_field(usage, "output_tokens")
+    };
+}
+
+locus AnthropicMessages {
+    params {
+        name: String = "hosted";
+        adapter: String = "anthropic-messages";
+        endpoint: String = "https://api.anthropic.com/v1/messages";
+        version: String = "2023-06-01"; // the `anthropic-version` header
+        model: String = "claude-sonnet-5";
+        credential: HostedCredential = HostedCredential { env_var: "ANTHROPIC_API_KEY", scheme: "x-api-key" };
+        max_bytes: Int = 800000;
+        temperature_milli: Int = -1; // < 0: the provider's default; 0..1000 sent as 0.000..1.000
+        max_tokens: Int = 4096; // required by the API; a whole-file rewrite needs room
+        // price per 1k tokens, micro-dollars (3 / 15 per M ≈ sonnet)
+        input_micros_per_1k: Int = 3000;
+        output_micros_per_1k: Int = 15000;
+        calls: Int = 0;
+        last: ModelEvidence = ModelEvidence { };
+    }
+    bus { publish ModelCalled; }
+    fn identity() -> String { return self.name; }
+    fn model_name() -> String { return self.model; }
+    fn allows(data_class: String) -> Bool { return data_class != "customer" && self.credential.ready(); }
+    fn capacity_bytes() -> Int { return self.max_bytes; }
+    @effects(is: { external_model })
+    fn complete(req: ModelRequest) -> ModelResult {
+        self.calls = self.calls + 1;
+        let mut ev = ModelEvidence {
+            attempt_id: req.attempt_id, adapter: self.adapter, backend: self.name,
+            endpoint: self.endpoint, credential: self.credential.fingerprint(),
+            requested_model: self.model,
+            params: temperature_param(self.temperature_milli) + " max_tokens=" + to_string(if self.max_tokens > 0 { self.max_tokens } else { 4096 }),
+            prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
+            context_digest: digest_of(req.context),
+            knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
+            retry_of: req.retry_of, data_class: req.data_class
+        };
+        if !self.allows(req.data_class) {
+            ev.refused = if self.credential.ready() { "data class " + req.data_class } else { "credential not present" };
+            self.last = ev;
+            ModelCalled <- ev;
+            return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused };
+        }
+        let body = anthropic_messages_body(self.model, req, self.temperature_milli, self.max_tokens);
+        let t0 = std::time::monotonic();
+        let resp = self.credential.post_json(self.endpoint, body, "anthropic-version: " + self.version + "\r\n") or self.transport_failed(err);
+        ev.elapsed = to_string(std::time::monotonic() - t0);
+        let out = parse_messages(resp.status, std::str::from_bytes(resp.body));
         ev.ok = out.ok;
         ev.refused = out.refused;
         ev.reported_model = out.reported_model;

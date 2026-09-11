@@ -134,7 +134,7 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `process.hl` | `Task`, `Workflow`, `Step`, `Work`, `Attempt`, `Metabolism` |
 | `work_system.hl` | `WorkSystem`, routing perspectives, the performers |
 | `review.hl` | `Review`, `AutonomyBoundary`, authority ranks |
-| `models.hl` | `ModelRouter`, `OpenAiChat`, `LocalModel`, `FakeModel`, `HostedCredential`, `probe` |
+| `models.hl` | `ModelRouter`, `OpenAiChat`, `AnthropicMessages`, `LocalModel`, `FakeModel`, `HostedCredential` (with its `scheme`), `probe` |
 | `budget.hl` | `BudgetPolicy`, `Budget` (the substrate's one counter) |
 | `knowledge.hl` | semantic memory: ideas, edges, bindings |
 | `workspace.hl` | `IsolatedWorktrees`, `LocalGit`, `MutationGateway` |

@@ -608,31 +608,35 @@ fn discover() -> Discovery {
     }
 }
 
-/// A hosted backend as the catalog writes it: provider, model, key,
-/// price per 1k tokens in micro-dollars.
+/// A hosted backend as the catalog writes it: the adapter (what the
+/// wire speaks), model, key and its scheme, price per 1k tokens in
+/// micro-dollars.
 struct Hosted {
+    adapter: &'static str, // `dna::OpenAiChat` | `dna::AnthropicMessages`
     model: &'static str,
     endpoint: &'static str,
     env_var: &'static str,
+    scheme: &'static str, // `bearer` | `x-api-key`
     input_micros_per_1k: u32,
     output_micros_per_1k: u32,
 }
 
 impl Discovery {
-    /// The provider the hosted backends speak to: Anthropic when its key
-    /// is present (the strongest models), else OpenAI (its key, or a
-    /// placeholder until one is set).
+    /// The provider the hosted backends speak to: Anthropic's native
+    /// Messages API when its key is present (the strongest models),
+    /// else OpenAI's chat shape (its key, or a placeholder until one is
+    /// set).
     fn hosted(&self) -> (Hosted, Hosted, &'static str) {
         if self.anthropic {
             (
-                Hosted { model: "claude-opus-5", endpoint: "https://api.anthropic.com/v1/chat/completions", env_var: "ANTHROPIC_API_KEY", input_micros_per_1k: 15000, output_micros_per_1k: 75000 },
-                Hosted { model: "claude-haiku-4-5-20251001", endpoint: "https://api.anthropic.com/v1/chat/completions", env_var: "ANTHROPIC_API_KEY", input_micros_per_1k: 1000, output_micros_per_1k: 5000 },
+                Hosted { adapter: "dna::AnthropicMessages", model: "claude-opus-5", endpoint: "https://api.anthropic.com/v1/messages", env_var: "ANTHROPIC_API_KEY", scheme: "x-api-key", input_micros_per_1k: 15000, output_micros_per_1k: 75000 },
+                Hosted { adapter: "dna::AnthropicMessages", model: "claude-haiku-4-5-20251001", endpoint: "https://api.anthropic.com/v1/messages", env_var: "ANTHROPIC_API_KEY", scheme: "x-api-key", input_micros_per_1k: 1000, output_micros_per_1k: 5000 },
                 "ANTHROPIC_API_KEY",
             )
         } else {
             (
-                Hosted { model: "gpt-4o", endpoint: "https://api.openai.com/v1/chat/completions", env_var: "OPENAI_API_KEY", input_micros_per_1k: 2500, output_micros_per_1k: 10000 },
-                Hosted { model: "gpt-4o-mini", endpoint: "https://api.openai.com/v1/chat/completions", env_var: "OPENAI_API_KEY", input_micros_per_1k: 150, output_micros_per_1k: 600 },
+                Hosted { adapter: "dna::OpenAiChat", model: "gpt-4o", endpoint: "https://api.openai.com/v1/chat/completions", env_var: "OPENAI_API_KEY", scheme: "bearer", input_micros_per_1k: 2500, output_micros_per_1k: 10000 },
+                Hosted { adapter: "dna::OpenAiChat", model: "gpt-4o-mini", endpoint: "https://api.openai.com/v1/chat/completions", env_var: "OPENAI_API_KEY", scheme: "bearer", input_micros_per_1k: 150, output_micros_per_1k: 600 },
                 "OPENAI_API_KEY",
             )
         }
@@ -687,8 +691,8 @@ fn models_hl(found: &Discovery) -> String {
     let desk_model = found.ollama.clone().unwrap_or_else(|| "llama3".to_string());
     let hosted = |name: &str, h: &Hosted| {
         format!(
-            "dna::OpenAiChat {{ name: \"{name}\", model: \"{}\", endpoint: \"{}\", credential: dna::HostedCredential {{ env_var: \"{}\" }}, input_micros_per_1k: {}, output_micros_per_1k: {} }}",
-            h.model, h.endpoint, h.env_var, h.input_micros_per_1k, h.output_micros_per_1k
+            "{} {{ name: \"{name}\", model: \"{}\", endpoint: \"{}\", credential: dna::HostedCredential {{ env_var: \"{}\", scheme: \"{}\" }}, input_micros_per_1k: {}, output_micros_per_1k: {} }}",
+            h.adapter, h.model, h.endpoint, h.env_var, h.scheme, h.input_micros_per_1k, h.output_micros_per_1k
         )
     };
     format!(
@@ -707,19 +711,21 @@ import "vendor/dna" as dna;
 
 // ---- backends ------------------------------------------------------
 //
-// A hosted backend speaks the OpenAI chat shape (OpenAI, OpenRouter,
-// vLLM, Anthropic's compatibility endpoint) and presents its key from
-// a sealed locus that never returns it; without the key it is not a
-// permitted backend and the router refuses before the wire. Prices
-// are micro-dollars per 1k tokens, for the evidence and the budget.
+// A hosted backend is `dna::AnthropicMessages` (the native Messages
+// API; the key travels as `x-api-key`) or `dna::OpenAiChat` (the
+// OpenAI chat shape: OpenAI, OpenRouter, vLLM, Ollama; the key as a
+// bearer token). Either presents its key from a sealed locus that
+// never returns it; without the key it is not a permitted backend and
+// the router refuses before the wire. Prices are micro-dollars per
+// 1k tokens, for the evidence and the budget.
 
 // The strongest model: the Leader's decisions, the editor's assessments.
-fn frontier() -> dna::OpenAiChat {{
+fn frontier() -> {adapter} {{
     return {frontier};
 }}
 
 // A fast, cheap model: classification, drafts, retries.
-fn fast() -> dna::OpenAiChat {{
+fn fast() -> {adapter} {{
     return {fast};
 }}
 
@@ -767,6 +773,7 @@ fn probe_catalog() -> String {{
 }}
 "#,
         summary = found.summary(),
+        adapter = frontier.adapter,
         frontier = hosted("deep", &frontier),
         fast = hosted("quick", &fast),
         desk = desk_model,

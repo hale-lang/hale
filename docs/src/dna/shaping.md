@@ -94,11 +94,13 @@ fn agent_models() -> dna::ModelRouter { return dna::ModelRouter { quick: fast(),
 fn org_budget() -> dna::BudgetPolicy { return dna::BudgetPolicy { window: "day", allowance_micros: 25000000 }; }
 ```
 
-- **Hosted** (`OpenAiChat`) — any endpoint speaking the OpenAI chat
-  shape. The key is named by environment variable and read into a
-  sealed box the rest of the program cannot read back from. Without
-  the key, the backend simply isn't available. Customer-classed data
-  never goes to it.
+- **Hosted** (`OpenAiChat` for any endpoint speaking the OpenAI chat
+  shape, `AnthropicMessages` for Anthropic's native API) — the key
+  is named by environment variable and read into a sealed box the
+  rest of the program cannot read back from, which presents it the
+  way its `scheme` says (`bearer`, or `x-api-key`). Without the key,
+  the backend simply isn't available. Customer-classed data never
+  goes to it.
 - **Local** — the same wire to something on your machine. No key,
   any data.
 - **Scripted** — `dna::FakeModel { answer_file: "…" }` returns a
