@@ -71,7 +71,7 @@ Deleting it loses nothing the record holds.
 `expression.crashed`, `pressure.raised`, `pressure.remeasured`,
 `appendage.proposed`, `model.called`, `budget.exhausted`, `knowledge.proposed`,
 `knowledge.ratified`, `knowledge.declined`, `knowledge.refused`, `knowledge.consulted`,
-`concern.raised`, `concern.proposed`, `github.pr`, `github.commented`,
+`concern.requested`, `concern.raised`, `concern.proposed`, `github.pr`, `github.commented`,
 `mutation.topology`, `fleet.deploy`, `instance.up`, `instance.exited`,
 `review.reasoned` (the deciding verdict's comment — a person's note or
 the Leader's reasoning — right after `review.settled`; `hale dna
@@ -373,7 +373,7 @@ authority.
   watermark, record revision, counts), `GET
   /context?target=<locus path>&budget=<n>` (the bounded package: the
   ids included, their ideas with text, author and `ratified_seq`, and
-  a digest over target, watermark and ids), `GET /idea/<digest>`,
+  the store's revision, and a digest over the target and the ids — what is handed over, never the revision, which varies between runs and would make a tape unable to answer the same request twice), `GET /idea/<digest>`,
   `POST /apply`. `HALE_DNA_KNOWLEDGE_DSN` names the store: a
   `postgres://user:password@host:port/database?sslmode=…` URL, or
   `memory` for a store that lives only as long as the process; unset
@@ -443,8 +443,37 @@ authority.
   `vector` extension at open and says so when the Postgres has none)
   and `Mem` with the same `cosine`; a hosted embedder is the same
   shape later.
-- **Not yet (K4):** the application side and the learning scenario in
-  the fixture.
+- **The application side (K4).** An application declares the wire
+  fact itself — a type of the membrane's shape (`source`, `what`,
+  `severity`) on the subject `dna.concern.raised`, no import of the
+  DNA — and publishes it when it observes something about the part
+  above it. A node routes that subject for every instance it starts
+  (`LOTUS_BUS_CONFIG=<node dir>/instance.bus.conf`, role connect) to
+  its own socket `<clone>/.hale/node/concern.raised.sock`, which the
+  `hale node` shim binds for it as an environment-configured listen
+  route before the node starts; the node subscribes `ConcernRaised`
+  with no source binding, and on each one appends `concern.requested
+  <source>` (`source`, `what`, `severity`, `node`) to the record in
+  its name and syncs. The host relays `concern.requested` rows onto
+  the membrane like `intent.requested` and `review.verdict`, once
+  each, and the organization journals `concern.raised`. `hale dna
+  concern raise` from a clone with no membrane takes the same road.
+  A route for a subject an instance never publishes is inert.
+- **The learning scenario** is the acceptance (K4), in the fixture:
+  the worker on the second node observes its mail backlog and raises
+  the concern three times; each travels node → record → host →
+  membrane → `concern.raised`; the third makes a proposal by
+  `org/trio/worker` bound to `org/trio` (a concern by the tower
+  rule); the Board ratifies the exact digest (`hale dna review k:…
+  approve --authority board`); the knowledge service, run beside the
+  organization (`hale dna knowledge`, `HALE_DNA_KNOWLEDGE_URL` in the
+  organization's environment — the host forwards an operator's URL
+  under `run`), tails it; and the next change to the trio consults
+  the service (`knowledge.consulted m1` with the digest included),
+  hands the editor the objective with the concern under it, and every
+  `model.called` row of the attempt names the package and the digest.
+  Something observed and ratified today informs the work done
+  tomorrow, and the receipt says so.
 
 ## Backends by role
 

@@ -131,6 +131,23 @@ pub fn node(args: &[String]) -> ExitCode {
         eprintln!("usage: hale node <name> [--repo <clone>] [--fleet <name>] [--tick <ms>]");
         return ExitCode::from(2);
     }
+    // GH #583 K4: the node listens for its instances' concerns on a
+    // socket of its own; an env-configured route, since the host program
+    // declares no binding for it (every other verb runs without one)
+    let clone = repo.canonicalize().unwrap_or(repo.clone());
+    let node_dir = clone.join(".hale/node");
+    if let Err(e) = fs::create_dir_all(&node_dir) {
+        eprintln!("hale node: cannot create {}: {e}", node_dir.display());
+        return ExitCode::from(1);
+    }
+    let sock = node_dir.join("concern.raised.sock");
+    let _ = fs::remove_file(&sock);
+    let conf = node_dir.join("node.bus.conf");
+    if let Err(e) = fs::write(&conf, format!("dna.concern.raised = unix://{} : listen\n", sock.display())) {
+        eprintln!("hale node: cannot write {}: {e}", conf.display());
+        return ExitCode::from(1);
+    }
+    std::env::set_var("LOTUS_BUS_CONFIG", &conf);
     host_exec("node", &repo, &rest)
 }
 

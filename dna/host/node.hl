@@ -36,6 +36,7 @@ locus Node {
         instances: Instances = Instances { };
         expressed_seq: Int = -1;
         started_total: Int = 0;
+        concerns_relayed: Int = 0; // concerns heard from instances and put into the record (GH #583 K4)
     }
     fn index_of(id: String) -> Int {
         let mut i = 0;
@@ -108,7 +109,8 @@ locus Node {
                             let old = self.instances.get(idx) or Instance { };
                             stop_proc(old.proc);
                         }
-                        let envs = "LOTUS_OBS=1\nHALE_BIN=" + hale + "\nHALE_DNA_NODE=" + self.name + "\nHALE_DNA_INSTANCE=" + id + "\nHALE_DNA_EXPRESSION=" + shape + " build " + build_digest;
+                        // K4: an instance's concerns come to this node's socket
+                        let envs = "LOTUS_OBS=1\nHALE_BIN=" + hale + "\nHALE_DNA_NODE=" + self.name + "\nHALE_DNA_INSTANCE=" + id + "\nHALE_DNA_EXPRESSION=" + shape + " build " + build_digest + "\nLOTUS_BUS_CONFIG=" + self.instance_bus_conf();
                         let p = start(self.node_dir, id, self.root, envs, bin);
                         if p.pid <= 0 { self.say("instance " + id + ": cannot start " + bin); return false; }
                         let b = std::json::Builder { };
@@ -165,6 +167,25 @@ locus Node {
         }
         if gone { let s = sync_record(self.root); }
     }
+    // GH #583 K4: an instance on this node raised a concern (its own
+    // declaration of the wire fact, routed here by LOTUS_BUS_CONFIG);
+    // the node puts it into the record as `concern.requested`, and the
+    // host beside the organization relays it onto the membrane — the
+    // same way intent and verdicts travel from any clone.
+    bus { subscribe dna::ConcernRaised as on_concern; }
+    fn on_concern(c: dna::Concern) {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("source", c.source);
+        b.string_field("what", c.what);
+        b.int_field("severity", c.severity);
+        b.string_field("node", self.name);
+        b.end_object();
+        if !append_as(self.root, "concern.requested", c.source, b.result(), self.author) { self.say("the record refused the concern from " + c.source); return; }
+        self.concerns_relayed = self.concerns_relayed + 1;
+        let s = sync_record(self.root);
+        self.say("concern from " + c.source + " (`" + c.what + "`) put into the record" + (if s.ok { "" } else { "; sync: " + s.summary }));
+    }
     @unbounded
     fn tick() {
         let s = sync_record(self.root);
@@ -182,6 +203,13 @@ locus Node {
         if deploy.seq >= 0 && deploy.seq != self.expressed_seq {
             let done = self.express(deploy);
         }
+    }
+    // The route an instance gets: this node's concern socket (the shim
+    // bound it for the node before the node started), role connect.
+    fn instance_bus_conf() -> String {
+        let conf = self.node_dir + "/instance.bus.conf";
+        let w = write_text(conf, "dna.concern.raised = unix://" + self.root + "/.hale/node/concern.raised.sock : connect\n") or false;
+        return conf;
     }
     run() {
         self.node_dir = self.root + "/.hale/node/" + self.name;

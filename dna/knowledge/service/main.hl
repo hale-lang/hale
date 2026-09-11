@@ -80,7 +80,11 @@ locus Service {
     fn package(target: String, budget: Int, query: String) -> String {
         let ids = if len(query) > 0 { self.store.ranked_ids(target, budget, know::embed_text(query)) } else { self.store.context_ids(target, budget) };
         let n = if len(ids) == 0 { 0 } else { count_words(ids) };
-        let d = dna::digest_of(target + "@" + to_string(self.store.watermark()) + ":" + ids);
+        // the digest identifies what is handed over — the target and the
+        // ideas — and nothing that varies between runs: the revision is
+        // reported beside it, never inside it, or a tape could not answer
+        // the same request twice (GH #583 K4)
+        let d = dna::digest_of(target + ":" + ids);
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("target", target);
