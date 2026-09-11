@@ -260,6 +260,29 @@ one arrangement of it:
   record: every instance of the plan, its node, whether it is up, the
   revision and model hash it last came up at, and the last deploy.
 
+## The surface
+
+`hale dna ui [project] [--port N]` serves the DNA surface in a browser
+from the record alone: a Hale program (`dna/ui`, embedded in the
+toolchain like the core and the membrane client, built once into the
+toolchain cache) that answers every request by running one offline
+verb of `hale dna` in the project root and returning what it printed
+— the status projection (`/api/status`), the Board's queue
+(`/api/board`), the pending Reviews and one Review's three views
+(`/api/reviews`, `/api/review/<id>`), the fleet (`/api/fleet`), the
+history (`/api/history[/<entity>]`), pressure (`/api/pressure`). A
+verdict (`POST /api/verdict`), an intent (`POST /api/ask`) and a
+pressure signal (`POST /api/pressure`) are the CLI's own verbs sent
+and not waited for: onto the membrane when one is bound here, into
+the record otherwise, in the name the form gives. A path segment
+reaching the CLI is cleaned of separators and leading dashes, so a
+request cannot name a file or a flag. The surface reads nothing
+itself and decides nothing; with or without an organization up, it
+shows what the CLI shows. `hale dna review <id> <verdict> --no-wait`
+is the same non-blocking verdict from the terminal. Iris stays the
+observer: attached to the organization's process it renders the org
+as the live topology it is.
+
 What is deliberately not here yet: a fleet-level semantic diff (a
 Review's diff is the edited seed's; the deploy row names the instances
 it reaches), pressure raised from services' typed metrics (`hale dna

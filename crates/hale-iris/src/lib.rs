@@ -53,6 +53,8 @@ pub fn all_files() -> impl Iterator<Item = (&'static str, &'static str)> {
         .map(|f| (f.path, f.content))
         .chain(hale_dna::FILES.iter().map(|f| (f.path, f.content)))
         .chain(std::iter::once((hale_dna::MEMBRANE_CLIENT.path, hale_dna::MEMBRANE_CLIENT.content)))
+        .chain(std::iter::once((hale_dna::UI_MAIN.path, hale_dna::UI_MAIN.content)))
+        .chain(std::iter::once((hale_dna::UI_HTML.path, hale_dna::UI_HTML.content)))
 }
 
 /// The seed `hale build` compiles for `hale iris` (relative to the root).

@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hale dna</title>
+<style>
+  :root { --bg: #fbfaf7; --fg: #1f1d1a; --mute: #6b665e; --line: #e2ddd3; --card: #ffffff; --accent: #2f5d50; --warn: #8a4b1f; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16150f; --fg: #ece7dc; --mute: #9c968a; --line: #2c2a24; --card: #1e1d17; --accent: #8fc7b4; --warn: #e0a06b; } }
+  body { margin: 0; padding-block: 0; padding-inline: 16px; background: var(--bg); color: var(--fg); font: 14px/1.45 ui-sans-serif, system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: baseline; padding: 14px 0; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0; }
+  header .mute { color: var(--mute); }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; padding: 16px 0 40px; max-width: 1400px; }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; min-width: 0; }
+  section.wide { grid-column: 1 / -1; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--mute); margin: 0 0 8px; }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-x: auto; }
+  ul.reviews { list-style: none; margin: 0; padding: 0; }
+  ul.reviews li { padding: 6px 0; border-top: 1px solid var(--line); cursor: pointer; }
+  ul.reviews li:first-child { border-top: 0; }
+  ul.reviews li.open { color: var(--accent); }
+  form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+  input, select, textarea, button { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+  textarea { width: 100%; min-height: 56px; }
+  button { cursor: pointer; border-color: var(--accent); }
+  .answer { color: var(--warn); margin-top: 6px; white-space: pre-wrap; }
+  .tag { color: var(--mute); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>hale dna</h1>
+  <span id="organism" class="mute">reading the record…</span>
+  <span id="journal" class="mute"></span>
+  <span id="expression" class="mute"></span>
+</header>
+<main>
+  <section class="wide">
+    <h2>Board</h2>
+    <pre id="board">…</pre>
+  </section>
+  <section>
+    <h2>Reviews</h2>
+    <ul id="reviews" class="reviews"></ul>
+    <form id="verdict">
+      <span class="tag">verdict on <b id="review-id">—</b></span>
+      <select name="verdict"><option>approve</option><option>revise</option><option>reject</option><option>abstain</option></select>
+      <input name="as" placeholder="as (your name)" size="14">
+      <input name="comment" placeholder="comment" size="28">
+      <button type="submit">send</button>
+    </form>
+    <div id="verdict-answer" class="answer"></div>
+  </section>
+  <section>
+    <h2>Review</h2>
+    <pre id="review">pick a Review</pre>
+  </section>
+  <section>
+    <h2>Fleet</h2>
+    <pre id="fleet">…</pre>
+  </section>
+  <section>
+    <h2>Ask</h2>
+    <form id="ask">
+      <textarea name="outcome" placeholder="what should happen"></textarea>
+      <input name="to" placeholder="to (a locus, optional)" size="18">
+      <button type="submit">offer intent</button>
+    </form>
+    <div id="ask-answer" class="answer"></div>
+    <h2 style="margin-top:14px">Pressure</h2>
+    <form id="pressure">
+      <input name="source" placeholder="source" size="14">
+      <input name="what" placeholder="what it saw" size="30">
+      <button type="submit">raise</button>
+    </form>
+    <div id="pressure-answer" class="answer"></div>
+  </section>
+  <section class="wide">
+    <h2>History</h2>
+    <pre id="history">…</pre>
+  </section>
+</main>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var open = null;
+  function get(path) { return fetch(path, { cache: 'no-store' }).then(function (r) { return r.text(); }); }
+  function post(path, body) {
+    return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(function (r) { return r.text(); });
+  }
+  function refresh() {
+    get('/api/status').then(function (t) {
+      var s; try { s = JSON.parse(t); } catch (e) { $('organism').textContent = t.slice(0, 200); return; }
+      $('organism').textContent = s.organism || '';
+      $('journal').textContent = s.journal ? ('record: ' + s.journal.revision + ' event(s), chain ' + s.journal.chain) : '';
+      var e = s.expression || {};
+      $('expression').textContent = e.current && e.current.shape_hash ? ('expression: ' + String(e.current.shape_hash).slice(0, 12)) : '';
+      var ul = $('reviews'); ul.innerHTML = '';
+      (s.reviews || []).slice().reverse().forEach(function (r) {
+        var li = document.createElement('li');
+        li.textContent = r.id + ' [' + r.state + '] ' + (r.state === 'pending' ? ('needs ' + r.required_authority + ' — ' + r.question) : ('settled ' + (r.settled || '')));
+        if (r.id === open) li.className = 'open';
+        li.onclick = function () { open = r.id; $('review-id').textContent = r.id; showReview(); refresh(); };
+        ul.appendChild(li);
+      });
+      if (!ul.children.length) ul.innerHTML = '<li class="tag">no Reviews in the record</li>';
+    }).catch(function (err) { $('organism').textContent = 'no answer from hale dna ui: ' + err; });
+    get('/api/board').then(function (t) { $('board').textContent = t; });
+    get('/api/fleet').then(function (t) { $('fleet').textContent = t; });
+    get('/api/history').then(function (t) { $('history').textContent = t.split('\n').slice(-40).join('\n'); });
+    if (open) showReview();
+  }
+  function showReview() { get('/api/review/' + encodeURIComponent(open)).then(function (t) { $('review').textContent = t; }); }
+  $('verdict').onsubmit = function (ev) {
+    ev.preventDefault();
+    if (!open) { $('verdict-answer').textContent = 'pick a Review first'; return; }
+    var f = ev.target;
+    post('/api/verdict', { id: open, verdict: f.verdict.value, as: f.as.value, comment: f.comment.value }).then(function (t) { $('verdict-answer').textContent = t; setTimeout(refresh, 1500); });
+  };
+  $('ask').onsubmit = function (ev) {
+    ev.preventDefault();
+    var f = ev.target;
+    post('/api/ask', { outcome: f.outcome.value, to: f.to.value }).then(function (t) { $('ask-answer').textContent = t; f.outcome.value = ''; setTimeout(refresh, 1500); });
+  };
+  $('pressure').onsubmit = function (ev) {
+    ev.preventDefault();
+    var f = ev.target;
+    post('/api/pressure', { source: f.source.value, what: f.what.value }).then(function (t) { $('pressure-answer').textContent = t; setTimeout(refresh, 1500); });
+  };
+  refresh();
+  setInterval(refresh, 4000);
+})();
+</script>
+</body>
+</html>

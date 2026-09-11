@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: the surface (GH #566 F6)
+
+- `hale dna ui [project] [--port N]`: the DNA surface in a browser, from the record alone — a Hale program (`dna/ui`, embedded in the toolchain beside the core and the membrane client) that answers every request by running one offline verb of `hale dna` in the project root: the status projection, the Board's queue, the pending Reviews and a Review's three views, the fleet, the history, pressure; verdicts, intent and pressure signals from forms go the way the CLI's do (onto the membrane when one is bound here, into the record otherwise). Path segments reaching the CLI are cleaned, so a request cannot name a file or a flag. `hale dna review <id> <verdict> --no-wait` sends a verdict without waiting for the answer. Test: `dna_ui` (no organization anywhere: the page, the API from the record, a verdict from the form landing as a `review.verdict` row in the reviewer's name, an intent, the refusals).
+
 ### DNA: the fleet is the expression (GH #566 F5)
 
 - Fleet plan schema 1.2: an instance may name a `seed` (relative to the plan) instead of an `artifact` — composition cuts the artifact from the seed first — and the `node` that expresses it. `hale fleet check --in <dir>` checks another workspace's declared fleets; `--if-declared` makes a workspace with none a success that says so. `[dna] fleet = "<name>"` in `hale.toml` names the fleet the DNA expresses.
