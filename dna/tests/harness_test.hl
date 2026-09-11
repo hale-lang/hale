@@ -146,7 +146,7 @@ main locus App {
             std::test::assert(std::str::contains(self.dna.editor.last_summary, "genome bytes 0"), "the genome was unreachable from the harness: " + self.dna.editor.last_summary);
         } else {
             std::test::assert(std::str::contains(ev, "confinement=none"), "unconfined by the org chart's leave: " + ev);
-            println("harness_test: bwrap not on PATH here; the mask is not exercised");
+            eprintln("harness_test: bwrap not on PATH here; the mask is not exercised");
         }
         std::test::assert(std::str::contains(std::json::find_string_field(self.last_body(self.dna.journal, "review.requested"), "question"), "note that the harness was here"), "the Review is over the harness's work");
 

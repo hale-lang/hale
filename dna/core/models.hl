@@ -818,8 +818,11 @@ locus HarnessModel {
         let mut argv = self.command + "\n" + self.argv;
         if len(self.model) > 0 { argv = argv + "\n--model\n" + self.model; }
         argv = argv + "\n" + prompt;
+        // no boundary available and the org chart allows it: the harness
+        // runs plainly in the workspace, and the evidence says `none`
+        let wrapped = if kind == "none" { "sh\n-c\ncd \"$0\" && exec \"$@\"\n" + cwd + "\n" + argv } else { self.confinement.wrap(argv, cwd, req.mask) };
         let t0 = std::time::monotonic();
-        let r = run_tool(self.confinement.wrap(argv, cwd, req.mask));
+        let r = run_tool(wrapped);
         ev.elapsed = to_string(std::time::monotonic() - t0);
         if len(scratch) > 0 { let rm = run_tool("rm\n-rf\n" + scratch); }
         let out = parse_harness(self.output, r.code, r.stdout, r.stderr);
