@@ -442,6 +442,13 @@ vec.set(i, x)         or noop(err);   # swallow OOB
 > value as before. (Before this, `get` handed back the slot's pointer
 > and a same-arena value passed through `set` uncopied; two items
 > swapped through `get` and `set` segfaulted.)
+>
+> The copy is an allocation in the caller's arena, freed with the
+> frame — the same cost and lifetime as a hashmap `get`. A frame that
+> reads a heap-bearing element millions of times before it returns
+> holds every copy until then; a hot walk uses `for x in v.items`,
+> which visits the elements in place without copying (and must not
+> `set` the vec it walks).
 
 ```hale,fragment
 ```

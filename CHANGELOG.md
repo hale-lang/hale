@@ -14,7 +14,7 @@ behavior.
 
 ### A vec form owns its elements; `hale run` names a signal (GH #577)
 
-- `@form(vec)`: `get` returns the caller's copy of a heap-bearing element, and `set` / `push` store the vec's own copy whatever arena the value came from. Before, `get` handed back the slot's pointer and `set` passed a pointer already in the arena straight through, so two slots could share one struct and `set`'s retire of the replaced element freed memory the other slot — or a value read earlier — still held: two items swapped through `get` and `set` segfaulted. Scalars and locus refs are unchanged. Test: `tests/hale/form_vec_owned_elements_test.hl`.
+- `@form(vec)`: `get` returns the caller's copy of a heap-bearing element, and `set` / `push` store the vec's own copy whatever arena the value came from. Before, `get` handed back the slot's pointer and `set` passed a pointer already in the arena straight through, so two slots could share one struct and `set`'s retire of the replaced element freed memory the other slot — or a value read earlier — still held: two items swapped through `get` and `set` segfaulted. Scalars and locus refs are unchanged. The copy is an allocation in the caller's arena, freed with the frame (as a hashmap `get` already was); a hot walk uses `for x in v.items`, which visits elements in place. Test: `tests/hale/form_vec_owned_elements_test.hl`.
 - `hale run` says when the program was killed by a signal (`hale run: the program was killed by SIGSEGV (signal 11)`) and exits 128 + the signal, where it used to say nothing and exit 1.
 
 ### DNA: the host is Hale (GH #566 F8)
