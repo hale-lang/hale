@@ -1032,6 +1032,21 @@ A repository usually has more than one, and checking whichever one
 somebody remembered to name is the same partial-coverage problem
 `--matrix` solves for entrypoints. Every fleet runs even when an
 earlier one fails, and the exit status is the worst of them.
+`--in <dir>` checks the fleets another workspace declares (a
+candidate's worktree); `--if-declared` makes a workspace that declares
+none a success that says so, for a step that runs on every workspace.
+
+**Schema 1.2 (GH #566 F5): seeds and nodes.** An instance may name a
+`seed` — a directory relative to the plan — instead of an `artifact`;
+composition then cuts the artifact from the seed first (`hale check
+<seed> --dump-topology`, into `.hale/fleet/<plan>/<id>.topology.json`
+beside the plan), so the plan can describe the workspace's own
+services and a change is checked as the fleet it would deploy. A seed
+that does not check is an instance with no admissible artifact; an
+instance with neither is a plan that cannot be formed. An instance may
+also name the `node` that expresses it (`hale node <name>`,
+`spec/dna.md`); composition ignores it. `[dna] fleet = "<name>"` in
+`hale.toml` names which declared fleet the DNA expresses.
 
 `[fleets]` and `[environments]` are **separate axes** and a workspace
 may declare both. An environment binds law to an ENTRYPOINT at the

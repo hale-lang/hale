@@ -30,6 +30,7 @@ use hale_lsp as lsp;
 mod fleet;
 mod dna;
 mod iris;
+mod node;
 mod mcp;
 mod pkg;
 mod replay;
@@ -67,6 +68,11 @@ fn main() -> ExitCode {
     // application as ordinary Hale source.
     if cmd == "dna" {
         return dna::run(&args[2..]);
+    }
+    // GH #566 F5: `hale node <name>` — the agent that expresses a fleet
+    // plan's instances on one machine, from the record.
+    if cmd == "node" {
+        return node::run(&args[2..]);
     }
     if cmd == "--list-targets" || cmd == "targets" {
         let host = hale_codegen::target::TargetSpec::host();
@@ -2692,9 +2698,10 @@ fn file_of_span(
 /// environment is law bound to an entrypoint. A workspace declares
 /// both, and `production` in one need not mean `production` in the
 /// other.
-fn run_fleet_all() -> ExitCode {
-    let cwd =
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+fn run_fleet_all(from: Option<&Path>, if_declared: bool) -> ExitCode {
+    let cwd = from
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let mut dir = cwd.canonicalize().unwrap_or(cwd);
     let manifest = loop {
         let m = dir.join("hale.toml");
@@ -2707,6 +2714,10 @@ fn run_fleet_all() -> ExitCode {
         }
     };
     let Some(manifest) = manifest else {
+        if if_declared {
+            println!("no hale.toml at or above {}: no fleets declared", dir.display());
+            return ExitCode::SUCCESS;
+        }
         eprintln!(
             "`hale fleet check` with no plan checks every fleet in \
              `[fleets]`, and no `hale.toml` was found at or above the \
@@ -2739,6 +2750,10 @@ fn run_fleet_all() -> ExitCode {
         }
     };
     if fleets.is_empty() {
+        if if_declared {
+            println!("{} declares no [fleets]", manifest.display());
+            return ExitCode::SUCCESS;
+        }
         eprintln!(
             "{} declares no `[fleets]`. Add `<name> = \"<plan path>\"` \
              entries, or name a plan explicitly — reporting success for \
@@ -2874,6 +2889,12 @@ fn run_fleet(rest: &[String]) -> ExitCode {
     // given, exactly like `[fleet_trust]` in the manifest.
     let mut args: Vec<&String> = Vec::new();
     let mut trust_paths: Vec<PathBuf> = Vec::new();
+    // GH #566 F5: `--in <dir>` checks the fleets a workspace elsewhere
+    // declares (a DNA candidate's worktree); `--if-declared` makes a
+    // workspace with no fleets a success that says so, for a
+    // verification step that runs on every workspace.
+    let mut from: Option<PathBuf> = None;
+    let mut if_declared = false;
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         if a == "--trust" {
@@ -2884,6 +2905,16 @@ fn run_fleet(rest: &[String]) -> ExitCode {
                     return ExitCode::from(2);
                 }
             }
+        } else if a == "--in" {
+            match it.next() {
+                Some(d) => from = Some(PathBuf::from(d)),
+                None => {
+                    eprintln!("--in needs a directory");
+                    return ExitCode::from(2);
+                }
+            }
+        } else if a == "--if-declared" {
+            if_declared = true;
         } else {
             args.push(a);
         }
@@ -2905,7 +2936,7 @@ fn run_fleet(rest: &[String]) -> ExitCode {
             );
             return ExitCode::from(2);
         }
-        return run_fleet_all();
+        return run_fleet_all(from.as_deref(), if_declared);
     }
     let (sub, plan) = match (sub, plan) {
         (Some("check"), Some(p)) | (Some("dump"), Some(p)) => {
@@ -2913,7 +2944,8 @@ fn run_fleet(rest: &[String]) -> ExitCode {
         }
         _ => {
             eprintln!("hale fleet check [plan.json]   compose and check");
-            eprintln!("                                (no plan: every fleet in [fleets])");
+            eprintln!("                                (no plan: every fleet in [fleets];");
+            eprintln!("                                 --in <dir> another workspace's, --if-declared: none is ok)");
             eprintln!("hale fleet dump  <plan.json>    write the fleet artifact");
             eprintln!("hale fleet attest <plan.json>   binaries match the plan's sha256 rows");
             eprintln!("hale fleet keygen <prefix>      ES256 keypair for signing");

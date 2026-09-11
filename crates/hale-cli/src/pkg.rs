@@ -99,6 +99,35 @@ pub struct Manifest {
     /// which is the pre-Phase-7 meaning of a composition, unchanged.
     #[serde(default)]
     pub fleet_trust: FleetTrust,
+    /// GH #566 F5: `[dna] fleet = "production"` — which declared fleet
+    /// the DNA expresses. Named, not inferred: a workspace usually
+    /// declares more than one arrangement, and the one an approval
+    /// redeploys must be a choice somebody made.
+    #[serde(default)]
+    pub dna: DnaManifest,
+}
+
+/// The `[dna]` section.
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct DnaManifest {
+    pub fleet: Option<String>,
+}
+
+/// GH #566 F5: the fleet the DNA expresses — its name and plan path
+/// (relative to the manifest), when `[dna] fleet` names one.
+pub fn read_dna_fleet(manifest: &Path) -> Result<Option<(String, PathBuf)>, String> {
+    if !manifest.exists() {
+        return Ok(None);
+    }
+    let src = fs::read_to_string(manifest).map_err(|e| format!("read {}: {}", manifest.display(), e))?;
+    let m: Manifest = toml::from_str(&src).map_err(|e| format!("parse {}: {}", manifest.display(), e))?;
+    let Some(name) = m.dna.fleet else { return Ok(None) };
+    let Some(rel) = m.fleets.get(&name) else {
+        return Err(format!("{}: `[dna] fleet = \"{name}\"` names no entry of `[fleets]`", manifest.display()));
+    };
+    let base = manifest.parent().unwrap_or(Path::new("."));
+    Ok(Some((name, base.join(rel))))
 }
 
 /// The `[fleet_trust]` section.

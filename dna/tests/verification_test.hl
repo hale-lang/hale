@@ -52,7 +52,7 @@ main locus App {
 
         // ---- a candidate that checks ---------------------------------------
         let r = self.v.verify(self.journal, dna::Mutation { id: "m1", worktree: root + "/wt", candidate_commit: "cand1" }, root + "/baseline.topology");
-        std::test::assert_eq_str(r.steps, "fmt=0 check=0 verify=0 test=0 diff=0 rollback=-1", "every step ran clean (no base commit: no rehearsal): " + r.steps);
+        std::test::assert_eq_str(r.steps, "fmt=0 check=0 verify=0 test=0 diff=0 rollback=-1 fleet=0", "every step ran clean (no base commit: no rehearsal): " + r.steps);
         std::test::assert(r.evidence.check_clean && r.evidence.verify_clean, "check and verify evidence");
         std::test::assert(!r.evidence.tests_pass, "no tests is no test evidence");
         std::test::assert(!r.evidence.replay_ok, "no recording is no replay evidence");
@@ -85,7 +85,7 @@ main locus App {
             if std::str::contains(e.kind, "evidence.") { evidence_events = evidence_events + 1; }
             i = i + 1;
         }
-        std::test::assert_eq_int(evidence_events, 6, "fmt check verify test diff magnitude");
+        std::test::assert_eq_int(evidence_events, 7, "fmt check verify test fleet diff magnitude");
         std::test::assert(self.journal.verify_chain(), "chain intact");
 
         // ---- a candidate that does not check ------------------------------

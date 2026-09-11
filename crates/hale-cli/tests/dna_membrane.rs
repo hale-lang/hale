@@ -204,7 +204,16 @@ fn verdict_and_intent_cross_the_membrane_and_the_organism_decides() {
 
     // 4. a malformed request never becomes a publish.
     let r = post(port, "/ctl/review", r#"{"verdict":"approve"}"#);
-    let snap = http(port, "GET /snapshot HTTP/1.0\r\nHost: x\r\n\r\n");
+    // the counters land on the fusion loop's next snapshot tick
+    let mut snap = String::new();
+    let dl = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < dl {
+        snap = http(port, "GET /snapshot HTTP/1.0\r\nHost: x\r\n\r\n");
+        if snap.contains("\"verdicts\":2") && snap.contains("\"intents\":1") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
     finish(&mut organism, &mut iris);
     let transcript = lines.lock().unwrap().join("\n");
     assert!(born, "task born via the membrane:\n{transcript}");

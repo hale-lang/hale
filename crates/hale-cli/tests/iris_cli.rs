@@ -5,7 +5,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -38,6 +38,60 @@ fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
+/// Start `hale iris <port> <args…>` on a free port and wait until OUR
+/// server says it is listening. A port picked with bind(0) and released
+/// can be taken before fuse-hl binds it — under a loaded shard, by
+/// another test's server — and then a connect to the port succeeds
+/// against a stranger whose snapshot never loads our diff, which a poll
+/// loop waits 300 s for. So: stderr captured, the ready line
+/// (`fuse-hl: listening`) awaited from our own child, an early exit or
+/// a silent child retried on a fresh port, and the failure named.
+fn spawn_iris(cache: &Path, args: &[&str]) -> (std::process::Child, u16) {
+    let mut last = String::new();
+    for _ in 0..4 {
+        let port = free_port();
+        let log = cache.join(format!("iris-{port}.stderr"));
+        // both streams into one log: the ready line is printed, the
+        // build banner and a bind failure are eprinted
+        let out = std::fs::File::create(&log).unwrap();
+        let err = out.try_clone().unwrap();
+        // a private registry: this iris discovers no other test's observed
+        // processes, whose segments come and go under it on a loaded
+        // shard — what it serves here needs none of them
+        let runtime = cache.join(format!("iris-{port}-runtime"));
+        let _ = std::fs::create_dir_all(&runtime);
+        let mut child = Command::new(env!("CARGO_BIN_EXE_hale"))
+            .args(["iris", &port.to_string()])
+            .args(args)
+            .env("XDG_CACHE_HOME", cache)
+            .env("XDG_RUNTIME_DIR", &runtime)
+            .stdout(out)
+            .stderr(err)
+            .spawn()
+            .expect("spawn hale iris");
+        let deadline = Instant::now() + Duration::from_secs(240);
+        loop {
+            if let Ok(Some(st)) = child.try_wait() {
+                last = format!("hale iris exited {st} before serving on {port}:\n{}", std::fs::read_to_string(&log).unwrap_or_default());
+                break;
+            }
+            let said = std::fs::read_to_string(&log).unwrap_or_default();
+            if said.contains("fuse-hl: listening") && TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                return (child, port);
+            }
+            if Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                last = format!("hale iris did not accept on {port} within 240s:\n{}", std::fs::read_to_string(&log).unwrap_or_default());
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        eprintln!("{last}; retrying on another port");
+    }
+    panic!("{last}");
+}
+
 #[test]
 fn iris_materializes_builds_once_and_serves_a_snapshot() {
     let cache = cache_root();
@@ -62,14 +116,7 @@ fn iris_materializes_builds_once_and_serves_a_snapshot() {
     assert!(!err.contains("building the observer"), "second launch must not rebuild: {err}");
 
     // Launch and fetch /snapshot.
-    let port = free_port();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .args(["iris", &port.to_string()])
-        .env("XDG_CACHE_HOME", &cache)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn hale iris");
+    let (mut child, port) = spawn_iris(&cache, &[]);
     let deadline = Instant::now() + Duration::from_secs(300);
     let mut body = String::new();
     while Instant::now() < deadline {
@@ -127,16 +174,7 @@ fn iris_diff_pair_rides_into_the_snapshot() {
         assert!(art.is_file(), "artifact {name}: {}", String::from_utf8_lossy(&out.stderr));
         artifacts.push(art);
     }
-    let port = free_port();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .args(["iris", &port.to_string(), "--diff"])
-        .arg(&artifacts[0])
-        .arg(&artifacts[1])
-        .env("XDG_CACHE_HOME", &cache)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn hale iris --diff");
+    let (mut child, port) = spawn_iris(&cache, &["--diff", &artifacts[0].to_string_lossy(), &artifacts[1].to_string_lossy()]);
     let deadline = Instant::now() + Duration::from_secs(300);
     let mut body = String::new();
     while Instant::now() < deadline {
@@ -153,9 +191,22 @@ fn iris_diff_pair_rides_into_the_snapshot() {
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+    let exited = child.try_wait().ok().flatten().map(|st| format!("{st}")).unwrap_or_else(|| "still running".into());
     let _ = child.kill();
     let _ = child.wait();
-    let json_start = body.find("{\"ts\"").expect("snapshot body");
+    let json_start = body.find("{\"ts\"").unwrap_or_else(|| {
+        // the last snapshot seen and what the server said, for a failure
+        // a loaded shard produces and a workstation never does
+        let last = TcpStream::connect(("127.0.0.1", port)).ok().and_then(|mut s| {
+            let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
+            let _ = s.write_all(b"GET /snapshot HTTP/1.0\r\nHost: x\r\n\r\n");
+            let mut b = String::new();
+            let _ = s.read_to_string(&mut b);
+            Some(b)
+        });
+        let log = std::fs::read_to_string(cache.join(format!("iris-{port}.stderr"))).unwrap_or_default();
+        panic!("no loaded diff in the snapshot within 300s (server {exited})\nlast snapshot: {last:?}\nserver log:\n{log}");
+    });
     let v: serde_json::Value = serde_json::from_str(&body[json_start..]).expect("snapshot is JSON");
     assert_eq!(v["diff"]["state"], "loaded", "{body}");
     let doc = &v["diff"]["document"];
