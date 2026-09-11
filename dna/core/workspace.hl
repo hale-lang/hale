@@ -116,6 +116,7 @@ interface Repository {
     fn diff(path: String, base: String, candidate: String) -> String;
     fn contains(path: String, commit: String) -> Bool;
     fn apply(candidate: String) -> Bool;
+    fn rollback(base: String) -> Bool;
     fn kind() -> String;
 }
 
@@ -160,8 +161,23 @@ locus LocalGit {
         let ff = run_tool("git\n-C\n" + self.repo + "\nmerge\n-q\n--ff-only\n" + candidate);
         if ff.code == 0 { self.applied = self.applied + 1; return true; }
         let m = run_tool("git\n-C\n" + self.repo + "\n-c\nuser.name=dna\n-c\nuser.email=dna@local\nmerge\n-q\n--no-edit\n--no-ff\n" + candidate);
-        if m.code != 0 { self.last_error = trim_nl(m.stderr); return false; }
+        if m.code != 0 {
+            // no half-applied state: a merge that did not complete is
+            // aborted, and the failure is the result
+            let a = run_tool("git\n-C\n" + self.repo + "\nmerge\n--abort");
+            self.last_error = trim_nl(m.stderr);
+            return false;
+        }
         self.applied = self.applied + 1;
+        return true;
+    }
+    // Move the genome back to `base`, keeping the working tree's
+    // untracked files; the applied commits stay reachable from the
+    // Mutation's worktree, so the lineage loses nothing.
+    @effects(is: { repo_write })
+    fn rollback(base: String) -> Bool {
+        let r = run_tool("git\n-C\n" + self.repo + "\nreset\n-q\n--keep\n" + base);
+        if r.code != 0 { self.last_error = trim_nl(r.stderr); return false; }
         return true;
     }
 }
@@ -189,6 +205,7 @@ locus MutationGateway {
     }
     fn lease_key(mutation_id: String) -> String { return "mutation:" + mutation_id; }
     fn head() -> String { return self.repo.head(self.workspaces.repo()); }
+    fn head_of(path: String) -> String { return self.repo.head(path); }
     fn repo_path() -> String { return self.workspaces.repo(); }
     // The Attempt takes the Mutation's lease before touching it.
     fn take(mutation_id: String, holder: String, now: Int) -> Lease {
@@ -250,6 +267,25 @@ locus MutationGateway {
         if !ok { return self.refuse("apply failed"); }
         let j = j.append(j.revision(), "mutation.applied", mutation_id, candidate);
         return GateResult { ok: true, value: candidate };
+    }
+    // Roll the genome back to the Mutation's base (GH #529 D6): the
+    // observation window went badly, or the host could not express the
+    // candidate. Idempotent per (Mutation, base), fenced like an apply.
+    fn rollback(j: Journal, mutation_id: String, base: String, token: Int, now: Int) -> GateResult {
+        if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) { return self.refuse("stale or missing lease"); }
+        let key = "rollback:" + mutation_id + ":" + base;
+        let fresh = effect_request(j, key, base);
+        if !fresh {
+            let st = effect_status(j, key);
+            if st.done && st.ok { return GateResult { ok: true, value: base, replayed: true }; }
+            if st.done { return self.refuse("earlier rollback failed; not retried"); }
+            return self.refuse("rollback in flight");
+        }
+        let ok = self.repo.rollback(base);
+        let r = effect_result(j, key, ok);
+        if !ok { return self.refuse("rollback failed"); }
+        let x = j.append(j.revision(), "mutation.rolled_back", mutation_id, base);
+        return GateResult { ok: true, value: base };
     }
     // Remove the worktree (the Mutation dissolves; its history stays).
     fn remove(j: Journal, mutation_id: String, token: Int, now: Int) -> GateResult {

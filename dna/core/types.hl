@@ -180,6 +180,7 @@ type Mutation {
     candidate_digest: String = ""; // what a Review pins (sha256 of the candidate's artifact, or the commit)
     change_class: String = "";
     rationale: String = "";
+    fitness_signals: String = ""; // declared by the proposal; the observation window is judged against them
     disposition: String = ""; // "proposed" | "staged" | "reviewed" | "applied" | "rejected" | "rolled_back" | "dissolved"
 }
 

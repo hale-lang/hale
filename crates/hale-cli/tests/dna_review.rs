@@ -119,9 +119,11 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
     while Instant::now() < dl && !(app.join(".hale/dna/hale-dna.intent.offered.sock").exists() && app.join(".hale/dna/hale-dna.review.verdict.sock").exists()) {
         std::thread::sleep(Duration::from_millis(200));
     }
+    // the host first (D5 makes it restart the organism on approval), then the organism
     let finish = |host: &mut std::process::Child| {
-        let _ = Command::new("pkill").args(["-x", "orgrev"]).status();
+        let _ = host.kill();
         let _ = host.wait();
+        let _ = Command::new("pkill").args(["-x", "orgrev"]).status();
     };
     if !app.join(".hale/dna/hale-dna.review.verdict.sock").exists() {
         finish(&mut host);
@@ -137,7 +139,8 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
     finish(&mut host);
     assert!(ok1 && out1.contains("refused the verdict: digest mismatch"), "wrong digest:\n{out1}");
     assert!(ok2 && out2.contains("review m1 settled: approve by riley"), "settle:\n{out2}");
-    assert!(ok3 && out3.contains("1 pending of 2") && out3.contains("m1 [reviewed]"), "status:\n{out3}");
-    assert!(ok4 && out4.contains("evidence.check") && out4.contains("review.requested") && out4.contains("review.settled") && out4.contains("mutation.candidate"), "history:\n{out4}");
+    // approval applies (D5): the mutation is past `reviewed` by the time the status is read
+    assert!(ok3 && out3.contains("1 pending of 2") && (out3.contains("m1 [applied]") || out3.contains("m1 [retained]")), "status:\n{out3}");
+    assert!(ok4 && out4.contains("evidence.check") && out4.contains("review.requested") && out4.contains("review.settled") && out4.contains("mutation.candidate") && out4.contains("mutation.applied"), "history:\n{out4}");
     let _ = std::fs::remove_dir_all(&d);
 }

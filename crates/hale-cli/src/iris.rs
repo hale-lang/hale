@@ -268,6 +268,9 @@ pub fn run(args: &[String]) -> ExitCode {
 /// directory (`dna/organism/main.hl` binds them under `/tmp`).
 pub const MEMBRANE_VERDICT_SOCK: &str = "hale-dna.review.verdict.sock";
 pub const MEMBRANE_INTENT_SOCK: &str = "hale-dna.intent.offered.sock";
+/// The host's report on an observation window (GH #529 D6); the
+/// organism binds it beside the two above.
+pub const MEMBRANE_OBSERVED_SOCK: &str = "hale-dna.expression.observed.sock";
 
 /// Diff two topology artifacts with the compiler's own engine and
 /// write the document where fuse-hl can watch it.

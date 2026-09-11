@@ -1,0 +1,165 @@
+// dna/tests/apply_test.hl — GH #529 D5 + D6: approval applies exactly
+// the reviewed candidate; nothing else moves the genome.
+//
+// Over a real repository, in one process (no host): an approved
+// Review applies the pinned candidate through the gateway and asks
+// for a restart; a retried apply reads the Journal and commits nothing
+// twice; a candidate that moved after the review is refused by
+// digest; a rejection leaves `git log` untouched; the host's
+// observation report retains a healthy expression (and dissolves the
+// worktree) or rolls a bad one back to the base and asks for the old
+// expression back.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
+
+const BASE: String = "type Ping { n: Int = 0; }\ntopic Pings { payload: Ping; subject: \"t.pings\"; }\nlocus A { params { seen: Int = 0; } bus { subscribe Pings as on_ping; } fn on_ping(p: Ping) { self.seen = self.seen + 1; } }\nmain locus App { params { a: A = A { }; } bus { publish Pings; } run() { Pings <- Ping { n: 1 }; } }\nfn main() { App { }; }\n";
+const CANDIDATE: String = "type Ping { n: Int = 0; }\ntopic Pings { payload: Ping; subject: \"t.pings\"; }\nlocus A { params { seen: Int = 0; limit: Int = 8; } bus { subscribe Pings as on_ping; } fn on_ping(p: Ping) { self.seen = self.seen + 1; } }\nmain locus App { params { a: A = A { }; } bus { publish Pings; } run() { Pings <- Ping { n: 1 }; } }\nfn main() { App { }; }\n";
+
+main locus App {
+    params {
+        repo: String = "";
+        dna: dna::Dna = dna::Dna { };
+    }
+    bus {
+        publish dna::ReviewVerdict;
+        publish dna::ExpressionObserved;
+    }
+    fn commits() -> Int {
+        let r = sh("git\n-C\n" + self.repo + "\nrev-list\n--count\nHEAD");
+        return std::str::parse_int(dna::trim_nl(r.stdout)) or - 1;
+    }
+    fn head() -> String { return dna::trim_nl(sh("git\n-C\n" + self.repo + "\nrev-parse\nHEAD").stdout); }
+    fn approve(id: String, digest: String) {
+        dna::ReviewVerdict <- dna::Verdict { review_id: id, subject_digest: digest, verdict: "approve", reviewer: "riley", authority: "maintainer" };
+        std::time::sleep(150ms);
+    }
+    @unbounded
+    fn last(kind: String, entity: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.dna.journal.revision() {
+            let e = self.dna.journal.read(i);
+            if e.kind == kind && e.entity == entity { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    @unbounded
+    fn count(kind: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.dna.journal.revision() {
+            if self.dna.journal.read(i).kind == kind { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    run() {
+        let repo = "/tmp/dna-apply-" + to_string(std::process::pid());
+        self.repo = repo;
+        std::io::fs::mkdir(repo) or discard;
+        std::io::fs::mkdir(repo + "/.hale") or discard;
+        std::io::fs::mkdir(repo + "/.hale/dna") or discard;
+        std::io::fs::write_file(repo + "/main.hl", BASE) or discard;
+        std::io::fs::write_file(repo + "/.gitignore", "/.hale/\n") or discard;
+        let init = sh("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        let add = sh("git\n-C\n" + repo + "\nadd\n-A");
+        let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
+        std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
+        let base = self.head();
+        self.dna = dna::Dna {
+            journal: dna::FileJournal { path: repo + "/.hale/dna/journal.jsonl" },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), evidence_dir: repo + "/.hale/dna/evidence", repo: repo },
+            editor: dna::SourceEditor {
+                models: dna::ModelRouter {
+                    quick: dna::FakeModel { name: "quick", answer: CANDIDATE },
+                    deep: dna::FakeModel { name: "deep", answer: "capacity +" }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            boundary: dna::AutonomyBoundary {
+                child: "app",
+                grant: dna::Grant { child: "app", classes: "feature", max_magnitude: 40, review: "pre" }
+            }
+        };
+
+        // ---- 1. approval applies exactly the reviewed candidate ----------
+        let out = self.dna.mutate("t1", "feature", "give A a limit", "main.hl", 100);
+        std::test::assert_eq_str(out, "m1: review", out);
+        let cand1 = self.last("mutation.candidate", "m1");
+        std::test::assert_eq_int(self.commits(), 1, "nothing applied before the verdict");
+        self.approve("m1", cand1);
+        std::test::assert_eq_str(self.head(), cand1, "HEAD is the reviewed candidate");
+        std::test::assert_eq_int(self.commits(), 2, "one commit applied");
+        std::test::assert_eq_str(self.last("mutation.applied", "m1"), cand1, "journaled as applied");
+        std::test::assert(std::str::contains(self.last("expression.restart_requested", "m1"), "apply " + cand1), "the host is asked to restart: " + self.last("expression.restart_requested", "m1"));
+        std::test::assert(std::str::contains(self.last("expression.restart_requested", "m1"), "fitness capacity +"), "with the declared fitness signals");
+        std::test::assert_eq_int(self.dna.applied, 1, "applied once");
+
+        // ---- 2. a retried apply reads the Journal: exactly one commit -----
+        let again = self.dna.apply_reviewed("m1", 101);
+        std::test::assert_eq_str(again, "applied (replayed)", again);
+        std::test::assert_eq_int(self.commits(), 2, "still one commit");
+        std::test::assert_eq_int(self.dna.restarts_requested, 1, "no second restart for a replayed apply");
+
+        // ---- 3. the observation window: healthy retains, dissolves the worktree
+        dna::ExpressionObserved <- dna::Observation { mutation_id: "m1", outcome: "healthy", model_hash: "shape:new" };
+        std::time::sleep(150ms);
+        std::test::assert(std::str::contains(self.last("mutation.retained", "m1"), "shape:new"), "retained: " + self.last("mutation.retained", "m1"));
+        let gone = std::io::fs::list_dir_count(repo + "/.hale/dna/worktrees/m1") or - 1;
+        std::test::assert_eq_int(gone, -1, "the worktree is dissolved");
+        std::test::assert_eq_int(self.commits(), 2, "genome unchanged by retention");
+
+        // ---- 4. a candidate that moved after the review is refused by digest
+        let out2 = self.dna.mutate("t2", "feature", "give A a limit, again", "main.hl", 200);
+        std::test::assert_eq_str(out2, "m2: review", out2);
+        let cand2 = self.last("mutation.candidate", "m2");
+        let wt2 = repo + "/.hale/dna/worktrees/m2";
+        let tamper = sh("git\n-C\n" + wt2 + "\n-c\nuser.name=x\n-c\nuser.email=x@local\ncommit\n-q\n--allow-empty\n-m\ntampered after review");
+        std::test::assert_eq_int(tamper.code, 0, "tamper: " + tamper.stderr);
+        self.approve("m2", cand2);
+        std::test::assert_eq_str(self.last("review.settled", "m2"), "approve by riley", "the Review itself settled");
+        std::test::assert(std::str::contains(self.last("mutation.refused", "m2"), "candidate moved after review"), "refused by digest: " + self.last("mutation.refused", "m2"));
+        std::test::assert_eq_int(self.commits(), 2, "git log unchanged");
+        std::test::assert_eq_int(self.dna.applied, 1, "nothing applied");
+
+        // ---- 5. rejection leaves everything untouched --------------------
+        let out3 = self.dna.mutate("t3", "feature", "give A a limit, a third time", "main.hl", 300);
+        let cand3 = self.last("mutation.candidate", "m3");
+        dna::ReviewVerdict <- dna::Verdict { review_id: "m3", subject_digest: cand3, verdict: "reject", reviewer: "riley", authority: "maintainer", comment: "no" };
+        std::time::sleep(150ms);
+        std::test::assert(std::str::contains(self.last("mutation.rejected", "m3"), "untouched"), "rejected: " + self.last("mutation.rejected", "m3"));
+        std::test::assert_eq_int(self.commits(), 2, "git log unchanged by rejection");
+        std::test::assert_eq_str(self.head(), cand1, "HEAD unchanged by rejection");
+
+        // ---- 6. a bad window rolls back to the base and asks for the old expression
+        let out4 = self.dna.mutate("t4", "feature", "give A a limit, once more", "main.hl", 400);
+        let cand4 = self.last("mutation.candidate", "m4");
+        self.approve("m4", cand4);
+        std::test::assert_eq_str(self.head(), cand4, "m4 applied");
+        std::test::assert_eq_int(self.commits(), 3, "two applied commits");
+        dna::ExpressionObserved <- dna::Observation { mutation_id: "m4", outcome: "crashed", detail: "exited 139 in the window" };
+        std::time::sleep(150ms);
+        std::test::assert_eq_str(self.last("mutation.rolled_back", "m4"), cand1, "rolled back to m4's base (the retained m1)");
+        std::test::assert_eq_str(self.head(), cand1, "HEAD is the base again");
+        std::test::assert(std::str::contains(self.last("expression.restart_requested", "m4"), "rollback " + cand1), "the old expression is asked back: " + self.last("expression.restart_requested", "m4"));
+        std::test::assert_eq_int(self.dna.restarts_requested, 3, "m1 apply, m4 apply, m4 rollback");
+        // a second report on a rolled-back Mutation changes nothing
+        dna::ExpressionObserved <- dna::Observation { mutation_id: "m4", outcome: "healthy" };
+        std::time::sleep(150ms);
+        std::test::assert_eq_int(self.count("mutation.retained"), 1, "only m1 was ever retained");
+        std::test::assert(self.dna.journal.verify_chain(), "chain intact");
+    }
+}
+fn main() { App { }; }

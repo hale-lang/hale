@@ -103,3 +103,15 @@ type ModelEvidence {
     refused: String = "";
 }
 topic ModelCalled { payload: ModelEvidence; subject: "dna.model.called"; }
+
+// GH #529 D6: what became of the expression after an apply. The host
+// (`hale dna run`) rebuilds and restarts on the organism's request,
+// watches the observation window, and reports back on the membrane;
+// the organism decides whether the Mutation is retained or rolled back.
+type Observation {
+    mutation_id: String = "";
+    outcome: String = ""; // "healthy" | "crashed" | "build_failed"
+    model_hash: String = ""; // the shape hash the restarted expression reports
+    detail: String = "";
+}
+topic ExpressionObserved { payload: Observation; subject: "dna.expression.observed"; }
