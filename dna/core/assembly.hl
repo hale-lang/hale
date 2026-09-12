@@ -646,11 +646,15 @@ locus Dna {
         let opened = self.gateway.open(self.journal, id, base, lease.token, now);
         if !opened.ok { return self.mutation_failed(id, "worktree: " + opened.refused); }
         let wt = opened.value;
-        // the grant is the seed this change edits, inside THIS worktree
-        self.editor.confine(if seed == "." || seed == "" { wt } else { wt + "/" + seed });
+        // the grant is the seed this change edits, inside THIS worktree;
+        // the worktree is what a harness's export copies, the repository
+        // what it must never reach (GH #583 M3)
+        self.editor.place(wt, seed, self.gateway.repo.root());
         let mut file = target;
-        if len(file) == 0 {
-            // step 5: the Attempt inspects the listing under its grant
+        // step 5: the Attempt inspects the listing under its grant — unless
+        // its backend works in place (GH #583 M3): a harness finds its own
+        // files, and the import says which it changed
+        if len(file) == 0 && !self.editor.in_place("internal") {
             file = self.editor.locate(objective);
             if len(file) == 0 {
                 let x = self.gateway.remove(self.journal, id, lease.token, now);
@@ -658,9 +662,19 @@ locus Dna {
             }
             let x1 = self.journal.append(self.journal.revision(), "mutation.located", id, file + " under " + self.editor.grant());
         }
+        // GH #583 M3: the genome must not move while an attempt runs —
+        // an editor's process (a harness with tools) could reach it only
+        // around the boundary, and the record says so instead of the
+        // candidate quietly building on a moved base
+        let head_before = self.gateway.head();
+        let wt_before = self.gateway.repo.head(wt);
         let r = self.editor.perform(WorkRequest {
             work_id: id, task_id: task_id, objective: objective, target: file, data_class: "internal"
         });
+        if self.gateway.head() != head_before || self.gateway.repo.head(wt) != wt_before {
+            let x = self.gateway.remove(self.journal, id, lease.token, now);
+            return self.mutation_failed(id, "the genome moved during the attempt (" + head_before + " -> " + self.gateway.head() + "; worktree " + wt_before + " -> " + self.gateway.repo.head(wt) + "): nothing built on it is a candidate");
+        }
         if r.disposition != "done" {
             let x = self.gateway.remove(self.journal, id, lease.token, now);
             return self.mutation_failed(id, "attempt: " + r.narrative);

@@ -198,6 +198,42 @@ The organization's models are a catalog in source (GH #583 M1):
   the header, no adapter does. An API error is refused as `http
   <status> <the API's message>`; a transport failure as `http 0
   <kind> <detail>`.
+- **The harness.** `HarnessModel` runs an installed coding harness
+  (`command: claude`, or `codex` with `output: text`) per request with
+  its own tools on, as a backend that `works_in_place`: for a
+  source-editing request the editor makes an EXPORT of the Mutation's
+  worktree (a plain directory with the same files, never `.git`, never
+  `.hale`), runs the harness with the export as its cwd and the whole
+  objective as its prompt, and imports the export's diff back under
+  the grant — a file that differs or is new is written through the
+  tools, one that is gone is removed, a change outside the grant is
+  counted (`outside_grant`) and left behind; `files_changed` is
+  derived from that diff, never from the harness's answer. Then the
+  same fmt, check, retry (the diagnostics in the next prompt) and
+  assessment as the file-by-file flow. An answer-only request (a
+  review) runs in an empty directory of its own. `complete` carries
+  `external_model` and `harness_run`; evidence is one `model.called`
+  row per call with the harness's own cost summary
+  (`total_cost_usd`, `usage`), `tool_grant: harness @export`, and
+  `confinement=<kind>` in `params`.
+- **The boundary is stated exactly.** The export is not a sandbox: a
+  process whose cwd is the export can still reach whatever the
+  operator's account can. What DNA guarantees is that *the genome is
+  unreachable from the harness process*. A `Confinement` (`kind`,
+  `available`, `wrap(argv, cwd, mask)`) supplies it: `Bubblewrap`
+  (Linux: the filesystem as the operator sees it — the harness's own
+  home state, the toolchain, the network — with the repository and
+  the worktree replaced by empty tmpfs mounts, `--die-with-parent`)
+  or `NoConfinement`. A harness whose confinement is unavailable is
+  refused (`unconfined harness not allowed`) unless the org chart's
+  `allow_unconfined` says otherwise; the evidence records which it
+  was. On every platform the assembly also checks that the
+  repository's head and the worktree's head did not move during the
+  attempt and fails the Mutation (`mutation.failed`: `the genome
+  moved during the attempt`) if they did: not a boundary, but a
+  bypass becomes a loud refusal. Outside the genome the harness has
+  exactly the operator's account, which is what running it by hand
+  has. The `Repository` interface names its `root` for the mask.
 - **The catalog is source.** A backend is a constructor function
   (`frontier()`, `fast()`, `desk()` …); a position's router is a
   function composed from them (`leader_models()`, `editor_models()`,
@@ -208,11 +244,14 @@ The organization's models are a catalog in source (GH #583 M1):
   boundary.
 - **Discovery.** `init` and `new` look at the environment
   (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) and `PATH` (`ollama`, whose
-  first listed model becomes the desk model; `claude` and `codex` are
-  reported), write the catalog for what is there (`AnthropicMessages`
-  with `claude-opus-5` / `claude-haiku-4-5` when its key is present,
-  else `OpenAiChat` with `gpt-4o` / `gpt-4o-mini`, a placeholder key
-  when none is set), and print what each position was given. Nothing found is fine: a hosted backend without its key
+  first listed model becomes the desk model; `claude`, else `codex`,
+  becomes `harness()`), write the catalog for what is there
+  (`AnthropicMessages` with `claude-opus-5` / `claude-haiku-4-5` when
+  its key is present, else `OpenAiChat` with `gpt-4o` /
+  `gpt-4o-mini`, a placeholder key when none is set; with a harness
+  the editor's and the agent's `quick` tier is the harness, and with
+  no key every model-backed slot is), and print what each position
+  was given. Nothing found is fine: a hosted backend without its key
   is not permitted, and every Review waits for the Board. `upgrade`
   writes a catalog for an organization that predates it and says what
   to point at it; it never edits the organization's main.

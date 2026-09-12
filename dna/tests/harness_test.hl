@@ -1,0 +1,202 @@
+// dna/tests/harness_test.hl — GH #583 M3: a harness edits in an EXPORT,
+// the editor imports the diff under the grant, the genome is never
+// reached.
+//
+// A stand-in harness (a shell script) plays `claude -p --output-format
+// json`: it edits the seed's main file in its cwd, leaves a file
+// outside the grant, tries to read the genome by its real path, and
+// prints the result object with a cost. One Dna over a real repository
+// runs a Mutation through it: the candidate carries the harness's
+// edit, the file outside the grant is left behind and counted, the
+// evidence is a `model.called` row with the harness's cost, the export
+// is gone, and the genome was masked when Bubblewrap is here. A
+// harness that moves the genome fails the attempt by the record; an
+// unconfined harness is refused unless the org chart allows it; an
+// answer-only call runs in an empty directory of its own.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
+
+const BASE: String = "type Ping { n: Int = 0; }\ntopic Pings { payload: Ping; subject: \"t.pings\"; }\nlocus A { params { seen: Int = 0; } bus { subscribe Pings as on_ping; } fn on_ping(p: Ping) { self.seen = self.seen + 1; } }\nmain locus App { params { a: A = A { }; } bus { publish Pings; } run() { Pings <- Ping { n: 1 }; } }\nfn main() { App { }; }\n";
+
+// The stand-in: `$1..` are claude's flags, the prompt is last. It
+// reads the genome's path from a file the test wrote, so the result
+// says how many bytes of the genome it could see.
+fn harness_script(genome_file: String) -> String {
+    return "#!/bin/sh\n"
+        + "genome=$(cat " + genome_file + ")\n"
+        + "printf '// touched by the harness\\n' >> app/main.hl\n"
+        + "printf 'left behind\\n' > NOTES.txt\n"
+        + "seen=$(cat \"$genome/app/main.hl\" 2>/dev/null | wc -c | tr -d ' ')\n"
+        + "printf '{\"type\": \"result\", \"subtype\": \"success\", \"is_error\": false, \"result\": \"touched app/main.hl; genome bytes %s\", \"total_cost_usd\": 0.0123, \"usage\": {\"input_tokens\": 10, \"output_tokens\": 5}}\\n' \"$seen\"\n";
+}
+
+// A harness that reaches into the genome and moves it.
+fn mover_script(genome_file: String) -> String {
+    return "#!/bin/sh\n"
+        + "genome=$(cat " + genome_file + ")\n"
+        + "printf '// touched\\n' >> app/main.hl\n"
+        + "git -C \"$genome\" -c user.name=h -c user.email=h@local commit -q --allow-empty -m moved\n"
+        + "printf '{\"type\": \"result\", \"subtype\": \"success\", \"is_error\": false, \"result\": \"moved it\", \"total_cost_usd\": 0.001, \"usage\": {\"input_tokens\": 1, \"output_tokens\": 1}}\\n'\n";
+}
+
+main locus App {
+    params {
+        repo: String = "";
+        dna: dna::Dna = dna::Dna { };
+        again: dna::Dna = dna::Dna { };
+        direct: dna::HarnessModel = dna::HarnessModel { };
+        strict: dna::HarnessModel = dna::HarnessModel { };
+    }
+    @unbounded
+    fn last_body(j: dna::Journal, kind: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    @unbounded
+    fn evidence_with(j: dna::Journal, needle: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "model.called" && std::str::contains(e.body, needle) { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    run() {
+        // ---- the genome: a repository whose seed is `app/`
+        let repo = "/tmp/dna-harness-" + to_string(std::process::pid());
+        let scratch = repo + "-bin";
+        std::io::fs::mkdir(repo) or discard;
+        std::io::fs::mkdir(scratch) or discard;
+        std::io::fs::mkdir(repo + "/app") or discard;
+        std::io::fs::mkdir(repo + "/.hale") or discard;
+        std::io::fs::mkdir(repo + "/.hale/dna") or discard;
+        std::io::fs::write_file(repo + "/hale.toml", "[deps]\n") or discard;
+        std::io::fs::write_file(repo + "/app/main.hl", BASE) or discard;
+        std::io::fs::write_file(repo + "/.gitignore", "/.hale/\n") or discard;
+        std::io::fs::write_file(scratch + "/genome", repo) or discard;
+        std::io::fs::write_file(scratch + "/claude", harness_script(scratch + "/genome")) or discard;
+        std::io::fs::write_file(scratch + "/mover", mover_script(scratch + "/genome")) or discard;
+        let chmod = sh("chmod\n+x\n" + scratch + "/claude\n" + scratch + "/mover");
+        let init = sh("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        let add = sh("git\n-C\n" + repo + "\nadd\n-A");
+        let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
+        std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
+        let cut = sh(toolchain() + "\ncheck\n" + repo + "/app\n--dump-topology=" + repo + "/.hale/dna/baseline.topology");
+        std::test::assert_eq_int(cut.code, 0, "baseline: " + cut.stderr);
+        let bwrap = dna::Bubblewrap { };
+        let masked = bwrap.available();
+
+        // ---- 1. a Mutation through the harness
+        self.dna = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees", base_exec_digest: "exec:base" },
+                repo: dna::LocalGit { repo: repo }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo, seed: "app" },
+            editor: dna::SourceEditor {
+                name: "editor",
+                models: dna::ModelRouter {
+                    // the quick tier is the harness; Bubblewrap when this machine has it, else none by the org chart's leave
+                    quick: dna::HarnessModel { name: "quick", command: scratch + "/claude", confinement: dna::Bubblewrap { }, allow_unconfined: true },
+                    deep: dna::FakeModel { name: "deep", answer: "pings_seen +" }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
+            genome_seed: "app"
+        };
+        let out = self.dna.mutate("t1", "docs", "note that the harness was here", "", 1);
+        std::test::assert(std::str::contains(out, ": review"), "the harness's candidate reaches its Review: " + out);
+        std::time::sleep(100ms);
+        // the candidate carries the harness's edit, and only the grant's files
+        let cand = std::json::find_string_field(self.last_body(self.dna.journal, "review.requested"), "candidate_commit");
+        let shown = sh("git\n-C\n" + repo + "\nshow\n" + cand + ":app/main.hl");
+        std::test::assert(std::str::contains(shown.stdout, "// touched by the harness"), "the edit is in the candidate: " + shown.stdout);
+        let notes = sh("git\n-C\n" + repo + "\nshow\n" + cand + ":NOTES.txt");
+        std::test::assert(notes.code != 0, "the file outside the grant was left behind");
+        std::test::assert_eq_int(self.dna.editor.refused_outside, 1, "and counted");
+        std::test::assert_eq_int(self.dna.editor.imported, 1, "one file imported");
+        std::test::assert_eq_int(self.dna.editor.exports, 1, "one export");
+        std::test::assert(!std::io::fs::file_exists(self.dna.editor.last_export), "the export is gone: " + self.dna.editor.last_export);
+        // the evidence: adapter, cost from the harness's own summary, the grant, the confinement
+        let ev = self.evidence_with(self.dna.journal, "\"adapter\": \"harness\"");
+        std::test::assert(len(ev) > 0, "a model.called row for the harness call");
+        std::test::assert(std::str::contains(ev, "\"cost_micros\": 12300"), "cost from the harness's summary: " + ev);
+        std::test::assert(std::str::contains(ev, "\"tool_grant\": \"harness @export\""), "the grant is the export: " + ev);
+        std::test::assert(std::str::contains(ev, "\"input_tokens\": 10"), "usage from the summary: " + ev);
+        std::test::assert(std::str::contains(ev, "\"endpoint\": \"" + scratch + "/claude\""), "the harness named: " + ev);
+        if masked {
+            std::test::assert(std::str::contains(ev, "confinement=bubblewrap"), "confined: " + ev);
+            std::test::assert(std::str::contains(self.dna.editor.last_summary, "genome bytes 0"), "the genome was unreachable from the harness: " + self.dna.editor.last_summary);
+        } else {
+            std::test::assert(std::str::contains(ev, "confinement=none"), "unconfined by the org chart's leave: " + ev);
+            eprintln("harness_test: bwrap not on PATH here; the mask is not exercised");
+        }
+        std::test::assert(std::str::contains(std::json::find_string_field(self.last_body(self.dna.journal, "review.requested"), "question"), "note that the harness was here"), "the Review is over the harness's work");
+
+        // ---- 2. a harness that moves the genome fails the attempt by the record
+        self.again = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees", base_exec_digest: "exec:base" },
+                repo: dna::LocalGit { repo: repo }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo, seed: "app" },
+            editor: dna::SourceEditor {
+                name: "editor",
+                models: dna::ModelRouter {
+                    quick: dna::HarnessModel { name: "quick", command: scratch + "/mover", confinement: dna::NoConfinement { }, allow_unconfined: true },
+                    deep: dna::FakeModel { name: "deep", answer: "pings_seen +" }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
+            genome_seed: "app"
+        };
+        let moved = self.again.mutate("t2", "docs", "move it", "", 2);
+        std::test::assert(std::str::contains(moved, "the genome moved during the attempt"), "refused by the record: " + moved);
+        std::test::assert(std::str::contains(self.last_body(self.again.journal, "mutation.failed"), "the genome moved during the attempt"), "journaled: " + self.last_body(self.again.journal, "mutation.failed"));
+
+        // ---- 3. unconfined is refused unless the org chart allows it
+        self.strict = dna::HarnessModel { name: "quick", command: scratch + "/claude", confinement: dna::NoConfinement { } };
+        std::test::assert(self.strict.allows("internal"), "the binary is present");
+        let s = self.strict.complete(dna::ModelRequest { attempt_id: "x/a0", prompt: "hello" });
+        std::test::assert(!s.ok && std::str::contains(s.refused, "unconfined harness not allowed"), s.refused);
+        std::test::assert(!self.strict.allows("customer"), "customer data never goes to a harness");
+        let absent = dna::HarnessModel { name: "quick", command: "/no/such/harness-7f3c", allow_unconfined: true };
+        std::test::assert(!absent.allows("internal"), "a harness that is not there is not permitted");
+
+        // ---- 4. an answer-only call runs in an empty directory of its own
+        self.direct = dna::HarnessModel { name: "deep", command: scratch + "/claude", confinement: dna::NoConfinement { }, allow_unconfined: true };
+        let d = self.direct.complete(dna::ModelRequest { attempt_id: "r/review", role: "review", prompt: "decide", context: "the diff" });
+        std::test::assert(d.ok, "answered: " + d.refused);
+        std::test::assert(std::str::starts_with(d.output, "touched app/main.hl"), "the result text is the answer: " + d.output);
+        std::test::assert_eq_int(d.cost_micros, 12300, "cost from the summary");
+        std::test::assert_eq_str(self.direct.last.tool_grant, "harness", "no export: no grant");
+        std::test::assert(!std::io::fs::file_exists(repo + "/NOTES.txt"), "its scratch was not the repository");
+
+        // the money arithmetic
+        std::test::assert_eq_int(dna::usd_to_micros("0.0123"), 12300, "0.0123 USD");
+        std::test::assert_eq_int(dna::usd_to_micros("1.5"), 1500000, "1.5 USD");
+        std::test::assert_eq_int(dna::usd_to_micros("0"), 0, "0 USD");
+        std::test::assert_eq_int(dna::usd_to_micros("0.00000049"), 0, "below a micro-dollar");
+    }
+}
+
+fn main() { App { }; }

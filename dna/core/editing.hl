@@ -61,6 +61,15 @@ locus WorktreeTools {
         self.refused = self.refused + 1;
         self.last_refusal = "write failed: " + e.kind;
     }
+    // A file the harness deleted in its export (GH #583 M3): removed
+    // inside the grant, refused outside it like any edit.
+    @unbounded
+    fn remove(rel: String) -> Bool {
+        if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "remove outside the worktree: " + rel; return false; }
+        std::io::fs::unlink(self.root + "/" + rel) or discard;
+        self.edits = self.edits + 1;
+        return true;
+    }
     @effects(is: { toolchain_run })
     fn fmt() -> RunResult { return run_tool(self.hale_bin + "\nfmt\n" + self.root); }
     @effects(is: { toolchain_run })
@@ -122,10 +131,29 @@ locus SourceEditor {
         max_tries: Int = 3; // a proposal that does not check is retried with the diagnostics, this many times in all
         attempts: Int = 0;
         last: MutationProposal = MutationProposal { };
+        // GH #583 M3: the harness flow's bearings and counters
+        worktree: String = ""; // the Mutation's worktree (the export copies it)
+        seed: String = ""; // the grant's seed inside it ("" = the whole worktree)
+        repo: String = ""; // the repository: masked from the harness
+        exports: Int = 0;
+        imported: Int = 0; // files brought back from an export under the grant
+        refused_outside: Int = 0; // files the harness changed outside the grant, left behind
+        last_export: String = ""; // the last export's path (removed after the import)
+        last_summary: String = ""; // the harness's one-line answer
     }
     fn kind() -> String { return "agent"; }
     fn identity() -> String { return self.name; }
-    fn confine(root: String) { self.tools.confine(root); }
+    fn confine(root: String) { self.tools.confine(root); self.worktree = root; self.seed = ""; }
+    // Where this Mutation's worktree is, which seed inside it the grant
+    // covers, and the repository it belongs to (GH #583 M3): the export
+    // a harness works in is the whole worktree, the import is only the
+    // grant, and the repository is what the harness must never reach.
+    fn place(worktree: String, seed: String, repo: String) {
+        self.worktree = worktree;
+        self.seed = if seed == "." { "" } else { seed };
+        self.repo = repo;
+        self.tools.confine(if len(self.seed) == 0 { worktree } else { worktree + "/" + self.seed });
+    }
     fn grant() -> String { return "read edit fmt check @" + self.tools.root; }
     // The `.hl` files of the grant's root, newline-separated: what an
     // Attempt may inspect (nothing outside the grant is listed).
@@ -226,12 +254,180 @@ locus SourceEditor {
         if !self.tools.edit(file, unfence(edit.output)) { return ModelResult { ok: false, backend: edit.backend, refused: self.tools.last_refusal }; }
         return edit;
     }
+    // ---- the harness flow (GH #583 M3) --------------------------------
+    // Whether an edit would go to a backend that works in place: then
+    // there is no file to locate first — the harness finds its own.
+    fn in_place(data_class: String) -> Bool {
+        return self.models.in_place(ModelRequest { role: "edit", data_class: data_class });
+    }
+    // An EXPORT of the worktree: a plain directory with the same files,
+    // never `.git` (a worktree's is a pointer into the repository) and
+    // never `.hale`. "" when it cannot be made.
+    fn make_export() -> String {
+        let t = run_tool("mktemp\n-d\n/tmp/hale-dna-export.XXXXXX");
+        let dir = trim_nl(t.stdout);
+        if t.code != 0 || len(dir) == 0 { return ""; }
+        let cp = run_tool("cp\n-r\n" + self.worktree + "/.\n" + dir);
+        if cp.code != 0 { let rm = run_tool("rm\n-rf\n" + dir); return ""; }
+        let strip = run_tool("rm\n-rf\n" + dir + "/.git\n" + dir + "/.hale");
+        self.exports = self.exports + 1;
+        self.last_export = dir;
+        return dir;
+    }
+    // The regular files under `dir`, worktree-relative, one per line;
+    // vendor, .git and .hale are never part of a change.
+    fn listing(dir: String) -> String {
+        // a worktree's `.git` is a FILE (a pointer into the repository), so it is named as well as its tree
+        let r = run_tool("sh\n-c\ncd \"$0\" && find . -type f ! -path \"./vendor/*\" ! -path \"./.git\" ! -path \"./.git/*\" ! -path \"./.hale\" ! -path \"./.hale/*\" | sed \"s|^./||\" | sort\n" + dir);
+        return if r.code == 0 { r.stdout } else { "" };
+    }
+    // The file's path inside the grant, or "" when it lies outside it.
+    fn in_grant(rel: String) -> String {
+        if len(self.seed) == 0 { return rel; }
+        if std::str::starts_with(rel, self.seed + "/") { return rel[(len(self.seed) + 1)..len(rel)]; }
+        return "";
+    }
+    // Bring the export's changes back under the grant: a file that
+    // differs or is new is written through the tools, one that is gone
+    // is removed; a change outside the grant is counted and left behind.
+    // Returns the grant-relative files changed, space-separated.
+    // Bounded by the files of one worktree.
+    @unbounded
+    fn import_from(dir: String) -> String {
+        let mut changed = "";
+        let mut lines = self.listing(dir);
+        while len(lines) > 0 {
+            let nl = std::str::index_of(lines, "\n");
+            let rel = if nl < 0 { lines } else { lines[0..nl] };
+            if nl < 0 { lines = ""; } else { lines = lines[(nl + 1)..len(lines)]; }
+            if len(rel) == 0 { continue; }
+            let after = std::io::fs::read_file(dir + "/" + rel) or "";
+            let before = std::io::fs::read_file(self.worktree + "/" + rel) or "";
+            if after == before { continue; }
+            let g = self.in_grant(rel);
+            if len(g) == 0 { self.refused_outside = self.refused_outside + 1; continue; }
+            if self.tools.edit(g, after) { self.imported = self.imported + 1; changed = changed + g + " "; }
+        }
+        let mut gone = self.listing(self.worktree);
+        while len(gone) > 0 {
+            let nl = std::str::index_of(gone, "\n");
+            let rel = if nl < 0 { gone } else { gone[0..nl] };
+            if nl < 0 { gone = ""; } else { gone = gone[(nl + 1)..len(gone)]; }
+            if len(rel) == 0 || std::io::fs::file_exists(dir + "/" + rel) { continue; }
+            let g = self.in_grant(rel);
+            if len(g) == 0 { self.refused_outside = self.refused_outside + 1; continue; }
+            if self.tools.remove(g) { self.imported = self.imported + 1; changed = changed + g + " "; }
+        }
+        return trim_nl(changed);
+    }
+    // One try of the harness: export, then ask with the export as its
+    // workspace and the repository masked; the caller imports from
+    // `last_export` and removes it.
+    fn harness_try(attempt: String, objective: String, diagnostics: String, data_class: String) -> ModelResult {
+        let dir = self.make_export();
+        if len(dir) == 0 { return ModelResult { ok: false, refused: "cannot export the worktree" }; }
+        let inside = if len(self.seed) == 0 { "." } else { self.seed };
+        let mut prompt = "You are working in a copy of a Hale project: the current directory. Make this change: " + objective
+            + "\nEdit only files under " + inside + ". Run `hale fmt " + inside + "` and `hale check " + inside + "` before you finish, and fix what they report."
+            + "\nReply with one line saying what you changed.";
+        if len(diagnostics) > 0 { prompt = prompt + "\nThe previous attempt did not check. hale check said:\n" + diagnostics; }
+        let r = self.models.ask(ModelRequest {
+            attempt_id: attempt, role: "edit", prompt: prompt, context_bytes: len(prompt),
+            workspace: dir, mask: self.repo + "\n" + self.worktree,
+            tool_grant: "harness @export", data_class: data_class,
+            retry_of: if len(diagnostics) > 0 { attempt + ":edit" } else { "" }
+        });
+        if r.ok { self.last_summary = trim_nl(r.output); }
+        return r;
+    }
+    // The harness flow: the whole objective in one call per try, the
+    // files it changed derived from the export's diff, never from its
+    // answer; then the same fmt, check, retry and assessment as the
+    // file-by-file flow. Bounded by `max_tries`.
+    @unbounded
+    fn perform_in_place(req: WorkRequest) -> WorkResult {
+        let mut tries = 0;
+        let mut diagnostics = "";
+        let mut backends = "";
+        let mut fmt_code = 1;
+        let mut check_code = 1;
+        let mut done = false;
+        let mut files = "";
+        while tries < self.max_tries && !done {
+            let attempt = req.work_id + "/a" + to_string(req.attempt_no + tries);
+            let r = self.harness_try(attempt, req.objective, diagnostics, req.data_class);
+            if !r.ok {
+                let rm = run_tool("rm\n-rf\n" + self.last_export);
+                return WorkResult { disposition: "failed", narrative: "harness refused: " + r.refused, performer: self.name };
+            }
+            backends = r.backend;
+            let brought = self.import_from(self.last_export);
+            let rm = run_tool("rm\n-rf\n" + self.last_export);
+            if len(brought) > 0 { files = brought; }
+            if len(files) == 0 {
+                return WorkResult { disposition: "failed", narrative: "the harness changed nothing under the grant (" + to_string(self.refused_outside) + " change(s) outside it left behind): " + self.last_summary, performer: self.name };
+            }
+            let f = self.tools.fmt();
+            let c = self.tools.check();
+            fmt_code = f.code;
+            check_code = c.code;
+            tries = tries + 1;
+            if c.code == 0 { done = true; } else { diagnostics = trim_nl(c.stderr); }
+        }
+        let attempt = req.work_id + "/a" + to_string(req.attempt_no + tries - 1);
+        let mut changed = "";
+        let mut rest = files + " ";
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            let file = rest[0..sp];
+            rest = rest[(sp + 1)..len(rest)];
+            if len(file) == 0 { continue; }
+            changed = changed + "=== " + file + "\n" + self.tools.read(file) + "\n";
+        }
+        let assess = self.models.ask(ModelRequest {
+            attempt_id: attempt, role: "assess", assurance: 2,
+            prompt: "Which fitness signals should this change move, and which way? One per line, nothing else: <signal> <+|->",
+            context: "OBJECTIVE\n" + req.objective + "\n\nFILES AS EDITED\n" + changed, context_bytes: len(changed) + len(req.objective) + 64,
+            tool_grant: self.grant(), data_class: req.data_class, retry_of: attempt + ":edit"
+        });
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("work_id", req.work_id);
+        b.string_field("files_changed", files);
+        b.string_field("rationale", req.objective);
+        b.string_field("fitness_signals", if assess.ok { fitness_lines(assess.output) } else { "" });
+        b.bool_field("fmt_clean", fmt_code == 0);
+        b.bool_field("check_clean", check_code == 0);
+        b.int_field("tries", tries);
+        b.string_field("check_output", if check_code == 0 { "" } else { diagnostics });
+        b.string_field("summary", self.last_summary);
+        b.int_field("outside_grant", self.refused_outside);
+        b.end_object();
+        self.last = MutationProposal {
+            work_id: req.work_id, files_changed: files, rationale: req.objective,
+            fitness_signals: if assess.ok { assess.output } else { "" },
+            fmt_clean: fmt_code == 0, check_clean: check_code == 0,
+            check_output: if check_code == 0 { "" } else { diagnostics }
+        };
+        return WorkResult {
+            disposition: if check_code == 0 { "done" } else { "failed" },
+            result: b.result(),
+            narrative: if check_code == 0 { "harness proposal checks clean after " + to_string(tries) + " try(ies): " + self.last_summary } else { "harness proposal does not check after " + to_string(tries) + " try(ies): " + diagnostics },
+            evidence: "fmt=" + to_string(fmt_code) + " check=" + to_string(check_code) + " tries=" + to_string(tries) + " backends=" + backends + "," + assess.backend,
+            performer: self.name
+        };
+    }
     // Bounded by the attempt cap of the Work that owns this performer
     // and by `max_tries` (GH #566 F3): a proposal that does not check
     // is tried again with the diagnostics fed back, then fails.
     @unbounded
     fn perform(req: WorkRequest) -> WorkResult {
         self.attempts = self.attempts + 1;
+        // a backend that works in place gets the whole objective and an
+        // export (GH #583 M3); everything else is asked file by file
+        if self.in_place(req.data_class) {
+            return self.perform_in_place(req);
+        }
         let files = if len(req.target) > 0 { req.target } else { self.plan(req.objective) };
         if len(files) == 0 {
             return WorkResult { disposition: "failed", narrative: "no target file in the request", performer: self.name };

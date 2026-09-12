@@ -16,6 +16,13 @@ behavior.
 - `hale dna models`: the catalog probed — one line per backend with one small request to each that is permitted; the organization is not started and nothing is journaled.
 - `HostedModel` is `OpenAiChat` (`adapter: openai-chat`), named for what it speaks; `FakeModel { fail_after }` refuses after that many calls, for tests that fail an Attempt on cue.
 
+### DNA: the harness works in an export; the genome is unreachable from it (GH #583 M3)
+
+- `HarnessModel`: an installed coding harness (`claude`, or `codex` with `output: text`) as a backend that works in place. For a source-editing request the editor exports the Mutation's worktree (a plain directory, never `.git`, never `.hale`), runs the harness there with the whole objective and its own tools on, and imports the export's diff back under the grant: a changed or new file is written through the tools, a deleted one removed, a change outside the grant counted and left behind; `files_changed` is derived from the diff, never from the answer. Then the same fmt, check, retry and assessment as the file-by-file flow. An answer-only call runs in an empty directory of its own. Evidence: one `model.called` row with the harness's own cost summary, `tool_grant: harness @export`, `confinement=<kind>`.
+- `Confinement`: `Bubblewrap` (Linux; the repository and the worktree replaced by empty tmpfs mounts, everything else — the harness's home state, the toolchain, the network — as the operator sees it) or `NoConfinement`; an unavailable confinement refuses the harness unless the org chart's `allow_unconfined` says otherwise. The assembly checks that neither the repository's head nor the worktree's moved during any attempt and fails the Mutation by the record if they did. `effect harness_run` names the reach; `Repository.root()` names what is masked.
+- Discovery writes `harness()` when `claude` (else `codex`) is on `PATH`: the editor's and the agent's quick tier, and every model-backed slot when there is no key.
+- `ModelBackend.works_in_place()`, `ModelRouter.in_place(req)`, `ModelRequest { workspace, mask }`, `SourceEditor.place(worktree, seed, repo)` and `WorktreeTools.remove`.
+
 ### DNA: the native Anthropic adapter, and the credential's scheme (GH #583 M2)
 
 - `AnthropicMessages`: the Messages API on the same `ModelBackend` seam — `system` beside `messages`, `max_tokens` required (default 4096), the reply's text blocks joined, `anthropic-version` sent, the same evidence and price table as `OpenAiChat`. `init` writes it as the hosted backend when `ANTHROPIC_API_KEY` is present (`claude-opus-5` / `claude-haiku-4-5-20251001`), instead of the compatibility endpoint.

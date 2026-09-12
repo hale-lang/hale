@@ -641,6 +641,17 @@ impl Discovery {
             )
         }
     }
+    /// The harness the catalog writes, when one is on PATH: `claude`
+    /// first, else `codex`.
+    fn harness(&self) -> Option<&'static str> {
+        if self.harnesses.iter().any(|h| h == "claude") {
+            Some("claude")
+        } else if self.harnesses.iter().any(|h| h == "codex") {
+            Some("codex")
+        } else {
+            None
+        }
+    }
     fn summary(&self) -> String {
         let mut parts = Vec::new();
         parts.push(match (self.anthropic, self.openai) {
@@ -673,11 +684,12 @@ impl Discovery {
                 desk,
                 if self.ollama.is_some() { "" } else { ", not found" }
             ),
-            "leader, editor, agent: deep = frontier, quick = fast, private = desk · budget 25.00 USD a day (`hale dna models` probes them)".to_string(),
+            match (self.harness(), self.anthropic || self.openai) {
+                (Some(h), true) => format!("editor, agent: quick = harness ({h}), deep = frontier · leader: deep = frontier, quick = fast · private = desk · budget 25.00 USD a day (`hale dna models` probes them)"),
+                (Some(h), false) => format!("editor, agent, leader: quick = harness ({h}), deep = harness ({h}) · private = desk · budget 25.00 USD a day (`hale dna models` probes them)"),
+                (None, _) => "leader, editor, agent: deep = frontier, quick = fast, private = desk · budget 25.00 USD a day (`hale dna models` probes them)".to_string(),
+            },
         ];
-        for h in &self.harnesses {
-            out.push(format!("found   {h} on PATH; a harness is not a backend in this toolchain yet"));
-        }
         out
     }
 }
@@ -689,6 +701,46 @@ impl Discovery {
 fn models_hl(found: &Discovery) -> String {
     let (frontier, fast, _) = found.hosted();
     let desk_model = found.ollama.clone().unwrap_or_else(|| "llama3".to_string());
+    let keyed = found.anthropic || found.openai;
+    let has_harness = found.harness().is_some();
+    // GH #583 M3: an installed harness edits in an export of the worktree
+    // with its own tools; the editor imports the diff under the grant.
+    let harness_section = match found.harness() {
+        Some("codex") => r#"// ---- the harness ---------------------------------------------------
+//
+// `codex` on this machine: run per request with its own tools, in an
+// EXPORT of the worktree (a plain directory, never `.git`) as its cwd;
+// the editor imports what it changed under the grant. The confinement
+// masks the repository from the process (Bubblewrap on Linux); with
+// none available the harness is refused unless `allow_unconfined` says
+// otherwise — that is the org chart's word, and the evidence records
+// which it was. `output: "text"`: codex prints its final message.
+
+fn harness() -> dna::HarnessModel {
+    return dna::HarnessModel { name: "quick", command: "codex", argv: "exec
+--full-auto", output: "text", confinement: dna::Bubblewrap { } };
+}
+
+"#
+        .to_string(),
+        Some(_) => r#"// ---- the harness ---------------------------------------------------
+//
+// `claude` on this machine: run per request with its own tools, in an
+// EXPORT of the worktree (a plain directory, never `.git`) as its cwd;
+// the editor imports what it changed under the grant. The confinement
+// masks the repository from the process (Bubblewrap on Linux); with
+// none available the harness is refused unless `allow_unconfined` says
+// otherwise — that is the org chart's word, and the evidence records
+// which it was.
+
+fn harness() -> dna::HarnessModel {
+    return dna::HarnessModel { name: "quick", command: "claude", confinement: dna::Bubblewrap { } };
+}
+
+"#
+        .to_string(),
+        None => String::new(),
+    };
     let hosted = |name: &str, h: &Hosted| {
         format!(
             "{} {{ name: \"{name}\", model: \"{}\", endpoint: \"{}\", credential: dna::HostedCredential {{ env_var: \"{}\", scheme: \"{}\" }}, input_micros_per_1k: {}, output_micros_per_1k: {} }}",
@@ -735,7 +787,7 @@ fn desk() -> dna::LocalModel {{
     return dna::LocalModel {{ name: "private", endpoint: "http://127.0.0.1:11434/v1/chat/completions", model: "{desk}" }};
 }}
 
-// ---- positions -----------------------------------------------------
+{harness_section}// ---- positions -----------------------------------------------------
 //
 // Each position's router: `deep` decides and assesses, `quick` drafts
 // and classifies, `private` takes what may not leave the machine.
@@ -743,15 +795,15 @@ fn desk() -> dna::LocalModel {{
 // strongest model, the production of candidates on a cheaper one.
 
 fn leader_models() -> dna::ModelRouter {{
-    return dna::ModelRouter {{ quick: fast(), deep: frontier(), private: desk() }};
+    return dna::ModelRouter {{ quick: {leader_quick}, deep: {leader_deep}, private: desk() }};
 }}
 
 fn editor_models() -> dna::ModelRouter {{
-    return dna::ModelRouter {{ quick: fast(), deep: frontier(), private: desk() }};
+    return dna::ModelRouter {{ quick: {editor_quick}, deep: {editor_deep}, private: desk() }};
 }}
 
 fn agent_models() -> dna::ModelRouter {{
-    return dna::ModelRouter {{ quick: fast(), deep: frontier(), private: desk() }};
+    return dna::ModelRouter {{ quick: {editor_quick}, deep: {editor_deep}, private: desk() }};
 }}
 
 // ---- the budget ----------------------------------------------------
@@ -769,7 +821,7 @@ fn org_budget() -> dna::BudgetPolicy {{
 // ---- the probe (`hale dna models`) ---------------------------------
 
 fn probe_catalog() -> String {{
-    return dna::probe("frontier", frontier()) + dna::probe("fast", fast()) + dna::probe("desk", desk());
+    return dna::probe("frontier", frontier()) + dna::probe("fast", fast()) + dna::probe("desk", desk()){probe_harness};
 }}
 "#,
         summary = found.summary(),
@@ -777,6 +829,12 @@ fn probe_catalog() -> String {{
         frontier = hosted("deep", &frontier),
         fast = hosted("quick", &fast),
         desk = desk_model,
+        harness_section = harness_section,
+        leader_quick = if keyed || !has_harness { "fast()" } else { "harness()" },
+        leader_deep = if keyed || !has_harness { "frontier()" } else { "harness()" },
+        editor_quick = if has_harness { "harness()" } else { "fast()" },
+        editor_deep = if keyed || !has_harness { "frontier()" } else { "harness()" },
+        probe_harness = if has_harness { " + dna::probe(\"harness\", harness())" } else { "" },
     )
 }
 

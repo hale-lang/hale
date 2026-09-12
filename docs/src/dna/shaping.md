@@ -101,6 +101,11 @@ fn org_budget() -> dna::BudgetPolicy { return dna::BudgetPolicy { window: "day",
   way its `scheme` says (`bearer`, or `x-api-key`). Without the key,
   the backend simply isn't available. Customer-classed data never
   goes to it.
+- **Harness** (`HarnessModel`) — `claude` or `codex` on your
+  machine, run with its own tools in an export of the worktree, the
+  repository masked from it; the editor imports what it changed
+  under the grant. [Models and credentials](./models.md) has the
+  boundary.
 - **Local** — the same wire to something on your machine. No key,
   any data.
 - **Scripted** — `dna::FakeModel { answer_file: "…" }` returns a

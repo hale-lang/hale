@@ -111,6 +111,7 @@ locus IsolatedWorktrees {
 // ---- the repository --------------------------------------------------
 
 interface Repository {
+    fn root() -> String; // the repository's path: what a harness must never reach (GH #583 M3)
     fn head(path: String) -> String;
     fn commit_all(path: String, message: String) -> String;
     fn diff(path: String, base: String, candidate: String) -> String;
@@ -131,6 +132,7 @@ locus LocalGit {
         last_error: String = "";
     }
     fn kind() -> String { return "local-git"; }
+    fn root() -> String { return self.repo; }
     fn head(path: String) -> String {
         let r = run_tool("git\n-C\n" + path + "\nrev-parse\nHEAD");
         if r.code != 0 { self.last_error = trim_nl(r.stderr); return ""; }
