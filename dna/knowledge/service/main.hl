@@ -74,8 +74,18 @@ locus Service {
     // open once it opens, and retried while it will not, so a database
     // that comes up late needs no restart.
     fn ensure_open() -> Bool {
-        if self.opened { return true; }
-        if self.store.open() {
+        // An open that succeeded once is not a connection that still
+        // answers. A database restart, or anything else that drops the
+        // session, left this true forever: the summary said `open`, the
+        // record tail failed, and `/context` answered 200 with an empty
+        // package and a normal-looking digest until someone restarted
+        // the service by hand (the review's second round, finding 4).
+        // The connection is asked on each request, and a dead one is
+        // re-established here rather than reported as knowledge.
+        if self.opened && self.store.healthy() { return true; }
+        if self.opened { eprintln("hale dna knowledge: the store's connection is gone (", self.store.last_error(), "); dialling again"); }
+        self.opened = false;
+        if self.store.reopen() {
             self.opened = true;
             self.last_error = "";
             return true;

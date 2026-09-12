@@ -79,12 +79,30 @@ locus WorktreeTools {
     }
     // A file the harness deleted in its export (GH #583 M3): removed
     // inside the grant, refused outside it like any edit.
+    //
+    // The failure travels, like a write's. This discarded the unlink
+    // error and reported the removal done, so the import's new
+    // incomplete-import check could never catch a deletion that did not
+    // happen: the candidate was proposed as if the file were gone while
+    // it was still there (the review's second round, finding 5).
     @unbounded
     fn remove(rel: String) -> Bool {
         if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "remove outside the worktree: " + rel; return false; }
-        std::io::fs::unlink(self.root + "/" + rel) or discard;
+        let before = self.refused;
+        std::io::fs::unlink(self.root + "/" + rel) or self.remove_failed(err);
+        if self.refused > before { return false; }
+        if std::io::fs::file_exists(self.root + "/" + rel) {
+            self.refused = self.refused + 1;
+            self.last_refusal = "remove failed: " + rel + " is still there";
+            return false;
+        }
         self.edits = self.edits + 1;
         return true;
+    }
+    @unbounded
+    fn remove_failed(e: IoError) {
+        self.refused = self.refused + 1;
+        self.last_refusal = "remove failed: " + e.kind;
     }
     @effects(is: { toolchain_run })
     fn fmt() -> RunResult { return run_tool(self.hale_bin + "\nfmt\n" + self.root); }

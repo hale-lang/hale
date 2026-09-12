@@ -177,6 +177,23 @@ fn a_harness_on_path_becomes_the_editors_quick_tier_and_the_probe_runs_it() {
     // the organization checks and builds with the harness wired
     let (ok, out) = hale_env(&["check", "--matrix", "."], &app, &[], &[]);
     assert!(ok, "matrix: {out}");
+    // the GENERATED catalog, unaltered: a confined harness has to be
+    // able to establish its boundary, and a confinement with nothing to
+    // mask is refused rather than run — so the probe's own process needs
+    // the genome. Only the organization under `run`/`dev` was given it,
+    // so an ordinary `hale dna models` refused every harness slot (the
+    // review's second round, finding 2). Whether bubblewrap is on this
+    // machine or not, that is the one answer that must never come back.
+    let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
+    c.args(["dna", "models"]).current_dir(&app).env("PATH", &path).env_remove("HALE_DNA_GENOME");
+    for k in NO_KEYS {
+        c.env_remove(k);
+    }
+    let probe = c.output().unwrap();
+    let probed_out = format!("{}{}", String::from_utf8_lossy(&probe.stdout), String::from_utf8_lossy(&probe.stderr));
+    assert!(probe.status.success(), "{probed_out}");
+    assert!(!probed_out.contains("no genome to mask"), "the probe's genome is the project it ran in:\n{probed_out}");
+
     // the probe runs the harness (an answer-only call in a directory of
     // its own; the stand-in needs no confinement, so the org chart's
     // leave is given in the probe's copy of the catalog)
@@ -193,6 +210,34 @@ fn a_harness_on_path_becomes_the_editors_quick_tier_and_the_probe_runs_it() {
     let harness_line = stdout.lines().find(|l| l.starts_with("harness ")).unwrap_or_else(|| panic!("a harness line:\n{stdout}"));
     assert!(harness_line.starts_with("harness     quick     claude                        ok  ") && harness_line.contains("  2000 micro-dollars  \"ready\""), "{stdout}");
     assert!(stdout.lines().any(|l| l.starts_with("frontier    deep      gpt-4o ") && l.contains("not permitted")), "{stdout}");
+}
+
+/// The review's second round, finding 3: a non-interactive codex is
+/// READ-ONLY by default. The generated entry dropped `--full-auto` (the
+/// installed CLI rejects that spelling) and with it the only thing that
+/// selected a write mode, so this backend could answer but never edit
+/// the export it was handed. The write mode is named explicitly now,
+/// scoped to the working directory; DNA's own confinement is what keeps
+/// the genome out of reach, and says so in the generated comment.
+#[test]
+fn the_generated_codex_entry_can_write_in_the_export_it_is_given() {
+    let bin = workdir("codex-bin").join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("codex"), "#!/bin/sh\nprintf 'ready\\n'\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), bare_path());
+    let d = workdir("codexed");
+    let (ok, out) = hale_env(&["dna", "new", "codexed"], &d, &[("PATH", &path)], NO_KEYS);
+    assert!(ok, "{out}");
+    let app = d.join("codexed");
+    let catalog = std::fs::read_to_string(app.join("dna/org/models.hl")).unwrap();
+    assert!(catalog.contains("command: \"codex\""), "codex is the harness here:\n{catalog}");
+    assert!(catalog.contains("exec\n--skip-git-repo-check\n--sandbox\nworkspace-write"), "the export is not a repository, and the harness must be able to write in it:\n{catalog}");
+    assert!(catalog.contains("READ-ONLY by default"), "the generated comment says why:\n{catalog}");
+    // and the organization still checks with it wired
+    let (ok, out) = hale_env(&["check", "--matrix", "."], &app, &[], &[]);
+    assert!(ok, "matrix: {out}");
 }
 
 #[test]

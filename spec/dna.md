@@ -214,7 +214,10 @@ The organization's models are a catalog in source (GH #583 M1):
   <status> <the API's message>`; a transport failure as `http 0
   <kind> <detail>`.
 - **The harness.** `HarnessModel` runs an installed coding harness
-  (`command: claude`, or `codex` with `output: text`) per request with
+  (`command: claude`, or `codex` with `output: text` and `exec
+  --skip-git-repo-check --sandbox workspace-write`, because a
+  non-interactive codex is read-only by default and would answer
+  without ever editing its export) per request with
   its own tools on, as a backend that `works_in_place`: for a
   source-editing request the editor makes an EXPORT of the Mutation's
   worktree (a plain directory with the same files, never `.git`, never
@@ -248,7 +251,10 @@ The organization's models are a catalog in source (GH #583 M1):
   request's**: `HarnessModel { genome, genome_env }` reads it at birth
   (the host exports `HALE_DNA_GENOME`), every call masks it, and a
   request's `mask` adds what that call knows besides — the worktree an
-  editor exported. An answer-only role (a review, a classification,
+  editor exported. Every verb the host runs is given
+  `HALE_DNA_GENOME`, not only the organization under `run` and `dev`:
+  `hale dna models` probes the catalog in a process of its own, and a
+  confined harness with nothing to mask is refused. An answer-only role (a review, a classification,
   the catalog's probe) carries no request mask, so a genome on the
   model itself is what makes the guarantee true for them. **A
   confinement with nothing to mask is refused**, not run, so the claim
@@ -405,7 +411,15 @@ authority.
 - **The service program.** `dna/knowledge/service` (`hale dna
   knowledge [project] [--port N]`, default 8791): applies the record
   on every request (the reader sees it as it is now) and answers over
-  HTTP — `GET /` (store kind,
+  HTTP. The store is opened on the first request rather than at birth
+  — a database that is down must not hold the surface closed, because
+  the surface is where an operator reads that it is down — and the
+  connection is asked on each request afterwards (`healthy`), because
+  an open that succeeded once is not a connection that still answers:
+  a session dropped by a restart or a failover is re-established
+  (`reopen`), and only a store that cannot be reached at all answers
+  503. A package is never built from a store whose queries are
+  failing — `GET /` (store kind,
   watermark, record revision, counts), `GET
   /context?target=<locus path>&budget=<n>` (the bounded package: the
   ids included, their ideas with text, author and `ratified_seq`, and

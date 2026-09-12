@@ -18,6 +18,15 @@ interface KnowledgeStore {
     fn kind() -> String;
     // Migrate and connect; false with `last_error` set when it cannot.
     fn open() -> Bool;
+    // Whether the connection this store holds still answers. An open
+    // that succeeded once says nothing about now: a database restart,
+    // or anything that drops the session, leaves a store that reports
+    // itself open and fails every query (the review's second round,
+    // finding 4). Cheap enough to ask on each request.
+    fn healthy() -> Bool;
+    // Drop whatever is held and connect again, whatever the store
+    // thinks its state is.
+    fn reopen() -> Bool;
     fn last_error() -> String;
     // The next record seq to apply (0 = nothing applied yet).
     fn watermark() -> Int;
@@ -98,6 +107,9 @@ locus Mem {
     }
     fn kind() -> String { return "memory"; }
     fn open() -> Bool { return true; }
+    // Nothing to lose and nothing to dial: memory is always both.
+    fn healthy() -> Bool { return true; }
+    fn reopen() -> Bool { return true; }
     fn last_error() -> String { return ""; }
     fn watermark() -> Int { return self.mark; }
     fn set_watermark(seq: Int) -> Bool { if seq > self.mark { self.mark = seq; } return true; }
@@ -342,6 +354,17 @@ locus Pq {
         if !r.ok { return self.fail("migrate", r.err); }
         self.opened = true;
         return true;
+    }
+    fn healthy() -> Bool {
+        if !self.opened { return false; }
+        let r = self.conn.query_one("SELECT 1");
+        if !r.ok { self.error = "connection: " + r.err.kind + " " + r.err.detail; return false; }
+        return true;
+    }
+    fn reopen() -> Bool {
+        self.conn.close();
+        self.opened = false;
+        return self.open();
     }
     fn last_error() -> String { return self.error; }
     fn watermark() -> Int {

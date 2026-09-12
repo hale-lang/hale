@@ -213,16 +213,43 @@ fn the_service_serves_a_real_postgres() {
         return;
     }
     let (d, app, digest) = seeded_app("pg");
-    // this run owns the database
-    let wipe = Command::new("psql").args([&dsn, "-v", "ON_ERROR_STOP=1", "-c", "DROP TABLE IF EXISTS knowledge_bindings, knowledge_edges, knowledge_ideas, knowledge_meta, knowledge_structure, knowledge_signals"]).output();
-    assert!(wipe.map(|o| o.status.success()).unwrap_or(false), "psql is needed to reset the database for this test");
-    let ((summary, ctx, idea), log) = serve(&app, &dsn, free_port(), |p| {
+    // A database of this run's own where the server will grant one. The
+    // tables here are global to a database, and the native knowledge
+    // fixture reads the same DSN: run unpartitioned, the two wipe each
+    // other's rows (the review's second round, the isolation note). The
+    // shared DSN is the fallback, wiped as before.
+    let own = format!("hale_dna_svc_{}", std::process::id());
+    let made = Command::new("psql")
+        .args([&dsn, "-v", "ON_ERROR_STOP=1", "-c", &format!("DROP DATABASE IF EXISTS {own}"), "-c", &format!("CREATE DATABASE {own}")])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let dsn = if made { with_database(&dsn, &own) } else { dsn.clone() };
+    if !made {
+        let wipe = Command::new("psql").args([&dsn, "-v", "ON_ERROR_STOP=1", "-c", "DROP TABLE IF EXISTS knowledge_bindings, knowledge_edges, knowledge_ideas, knowledge_meta, knowledge_structure, knowledge_signals"]).output();
+        assert!(wipe.map(|o| o.status.success()).unwrap_or(false), "psql is needed to reset the database for this test");
+    }
+    let kill = dsn.clone();
+    let ((summary, ctx, idea, after_kill, ctx2), log) = serve(&app, &dsn, free_port(), |p| {
         // the service applies the record on every request
         let s = body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n"));
         let c = body(&http(p, "GET /context?target=org%2Fserved%2Fmain&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
         let i = body(&http(p, &format!("GET /idea/{digest} HTTP/1.0\r\nHost: x\r\n\r\n")));
-        (s, c, i)
+        // The connection dies while the database stays healthy — a
+        // restart, a failover, an idle timeout. `opened` was sticky, so
+        // the service went on reporting `open` and answering 200 with an
+        // empty package and a normal-looking digest until someone
+        // restarted it by hand (the review's second round, finding 4).
+        let _ = Command::new("psql")
+            .args([&kill, "-v", "ON_ERROR_STOP=1", "-c", "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = current_database()"])
+            .output();
+        let k = body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n"));
+        let c2 = body(&http(p, "GET /context?target=org%2Fserved%2Fmain&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
+        (s, c, i, k, c2)
     });
+    if made {
+        let _ = Command::new("psql").args([&std::env::var("HALE_DNA_KNOWLEDGE_DSN").unwrap(), "-c", &format!("DROP DATABASE IF EXISTS {own}")]).output();
+    }
     let _ = std::fs::remove_dir_all(&d);
     assert!(summary.contains("\"store\": \"postgres\"") && summary.contains("\"open\": true"), "the store is open: {summary}\n{log}");
     assert!(summary.contains("\"error\": \"\""), "and nothing failed: {summary}");
@@ -235,6 +262,25 @@ fn the_service_serves_a_real_postgres() {
     // the paragraph survives the driver's tab-separated rows (finding 9)
     assert!(idea.contains("\"text\": \"First line\\nSecond line\\twith a tab\"") && idea.contains("\"author\": \"org\"") && idea.contains("\"accepted\": true"), "the idea round-trips intact: {idea}");
     assert!(ctx.contains("\"included_n\": 1") && ctx.contains(&digest) && ctx.contains("Second line"), "and reaches the package: {ctx}");
+    // the connection died and the service dialled again by itself: the
+    // same knowledge, not an empty package with a well-formed digest
+    assert!(after_kill.contains("\"open\": true") && after_kill.contains("\"error\": \"\""), "the service re-established its connection: {after_kill}\n{log}");
+    assert!(after_kill.contains(&format!("\"watermark\": {}", n("watermark"))), "and is where it was: {after_kill}");
+    assert!(ctx2.contains("\"included_n\": 1") && ctx2.contains(&digest), "the package survives a lost connection: {ctx2}\n{log}");
+}
+
+/// The DSN with a different database, keeping user, host, port and
+/// parameters: `postgres://u:p@h:5432/<db>?sslmode=disable`.
+fn with_database(dsn: &str, db: &str) -> String {
+    let (head, query) = match dsn.find('?') {
+        Some(i) => (&dsn[..i], &dsn[i..]),
+        None => (dsn, ""),
+    };
+    let authority_end = head.find("//").map(|i| i + 2).unwrap_or(0);
+    match head[authority_end..].find('/') {
+        Some(i) => format!("{}/{db}{query}", &head[..authority_end + i]),
+        None => format!("{head}/{db}{query}"),
+    }
 }
 
 #[test]
