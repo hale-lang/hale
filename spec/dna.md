@@ -183,14 +183,21 @@ The organization's models are a catalog in source (GH #583 M1):
   every call publishes `ModelCalled`, which the substrate journals as
   `model.called` with the time of the call (`at`). Routers return
   data, never a backend. Adapters: `OpenAiChat` (the OpenAI chat
-  shape: OpenAI, OpenRouter, vLLM, Anthropic's compatibility
-  endpoint; `adapter: openai-chat`; the credential from a sealed
-  `HostedCredential` that names its source and never returns the
-  bytes; `complete` carries `external_model`), `LocalModel` (the same
-  wire to this machine; no credential, no `external_model`, any data
-  class), `FakeModel` (scripted: `answer`, `answer_file`,
-  `answers_dir`, `answer_role`; `fail_after` refuses after that many
-  calls).
+  shape: OpenAI, OpenRouter, vLLM, Ollama; `adapter: openai-chat`),
+  `AnthropicMessages` (the native Messages API: `system` beside
+  `messages`, `max_tokens` required and defaulted to 4096, the reply's
+  text blocks joined, `anthropic-version` sent; `adapter:
+  anthropic-messages`), `LocalModel` (the OpenAI shape to this
+  machine; no credential, no `external_model`, any data class),
+  `FakeModel` (scripted: `answer`, `answer_file`, `answers_dir`,
+  `answer_role`; `fail_after` refuses after that many calls). A hosted
+  adapter's `complete` carries `external_model`; its credential is a
+  sealed `HostedCredential` that names its source (`env_var`) and its
+  `scheme` — `bearer` (an `Authorization: Bearer` header) or
+  `x-api-key` — and never returns the bytes: the credential composes
+  the header, no adapter does. An API error is refused as `http
+  <status> <the API's message>`; a transport failure as `http 0
+  <kind> <detail>`.
 - **The catalog is source.** A backend is a constructor function
   (`frontier()`, `fast()`, `desk()` …); a position's router is a
   function composed from them (`leader_models()`, `editor_models()`,
@@ -202,11 +209,10 @@ The organization's models are a catalog in source (GH #583 M1):
 - **Discovery.** `init` and `new` look at the environment
   (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) and `PATH` (`ollama`, whose
   first listed model becomes the desk model; `claude` and `codex` are
-  reported), write the catalog for what is there (Anthropic's
-  compatibility endpoint with `claude-opus-5` / `claude-haiku-4-5`
-  when its key is present, else OpenAI with `gpt-4o` / `gpt-4o-mini`,
-  a placeholder key when none is set), and print what each position
-  was given. Nothing found is fine: a hosted backend without its key
+  reported), write the catalog for what is there (`AnthropicMessages`
+  with `claude-opus-5` / `claude-haiku-4-5` when its key is present,
+  else `OpenAiChat` with `gpt-4o` / `gpt-4o-mini`, a placeholder key
+  when none is set), and print what each position was given. Nothing found is fine: a hosted backend without its key
   is not permitted, and every Review waits for the Board. `upgrade`
   writes a catalog for an organization that predates it and says what
   to point at it; it never edits the organization's main.

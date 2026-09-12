@@ -16,6 +16,11 @@ behavior.
 - `hale dna models`: the catalog probed — one line per backend with one small request to each that is permitted; the organization is not started and nothing is journaled.
 - `HostedModel` is `OpenAiChat` (`adapter: openai-chat`), named for what it speaks; `FakeModel { fail_after }` refuses after that many calls, for tests that fail an Attempt on cue.
 
+### DNA: the native Anthropic adapter, and the credential's scheme (GH #583 M2)
+
+- `AnthropicMessages`: the Messages API on the same `ModelBackend` seam — `system` beside `messages`, `max_tokens` required (default 4096), the reply's text blocks joined, `anthropic-version` sent, the same evidence and price table as `OpenAiChat`. `init` writes it as the hosted backend when `ANTHROPIC_API_KEY` is present (`claude-opus-5` / `claude-haiku-4-5-20251001`), instead of the compatibility endpoint.
+- `HostedCredential { scheme }`: `bearer` (the default; `Authorization: Bearer`) or `x-api-key`. The sealed credential composes the header for its scheme and takes the adapter's own headers as a separate argument, so no adapter ever holds a header with the material in it.
+
 ### `hale check` refuses a call to a name nothing binds (GH #583, dna/FRICTION.md F.18)
 
 - A bare callee that is not a local binding, a top-level fn, a generic fn or a builtin typed as Unknown and passed `check`, to be refused by `hale build` as `no free fn / generic fn / fn-pointer binding with that name is in scope`. An organization whose gate is `check` applied a candidate naming a router function nobody had written, and found out at expression (rolled back by the window, as designed — but the wrong gate). The checker holds codegen's rule now when a whole seed is checked (`hale check <directory>`, which is what a build compiles and what the organization's gate runs): `call to X: no free fn, generic fn or fn-pointer binding with that name is in scope`, with a did-you-mean over the program's fns. One file checked alone, or a partial program a harness assembles, keeps the permissive reading, since it may call what a sibling file defines. `check_unbound_callee.rs` pins both.
