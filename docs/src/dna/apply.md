@@ -17,7 +17,9 @@ When a mutation's Review settles `approve`, the substrate:
    a maintainer committed, or another proposal landed, while this one
    was under review, it is **refused** (`mutation.refused: the genome
    moved since the review`) and nothing is applied. Propose again on
-   the new base and the whole gate runs on that result;
+   the new base and the whole gate runs on that result. An apply the
+   record already holds is exempt: a retried apply replays (step 5),
+   and the head it left behind is the candidate, not the base;
 4. takes the Mutation's lease (a fencing token; a stale one is
    refused);
 5. applies through the gateway: a **fast-forward to the candidate, or

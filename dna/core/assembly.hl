@@ -475,9 +475,13 @@ locus Dna {
         // apply a merge of two changes nobody reviewed together and
         // nothing verified together. Refuse; a new candidate on the new
         // base goes through the whole gate.
+        // …unless this very apply is already in the record: a retried
+        // apply replays what happened, and the head it left behind is
+        // the candidate, not the base.
+        let already = effect_status(self.journal, "apply:" + reviewed);
         let base = std::json::find_string_field(req, "base_commit");
         let now_head = self.gateway.head();
-        if len(base) > 0 && now_head != base {
+        if len(base) > 0 && now_head != base && !(already.done && already.ok) {
             let y = self.journal.append(self.journal.revision(), "mutation.refused", mutation_id, "the genome moved since the review: " + now_head + " != " + base + "; propose again on the new base");
             self.membrane.notify("mutation", mutation_id + " refused: the genome moved since the review (" + short_sha(base) + " -> " + short_sha(now_head) + ")");
             return "refused: the genome moved since the review";
