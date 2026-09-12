@@ -8,6 +8,11 @@ behavior.
 
 ## Unreleased
 
+### DNA: the record reaches the second clone, and the membrane reaches a long path (shakeout findings 6 and 7)
+
+- `sync` compared the local record's head with an absent remote head, called that "up to date", and returned success without pushing, so a record made in one clone stayed there and every other clone saw a governed repository with no history. The getting-started guide hid it by telling the reader to push `refs/dna/*` by hand; it now says `git push origin main` and `hale dna sync`. A remote with no record is the local one's push (`pushed N event(s) (the remote had none)`), and `dna_record_sync.rs` asserts that a second clone acquires the whole record with nothing done by hand.
+- A Unix address holds 108 bytes, path included, and `.hale/dna/hale-dna.review.verdict.sock` spends 39 of them. The organization binds its five membrane sockets relative to the root it runs in, but the membrane client wrote absolute routes, so on an ordinary project path (a home directory, a checkout, a worktree) `hale dna ask` could not reach sockets that were there and listening — the shakeout had to move the checkout to `/tmp` to proceed. Routes are relative on both sides now: the client runs with the project root as its working directory, and a node's instances connect to `.hale/node/concern.raised.sock` the same way. `dna_long_path.rs` runs an organization from a path where the absolute address does not fit and asks it for a Task.
+
 ### DNA: the import creates what it writes into, and the tape creates its directory (shakeout findings 10 and 11)
 
 - A harness that adds a module writes a file in a directory the worktree does not have yet. The import wrote through that path, the write failed with `not_found`, and the import went on: the candidate carried the rest of the change and nothing said a file was missing. Parents are made under the grant before the write, and an in-grant write or removal that fails now fails the attempt (`the import was incomplete: …`) rather than producing a partial candidate. `harness_test.hl` has a stand-in that adds `app/lib/helper.hl` and asserts the file is in the candidate.

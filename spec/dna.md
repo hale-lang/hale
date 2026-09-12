@@ -38,7 +38,11 @@ repository:
   pushes. Local ahead: push. Remote ahead: fast-forward. Diverged: the
   local-only events are re-appended on top of the remote's head, bodies
   and authors unchanged, `seq` their new position, then pushed; a push
-  the remote refuses is fetched and reconciled again. Receipts travel
+  the remote refuses is fetched and reconciled again. **A remote with
+  no record yet is the local one's push**, not "up to date": the first
+  sync after an ordinary `git push origin main` carries the record, so
+  no one has to push `refs/dna/*` by hand for a second clone to have
+  the organization's history. Receipts travel
   by refspec both ways. The remote is `dna.remote` in git config, or
   `origin`. A plain clone has no record until it syncs.
 - **The membrane over the record.** From a clone with no organism,
@@ -54,6 +58,15 @@ repository:
 `.hale/dna/` holds only what is not the record: the membrane sockets,
 the status projection, worktrees, scratch inputs to the toolchain.
 Deleting it loses nothing the record holds.
+
+**The socket routes are relative on both sides.** A Unix address holds
+108 bytes, path included, and `.hale/dna/hale-dna.review.verdict.sock`
+already spends 39 of them, so an absolute route puts an ordinary
+project path over the limit. The organization binds these names
+relative to the root it runs in; the membrane client is run with the
+project root as its working directory and given the same relative
+routes, and a node's instances connect to `.hale/node/concern.raised.sock`
+the same way. A project's path therefore has no length rule.
 
 ## Event kinds
 

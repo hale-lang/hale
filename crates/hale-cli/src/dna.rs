@@ -143,7 +143,10 @@ pub fn node(args: &[String]) -> ExitCode {
     let sock = node_dir.join("concern.raised.sock");
     let _ = fs::remove_file(&sock);
     let conf = node_dir.join("node.bus.conf");
-    if let Err(e) = fs::write(&conf, format!("dna.concern.raised = unix://{} : listen\n", sock.display())) {
+    // relative, and the host execs with the clone as its working
+    // directory: a Unix address holds 108 bytes of path, and an ordinary
+    // project path spends most of them (the shakeout's finding 6)
+    if let Err(e) = fs::write(&conf, "dna.concern.raised = unix://.hale/node/concern.raised.sock : listen\n") {
         eprintln!("hale node: cannot write {}: {e}", conf.display());
         return ExitCode::from(1);
     }

@@ -146,3 +146,52 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
     assert!(ok && st.contains("chain verified"), "{st}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// The shakeout's finding 7: a remote that has no record yet. `sync`
+/// compared the local head with an absent remote head, took that for
+/// "nothing to do", and reported success without pushing — so the
+/// record stayed on the machine that made it and every other clone saw
+/// a governed repository with no history. The getting-started guide
+/// worked only because it told the reader to push `refs/dna/*` by hand.
+/// Here nobody does: the first `sync` after `git push origin main`
+/// carries the record, and a second clone acquires it.
+#[test]
+fn the_first_sync_carries_a_record_the_remote_does_not_have() {
+    let d = std::env::temp_dir().join(format!("hale_dna_sync_boot_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let bare = d.join("origin.git");
+    git(&["init", "-q", "--bare", "-b", "main", &bare.to_string_lossy()], &d);
+    let (ok, out) = hale_in(&["dna", "new", "orgboot"], &d);
+    assert!(ok, "{out}");
+    let a: PathBuf = d.join("orgboot");
+    git(&["config", "user.name", "organism-host"], &a);
+    git(&["config", "user.email", "host@dna"], &a);
+    git(&["add", "-A"], &a);
+    git(&["commit", "-q", "-m", "the app"], &a);
+    git(&["remote", "add", "origin", &bare.to_string_lossy()], &a);
+    // the ordinary first push: the branch, and nothing about the record
+    git(&["push", "-q", "origin", "main"], &a);
+    let head = git(&["rev-parse", "refs/dna/journal"], &a);
+    assert!(!head.is_empty(), "the record exists in the clone that made it");
+
+    let (ok, out) = hale_in(&["dna", "sync"], &a);
+    assert!(ok, "{out}");
+    assert!(out.contains("pushed") && out.contains("the remote had none"), "sync says it carried the record: {out}");
+    let there = Command::new("git")
+        .args(["--git-dir", &bare.to_string_lossy(), "rev-parse", "refs/dna/journal"])
+        .output()
+        .expect("git");
+    assert!(there.status.success(), "the remote has the record now");
+    assert_eq!(String::from_utf8_lossy(&there.stdout).trim(), head, "the same head");
+
+    // a second clone, with nothing done by hand, has the whole record
+    let b = d.join("second");
+    git(&["clone", "-q", &bare.to_string_lossy(), &b.to_string_lossy()], &d);
+    let (ok, out) = hale_in(&["dna", "sync"], &b);
+    assert!(ok && out.contains("pulled the record"), "{out}");
+    assert_eq!(git(&["rev-parse", "refs/dna/journal"], &b), head, "the same record in both clones");
+    let (ok, st) = hale_in(&["dna", "status"], &b);
+    assert!(ok && st.contains("chain verified"), "{st}");
+    let _ = std::fs::remove_dir_all(&d);
+}

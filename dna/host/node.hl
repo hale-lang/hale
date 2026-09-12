@@ -206,9 +206,12 @@ locus Node {
     }
     // The route an instance gets: this node's concern socket (the shim
     // bound it for the node before the node started), role connect.
+    // Relative, like the membrane's: an instance runs in the clone's
+    // root, and a Unix address has 108 bytes for the whole path
+    // (the shakeout's finding 6).
     fn instance_bus_conf() -> String {
         let conf = self.node_dir + "/instance.bus.conf";
-        let w = write_text(conf, "dna.concern.raised = unix://" + self.root + "/.hale/node/concern.raised.sock : connect\n") or false;
+        let w = write_text(conf, "dna.concern.raised = unix://.hale/node/concern.raised.sock : connect\n") or false;
         return conf;
     }
     run() {

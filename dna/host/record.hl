@@ -194,18 +194,24 @@ fn sync_record(repo: String) -> SyncResult {
         round = round + 1;
         let local = record_head(repo);
         let remote_head = git_out(repo, "rev-parse\n-q\n--verify\n" + REMOTE_TRACK);
-        if len(local) == 0 || len(remote_head) == 0 {
-            if len(local) == 0 && len(remote_head) > 0 {
+        if len(local) == 0 {
+            if len(remote_head) > 0 {
                 if !git_ok(repo, "update-ref\n" + RECORD_REF + "\n" + remote_head) { return sync_failed("update-ref failed"); }
                 summary = "pulled the record";
             }
             return SyncResult { ok: true, summary: summary };
         }
-        if local == remote_head {
+        if len(remote_head) == 0 {
+            // The remote has no record yet: a governed repository whose
+            // first events were appended here, or a clone that pushed
+            // `main` alone. This said "up to date" and pushed nothing,
+            // so the record stayed on one machine and a second clone saw
+            // an organization with no history (the shakeout's finding 7).
+            summary = "pushed " + git_out(repo, "rev-list\n--count\n" + local) + " event(s) (the remote had none)";
+        } else if local == remote_head {
             if len(summary) == 0 { summary = "up to date"; }
             return SyncResult { ok: true, summary: summary };
-        }
-        if git_ok(repo, "merge-base\n--is-ancestor\n" + remote_head + "\n" + local) {
+        } else if git_ok(repo, "merge-base\n--is-ancestor\n" + remote_head + "\n" + local) {
             // local ahead: push below
             summary = "pushed " + git_out(repo, "rev-list\n--count\n" + remote_head + ".." + local) + " event(s)";
         } else if git_ok(repo, "merge-base\n--is-ancestor\n" + local + "\n" + remote_head) {
@@ -245,10 +251,18 @@ fn sync_record(repo: String) -> SyncResult {
 
 // The membrane client, exec'd with routes to this project's sockets:
 // one typed fact published, the organization decides.
+//
+// The routes are RELATIVE and the client runs in the project's root.
+// A Unix address is at most 108 bytes, path included, and the
+// organization binds these names relative to the same root — so an
+// absolute route was the only long side: an ordinary project path
+// (a home directory, a checkout, a worktree) pushed the client past
+// the limit and it could not connect to sockets that were there and
+// listening (the shakeout's finding 6).
 fn publish_on_membrane(root: String, kind: String, body: String) -> String {
     let bin = std::env::var("HALE_DNA_MEMBRANE");
     if len(bin) == 0 { return "no membrane client (HALE_DNA_MEMBRANE unset)"; }
-    let d = root + "/.hale/dna/";
+    let d = ".hale/dna/";
     let conf = "/tmp/hale-dna-membrane-" + to_string(std::process::pid()) + ".conf";
     let text = "dna.review.verdict = unix://" + d + VERDICT_SOCK + " : connect\n"
         + "dna.intent.offered = unix://" + d + INTENT_SOCK + " : connect\n"
@@ -257,7 +271,7 @@ fn publish_on_membrane(root: String, kind: String, body: String) -> String {
         + "dna.concern.raised = unix://" + d + CONCERN_SOCK + " : connect\n";
     let wrote = write_text(conf, text) or false;
     if !wrote { return "cannot write " + conf; }
-    let r = dna::run_tool("env\nLOTUS_BUS_CONFIG=" + conf + "\n" + bin + "\n" + kind + "\n" + body);
+    let r = dna::run_tool("sh\n-c\ncd \"$1\" && LOTUS_BUS_CONFIG=\"$2\" exec \"$3\" \"$4\" \"$5\"\nsh\n" + root + "\n" + conf + "\n" + bin + "\n" + kind + "\n" + body);
     std::io::fs::unlink(conf) or discard;
     if r.code != 0 { return "membrane client failed: " + r.stderr; }
     return "";
