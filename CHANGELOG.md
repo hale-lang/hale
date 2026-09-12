@@ -8,6 +8,14 @@ behavior.
 
 ## Unreleased
 
+### `hale check` refuses a call to a name nothing binds (GH #583, dna/FRICTION.md F.18)
+
+- A bare callee that is not a local binding, a top-level fn, a generic fn or a builtin typed as Unknown and passed `check`, to be refused by `hale build` as `no free fn / generic fn / fn-pointer binding with that name is in scope`. An organization whose gate is `check` applied a candidate naming a router function nobody had written, and found out at expression (rolled back by the window, as designed — but the wrong gate). The checker holds codegen's rule now when a whole seed is checked (`hale check <directory>`, which is what a build compiles and what the organization's gate runs): `call to X: no free fn, generic fn or fn-pointer binding with that name is in scope`, with a did-you-mean over the program's fns. One file checked alone, or a partial program a harness assembles, keeps the permissive reading, since it may call what a sibling file defines. `check_unbound_callee.rs` pins both.
+
+### A locus literal owns a factory result written as its field (GH #583, dna/FRICTION.md F.17)
+
+- `Router { quick: make("q") }` inside another factory registered `make`'s fresh result as a temporary of the enclosing frame (the GH #402 hook) and dissolved it at that frame's exit while the field — a fat pointer, for an interface-typed slot — still pointed at it: the organization's catalog (`ModelRouter { quick: fast(), deep: frontier() }`) read garbage from its backends under load, first as a corrupted `dir` string, then as a segfault in an interface dispatch. A fresh-factory call written as a locus- or interface-typed field of a literal, explicit or default, is now owned by the literal, the same rule a `let` RHS and an `=` into a locus slot already had. `tests/hale/factory_field_owner_test.hl` pins it; found by recording the M4 fixture, pinpointed with a `LOTUS_ASAN=1` build of the organization.
+
 ### `hale dna` and `hale node` exec the host in place
 
 - The shim that resolved the project and started the Hale host waited on it as a child, so a signal to the pid that ran `hale dna run` or `hale node` — a supervisor's, a test's — killed the shim and orphaned the host, which kept ticking; dozens of `host node` agents survived their tests on a workstation and loaded it. The shim now execs the host (and `hale dna ui` its surface) in place: the pid is the host. The fleet test asserts nothing of its own survives its teardown.

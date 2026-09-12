@@ -4218,7 +4218,11 @@ fn run_check_impl_labelled(
     // cost of every `--dump-topology` invocation.
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
-    let checked = hale_types::check_bundle_opts(&bundle, allow_unowned);
+    // F.18: a whole seed (a directory) is checked to what `build`
+    // accepts — a call to a bare name nothing binds is an error here;
+    // one file of a seed keeps the permissive reading for a sibling's fn
+    let strict_callees = target.is_dir();
+    let checked = hale_types::check_bundle_opts_scoped(&bundle, allow_unowned, strict_callees);
 
     if dump_topology || dump_topology_to.is_some() {
         // The artifact's EXISTENCE means the model is sound.

@@ -353,6 +353,109 @@ precise answer without the concrete type; filed as a follow-up.
 
 ---
 
+## F.17 — a String computed in a fn and passed to a locus constructor in another fn that returns the locus dangles under the organization
+
+**Tag:** `factory-result-in-literal-field-dissolved-by-frame`
+**Severity:** SOUNDNESS (a silently corrupted param, then a segfault),
+seen 2026-09-11 while recording the M4 fixture (GH #583).
+**Status:** FIXED in the compiler the same day (see the resolution
+below); the by-name params stay as design.
+
+The fixture's catalog wrote
+
+```hale
+fn tape_dir() -> String { return std::env::var("HALE_DNA_TAPE_DIR"); }
+fn frontier() -> dna::RecordedModel {
+    return dna::RecordedModel { name: "deep", dir: tape_dir(), inner: dna::AnthropicMessages { … } };
+}
+fn editor_models() -> dna::ModelRouter { return dna::ModelRouter { deep: frontier(), … }; }
+```
+
+and the generated organization's main took `models: editor_models()`
+as a param default. Under `hale dna run`, in the editor's second model
+call of a Mutation (from the assembly's `on_work_requested` handler),
+`self.dir` of the `deep` RecordedModel read as
+`/home/riley/code/hale-la��?��d`: the first bytes intact, the tail
+overwritten. The `quick` model, built the same way, still read its
+`dir` whole at that point. The computed String lived in the frame of
+`frontier()` (or of `tape_dir()`), was stored by the constructor as a
+param of a locus that outlived that frame, and the region was reused
+under the handler's allocation pressure. A literal in the same slot
+(`dir: "…"`) is static and never dangles, which is why every other
+catalog function is unaffected.
+
+Not reproduced on the main thread: a minimal program building the
+same shape (`fn computed() -> String`, `fn make() -> Box { return Box
+{ s: computed() } }`, `params { a: Box = make(); }`) and churning
+300 KB of strings afterwards reads the param intact. The organization
+adds the handler thread, the off-thread bus and much more allocation
+before the read; the minimal reproducer needs one of those.
+
+**Workaround in the core (kept as design):** a locus that needs a
+value from the environment names its SOURCE and reads it at birth,
+into its own region — `RecordedModel { dir_env, mode_env }`, the same
+shape as `HostedCredential { env_var }`. A catalog function computes
+no string.
+
+**Resolution (2026-09-11):** the string was the first symptom, not
+the cause. A `LOTUS_ASAN=1` build of the organization faulted in
+`RecordedModel.allows` on `self.inner`, and a minimal program
+reproduced it on the main thread: `Router { quick: make("q") }`
+inside another factory. The GH #402 hook registered `make`'s fresh
+result as a temporary of `make_router`'s frame and dissolved it at
+that frame's exit, while the field — a fat pointer, for an
+interface-typed slot — still pointed at it; the strings the dissolved
+locus carried went with it. The fix (crates/hale-codegen
+`locus/instantiation.rs`): a fresh-factory call written as a locus- or
+interface-typed field of a literal, explicit or default, is owned by
+the literal — the same one-shot suppression a `let` RHS and an `=`
+into a locus slot already had. `tests/hale/factory_field_owner_test.hl`
+pins the shape. Every catalog written by M1 (`ModelRouter { quick:
+fast(), deep: frontier() }`) had this hole; nothing ran those routers
+under a live organization until the fixture did.
+
+---
+
+## F.18 — `hale check` accepted a call to a function nobody wrote
+
+**Tag:** `unbound-bare-callee-passes-check`
+**Severity:** SOUNDNESS of the organization's gate, seen 2026-09-11
+while recording the M4 fixture (GH #583).
+**Status:** FIXED in the checker the same day.
+
+Under pressure from the worker the organization proposed a
+supervisor position; the model wrote
+
+```hale
+fulfilment: dna::Leader = dna::Leader { name: "fulfilment", models: fulfilment_models(), … };
+```
+
+with no `fulfilment_models` anywhere. `hale check dna/org` said
+`ok: 4 file(s) typechecked` — the candidate's `check_clean` held, the
+Board approved it, the gateway applied it — and `hale build dna/org`
+refused it at expression: `call to fulfilment_models: no free fn /
+generic fn / fn-pointer binding with that name is in scope`. The
+window judged `build_failed` and rolled the organization back to its
+base, which is the machinery working; but the gate that should have
+refused the candidate before anyone reviewed it is `check`, and it
+had no opinion. Minimal: `fn go() -> Int { return nothing_here(); }`
+typechecks. An unresolved bare identifier types as Unknown, and a
+call on Unknown is permissive.
+
+**Fix:** the checker holds codegen's rule for a bare callee when a
+WHOLE seed is checked (`hale check <directory>`, the organization's
+gate): a name that is not a local binding, a top-level fn, a generic
+fn or one of the builtins codegen answers itself is `call to X: no
+free fn, generic fn or fn-pointer binding with that name is in
+scope`, with a did-you-mean over the program's fns. One file of a
+seed, a styleguide snippet or a harness's partial program keeps the
+permissive reading — it may call what a sibling defines — which CI's
+corpus checks proved on the first try. Unresolved identifiers in
+other positions stay permissive (that is a wider change); the call is
+the shape a model invents.
+
+---
+
 ## Requests and bugs, summarized (2026-09-05)
 
 Eleven entries. What the fixtures established, against #521's prediction

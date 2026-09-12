@@ -144,8 +144,19 @@ pub fn check_bundle_opts(
     bundle: &Bundle<'_>,
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
+    check_bundle_opts_scoped(bundle, allow_unowned_subscriber, false)
+}
+
+/// The same check with the F.18 rule on: a call to a bare name nothing
+/// binds is an error, as `hale build` would say. The CLI passes `true`
+/// when it checked a whole seed (a directory), never for one file.
+pub fn check_bundle_opts_scoped(
+    bundle: &Bundle<'_>,
+    allow_unowned_subscriber: bool,
+    strict_callees: bool,
+) -> Vec<Diag> {
     let (top, mut diags) = resolve::build_top_scope(bundle);
-    diags.extend(check::check_bundle(bundle, &top, allow_unowned_subscriber));
+    diags.extend(check::check_bundle_scoped(bundle, &top, allow_unowned_subscriber, strict_callees));
     // GH #476 Change 9 (review): claim VERDICTS are judged over the
     // canonical model, and a model is a description of a CHECKED
     // program — `derive_application_model` says so, and ends with a

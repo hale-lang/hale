@@ -338,6 +338,20 @@ pub fn check_bundle(
     top: &TopScope,
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
+    check_bundle_scoped(bundle, top, allow_unowned_subscriber, false)
+}
+
+/// `strict_callees`: refuse a call to a bare name nothing binds
+/// (dna/FRICTION.md F.18) — the rule `hale build` holds. On only when
+/// the caller checked a WHOLE seed, so a single file of a multi-file
+/// seed, a styleguide snippet or a harness's partial program keeps the
+/// permissive `Unknown` it always had for a sibling's fn.
+pub fn check_bundle_scoped(
+    bundle: &Bundle<'_>,
+    top: &TopScope,
+    allow_unowned_subscriber: bool,
+    strict_callees: bool,
+) -> Vec<Diag> {
     let mut diags = Vec::new();
     let known = collect_known_names(top);
     // WASM plan: the bundle targets wasm if any program declares
@@ -383,6 +397,7 @@ pub fn check_bundle(
             fallible_ctx: None,
             return_ctx: None,
             wasm_target,
+            strict_callees,
             or_value_discarded: false,
             generic_fns,
             generic_types,
@@ -5884,6 +5899,7 @@ struct Checker<'a> {
     /// `target browser_js`. Gates the POSIX-only stdlib (no syscalls in
     /// the browser sandbox) at typecheck — see `wasm_unavailable_stdlib`.
     wasm_target: bool,
+    strict_callees: bool, // F.18: on for a whole seed (`hale check <dir>`), off for a partial program
     /// M3 stage 2 (2026-07-02): true while checking an `or`
     /// expression whose value is discarded (statement position) —
     /// the Substitute arm skips the fallback-vs-success type match.
@@ -11832,6 +11848,47 @@ impl<'a> Checker<'a> {
                     }
                 }
                 let callee_ty = self.check_expr(callee);
+                // GH #583 (dna/FRICTION.md F.18): a bare callee that names
+                // nothing — not a local (a fn-pointer binding), not a
+                // top-level fn, not a generic fn, not a builtin — was
+                // typed Unknown and sailed through `check`, to die in
+                // `hale build` as "no free fn / generic fn / fn-pointer
+                // binding with that name is in scope". An organization
+                // whose gate is `check` applied a candidate that named a
+                // router function nobody had written, and found out at
+                // expression. The checker holds codegen's rule now, for a
+                // WHOLE seed (`strict_callees`); a partial program — one
+                // file of a seed, a snippet — legitimately calls what a
+                // sibling defines and keeps the permissive Unknown. The
+                // builtin list is the set of bare names codegen answers
+                // itself.
+                if let Expr::Ident(id) = callee.as_ref() {
+                    let name = id.name.as_str();
+                    let known = self.locals.lookup(name).is_some()
+                        || self.top.lookup(name).is_some()
+                        || self.generic_fns.contains_key(name)
+                        || BARE_BUILTIN_CALLEES.contains(&name);
+                    if self.strict_callees && !known && matches!(callee_ty, Ty::Unknown) {
+                        let candidates: Vec<&str> = self
+                            .top
+                            .symbols
+                            .iter()
+                            .filter(|(_, sym)| matches!(sym, TopSymbol::Fn(_)))
+                            .map(|(n, _)| n.as_str())
+                            .collect();
+                        let hint = closest_bare_name(name, &candidates)
+                            .map(|h| format!(" — did you mean `{}`?", h))
+                            .unwrap_or_default();
+                        self.diags.push(Diag::ty(
+                            id.span,
+                            format!(
+                                "call to `{}`: no free fn, generic fn or fn-pointer \
+                                 binding with that name is in scope{}",
+                                name, hint
+                            ),
+                        ));
+                    }
+                }
                 let arg_tys: Vec<Ty> = args.iter().map(|a| self.check_expr(a)).collect();
                 // F.20: when a fn param is an interface type, the
                 // arg's locus type must structurally satisfy the
@@ -13899,4 +13956,41 @@ fn locus_has_unsynchronized_state(
         }
     }
     None
+}
+
+/// The bare names codegen answers itself when they resolve to no user
+/// fn (see `lower` in hale-codegen: `len`, `to_string`, the printers,
+/// the numeric trio, the bounded intrinsics, the casts, `__fmt`). A
+/// call to any other unbound bare name is refused by `hale build`, so
+/// the checker refuses it first (dna/FRICTION.md F.18).
+pub(crate) const BARE_BUILTIN_CALLEES: &[&str] = &[
+    "len", "to_string", "hex", "println", "print", "eprintln", "abs", "min", "max",
+    "sum", "prod", "panic", "exit", "push", "at", "set", "count", "clear", "truncate",
+    "Int", "Float", "String", "Bool", "Bytes", "Decimal", "Duration",
+    hale_syntax::parser::FMT_BUILTIN,
+];
+
+/// Nearest name by edit distance, for the "did you mean" hint; `None`
+/// when nothing is within a short distance.
+fn closest_bare_name<'a>(name: &str, candidates: &[&'a str]) -> Option<&'a str> {
+    fn dist(a: &str, b: &str) -> usize {
+        let a: Vec<char> = a.chars().collect();
+        let b: Vec<char> = b.chars().collect();
+        let mut prev: Vec<usize> = (0..=b.len()).collect();
+        for i in 1..=a.len() {
+            let mut cur = vec![i; b.len() + 1];
+            for j in 1..=b.len() {
+                let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+                cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+            }
+            prev = cur;
+        }
+        prev[b.len()]
+    }
+    candidates
+        .iter()
+        .map(|c| (dist(name, c), *c))
+        .filter(|(d, _)| *d <= 3)
+        .min_by_key(|(d, c)| (*d, c.to_string()))
+        .map(|(_, c)| c)
 }

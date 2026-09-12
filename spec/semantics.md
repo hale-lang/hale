@@ -970,7 +970,12 @@ This is the same principle as the no-locus-return rule on methods
 (`fn get() -> SomeLocus` is rejected): **a locus is structure, not
 a value to hand around.** Ordinary `let`-bound loci — including
 factory results — are unaffected; they are owned by the binding
-that names them.
+that names them. A factory result written as a locus- or
+interface-typed **field of a locus literal** — `Router { quick:
+make("q") }`, in a body, a default, or another factory — is owned
+by that literal: the literal is the construction site, so this is
+not the ambiguous store above, and the frame that made the call
+does not reclaim the result at its exit (dna/FRICTION.md F.17).
 
 ## Mode invocation
 

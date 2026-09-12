@@ -576,6 +576,23 @@ function within the locus's scope. Lifecycle methods (`birth`,
 `accept`, etc.) are not regular `fn`s — they have their own
 syntax and don't take `self` (it's implicit).
 
+### Calls to bare names
+
+A call whose callee is a bare identifier must name something: a
+local binding (a fn pointer), a free `fn`, a generic `fn`, or one of
+the builtins the compiler answers itself (`len`, `to_string`, `hex`,
+the printers, `abs` / `min` / `max`, the `bounded` intrinsics, the
+casts). When a **whole seed** is checked (`hale check <directory>`,
+which is what a build compiles and what the organization's gate
+runs), any other bare callee is a type error — `call to X: no free
+fn, generic fn or fn-pointer binding with that name is in scope`,
+with a did-you-mean over the program's fns — rather than an
+`Unknown` that `hale build` refuses later. One file checked alone,
+or a partial program a harness assembles, keeps the permissive
+reading: it may call what a sibling file defines. Unresolved
+identifiers in other positions remain permissive (dna/FRICTION.md
+F.18).
+
 ## Contract subsumption
 
 For two contracts `C1` and `C2`, `C1 ⊆ C2` iff every entry in
