@@ -363,6 +363,21 @@ locus Dna {
     @unbounded
     fn on_review_settled(r: ReviewSettlement) {
         if r.refusal != "" {
+            // An approved candidate that never applied. The refusal for
+            // a destination with uncommitted work says to commit or
+            // stash and approve again — and that second approval
+            // reached a Review that had already settled, so no route a
+            // human has could get back to the apply (the third-round
+            // review's finding 2). The verdict is spent; the apply is
+            // not. Approving again re-runs the whole gate over the same
+            // pinned candidate: nothing is relaxed, and a candidate or
+            // a base that moved in the meantime is refused as ever.
+            let d = self.disposition_of(r.review_id);
+            if r.refusal == "already settled" && len(self.request_of(r.review_id)) > 0 && self.approved(r.review_id) && d != "applied" && d != "retained" {
+                let a = self.journal.append(self.journal.revision(), "mutation.apply_retried", r.review_id, "approved and not applied; the gate runs again");
+                let y = self.apply_reviewed(r.review_id, std::time::now());
+                return;
+            }
             let x = self.journal.append(self.journal.revision(), "review.refused", r.review_id, r.refusal);
             return;
         }
@@ -493,7 +508,7 @@ locus Dna {
         // the maintainer can commit or stash and approve again; the
         // gateway checks it once more immediately around the git call,
         // where a refusal is the race and the Mutation is done.
-        let dirty = self.gateway.dirty();
+        let dirty = self.gateway.dirty(self.genome_seed);
         if len(dirty) > 0 && !(already.done && already.ok) {
             let z = self.journal.append(self.journal.revision(), "mutation.refused", mutation_id, "the genome has uncommitted changes; commit or stash them and approve again:\n" + dirty);
             self.membrane.notify("mutation", mutation_id + " refused: the genome has uncommitted changes");

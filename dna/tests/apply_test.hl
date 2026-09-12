@@ -161,25 +161,55 @@ main locus App {
         std::time::sleep(150ms);
         std::test::assert_eq_int(self.count("mutation.retained"), 1, "only m1 was ever retained");
 
-        // ---- 7. a destination with uncommitted work of its own -----------
-        // A fast-forward KEEPS a maintainer's edit to another file and
-        // reports success: the genome's head would be the candidate
-        // while the files the host builds from are not the candidate's,
-        // and nobody reviewed the difference (the review's second
-        // round, finding 1). Refused, and their edit is left alone.
+        // ---- 7. an UNTRACKED source file in the destination --------------
+        // Git tracking does not decide what a seed compiles: the files
+        // on disk do. An untracked `helper.hl` beside the reviewed
+        // `main.hl` is built by the seed that expresses the candidate,
+        // so the genome would check and build as two files while the
+        // candidate was one (the third-round review's finding 1).
         let before7 = self.head();
-        let out5 = self.dna.mutate("t5", "feature", "give A a limit while a maintainer is mid-edit", "main.hl", 500);
+        let out5 = self.dna.mutate("t5", "feature", "give A a limit while a file sits untracked", "main.hl", 500);
         let cand5 = self.last("mutation.candidate", "m5");
-        std::io::fs::write_file(repo + "/.gitignore", "/.hale/\n# a maintainer, mid-edit\n") or discard;
+        std::io::fs::write_file(repo + "/helper.hl", "fn helper() -> Int { return 1; }\n") or discard;
         self.approve("m5", cand5);
         std::test::assert(std::str::contains(self.last("mutation.refused", "m5"), "uncommitted changes"), "refused: " + self.last("mutation.refused", "m5"));
+        std::test::assert(std::str::contains(self.last("mutation.refused", "m5"), "helper.hl"), "and names the file: " + self.last("mutation.refused", "m5"));
         std::test::assert_eq_str(self.head(), before7, "the genome did not move");
+        std::test::assert(std::io::fs::file_exists(repo + "/helper.hl"), "the file is still theirs");
+        // and `.hale/` is never the reason: the worktrees live there
+        std::test::assert(!std::str::contains(self.last("mutation.refused", "m5"), ".hale"), "scratch is not dirt: " + self.last("mutation.refused", "m5"));
+
+        // ---- 7b. approving again after clearing the destination ----------
+        // The refusal says to commit or stash and approve again — and
+        // the Review has already settled, so that second approval had
+        // nowhere to go (the third-round review's finding 2). The
+        // verdict is spent; the apply is not.
+        std::io::fs::unlink(repo + "/helper.hl") or discard;
+        // what the seed does NOT compile is not dirt: the binary `hale
+        // build` leaves beside every seed, and another program's source
+        // in a directory of its own. Counting those refuses every apply
+        // in a working project.
+        std::io::fs::write_file(repo + "/app", "ELF-ish, the seed's artifact\n") or discard;
+        std::io::fs::mkdir(repo + "/elsewhere") or discard;
+        std::io::fs::write_file(repo + "/elsewhere/driver.hl", "fn main() { }\n") or discard;
+        self.approve("m5", cand5);
+        std::test::assert(len(self.last("mutation.apply_retried", "m5")) > 0, "the apply ran again on a settled review");
+        std::test::assert_eq_str(self.head(), cand5, "and applied the pinned candidate");
+        std::test::assert_eq_str(self.last("mutation.applied", "m5"), cand5, "journaled as applied");
+
+        // ---- 7c. a tracked file, mid-edit, and then committed ------------
+        let out6 = self.dna.mutate("t6", "feature", "give A a limit while a maintainer is mid-edit", "main.hl", 600);
+        let cand6 = self.last("mutation.candidate", "m6");
+        std::io::fs::write_file(repo + "/.gitignore", "/.hale/\n# a maintainer, mid-edit\n") or discard;
+        self.approve("m6", cand6);
+        std::test::assert(std::str::contains(self.last("mutation.refused", "m6"), "uncommitted changes"), "refused: " + self.last("mutation.refused", "m6"));
+        std::test::assert_eq_str(self.head(), cand5, "the genome did not move");
         std::test::assert(std::str::contains(std::io::fs::read_file(repo + "/.gitignore") or "", "mid-edit"), "the maintainer's edit was not reset");
-        // and once they commit it, the same approval applies
+        // committing it moves the base, which is a new proposal's business
         let addm = sh("git\n-C\n" + repo + "\nadd\n-A");
         let cm = sh("git\n-C\n" + repo + "\n-c\nuser.name=m\n-c\nuser.email=m@local\ncommit\n-q\n-m\nthe maintainer's own change");
         std::test::assert_eq_int(cm.code, 0, "the maintainer commits: " + cm.stderr);
-        let retry = self.dna.apply_reviewed("m5", 501);
+        let retry = self.dna.apply_reviewed("m6", 601);
         std::test::assert(std::str::contains(retry, "the genome moved since the review"), "on a new base it is a new proposal: " + retry);
 
         // ---- 8. git's exit status is not the guarantee -------------------
@@ -189,8 +219,7 @@ main locus App {
         // call leaves behind, and the gateway must read the result back
         // rather than trust the status.
         self.plain = dna::LocalGit { repo: repo };
-        let ancestor = before7;
-        let applied = self.plain.apply(ancestor);
+        let applied = self.plain.apply(cand5);
         std::test::assert(!applied, "an ancestor is not an apply, whatever git exits");
         std::test::assert(std::str::contains(self.plain.last_error, "it moved during the apply"), "and says what happened: " + self.plain.last_error);
         std::test::assert_eq_int(self.plain.applied, 0, "nothing counted as applied");

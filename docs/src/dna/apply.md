@@ -21,12 +21,20 @@ When a mutation's Review settles `approve`, the substrate:
    record already holds is exempt: a retried apply replays (step 6),
    and the head it left behind is the candidate, not the base;
 4. checks that the genome has nothing uncommitted. A fast-forward
-   **keeps** a maintainer's uncommitted edit to another file, so the
-   head would be the candidate while the files the host builds from
-   are not. It is **refused** (`mutation.refused: the genome has
-   uncommitted changes`), their work is left exactly as it is, and
-   approving again after they commit or stash runs the whole gate on
-   the new base;
+   **keeps** a maintainer's uncommitted edit, so the head would be the
+   candidate while the files the host builds from are not. Tracked
+   changes count, and so does **untracked source of the genome's own
+   seed** — `hale check` reads the directory, not the index, so an
+   untracked `helper.hl` beside the reviewed files is built by the very
+   seed that expresses the candidate. What that seed does not compile
+   is not dirt: the binary `hale build` leaves beside a seed, a log,
+   another program's source in a directory of its own, anything under
+   `.hale/`. A dirty destination is **refused**
+   (`mutation.refused: the genome has uncommitted changes`), the work
+   is left exactly as it is, and **approving again** re-runs the whole
+   gate once it is cleared — the verdict is spent, the apply is not,
+   and the record keeps `mutation.apply_retried`. Committing the work
+   instead moves the base, which is a new proposal's business;
 5. takes the Mutation's lease (a fencing token; a stale one is
    refused);
 6. applies through the gateway: a **fast-forward to the candidate, or

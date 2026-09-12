@@ -46,6 +46,23 @@ fn list_files(dir: String) -> String {
     return if r.code == 0 { r.stdout } else { "" };
 }
 
+// Whether an untracked path is something the GENOME SEED compiles.
+// A seed is one directory of `.hl` files — `hale check` does not
+// descend — so an untracked `.hl` beside the reviewed ones is an input
+// of the very build that expresses the candidate, and one in another
+// directory belongs to another program. `hale.toml` counts wherever
+// the seed is: it says which files are a seed and which environment
+// checks them. Everything else an untracked path can be — the binary
+// `hale build` leaves beside every seed, a log, an editor's swap file
+// — no build of the genome reads.
+fn seed_input(rel: String, seed: String) -> Bool {
+    if rel == "hale.toml" { return true; }
+    if len(seed) == 0 { return false; }
+    if !(len(rel) > 3 && rel[(len(rel) - 3)..len(rel)] == ".hl") { return false; }
+    let inside = if seed == "." || seed == "" { rel } else if std::str::starts_with(rel, seed + "/") { rel[(len(seed) + 1)..len(rel)] } else { return false; };
+    return std::str::index_of(inside, "/") < 0;
+}
+
 fn trim_nl(s: String) -> String {
     let mut e = len(s);
     while e > 0 && (s[(e - 1)..e] == "\n" || s[(e - 1)..e] == "\r" || s[(e - 1)..e] == " ") { e = e - 1; }
@@ -131,8 +148,10 @@ interface Repository {
     // keeps: "apply failed" alone told an operator nothing about which
     // of the destination's states stopped it.
     fn why() -> String;
-    // What the destination has changed and not committed ("" = clean).
-    fn dirty_files() -> String;
+    // What the destination has changed and not committed ("" = clean):
+    // tracked modifications, and untracked source of `seed` (empty
+    // asks about tracked files alone).
+    fn dirty_in(seed: String) -> String;
 }
 
 // Local git. `apply` is the ONE method that changes the genome: it
@@ -171,26 +190,39 @@ locus LocalGit {
         let r = run_tool("git\n-C\n" + path + "\nmerge-base\n--is-ancestor\n" + commit + "\nHEAD");
         return r.code == 0;
     }
-    // Fast-forward the repository to the EXACT candidate, or fail.
-    //
-    // This used to fall back to a merge commit when the candidate was
-    // not a descendant of HEAD. A merge composes a tree that is not the
-    // reviewed candidate: a maintainer commit or a second proposal
-    // landing during a review was enough, and the result was applied
-    // with the reviewed candidate's name on it, unverified and unseen
-    // (the shakeout's finding 2). A stale base is now a refusal, and
-    // whoever wants the change makes a new candidate on the new base
-    // and takes it through the whole gate.
     // A destination that carries uncommitted work of its own. A
     // fast-forward keeps such a change: the head would be the candidate
     // while the files the host builds from are not the candidate's, and
-    // nobody reviewed the difference. Tracked modifications only —
-    // untracked scratch (`.hale/`) is not part of any tree.
-    fn dirty_files() -> String { return self.dirty(self.repo); }
-    fn dirty(path: String) -> String {
-        let r = run_tool("git\n-C\n" + path + "\nstatus\n--porcelain\n--untracked-files=no");
+    // nobody reviewed the difference.
+    //
+    // UNTRACKED SOURCE counts, for the seed the candidate expresses.
+    // This asked git for tracked modifications only, and what a seed
+    // compiles is the files on disk: an untracked `app/helper.hl`
+    // beside the reviewed `app/main.hl` is built by the very seed that
+    // expresses the candidate, so the genome checked and built as two
+    // files while the candidate was one — and an unfinished one broke
+    // the build of a candidate that had passed (the third-round
+    // review's finding 1). `seed` empty asks about tracked files
+    // alone. `.hale/` is dropped whatever git's ignore rules say: the
+    // Mutation's worktrees and the host's own state live there, and no
+    // seed reads them.
+    @unbounded
+    fn dirty_in(seed: String) -> String {
+        let r = run_tool("git\n-C\n" + self.repo + "\nstatus\n--porcelain\n--untracked-files=all");
         if r.code != 0 { return ""; }
-        return trim_nl(r.stdout);
+        let mut out = "";
+        let mut rest = trim_nl(r.stdout) + "\n";
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+            if len(line) < 4 { continue; }
+            let what = line[3..len(line)];
+            if what == ".hale" || std::str::starts_with(what, ".hale/") { continue; }
+            if line[0..2] == "??" && !seed_input(what, seed) { continue; }
+            out = out + line + "\n";
+        }
+        return trim_nl(out);
     }
     // Fast-forward the repository to the EXACT candidate, or fail.
     //
@@ -214,7 +246,7 @@ locus LocalGit {
     // the candidate, tree and all.
     @effects(is: { genome_apply, repo_write })
     fn apply(candidate: String) -> Bool {
-        let dirty = self.dirty(self.repo);
+        let dirty = self.dirty_in("");
         if len(dirty) > 0 {
             self.last_error = "the genome has uncommitted changes; commit or stash them before an apply:\n" + dirty;
             return false;
@@ -229,7 +261,7 @@ locus LocalGit {
             self.last_error = "the genome is " + now + ", not the candidate " + candidate + ": it moved during the apply; propose again on the new base";
             return false;
         }
-        let after = self.dirty(self.repo);
+        let after = self.dirty_in("");
         if len(after) > 0 {
             self.last_error = "the genome's files are not the candidate's after the apply:\n" + after;
             return false;
@@ -279,7 +311,7 @@ locus MutationGateway {
     }
     // What the destination has uncommitted, for the caller's check
     // before an apply is requested at all.
-    fn dirty() -> String { return self.repo.dirty_files(); }
+    fn dirty(seed: String) -> String { return self.repo.dirty_in(seed); }
     fn refuse(why: String) -> GateResult {
         self.refusals = self.refusals + 1;
         return GateResult { refused: why };

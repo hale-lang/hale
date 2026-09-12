@@ -226,9 +226,10 @@ The organization's models are a catalog in source (GH #583 M1):
   the grant — a file that differs or is new is written through the
   tools, one that is gone is removed, a change outside the grant is
   counted (`outside_grant`) and left behind; `files_changed` is
-  derived from that diff, never from the harness's answer. A written
-  file's parent directories are made under the grant first, so a
-  harness may add a module in a directory the worktree does not have
+  derived from that diff, never from the harness's answer. A file the
+  worktree does not have is new whatever it holds, empty included. A
+  written file's parent directories are made under the grant first, so
+  a harness may add a module in a directory the worktree does not have
   yet, and **an in-grant write or removal that fails is the attempt's
   failure** (`the import was incomplete: …`), never a candidate
   carrying part of the change. Then the
@@ -411,7 +412,12 @@ authority.
 - **The service program.** `dna/knowledge/service` (`hale dna
   knowledge [project] [--port N]`, default 8791): applies the record
   on every request (the reader sees it as it is now) and answers over
-  HTTP. The store is opened on the first request rather than at birth
+  HTTP. **A question it cannot answer is a refusal, never an empty
+  answer**: a package built from failing reads, or served while the
+  record's projection is stuck, is indistinguishable from "there is no
+  knowledge here" — so a read error or an `apply_record` error is 503
+  with the reason, and the summary carries whatever the counts hit.
+  The store is opened on the first request rather than at birth
   — a database that is down must not hold the surface closed, because
   the surface is where an operator reads that it is down — and the
   connection is asked on each request afterwards (`healthy`), because
