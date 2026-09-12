@@ -5,7 +5,8 @@
 ```text
 hale dna init [app-dir]      generate the organization (dna/org) for an existing application
 hale dna new <name>          a greenfield application with its organization
-hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain
+hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain (and write a catalog for an organization from before it)
+hale dna models [project]    the catalog (dna/org/models.hl): every backend, one small request to each
 hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]
                              the organization AND the application under one host: rebuild and
                              restart the application on an apply, watch the window, report back
@@ -43,8 +44,9 @@ Environment the host sets on the organization: `LOTUS_OBS=1`,
 restart `HALE_DNA_RESTART_FOR` / `HALE_DNA_EXPRESSION`. A node sets
 `HALE_DNA_NODE` and `HALE_DNA_INSTANCE` on each instance.
 `HALE_DNA_ONESHOT` makes a generated application's `run()` return
-after its first cycle (for tests). `OPENAI_API_KEY` is the default
-`HostedCredential` source. Git config: `dna.remote` (default
+after its first cycle (for tests). `ANTHROPIC_API_KEY` /
+`OPENAI_API_KEY` are what `init` looks for when it writes the
+catalog, and the `HostedCredential` sources it names. Git config: `dna.remote` (default
 `origin`), `dna.github` (`owner/repo`), `dna.github.board` (logins).
 
 ## The record's vocabulary
@@ -132,7 +134,8 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `process.hl` | `Task`, `Workflow`, `Step`, `Work`, `Attempt`, `Metabolism` |
 | `work_system.hl` | `WorkSystem`, routing perspectives, the performers |
 | `review.hl` | `Review`, `AutonomyBoundary`, authority ranks |
-| `models.hl` | `ModelRouter`, `HostedModel`, `LocalModel`, `FakeModel`, `HostedCredential` |
+| `models.hl` | `ModelRouter`, `OpenAiChat`, `LocalModel`, `FakeModel`, `HostedCredential`, `probe` |
+| `budget.hl` | `BudgetPolicy`, `Budget` (the substrate's one counter) |
 | `knowledge.hl` | semantic memory: ideas, edges, bindings |
 | `workspace.hl` | `IsolatedWorktrees`, `LocalGit`, `MutationGateway` |
 | `editing.hl` | `WorktreeTools`, `SourceEditor` |

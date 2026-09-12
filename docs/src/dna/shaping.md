@@ -76,22 +76,29 @@ and it is rolled back.
 
 ## Models
 
-Also in `dna/org/main.hl`. The editor, the Leader and the
-general-purpose agent each have a router; they can differ. Three
-kinds of backend:
+In `dna/org/models.hl`, the catalog: a backend is a constructor
+function, each position's router is composed from them, and the
+budget is one policy. `init` wrote it from what your machine had
+(the keys in the environment, `ollama` on `PATH`) and said what each
+position was given; `hale dna models` probes every backend it names.
 
 ```hale,fragment
-models: dna::ModelRouter {
-    quick: dna::HostedModel { name: "quick", model: "gpt-4o-mini", credential: dna::HostedCredential { env_var: "OPENAI_API_KEY" } },
-    deep: dna::HostedModel { name: "deep", model: "gpt-4o", credential: dna::HostedCredential { env_var: "OPENAI_API_KEY" }, input_micros_per_1k: 2500, output_micros_per_1k: 10000 },
-    private: dna::LocalModel { name: "private", endpoint: "http://127.0.0.1:11434/v1/chat/completions", model: "llama3" }
-}
+fn frontier() -> dna::OpenAiChat { return dna::OpenAiChat { name: "deep", model: "gpt-4o", endpoint: "https://api.openai.com/v1/chat/completions", credential: dna::HostedCredential { env_var: "OPENAI_API_KEY" }, input_micros_per_1k: 2500, output_micros_per_1k: 10000 }; }
+fn fast() -> dna::OpenAiChat { return dna::OpenAiChat { name: "quick", model: "gpt-4o-mini", endpoint: "https://api.openai.com/v1/chat/completions", credential: dna::HostedCredential { env_var: "OPENAI_API_KEY" }, input_micros_per_1k: 150, output_micros_per_1k: 600 }; }
+fn desk() -> dna::LocalModel { return dna::LocalModel { name: "private", endpoint: "http://127.0.0.1:11434/v1/chat/completions", model: "llama3" }; }
+
+fn leader_models() -> dna::ModelRouter { return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() }; }
+fn editor_models() -> dna::ModelRouter { return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() }; }
+fn agent_models() -> dna::ModelRouter { return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() }; }
+
+fn org_budget() -> dna::BudgetPolicy { return dna::BudgetPolicy { window: "day", allowance_micros: 25000000 }; }
 ```
 
-- **Hosted** — any OpenAI-compatible endpoint. The key is named by
-  environment variable and read into a sealed box the rest of the
-  program cannot read back from. Without the key, the backend simply
-  isn't available. Customer-classed data never goes to it.
+- **Hosted** (`OpenAiChat`) — any endpoint speaking the OpenAI chat
+  shape. The key is named by environment variable and read into a
+  sealed box the rest of the program cannot read back from. Without
+  the key, the backend simply isn't available. Customer-classed data
+  never goes to it.
 - **Local** — the same wire to something on your machine. No key,
   any data.
 - **Scripted** — `dna::FakeModel { answer_file: "…" }` returns a
@@ -101,10 +108,12 @@ models: dna::ModelRouter {
 
 The Leader reviews with the deep tier. A frontier model there and a
 cheaper one on the editor is a reasonable split: the expensive
-judgement on what gets applied, the cheap work on producing it.
-Costs are metered per call and journaled; `hale dna history m1/a0`
-shows what one attempt asked for and what it cost. The prompt itself
-is never recorded, only its hash.
+judgement on what gets applied, the cheap work on producing it. A
+new position gets its own router function. Costs are metered per
+call, journaled, and counted against the one budget; when a window
+is spent, intent is refused with the reason and the Reviews wait for
+you. `hale dna history m1/a0` shows what one attempt asked for and
+what it cost. The prompt itself is never recorded, only its hash.
 
 ## The backends
 

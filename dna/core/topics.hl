@@ -91,7 +91,7 @@ topic WorkDone { payload: WorkSettlement; subject: "dna.work.done"; keyed_by wor
 // that made the call on `ModelCalled`; the assembly journals it.
 type ModelEvidence {
     attempt_id: String = "";
-    adapter: String = ""; // "hosted" | "local" | "fake"
+    adapter: String = ""; // "openai-chat" | "local" | "fake"
     backend: String = ""; // the router-facing name ("quick", "deep", "private")
     endpoint: String = ""; // where the prompt went (never the credential)
     credential: String = ""; // the credential's fingerprint (a correlation handle), or ""

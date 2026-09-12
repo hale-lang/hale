@@ -21,10 +21,11 @@ main locus App {
         // (agent again) and the history shows every assignment.
         ws: dna::WorkSystem = dna::WorkSystem {
             human: dna::HumanWorkGateway { operator: "riley", answer: "declined" },
-            // a cost ceiling the fourth task will trip mid-attempt
+            // a deep backend scripted to fail on its second call: the
+            // fourth task trips it mid-attempt
             agent: dna::AgentPerformer {
                 name: "architect",
-                models: dna::ModelRouter { daily_cost_ceiling_micros: 60 }
+                models: dna::ModelRouter { deep: dna::FakeModel { name: "deep", model: "deep-1", price_micros: 50, fail_after: 1 } }
             },
             max_attempts: 3
         };
@@ -55,8 +56,8 @@ main locus App {
         let s3 = self.m.find(t3);
         std::test::assert_eq_str(s3.disposition, "done", "customer-class work routes to the private model: " + s3.detail);
 
-        // 4. Reassignment. The router's ceiling (60 micros) is crossed
-        //    during this task's second model call, so the agent Attempt
+        // 4. Reassignment. The deep backend refuses this task's second
+        //    model call (its scripted failure), so the agent Attempt
         //    fails; selection moves to the human, who declines (a typed
         //    outcome, not an error); the cap is reached with the human
         //    still declining. Every assignment is its own Attempt, the

@@ -84,6 +84,10 @@ locus FakeModel {
         // if present, else `<dir>/main.hl`. Tests script a multi-file
         // change and a retry with it.
         answers_dir: String = "";
+        // A scripted failure: after this many successful calls the next
+        // ones are refused (0 = never), so a test can fail an Attempt
+        // on cue without a wire.
+        fail_after: Int = 0;
         calls: Int = 0;
     }
     // A fake leaves the same evidence a hosted call does (GH #529 D7):
@@ -120,6 +124,11 @@ locus FakeModel {
         };
         if !self.allows(req.data_class) {
             ev.refused = "data class " + req.data_class;
+            ModelCalled <- ev;
+            return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused };
+        }
+        if self.fail_after > 0 && self.calls > self.fail_after {
+            ev.refused = "scripted failure after " + to_string(self.fail_after) + " call(s)";
             ModelCalled <- ev;
             return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused };
         }
@@ -166,7 +175,9 @@ locus LocalFakeModel {
 // behind the same `ModelBackend` interface as the fakes. Two loci
 // share the wire code and differ in what the law can see:
 //
-//   HostedModel  — a prompt leaves the process for a hosted model:
+//   OpenAiChat   — a prompt leaves the process for a hosted model
+//                  speaking the OpenAI chat shape (OpenAI, OpenRouter,
+//                  vLLM, Anthropic's compatibility endpoint):
 //                  `complete` carries `external_model`, and the
 //                  credential is presented from a SEALED locus that
 //                  never returns the material.
@@ -281,10 +292,10 @@ fn parse_chat(status: Int, body: String) -> ChatOutcome {
     }
 }
 
-locus HostedModel {
+locus OpenAiChat {
     params {
         name: String = "hosted";
-        adapter: String = "hosted";
+        adapter: String = "openai-chat";
         endpoint: String = "https://api.openai.com/v1/chat/completions";
         model: String = "gpt-4o-mini";
         credential: HostedCredential = HostedCredential { };
@@ -456,8 +467,7 @@ locus ModelRouter {
         deep: ModelBackend = FakeModel { name: "deep", model: "deep-1", price_micros: 50 };
         private: ModelBackend = LocalFakeModel { };
         selection: ModelSelection = EvidenceAwareSelection { };
-        daily_cost_ceiling_micros: Int = 25000000;
-        spent_micros: Int = 0;
+        spent_micros: Int = 0; // what this router's calls cost, a counter; the org's allowance is the substrate's Budget (GH #583)
         calls: Int = 0;
         last_backend: String = "";
     }
@@ -468,9 +478,6 @@ locus ModelRouter {
         let private_ok = self.private.allows(req.data_class) && self.private.capacity_bytes() >= req.context_bytes;
         let cls = self.selection.select(req, quick_ok, deep_ok, private_ok);
         if cls == "" { return ModelResult { ok: false, refused: "no permitted backend for " + req.data_class }; }
-        if self.spent_micros >= self.daily_cost_ceiling_micros {
-            return ModelResult { ok: false, refused: "cost ceiling" };
-        }
         self.calls = self.calls + 1;
         self.last_backend = cls;
         let r = if cls == "deep" { self.deep.complete(req) }
@@ -479,4 +486,37 @@ locus ModelRouter {
         self.spent_micros = self.spent_micros + r.cost_micros;
         return r;
     }
+}
+
+// ---- the probe (GH #583 M1) -------------------------------------------
+//
+// `hale dna models` runs the catalog in probe mode: one line per
+// backend the catalog names, and one small request to each that is
+// permitted, so an operator sees which backends actually answer
+// before any work is routed to them. A probe leaves the same
+// `ModelCalled` evidence as any call; nothing journals it because a
+// probe is nobody's Attempt.
+fn probe(name: String, b: ModelBackend) -> String {
+    let head = pad_right(name, 10) + "  " + pad_right(b.identity(), 8) + "  " + pad_right(b.model_name(), 28) + "  ";
+    if !b.allows("internal") { return head + "not permitted (no credential present)\n"; }
+    let t0 = std::time::monotonic();
+    let r = b.complete(ModelRequest {
+        attempt_id: "probe/" + name, role: "probe",
+        prompt: "Reply with the single word: ready", context_bytes: 0, data_class: "internal"
+    });
+    let elapsed = to_string(std::time::monotonic() - t0);
+    if !r.ok { return head + "refused: " + r.refused + "\n"; }
+    return head + "ok  " + elapsed + "  " + to_string(r.cost_micros) + " micro-dollars  " + jq(first_line(r.output)) + "\n";
+}
+
+fn first_line(s: String) -> String {
+    let nl = std::str::index_of(s, "\n");
+    let line = if nl < 0 { s } else { s[0..nl] };
+    if len(line) > 48 { return line[0..48] + "…"; }
+    return line;
+}
+
+fn pad_right(s: String, width: Int) -> String {
+    if len(s) >= width { return s; }
+    return std::str::pad_right(s, width, " ");
 }

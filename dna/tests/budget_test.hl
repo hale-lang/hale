@@ -1,0 +1,87 @@
+// dna/tests/budget_test.hl — GH #583 M1: the organization's spend has
+// one owner.
+//
+// The catalog declares a policy; the substrate owns the counter. Every
+// model call's evidence is accounted at its time, an exhausted window
+// refuses further intent with the reason and journals
+// `budget.exhausted` once, and a Budget rehydrated from the same
+// record shows the same spend — a restart loses nothing.
+
+import "../core" as dna;
+
+main locus App {
+    params {
+        // 20 micro-dollars for the record's lifetime: one judgment task
+        // (classify on quick = 5, synthesize on deep = 50) spends it
+        core: dna::Dna = dna::Dna {
+            budget: dna::Budget { policy: dna::BudgetPolicy { window: "none", allowance_micros: 20 } }
+        };
+        again: dna::Budget = dna::Budget { policy: dna::BudgetPolicy { window: "none", allowance_micros: 20 } };
+        daily: dna::Budget = dna::Budget { policy: dna::BudgetPolicy { window: "day", allowance_micros: 100 } };
+    }
+    @unbounded
+    fn count(kind: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.core.journal.revision() {
+            if self.core.journal.read(i).kind == kind { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn last_body(kind: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.core.journal.revision() {
+            let e = self.core.journal.read(i);
+            if e.kind == kind { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    run() {
+        // 1. one judgment task: two model calls, both accounted at their time
+        let t1 = self.core.ask(dna::Intent { id: "i1", outcome: "assess the storage migration", from: "test" },
+            dna::Knobs { routed: true, requires: "judgment" });
+        std::time::sleep(100ms);
+        std::test::assert_eq_int(self.count("model.called"), 2, "two calls journaled");
+        std::test::assert(std::str::contains(self.last_body("model.called"), "\"at\": "), "the evidence says when: " + self.last_body("model.called"));
+        std::test::assert_eq_int(self.core.budget.spent_micros, 55, "5 + 50 accounted by the substrate");
+        std::test::assert_eq_int(self.core.budget.calls, 2, "two calls counted");
+        std::test::assert(self.core.budget.exhausted(1), "55 >= 20: the allowance is spent");
+
+        // 2. further intent is refused with the reason; announced once
+        let r = self.core.ask(dna::Intent { id: "i2", outcome: "decide the rollout", from: "test" },
+            dna::Knobs { routed: true, requires: "judgment" });
+        std::test::assert(std::str::starts_with(r, "refused: budget exhausted"), "refused for want of budget: " + r);
+        std::test::assert(std::str::contains(r, "spent 55 of 20 micro-dollars for the record"), "the reason names the spend: " + r);
+        let r2 = self.core.ask(dna::Intent { id: "i3", outcome: "and again", from: "test" }, dna::Knobs { routed: true, requires: "judgment" });
+        std::test::assert_eq_int(self.count("budget.exhausted"), 1, "announced once per window");
+        std::test::assert_eq_int(self.count("intent.refused"), 2, "both asks refused in the record");
+        std::test::assert_eq_int(self.count("task.born"), 1, "no Task born on an exhausted budget");
+        std::test::assert(std::str::contains(self.last_body("budget.exhausted"), "\"allowance_micros\": 20"), self.last_body("budget.exhausted"));
+
+        // 3. a Budget rehydrated from the same record: the same spend,
+        //    the announcement remembered
+        self.again.rehydrate(self.core.journal, 1);
+        std::test::assert_eq_int(self.again.spent_micros, 55, "rehydrated spend");
+        std::test::assert_eq_int(self.again.calls, 2, "rehydrated calls");
+        std::test::assert(self.again.announced, "the window's announcement is remembered");
+        std::test::assert(!self.again.announce(), "and not announced twice");
+
+        // 4. windows: a day's counters roll; an earlier day's rows are ignored
+        self.daily.account(60, 100);
+        std::test::assert(!self.daily.exhausted(100), "60 < 100 on day 0");
+        self.daily.account(60, 200);
+        std::test::assert(self.daily.exhausted(200), "120 >= 100 on day 0");
+        std::test::assert(!self.daily.exhausted(86400 + 5), "a new day: the counters roll");
+        std::test::assert_eq_int(self.daily.spent_micros, 0, "rolled");
+        self.daily.account(30, 50);
+        std::test::assert_eq_int(self.daily.spent_micros, 0, "yesterday's row does not count today");
+        std::test::assert_eq_int(self.daily.remaining_micros(86400 + 5), 100, "the whole allowance remains");
+        std::test::assert_eq_str(self.daily.describe(86400 + 5), "spent 0 of 100 micro-dollars this day in 0 call(s)", self.daily.describe(86400 + 5));
+    }
+}
+
+fn main() { App { }; }

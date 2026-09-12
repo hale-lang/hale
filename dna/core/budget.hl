@@ -1,0 +1,95 @@
+// dna/core/budget.hl — the organization's spend, with one owner
+// (GH #583 M1).
+//
+// The catalog (`dna/org/models.hl`) declares the policy as DATA: an
+// allowance per window. Nothing else constructs a counter, so naming
+// the budget from several constructor functions cannot mint several
+// allowances. The substrate owns the one `Budget`: every `model.called`
+// row it journals is accounted here, the counter is rehydrated from
+// the record at birth (a restart loses nothing, a position added
+// later is covered by construction), and when a window is exhausted
+// the assembly stops routing model-backed work — intent is refused
+// with the reason, Reviews wait for the Board — and journals
+// `budget.exhausted` once per window.
+
+type BudgetPolicy {
+    window: String = "day"; // "day" | "week" | "none" (one allowance for the record's lifetime)
+    allowance_micros: Int = 25000000; // micro-dollars per window; 0 = unmetered
+}
+
+locus Budget {
+    params {
+        policy: BudgetPolicy = BudgetPolicy { };
+        window_start: Int = 0; // unix seconds; the window the counters are about
+        spent_micros: Int = 0;
+        calls: Int = 0;
+        refusals: Int = 0; // asks refused for want of budget
+        announced: Bool = false; // `budget.exhausted` journaled for this window
+    }
+    fn window_of(at: Int) -> Int {
+        if self.policy.window == "week" { return at - at % 604800; }
+        if self.policy.window == "day" { return at - at % 86400; }
+        return 0;
+    }
+    // Move the counters to the window `at` falls in when it is later
+    // than the current one; an earlier window's rows are ignored.
+    fn roll(at: Int) -> Bool {
+        let w = self.window_of(at);
+        if w < self.window_start { return false; }
+        if w > self.window_start {
+            self.window_start = w;
+            self.spent_micros = 0;
+            self.calls = 0;
+            self.announced = false;
+        }
+        return true;
+    }
+    // One model call's cost, at the time it was made.
+    fn account(cost_micros: Int, at: Int) {
+        if !self.roll(at) { return; }
+        self.spent_micros = self.spent_micros + cost_micros;
+        self.calls = self.calls + 1;
+    }
+    fn exhausted(now: Int) -> Bool {
+        let live = self.roll(now);
+        return self.policy.allowance_micros > 0 && self.spent_micros >= self.policy.allowance_micros;
+    }
+    fn remaining_micros(now: Int) -> Int {
+        let live = self.roll(now);
+        if self.policy.allowance_micros == 0 { return 0; }
+        let r = self.policy.allowance_micros - self.spent_micros;
+        return if r < 0 { 0 } else { r };
+    }
+    // True once per window: the caller journals `budget.exhausted`.
+    fn announce() -> Bool {
+        if self.announced { return false; }
+        self.announced = true;
+        self.refusals = self.refusals + 1;
+        return true;
+    }
+    fn describe(now: Int) -> String {
+        let live = self.roll(now);
+        let scope = if self.policy.window == "none" { "for the record" } else { "this " + self.policy.window };
+        if self.policy.allowance_micros == 0 { return "spent " + to_string(self.spent_micros) + " micro-dollars " + scope + " (unmetered)"; }
+        return "spent " + to_string(self.spent_micros) + " of " + to_string(self.policy.allowance_micros) + " micro-dollars " + scope + " in " + to_string(self.calls) + " call(s)";
+    }
+    // The counters from the record: every `model.called` row's cost at
+    // its time, and whether this window's exhaustion was announced.
+    // Bounded by the rows the record holds.
+    @unbounded
+    fn rehydrate(j: Journal, now: Int) {
+        let live = self.roll(now);
+        let n = j.revision();
+        let mut i = 0;
+        while i < n {
+            let e = j.read(i);
+            if e.kind == "model.called" {
+                self.account(std::json::find_int_field(e.body, "cost_micros"), std::json::find_int_field(e.body, "at"));
+            }
+            if e.kind == "budget.exhausted" && self.window_of(std::json::find_int_field(e.body, "at")) == self.window_start {
+                self.announced = true;
+            }
+            i = i + 1;
+        }
+    }
+}

@@ -1,8 +1,8 @@
-// dna/tests/hosted_model_test.hl — GH #528 PR 27: the hosted adapter.
+// dna/tests/openai_chat_test.hl — GH #528 PR 27: the hosted adapter (GH #583 M1: named for what it speaks).
 //
 // A fake OpenAI-compatible endpoint in this same program (io pool)
 // answers chat completions and insists on a bearer credential. The
-// HostedModel presents the credential from a sealed locus (the test
+// OpenAiChat adapter presents the credential from a sealed locus (the test
 // never sees it), records the evidence list on every call, refuses
 // customer data and a missing credential without touching the wire,
 // and the LocalModel reaches the same endpoint with no credential
@@ -31,14 +31,14 @@ locus FakeOpenAi {
 main locus App {
     params {
         srv: std::http::Server = std::http::Server { port: 47391, handler: FakeOpenAi { } };
-        hosted: dna::HostedModel = dna::HostedModel {
+        hosted: dna::OpenAiChat = dna::OpenAiChat {
             name: "quick", model: "test-model",
             endpoint: "http://127.0.0.1:47391/v1/chat/completions",
             // any present env var stands in for the API key; the server only checks presence
             credential: dna::HostedCredential { env_var: "HOME" },
             max_tokens: 64
         };
-        keyless: dna::HostedModel = dna::HostedModel {
+        keyless: dna::OpenAiChat = dna::OpenAiChat {
             name: "deep", model: "test-model",
             endpoint: "http://127.0.0.1:47391/v1/chat/completions",
             credential: dna::HostedCredential { env_var: "HALE_DNA_NO_SUCH_KEY_7f3a" }
@@ -62,7 +62,7 @@ main locus App {
         std::test::assert_eq_str(r.model, "test-model-2026", "the model the endpoint REPORTED");
         std::test::assert(r.tokens > 3, "tokens from usage");
         let ev = self.hosted.last;
-        std::test::assert_eq_str(ev.adapter, "hosted", "adapter identity");
+        std::test::assert_eq_str(ev.adapter, "openai-chat", "adapter identity");
         std::test::assert_eq_str(ev.requested_model, "test-model", "requested model");
         std::test::assert_eq_str(ev.reported_model, "test-model-2026", "reported model");
         std::test::assert(std::str::contains(ev.credential, "fp:"), "credential recorded as a fingerprint, never bytes: " + ev.credential);
