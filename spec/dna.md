@@ -362,7 +362,12 @@ authority.
   goals flow down, initiatives stay local — in ratification order),
   `count(what)`. `Pq` is Postgres (four tables: `knowledge_meta`,
   `knowledge_ideas`, `knowledge_bindings`, `knowledge_edges`; the
-  schema migrated at `open`; every write an upsert); `Mem` is the
+  schema migrated at `open`; every write an upsert; rows come back as
+  JSON built by the server, since the driver's tab- and
+  newline-separated rows cannot carry an ordinary paragraph; a signal
+  counts once per record row, keyed on that row's sequence, because
+  the projection write and the watermark advance are separate and a
+  crash between them replays the row); `Mem` is the
   same contract in memory. **The service is a consumer of the
   record**: `apply_record(store, journal, receipts)` walks
   `knowledge.*` rows from the watermark, resolves each digest to its

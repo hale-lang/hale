@@ -17,6 +17,12 @@
 import "../core" as dna;
 import "../knowledge" as know;
 
+// Postgres builds its JSON server-side and Hale's builder spaces its
+// separators; both are the same document, so compare without them.
+fn compact(j: String) -> String {
+    return std::str::replace(std::str::replace(j, "\": ", "\":"), ", \"", ",\"");
+}
+
 fn doc(kind: String, text: String, author: String, target: String) -> String {
     return dna::knowledge_document(dna::Idea { kind: kind, text: text, author: author }, target);
 }
@@ -64,8 +70,8 @@ main locus App {
         std::test::assert_eq_int(store.structure_count("locus"), 1, label + ": one locus");
         std::test::assert_eq_str(store.structure_names("topic"), "Fulfil", label + ": the topic by name");
         let sig = store.signals();
-        std::test::assert(std::str::contains(sig, "\"kind\": \"pressure\", \"source\": \"org/sup/worker\", \"what\": \"mail backlog\", \"count\": 2"), label + ": pressure counted twice: " + sig);
-        std::test::assert(std::str::contains(sig, "\"kind\": \"concern\", \"source\": \"org/sup/worker/mailer\", \"what\": \"sends duplicated\", \"count\": 1"), label + ": the concern once: " + sig);
+        std::test::assert(std::str::contains(compact(sig), "\"kind\":\"pressure\",\"source\":\"org/sup/worker\",\"what\":\"mail backlog\",\"count\":2"), label + ": pressure counted twice: " + sig);
+        std::test::assert(std::str::contains(compact(sig), "\"kind\":\"concern\",\"source\":\"org/sup/worker/mailer\",\"what\":\"sends duplicated\",\"count\":1"), label + ": the concern once: " + sig);
         std::test::assert_eq_int(r.watermark, self.j.revision(), label + ": the watermark is the record's end");
         std::test::assert_eq_int(store.watermark(), self.j.revision(), label + ": and stored");
         let s1 = store.idea(d1);
@@ -88,10 +94,39 @@ main locus App {
         std::test::assert_eq_str(store.ranked_ids("org/sup/worker", 8, know::embed_text("compress the archive")), d3 + " " + d1, label + ": the whole bound, most relevant first");
         std::test::assert_eq_str(store.ranked_ids("org/sup/worker", 8, ""), d1 + " " + d3, label + ": no query is ratification order");
         std::test::assert_eq_str(store.ranked_ids("org/sup/api", 8, know::embed_text("mail")), "", label + ": ranking never leaves the bound");
+        // ---- the shakeout's findings 8, 9 and 12, in both stores ----
+        // 8: `_` is a SQL LIKE wildcard and an ordinary character in a
+        // project name, so `org/orders_api` matched `org/ordersXapi`.
+        let du = "sha256:" + self.receipts.store(doc("practice", "invoice before shipping", "org", "org/orders_api"));
+        let u1 = self.j.append(self.j.revision(), "knowledge.ratified", du, "{\"class\": \"goal\", \"target\": \"org/orders_api\"}");
+        // 9: an ordinary practice is a paragraph, and the driver's rows
+        // are tab- and newline-separated with no escaping.
+        let dm = "sha256:" + self.receipts.store(doc("practice", "First line\nSecond line\twith a tab", "org/sup", "org/sup/worker"));
+        let m1 = self.j.append(self.j.revision(), "knowledge.ratified", dm, "{\"class\": \"goal\", \"target\": \"org/sup/worker\"}");
+        let more = know::apply_record(store, self.j, self.receipts);
+        std::test::assert_eq_str(more.error, "", label + ": applied");
+        std::test::assert_eq_str(store.context_ids("org/orders_api/worker", 8), du, label + ": the underscored path gets its own practice");
+        std::test::assert_eq_str(store.context_ids("org/ordersXapi/worker", 8), "", label + ": and no other path matches it");
+        std::test::assert_eq_str(store.context_ids("org/orders_apiary", 8), "", label + ": a longer name is not a child");
+        let kept = store.idea(dm);
+        std::test::assert_eq_str(kept.idea.text, "First line\nSecond line\twith a tab", label + ": the paragraph survives the transport");
+        std::test::assert_eq_str(kept.idea.author, "org/sup", label + ": and the fields after it are not shifted");
+        std::test::assert(kept.idea.accepted && kept.idea.provenance == "ratified", label + ": provenance intact");
+        // 12: the projection write and the watermark advance are
+        // separate, so a crash between them replays the row.
+        // The pressure rows were record rows 3 and 4, so the store's
+        // last_seq is 4: replaying row 4 is the crash window exactly.
+        let before_signals = store.signals();
+        std::test::assert(std::str::contains(compact(before_signals), "\"what\":\"mail backlog\",\"count\":2,\"last_seq\":4"), label + ": two raises counted: " + before_signals);
+        let replay = store.put_signal("pressure", "org/sup/worker", "mail backlog", 4);
+        std::test::assert_eq_str(store.signals(), before_signals, label + ": the same record row twice is one event");
+        let older = store.put_signal("pressure", "org/sup/worker", "mail backlog", 3);
+        std::test::assert_eq_str(store.signals(), before_signals, label + ": nor does an earlier row count again");
+
         // applying the same record again converges
         let again = know::apply_record(store, self.j, self.receipts);
         std::test::assert_eq_int(again.rows, 0, label + ": nothing new to apply");
-        std::test::assert_eq_int(store.count("ideas"), 3, label + ": idempotent");
+        std::test::assert_eq_int(store.count("ideas"), 5, label + ": idempotent (three, plus the underscored and the multiline practice)");
         std::test::assert_eq_int(store.structure_count(""), 2, label + ": projections idempotent");
         // the watermark only advances: a lower one does not move it back
         std::test::assert(store.set_watermark(2) && store.watermark() == self.j.revision(), label + ": a lower watermark does not move it back");
@@ -102,8 +137,8 @@ main locus App {
         // a second store over the same record, from zero, reaches the same state
         let fresh = know::Mem { };
         let back = know::apply_record(fresh, self.j, self.receipts);
-        std::test::assert_eq_int(back.ratified, 2, "mem: a fresh store replays the record");
-        std::test::assert_eq_int(fresh.count("ideas"), 3, "mem: three ideas");
+        std::test::assert_eq_int(back.ratified, 4, "mem: a fresh store replays the record");
+        std::test::assert_eq_int(fresh.count("ideas"), 5, "mem: five ideas");
         // the embedding: deterministic, normalized, lexical
         let e1 = know::embed_text("retry a mail send once");
         std::test::assert(know::cosine(e1, know::embed_text("Retry a MAIL send, once!")) > 0.99, "the same words, however written");
@@ -136,7 +171,7 @@ main locus App {
             let other = know::Pq { conn: know::pq_conn(dsn) };
             std::test::assert(other.open(), "a second connection opens: " + other.last_error());
             std::test::assert_eq_int(other.watermark(), self.j.revision(), "pq: the watermark is durable");
-            std::test::assert_eq_int(other.count("ratified"), 2, "pq: the ratified ideas are there for anyone");
+            std::test::assert_eq_int(other.count("ratified"), 4, "pq: the ratified ideas are there for anyone");
             std::test::assert_eq_str(other.context_ids("org/sup/worker/mailer", 8), self.mem.context_ids("org/sup/worker/mailer", 8), "pq and mem answer the same package");
         } else {
             eprintln("knowledge_store_test: no HALE_DNA_KNOWLEDGE_DSN; the Postgres half was not exercised here");
