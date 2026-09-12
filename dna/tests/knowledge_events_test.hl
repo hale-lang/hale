@@ -1,0 +1,124 @@
+// dna/tests/knowledge_events_test.hl — GH #583 K1: the record's half of
+// the knowledge graph.
+//
+// A proposal is a receipt (its canonical document, by digest), a
+// `knowledge.proposed` row naming the digest, and a Board Review pinned
+// to it. A verdict naming another digest is refused by the Review; the
+// Board's approval is one `knowledge.ratified` row naming the digest —
+// the authoritative event the knowledge service applies. A declined
+// proposal leaves a `knowledge.declined` row and nothing else. A
+// lateral proposal (siblings) is refused before any of that. A second
+// Dna over the same record re-births the pending knowledge Review.
+
+import "../core" as dna;
+
+main locus App {
+    params {
+        dna: dna::Dna = dna::Dna { };
+        again: dna::Dna = dna::Dna { };
+        refused_seen: Int = 0;
+        settled_seen: Int = 0;
+    }
+    bus {
+        publish dna::ReviewVerdict;
+        subscribe dna::ReviewSettled as on_settled;
+    }
+    fn on_settled(s: dna::ReviewSettlement) {
+        if s.refusal != "" { self.refused_seen = self.refused_seen + 1; } else { self.settled_seen = self.settled_seen + 1; }
+    }
+    @unbounded
+    fn rows(j: dna::Journal, kind: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            if j.read(i).kind == kind { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn last(j: dna::Journal, kind: String) -> dna::Event {
+        let mut out = dna::Event { };
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind { out = e; }
+            i = i + 1;
+        }
+        return out;
+    }
+    run() {
+        let repo = "/tmp/dna-know-" + to_string(std::process::pid());
+        std::io::fs::mkdir(repo) or discard;
+        std::io::fs::mkdir(repo + "/.hale") or discard;
+        std::io::fs::mkdir(repo + "/.hale/dna") or discard;
+        let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        self.dna = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+            membrane: dna::Board { who: "board" }
+        };
+
+        // 1. a practice proposed by the worker's supervisor for the worker: a goal
+        let digest = self.dna.propose_knowledge(
+            dna::Idea { id: "p1", kind: "practice", text: "retry a mail send once before raising pressure", author: "org/worker-supervisor" },
+            "org/worker-supervisor/worker");
+        std::test::assert(std::str::starts_with(digest, "sha256:"), "a digest: " + digest);
+        let proposed = self.last(self.dna.journal, "knowledge.proposed");
+        std::test::assert_eq_str(proposed.entity, digest, "the row names the digest");
+        std::test::assert(std::str::contains(proposed.body, "\"class\": \"goal\"") && std::str::contains(proposed.body, "\"review_id\": \"" + dna::knowledge_review_id(digest) + "\""), proposed.body);
+        // the document is a receipt, recoverable by the digest alone
+        let doc = self.dna.verification.receipts.read(digest[7..len(digest)]);
+        std::test::assert(std::str::contains(doc, "\"text\": \"retry a mail send once before raising pressure\"") && std::str::contains(doc, "\"target\": \"org/worker-supervisor/worker\""), "the receipt is the document: " + doc);
+        let req = self.last(self.dna.journal, "review.requested");
+        std::test::assert_eq_str(req.entity, "review:" + dna::knowledge_review_id(digest), "a Review pinned to the digest");
+        std::test::assert(std::str::contains(req.body, "\"required_authority\": \"board\"") && std::str::contains(req.body, "\"knowledge_digest\": \"" + digest + "\""), req.body);
+
+        // 2. a verdict naming another digest is refused by the Review
+        dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(digest), subject_digest: "sha256:0000", verdict: "approve", reviewer: "riley", authority: "board" };
+        std::time::sleep(100ms);
+        std::test::assert_eq_int(self.refused_seen, 1, "refused: wrong digest");
+        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.ratified"), 0, "nothing ratified");
+        // a leader's verdict does not satisfy the Board's requirement
+        dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(digest), subject_digest: digest, verdict: "approve", reviewer: "leader", authority: "leader" };
+        std::time::sleep(100ms);
+        std::test::assert_eq_int(self.refused_seen, 2, "refused: the Board's");
+
+        // 3. a second Dna over the same record re-births the pending Review
+        self.again = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+            membrane: dna::Board { who: "board" }
+        };
+        std::test::assert_eq_int(self.again.rehydrated, 1, "the pending knowledge Review is re-born");
+
+        // 4. the Board approves: knowledge.ratified rows naming the digest.
+        //    (Two assemblies share this program's bus here — the first
+        //    and the re-born one — so each hears each settlement; a
+        //    governed repository has one organization, so one row.)
+        dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(digest), subject_digest: digest, verdict: "approve", reviewer: "riley", authority: "board" };
+        std::time::sleep(200ms);
+        std::test::assert(self.settled_seen >= 1, "settled");
+        let ratified = self.rows(self.again.journal, "knowledge.ratified");
+        std::test::assert(ratified >= 1, "ratified");
+        let rat = self.last(self.again.journal, "knowledge.ratified");
+        std::test::assert_eq_str(rat.entity, digest, "the ratification names the digest");
+        std::test::assert(std::str::contains(rat.body, "\"decided_by\": \"riley\"") && std::str::contains(rat.body, "\"target\": \"org/worker-supervisor/worker\""), rat.body);
+
+        // 5. a declined proposal: knowledge.declined, nothing ratified
+        let d2 = self.again.propose_knowledge(dna::Idea { id: "p2", kind: "concern", text: "the api drops orders under load", author: "org/worker-supervisor/worker" }, "org/worker-supervisor");
+        std::test::assert(std::str::contains(self.last(self.again.journal, "knowledge.proposed").body, "\"class\": \"concern\""), "child-authored, bound upward: a concern");
+        dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(d2), subject_digest: d2, verdict: "reject", reviewer: "riley", authority: "board" };
+        std::time::sleep(200ms);
+        std::test::assert(self.rows(self.again.journal, "knowledge.declined") >= 1, "declined");
+        std::test::assert_eq_int(self.rows(self.again.journal, "knowledge.ratified"), ratified, "nothing more ratified");
+
+        // 6. a lateral proposal is refused before any Review
+        let d3 = self.again.propose_knowledge(dna::Idea { id: "p3", kind: "idea", text: "siblings coordinating", author: "org/a" }, "org/b");
+        std::test::assert_eq_str(d3, "", "refused");
+        std::test::assert(std::str::contains(self.last(self.again.journal, "knowledge.refused").body, "lateral"), "the reason");
+        let rm = dna::run_tool("rm\n-rf\n" + repo);
+    }
+}
+
+fn main() { App { }; }

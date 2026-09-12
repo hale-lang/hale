@@ -91,6 +91,35 @@ pub const HOST_FILES: &[EmbeddedFile] = host!["host", "main", "node", "procs", "
 pub const HOST_SEED: &str = "dna/host";
 pub const HOST_BIN: &str = "dna/host/host";
 
+macro_rules! at {
+    ($($path:literal),* $(,)?) => {
+        &[$(EmbeddedFile {
+            path: $path,
+            content: include_str!(concat!("../../../", $path)),
+        }),*]
+    };
+}
+
+/// The knowledge graph as a service (GH #583 K1): the store library
+/// (`dna/knowledge`: the `KnowledgeStore` interface, `Mem`, `Pq`, the
+/// record's tail), the service program (`dna/knowledge/service`), and
+/// pond's Postgres driver pinned beside them (`dna/pond/{db,pq}`).
+pub const KNOWLEDGE_FILES: &[EmbeddedFile] = at![
+    "dna/knowledge/store.hl",
+    "dna/knowledge/tail.hl",
+    "dna/knowledge/service/main.hl",
+    "dna/pond/db/args.hl",
+    "dna/pond/db/db.hl",
+    "dna/pond/db/types.hl",
+    "dna/pond/pq/pool.hl",
+    "dna/pond/pq/pq.hl",
+    "dna/pond/pq/scram.hl",
+    "dna/pond/pq/stream.hl",
+    "dna/pond/pq/wire.hl",
+];
+pub const KNOWLEDGE_SEED: &str = "dna/knowledge/service";
+pub const KNOWLEDGE_BIN: &str = "dna/knowledge/service/service";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,5 +151,20 @@ mod tests {
         let mut host_embedded: Vec<String> = HOST_FILES.iter().map(|f| f.path.rsplit('/').next().unwrap().to_string()).collect();
         host_embedded.sort();
         assert_eq!(host_embedded, host_on_disk, "a dna/host file was added or removed without updating hale-dna");
+        // the knowledge set: every .hl under dna/knowledge and dna/pond
+        let mut know_on_disk: Vec<String> = Vec::new();
+        for d in ["dna/knowledge", "dna/knowledge/service", "dna/pond/db", "dna/pond/pq"] {
+            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(d);
+            for e in std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()) {
+                let n = e.file_name().to_string_lossy().to_string();
+                if n.ends_with(".hl") {
+                    know_on_disk.push(format!("{d}/{n}"));
+                }
+            }
+        }
+        know_on_disk.sort();
+        let mut know_embedded: Vec<String> = KNOWLEDGE_FILES.iter().map(|f| f.path.to_string()).collect();
+        know_embedded.sort();
+        assert_eq!(know_embedded, know_on_disk, "a dna/knowledge or dna/pond file was added or removed without updating hale-dna");
     }
 }

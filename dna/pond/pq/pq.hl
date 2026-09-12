@@ -1,0 +1,865 @@
+// pond/pq — PostgreSQL driver (pgwire v3 over std::io::tcp).
+//
+// `PgConn` structurally satisfies `pond/db::DbDriver` (F.20): a
+// pure-Hale postgres backend, no FFI. Built for the refstore
+// relational store. Auth: trust + SCRAM-SHA-256 (the `password`
+// param; crypto core in scram.hl, framing in wire.hl). Query:
+// simple-query protocol (text results). See wire.hl for the codec;
+// extended query (binary params/results) is a follow-up.
+//
+// Lifecycle: birth() parses config only; open() dials + does the
+// startup handshake (reads to the first ReadyForQuery); close()
+// sends Terminate. Each exec/query is one simple-query round trip
+// that reads the backend stream up to ReadyForQuery.
+//
+// Placement: intended for an ordinary cooperative pool (e.g.
+// refstore on `main`), so the blocking recv in __pump is fine —
+// NOT an async_io connection-handler shape.
+
+import "../db" as db;
+
+// __PgResult — internal parse accumulator for one query's
+// backend response (everything up to ReadyForQuery).
+type __PgResult {
+    ok: Bool = true;
+    err_kind: String = "";
+    err_code: String = "";
+    err_detail: String = "";
+    csv: String = "";
+    n: Int = 0;
+    cmd_tag: String = ""; // CommandComplete tag, e.g. "INSERT 0 1"
+}
+
+// __PgMsg — one framed backend message, as returned by
+// `__read_one_msg`. `body` is a snapshot of the rx buffer starting at
+// this message; only its first `total` bytes belong to this message
+// (the snapshot is stable across the subsequent shift_front). On a
+// peer close mid-frame, `ok` is false and `err` names the phase.
+type __PgMsg {
+    mtype: Int = 0;
+    body: Bytes = b"";
+    total: Int = 0;
+    ok: Bool = false;
+    err: String = "";
+}
+
+// __SaslResult — outcome of __sasl_exchange. On failure, err_kind /
+// err_detail flow straight into the open() db::DbError.
+type __SaslResult {
+    ok: Bool = false;
+    err_kind: String = "auth_failed";
+    err_detail: String = "";
+}
+
+// __ErrFields — the fields pulled from an ErrorResponse ('E') body by
+// __parse_error_fields: the human-readable 'M' Message and the 'C'
+// SQLSTATE code. Both the __pump 'E' branch and __error_message consume
+// it (they previously duplicated the field walk).
+type __ErrFields {
+    message: String = "";
+    code: String = "";
+}
+
+locus PgConn {
+    params {
+        host: String = "127.0.0.1";
+        port: Int = 5432;
+        user: String = "postgres";
+        // password — used ONLY by the open() handshake when the server
+        // requests SCRAM-SHA-256 (AuthenticationSASL). Empty = trust
+        // auth (the server sends AuthenticationOk with no challenge).
+        password: String = "";
+        database: String = "postgres";
+
+        // sslmode — TLS negotiation policy (caller-facing). One of
+        // "disable" | "prefer" | "require" | "verify-full" (see wire.hl
+        // for semantics). DEFAULT "prefer": opportunistic TLS with a
+        // plaintext fallback, so every existing plaintext-only call site
+        // keeps working while TLS-capable servers get encryption for
+        // free. Validated at open(); an unknown value is rejected.
+        sslmode: String = "prefer";
+
+        sock: Int = -1;
+        connected: Bool = false;
+
+        // tls — DERIVED internal state, NOT a caller knob: set true at
+        // the end of a successful upgrade in __negotiate_tls, false
+        // otherwise. It selects the send/recv/close transport family
+        // (stream.hl dispatch). It must still be a constructible param so
+        // PgPool's transient PgConn reconstructions can thread it (a
+        // pooled fd is a TLS handle when the pool negotiated TLS).
+        tls: Bool = false;
+
+        // Transaction state, tracked from the backend's
+        // ReadyForQuery indicator: "idle" | "in_tx" | "aborted".
+        txn_state: String = "idle";
+
+        rx_buf: std::bytes::BytesBuilder
+            = std::bytes::BytesBuilder { initial_cap: 8192 };
+
+        recv_chunk: Int = 8192;
+    }
+
+    fn backend() -> String { return "postgres"; }
+
+    // open — dial + StartupMessage + read to first ReadyForQuery.
+    //
+    // RETRY: a single dial is unreliable. The startup handshake against a
+    // perfectly healthy server intermittently aborts with a transient
+    // peer-close — __pump's `recv_bytes` returns a zero-length chunk before
+    // the server's AuthenticationOk/ReadyForQuery burst lands, and the
+    // simple-protocol reader can't tell that retryable read (the stdlib
+    // recv contract's `-2`, which `recv_bytes` flattens to len 0) from a
+    // real EOF, so it reports "peer closed mid-response". Observed against
+    // postgres 18 on a fresh cold dial at a meaningful rate; a fresh redial
+    // almost always succeeds on the next attempt. Bounded retries with a
+    // short backoff make open() durable WITHOUT masking a genuinely-down
+    // server: a real refusal fails `connect` fast every attempt and we
+    // still surface the last error after the final try.
+    fn open() -> db::Status {
+        // Reject an unknown sslmode up front — before dialing — so a
+        // typo fails fast with a clear message instead of being silently
+        // coerced to a default. (config errors never enter the retry
+        // loop below.)
+        if !is_valid_sslmode(self.sslmode) {
+            return db::Status { ok: false, err: db::DbError { kind: "config",
+                engine_code: 0, detail: "invalid sslmode '" + self.sslmode
+                    + "' (want disable|prefer|require|verify-full)" } };
+        }
+        let mut attempt = 0;
+        let mut last = db::Status {
+            ok: false,
+            err: db::DbError { kind: "open_failed", engine_code: 0, detail: "not attempted" },
+        };
+        while attempt < 8 {
+            attempt = attempt + 1;
+            let st = self.__open_once();
+            if st.ok { return st; }
+            last = st;
+            // Tear down any half-open connection (a failed handshake left
+            // it dialed — possibly already upgraded to TLS) before the
+            // next attempt so we never leak the fd/handle. __close_handle
+            // dispatches on self.tls so a partially-upgraded socket is
+            // torn down via the right transport.
+            if self.sock >= 0 {
+                __close_handle(self.sock, self.tls);
+                self.sock = -1;
+            }
+            self.tls = false;
+            self.connected = false;
+            self.rx_buf.clear();
+            // A definitive outcome — a rejected password / protocol
+            // violation / signature mismatch ("auth_failed"), an
+            // unsupported auth method ("unsupported"), or a pre-auth
+            // ErrorResponse such as a bad database name / pg_hba reject
+            // / connection limit ("startup_rejected") — will not fix
+            // itself on a redial, so fail fast instead of burning the
+            // retry budget (and ~1s of backoff). is_fail_fast_kind()
+            // (wire.hl) is the single source of truth for this set. The
+            // retry loop exists for the TRANSIENT cold-dial peer-close
+            // ("io") only.
+            if is_fail_fast_kind(st.err.kind) {
+                return last;
+            }
+            std::time::sleep(150ms);
+        }
+        return last;
+    }
+
+    // __open_once — one dial + StartupMessage + read-to-ReadyForQuery. The
+    // retry policy lives in open(); this is the single-attempt body.
+    fn __open_once() -> db::Status {
+        let fd = std::io::tcp::connect(self.host, self.port)
+        or __on_connect_fail(err);
+        if fd < 0 {
+            return db::Status {
+                ok: false,
+                err: db::DbError { kind: "open_failed", engine_code: 0,
+                    detail: "connect failed to " + self.host },
+            };
+        }
+        self.sock = fd;
+        self.tls = false;
+        self.rx_buf.clear();
+
+        // TLS negotiation (STARTTLS-style): unless sslmode == "disable",
+        // send the SSLRequest preamble over the plaintext fd, read the
+        // single-byte reply, and upgrade the fd on 'S'. On success
+        // self.sock becomes the TLS handle and self.tls flips true, so
+        // every subsequent I/O routes through the TLS transport.
+        if sslmode_wants_tls(self.sslmode) {
+            let neg = self.__negotiate_tls();
+            if !neg.ok {
+                self.connected = false;
+                return neg;
+            }
+        }
+
+        __send_raw(self.sock, self.tls, build_startup(self.user, self.database));
+
+        // The first backend message after StartupMessage is an
+        // Authentication ('R'). Trust auth = code 0 (AuthenticationOk).
+        // SCRAM = code 10 (AuthenticationSASL) -> run the SASL exchange
+        // (which consumes through AuthenticationOk). Either way we then
+        // fall through to __pump to drain the ParameterStatus /
+        // BackendKeyData / ReadyForQuery tail exactly as before.
+        let auth = self.__read_one_msg();
+        if !auth.ok {
+            // A4: a peer-close on this first post-Startup read is the same
+            // transient cold-dial condition as a peer-close mid-SASL
+            // (__sasl_exchange's m2/m3/m4 use sasl_retryable_kind() = "io")
+            // or in __pump (kind "io") — classify it "io" for consistency,
+            // not "open_failed". Both are outside is_fail_fast_kind so the
+            // retry behaviour is identical; this only aligns the taxonomy so
+            // a peer-close mid-read reports one kind everywhere.
+            self.connected = false;
+            return db::Status { ok: false, err: db::DbError { kind: "io",
+                engine_code: 0, detail: "startup: " + auth.err } };
+        }
+        if auth.mtype == 69 { // 'E' ErrorResponse, pre-auth
+            // A rejection before any auth challenge — bad database
+            // name, pg_hba reject, connection limit, etc (F4). Without
+            // this special case the generic "not 'R'" branch below
+            // reports an opaque "expected Authentication, got type 69"
+            // AND open()'s retry loop burns all 8 attempts on what is
+            // already a deterministic rejection. Extract the server's
+            // actual message and classify it fail-fast.
+            self.connected = false;
+            return db::Status { ok: false, err: db::DbError { kind: "startup_rejected",
+                engine_code: 0, detail: "startup: " + __error_message(auth.body, auth.total) } };
+        }
+        if auth.mtype != 82 { // not 'R'
+            self.connected = false;
+            return db::Status { ok: false, err: db::DbError { kind: "open_failed",
+                engine_code: 0, detail: "startup: expected Authentication, got type "
+                    + to_string(auth.mtype) } };
+        }
+        let code = sasl_r_code(auth.body);
+        if code == 10 { // AuthenticationSASL
+            // A1: verify the server actually advertised plain SCRAM-SHA-256
+            // before starting the exchange. pq speaks only SCRAM-SHA-256 (no
+            // channel binding, never -PLUS). A server offering only
+            // SCRAM-SHA-256-PLUS, or a non-SCRAM mechanism, shares no
+            // mechanism with us — without this check the exchange would send
+            // a SASLInitialResponse hardcoding "SCRAM-SHA-256" and fail with
+            // an opaque auth_failed. Instead fail fast ("unsupported" is in
+            // is_fail_fast_kind, so no 8x retry storm) with a clear message
+            // naming what the server DID offer.
+            if !sasl_offers_scram_sha256(auth.body, auth.total) {
+                self.connected = false;
+                return db::Status { ok: false, err: db::DbError { kind: "unsupported",
+                    engine_code: 0, detail: "no mutually supported SASL mechanism (server offered: "
+                        + sasl_mechanisms(auth.body, auth.total)
+                        + "; pq supports SCRAM-SHA-256)" } };
+            }
+            let se = self.__sasl_exchange();
+            if !se.ok {
+                self.connected = false;
+                return db::Status { ok: false, err: db::DbError { kind: se.err_kind,
+                    engine_code: 0, detail: se.err_detail } };
+            }
+        } else if code != 0 { // MD5 (5) etc.
+            self.connected = false;
+            return db::Status { ok: false, err: db::DbError { kind: "unsupported",
+                engine_code: 0, detail: "auth method " + to_string(code)
+                    + " not supported (trust + SCRAM-SHA-256 only)" } };
+        }
+        // code == 0: AuthenticationOk already consumed (trust, or the
+        // tail of a completed SCRAM exchange). Drain to ReadyForQuery.
+        let r = self.__pump();
+        if !r.ok {
+            self.connected = false;
+            return db::Status {
+                ok: false,
+                err: db::DbError { kind: "open_failed", engine_code: 0,
+                    detail: "startup: " + r.err_detail },
+            };
+        }
+        self.connected = true;
+        return db::Status { ok: true };
+    }
+
+    // __negotiate_tls — the pgwire SSLRequest dance, run on the freshly
+    // dialed PLAINTEXT fd (self.sock, self.tls still false) before
+    // StartupMessage. Sends the 8-byte SSLRequest preamble, reads the
+    // single-byte reply, classifies it via wire.hl's classify_ssl_reply
+    // (F4 — the byte x sslmode truth table lives there, unit-tested
+    // offline, so this method only has to act on the outcome), and acts:
+    //
+    //   "upgrade"   — server accepts TLS. upgrade the fd
+    //                 (verify = sslmode=="verify-full"); on success
+    //                 self.sock becomes the TLS handle + self.tls = true.
+    //                 On handshake failure WE close the fd (the upgrade
+    //                 primitive leaves a caller-owned fd open on failure —
+    //                 daydream-scb) and return a fail-fast "tls" error.
+    //   "plaintext" — server has no TLS, sslmode=prefer tolerates the
+    //                 fallback (self.tls stays false). F2(a): emit a
+    //                 one-line notice — a silent plaintext fallback makes
+    //                 TLS-stripping invisible, so log it the moment it
+    //                 happens.
+    //   "refuse"    — server has no TLS but sslmode=require/verify-full
+    //                 demands it — fail CLOSED with a fail-fast "tls"
+    //                 error (never downgrade).
+    //   "protocol_error" — unexpected reply byte; fail-fast "tls".
+    //
+    // Error classification: a peer-close BEFORE the reply is a transient
+    // cold-dial condition (same class as the SCRAM read-failure path) and
+    // stays "io" (retryable — open()'s retry loop redials). Every
+    // definitive TLS outcome (refused-under-require, handshake failure,
+    // junk byte) is "tls", which is fail-fast (wire.hl is_fail_fast_kind)
+    // — a server's TLS capability and a cert-verification result don't
+    // change on redial, and verify-full must fail cleanly, not after an
+    // 8x retry storm.
+    fn __negotiate_tls() -> db::Status {
+        // SSLRequest goes over PLAINTEXT (the fd is not upgraded yet).
+        // B2: route it through the SAME stream.hl helpers every other pq
+        // I/O site uses, with is_tls=false. __send_raw/__recv_raw own the
+        // borrowed-Stream idiom (owns_fd:false so the transient wrapper's
+        // dissolve does not close self.sock — which we still need, to
+        // upgrade or to continue plaintext) AND the workaround for the
+        // segfaulting tcp send/recv free-fns, in ONE place. This was the
+        // last I/O site hand-rolling that idiom; keeping it in stream.hl
+        // means a future toolchain fix (e.g. hale un-segfaults the free
+        // fns) touches one file, not two.
+        __send_raw(self.sock, false, build_ssl_request());
+        // Reply is EXACTLY one byte, unframed — not a normal pgwire
+        // message, so we read it directly rather than via __read_one_msg.
+        let reply = __recv_raw(self.sock, false, 1);
+        if len(reply) == 0 {
+            return db::Status { ok: false, err: db::DbError { kind: "io",
+                engine_code: 0, detail: "ssl: peer closed before SSLRequest reply" } };
+        }
+        let b = byte_at(reply, 0);
+        let outcome = classify_ssl_reply(b, self.sslmode);
+        if outcome == "upgrade" {
+            let verify = sslmode_verify(self.sslmode);
+            let handle = std::io::tls::upgrade(self.sock, self.host, verify)
+            or __on_upgrade_fail(err);
+            if handle < 0 {
+                // Handshake failed. std::io::tls::upgrade owns its own SSL
+                // cleanup on EVERY failure path and never closes our fd (it
+                // is caller-owned), so tearing down just the (still
+                // plaintext, tls not yet flipped) fd here is leak-free. B3 —
+                // verified against the runtime contract in lotus_tls.c
+                // (lotus_tls_upgrade, hale-tls-upgrade tree):
+                //   * bad-arg / ctx-get / SSL_new failures return before any
+                //     SSL is allocated — nothing to free;
+                //   * SSL_connect failure (the EXPECTED verify-full/cert
+                //     path) SSL_free()s the ssl (lotus_tls.c:361);
+                //   * the handle-table realloc ENOMEM path SSL_shutdown +
+                //     SSL_free()s it (lotus_tls.c:377-378);
+                //   * the BIO is transferred into the SSL (SSL_set_bio) so
+                //     SSL_free frees it too — no BIO leak either.
+                // No partial SSL object is ever returned to us. B2: close
+                // via stream.hl's __close_handle (is_tls=false) rather than
+                // a raw std::io::tcp::__close_fd, so teardown routes through
+                // the same helper as everywhere else.
+                __close_handle(self.sock, false);
+                self.sock = -1;
+                return db::Status { ok: false, err: db::DbError { kind: "tls",
+                    engine_code: 0, detail: "ssl: TLS handshake failed to " + self.host
+                        + " (sslmode=" + self.sslmode + ")" } };
+            }
+            self.sock = handle;
+            self.tls = true;
+            return db::Status { ok: true };
+        }
+        if outcome == "plaintext" {
+            // prefer: opportunistic — fall back to plaintext. F2(a): make
+            // the TLS-stripping observable instead of silent.
+            self.tls = false;
+            println("[pq] tls: sslmode=", self.sslmode,
+                " negotiated PLAINTEXT (server does not support TLS) host=",
+                self.host, " port=", to_string(self.port));
+            return db::Status { ok: true };
+        }
+        if outcome == "refuse" {
+            return db::Status { ok: false, err: db::DbError { kind: "tls",
+                engine_code: 0, detail: "ssl: server does not support TLS but sslmode="
+                    + self.sslmode + " requires it (refusing to downgrade)" } };
+        }
+        // "protocol_error"
+        return db::Status { ok: false, err: db::DbError { kind: "tls",
+            engine_code: 0, detail: "ssl: unexpected SSLRequest reply byte "
+                + to_string(b) + " (want 'S'/83 or 'N'/78)" } };
+    }
+
+    // __sasl_exchange — run the SCRAM-SHA-256 SASL handshake after the
+    // server's AuthenticationSASL. Sends SASLInitialResponse (client
+    // -first), reads SASLContinue (server-first), computes + sends the
+    // client proof, reads SASLFinal and verifies the server signature,
+    // then reads AuthenticationOk. The crypto lives in scram.hl; this
+    // method owns only the message sequencing. Fails CLOSED: any
+    // framing error, a rejected password (ErrorResponse 'E'), a nonce
+    // that doesn't extend the client's (RFC 5802 §5.1, enforced inside
+    // compute_client_final), or a server-signature mismatch returns
+    // ok=false with a useful detail.
+    //
+    // err_kind split (F2): a read failure here (!m2/m3/m4.ok) is always
+    // a TRANSIENT peer-close, not a definitive auth outcome — classified
+    // sasl_retryable_kind() ("io") so open()'s retry loop keeps retrying
+    // it instead of the failure defeating the retry loop. Everything
+    // else here (ErrorResponse, a protocol violation, a bad nonce/
+    // signature) is definitive and stays "auth_failed", which open()
+    // fail-fasts on via is_fail_fast_kind() (wire.hl).
+    fn __sasl_exchange() -> __SaslResult {
+        // client-first: gs2 header "n,," + "n=,r=<nonce>". Empty SASL
+        // username — postgres authenticates the StartupMessage user.
+        let nonce = client_nonce();
+        if len(nonce) == 0 {
+            return __SaslResult { ok: false, err_kind: "auth_failed",
+                err_detail: "auth: CSPRNG failed generating SCRAM client nonce" };
+        }
+        let cfb = make_client_first_bare("", nonce);
+        __send_raw(self.sock, self.tls, build_sasl_initial(gs2_header() + cfb));
+
+        // server-first: AuthenticationSASLContinue (code 11).
+        let m2 = self.__read_one_msg();
+        if !m2.ok {
+            return __SaslResult { ok: false, err_kind: sasl_retryable_kind(),
+                err_detail: "auth: " + m2.err };
+        }
+        if m2.mtype == 69 { // 'E' ErrorResponse
+            return __SaslResult { ok: false, err_kind: "auth_failed",
+                err_detail: "auth: " + __error_message(m2.body, m2.total) };
+        }
+        if m2.mtype != 82 || sasl_r_code(m2.body) != 11 {
+            return __SaslResult { ok: false, err_kind: "auth_failed",
+                err_detail: "auth: expected SASLContinue" };
+        }
+        let server_first = sasl_r_text(m2.body, m2.total);
+
+        // compute the client-final message + expected server signature.
+        let cf = compute_client_final(self.password, cfb, server_first);
+        if !cf.ok {
+            return __SaslResult { ok: false, err_kind: "auth_failed",
+                err_detail: "auth: " + cf.err };
+        }
+        __send_raw(self.sock, self.tls, build_sasl_response(cf.client_final));
+
+        // server-final: SASLFinal (code 12), OR ErrorResponse ('E') on
+        // a rejected password.
+        let m3 = self.__read_one_msg();
+        if !m3.ok {
+            return __SaslResult { ok: false, err_kind: sasl_retryable_kind(),
+                err_detail: "auth: " + m3.err };
+        }
+        if m3.mtype == 69 { // 'E' — wrong password etc.
+            return __SaslResult { ok: false, err_kind: "auth_failed",
+                err_detail: "auth: " + __error_message(m3.body, m3.total) };
+        }
+        if m3.mtype != 82 || sasl_r_code(m3.body) != 12 {
+            return __SaslResult { ok: false, err_kind: "auth_failed",
+                err_detail: "auth: expected SASLFinal" };
+        }
+        if !verify_server_final(sasl_r_text(m3.body, m3.total), cf.server_sig_b64) {
+            return __SaslResult { ok: false, err_kind: "auth_failed",
+                err_detail: "auth: server signature verification failed" };
+        }
+
+        // AuthenticationOk (code 0).
+        let m4 = self.__read_one_msg();
+        if !m4.ok {
+            return __SaslResult { ok: false, err_kind: sasl_retryable_kind(),
+                err_detail: "auth: " + m4.err };
+        }
+        if m4.mtype == 69 { // 'E' — surface it like m2/m3
+            // A3: a server ErrorResponse can arrive here too (e.g. a
+            // post-verification failure the server only reports after the
+            // client proof). Surface its actual message the way the m2/m3
+            // reads do, rather than the generic "expected AuthenticationOk".
+            return __SaslResult { ok: false, err_kind: "auth_failed",
+                err_detail: "auth: " + __error_message(m4.body, m4.total) };
+        }
+        if m4.mtype != 82 || sasl_r_code(m4.body) != 0 {
+            return __SaslResult { ok: false, err_kind: "auth_failed",
+                err_detail: "auth: expected AuthenticationOk after SASL" };
+        }
+        return __SaslResult { ok: true };
+    }
+
+    fn close() {
+        if self.connected && self.sock >= 0 {
+            __send_raw(self.sock, self.tls, build_terminate());
+            __close_handle(self.sock, self.tls);
+        }
+        self.connected = false;
+        self.tls = false;
+        self.sock = -1;
+    }
+
+    fn exec(sql: String) -> db::ExecResult {
+        let r = self.__run(sql);
+        if !r.ok {
+            return db::ExecResult { ok: false,
+                err: db::DbError { kind: r.err_kind, engine_code: 0, detail: r.err_detail } };
+        }
+        return db::ExecResult {
+            ok: true,
+            rows_affected: __tag_rows(r.cmd_tag),
+            last_insert_rowid: 0, // postgres: use RETURNING + query_one
+        };
+    }
+
+    fn query_one(sql: String) -> db::Row {
+        let r = self.__run(sql);
+        if !r.ok {
+            return db::Row { ok: false,
+                err: db::DbError { kind: r.err_kind, engine_code: 0, detail: r.err_detail } };
+        }
+        if r.n == 0 {
+            return db::Row { ok: false,
+                err: db::DbError { kind: "no_row", engine_code: 0, detail: "query returned no rows" } };
+        }
+        // first row = csv up to the first newline
+        let nl = std::str::index_of(r.csv, "\n");
+        let first = if nl < 0 { r.csv } else { r.csv[0..nl] };
+        return db::Row { ok: true, data: first };
+    }
+
+    fn query_all(sql: String) -> db::Rows {
+        let r = self.__run(sql);
+        if !r.ok {
+            return db::Rows { ok: false,
+                err: db::DbError { kind: r.err_kind, engine_code: 0, detail: r.err_detail } };
+        }
+        return db::Rows { ok: true, csv: r.csv, n: r.n };
+    }
+
+    // ===== parameterized (extended-query) surface =====
+
+    fn exec_params(sql: String, args: db::Args) -> db::ExecResult {
+        let r = self.__run_ext(sql, args);
+        if !r.ok {
+            return db::ExecResult { ok: false,
+                err: db::DbError { kind: r.err_kind, engine_code: 0, detail: r.err_detail } };
+        }
+        return db::ExecResult { ok: true, rows_affected: __tag_rows(r.cmd_tag), last_insert_rowid: 0 };
+    }
+
+    fn query_params(sql: String, args: db::Args) -> db::Rows {
+        let r = self.__run_ext(sql, args);
+        if !r.ok {
+            return db::Rows { ok: false,
+                err: db::DbError { kind: r.err_kind, engine_code: 0, detail: r.err_detail } };
+        }
+        return db::Rows { ok: true, csv: r.csv, n: r.n };
+    }
+
+    fn __run_ext(sql: String, args: db::Args) -> __PgResult {
+        if !self.connected {
+            return __PgResult { ok: false, err_kind: "io", err_detail: "not connected" };
+        }
+        __send_raw(self.sock, self.tls, build_extended(sql, args));
+        return self.__pump();
+    }
+
+    // ===== transactions =====
+
+    fn begin() -> db::Status { return self.__tx_cmd("BEGIN"); }
+    fn commit() -> db::Status { return self.__tx_cmd("COMMIT"); }
+    fn rollback() -> db::Status { return self.__tx_cmd("ROLLBACK"); }
+    fn tx_status() -> String { return self.txn_state; }
+
+    fn __tx_cmd(cmd: String) -> db::Status {
+        let r = self.__run(cmd);
+        if !r.ok {
+            return db::Status { ok: false,
+                err: db::DbError { kind: r.err_kind, engine_code: 0, detail: r.err_detail } };
+        }
+        return db::Status { ok: true };
+    }
+
+    // __run — one simple-query round trip.
+    fn __run(sql: String) -> __PgResult {
+        if !self.connected {
+            return __PgResult { ok: false, err_kind: "io", err_detail: "not connected" };
+        }
+        __send_raw(self.sock, self.tls, build_query(sql));
+        return self.__pump();
+    }
+
+    // __read_one_msg — read + frame exactly ONE backend message off
+    // the socket, advancing rx_buf. Fills the 5-byte header (type +
+    // Int32 len), then the full body, snapshots it, and shift_fronts
+    // the consumed bytes. Shared by __pump and __sasl_exchange so both
+    // stay byte-for-byte consistent on rx_buf bookkeeping. The
+    // returned `body` snapshot is stable after the shift.
+    fn __read_one_msg() -> __PgMsg {
+        // ensure a full message header (type + Int32 len).
+        while self.rx_buf.len() < 5 {
+            let chunk = __recv_raw(self.sock, self.tls, self.recv_chunk);
+            if len(chunk) <= 0 {
+                return __PgMsg { ok: false, err: "peer closed mid-response" };
+            }
+            self.rx_buf.append(chunk);
+        }
+        let hdr = self.rx_buf.snapshot();
+        let mtype = byte_at(hdr, 0);
+        let mlen = read_be32(hdr, 1); // length includes itself, excludes type byte
+        let total = mlen + 1; // + type byte
+
+        while self.rx_buf.len() < total {
+            let chunk = __recv_raw(self.sock, self.tls, self.recv_chunk);
+            if len(chunk) <= 0 {
+                return __PgMsg { ok: false, err: "peer closed mid-message" };
+            }
+            self.rx_buf.append(chunk);
+        }
+        let body = self.rx_buf.snapshot();
+        self.rx_buf.shift_front(total);
+        return __PgMsg { mtype: mtype, body: body, total: total, ok: true };
+    }
+
+    // __pump — read + parse backend messages until ReadyForQuery
+    // ('Z'). Accumulates DataRows into csv. Captures ErrorResponse.
+    fn __pump() -> __PgResult {
+        let mut res = __PgResult { ok: true };
+        let mut done = false;
+
+        while !done {
+            let m = self.__read_one_msg();
+            if !m.ok {
+                res.ok = false; res.err_kind = "io";
+                res.err_detail = m.err;
+                return res;
+            }
+            __handle_msg(m.mtype, m.body, m.total, res);
+            if m.mtype == 90 { // 'Z' ReadyForQuery
+                done = true;
+                self.txn_state = __zstatus(byte_at(m.body, 5));
+            }
+        }
+        return res;
+    }
+}
+
+// ===== free-fn helpers (fallible / parsing) =====
+
+fn __on_connect_fail(e: IoError) -> Int {
+    return -1;
+}
+
+// __on_upgrade_fail — `or`-handler for std::io::tls::upgrade. Returns a
+// sentinel -1 so __negotiate_tls can detect the handshake failure and
+// tear down the (still caller-owned) fd itself.
+fn __on_upgrade_fail(e: IoError) -> Int {
+    return -1;
+}
+
+// __zstatus — map the ReadyForQuery indicator byte to a name.
+//   'I' (73) idle   'T' (84) in transaction   'E' (69) aborted
+fn __zstatus(b: Int) -> String {
+    if b == 84 { return "in_tx"; }
+    if b == 69 { return "aborted"; }
+    return "idle";
+}
+
+// build_extended — Parse + Bind + Execute + Sync for one
+// parameterized statement (unnamed prepared stmt + portal, text
+// param format, text result format). The backend replies
+// ParseComplete/BindComplete (ignored by __handle_msg) then the
+// usual DataRow*/CommandComplete/ErrorResponse/ReadyForQuery.
+fn build_extended(sql: String, args: db::Args) -> Bytes {
+    let out = std::bytes::BytesBuilder { initial_cap: 256 };
+
+    // Parse 'P': dest"" query num_param_oids(0=infer)
+    let pb = std::bytes::BytesBuilder { initial_cap: 128 };
+    pb.append(std::bytes::from_int(0)); // unnamed dest
+    pb.append(std::bytes::from_string(sql));
+    pb.append(std::bytes::from_int(0)); // query NUL
+    be16_append(pb, 0); // 0 param-type oids
+    let pp = pb.snapshot();
+    out.append(std::bytes::from_int(80)); // 'P'
+    be32_append(out, len(pp) + 4);
+    out.append(pp);
+
+    // Bind 'B': portal"" stmt"" fmtcodes(0=text) nparams params... rfmt(0=text)
+    let bb = std::bytes::BytesBuilder { initial_cap: 128 };
+    bb.append(std::bytes::from_int(0)); // unnamed portal
+    bb.append(std::bytes::from_int(0)); // unnamed stmt
+    be16_append(bb, 0); // 0 param format codes -> all text
+    let nargs = args.count();
+    be16_append(bb, nargs);
+    let mut i = 0;
+    while i < nargs {
+        if args.null_at(i) {
+            // Int32 -1 (NULL) = four 0xFF bytes
+            bb.append(std::bytes::from_int(255));
+            bb.append(std::bytes::from_int(255));
+            bb.append(std::bytes::from_int(255));
+            bb.append(std::bytes::from_int(255));
+        } else {
+            let v = std::bytes::from_string(args.val_at(i));
+            be32_append(bb, len(v));
+            bb.append(v);
+        }
+        i = i + 1;
+    }
+    be16_append(bb, 0); // 0 result format codes -> all text
+    let bbs = bb.snapshot();
+    out.append(std::bytes::from_int(66)); // 'B'
+    be32_append(out, len(bbs) + 4);
+    out.append(bbs);
+
+    // Execute 'E': portal"" maxrows(0=all)
+    let eb = std::bytes::BytesBuilder { initial_cap: 8 };
+    eb.append(std::bytes::from_int(0)); // unnamed portal
+    be32_append(eb, 0); // all rows
+    let ebs = eb.snapshot();
+    out.append(std::bytes::from_int(69)); // 'E'
+    be32_append(out, len(ebs) + 4);
+    out.append(ebs);
+
+    // Sync 'S'
+    out.append(std::bytes::from_int(83)); // 'S'
+    be32_append(out, 4);
+
+    return out.finish();
+}
+
+// __handle_msg — dispatch one complete backend message. Mutates
+// `res` (passed by locus-ref — __PgResult is a type, but Hale
+// passes records by value; so we RETURN-via-fields won't work).
+// Instead this is structured to mutate through the res handle.
+// NOTE: __PgResult is threaded by reference here via the
+// type-as-mutable-record convention used elsewhere in pond.
+fn __handle_msg(mtype: Int, msg: Bytes, total: Int, res: __PgResult) {
+    // 'D' (68) DataRow
+    if mtype == 68 {
+        let ncols = read_be16(msg, 5);
+        let mut off = 7;
+        let mut row = "";
+        let mut c = 0;
+        while c < ncols {
+            let collen = read_be32(msg, off);
+            off = off + 4;
+            if c > 0 { row = row + "\t"; }
+            if collen == 4294967295 {
+                row = row + ""; // NULL
+            } else {
+                let cell = std::bytes::slice(msg, off, off + collen);
+                row = row + std::str::from_bytes(cell);
+                off = off + collen;
+            }
+            c = c + 1;
+        }
+        if res.n > 0 { res.csv = res.csv + "\n"; }
+        res.csv = res.csv + row;
+        res.n = res.n + 1;
+        return;
+    }
+    // 'C' (67) CommandComplete — tag is a cstr at offset 5
+    if mtype == 67 {
+        res.cmd_tag = __cstr_at(msg, 5);
+        return;
+    }
+    // 'E' (69) ErrorResponse — field-typed cstrs until 0. A2: the walk is
+    // now the shared __parse_error_fields (also used by __error_message).
+    if mtype == 69 {
+        res.ok = false;
+        res.err_kind = "query_failed";
+        let fields = __parse_error_fields(msg, total);
+        res.err_detail = fields.message;
+        res.err_code = fields.code;
+        return;
+    }
+    // 'R' (82) Authentication — the open() handshake consumes the
+    // auth exchange (trust / SCRAM) before __pump ever runs, so an 'R'
+    // reaching here is an unexpected mid-stream auth request. Only
+    // AuthenticationOk (code 0) is a benign no-op; anything else is an
+    // error (defensive — should not occur in the simple-query flow).
+    if mtype == 82 {
+        let code = read_be32(msg, 5);
+        if code != 0 {
+            res.ok = false;
+            res.err_kind = "unsupported";
+            res.err_detail = "unexpected authentication request (code "
+                + to_string(code) + ") outside the open() handshake";
+        }
+        return;
+    }
+    // 'S' param status, 'K' backend key, 'Z' ready, 'T' rowdesc,
+    // 'N' notice, 'I' empty-query: nothing to accumulate.
+}
+
+// __parse_error_fields — walk an ErrorResponse ('E') body's field-typed
+// entries (each: [Byte field-type][NUL-terminated value], the sequence
+// terminated by a 0 field-type byte) and pull out the 'M' (human
+// Message) and 'C' (SQLSTATE) fields. A2: the single source of truth for
+// that walk, shared by __handle_msg's 'E' branch (wants message + code)
+// and __error_message (wants the message for auth/startup detail) — each
+// previously duplicated it.
+//
+// A6: the offset advance uses wire.hl's cstr_end (the exact byte index of
+// the value's NUL) instead of a len(std::bytes::from_string(val)) String
+// round-trip. The round-trip assumed String<->Bytes preserved byte
+// length; a multi-byte-UTF-8 field value (e.g. a localized server
+// message) could desync the walk. Stepping over the raw bytes to the NUL
+// is UTF-8-length-exact.
+fn __parse_error_fields(msg: Bytes, total: Int) -> __ErrFields {
+    let mut fields = __ErrFields { };
+    let mut off = 5;
+    while off < total {
+        let ftype = byte_at(msg, off);
+        if ftype == 0 { off = total; }
+        else {
+            let vend = cstr_end(msg, off + 1, total);
+            let val = std::str::from_bytes(std::bytes::slice(msg, off + 1, vend));
+            if ftype == 77 { fields.message = val; } // 'M' human message
+            if ftype == 67 { fields.code = val; } // 'C' SQLSTATE
+            off = vend + 1;
+        }
+    }
+    return fields;
+}
+
+// __error_message — the human-readable 'M' (Message) field of an
+// ErrorResponse ('E') body, via the shared __parse_error_fields walk.
+// Falls back to a generic string when no 'M' field is present, so an
+// auth/startup failure always has a useful detail.
+fn __error_message(msg: Bytes, total: Int) -> String {
+    let fields = __parse_error_fields(msg, total);
+    if len(fields.message) == 0 { return "authentication failed"; }
+    return fields.message;
+}
+
+// __cstr_at — read a NUL-terminated string starting at `off`.
+fn __cstr_at(buf: Bytes, off: Int) -> String {
+    let total = len(buf);
+    let mut end = off;
+    while end < total {
+        if byte_at(buf, end) == 0 { end = total + 1000000; } // sentinel break
+        else { end = end + 1; }
+    }
+    // recover the real end (we jumped by a big sentinel to break)
+    let mut e = off;
+    while e < total {
+        if byte_at(buf, e) == 0 {
+            let s = std::bytes::slice(buf, off, e);
+            return std::str::from_bytes(s);
+        }
+        e = e + 1;
+    }
+    return std::str::from_bytes(std::bytes::slice(buf, off, total));
+}
+
+// __tag_rows — parse rows-affected from a CommandComplete tag.
+// "INSERT 0 5" -> 5, "UPDATE 3" -> 3, "DELETE 2" -> 2,
+// "SELECT 7" -> 7. Takes the trailing integer.
+fn __tag_rows(tag: String) -> Int {
+    let sp = __last_space(tag);
+    if sp < 0 { return 0; }
+    let num = tag[sp + 1..len(tag)];
+    return std::str::parse_int(num) or 0;
+}
+
+fn __last_space(s: String) -> Int {
+    let n = len(s);
+    let mut i = n - 1;
+    let mut found = -1;
+    while i >= 0 {
+        if s[i..i + 1] == " " { found = i; i = -1; } else { i = i - 1; }
+    }
+    return found;
+}

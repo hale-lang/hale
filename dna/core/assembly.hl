@@ -290,6 +290,64 @@ locus Dna {
         }
         return true;
     }
+    // ---- knowledge (GH #583 K1): the record's half ------------------
+    // A proposal enters the record as a receipt (its canonical document,
+    // by digest), a `knowledge.proposed` row naming that digest, and a
+    // Review pinned to it — the Board's, since ratified knowledge is the
+    // organization's. Returns the digest. The tower rule decides the
+    // class of the binding (goal / concern / initiative) from who
+    // proposes and where it binds; a lateral proposal is refused.
+    fn propose_knowledge(i: Idea, target: String) -> String {
+        let class = classify_binding(i.author, target);
+        if class == "lateral" {
+            let x = self.journal.append(self.journal.revision(), "knowledge.refused", i.id, "lateral: `" + i.author + "` may not bind knowledge to `" + target + "` (siblings do not privately coordinate)");
+            return "";
+        }
+        let doc = knowledge_document(i, target);
+        let digest = "sha256:" + self.verification.receipts.store(doc);
+        let review_id = knowledge_review_id(digest);
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("digest", digest);
+        b.string_field("review_id", review_id);
+        b.string_field("kind", i.kind);
+        b.string_field("author", i.author);
+        b.string_field("target", target);
+        b.string_field("class", class);
+        b.int_field("at", std::time::now());
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "knowledge.proposed", digest, b.result());
+        let question = "ratify " + i.kind + " `" + i.text + "` as a " + class + " for " + target + "?";
+        Review { review_id: review_id, question: question, subject_digest: digest, required_authority: "board", author: i.author };
+        let q = std::json::Builder { };
+        q.begin_object();
+        q.string_field("question", question);
+        q.string_field("subject_digest", digest);
+        q.string_field("required_authority", "board");
+        q.string_field("author", i.author);
+        q.string_field("knowledge_digest", digest);
+        q.string_field("kind", i.kind);
+        q.string_field("target", target);
+        q.string_field("class", class);
+        q.end_object();
+        let y = self.journal.append(self.journal.revision(), "review.requested", "review:" + review_id, q.result());
+        self.membrane.notify("knowledge", "board needed for " + review_id + ": " + question);
+        return digest;
+    }
+    // The `review.requested` body of a knowledge proposal's Review, ""
+    // for any other.
+    @unbounded
+    fn knowledge_request_of(review_id: String) -> String {
+        let n = self.journal.revision();
+        let mut i = 0;
+        let mut out = "";
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "review.requested" && e.entity == "review:" + review_id && std::str::contains(e.body, "\"knowledge_digest\"") { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
     // The Review decided; the Journal records it (the file
     // `hale dna status` and `history` read).
     @unbounded
@@ -303,6 +361,27 @@ locus Dna {
         // reasoning — the model's answer, not a digest of it
         if len(r.comment) > 0 {
             let w = self.journal.append(self.journal.revision(), "review.reasoned", r.review_id, r.comment);
+        }
+        // GH #583 K1: a knowledge proposal's approval is the authoritative
+        // ratification — one row naming the digest, which the knowledge
+        // service applies from the record; anything else leaves the
+        // proposal as it was, in lineage.
+        let kreq = self.knowledge_request_of(r.review_id);
+        if len(kreq) > 0 {
+            let digest = std::json::find_string_field(kreq, "knowledge_digest");
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("digest", digest);
+            b.string_field("review_id", r.review_id);
+            b.string_field("outcome", r.outcome);
+            b.string_field("decided_by", r.decided_by);
+            b.string_field("kind", std::json::find_string_field(kreq, "kind"));
+            b.string_field("target", std::json::find_string_field(kreq, "target"));
+            b.string_field("class", std::json::find_string_field(kreq, "class"));
+            b.int_field("at", std::time::now());
+            b.end_object();
+            let k = self.journal.append(self.journal.revision(), if r.outcome == "approve" { "knowledge.ratified" } else { "knowledge.declined" }, digest, b.result());
+            return;
         }
         // GH #529 D5: a mutation's approval applies exactly the reviewed
         // candidate; a rejection or revision leaves genome and expression
@@ -796,8 +875,9 @@ locus Dna {
             let e = self.journal.read(i);
             if e.kind == "task.born" { tasks = tasks + 1; }
             if e.kind == "mutation.proposed" { mutations = mutations + 1; }
-            if e.kind == "review.requested" && std::str::contains(e.body, "\"mutation_id\"") {
-                let id = std::json::find_string_field(e.body, "mutation_id");
+            // a mutation's Review, or a knowledge proposal's (GH #583 K1)
+            if e.kind == "review.requested" && (std::str::contains(e.body, "\"mutation_id\"") || std::str::contains(e.body, "\"knowledge_digest\"")) {
+                let id = if std::str::contains(e.body, "\"mutation_id\"") { std::json::find_string_field(e.body, "mutation_id") } else { e.entity[7..len(e.entity)] };
                 let mut settled = false;
                 let mut k = i + 1;
                 while k < n {

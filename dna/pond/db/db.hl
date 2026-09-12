@@ -1,0 +1,67 @@
+// pond/db — the DbDriver interface.
+//
+// A concrete driver locus (pond/pq's PgConn, pond/sqlite's Db,
+// an in-memory MemDriver) structurally satisfies this by
+// declaring the same method set. Consumers hold a DbDriver-typed
+// slot and never name the concrete backend:
+//
+//   locus Refstore {
+//       params { store: db::DbDriver; }      // injected: PgConn / Db / Mem
+//       fn load() {
+//           let rows = self.store.query_all("SELECT * FROM contract");
+//           if !rows.ok { ...self.on_failure(err)... } else { ...parse rows.csv... }
+//       }
+//   }
+//
+// All methods are non-fallible at the signature level (F.20
+// interfaces can't declare `fallible`); failure rides in the
+// returned `Status` / `ExecResult` / `Row` / `Rows` via `ok` +
+// `err`. See types.hl.
+//
+// Lifecycle note: drivers are Service-shaped — `open()` dials /
+// opens the backend, `close()` tears it down. A driver MAY also
+// open lazily in birth() and treat `open()` as idempotent; the
+// interface only requires the method exists.
+//
+// Status / ExecResult / Row / Rows / DbError are same-seed
+// siblings (types.hl) — referenced bare, no import.
+
+interface DbDriver {
+    // Identity — "postgres" | "sqlite" | "memory" | ...
+    fn backend() -> String;
+
+    // Lifecycle. open() establishes the connection (idempotent);
+    // close() releases it. open returns a Status so the caller
+    // sees why a dial failed; close is best-effort (Go-style:
+    // close errors are rare and usually unactionable).
+    fn open() -> Status;
+    fn close();
+
+    // Non-query: INSERT / UPDATE / DELETE / DDL. Returns rows
+    // affected (+ last_insert_rowid where the backend provides
+    // it). Check `.ok`.
+    fn exec(sql: String) -> ExecResult;
+
+    // SELECT one row. `.ok=false, err.kind="no_row"` on empty.
+    fn query_one(sql: String) -> Row;
+
+    // SELECT many rows. `.csv` newline/tab delimited, `.n` count.
+    fn query_all(sql: String) -> Rows;
+
+    // ===== parameterized (extended-query) surface =====
+    // $1/$2/... placeholders bound from `args` — the safe path for
+    // any externally-sourced value (escaping + injection handled
+    // by the protocol, not string interpolation). Same result
+    // shapes as the non-param variants.
+    fn exec_params(sql: String, args: Args) -> ExecResult;
+    fn query_params(sql: String, args: Args) -> Rows;
+
+    // ===== transactions =====
+    // begin/commit/rollback as first-class ops; tx_status reports
+    // "idle" | "in_tx" | "aborted" (from the backend's
+    // ReadyForQuery indicator) so callers can reason about state.
+    fn begin() -> Status;
+    fn commit() -> Status;
+    fn rollback() -> Status;
+    fn tx_status() -> String;
+}

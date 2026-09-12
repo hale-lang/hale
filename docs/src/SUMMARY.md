@@ -83,6 +83,7 @@
 - [Apply, express, observe](./dna/apply.md)
 - [Autonomy: the vector and the rules](./dna/autonomy.md)
 - [Models and credentials](./dna/models.md)
+- [The knowledge graph](./dna/knowledge.md)
 - [Reference](./dna/reference.md)
 
 ---

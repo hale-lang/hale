@@ -1,0 +1,231 @@
+// pond/pq/scram — SCRAM-SHA-256 client core (RFC 5802 / RFC 7677).
+//
+// Pure, offline, ZERO wire/socket coupling: everything here is a
+// deterministic function of (password, client-first-bare, server
+// message text). The pgwire framing that carries these strings lives
+// in wire.hl; the exchange sequencing lives in pq.hl's
+// __sasl_exchange. Keeping the crypto here std-only (std::crypto,
+// std::text::base64, std::os, std::bytes, std::str — no sibling-file
+// or FFI coupling) means the whole core is unit-testable in-tree
+// against the RFC 7677 vector — same pattern as wire.hl and its
+// offline test.
+//
+// Scope: SCRAM-SHA-256 WITHOUT channel binding (gs2 header "n,,",
+// c=biws). We never advertise "y"/-PLUS — that is a mandatory reject
+// per RFC 5802 §6 and tls-server-end-point binding needs a cert
+// digest Hale does not expose. Passwords are treated as raw UTF-8
+// bytes (no SASLprep normalization); callers use ASCII passwords.
+//
+// !! BytesBuilder rule (hale arena bug daydream-dhu): any builder
+// result fed into std::crypto::* or std::text::base64::encode MUST
+// come from .snapshot(), never .finish() — finish()'d blobs segfault
+// through the crypto/base64 FFI. Everything here uses .snapshot().
+
+type ScramServerFirst {
+    nonce: String = ""; // r= : full nonce (client nonce + server nonce)
+    salt_b64: String = ""; // s= : base64 salt
+    iters: Int = 0; // i= : PBKDF2 iteration count (never hardcode)
+    ok: Bool = false;
+}
+
+type ScramClientFinal {
+    client_final: String = ""; // "c=biws,r=<nonce>,p=<proof>" to send
+    server_sig_b64: String = ""; // expected v= to verify the server with
+    ok: Bool = false;
+    err: String = "";
+}
+
+// salted_password — SaltedPassword = Hi(password, salt, i) =
+// PBKDF2-HMAC-SHA256 with dkLen = 32 (exactly one SHA-256 output
+// block, so INT(1) is the only block index):
+//   U1 = HMAC(password, salt || INT(1)),  Uk = HMAC(password, U(k-1)),
+//   SaltedPassword = U1 XOR U2 XOR ... XOR Ui.
+fn salted_password(@secret password: String, salt: Bytes, iters: Int) -> Bytes {
+    let pw = std::bytes::from_string(password);
+    let blk = std::bytes::BytesBuilder { initial_cap: len(salt) + 4 };
+    blk.append(salt);
+    blk.append_u8(0); blk.append_u8(0); blk.append_u8(0); blk.append_u8(1); // INT(1), big-endian
+    let mut u = std::crypto::hmac_sha256(pw, blk.snapshot());
+    let mut acc = u;
+    let mut i = 1;
+    while i < iters {
+        u = std::crypto::hmac_sha256(pw, u);
+        acc = scram_xor(acc, u);
+        i = i + 1;
+    }
+    return acc;
+}
+
+// compute_client_final — derive the client-final-message and the
+// expected server signature from the server-first-message.
+//
+//   ClientKey       = HMAC(SaltedPassword, "Client Key")
+//   StoredKey       = SHA-256(ClientKey)
+//   AuthMessage     = client-first-bare + "," + server-first + "," + cfmwp
+//   ClientSignature = HMAC(StoredKey, AuthMessage)
+//   ClientProof     = ClientKey XOR ClientSignature
+//   ServerKey       = HMAC(SaltedPassword, "Server Key")
+//   ServerSignature = HMAC(ServerKey, AuthMessage)
+//
+// where cfmwp (client-final-without-proof) = "c=biws,r=<full nonce>"
+// and "biws" is the fixed base64 of the gs2 header "n,,".
+fn compute_client_final(@secret password: String, client_first_bare: String,
+    server_first: String) -> ScramClientFinal {
+        let sf = parse_server_first(server_first);
+        if !sf.ok {
+            return ScramClientFinal { ok: false, err: "malformed server-first-message" };
+        }
+        // F1 / RFC 5802 §5.1 MUST: the server's nonce is required to extend
+        // the client nonce we sent in client-first — the server appends its
+        // own contribution. Verify sf.nonce both STARTS WITH the client
+        // nonce (embedded in client_first_bare's "r=" field) AND is
+        // strictly longer than it, rejecting a foreign nonce and an exact
+        // echo (no server contribution) alike. Fail closed: a nonce
+        // downgrade/reflection here is an authentication protocol
+        // violation, not a retryable condition.
+        let want_nonce = scram_field_after(client_first_bare, "r=");
+        if !std::str::starts_with(sf.nonce, want_nonce) || len(sf.nonce) <= len(want_nonce) {
+            return ScramClientFinal { ok: false,
+                err: "nonce mismatch: server r= does not extend the client nonce" };
+        }
+        let salt = std::text::base64::decode(sf.salt_b64);
+        let salted = salted_password(password, salt, sf.iters);
+
+        let client_key = std::crypto::hmac_sha256(salted, std::bytes::from_string("Client Key"));
+        let stored_key = std::crypto::sha256(client_key);
+
+        let cfmwp = "c=biws,r=" + sf.nonce;
+        let auth_msg = client_first_bare + "," + server_first + "," + cfmwp;
+        let auth_b = std::bytes::from_string(auth_msg);
+
+        let client_sig = std::crypto::hmac_sha256(stored_key, auth_b);
+        let client_proof = scram_xor(client_key, client_sig);
+        let client_final = cfmwp + ",p=" + std::text::base64::encode(client_proof);
+
+        let server_key = std::crypto::hmac_sha256(salted, std::bytes::from_string("Server Key"));
+        let server_sig = std::crypto::hmac_sha256(server_key, auth_b);
+
+        return ScramClientFinal {
+            client_final: client_final,
+            server_sig_b64: std::text::base64::encode(server_sig),
+            ok: true,
+        };
+    }
+
+// parse_server_first — pull r= / s= / i= out of the
+// server-first-message "r=<nonce>,s=<salt>,i=<iters>". Each field is
+// anchored so a base64 salt containing padding never fools the split;
+// the nonce is base64url (comma-free) so ",s=" / ",i=" never appear
+// inside it. ok=false if any field is missing or i= is not positive.
+//
+// F5(a)/(b) hardening: the message itself must START with "r=" —
+// anchoring the leading field to the string start (instead of an
+// unanchored index_of("r=") search) closes a smuggling class where a
+// hostile prefix could precede a buried "r=", and it doubles as the
+// RFC 5802 §6 mandatory-extension guard: a server-first beginning
+// "m=..." (an extension we don't understand) MUST abort the exchange
+// — "m=" simply fails the "starts with r=" anchor like any other
+// non-"r=" prefix.
+//
+// F3 hardening: a hostile/misconfigured server can hand back an
+// enormous PBKDF2 iteration count to burn client CPU (Hi() is one
+// HMAC-SHA256 per iteration) — cap it well above any real deployment
+// (postgres/RDS default is 4096) and fail closed above the cap.
+fn parse_server_first(msg: String) -> ScramServerFirst {
+    if !std::str::starts_with(msg, "r=") {
+        return ScramServerFirst { ok: false };
+    }
+    let r = scram_field_after(msg, "r=");
+    let s = scram_field_after(msg, ",s=");
+    let iters = std::str::parse_int(scram_field_after(msg, ",i=")) or 0;
+    let good = len(r) > 0 && len(s) > 0 && iters > 0 && iters <= 1000000;
+    return ScramServerFirst { nonce: r, salt_b64: s, iters: iters, ok: good };
+}
+
+// verify_server_final — check the server-final-message "v=<sig>"
+// against the ServerSignature we expect. Fail closed: a missing or
+// mismatched v= returns false. The "," sentinel lets field_after stop
+// correctly when v= is the final (or only) field.
+//
+// F5(a): the message must START with "v=" (anchored, same rationale as
+// parse_server_first) rather than an unanchored search — this also
+// cleanly rejects an "e=..." SASL error message via the same guard
+// instead of relying on the field-not-found path to happen to catch it.
+//
+// F5(d): this is a plain string compare, not constant-time. That
+// matches libpq's own client-side v= check — the value being compared
+// is a MAC the client independently derived from a password-derived
+// secret it already holds; the only thing a timing side-channel could
+// leak here is the server's signature, which the wire already handed
+// us in plaintext. Left as-is intentionally, not an oversight.
+fn verify_server_final(server_final: String, expected_sig_b64: String) -> Bool {
+    if !std::str::starts_with(server_final, "v=") { return false; }
+    let got = scram_field_after(server_final + ",", "v=");
+    if len(got) == 0 { return false; }
+    return got == expected_sig_b64;
+}
+
+// make_client_first_bare — "n=<username>,r=<nonce>". Postgres ignores
+// the SASL username in favour of the StartupMessage user, so the
+// driver passes an empty username -> "n=,r=<nonce>" (confirmed live,
+// daydream-0v2 spike 3).
+fn make_client_first_bare(username: String, nonce: String) -> String {
+    return "n=" + username + ",r=" + nonce;
+}
+
+// gs2_header — channel-binding-absent GS2 header. base64("n,,") =
+// "biws", the fixed c= value used in the client-final-message.
+fn gs2_header() -> String { return "n,,"; }
+
+// client_nonce — 18 random bytes, base64url (printable, comma-free,
+// per RFC 5802 nonce constraints). Returns "" if the CSPRNG fails, so
+// the caller can fail the exchange closed rather than send an empty
+// nonce.
+fn client_nonce() -> String {
+    let rnd = std::os::getrandom(18) or std::bytes::from_string("");
+    if len(rnd) == 0 { return ""; }
+    return std::text::base64::url_encode(rnd);
+}
+
+// ===== helpers =====
+
+// scram_xor — byte-wise XOR of two equal-length Bytes. The
+// BytesBuilder.xor_mask primitive only XORs against a repeating
+// 4-byte key (a WebSocket masking primitive), so a general 32-vs-32
+// fold needs this hand loop. Returns .snapshot() (see arena rule).
+//
+// F5(c) guard: every call site in this file XORs two same-width
+// HMAC-SHA256/SHA-256 outputs (32 bytes each), so a length mismatch
+// can only mean an internal bug. The naive body would silently
+// zero-pad the shorter side (`std::bytes::at(..) or 0`) and truncate
+// the result to len(a) — both corrupt the derived key material
+// without any signal. Fail loud instead: on a mismatch, return empty
+// Bytes so the very next step (a base64 encode / signature compare)
+// visibly breaks rather than silently authenticating with corrupted
+// material.
+fn scram_xor(a: Bytes, b: Bytes) -> Bytes {
+    let n = len(a);
+    if n != len(b) {
+        return std::bytes::from_string("");
+    }
+    let out = std::bytes::BytesBuilder { initial_cap: n };
+    let mut i = 0;
+    while i < n {
+        out.append_u8((std::bytes::at(a, i) or 0) ^ (std::bytes::at(b, i) or 0));
+        i = i + 1;
+    }
+    return out.snapshot();
+}
+
+// scram_field_after — value of a SCRAM attribute: the text after
+// `prefix` up to the next comma (or end of string). "" if the prefix
+// is absent.
+fn scram_field_after(msg: String, prefix: String) -> String {
+    let p = std::str::index_of(msg, prefix);
+    if p < 0 { return ""; }
+    let start = p + len(prefix);
+    let rest = msg[start..len(msg)];
+    let c = std::str::index_of(rest, ",");
+    if c < 0 { return rest; }
+    return rest[0..c];
+}

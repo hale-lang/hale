@@ -1,4 +1,5 @@
-// dna/core/knowledge.hl — semantic memory (#521 comment 1).
+// dna/core/knowledge.hl — semantic memory (#521 comment 1; the
+// service that owns the graph is dna/knowledge, GH #583 K1).
 //
 // `Knowledge` is a locus that owns domain data: ideas, edges, bindings
 // and revisions are pure cells in its forms, in exactly one tower
@@ -149,4 +150,30 @@ locus Knowledge {
         let d = hex(std::crypto::sha256(std::bytes::from_string(target + "@" + to_string(self.revision) + ":" + included)));
         return ContextPackage { target: target, revision: self.revision, digest: d, included: included, included_n: n, omitted_n: omitted, data_class: data_class };
     }
+}
+
+// ---- the record's half (GH #583 K1) -----------------------------------
+//
+// A proposal is a document: canonical JSON with a fixed field order,
+// filed as a receipt under its sha256, so a digest in the record
+// always resolves to recoverable content. What the Review pins, what
+// `knowledge.ratified` names, and what the knowledge service applies
+// idempotently are all this digest.
+fn knowledge_document(i: Idea, target: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("kind", i.kind);
+    b.string_field("text", i.text);
+    b.string_field("author", i.author);
+    b.string_field("target", target);
+    b.string_field("provenance", if len(i.provenance) > 0 { i.provenance } else { "proposed" });
+    b.end_object();
+    return b.result();
+}
+
+// The review id a proposal's digest is known by: `k:` and the first
+// twelve hex digits.
+fn knowledge_review_id(digest: String) -> String {
+    let d = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+    return "k:" + d[0..12];
 }

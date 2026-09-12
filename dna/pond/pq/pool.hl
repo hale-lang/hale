@@ -1,0 +1,266 @@
+// pond/pq — PgPool: a fixed-size connection pool over PgConn.
+//
+// Why an fd pool, not a locus pool: Hale `@form(*)` cells can't
+// hold loci and methods can't return loci, so a classic
+// "checkout a connection object" pool isn't expressible. Instead
+// the pool owns a vec of opened socket fds (Ints) + a parallel
+// busy vec; each operation acquires a free fd, wraps it in a
+// TRANSIENT PgConn { sock, connected: true } (PgConn has no
+// dissolve, so the fd stays open), runs the op, and releases.
+//
+// PgPool itself satisfies db::DbDriver, so it's interchangeable
+// with a single PgConn at the slot — pick the pool for concurrent
+// AUTOCOMMIT query workloads (e.g. an async_io read API fanning
+// out queries), a single PgConn for serial / transactional use
+// (e.g. refstore).
+//
+// **Concurrency model.** acquire() (find-free + mark-busy) has no
+// yield point between the scan and the set, so on a cooperative
+// pool (the common kind) two interleaved coros never grab the
+// same fd — exclusion holds for the duration of one pooled op.
+// Acquire→use→release is internal to each method; a caller never
+// holds a checked-out fd across calls. That's also why
+// transactions can't run on the pool (a txn must pin one
+// connection across begin..commit, which means holding it across
+// calls): begin/commit/rollback return an error directing the
+// caller to a dedicated PgConn.
+
+import "../db" as db;
+
+@form(vec)
+locus __FdVec {
+    capacity { heap data of Int; }
+}
+
+locus PgPool {
+    params {
+        host: String = "127.0.0.1";
+        port: Int = 5432;
+        user: String = "postgres";
+        // password — threaded into each PgConn.open() below; needed
+        // only at auth time (SCRAM-SHA-256). Empty = trust auth.
+        password: String = "";
+        database: String = "postgres";
+        // sslmode — threaded into each pooled PgConn.open(). Same four
+        // values + default "prefer" as PgConn (see wire.hl). A pool is
+        // homogeneous (one host/port/sslmode), so every connection
+        // negotiates the SAME transport.
+        sslmode: String = "prefer";
+        size: Int = 4;
+
+        opened: Bool = false;
+        fds: __FdVec = __FdVec { };
+        busy: __FdVec = __FdVec { }; // 0 = free, 1 = in use
+        n: Int = 0; // opened connection count
+        rr: Int = 0; // round-robin cursor for fairness
+
+        // pool_tls — derived ONCE in open() from the first connection's
+        // settled `tls` flag. The pool stores raw fds in `fds`, but with
+        // TLS each stored value is a TLS HANDLE, not a kernel fd — so
+        // every transient PgConn reconstruction below threads this flag
+        // as `tls:` so its send/recv/close route through the right
+        // transport (stream.hl dispatch). Uniform across the pool because
+        // the connections are homogeneous.
+        pool_tls: Bool = false;
+    }
+
+    fn backend() -> String { return "postgres"; }
+
+    // open — dial + handshake `size` connections, stash their fds.
+    //
+    // F1 (pool TLS homogeneity): the pool derives ONE `pool_tls` from
+    // connection 0 and threads that single flag into every subsequent
+    // pooled PgConn reconstruction — it never stores a per-slot transport
+    // tag. That assumes every pooled connection negotiates the SAME
+    // transport. Under sslmode=disable/require/verify-full this is
+    // structurally guaranteed (see wire.hl's pool_tls_mismatch doc
+    // comment); only `prefer` against a non-uniform backend (e.g. a
+    // load-balanced/proxied endpoint where connection 0 lands on a
+    // TLS-capable node but connection N doesn't, or vice versa) can
+    // violate it. If unnoticed, the mismatched connection's handle would
+    // later be driven through the WRONG transport family in stream.hl's
+    // dispatch — corrupting the shared TLS handle table silently. So
+    // every connection after the first is checked against pool_tls
+    // (wire::pool_tls_mismatch); a mismatch tears down the offending
+    // connection AND every already-opened one, and fails the whole pool
+    // closed rather than risk that corruption.
+    // @unbounded: one PgConn per pool slot; the loop bound is the configured pool size.
+    @unbounded
+    fn open() -> db::Status {
+        let mut i = 0;
+        while i < self.size {
+            let c = PgConn { host: self.host, port: self.port,
+                user: self.user, password: self.password,
+                database: self.database, sslmode: self.sslmode };
+            let st = c.open();
+            if !st.ok {
+                self.opened = (self.n > 0);
+                return db::Status { ok: self.n > 0, err: st.err };
+            }
+            // Derive the pool's transport from the first connection that
+            // settles (homogeneous pool -> all identical). c.sock is now a
+            // TLS handle when c.tls is true; both get stored uniformly.
+            if self.n == 0 {
+                self.pool_tls = c.tls;
+            } else if pool_tls_mismatch(c.tls, self.pool_tls) {
+                c.close();
+                self.__teardown();
+                self.opened = false;
+                return db::Status { ok: false, err: db::DbError { kind: "tls",
+                    engine_code: 0, detail: pool_tls_mismatch_detail(i, c.tls, self.pool_tls) } };
+            }
+            self.fds.push(c.sock);
+            self.busy.push(0);
+            self.n = self.n + 1;
+            i = i + 1;
+        }
+        self.opened = true;
+        return db::Status { ok: true };
+    }
+
+    // __teardown — close every already-opened connection (indices
+    // 0..n) via the pool's derived transport, then reset the pool's
+    // bookkeeping to empty. Shared by close() (guarded by `opened`, so
+    // it runs at most once per open()) and open()'s F1 homogeneity-
+    // violation path (which must fail the whole pool closed BEFORE
+    // `opened` is ever set true, so it can't go through close()'s
+    // guard). Clearing fds/busy (not just resetting n) matters beyond
+    // hygiene: open() always PUSHes rather than overwrites, so a stale
+    // tail left over from a prior open()/close() cycle would otherwise
+    // make a subsequent open() push new fds past the ones __acquire
+    // actually indexes into (0..n), silently handing out closed/stale
+    // handles.
+    // @unbounded: one PgConn per pool slot; the loop bound is the configured pool size.
+    @unbounded
+    fn __teardown() {
+        let mut i = 0;
+        while i < self.n {
+            let fd = self.fds.get(i) or - 1;
+            if fd >= 0 {
+                let c = PgConn { sock: fd, connected: true, tls: self.pool_tls };
+                c.close();
+            }
+            i = i + 1;
+        }
+        self.n = 0;
+        while !self.fds.is_empty() { self.fds.pop() or 0; }
+        while !self.busy.is_empty() { self.busy.pop() or 0; }
+    }
+
+    // close — F3: guarded by `opened` so a second close() (or a close()
+    // before any successful open()) is a no-op instead of re-closing
+    // already-torn-down handles. Pre-TLS this only double-closed a
+    // kernel fd (relatively benign — EBADF); with TLS handles a second
+    // close() is a handle-table use-after-free (the slot may already
+    // have been reused by an unrelated connection), so the guard is
+    // load-bearing now, not just tidiness.
+    fn close() {
+        if !self.opened { return; }
+        self.__teardown();
+        self.opened = false;
+    }
+
+    // __acquire — index of a free connection (marks it busy), or
+    // -1 if all busy. Round-robin start for fairness. No yield
+    // between scan + mark → safe on cooperative pools.
+    fn __acquire() -> Int {
+        let mut tries = 0;
+        let mut idx = self.rr;
+        while tries < self.n {
+            if idx >= self.n { idx = 0; }
+            let b = self.busy.get(idx) or 1;
+            if b == 0 {
+                self.busy.set(idx, 1) or discard;
+                self.rr = idx + 1;
+                return idx;
+            }
+            idx = idx + 1;
+            tries = tries + 1;
+        }
+        return -1;
+    }
+
+    fn __release(idx: Int) {
+        if idx >= 0 { self.busy.set(idx, 0) or discard; }
+    }
+
+    fn exec(sql: String) -> db::ExecResult {
+        let idx = self.__acquire();
+        if idx < 0 { return __pool_exhausted_exec(); }
+        let fd = self.fds.get(idx) or - 1;
+        let c = PgConn { sock: fd, connected: true, tls: self.pool_tls };
+        let r = c.exec(sql);
+        self.__release(idx);
+        return r;
+    }
+
+    fn query_one(sql: String) -> db::Row {
+        let idx = self.__acquire();
+        if idx < 0 { return __pool_exhausted_row(); }
+        let fd = self.fds.get(idx) or - 1;
+        let c = PgConn { sock: fd, connected: true, tls: self.pool_tls };
+        let r = c.query_one(sql);
+        self.__release(idx);
+        return r;
+    }
+
+    fn query_all(sql: String) -> db::Rows {
+        let idx = self.__acquire();
+        if idx < 0 { return __pool_exhausted_rows(); }
+        let fd = self.fds.get(idx) or - 1;
+        let c = PgConn { sock: fd, connected: true, tls: self.pool_tls };
+        let r = c.query_all(sql);
+        self.__release(idx);
+        return r;
+    }
+
+    fn exec_params(sql: String, args: db::Args) -> db::ExecResult {
+        let idx = self.__acquire();
+        if idx < 0 { return __pool_exhausted_exec(); }
+        let fd = self.fds.get(idx) or - 1;
+        let c = PgConn { sock: fd, connected: true, tls: self.pool_tls };
+        let r = c.exec_params(sql, args);
+        self.__release(idx);
+        return r;
+    }
+
+    fn query_params(sql: String, args: db::Args) -> db::Rows {
+        let idx = self.__acquire();
+        if idx < 0 { return __pool_exhausted_rows(); }
+        let fd = self.fds.get(idx) or - 1;
+        let c = PgConn { sock: fd, connected: true, tls: self.pool_tls };
+        let r = c.query_params(sql, args);
+        self.__release(idx);
+        return r;
+    }
+
+    // Transactions can't span pooled acquire/release cycles — a
+    // txn needs one pinned connection across begin..commit. Route
+    // callers to a dedicated PgConn instead of corrupting a shared
+    // one.
+    fn begin() -> db::Status { return __pool_no_tx(); }
+    fn commit() -> db::Status { return __pool_no_tx(); }
+    fn rollback() -> db::Status { return __pool_no_tx(); }
+    fn tx_status() -> String { return "n/a (pool)"; }
+}
+
+fn __pool_no_tx() -> db::Status {
+    return db::Status { ok: false,
+        err: db::DbError { kind: "unsupported", engine_code: 0,
+            detail: "transactions require a dedicated PgConn, not PgPool" } };
+}
+
+fn __pool_exhausted_exec() -> db::ExecResult {
+    return db::ExecResult { ok: false,
+        err: db::DbError { kind: "busy", engine_code: 0, detail: "pool exhausted" } };
+}
+
+fn __pool_exhausted_row() -> db::Row {
+    return db::Row { ok: false,
+        err: db::DbError { kind: "busy", engine_code: 0, detail: "pool exhausted" } };
+}
+
+fn __pool_exhausted_rows() -> db::Rows {
+    return db::Rows { ok: false,
+        err: db::DbError { kind: "busy", engine_code: 0, detail: "pool exhausted" } };
+}

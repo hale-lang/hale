@@ -19,12 +19,14 @@ fn dna_fixtures_pass() {
     let dir = repo_root().join("dna/tests");
     // The editing fixture runs the toolchain (`hale fmt`, `hale check`)
     // inside its worktree: hand it this build, not whatever is on PATH.
-    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .arg("test")
-        .arg(&dir)
-        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
-        .output()
-        .expect("invoke hale test dna/tests");
+    // GH #583 K1: the knowledge store's Postgres half runs when a DSN is
+    // in the environment (CI's service container; a developer's compose)
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_hale"));
+    cmd.arg("test").arg(&dir).env("HALE_BIN", env!("CARGO_BIN_EXE_hale"));
+    if let Ok(dsn) = std::env::var("HALE_DNA_KNOWLEDGE_DSN") {
+        cmd.env("HALE_DNA_KNOWLEDGE_DSN", dsn);
+    }
+    let out = cmd.output().expect("invoke hale test dna/tests");
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -84,6 +86,8 @@ fn dna_fixture_set_is_complete() {
             "fanout_join_test.hl",
             "harness_test.hl",
             "journal_test.hl",
+            "knowledge_events_test.hl",
+            "knowledge_store_test.hl",
             "knowledge_test.hl",
             "mutation_review_test.hl",
             "openai_chat_test.hl",

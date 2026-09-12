@@ -1,0 +1,345 @@
+// dna/knowledge — the knowledge graph as a service (GH #583 K1).
+//
+// The record holds the decided half: every ratified idea is a
+// `knowledge.ratified` row naming a receipt. This library holds the
+// live, queryable, shared half: a `KnowledgeStore` that a service
+// (service/) applies the record's rows into and answers from. `Pq` is
+// Postgres through pond's driver; `Mem` is the same contract in
+// memory, for tests and for a laptop with nothing. Nothing here lives
+// on the local filesystem.
+
+import "../core" as dna;
+import "../pond/db" as db;
+import "../pond/pq" as pq;
+
+// ---- the store ----------------------------------------------------------
+
+interface KnowledgeStore {
+    fn kind() -> String;
+    // Migrate and connect; false with `last_error` set when it cannot.
+    fn open() -> Bool;
+    fn last_error() -> String;
+    // The next record seq to apply (0 = nothing applied yet).
+    fn watermark() -> Int;
+    fn set_watermark(seq: Int) -> Bool;
+    // Idempotent by id: a second write with the same id updates in place.
+    fn upsert(i: dna::Idea, ratified_seq: Int) -> Bool;
+    fn bind(b: dna::KnowledgeBinding) -> Bool;
+    fn link(e: dna::KnowledgeEdge) -> Bool;
+    // One idea by id (`present` false when absent).
+    fn idea(id: String) -> Stored;
+    // Ids of accepted ideas bound to `target` or any of its ancestors
+    // (goals flow down), space-separated, at most `budget`.
+    fn context_ids(target: String, budget: Int) -> String;
+    // "ideas" | "ratified" | "proposed" | "bindings" | "edges"
+    fn count(what: String) -> Int;
+}
+
+type Stored {
+    present: Bool = false;
+    idea: dna::Idea = dna::Idea { };
+    ratified_seq: Int = 0;
+}
+
+// ---- in memory ----------------------------------------------------------
+
+@form(vec)
+locus IdeaRows { capacity { heap rows of dna::Idea; } }
+@form(vec)
+locus SeqRows { capacity { heap rows of Int; } }
+@form(vec)
+locus BindingRows { capacity { heap rows of dna::KnowledgeBinding; } }
+@form(vec)
+locus EdgeRows { capacity { heap rows of dna::KnowledgeEdge; } }
+
+locus Mem {
+    params {
+        ideas: IdeaRows = IdeaRows { };
+        seqs: SeqRows = SeqRows { };
+        bindings: BindingRows = BindingRows { };
+        edges: EdgeRows = EdgeRows { };
+        mark: Int = 0;
+    }
+    fn kind() -> String { return "memory"; }
+    fn open() -> Bool { return true; }
+    fn last_error() -> String { return ""; }
+    fn watermark() -> Int { return self.mark; }
+    fn set_watermark(seq: Int) -> Bool { if seq > self.mark { self.mark = seq; } return true; }
+    @unbounded
+    fn index_of(id: String) -> Int {
+        let mut i = 0;
+        while i < self.ideas.len() {
+            let x = self.ideas.get(i) or dna::Idea { };
+            if x.id == id { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+    fn upsert(i: dna::Idea, ratified_seq: Int) -> Bool {
+        let at = self.index_of(i.id);
+        if at < 0 {
+            self.ideas.push(dna::Idea { id: i.id, kind: i.kind, text: i.text, author: i.author, provenance: i.provenance, revision: i.revision, accepted: i.accepted });
+            self.seqs.push(ratified_seq);
+            return true;
+        }
+        self.ideas.set(at, dna::Idea { id: i.id, kind: i.kind, text: i.text, author: i.author, provenance: i.provenance, revision: i.revision, accepted: i.accepted }) or discard;
+        self.seqs.set(at, ratified_seq) or discard;
+        return true;
+    }
+    @unbounded
+    fn bind(b: dna::KnowledgeBinding) -> Bool {
+        let mut i = 0;
+        while i < self.bindings.len() {
+            let x = self.bindings.get(i) or dna::KnowledgeBinding { };
+            if x.idea == b.idea && x.target == b.target && x.author == b.author { return true; }
+            i = i + 1;
+        }
+        self.bindings.push(dna::KnowledgeBinding { idea: b.idea, target: b.target, author: b.author, class: b.class });
+        return true;
+    }
+    @unbounded
+    fn link(e: dna::KnowledgeEdge) -> Bool {
+        let mut i = 0;
+        while i < self.edges.len() {
+            let x = self.edges.get(i) or dna::KnowledgeEdge { };
+            if x.from == e.from && x.to == e.to && x.rel == e.rel { return true; }
+            i = i + 1;
+        }
+        self.edges.push(dna::KnowledgeEdge { from: e.from, to: e.to, rel: e.rel });
+        return true;
+    }
+    fn idea(id: String) -> Stored {
+        let at = self.index_of(id);
+        if at < 0 { return Stored { }; }
+        return Stored { present: true, idea: self.ideas.get(at) or dna::Idea { }, ratified_seq: self.seqs.get(at) or 0 };
+    }
+    @unbounded
+    fn context_ids(target: String, budget: Int) -> String {
+        let mut out = "";
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.bindings.len() && n < budget {
+            let b = self.bindings.get(i) or dna::KnowledgeBinding { };
+            i = i + 1;
+            if !(b.target == target || dna::is_ancestor(b.target, target)) { continue; }
+            if std::str::contains(out, b.idea + " ") { continue; }
+            let s = self.idea(b.idea);
+            if !s.present || !s.idea.accepted { continue; }
+            out = out + b.idea + " ";
+            n = n + 1;
+        }
+        return dna::trim_nl(out);
+    }
+    @unbounded
+    fn count(what: String) -> Int {
+        if what == "bindings" { return self.bindings.len(); }
+        if what == "edges" { return self.edges.len(); }
+        if what == "ideas" { return self.ideas.len(); }
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.ideas.len() {
+            let x = self.ideas.get(i) or dna::Idea { };
+            if (what == "ratified" && x.accepted) || (what == "proposed" && x.provenance == "proposed") { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+}
+
+// ---- Postgres -----------------------------------------------------------
+//
+// One connection, the schema migrated at open. Every write is an upsert
+// keyed by the idea's digest, so applying the record twice converges.
+
+fn tab_field(line: String, n: Int) -> String {
+    let mut rest = line;
+    let mut k = 0;
+    while true {
+        let t = std::str::index_of(rest, "\t");
+        let f = if t < 0 { rest } else { rest[0..t] };
+        if k == n { return f; }
+        if t < 0 { return ""; }
+        rest = rest[(t + 1)..len(rest)];
+        k = k + 1;
+    }
+    return "";
+}
+
+fn first_line(s: String) -> String {
+    let nl = std::str::index_of(s, "\n");
+    return if nl < 0 { s } else { s[0..nl] };
+}
+
+locus Pq {
+    params {
+        conn: pq::PgConn = pq::PgConn { sslmode: "prefer" };
+        opened: Bool = false;
+        error: String = "";
+    }
+    fn kind() -> String { return "postgres"; }
+    fn fail(what: String, e: db::DbError) -> Bool {
+        self.error = what + ": " + e.kind + " " + e.detail;
+        return false;
+    }
+    fn open() -> Bool {
+        if self.opened { return true; }
+        let st = self.conn.open();
+        if !st.ok { return self.fail("open", st.err); }
+        let ddl = "CREATE TABLE IF NOT EXISTS knowledge_meta (key text PRIMARY KEY, value text NOT NULL);"
+            + "CREATE TABLE IF NOT EXISTS knowledge_ideas (id text PRIMARY KEY, kind text NOT NULL, text text NOT NULL, author text NOT NULL, provenance text NOT NULL, revision bigint NOT NULL DEFAULT 0, accepted boolean NOT NULL DEFAULT false, ratified_seq bigint NOT NULL DEFAULT 0);"
+            + "CREATE TABLE IF NOT EXISTS knowledge_bindings (idea text NOT NULL, target text NOT NULL, author text NOT NULL, class text NOT NULL, PRIMARY KEY (idea, target, author));"
+            + "CREATE TABLE IF NOT EXISTS knowledge_edges (src text NOT NULL, dst text NOT NULL, rel text NOT NULL, PRIMARY KEY (src, dst, rel));";
+        let r = self.conn.exec(ddl);
+        if !r.ok { return self.fail("migrate", r.err); }
+        self.opened = true;
+        return true;
+    }
+    fn last_error() -> String { return self.error; }
+    fn watermark() -> Int {
+        let row = self.conn.query_one("SELECT value FROM knowledge_meta WHERE key = 'watermark'");
+        if !row.ok { return 0; }
+        return std::str::parse_int(dna::trim_nl(row.data)) or 0;
+    }
+    fn set_watermark(seq: Int) -> Bool {
+        let a = db::Args { };
+        a.add(to_string(seq));
+        let r = self.conn.exec_params("INSERT INTO knowledge_meta (key, value) VALUES ('watermark', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value WHERE EXCLUDED.value::bigint > knowledge_meta.value::bigint", a);
+        if !r.ok { return self.fail("watermark", r.err); }
+        return true;
+    }
+    fn upsert(i: dna::Idea, ratified_seq: Int) -> Bool {
+        let a = db::Args { };
+        a.add(i.id);
+        a.add(i.kind);
+        a.add(i.text);
+        a.add(i.author);
+        a.add(i.provenance);
+        a.add(to_string(i.revision));
+        a.add(if i.accepted { "true" } else { "false" });
+        a.add(to_string(ratified_seq));
+        let r = self.conn.exec_params("INSERT INTO knowledge_ideas (id, kind, text, author, provenance, revision, accepted, ratified_seq) VALUES ($1, $2, $3, $4, $5, $6::bigint, $7::boolean, $8::bigint) ON CONFLICT (id) DO UPDATE SET kind = EXCLUDED.kind, text = EXCLUDED.text, author = EXCLUDED.author, provenance = EXCLUDED.provenance, revision = EXCLUDED.revision, accepted = EXCLUDED.accepted, ratified_seq = EXCLUDED.ratified_seq", a);
+        if !r.ok { return self.fail("upsert", r.err); }
+        return true;
+    }
+    fn bind(b: dna::KnowledgeBinding) -> Bool {
+        let a = db::Args { };
+        a.add(b.idea);
+        a.add(b.target);
+        a.add(b.author);
+        a.add(b.class);
+        let r = self.conn.exec_params("INSERT INTO knowledge_bindings (idea, target, author, class) VALUES ($1, $2, $3, $4) ON CONFLICT (idea, target, author) DO UPDATE SET class = EXCLUDED.class", a);
+        if !r.ok { return self.fail("bind", r.err); }
+        return true;
+    }
+    fn link(e: dna::KnowledgeEdge) -> Bool {
+        let a = db::Args { };
+        a.add(e.from);
+        a.add(e.to);
+        a.add(e.rel);
+        let r = self.conn.exec_params("INSERT INTO knowledge_edges (src, dst, rel) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", a);
+        if !r.ok { return self.fail("link", r.err); }
+        return true;
+    }
+    fn idea(id: String) -> Stored {
+        let a = db::Args { };
+        a.add(id);
+        let rows = self.conn.query_params("SELECT id, kind, text, author, provenance, revision, accepted, ratified_seq FROM knowledge_ideas WHERE id = $1", a);
+        if !rows.ok || rows.n == 0 { return Stored { }; }
+        let line = first_line(rows.csv);
+        return Stored {
+            present: true,
+            idea: dna::Idea {
+                id: tab_field(line, 0), kind: tab_field(line, 1), text: tab_field(line, 2), author: tab_field(line, 3),
+                provenance: tab_field(line, 4), revision: std::str::parse_int(tab_field(line, 5)) or 0,
+                accepted: tab_field(line, 6) == "t" || tab_field(line, 6) == "true"
+            },
+            ratified_seq: std::str::parse_int(tab_field(line, 7)) or 0
+        };
+    }
+    // The tower rule in one query: bound to the target, or to any prefix
+    // of its path; goals flow down, initiatives stay local.
+    @unbounded
+    fn context_ids(target: String, budget: Int) -> String {
+        let a = db::Args { };
+        a.add(target);
+        a.add(to_string(budget));
+        let rows = self.conn.query_params("SELECT DISTINCT b.idea, i.ratified_seq FROM knowledge_bindings b JOIN knowledge_ideas i ON i.id = b.idea WHERE i.accepted AND ($1 = b.target OR $1 LIKE b.target || '/%') ORDER BY i.ratified_seq, b.idea LIMIT $2::bigint", a);
+        if !rows.ok { return ""; }
+        let mut out = "";
+        let mut rest = rows.csv;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+            let id = tab_field(line, 0);
+            if len(id) > 0 { out = out + id + " "; }
+        }
+        return dna::trim_nl(out);
+    }
+    fn count(what: String) -> Int {
+        let sql = if what == "bindings" { "SELECT count(*) FROM knowledge_bindings" }
+        else if what == "edges" { "SELECT count(*) FROM knowledge_edges" }
+        else if what == "ratified" { "SELECT count(*) FROM knowledge_ideas WHERE accepted" }
+        else if what == "proposed" { "SELECT count(*) FROM knowledge_ideas WHERE provenance = 'proposed'" }
+        else { "SELECT count(*) FROM knowledge_ideas" };
+        let row = self.conn.query_one(sql);
+        if !row.ok { return 0; }
+        return std::str::parse_int(dna::trim_nl(row.data)) or 0;
+    }
+}
+
+// ---- the DSN ------------------------------------------------------------
+//
+// `postgres://user:password@host:port/database?sslmode=…`, the shape
+// every tool prints. The password never leaves the connection's params.
+
+type Dsn {
+    ok: Bool = false;
+    user: String = "postgres";
+    password: String = "";
+    host: String = "127.0.0.1";
+    port: Int = 5432;
+    database: String = "postgres";
+    sslmode: String = "prefer";
+    why: String = "";
+}
+
+fn parse_dsn(s: String) -> Dsn {
+    let mut rest = s;
+    if std::str::starts_with(rest, "postgresql://") { rest = rest[13..len(rest)]; }
+    else if std::str::starts_with(rest, "postgres://") { rest = rest[11..len(rest)]; }
+    else { return Dsn { why: "not a postgres:// URL" }; }
+    let mut d = Dsn { ok: true };
+    let q = std::str::index_of(rest, "?");
+    if q >= 0 {
+        let query = rest[(q + 1)..len(rest)];
+        rest = rest[0..q];
+        let m = std::str::index_of(query, "sslmode=");
+        if m >= 0 {
+            let v = query[(m + 8)..len(query)];
+            let amp = std::str::index_of(v, "&");
+            d.sslmode = if amp < 0 { v } else { v[0..amp] };
+        }
+    }
+    let at = std::str::index_of(rest, "@");
+    if at >= 0 {
+        let cred = rest[0..at];
+        rest = rest[(at + 1)..len(rest)];
+        let colon = std::str::index_of(cred, ":");
+        if colon < 0 { d.user = cred; } else { d.user = cred[0..colon]; d.password = cred[(colon + 1)..len(cred)]; }
+    }
+    let slash = std::str::index_of(rest, "/");
+    let hostport = if slash < 0 { rest } else { rest[0..slash] };
+    if slash >= 0 && slash + 1 < len(rest) { d.database = rest[(slash + 1)..len(rest)]; }
+    let pc = std::str::index_of(hostport, ":");
+    if pc < 0 { d.host = hostport; } else { d.host = hostport[0..pc]; d.port = std::str::parse_int(hostport[(pc + 1)..len(hostport)]) or 5432; }
+    if len(d.host) == 0 { d.host = "127.0.0.1"; }
+    return d;
+}
+
+// The connection a DSN names; a `Pq` is built around it in place
+// (`Pq { conn: pq_conn(d) }`), since a locus is structure, not a
+// value a factory hands back into a field.
+fn pq_conn(d: Dsn) -> pq::PgConn {
+    return pq::PgConn { host: d.host, port: d.port, user: d.user, password: d.password, database: d.database, sslmode: d.sslmode };
+}
