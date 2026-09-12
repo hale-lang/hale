@@ -226,10 +226,18 @@ The organization's models are a catalog in source (GH #583 M1):
   (Linux: the filesystem as the operator sees it — the harness's own
   home state, the toolchain, the network — with the repository and
   the worktree replaced by empty tmpfs mounts, `--die-with-parent`)
-  or `NoConfinement`. A harness whose confinement is unavailable is
-  refused (`unconfined harness not allowed`) unless the org chart's
-  `allow_unconfined` says otherwise; the evidence records which it
-  was. On every platform the assembly also checks that the
+  or `NoConfinement`. **The genome is the model's own, not the
+  request's**: `HarnessModel { genome, genome_env }` reads it at birth
+  (the host exports `HALE_DNA_GENOME`), every call masks it, and a
+  request's `mask` adds what that call knows besides — the worktree an
+  editor exported. An answer-only role (a review, a classification,
+  the catalog's probe) carries no request mask, so a genome on the
+  model itself is what makes the guarantee true for them. **A
+  confinement with nothing to mask is refused**, not run, so the claim
+  and the fact cannot diverge. A harness whose confinement is
+  unavailable is refused (`unconfined harness not allowed`) unless the
+  org chart's `allow_unconfined` says otherwise; the evidence records
+  which it was, and `masked=<n>` how many paths the boundary covered. On every platform the assembly also checks that the
   repository's head and the worktree's head did not move during the
   attempt and fails the Mutation (`mutation.failed`: `the genome
   moved during the attempt`) if they did: not a boundary, but a

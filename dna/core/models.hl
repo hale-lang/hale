@@ -698,6 +698,19 @@ locus Bubblewrap {
     }
 }
 
+// How many paths a newline-separated mask names.
+fn path_count(mask: String) -> Int {
+    let mut n = 0;
+    let mut rest = mask;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let one = if nl < 0 { rest } else { rest[0..nl] };
+        if len(one) > 0 { n = n + 1; }
+        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+    }
+    return n;
+}
+
 // "0.0123" (dollars, as the harness prints it) -> 12300 micro-dollars.
 fn usd_to_micros(raw: String) -> Int {
     let t = trim_nl(raw);
@@ -749,12 +762,25 @@ locus HarnessModel {
         name: String = "quick";
         adapter: String = "harness";
         command: String = "claude"; // the harness on PATH
-        // flags before the prompt, newline-separated; the prompt is the
-        // last argument (the `claude -p … <prompt>` shape)
+        // flags, newline-separated. The PROMPT IS NOT AN ARGUMENT: a
+        // prompt has newlines and Hale's argv is newline-separated, so
+        // one written there arrives as several arguments (the shakeout's
+        // finding 5). It goes to the harness on stdin.
         argv: String = "-p\n--output-format\njson\n--dangerously-skip-permissions";
         output: String = "json"; // "json": the result object above; "text": stdout is the answer
         model: String = ""; // "" = the harness's default; else passed as `--model <model>`
         confinement: Confinement = Bubblewrap { };
+        // The genome this harness must never reach, whatever its role.
+        // A request's `mask` carries what THAT call adds (the worktree an
+        // editor exported); the genome is the model's own, because an
+        // answer-only role — a review, a classification, the catalog's
+        // probe — has no request to carry it and was therefore running
+        // with an empty mask while the evidence claimed a boundary (the
+        // shakeout's finding 1). Named by environment variable and read
+        // at birth, the way a credential names its source; the host sets
+        // HALE_DNA_GENOME for the organization.
+        genome: String = "";
+        genome_env: String = "HALE_DNA_GENOME";
         allow_unconfined: Bool = false; // the org chart's word: may the harness run with no boundary?
         max_bytes: Int = 4000000;
         present: Bool = false;
@@ -765,6 +791,16 @@ locus HarnessModel {
     birth() {
         let r = run_tool("sh\n-c\ncommand -v \"$0\"\n" + self.command);
         self.present = r.code == 0;
+        if len(self.genome) == 0 && len(self.genome_env) > 0 && std::env::var_exists(self.genome_env) {
+            self.genome = std::env::var(self.genome_env);
+        }
+    }
+    // Everything this call must not reach: the genome always, plus what
+    // the request adds. Empty only when nothing is known to protect.
+    fn effective_mask(extra: String) -> String {
+        if len(self.genome) == 0 { return extra; }
+        if len(extra) == 0 { return self.genome; }
+        return self.genome + "\n" + extra;
     }
     fn identity() -> String { return self.name; }
     fn model_name() -> String { return if len(self.model) > 0 { self.command + " " + self.model } else { self.command }; }
@@ -786,7 +822,7 @@ locus HarnessModel {
         let mut ev = ModelEvidence {
             attempt_id: req.attempt_id, adapter: self.adapter, backend: self.name,
             endpoint: self.command, requested_model: self.model_name(),
-            params: "confinement=" + kind + " output=" + self.output,
+            params: "confinement=" + kind + " masked=" + to_string(path_count(self.effective_mask(req.mask))) + " output=" + self.output,
             prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
             context_digest: digest_of(req.context),
             knowledge_bindings: req.knowledge_bindings,
@@ -795,6 +831,16 @@ locus HarnessModel {
         };
         if !self.allows(req.data_class) {
             ev.refused = if self.present { "data class " + req.data_class } else { "harness `" + self.command + "` not on PATH" };
+            self.last = ev;
+            ModelCalled <- ev;
+            return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: ev.refused };
+        }
+        let mask = self.effective_mask(req.mask);
+        // A confinement with nothing to mask is not a boundary. Refuse
+        // rather than run and record `confinement=<kind>` over a process
+        // that could read the genome by absolute path (finding 1).
+        if kind != "none" && len(mask) == 0 {
+            ev.refused = "no genome to mask: set " + self.genome_env + " (or the org chart's `genome`) before a harness may claim a boundary";
             self.last = ev;
             ModelCalled <- ev;
             return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: ev.refused };
@@ -815,15 +861,29 @@ locus HarnessModel {
             cwd = scratch;
         }
         let prompt = if len(req.context) > 0 { req.context + "\n\n" + req.prompt } else { req.prompt };
+        // The prompt goes on STDIN through a file this process owns,
+        // outside the workspace so an import never sees it: argv cannot
+        // carry a newline, and every real prompt has them (finding 5).
+        let pt = run_tool("mktemp\n/tmp/hale-dna-prompt.XXXXXX");
+        let prompt_file = trim_nl(pt.stdout);
+        if pt.code != 0 || len(prompt_file) == 0 {
+            ev.refused = "cannot write the prompt: mktemp failed";
+            if len(scratch) > 0 { let rm = run_tool("rm\n-rf\n" + scratch); }
+            self.last = ev;
+            ModelCalled <- ev;
+            return ModelResult { ok: false, backend: self.name, model: self.model_name(), refused: ev.refused };
+        }
+        std::io::fs::write_file(prompt_file, prompt) or discard;
         let mut argv = self.command + "\n" + self.argv;
         if len(self.model) > 0 { argv = argv + "\n--model\n" + self.model; }
-        argv = argv + "\n" + prompt;
         // no boundary available and the org chart allows it: the harness
         // runs plainly in the workspace, and the evidence says `none`
-        let wrapped = if kind == "none" { "sh\n-c\ncd \"$0\" && exec \"$@\"\n" + cwd + "\n" + argv } else { self.confinement.wrap(argv, cwd, req.mask) };
+        let inner = if kind == "none" { argv } else { self.confinement.wrap(argv, cwd, mask) };
+        let wrapped = "sh\n-c\ncd \"$1\" && p=\"$2\"; shift 2; exec \"$@\" < \"$p\"\nsh\n" + cwd + "\n" + prompt_file + "\n" + inner;
         let t0 = std::time::monotonic();
         let r = run_tool(wrapped);
         ev.elapsed = to_string(std::time::monotonic() - t0);
+        std::io::fs::unlink(prompt_file) or discard;
         if len(scratch) > 0 { let rm = run_tool("rm\n-rf\n" + scratch); }
         let out = parse_harness(self.output, r.code, r.stdout, r.stderr);
         ev.ok = out.ok;

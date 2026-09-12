@@ -841,10 +841,15 @@ fn models_hl(found: &Discovery) -> String {
 // none available the harness is refused unless `allow_unconfined` says
 // otherwise — that is the org chart's word, and the evidence records
 // which it was. `output: "text"`: codex prints its final message.
+//
+// The export is deliberately not a repository, hence
+// `--skip-git-repo-check`; the prompt arrives on stdin, so no flag
+// carries it. Versions differ: check `codex exec --help` if yours
+// refuses these.
 
 fn harness() -> dna::HarnessModel {
     return dna::HarnessModel { name: "quick", command: "codex", argv: "exec
---full-auto", output: "text", confinement: dna::Bubblewrap { } };
+--skip-git-repo-check", output: "text", confinement: dna::Bubblewrap { } };
 }
 
 "#

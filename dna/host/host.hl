@@ -129,7 +129,9 @@ locus Host {
         return r.stdout[0..12];
     }
     fn child_envs(restart_for: String, expression: String) -> String {
-        let mut e = "LOTUS_OBS=1\nHALE_BIN=" + self.hale;
+        // GH #583: the genome a harness must never reach, whatever its
+        // role. A HarnessModel reads it at birth (finding 1).
+        let mut e = "LOTUS_OBS=1\nHALE_BIN=" + self.hale + "\nHALE_DNA_GENOME=" + self.root;
         if len(restart_for) > 0 { e = e + "\nHALE_DNA_RESTART_FOR=" + restart_for + "\nHALE_DNA_EXPRESSION=" + expression; }
         // GH #583 K2: the organization's line to the knowledge service —
         // the one this host started, or the one the operator named

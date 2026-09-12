@@ -37,6 +37,25 @@ fn harness_script(genome_file: String) -> String {
         + "printf '{\"type\": \"result\", \"subtype\": \"success\", \"is_error\": false, \"result\": \"touched app/main.hl; genome bytes %s\", \"total_cost_usd\": 0.0123, \"usage\": {\"input_tokens\": 10, \"output_tokens\": 5}}\\n' \"$seen\"\n";
 }
 
+// The CONTRACT stand-in (the shakeout's findings 1 and 5): it records
+// exactly what it received — every argument on its own line, then the
+// stdin bytes — into a file OUTSIDE the workspace, and reports what it
+// could read of the genome. A stand-in that ignores its arguments
+// proves nothing about prompt delivery, which is how a prompt arriving
+// as several arguments went unnoticed.
+fn contract_script(record_file: String, genome_file: String) -> String {
+    return "#!/bin/sh\n"
+        + "genome=$(cat " + genome_file + ")\n"
+        + ": > " + record_file + "\n"
+        + "printf 'argc=%s\\n' \"$#\" >> " + record_file + "\n"
+        + "for a in \"$@\"; do printf 'arg=%s\\n' \"$a\" >> " + record_file + "; done\n"
+        + "printf 'stdin<<\\n' >> " + record_file + "\n"
+        + "cat >> " + record_file + "\n"
+        + "printf '\\n>>stdin\\n' >> " + record_file + "\n"
+        + "seen=$(cat \"$genome/app/main.hl\" 2>/dev/null | wc -c | tr -d ' ')\n"
+        + "printf '{\"type\": \"result\", \"subtype\": \"success\", \"is_error\": false, \"result\": \"read %s genome byte(s)\", \"total_cost_usd\": 0.001, \"usage\": {\"input_tokens\": 1, \"output_tokens\": 1}}\\n' \"$seen\"\n";
+}
+
 // A harness that reaches into the genome and moves it.
 fn mover_script(genome_file: String) -> String {
     return "#!/bin/sh\n"
@@ -53,6 +72,9 @@ main locus App {
         again: dna::Dna = dna::Dna { };
         direct: dna::HarnessModel = dna::HarnessModel { };
         strict: dna::HarnessModel = dna::HarnessModel { };
+        recorder: dna::HarnessModel = dna::HarnessModel { };
+        answering: dna::HarnessModel = dna::HarnessModel { };
+        unmasked: dna::HarnessModel = dna::HarnessModel { };
     }
     @unbounded
     fn last_body(j: dna::Journal, kind: String) -> String {
@@ -190,6 +212,44 @@ main locus App {
         std::test::assert_eq_int(d.cost_micros, 12300, "cost from the summary");
         std::test::assert_eq_str(self.direct.last.tool_grant, "harness", "no export: no grant");
         std::test::assert(!std::io::fs::file_exists(repo + "/NOTES.txt"), "its scratch was not the repository");
+
+        // ---- 5. the contract: what the harness actually received
+        //         (findings 1 and 5). The prompt has newlines, a blank
+        //         line and a leading dash; argv is newline-separated, so
+        //         a prompt written there would arrive as arguments.
+        let record = scratch + "/received";
+        std::io::fs::write_file(scratch + "/contract", contract_script(record, scratch + "/genome")) or discard;
+        let cx = sh("chmod\n+x\n" + scratch + "/contract");
+        let prompt = "Rewrite main.hl so that: document it\n\n-- keep every other line\nAnd this third line.";
+        self.recorder = dna::HarnessModel { name: "quick", command: scratch + "/contract", confinement: dna::NoConfinement { }, allow_unconfined: true };
+        let c = self.recorder.complete(dna::ModelRequest { attempt_id: "c/a0", role: "edit", prompt: prompt, context: "THE FILE\nline two" });
+        std::test::assert(c.ok, "the contract stand-in answered: " + c.refused);
+        let got = std::io::fs::read_file(record) or "";
+        std::test::assert(std::str::contains(got, "argc=4\n"), "the harness got its four flags and NOTHING else: " + got);
+        std::test::assert(std::str::contains(got, "arg=-p\n") && std::str::contains(got, "arg=--output-format\n") && std::str::contains(got, "arg=json\n") && std::str::contains(got, "arg=--dangerously-skip-permissions\n"), got);
+        std::test::assert(!std::str::contains(got, "arg=Rewrite") && !std::str::contains(got, "arg=And this third line."), "no part of the prompt is an argument: " + got);
+        // the prompt arrives intact on stdin: context, a blank line, then
+        // the instruction, every line of it, in order
+        std::test::assert(std::str::contains(got, "stdin<<\nTHE FILE\nline two\n\nRewrite main.hl so that: document it\n\n-- keep every other line\nAnd this third line.\n>>stdin"), "the prompt, exactly, on stdin: " + got);
+
+        // ---- 6. an ANSWER-ONLY call masks the genome too (finding 1):
+        //         no workspace, so no request mask — the model's own
+        //         genome is what the confinement covers
+        self.answering = dna::HarnessModel { name: "deep", command: scratch + "/contract", genome: repo, confinement: dna::Bubblewrap { } };
+        let a = self.answering.complete(dna::ModelRequest { attempt_id: "c/a1", role: "review", prompt: "decide" });
+        if masked {
+            std::test::assert(a.ok, "the answer-only call ran: " + a.refused);
+            std::test::assert_eq_str(a.output, "read 0 genome byte(s)", "a review cannot read the genome either: " + a.output);
+            std::test::assert(std::str::contains(self.answering.last.params, "confinement=bubblewrap masked=1"), "the evidence counts what was masked: " + self.answering.last.params);
+        }
+        // and a confinement with nothing to mask is refused, not run
+        self.unmasked = dna::HarnessModel { name: "deep", command: scratch + "/contract", genome_env: "HALE_DNA_NO_GENOME_7f3d", confinement: dna::Bubblewrap { } };
+        let u = self.unmasked.complete(dna::ModelRequest { attempt_id: "c/a2", role: "review", prompt: "decide" });
+        if masked {
+            std::test::assert(!u.ok && std::str::contains(u.refused, "no genome to mask"), "a boundary it cannot establish is refused: " + u.refused);
+        }
+        std::test::assert_eq_int(dna::path_count(""), 0, "no paths");
+        std::test::assert_eq_int(dna::path_count("/a\n/b\n"), 2, "two paths");
 
         // the money arithmetic
         std::test::assert_eq_int(dna::usd_to_micros("0.0123"), 12300, "0.0123 USD");
