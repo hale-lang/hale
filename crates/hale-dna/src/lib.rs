@@ -105,6 +105,7 @@ macro_rules! at {
 /// record's tail), the service program (`dna/knowledge/service`), and
 /// pond's Postgres driver pinned beside them (`dna/pond/{db,pq}`).
 pub const KNOWLEDGE_FILES: &[EmbeddedFile] = at![
+    "dna/knowledge/embed.hl",
     "dna/knowledge/store.hl",
     "dna/knowledge/tail.hl",
     "dna/knowledge/service/main.hl",

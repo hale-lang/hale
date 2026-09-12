@@ -2,9 +2,12 @@
 // and the record's tail, in memory and (when HALE_DNA_KNOWLEDGE_DSN
 // names a Postgres) for real.
 //
-// A record with a proposal, its ratification, a declined proposal and
-// noise is applied into a store from the watermark: the ratified idea
-// is accepted with its binding, the declined one is kept as declined,
+// A record with proposals, their ratifications, a declined proposal,
+// the code's structure, the fleet's signals and noise is applied into a
+// store from the watermark: the ratified ideas are accepted with their
+// bindings, the declined one is kept as declined, structure and signals
+// are projected (K3) and ranking inside the bound keeps what the work
+// is about,
 // the watermark advances to the record's end, and applying the same
 // record again converges (idempotent by digest). The tower rule holds
 // in the store's own query: a goal bound to a parent path reaches the
@@ -31,38 +34,65 @@ main locus App {
         // a sibling's initiative proposed and declined; other rows between
         let d1 = "sha256:" + self.receipts.store(doc("practice", "retry a mail send once", "org/sup", "org/sup/worker"));
         let d2 = "sha256:" + self.receipts.store(doc("idea", "batch the invoices", "org/sup/api", "org/sup/api"));
+        // a second practice for the worker, about something else (K3 ranks between them)
+        let d3 = "sha256:" + self.receipts.store(doc("practice", "compress the nightly archive before upload", "org/sup", "org/sup/worker"));
+        // K3: what the record observed of the code, and the fleet's signals
+        let s0 = self.j.append(self.j.revision(), "structure.observed", "locus:Worker", "{\"kind\": \"locus\", \"name\": \"Worker\", \"provenance\": \"observed\"}");
+        let s1 = self.j.append(self.j.revision(), "structure.observed", "topic:Fulfil", "{\"kind\": \"topic\", \"name\": \"Fulfil\", \"subject\": \"trio.fulfil\", \"provenance\": \"observed\"}");
+        let s2 = self.j.append(self.j.revision(), "structure.observed", "locus:Worker", "{\"kind\": \"locus\", \"name\": \"Worker\", \"sealed\": true, \"provenance\": \"observed\"}");
+        let p0 = self.j.append(self.j.revision(), "pressure.raised", "org/sup/worker", "mail backlog x1");
+        let p1 = self.j.append(self.j.revision(), "pressure.raised", "org/sup/worker", "mail backlog x2");
+        let c0 = self.j.append(self.j.revision(), "concern.raised", "org/sup/worker/mailer", "sends duplicated x1 severity 2");
         let a0 = self.j.append(self.j.revision(), "task.born", "t1", "noise");
         let a1 = self.j.append(self.j.revision(), "knowledge.proposed", d1, "{\"class\": \"goal\", \"target\": \"org/sup/worker\"}");
         let a2 = self.j.append(self.j.revision(), "knowledge.proposed", d2, "{\"class\": \"initiative\", \"target\": \"org/sup/api\"}");
         let a3 = self.j.append(self.j.revision(), "model.called", "x", "noise");
         let a4 = self.j.append(self.j.revision(), "knowledge.ratified", d1, "{\"class\": \"goal\", \"target\": \"org/sup/worker\", \"decided_by\": \"riley\"}");
         let a5 = self.j.append(self.j.revision(), "knowledge.declined", d2, "{\"class\": \"initiative\", \"target\": \"org/sup/api\"}");
+        let a6 = self.j.append(self.j.revision(), "knowledge.proposed", d3, "{\"class\": \"goal\", \"target\": \"org/sup/worker\"}");
+        let a7 = self.j.append(self.j.revision(), "knowledge.ratified", d3, "{\"class\": \"goal\", \"target\": \"org/sup/worker\", \"decided_by\": \"riley\"}");
         std::test::assert(store.open(), label + ": open: " + store.last_error());
         let r = know::apply_record(store, self.j, self.receipts);
         std::test::assert_eq_str(r.error, "", label + ": applied clean");
-        std::test::assert_eq_int(r.ratified, 1, label + ": one ratified");
-        std::test::assert_eq_int(r.proposed, 2, label + ": two proposed");
+        std::test::assert_eq_int(r.ratified, 2, label + ": two ratified");
+        std::test::assert_eq_int(r.proposed, 3, label + ": three proposed");
         std::test::assert_eq_int(r.declined, 1, label + ": one declined");
+        std::test::assert_eq_int(r.structure, 3, label + ": three structure rows walked");
+        std::test::assert_eq_int(r.signals, 3, label + ": three signal rows walked");
+        // the projections: structure keyed by kind and name (the later row wins), signals counted
+        std::test::assert_eq_int(store.structure_count(""), 2, label + ": two structure rows (Worker once)");
+        std::test::assert_eq_int(store.structure_count("locus"), 1, label + ": one locus");
+        std::test::assert_eq_str(store.structure_names("topic"), "Fulfil", label + ": the topic by name");
+        let sig = store.signals();
+        std::test::assert(std::str::contains(sig, "\"kind\": \"pressure\", \"source\": \"org/sup/worker\", \"what\": \"mail backlog\", \"count\": 2"), label + ": pressure counted twice: " + sig);
+        std::test::assert(std::str::contains(sig, "\"kind\": \"concern\", \"source\": \"org/sup/worker/mailer\", \"what\": \"sends duplicated\", \"count\": 1"), label + ": the concern once: " + sig);
         std::test::assert_eq_int(r.watermark, self.j.revision(), label + ": the watermark is the record's end");
         std::test::assert_eq_int(store.watermark(), self.j.revision(), label + ": and stored");
         let s1 = store.idea(d1);
         std::test::assert(s1.present && s1.idea.accepted && s1.idea.provenance == "ratified" && s1.idea.text == "retry a mail send once", label + ": the ratified idea, by digest");
-        std::test::assert_eq_int(s1.ratified_seq, 4, label + ": ratified at row 4");
+        std::test::assert_eq_int(s1.ratified_seq, 10, label + ": ratified at row 10");
         let s2 = store.idea(d2);
         std::test::assert(s2.present && !s2.idea.accepted && s2.idea.provenance == "declined", label + ": the declined one, kept as declined");
-        std::test::assert_eq_int(store.count("ratified"), 1, label + ": counts");
-        std::test::assert_eq_int(store.count("ideas"), 2, label + ": counts");
-        std::test::assert_eq_int(store.count("bindings"), 1, label + ": one binding (the ratified goal)");
-        // the tower rule: the goal bound to org/sup/worker reaches it and
-        // its descendants; org/sup/api sees nothing accepted
-        std::test::assert_eq_str(store.context_ids("org/sup/worker", 8), d1, label + ": the goal reaches its target");
-        std::test::assert_eq_str(store.context_ids("org/sup/worker/mailer", 8), d1, label + ": and the target's children");
+        std::test::assert_eq_int(store.count("ratified"), 2, label + ": counts");
+        std::test::assert_eq_int(store.count("ideas"), 3, label + ": counts");
+        std::test::assert_eq_int(store.count("bindings"), 2, label + ": two bindings (the ratified goals)");
+        // the tower rule: the goals bound to org/sup/worker reach it and
+        // its descendants, in ratification order; org/sup/api sees nothing
+        std::test::assert_eq_str(store.context_ids("org/sup/worker", 8), d1 + " " + d3, label + ": the goals reach their target, in order");
+        std::test::assert_eq_str(store.context_ids("org/sup/worker/mailer", 8), d1 + " " + d3, label + ": and the target's children");
         std::test::assert_eq_str(store.context_ids("org/sup/api", 8), "", label + ": not a sibling");
         std::test::assert_eq_str(store.context_ids("org/sup", 8), "", label + ": not the parent");
+        // K3: ranked inside the bound — the budget keeps what the work is about
+        std::test::assert_eq_str(store.ranked_ids("org/sup/worker", 1, know::embed_text("retry the mail send when it fails")), d1, label + ": a mail objective keeps the mail practice");
+        std::test::assert_eq_str(store.ranked_ids("org/sup/worker", 1, know::embed_text("compress the archive before the upload")), d3, label + ": an archive objective keeps the archive practice");
+        std::test::assert_eq_str(store.ranked_ids("org/sup/worker", 8, know::embed_text("compress the archive")), d3 + " " + d1, label + ": the whole bound, most relevant first");
+        std::test::assert_eq_str(store.ranked_ids("org/sup/worker", 8, ""), d1 + " " + d3, label + ": no query is ratification order");
+        std::test::assert_eq_str(store.ranked_ids("org/sup/api", 8, know::embed_text("mail")), "", label + ": ranking never leaves the bound");
         // applying the same record again converges
         let again = know::apply_record(store, self.j, self.receipts);
         std::test::assert_eq_int(again.rows, 0, label + ": nothing new to apply");
-        std::test::assert_eq_int(store.count("ideas"), 2, label + ": idempotent");
+        std::test::assert_eq_int(store.count("ideas"), 3, label + ": idempotent");
+        std::test::assert_eq_int(store.structure_count(""), 2, label + ": projections idempotent");
         // the watermark only advances: a lower one does not move it back
         std::test::assert(store.set_watermark(2) && store.watermark() == self.j.revision(), label + ": a lower watermark does not move it back");
     }
@@ -72,8 +102,15 @@ main locus App {
         // a second store over the same record, from zero, reaches the same state
         let fresh = know::Mem { };
         let back = know::apply_record(fresh, self.j, self.receipts);
-        std::test::assert_eq_int(back.ratified, 1, "mem: a fresh store replays the record");
-        std::test::assert_eq_int(fresh.count("ideas"), 2, "mem: two ideas");
+        std::test::assert_eq_int(back.ratified, 2, "mem: a fresh store replays the record");
+        std::test::assert_eq_int(fresh.count("ideas"), 3, "mem: three ideas");
+        // the embedding: deterministic, normalized, lexical
+        let e1 = know::embed_text("retry a mail send once");
+        std::test::assert(know::cosine(e1, know::embed_text("Retry a MAIL send, once!")) > 0.99, "the same words, however written");
+        std::test::assert(know::cosine(e1, know::embed_text("compress the nightly archive")) < 0.5, "different words, far");
+        std::test::assert(know::cosine(e1, know::embed_text("")) == 0.0, "the zero vector");
+        std::test::assert(std::str::starts_with(e1, "[") && std::str::ends_with(e1, "]"), "a pgvector literal: " + e1);
+        std::test::assert_eq_str(know::url_decode("retry%20the%20mail%2Fsend+now"), "retry the mail/send now", "the service decodes what the client encodes");
         std::test::assert(fresh.idea("sha256:" + self.receipts.store(doc("practice", "retry a mail send once", "org/sup", "org/sup/worker"))).idea.accepted, "mem: the goal is ratified there too");
 
         // the DSN parser
@@ -91,7 +128,7 @@ main locus App {
             self.pg = know::Pq { conn: know::pq_conn(dsn) };
             std::test::assert(self.pg.open(), "postgres opens: " + self.pg.last_error());
             // a clean slate for this run
-            let wipe = self.pg.conn.exec("DELETE FROM knowledge_bindings; DELETE FROM knowledge_edges; DELETE FROM knowledge_ideas; DELETE FROM knowledge_meta;");
+            let wipe = self.pg.conn.exec("DELETE FROM knowledge_bindings; DELETE FROM knowledge_edges; DELETE FROM knowledge_ideas; DELETE FROM knowledge_meta; DELETE FROM knowledge_structure; DELETE FROM knowledge_signals;");
             std::test::assert(wipe.ok, "wiped: " + wipe.err.detail);
             self.j = dna::MemJournal { };
             self.exercise(self.pg, "pq");
@@ -99,7 +136,7 @@ main locus App {
             let other = know::Pq { conn: know::pq_conn(dsn) };
             std::test::assert(other.open(), "a second connection opens: " + other.last_error());
             std::test::assert_eq_int(other.watermark(), self.j.revision(), "pq: the watermark is durable");
-            std::test::assert_eq_int(other.count("ratified"), 1, "pq: the ratified idea is there for anyone");
+            std::test::assert_eq_int(other.count("ratified"), 2, "pq: the ratified ideas are there for anyone");
             std::test::assert_eq_str(other.context_ids("org/sup/worker/mailer", 8), self.mem.context_ids("org/sup/worker/mailer", 8), "pq and mem answer the same package");
         } else {
             eprintln("knowledge_store_test: no HALE_DNA_KNOWLEDGE_DSN; the Postgres half was not exercised here");

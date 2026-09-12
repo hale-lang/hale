@@ -32,7 +32,9 @@ locus FakeKnowledge {
     fn handle(req: std::http::Request) -> std::http::Response {
         self.asked = self.asked + 1;
         if !std::str::starts_with(req.path, "/context") { return std::http::Response { status: 404, body: "no" }; }
-        let under_app = std::str::contains(req.path, "target=org%2Fapp");
+        // the practice is answered only for a query about the pings (K3:
+        // the objective travels as the query, encoded)
+        let under_app = std::str::contains(req.path, "target=org%2Fapp") && std::str::contains(req.path, "query=") && std::str::contains(req.path, "pings");
         if !under_app {
             return std::http::Response { status: 200, content_type: "application/json", body: "{\"target\": \"other\", \"revision\": 7, \"digest\": \"sha256:empty\", \"included\": \"\", \"included_n\": 0, \"ideas\": []}" };
         }
@@ -76,22 +78,25 @@ main locus App {
     run() {
         std::time::sleep(200ms);
         // ---- the client alone
-        let p = self.client.package_for("org/app/main");
+        let p = self.client.package_for("org/app/main", "document the pings & things");
         std::test::assert_eq_int(p.included_n, 1, "one idea for a path under the app: " + p.error);
         std::test::assert_eq_str(p.digest, "sha256:pkg7", "the service's digest");
         std::test::assert_eq_int(p.revision, 7, "the service's revision");
         std::test::assert_eq_str(p.text, "- practice: keep every comment a full sentence (org)\n", "rendered for an objective");
         std::test::assert(std::str::contains(dna::objective_with("document it", p), "PRACTICES (ratified knowledge for org/app/main, package sha256:pkg7):\n- practice: keep every comment"), "folded into the objective");
         std::test::assert_eq_str(dna::bindings_of(p), "package:sha256:pkg7 sha256:idea1", "what the evidence names");
-        let none = self.client.package_for("org/other");
+        let none = self.client.package_for("org/other", "document the pings");
+        let unasked = self.client.package_for("org/app/main", "");
+        std::test::assert_eq_int(unasked.included_n, 0, "no query, and this service ranks by it: nothing (the objective travels)");
         std::test::assert(none.included_n == 0 && dna::objective_with("x", none) == "x" && dna::bindings_of(none) == "", "nothing for another wing, the objective untouched");
-        let off = self.blind.package_for("org/app");
+        let off = self.blind.package_for("org/app", "x");
         std::test::assert(!self.blind.ready() && off.included_n == 0 && off.error == "no knowledge service", "no service: an empty package that says so");
         std::test::assert_eq_str(dna::knowledge_target("application", "app", "."), "org/app", "an application's path");
         std::test::assert_eq_str(dna::knowledge_target("application", "app", "api"), "org/app/api", "a seed inside it");
         std::test::assert_eq_str(dna::knowledge_target("organization", "app", "dna/org"), "org", "the organization's own");
         std::test::assert_eq_str(dna::parent_path("org/app/echo"), "org/app", "a parent");
         std::test::assert_eq_str(dna::parent_path("root"), "", "a root has none");
+        std::test::assert_eq_str(dna::url_encode("org/app main&x=1.0"), "org%2Fapp%20main%26x%3D1.0", "encoded for a query string");
 
         // ---- the genome and its organization, with the client
         let repo = "/tmp/dna-ctx-" + to_string(std::process::pid());

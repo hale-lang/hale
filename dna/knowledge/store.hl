@@ -29,10 +29,39 @@ interface KnowledgeStore {
     // One idea by id (`present` false when absent).
     fn idea(id: String) -> Stored;
     // Ids of accepted ideas bound to `target` or any of its ancestors
-    // (goals flow down), space-separated, at most `budget`.
+    // (goals flow down), space-separated, at most `budget`, in
+    // ratification order.
     fn context_ids(target: String, budget: Int) -> String;
+    // The same bounded set, ranked by similarity to `query_vec` (an
+    // `embed_text` literal) so the budget keeps the most relevant;
+    // an empty literal is `context_ids` (GH #583 K3).
+    fn ranked_ids(target: String, budget: Int, query_vec: String) -> String;
     // "ideas" | "ratified" | "proposed" | "bindings" | "edges"
     fn count(what: String) -> Int;
+    // ---- projections (K3): the code's structure by record row, and the
+    // operational signals, so the graph has what ideas bind to and what
+    // the fleet is saying ----
+    fn put_structure(kind: String, name: String, seq: Int, body: String) -> Bool;
+    fn structure_count(kind: String) -> Int; // "" = every kind
+    fn structure_names(kind: String) -> String; // space-separated
+    // one row per (kind, source, what): the count and the last record row
+    fn put_signal(kind: String, source: String, what: String, seq: Int) -> Bool;
+    fn signals() -> String; // a JSON array of {kind, source, what, count, last_seq}
+}
+
+type Signal { kind: String = ""; source: String = ""; what: String = ""; count: Int = 0; last_seq: Int = 0; }
+type Structure { kind: String = ""; name: String = ""; seq: Int = 0; }
+
+fn signal_json(x: Signal) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("kind", x.kind);
+    b.string_field("source", x.source);
+    b.string_field("what", x.what);
+    b.int_field("count", x.count);
+    b.int_field("last_seq", x.last_seq);
+    b.end_object();
+    return b.result();
 }
 
 type Stored {
@@ -51,13 +80,20 @@ locus SeqRows { capacity { heap rows of Int; } }
 locus BindingRows { capacity { heap rows of dna::KnowledgeBinding; } }
 @form(vec)
 locus EdgeRows { capacity { heap rows of dna::KnowledgeEdge; } }
+@form(vec)
+locus SignalRows { capacity { heap rows of Signal; } }
+@form(vec)
+locus StructureRows { capacity { heap rows of Structure; } }
 
 locus Mem {
     params {
         ideas: IdeaRows = IdeaRows { };
         seqs: SeqRows = SeqRows { };
+        embeds: Words = Words { }; // one literal per idea, in step with `ideas`
         bindings: BindingRows = BindingRows { };
         edges: EdgeRows = EdgeRows { };
+        signal_rows: SignalRows = SignalRows { };
+        structure: StructureRows = StructureRows { };
         mark: Int = 0;
     }
     fn kind() -> String { return "memory"; }
@@ -80,10 +116,12 @@ locus Mem {
         if at < 0 {
             self.ideas.push(dna::Idea { id: i.id, kind: i.kind, text: i.text, author: i.author, provenance: i.provenance, revision: i.revision, accepted: i.accepted });
             self.seqs.push(ratified_seq);
+            self.embeds.push(embed_text(i.text));
             return true;
         }
         self.ideas.set(at, dna::Idea { id: i.id, kind: i.kind, text: i.text, author: i.author, provenance: i.provenance, revision: i.revision, accepted: i.accepted }) or discard;
         self.seqs.set(at, ratified_seq) or discard;
+        self.embeds.set(at, embed_text(i.text)) or discard;
         return true;
     }
     @unbounded
@@ -130,6 +168,93 @@ locus Mem {
         }
         return dna::trim_nl(out);
     }
+    // The bounded set as `context_ids` finds it, then the `budget` most
+    // similar to the query, by selection (the set is small by design).
+    @unbounded
+    fn ranked_ids(target: String, budget: Int, query_vec: String) -> String {
+        if len(query_vec) == 0 { return self.context_ids(target, budget); }
+        let all = self.context_ids(target, 1000000);
+        let mut picked = "";
+        let mut n = 0;
+        while n < budget {
+            let mut best = "";
+            let mut best_score = 0.0 - 2.0;
+            let mut rest = all + " ";
+            while len(rest) > 1 {
+                let sp = std::str::index_of(rest, " ");
+                let id = rest[0..sp];
+                rest = rest[(sp + 1)..len(rest)];
+                if len(id) == 0 || std::str::contains(picked + " ", " " + id + " ") { continue; }
+                let at = self.index_of(id);
+                let score = cosine(self.embeds.get(at) or "", query_vec);
+                if score > best_score { best_score = score; best = id; }
+            }
+            if len(best) == 0 { break; }
+            picked = picked + " " + best;
+            n = n + 1;
+        }
+        return dna::trim_nl(if len(picked) > 0 { picked[1..len(picked)] } else { "" });
+    }
+    @unbounded
+    fn put_structure(kind: String, name: String, seq: Int, body: String) -> Bool {
+        let mut i = 0;
+        while i < self.structure.len() {
+            let x = self.structure.get(i) or Structure { };
+            if x.kind == kind && x.name == name { self.structure.set(i, Structure { kind: kind, name: name, seq: seq }) or discard; return true; }
+            i = i + 1;
+        }
+        self.structure.push(Structure { kind: kind, name: name, seq: seq });
+        return true;
+    }
+    @unbounded
+    fn structure_count(kind: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.structure.len() {
+            let x = self.structure.get(i) or Structure { };
+            if len(kind) == 0 || x.kind == kind { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn structure_names(kind: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.structure.len() {
+            let x = self.structure.get(i) or Structure { };
+            if len(kind) == 0 || x.kind == kind { out = out + x.name + " "; }
+            i = i + 1;
+        }
+        return dna::trim_nl(out);
+    }
+    @unbounded
+    fn put_signal(kind: String, source: String, what: String, seq: Int) -> Bool {
+        let mut i = 0;
+        while i < self.signal_rows.len() {
+            let x = self.signal_rows.get(i) or Signal { };
+            if x.kind == kind && x.source == source && x.what == what {
+                self.signal_rows.set(i, Signal { kind: kind, source: source, what: what, count: x.count + 1, last_seq: seq }) or discard;
+                return true;
+            }
+            i = i + 1;
+        }
+        self.signal_rows.push(Signal { kind: kind, source: source, what: what, count: 1, last_seq: seq });
+        return true;
+    }
+    @unbounded
+    fn signals() -> String {
+        let out = std::str::builder_new();
+        std::str::builder_append(out, "[");
+        let mut i = 0;
+        while i < self.signal_rows.len() {
+            if i > 0 { std::str::builder_append(out, ", "); }
+            std::str::builder_append(out, signal_json(self.signal_rows.get(i) or Signal { }));
+            i = i + 1;
+        }
+        std::str::builder_append(out, "]");
+        return std::str::builder_finish(out);
+    }
     @unbounded
     fn count(what: String) -> Int {
         if what == "bindings" { return self.bindings.len(); }
@@ -165,6 +290,21 @@ fn tab_field(line: String, n: Int) -> String {
     return "";
 }
 
+// The first column of every row, space-separated.
+@unbounded
+fn ids_of(csv: String) -> String {
+    let mut out = "";
+    let mut rest = csv;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+        let id = tab_field(line, 0);
+        if len(id) > 0 { out = out + id + " "; }
+    }
+    return dna::trim_nl(out);
+}
+
 fn first_line(s: String) -> String {
     let nl = std::str::index_of(s, "\n");
     return if nl < 0 { s } else { s[0..nl] };
@@ -185,10 +325,17 @@ locus Pq {
         if self.opened { return true; }
         let st = self.conn.open();
         if !st.ok { return self.fail("open", st.err); }
+        // pgvector ranks inside the bound (K3); the extension ships with the
+        // image compose and CI use, and a Postgres without it says so here
+        let ext = self.conn.exec("CREATE EXTENSION IF NOT EXISTS vector");
+        if !ext.ok { return self.fail("pgvector (CREATE EXTENSION vector)", ext.err); }
         let ddl = "CREATE TABLE IF NOT EXISTS knowledge_meta (key text PRIMARY KEY, value text NOT NULL);"
-            + "CREATE TABLE IF NOT EXISTS knowledge_ideas (id text PRIMARY KEY, kind text NOT NULL, text text NOT NULL, author text NOT NULL, provenance text NOT NULL, revision bigint NOT NULL DEFAULT 0, accepted boolean NOT NULL DEFAULT false, ratified_seq bigint NOT NULL DEFAULT 0);"
+            + "CREATE TABLE IF NOT EXISTS knowledge_ideas (id text PRIMARY KEY, kind text NOT NULL, text text NOT NULL, author text NOT NULL, provenance text NOT NULL, revision bigint NOT NULL DEFAULT 0, accepted boolean NOT NULL DEFAULT false, ratified_seq bigint NOT NULL DEFAULT 0, embedding vector(" + to_string(DIM) + "));"
+            + "ALTER TABLE knowledge_ideas ADD COLUMN IF NOT EXISTS embedding vector(" + to_string(DIM) + ");"
             + "CREATE TABLE IF NOT EXISTS knowledge_bindings (idea text NOT NULL, target text NOT NULL, author text NOT NULL, class text NOT NULL, PRIMARY KEY (idea, target, author));"
-            + "CREATE TABLE IF NOT EXISTS knowledge_edges (src text NOT NULL, dst text NOT NULL, rel text NOT NULL, PRIMARY KEY (src, dst, rel));";
+            + "CREATE TABLE IF NOT EXISTS knowledge_edges (src text NOT NULL, dst text NOT NULL, rel text NOT NULL, PRIMARY KEY (src, dst, rel));"
+            + "CREATE TABLE IF NOT EXISTS knowledge_structure (kind text NOT NULL, name text NOT NULL, seq bigint NOT NULL, body text NOT NULL, PRIMARY KEY (kind, name));"
+            + "CREATE TABLE IF NOT EXISTS knowledge_signals (kind text NOT NULL, source text NOT NULL, what text NOT NULL, count bigint NOT NULL DEFAULT 0, last_seq bigint NOT NULL DEFAULT 0, PRIMARY KEY (kind, source, what));";
         let r = self.conn.exec(ddl);
         if !r.ok { return self.fail("migrate", r.err); }
         self.opened = true;
@@ -217,7 +364,8 @@ locus Pq {
         a.add(to_string(i.revision));
         a.add(if i.accepted { "true" } else { "false" });
         a.add(to_string(ratified_seq));
-        let r = self.conn.exec_params("INSERT INTO knowledge_ideas (id, kind, text, author, provenance, revision, accepted, ratified_seq) VALUES ($1, $2, $3, $4, $5, $6::bigint, $7::boolean, $8::bigint) ON CONFLICT (id) DO UPDATE SET kind = EXCLUDED.kind, text = EXCLUDED.text, author = EXCLUDED.author, provenance = EXCLUDED.provenance, revision = EXCLUDED.revision, accepted = EXCLUDED.accepted, ratified_seq = EXCLUDED.ratified_seq", a);
+        a.add(embed_text(i.text));
+        let r = self.conn.exec_params("INSERT INTO knowledge_ideas (id, kind, text, author, provenance, revision, accepted, ratified_seq, embedding) VALUES ($1, $2, $3, $4, $5, $6::bigint, $7::boolean, $8::bigint, $9::vector) ON CONFLICT (id) DO UPDATE SET kind = EXCLUDED.kind, text = EXCLUDED.text, author = EXCLUDED.author, provenance = EXCLUDED.provenance, revision = EXCLUDED.revision, accepted = EXCLUDED.accepted, ratified_seq = EXCLUDED.ratified_seq, embedding = EXCLUDED.embedding", a);
         if !r.ok { return self.fail("upsert", r.err); }
         return true;
     }
@@ -263,18 +411,78 @@ locus Pq {
         let a = db::Args { };
         a.add(target);
         a.add(to_string(budget));
-        let rows = self.conn.query_params("SELECT DISTINCT b.idea, i.ratified_seq FROM knowledge_bindings b JOIN knowledge_ideas i ON i.id = b.idea WHERE i.accepted AND ($1 = b.target OR $1 LIKE b.target || '/%') ORDER BY i.ratified_seq, b.idea LIMIT $2::bigint", a);
+        let rows = self.conn.query_params("SELECT i.id FROM knowledge_ideas i WHERE i.accepted AND EXISTS (SELECT 1 FROM knowledge_bindings b WHERE b.idea = i.id AND ($1 = b.target OR $1 LIKE b.target || '/%')) ORDER BY i.ratified_seq, i.id LIMIT $2::bigint", a);
         if !rows.ok { return ""; }
-        let mut out = "";
-        let mut rest = rows.csv;
-        while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n");
-            let line = if nl < 0 { rest } else { rest[0..nl] };
-            if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
-            let id = tab_field(line, 0);
-            if len(id) > 0 { out = out + id + " "; }
+        return ids_of(rows.csv);
+    }
+    // The same bound, ranked by pgvector's cosine distance to the query.
+    fn ranked_ids(target: String, budget: Int, query_vec: String) -> String {
+        if len(query_vec) == 0 { return self.context_ids(target, budget); }
+        let a = db::Args { };
+        a.add(target);
+        a.add(query_vec);
+        a.add(to_string(budget));
+        let rows = self.conn.query_params("SELECT i.id FROM knowledge_ideas i WHERE i.accepted AND EXISTS (SELECT 1 FROM knowledge_bindings b WHERE b.idea = i.id AND ($1 = b.target OR $1 LIKE b.target || '/%')) ORDER BY i.embedding <=> $2::vector, i.ratified_seq, i.id LIMIT $3::bigint", a);
+        if !rows.ok { self.error = "ranked: " + rows.err.kind + " " + rows.err.detail; return ""; }
+        return ids_of(rows.csv);
+    }
+    fn put_structure(kind: String, name: String, seq: Int, body: String) -> Bool {
+        let a = db::Args { };
+        a.add(kind);
+        a.add(name);
+        a.add(to_string(seq));
+        a.add(body);
+        let r = self.conn.exec_params("INSERT INTO knowledge_structure (kind, name, seq, body) VALUES ($1, $2, $3::bigint, $4) ON CONFLICT (kind, name) DO UPDATE SET seq = EXCLUDED.seq, body = EXCLUDED.body", a);
+        if !r.ok { return self.fail("structure", r.err); }
+        return true;
+    }
+    fn structure_count(kind: String) -> Int {
+        let a = db::Args { };
+        a.add(kind);
+        let rows = self.conn.query_params("SELECT count(*) FROM knowledge_structure WHERE $1 = '' OR kind = $1", a);
+        if !rows.ok { return 0; }
+        return std::str::parse_int(dna::trim_nl(first_line(rows.csv))) or 0;
+    }
+    fn structure_names(kind: String) -> String {
+        let a = db::Args { };
+        a.add(kind);
+        let rows = self.conn.query_params("SELECT name FROM knowledge_structure WHERE $1 = '' OR kind = $1 ORDER BY seq, name", a);
+        if !rows.ok { return ""; }
+        return ids_of(rows.csv);
+    }
+    fn put_signal(kind: String, source: String, what: String, seq: Int) -> Bool {
+        let a = db::Args { };
+        a.add(kind);
+        a.add(source);
+        a.add(what);
+        a.add(to_string(seq));
+        let r = self.conn.exec_params("INSERT INTO knowledge_signals (kind, source, what, count, last_seq) VALUES ($1, $2, $3, 1, $4::bigint) ON CONFLICT (kind, source, what) DO UPDATE SET count = knowledge_signals.count + 1, last_seq = EXCLUDED.last_seq", a);
+        if !r.ok { return self.fail("signal", r.err); }
+        return true;
+    }
+    @unbounded
+    fn signals() -> String {
+        let rows = self.conn.query_all("SELECT kind, source, what, count, last_seq FROM knowledge_signals ORDER BY last_seq DESC, source");
+        let out = std::str::builder_new();
+        std::str::builder_append(out, "[");
+        if rows.ok {
+            let mut rest = rows.csv;
+            let mut first = true;
+            while len(rest) > 0 {
+                let nl = std::str::index_of(rest, "\n");
+                let line = if nl < 0 { rest } else { rest[0..nl] };
+                if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+                if len(line) == 0 { continue; }
+                if !first { std::str::builder_append(out, ", "); }
+                first = false;
+                std::str::builder_append(out, signal_json(Signal {
+                    kind: tab_field(line, 0), source: tab_field(line, 1), what: tab_field(line, 2),
+                    count: std::str::parse_int(tab_field(line, 3)) or 0, last_seq: std::str::parse_int(tab_field(line, 4)) or 0
+                }));
+            }
         }
-        return dna::trim_nl(out);
+        std::str::builder_append(out, "]");
+        return std::str::builder_finish(out);
     }
     fn count(what: String) -> Int {
         let sql = if what == "bindings" { "SELECT count(*) FROM knowledge_bindings" }

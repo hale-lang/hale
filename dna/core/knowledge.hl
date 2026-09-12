@@ -210,13 +210,16 @@ locus KnowledgeClient {
         return std::http::ClientResponse { status: 0, body: b"" };
     }
     // The package for a locus path: the ids, the digest and the revision
-    // the service computed, and the ideas rendered for an objective.
+    // the service computed, and the ideas rendered for an objective. The
+    // query — what the work is about — ranks the bounded set (K3); an
+    // empty query is ratification order.
     @unbounded
-    fn package_for(target: String) -> ContextPackage {
+    fn package_for(target: String, query: String) -> ContextPackage {
         if !self.ready() { return ContextPackage { target: target, error: "no knowledge service" }; }
         self.asked = self.asked + 1;
         self.last_error = "";
-        let resp = std::http::get(self.url + "/context?target=" + std::str::replace(target, "/", "%2F") + "&budget=" + to_string(self.budget)) or self.fetch_failed(err);
+        let q = if len(query) > 2000 { query[0..2000] } else { query };
+        let resp = std::http::get(self.url + "/context?target=" + url_encode(target) + "&budget=" + to_string(self.budget) + (if len(q) > 0 { "&query=" + url_encode(q) } else { "" })) or self.fetch_failed(err);
         if resp.status != 200 {
             if len(self.last_error) == 0 { self.last_error = "http " + to_string(resp.status); }
             return ContextPackage { target: target, error: self.last_error };
@@ -242,6 +245,28 @@ locus KnowledgeClient {
             text: std::str::builder_finish(out)
         };
     }
+}
+
+// Every byte that is not a letter, a digit, `-`, `_` or `.` as `%XX`.
+@unbounded
+fn url_encode(s: String) -> String {
+    let out = std::str::builder_new();
+    let bytes = std::bytes::from_string(s);
+    let n = len(bytes);
+    let mut i = 0;
+    while i < n {
+        let b = (std::bytes::at(bytes, i) or 0);
+        let plain = (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 45 || b == 95 || b == 46;
+        if plain { std::str::builder_append(out, std::str::from_bytes(std::bytes::slice(bytes, i, i + 1))); }
+        else { std::str::builder_append(out, "%" + hex_byte(b)); }
+        i = i + 1;
+    }
+    return std::str::builder_finish(out);
+}
+
+fn hex_byte(b: Int) -> String {
+    let digits = "0123456789ABCDEF";
+    return digits[(b / 16)..(b / 16 + 1)] + digits[(b % 16)..(b % 16 + 1)];
 }
 
 // The objective a position hands down, with the package folded in: the

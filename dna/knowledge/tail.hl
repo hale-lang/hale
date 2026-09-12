@@ -13,6 +13,8 @@ type Applied {
     ratified: Int = 0;
     proposed: Int = 0;
     declined: Int = 0;
+    structure: Int = 0; // structure rows projected (K3)
+    signals: Int = 0; // pressure and concern rows projected (K3)
     watermark: Int = 0; // the next seq to apply
     error: String = "";
 }
@@ -38,6 +40,24 @@ fn apply_record(store: KnowledgeStore, j: dna::Journal, receipts: dna::Receipts)
     while i < n {
         let e = j.read(i);
         out.rows = out.rows + 1;
+        // K3: the code's structure as the record observed it (init's
+        // rows: loci, topics, bindings, effect classes, claims), keyed by
+        // kind and name, the latest row winning; and the operational
+        // signals, counted per (kind, source, what)
+        if e.kind == "structure.observed" {
+            let kind = std::json::find_string_field(e.body, "kind");
+            let name = std::json::find_string_field(e.body, "name");
+            let colon = std::str::index_of(e.entity, ":");
+            let named = if len(name) > 0 { name } else if colon >= 0 { e.entity[(colon + 1)..len(e.entity)] } else { e.entity };
+            if !store.put_structure(if len(kind) > 0 { kind } else { "row" }, named, i, e.body) { out.error = store.last_error(); return out; }
+            out.structure = out.structure + 1;
+        }
+        if e.kind == "pressure.raised" || e.kind == "concern.raised" {
+            let x = std::str::index_of(e.body, " x");
+            let what = if x > 0 { e.body[0..x] } else { e.body };
+            if !store.put_signal(e.kind[0..(len(e.kind) - 7)], e.entity, what, i) { out.error = store.last_error(); return out; }
+            out.signals = out.signals + 1;
+        }
         if e.kind == "knowledge.ratified" || e.kind == "knowledge.proposed" || e.kind == "knowledge.declined" {
             let digest = e.entity;
             let raw = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };

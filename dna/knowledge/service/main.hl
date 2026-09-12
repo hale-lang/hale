@@ -13,8 +13,11 @@
 // Every request applies the record first (the reader sees it as it is
 // now), so there is no tick to fall behind.
 // GET /            a summary: store kind, watermark, counts
-// GET /context?target=<locus path>&budget=<n>
-//                  the bounded ContextPackage a position would receive
+// GET /context?target=<locus path>&budget=<n>[&query=<text>]
+//                  the bounded ContextPackage a position would receive;
+//                  with a query, ranked by similarity inside the bound (K3)
+// GET /structure   the code's structure as projected from the record
+// GET /signals     pressure and concerns, counted per source
 // GET /idea/<digest>
 //                  one idea with its ratification row
 // POST /apply      tail the record and report what was applied
@@ -68,13 +71,14 @@ locus Service {
         b.int_field("ideas", self.store.count("ideas"));
         b.int_field("ratified", self.store.count("ratified"));
         b.int_field("bindings", self.store.count("bindings"));
+        b.int_field("structure", self.store.structure_count(""));
         b.int_field("ticks", self.ticks);
         b.string_field("error", self.last_error);
         b.end_object();
         return b.result();
     }
-    fn package(target: String, budget: Int) -> String {
-        let ids = self.store.context_ids(target, budget);
+    fn package(target: String, budget: Int, query: String) -> String {
+        let ids = if len(query) > 0 { self.store.ranked_ids(target, budget, know::embed_text(query)) } else { self.store.context_ids(target, budget) };
         let n = if len(ids) == 0 { 0 } else { count_words(ids) };
         let d = dna::digest_of(target + "@" + to_string(self.store.watermark()) + ":" + ids);
         let b = std::json::Builder { };
@@ -84,6 +88,7 @@ locus Service {
         b.string_field("digest", d);
         b.string_field("included", ids);
         b.int_field("included_n", n);
+        b.bool_field("ranked", len(query) > 0);
         b.begin_array_field("ideas");
         let mut rest = ids + " ";
         while len(rest) > 1 {
@@ -118,7 +123,25 @@ locus Service {
             let target = std::str::replace(std::http::query_param(ctx.params, "target"), "%2F", "/");
             let b = std::http::query_param(ctx.params, "budget");
             let budget = if len(b) > 0 { std::str::parse_int(b) or 8 } else { 8 };
-            return json(self.package(target, budget));
+            let query = know::url_decode(std::http::query_param(ctx.params, "query"));
+            return json(self.package(target, budget, query));
+        }
+        if std::http::is_route(ctx, "GET", "/structure") {
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.int_field("rows", self.store.structure_count(""));
+            b.int_field("loci", self.store.structure_count("locus"));
+            b.int_field("topics", self.store.structure_count("topic"));
+            b.int_field("bindings", self.store.structure_count("binding"));
+            b.int_field("effect_classes", self.store.structure_count("effect_class"));
+            b.int_field("claims", self.store.structure_count("claim"));
+            b.string_field("loci_names", self.store.structure_names("locus"));
+            b.string_field("topic_names", self.store.structure_names("topic"));
+            b.end_object();
+            return json(b.result());
+        }
+        if std::http::is_route(ctx, "GET", "/signals") {
+            return json("{\"signals\": " + self.store.signals() + "}");
         }
         if std::str::starts_with(req.path, "/idea/") && req.method == "GET" {
             let s = self.store.idea(req.path[6..len(req.path)]);
