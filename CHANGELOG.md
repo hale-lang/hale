@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: an apply proves what it did (second-round review findings 1, 2, 3, 4 and 5)
+
+- **An apply that git reports as successful is not proof of the expression.** A fast-forward keeps a maintainer's uncommitted edit to another file, so the head would be the reviewed candidate while the files the host builds from are not; and a destination that advanced past the candidate between the caller's check and the git call makes `merge --ff-only <ancestor>` "already up to date", exit 0, leaving the genome on a commit nobody reviewed. The substrate refuses a destination with uncommitted work before the apply's effect row is written, so the maintainer can commit or stash and approve again; the gateway checks the destination once more immediately around the git call and reads the result back, so an applied candidate is the genome, tree and all. A refusal now carries the repository's own reason instead of a bare `apply failed`. `apply_test.hl` covers both: a maintainer mid-edit, whose work is left untouched, and an ancestor that git accepts and the gateway does not.
+
 ### DNA: the record reaches the second clone, and the membrane reaches a long path (shakeout findings 6 and 7)
 
 - `sync` compared the local record's head with an absent remote head, called that "up to date", and returned success without pushing, so a record made in one clone stayed there and every other clone saw a governed repository with no history. The getting-started guide hid it by telling the reader to push `refs/dna/*` by hand; it now says `git push origin main` and `hale dna sync`. A remote with no record is the local one's push (`pushed N event(s) (the remote had none)`), and `dna_record_sync.rs` asserts that a second clone acquires the whole record with nothing done by hand.

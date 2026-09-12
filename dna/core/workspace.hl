@@ -127,6 +127,12 @@ interface Repository {
     fn apply(candidate: String) -> Bool;
     fn rollback(base: String) -> Bool;
     fn kind() -> String;
+    // Why the last apply or rollback refused, in the words the record
+    // keeps: "apply failed" alone told an operator nothing about which
+    // of the destination's states stopped it.
+    fn why() -> String;
+    // What the destination has changed and not committed ("" = clean).
+    fn dirty_files() -> String;
 }
 
 // Local git. `apply` is the ONE method that changes the genome: it
@@ -140,6 +146,7 @@ locus LocalGit {
         last_error: String = "";
     }
     fn kind() -> String { return "local-git"; }
+    fn why() -> String { return self.last_error; }
     fn root() -> String { return self.repo; }
     fn head(path: String) -> String {
         let r = run_tool("git\n-C\n" + path + "\nrev-parse\nHEAD");
@@ -174,11 +181,57 @@ locus LocalGit {
     // (the shakeout's finding 2). A stale base is now a refusal, and
     // whoever wants the change makes a new candidate on the new base
     // and takes it through the whole gate.
+    // A destination that carries uncommitted work of its own. A
+    // fast-forward keeps such a change: the head would be the candidate
+    // while the files the host builds from are not the candidate's, and
+    // nobody reviewed the difference. Tracked modifications only —
+    // untracked scratch (`.hale/`) is not part of any tree.
+    fn dirty_files() -> String { return self.dirty(self.repo); }
+    fn dirty(path: String) -> String {
+        let r = run_tool("git\n-C\n" + path + "\nstatus\n--porcelain\n--untracked-files=no");
+        if r.code != 0 { return ""; }
+        return trim_nl(r.stdout);
+    }
+    // Fast-forward the repository to the EXACT candidate, or fail.
+    //
+    // This used to fall back to a merge commit when the candidate was
+    // not a descendant of HEAD. A merge composes a tree that is not the
+    // reviewed candidate: a maintainer commit or a second proposal
+    // landing during a review was enough, and the result was applied
+    // with the reviewed candidate's name on it, unverified and unseen
+    // (the shakeout's finding 2). A stale base is now a refusal, and
+    // whoever wants the change makes a new candidate on the new base
+    // and takes it through the whole gate.
+    //
+    // Git's exit status is not the guarantee, though, and the review's
+    // second round found both ways it can lie. `merge --ff-only` keeps
+    // an uncommitted edit to another file, and reports success. And a
+    // head that advanced BEYOND the candidate between the caller's
+    // check and this call makes `--ff-only <older>` "already up to
+    // date" — success, with the genome on a commit nobody reviewed.
+    // So the destination is checked here, immediately around the git
+    // call, and the result is read back: applied means the genome IS
+    // the candidate, tree and all.
     @effects(is: { genome_apply, repo_write })
     fn apply(candidate: String) -> Bool {
+        let dirty = self.dirty(self.repo);
+        if len(dirty) > 0 {
+            self.last_error = "the genome has uncommitted changes; commit or stash them before an apply:\n" + dirty;
+            return false;
+        }
         let ff = run_tool("git\n-C\n" + self.repo + "\nmerge\n-q\n--ff-only\n" + candidate);
         if ff.code != 0 {
             self.last_error = "not a fast-forward onto " + self.head(self.repo) + ": " + trim_nl(ff.stderr);
+            return false;
+        }
+        let now = self.head(self.repo);
+        if now != candidate {
+            self.last_error = "the genome is " + now + ", not the candidate " + candidate + ": it moved during the apply; propose again on the new base";
+            return false;
+        }
+        let after = self.dirty(self.repo);
+        if len(after) > 0 {
+            self.last_error = "the genome's files are not the candidate's after the apply:\n" + after;
             return false;
         }
         self.applied = self.applied + 1;
@@ -224,6 +277,9 @@ locus MutationGateway {
     fn take(mutation_id: String, holder: String, now: Int) -> Lease {
         return self.leases.acquire(self.lease_key(mutation_id), holder, now, self.lease_ttl);
     }
+    // What the destination has uncommitted, for the caller's check
+    // before an apply is requested at all.
+    fn dirty() -> String { return self.repo.dirty_files(); }
     fn refuse(why: String) -> GateResult {
         self.refusals = self.refusals + 1;
         return GateResult { refused: why };
@@ -277,7 +333,7 @@ locus MutationGateway {
         }
         let ok = self.repo.apply(candidate);
         let r = effect_result(j, key, ok);
-        if !ok { return self.refuse("apply failed"); }
+        if !ok { return self.refuse("apply failed: " + self.repo.why()); }
         let j = j.append(j.revision(), "mutation.applied", mutation_id, candidate);
         return GateResult { ok: true, value: candidate };
     }

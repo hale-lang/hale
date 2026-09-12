@@ -18,16 +18,28 @@ When a mutation's Review settles `approve`, the substrate:
    was under review, it is **refused** (`mutation.refused: the genome
    moved since the review`) and nothing is applied. Propose again on
    the new base and the whole gate runs on that result. An apply the
-   record already holds is exempt: a retried apply replays (step 5),
+   record already holds is exempt: a retried apply replays (step 6),
    and the head it left behind is the candidate, not the base;
-4. takes the Mutation's lease (a fencing token; a stale one is
+4. checks that the genome has nothing uncommitted. A fast-forward
+   **keeps** a maintainer's uncommitted edit to another file, so the
+   head would be the candidate while the files the host builds from
+   are not. It is **refused** (`mutation.refused: the genome has
+   uncommitted changes`), their work is left exactly as it is, and
+   approving again after they commit or stash runs the whole gate on
+   the new base;
+5. takes the Mutation's lease (a fencing token; a stale one is
    refused);
-5. applies through the gateway: a **fast-forward to the candidate, or
+6. applies through the gateway: a **fast-forward to the candidate, or
    nothing**. The request is journaled under the candidate's own
    idempotency key *before* dispatch and the result appended once, so
    a crashed and retried apply reads its own record and never commits
-   twice (`applied (replayed)`, and no second restart);
-6. journals `mutation.applied` and expresses it — through the
+   twice (`applied (replayed)`, and no second restart). Git's exit
+   status is not the guarantee: the destination is checked again
+   immediately around the git call and the **result is read back**, so
+   a head that advanced past the candidate in between — which `merge
+   --ff-only <ancestor>` reports as "already up to date", exit 0 — is
+   a failed apply, not a silent one;
+7. journals `mutation.applied` and expresses it — through the
    deployment gateway when one is wired, or by asking the host,
    naming the candidate, the seed the change edited and the fitness
    signals the proposal declared.

@@ -486,6 +486,19 @@ locus Dna {
             self.membrane.notify("mutation", mutation_id + " refused: the genome moved since the review (" + short_sha(base) + " -> " + short_sha(now_head) + ")");
             return "refused: the genome moved since the review";
         }
+        // A destination carrying uncommitted work of its own. The
+        // fast-forward would keep it, so the genome's head would be the
+        // candidate while its files are not (the review's second round,
+        // finding 1). Refused here, before the apply's effect row, so
+        // the maintainer can commit or stash and approve again; the
+        // gateway checks it once more immediately around the git call,
+        // where a refusal is the race and the Mutation is done.
+        let dirty = self.gateway.dirty();
+        if len(dirty) > 0 && !(already.done && already.ok) {
+            let z = self.journal.append(self.journal.revision(), "mutation.refused", mutation_id, "the genome has uncommitted changes; commit or stash them and approve again:\n" + dirty);
+            self.membrane.notify("mutation", mutation_id + " refused: the genome has uncommitted changes");
+            return "refused: the genome has uncommitted changes";
+        }
         return self.apply_candidate(mutation_id, reviewed, now);
     }
     // The apply itself: through the gateway under the candidate's key
