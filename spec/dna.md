@@ -210,7 +210,12 @@ The organization's models are a catalog in source (GH #583 M1):
   the grant — a file that differs or is new is written through the
   tools, one that is gone is removed, a change outside the grant is
   counted (`outside_grant`) and left behind; `files_changed` is
-  derived from that diff, never from the harness's answer. Then the
+  derived from that diff, never from the harness's answer. A written
+  file's parent directories are made under the grant first, so a
+  harness may add a module in a directory the worktree does not have
+  yet, and **an in-grant write or removal that fails is the attempt's
+  failure** (`the import was incomplete: …`), never a candidate
+  carrying part of the change. Then the
   same fmt, check, retry (the diagnostics in the next prompt) and
   assessment as the file-by-file flow. An answer-only request (a
   review) runs in an empty directory of its own. `complete` carries
@@ -251,7 +256,12 @@ The organization's models are a catalog in source (GH #583 M1):
   request — role, the inner's name and model, the prompt and context
   digests, the data class, the grant normalized (`… @grant`: its path
   is where it ran, not what it was) and, for a backend that works in
-  place, a digest of the workspace's starting tree. `record` forwards
+  place, a digest of the workspace's starting tree. `record` makes the
+  tape's directory before it writes anything into it, and an entry is
+  counted only once every file of it has landed: a patch or an entry
+  that could not be written is a refusal (`cannot write the tape: …`),
+  because an entry claiming a patch that is not there replays as a
+  miss on a request the tape appears to hold. `record` forwards
   to `inner` (whose evidence is the call's) and writes `<key>.json`
   with every keyed field in clear and the answer, and for a workspace
   `<key>.patch`: what the backend changed there, before any import,

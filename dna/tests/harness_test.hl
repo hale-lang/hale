@@ -56,6 +56,18 @@ fn contract_script(record_file: String, genome_file: String) -> String {
         + "printf '{\"type\": \"result\", \"subtype\": \"success\", \"is_error\": false, \"result\": \"read %s genome byte(s)\", \"total_cost_usd\": 0.001, \"usage\": {\"input_tokens\": 1, \"output_tokens\": 1}}\\n' \"$seen\"\n";
 }
 
+// A harness that adds a file in a directory the worktree does not have
+// yet — the ordinary shape of "add a module" (the shakeout's finding
+// 11: the import wrote through a path whose parent was missing, the
+// write failed with `not_found`, and the candidate went on without it).
+fn builder_script() -> String {
+    return "#!/bin/sh\n"
+        + "mkdir -p app/lib\n"
+        + "printf 'fn helper() -> Int {\\n    return 7;\\n}\\n' > app/lib/helper.hl\n"
+        + "printf '// the helper lives in app/lib\\n' >> app/main.hl\n"
+        + "printf '{\"type\": \"result\", \"subtype\": \"success\", \"is_error\": false, \"result\": \"added app/lib/helper.hl\", \"total_cost_usd\": 0.002, \"usage\": {\"input_tokens\": 2, \"output_tokens\": 2}}\\n'\n";
+}
+
 // A harness that reaches into the genome and moves it.
 fn mover_script(genome_file: String) -> String {
     return "#!/bin/sh\n"
@@ -75,6 +87,8 @@ main locus App {
         recorder: dna::HarnessModel = dna::HarnessModel { };
         answering: dna::HarnessModel = dna::HarnessModel { };
         unmasked: dna::HarnessModel = dna::HarnessModel { };
+        builder: dna::Dna = dna::Dna { };
+        stuck: dna::SourceEditor = dna::SourceEditor { };
     }
     @unbounded
     fn last_body(j: dna::Journal, kind: String) -> String {
@@ -256,6 +270,58 @@ main locus App {
         std::test::assert_eq_int(dna::usd_to_micros("1.5"), 1500000, "1.5 USD");
         std::test::assert_eq_int(dna::usd_to_micros("0"), 0, "0 USD");
         std::test::assert_eq_int(dna::usd_to_micros("0.00000049"), 0, "below a micro-dollar");
+
+        // ---- 7. a harness that adds a file in a NEW directory (finding
+        //         11): the import makes the parents under the grant, and
+        //         the candidate carries the new file
+        std::io::fs::write_file(scratch + "/builder", builder_script()) or discard;
+        let cb = sh("chmod\n+x\n" + scratch + "/builder");
+        self.builder = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees", base_exec_digest: "exec:base" },
+                repo: dna::LocalGit { repo: repo }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo, seed: "app" },
+            editor: dna::SourceEditor {
+                name: "editor",
+                models: dna::ModelRouter {
+                    quick: dna::HarnessModel { name: "quick", command: scratch + "/builder", confinement: dna::NoConfinement { }, allow_unconfined: true },
+                    deep: dna::FakeModel { name: "deep", answer: "pings_seen +" }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
+            genome_seed: "app"
+        };
+        let built = self.builder.mutate("t3", "docs", "put the helper in its own module", "", 3);
+        std::test::assert(std::str::contains(built, ": review"), "the new module reaches its Review: " + built);
+        std::time::sleep(100ms);
+        std::test::assert_eq_int(self.builder.editor.imported, 2, "the new file and the edited one");
+        let cand3 = std::json::find_string_field(self.last_body(self.builder.journal, "review.requested"), "candidate_commit");
+        let helper = sh("git\n-C\n" + repo + "\nshow\n" + cand3 + ":app/lib/helper.hl");
+        std::test::assert_eq_int(helper.code, 0, "the candidate has app/lib/helper.hl: " + helper.stderr);
+        std::test::assert(std::str::contains(helper.stdout, "return 7;"), "with its content: " + helper.stdout);
+
+        // ---- 8. an in-grant write that cannot land fails the attempt
+        //         (finding 11's other half): a partial import must never
+        //         become a candidate. Here the worktree has a DIRECTORY
+        //         where the export has a file, so the write fails for
+        //         any user, root included.
+        let wt = repo + "-wt";
+        let exp = repo + "-exp";
+        std::io::fs::mkdir(wt) or discard;
+        std::io::fs::mkdir(wt + "/app") or discard;
+        std::io::fs::mkdir(wt + "/app/main.hl") or discard;
+        std::io::fs::mkdir(exp) or discard;
+        std::io::fs::mkdir(exp + "/app") or discard;
+        std::io::fs::write_file(exp + "/app/main.hl", BASE) or discard;
+        self.stuck = dna::SourceEditor { name: "editor", tools: dna::WorktreeTools { hale_bin: toolchain() } };
+        self.stuck.place(wt, "app", repo);
+        let brought = self.stuck.import_from(exp);
+        std::test::assert_eq_str(brought, "", "nothing was brought back");
+        std::test::assert(std::str::contains(self.stuck.import_error, "could not import main.hl"), "and the failure is named: " + self.stuck.import_error);
+        std::test::assert_eq_int(self.stuck.imported, 0, "no file counted as imported");
     }
 }
 

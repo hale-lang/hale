@@ -8,6 +8,24 @@ behavior.
 
 ## Unreleased
 
+### DNA: the import creates what it writes into, and the tape creates its directory (shakeout findings 10 and 11)
+
+- A harness that adds a module writes a file in a directory the worktree does not have yet. The import wrote through that path, the write failed with `not_found`, and the import went on: the candidate carried the rest of the change and nothing said a file was missing. Parents are made under the grant before the write, and an in-grant write or removal that fails now fails the attempt (`the import was incomplete: …`) rather than producing a partial candidate. `harness_test.hl` has a stand-in that adds `app/lib/helper.hl` and asserts the file is in the candidate.
+- The tape wrote a workspace's patch before anything created its directory, so the FIRST entry of a fresh tape lost the patch while the entry still recorded `patched: true`; a replay then failed on a request the tape appeared to hold. The existing fixture recorded a text-only answer first, which created the directory and hid it. `record` makes the directory first, and an entry is counted only once every file of it has landed — a patch or entry that cannot be written is a refusal (`cannot write the tape: …`). `recorded_model_test.hl` records an in-place edit as the first entry of a tape that does not exist, replays it, and asserts a tape it cannot write is refused.
+
+### DNA: the harness delivers its prompt, and every role masks the genome (shakeout findings 1 and 5)
+
+- The prompt went on the end of `argv`. Hale's argv is newline-separated and every real prompt has newlines, so a harness received one argument per line and never saw an intact prompt; the fixture's stand-in ignored its arguments, which is why it passed. The prompt arrives on stdin now, through a file this process owns outside the workspace so an import never sees it, and the fixture asserts the exact bytes the harness received.
+- The confinement's mask came from the request, and only the editor's call set one, so a review, an agent's call, the editor's assessment and the catalog's probe ran with an empty mask while the evidence recorded `confinement=bubblewrap`. The genome is the model's own now (`genome` / `genome_env`, read at birth like a credential's source; the host exports `HALE_DNA_GENOME`), a request's mask adds what that call knows besides, and a confinement with nothing to mask is refused rather than run. Evidence records `masked=<n>`. Also: the generated codex entry used `exec --full-auto`, which the installed CLI rejects, and lacked `--skip-git-repo-check`, which an export needs.
+
+### DNA: the knowledge service opens its store, and Postgres keeps what it is given (shakeout findings 3, 4, 8, 9 and 12)
+
+- `Pq.open()` is what connects and migrates, and no startup path called it: the Postgres knowledge path answered 200 with an empty graph and a well-formed digest while every query failed. The service opens lazily on the first request, keeps retrying, reports `open` and the reason in its summary, and answers every other route with 503 and the error — lazily, because a database that is down must not hold closed the surface an operator reads that on.
+- Authority comparison was a substring test, so a verdict claiming `not-board` satisfied a Review that required `board`. An unknown name satisfies only itself.
+- Retrieval compared bound paths with `LIKE`, where `_` is a wildcard and an ordinary character in a project name, so a practice bound to `org/orders_api` was retrieved for the unrelated `org/ordersXapi`. Literal prefixes now.
+- The driver's rows were tab- and newline-separated with no escaping, so an idea whose text is an ordinary paragraph came back cut at the first line with its author and acceptance shifted into nothing, while the package still cited the original digest. Rows are read as JSON the server builds.
+- The projection write and the watermark advance are separate, so a crash between them replayed the row and an unconditional increment counted one event twice. Signals count once per record row, keyed on its sequence.
+
 ### DNA: an approval applies the reviewed candidate or nothing (shakeout finding 2)
 
 - The apply fell back to a merge commit when the candidate was not a descendant of the genome's head, and the staleness check looked only at the candidate's worktree. A maintainer commit or a second proposal landing during a review was therefore enough to compose a tree nobody reviewed and nothing verified, applied under the reviewed candidate's name. The substrate now checks the destination against the base the review was against and refuses (`mutation.refused: the genome moved since the review`), and `LocalGit.apply` fast-forwards or fails. `mutation_review_test.hl` lands a maintainer commit while a review is pending and asserts the refusal, that HEAD is still the maintainer's commit rather than a merge, and that nothing was applied.
