@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: an approval applies the reviewed candidate or nothing (shakeout finding 2)
+
+- The apply fell back to a merge commit when the candidate was not a descendant of the genome's head, and the staleness check looked only at the candidate's worktree. A maintainer commit or a second proposal landing during a review was therefore enough to compose a tree nobody reviewed and nothing verified, applied under the reviewed candidate's name. The substrate now checks the destination against the base the review was against and refuses (`mutation.refused: the genome moved since the review`), and `LocalGit.apply` fast-forwards or fails. `mutation_review_test.hl` lands a maintainer commit while a review is pending and asserts the refusal, that HEAD is still the maintainer's commit rather than a merge, and that nothing was applied.
+
 ### DNA: the application side, and the learning scenario (GH #583 K4)
 
 - An application raises a concern by declaring the wire fact itself (the membrane's shape on `dna.concern.raised`, no import of the DNA). A node routes the subject for every instance it starts to a socket of its own — the `hale node` shim binds it as an environment-configured listen route — and puts each concern into the record as `concern.requested` in its name; the host relays those rows onto the membrane like intent and verdicts; `hale dna concern raise` from a clone without a membrane takes the same road. The host forwards an operator's `HALE_DNA_KNOWLEDGE_URL` to the organization under `run`.

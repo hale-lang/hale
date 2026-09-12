@@ -164,18 +164,21 @@ locus LocalGit {
         let r = run_tool("git\n-C\n" + path + "\nmerge-base\n--is-ancestor\n" + commit + "\nHEAD");
         return r.code == 0;
     }
-    // Fast-forward the repository to the exact candidate; a candidate
-    // that is not a descendant of HEAD is merged with a merge commit.
+    // Fast-forward the repository to the EXACT candidate, or fail.
+    //
+    // This used to fall back to a merge commit when the candidate was
+    // not a descendant of HEAD. A merge composes a tree that is not the
+    // reviewed candidate: a maintainer commit or a second proposal
+    // landing during a review was enough, and the result was applied
+    // with the reviewed candidate's name on it, unverified and unseen
+    // (the shakeout's finding 2). A stale base is now a refusal, and
+    // whoever wants the change makes a new candidate on the new base
+    // and takes it through the whole gate.
     @effects(is: { genome_apply, repo_write })
     fn apply(candidate: String) -> Bool {
         let ff = run_tool("git\n-C\n" + self.repo + "\nmerge\n-q\n--ff-only\n" + candidate);
-        if ff.code == 0 { self.applied = self.applied + 1; return true; }
-        let m = run_tool("git\n-C\n" + self.repo + "\n-c\nuser.name=dna\n-c\nuser.email=dna@local\nmerge\n-q\n--no-edit\n--no-ff\n" + candidate);
-        if m.code != 0 {
-            // no half-applied state: a merge that did not complete is
-            // aborted, and the failure is the result
-            let a = run_tool("git\n-C\n" + self.repo + "\nmerge\n--abort");
-            self.last_error = trim_nl(m.stderr);
+        if ff.code != 0 {
+            self.last_error = "not a fast-forward onto " + self.head(self.repo) + ": " + trim_nl(ff.stderr);
             return false;
         }
         self.applied = self.applied + 1;

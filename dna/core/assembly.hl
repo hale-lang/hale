@@ -166,6 +166,11 @@ locus NoDeployment {
 
 // ---- Dna --------------------------------------------------------------
 
+fn short_sha(sha: String) -> String {
+    if len(sha) < 12 { return sha; }
+    return sha[0..12];
+}
+
 locus Dna {
     params {
         journal: Journal = MemJournal { };
@@ -463,6 +468,19 @@ locus Dna {
             let x = self.journal.append(self.journal.revision(), "mutation.refused", mutation_id, "candidate moved after review: " + head + " != " + reviewed);
             self.membrane.notify("mutation", mutation_id + " refused: the candidate moved after the review");
             return "refused: candidate moved after review";
+        }
+        // The DESTINATION must also be the base the review was against
+        // (the shakeout's finding 2). A maintainer commit or a second
+        // proposal landing while this one was under review makes the
+        // apply a merge of two changes nobody reviewed together and
+        // nothing verified together. Refuse; a new candidate on the new
+        // base goes through the whole gate.
+        let base = std::json::find_string_field(req, "base_commit");
+        let now_head = self.gateway.head();
+        if len(base) > 0 && now_head != base {
+            let y = self.journal.append(self.journal.revision(), "mutation.refused", mutation_id, "the genome moved since the review: " + now_head + " != " + base + "; propose again on the new base");
+            self.membrane.notify("mutation", mutation_id + " refused: the genome moved since the review (" + short_sha(base) + " -> " + short_sha(now_head) + ")");
+            return "refused: the genome moved since the review";
         }
         return self.apply_candidate(mutation_id, reviewed, now);
     }

@@ -13,16 +13,19 @@ When a mutation's Review settles `approve`, the substrate:
    that moved after the review is **refused by digest**
    (`mutation.refused: candidate moved after review`), and nothing is
    applied;
-3. takes the Mutation's lease (a fencing token; a stale one is
+3. checks that the genome is still the base the review was against. If
+   a maintainer committed, or another proposal landed, while this one
+   was under review, it is **refused** (`mutation.refused: the genome
+   moved since the review`) and nothing is applied. Propose again on
+   the new base and the whole gate runs on that result;
+4. takes the Mutation's lease (a fencing token; a stale one is
    refused);
-4. applies through the gateway: a fast-forward to the candidate, or
-   a merge of the pinned commit when the genome moved on. The request
-   is journaled under the candidate's own idempotency key *before*
-   dispatch and the result appended once, so a crashed and retried
-   apply reads its own record and never commits twice
-   (`applied (replayed)`, and no second restart). A merge that does
-   not complete is aborted; there is no half-applied state;
-5. journals `mutation.applied` and expresses it — through the
+5. applies through the gateway: a **fast-forward to the candidate, or
+   nothing**. The request is journaled under the candidate's own
+   idempotency key *before* dispatch and the result appended once, so
+   a crashed and retried apply reads its own record and never commits
+   twice (`applied (replayed)`, and no second restart);
+6. journals `mutation.applied` and expresses it — through the
    deployment gateway when one is wired, or by asking the host,
    naming the candidate, the seed the change edited and the fitness
    signals the proposal declared.

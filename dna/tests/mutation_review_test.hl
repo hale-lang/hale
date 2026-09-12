@@ -36,6 +36,18 @@ main locus App {
     fn on_settled(s: dna::ReviewSettlement) {
         if s.refusal != "" { self.refused_seen = self.refused_seen + 1; } else { self.settled_seen = self.settled_seen + 1; }
     }
+    // The last body journaled for a kind and entity, "" when none.
+    @unbounded
+    fn row_body(kind: String, entity: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.dna.journal.revision() {
+            let e = self.dna.journal.read(i);
+            if e.kind == kind && e.entity == entity { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
     run() {
         // ---- the genome: a repository with one commit and its baseline
         let repo = "/tmp/dna-mut-" + to_string(std::process::pid());
@@ -142,6 +154,32 @@ main locus App {
         std::test::assert(std::str::contains(failed3, "in flight (located)"), "the in-flight mutation failed on rehydrate: " + failed3);
         std::test::assert_eq_int(second.reviews_open, 1, "and it is a live child");
         std::test::assert(std::str::contains(second.status(), "\"rehydrated\": 1"), second.status());
+
+        // ---- the genome moved since the review (the shakeout's
+        //      finding 2): two separately valid changes, one reviewed
+        //      and one landed beside it. The apply used to MERGE them
+        //      and call the result the reviewed candidate; nobody
+        //      reviewed that tree and nothing verified it.
+        let out2 = self.dna.mutate("t2", "refactor", "document the mailer", "main.hl", 3);
+        std::test::assert(std::str::contains(out2, ": review") || std::str::contains(out2, ": release"), "a second mutation reaches its Review: " + out2);
+        let req2 = self.row_body("review.requested", "review:m2");
+        let digest2 = std::json::find_string_field(req2, "subject_digest");
+        let base2 = std::json::find_string_field(req2, "base_commit");
+        std::test::assert(len(digest2) > 0 && len(base2) > 0, "the Review names the candidate and its base: " + req2);
+        // a maintainer commits to the genome while the review is pending
+        std::io::fs::write_file(repo + "/NOTES.md", "a maintainer's note\n") or discard;
+        let ma = sh("git\n-C\n" + repo + "\nadd\n-A");
+        let mc = sh("git\n-C\n" + repo + "\n-c\nuser.name=m\n-c\nuser.email=m@local\ncommit\n-q\n-m\nthe maintainers own change");
+        std::test::assert_eq_int(mc.code, 0, "the maintainer's commit: " + mc.stderr);
+        let moved_head = dna::trim_nl(sh("git\n-C\n" + repo + "\nrev-parse\nHEAD").stdout);
+        std::test::assert(moved_head != base2, "the genome moved");
+        // the Board approves the candidate it reviewed
+        dna::ReviewVerdict <- dna::Verdict { review_id: "m2", subject_digest: digest2, verdict: "approve", reviewer: "riley", authority: "maintainer" };
+        std::time::sleep(200ms);
+        // refused, and the genome is untouched: not a merge of the two
+        std::test::assert(std::str::contains(self.row_body("mutation.refused", "m2"), "the genome moved since the review"), "refused: " + self.row_body("mutation.refused", "m2"));
+        std::test::assert_eq_str(dna::trim_nl(sh("git\n-C\n" + repo + "\nrev-parse\nHEAD").stdout), moved_head, "HEAD is the maintainer's commit, not a merge");
+        std::test::assert_eq_str(self.row_body("mutation.applied", "m2"), "", "nothing was applied");
     }
 }
 fn main() { App { }; }
