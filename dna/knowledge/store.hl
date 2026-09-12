@@ -28,6 +28,9 @@ interface KnowledgeStore {
     // thinks its state is.
     fn reopen() -> Bool;
     fn last_error() -> String;
+    // Forget the last error, so a caller can tell whether the read it
+    // is about to make failed rather than inheriting an older one.
+    fn forget_error();
     // The next record seq to apply (0 = nothing applied yet).
     fn watermark() -> Int;
     fn set_watermark(seq: Int) -> Bool;
@@ -110,6 +113,7 @@ locus Mem {
     // Nothing to lose and nothing to dial: memory is always both.
     fn healthy() -> Bool { return true; }
     fn reopen() -> Bool { return true; }
+    fn forget_error() { }
     fn last_error() -> String { return ""; }
     fn watermark() -> Int { return self.mark; }
     fn set_watermark(seq: Int) -> Bool { if seq > self.mark { self.mark = seq; } return true; }
@@ -335,6 +339,15 @@ locus Pq {
         self.error = what + ": " + e.kind + " " + e.detail;
         return false;
     }
+    // A read that failed is recorded too. These returned an empty
+    // answer and said nothing, so a connected database that could not
+    // run the query — a schema gone, a permission withdrawn, a
+    // statement timeout — reached a caller as "there is no knowledge
+    // here" (the third-round review's finding 3). The caller compares
+    // `last_error` around a read and refuses rather than answering.
+    fn note(what: String, e: db::DbError) {
+        self.error = what + ": " + e.kind + " " + e.detail;
+    }
     fn open() -> Bool {
         if self.opened { return true; }
         let st = self.conn.open();
@@ -367,9 +380,10 @@ locus Pq {
         return self.open();
     }
     fn last_error() -> String { return self.error; }
+    fn forget_error() { self.error = ""; }
     fn watermark() -> Int {
         let row = self.conn.query_one("SELECT value FROM knowledge_meta WHERE key = 'watermark'");
-        if !row.ok { return 0; }
+        if !row.ok { self.note("watermark", row.err); return 0; }
         return std::str::parse_int(dna::trim_nl(row.data)) or 0;
     }
     fn set_watermark(seq: Int) -> Bool {
@@ -423,7 +437,8 @@ locus Pq {
         let a = db::Args { };
         a.add(id);
         let rows = self.conn.query_params("SELECT row_to_json(t) FROM (SELECT id, kind, text, author, provenance, revision, accepted, ratified_seq FROM knowledge_ideas WHERE id = $1) t", a);
-        if !rows.ok || rows.n == 0 { return Stored { }; }
+        if !rows.ok { self.note("idea", rows.err); return Stored { }; }
+        if rows.n == 0 { return Stored { }; }
         let row = dna::trim_nl(first_line(rows.csv));
         if len(row) == 0 { return Stored { }; }
         return Stored {
@@ -448,7 +463,7 @@ locus Pq {
         a.add(target);
         a.add(to_string(budget));
         let rows = self.conn.query_params("SELECT i.id FROM knowledge_ideas i WHERE i.accepted AND EXISTS (SELECT 1 FROM knowledge_bindings b WHERE b.idea = i.id AND ($1 = b.target OR left($1, length(b.target) + 1) = b.target || '/')) ORDER BY i.ratified_seq, i.id LIMIT $2::bigint", a);
-        if !rows.ok { return ""; }
+        if !rows.ok { self.note("context", rows.err); return ""; }
         return ids_of(rows.csv);
     }
     // The same bound, ranked by pgvector's cosine distance to the query.
@@ -459,7 +474,7 @@ locus Pq {
         a.add(query_vec);
         a.add(to_string(budget));
         let rows = self.conn.query_params("SELECT i.id FROM knowledge_ideas i WHERE i.accepted AND EXISTS (SELECT 1 FROM knowledge_bindings b WHERE b.idea = i.id AND ($1 = b.target OR left($1, length(b.target) + 1) = b.target || '/')) ORDER BY i.embedding <=> $2::vector, i.ratified_seq, i.id LIMIT $3::bigint", a);
-        if !rows.ok { self.error = "ranked: " + rows.err.kind + " " + rows.err.detail; return ""; }
+        if !rows.ok { self.note("ranked", rows.err); return ""; }
         return ids_of(rows.csv);
     }
     fn put_structure(kind: String, name: String, seq: Int, body: String) -> Bool {
@@ -476,14 +491,14 @@ locus Pq {
         let a = db::Args { };
         a.add(kind);
         let rows = self.conn.query_params("SELECT count(*) FROM knowledge_structure WHERE $1 = '' OR kind = $1", a);
-        if !rows.ok { return 0; }
+        if !rows.ok { self.note("structure_count", rows.err); return 0; }
         return std::str::parse_int(dna::trim_nl(first_line(rows.csv))) or 0;
     }
     fn structure_names(kind: String) -> String {
         let a = db::Args { };
         a.add(kind);
         let rows = self.conn.query_params("SELECT name FROM knowledge_structure WHERE $1 = '' OR kind = $1 ORDER BY seq, name", a);
-        if !rows.ok { return ""; }
+        if !rows.ok { self.note("structure_names", rows.err); return ""; }
         return ids_of(rows.csv);
     }
     fn put_signal(kind: String, source: String, what: String, seq: Int) -> Bool {
@@ -505,7 +520,7 @@ locus Pq {
     // prose and carries tabs and newlines (finding 9).
     fn signals() -> String {
         let rows = self.conn.query_all("SELECT coalesce(json_agg(row_to_json(t) ORDER BY t.last_seq DESC, t.source), '[]') FROM (SELECT kind, source, what, count, last_seq FROM knowledge_signals) t");
-        if !rows.ok { return "[]"; }
+        if !rows.ok { self.note("signals", rows.err); return "[]"; }
         let row = dna::trim_nl(first_line(rows.csv));
         if len(row) == 0 { return "[]"; }
         return row;
@@ -517,7 +532,7 @@ locus Pq {
         else if what == "proposed" { "SELECT count(*) FROM knowledge_ideas WHERE provenance = 'proposed'" }
         else { "SELECT count(*) FROM knowledge_ideas" };
         let row = self.conn.query_one(sql);
-        if !row.ok { return 0; }
+        if !row.ok { self.note("count " + what, row.err); return 0; }
         return std::str::parse_int(dna::trim_nl(row.data)) or 0;
     }
 }

@@ -98,6 +98,7 @@ locus Service {
     // may have moved the ref since the last read).
     fn apply() -> know::Applied {
         if !self.ensure_open() { return know::Applied { error: self.last_error }; }
+        self.store.forget_error();
         let moved = self.j.refresh();
         let r = know::apply_record(self.store, self.j, self.receipts);
         self.applied = self.applied + r.ratified + r.proposed + r.declined;
@@ -106,6 +107,11 @@ locus Service {
     }
     fn summary() -> String {
         let up = self.ensure_open();
+        // The counts below are queries. A store that answers none of
+        // them reported zeroes beside an empty error, which reads as an
+        // empty graph rather than a failure (the third-round review's
+        // finding 3): whatever they hit is the summary's error too.
+        self.store.forget_error();
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("store", self.store.kind());
@@ -117,7 +123,7 @@ locus Service {
         b.int_field("bindings", self.store.count("bindings"));
         b.int_field("structure", self.store.structure_count(""));
         b.int_field("ticks", self.ticks);
-        b.string_field("error", self.last_error);
+        b.string_field("error", if len(self.last_error) > 0 { self.last_error } else { self.store.last_error() });
         b.end_object();
         return b.result();
     }
@@ -170,14 +176,26 @@ locus Service {
         // that the store is down, and why
         if std::http::is_route(ctx, "GET", "/") { return json(self.summary()); }
         if !self.ensure_open() { return unavailable(self.last_error); }
+        // A connection that answers `SELECT 1` is not a database that
+        // can answer the questions knowledge is made of. The record's
+        // projection failing, or a read failing, used to reach the
+        // caller as an empty package with a well-formed digest — "there
+        // is no knowledge here" (the third-round review's finding 3).
+        // Both are refusals: what this service has to say about the
+        // record is unknown until it can read and project it.
+        if len(fresh.error) > 0 { return unavailable("the record is not applied: " + fresh.error); }
         if std::http::is_route(ctx, "GET", "/context") {
             let target = std::str::replace(std::http::query_param(ctx.params, "target"), "%2F", "/");
             let b = std::http::query_param(ctx.params, "budget");
             let budget = if len(b) > 0 { std::str::parse_int(b) or 8 } else { 8 };
             let query = know::url_decode(std::http::query_param(ctx.params, "query"));
-            return json(self.package(target, budget, query));
+            self.store.forget_error();
+            let p = self.package(target, budget, query);
+            if len(self.store.last_error()) > 0 { return unavailable("the store cannot answer: " + self.store.last_error()); }
+            return json(p);
         }
         if std::http::is_route(ctx, "GET", "/structure") {
+            self.store.forget_error();
             let b = std::json::Builder { };
             b.begin_object();
             b.int_field("rows", self.store.structure_count(""));
@@ -189,13 +207,19 @@ locus Service {
             b.string_field("loci_names", self.store.structure_names("locus"));
             b.string_field("topic_names", self.store.structure_names("topic"));
             b.end_object();
+            if len(self.store.last_error()) > 0 { return unavailable("the store cannot answer: " + self.store.last_error()); }
             return json(b.result());
         }
         if std::http::is_route(ctx, "GET", "/signals") {
-            return json("{\"signals\": " + self.store.signals() + "}");
+            self.store.forget_error();
+            let sig = self.store.signals();
+            if len(self.store.last_error()) > 0 { return unavailable("the store cannot answer: " + self.store.last_error()); }
+            return json("{\"signals\": " + sig + "}");
         }
         if std::str::starts_with(req.path, "/idea/") && req.method == "GET" {
+            self.store.forget_error();
             let s = self.store.idea(req.path[6..len(req.path)]);
+            if len(self.store.last_error()) > 0 { return unavailable("the store cannot answer: " + self.store.last_error()); }
             if !s.present { return std::http::Response { status: 404, content_type: "application/json", body: "{\"error\": \"no such idea\"}" }; }
             let b = std::json::Builder { };
             b.begin_object();

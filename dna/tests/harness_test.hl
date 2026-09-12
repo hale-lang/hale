@@ -64,6 +64,7 @@ fn builder_script() -> String {
     return "#!/bin/sh\n"
         + "mkdir -p app/lib\n"
         + "printf 'fn helper() -> Int {\\n    return 7;\\n}\\n' > app/lib/helper.hl\n"
+        + ": > app/lib/.gitkeep\n"
         + "printf '// the helper lives in app/lib\\n' >> app/main.hl\n"
         + "printf '{\"type\": \"result\", \"subtype\": \"success\", \"is_error\": false, \"result\": \"added app/lib/helper.hl\", \"total_cost_usd\": 0.002, \"usage\": {\"input_tokens\": 2, \"output_tokens\": 2}}\\n'\n";
 }
@@ -297,11 +298,17 @@ main locus App {
         let built = self.builder.mutate("t3", "docs", "put the helper in its own module", "", 3);
         std::test::assert(std::str::contains(built, ": review"), "the new module reaches its Review: " + built);
         std::time::sleep(100ms);
-        std::test::assert_eq_int(self.builder.editor.imported, 2, "the new file and the edited one");
+        std::test::assert_eq_int(self.builder.editor.imported, 3, "the new file, the empty marker and the edited one");
         let cand3 = std::json::find_string_field(self.last_body(self.builder.journal, "review.requested"), "candidate_commit");
         let helper = sh("git\n-C\n" + repo + "\nshow\n" + cand3 + ":app/lib/helper.hl");
         std::test::assert_eq_int(helper.code, 0, "the candidate has app/lib/helper.hl: " + helper.stderr);
         std::test::assert(std::str::contains(helper.stdout, "return 7;"), "with its content: " + helper.stdout);
+        // and the EMPTY marker that made the directory. A file the
+        // worktree does not have is new whatever it holds; absence read
+        // as "" made a new empty file look unchanged, so it never
+        // reached the candidate (the third-round review's finding 4).
+        let keep = sh("git\n-C\n" + repo + "\ncat-file\n-e\n" + cand3 + ":app/lib/.gitkeep");
+        std::test::assert_eq_int(keep.code, 0, "the candidate has app/lib/.gitkeep: " + keep.stderr);
 
         // ---- 8. an in-grant write that cannot land fails the attempt
         //         (finding 11's other half): a partial import must never
