@@ -38,6 +38,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "performers",
     "process",
     "review",
+    "tape",
     "topics",
     "types",
     "verification",

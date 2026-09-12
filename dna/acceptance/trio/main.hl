@@ -1,0 +1,43 @@
+// dna/acceptance/trio — three services under one plan (GH #583 M4):
+// the GATEWAY (this seed) takes orders at the edge and hands them to
+// the api; the api (api/) fulfils them through the worker (worker/);
+// only the worker may send mail, which the fleet's law says over all
+// three. The organization in dna/org oversees the workspace; the
+// recorded fixture runs it end to end from a tape, keyless.
+//
+// `run()` holds the process up (a node runs it as an instance) unless
+// HALE_DNA_ONESHOT is set.
+
+type Order { id: Int = 0; total: Int = 0; }
+topic Orders { payload: Order; subject: "trio.orders"; }
+
+locus Gateway {
+    params { taken: Int = 0; }
+    bus { publish Orders; }
+    fn on_order(id: Int, total: Int) {
+        self.taken = self.taken + 1;
+        Orders <- Order { id: id, total: total };
+    }
+}
+
+// The edge's own ledger of what it took.
+locus Ledger {
+    params { seen: Int = 0; }
+    bus { subscribe Orders as on_order; }
+    fn on_order(o: Order) { self.seen = self.seen + 1; }
+}
+
+main locus TrioGateway {
+    params { gateway: Gateway = Gateway { }; ledger: Ledger = Ledger { }; }
+    run() {
+        self.gateway.on_order(1, 10);
+        std::time::sleep(100ms);
+        println("gateway: ", self.gateway.taken, " order(s) taken, ", self.ledger.seen, " in the ledger");
+        if std::env::var_exists("HALE_DNA_ONESHOT") { return; }
+        while true { std::time::sleep(100ms); }
+    }
+}
+
+fn main() {
+    TrioGateway { };
+}

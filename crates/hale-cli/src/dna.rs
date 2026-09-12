@@ -673,7 +673,7 @@ impl Discovery {
     fn report(&self) -> Vec<String> {
         let (frontier, fast, key) = self.hosted();
         let desk = self.ollama.clone().unwrap_or_else(|| "llama3".to_string());
-        let mut out = vec![
+        let out = vec![
             format!("found   {}", self.summary()),
             format!(
                 "frontier = {} · fast = {} ({}{}) · desk = {} (ollama at 127.0.0.1:11434{})",

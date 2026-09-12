@@ -63,7 +63,7 @@ still edits, reviews and decides. Re-running `init` keeps a catalog you have edi
 `hale dna upgrade` writes one for an organization from before the
 catalog and tells you what to point at it.
 
-## Five backends
+## Six backends
 
 - **`OpenAiChat`** — a prompt leaves the process for an endpoint
   speaking the OpenAI chat shape (OpenAI, OpenRouter, vLLM, Ollama).
@@ -89,6 +89,7 @@ catalog and tells you what to point at it.
   not on `PATH`.
 - **`LocalModel`** — the same wire to a local endpoint: no
   credential, no `external_model`, any data class.
+- **`RecordedModel`** — a tape over any of the above (below).
 - **`FakeModel`** — scripted. `answer` (or `answer_file`, or an
   `answers_dir` by role) is returned verbatim, optionally for one
   `answer_role` only; other roles get a deterministic digest answer;
@@ -139,6 +140,33 @@ Evidence is one `model.called` row per call, with the harness's own
 cost summary, `tool_grant: harness @export`, and the confinement.
 The Leader can use a harness too: an answer-only call runs in an
 empty directory of its own.
+
+## Recording and replay
+
+`dna::RecordedModel { dir, mode, inner }` wraps any backend. In
+`record` mode it forwards to the inner and writes what came back
+under a key made of the request's identity: the role, the backend's
+name and model, the prompt and context digests, the data class, the
+grant (with its path taken out) and, for a harness, a digest of the
+export's starting tree — plus, for a harness, the patch of what it
+changed in the export before anything was imported. In `replay`
+mode it answers from the directory, applies the patch, and leaves
+evidence that says so (`adapter: recorded`). A miss is refused,
+naming the request and the nearest entry's differing fields.
+
+```hale,fragment
+fn frontier() -> dna::RecordedModel {
+    return dna::RecordedModel { name: "deep", dir: "fixtures/tape", mode: "replay", inner: dna::AnthropicMessages { name: "deep", model: "claude-sonnet-5" } };
+}
+```
+
+`dir_env` and `mode_env` name environment variables the model reads
+at birth instead, which is how the fixture's catalog points at its
+tape and takes its mode from the run. Replay is pure and keyless;
+record reaches whatever the inner reaches. The in-repo acceptance fixture (`dna/acceptance/trio`:
+three services, two nodes, an organization that grows) runs this way
+in CI. A tape proves how the organization handles recorded outcomes;
+model quality is only ever tested by a fresh run.
 
 ## Probing the catalog
 

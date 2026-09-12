@@ -86,6 +86,13 @@ locus WorktreeTools {
 // block (```lang … ```), the block's body — a preamble before it and a
 // remark after it are commentary, not source. An answer with no fence
 // is the file as given.
+// Diagnostics with the worktree's path taken out (GH #583 M4): what a
+// prompt carries must not vary between runs, or a tape cannot answer it.
+fn strip_root(text: String, root: String) -> String {
+    if len(root) == 0 { return text; }
+    return std::str::replace(text, root + "/", "");
+}
+
 fn unfence(answer: String) -> String {
     let open = std::str::index_of(answer, "```");
     if open < 0 { return answer; }
@@ -274,13 +281,7 @@ locus SourceEditor {
         self.last_export = dir;
         return dir;
     }
-    // The regular files under `dir`, worktree-relative, one per line;
-    // vendor, .git and .hale are never part of a change.
-    fn listing(dir: String) -> String {
-        // a worktree's `.git` is a FILE (a pointer into the repository), so it is named as well as its tree
-        let r = run_tool("sh\n-c\ncd \"$0\" && find . -type f ! -path \"./vendor/*\" ! -path \"./.git\" ! -path \"./.git/*\" ! -path \"./.hale\" ! -path \"./.hale/*\" | sed \"s|^./||\" | sort\n" + dir);
-        return if r.code == 0 { r.stdout } else { "" };
-    }
+    fn listing(dir: String) -> String { return list_files(dir); }
     // The file's path inside the grant, or "" when it lies outside it.
     fn in_grant(rel: String) -> String {
         if len(self.seed) == 0 { return rel; }
@@ -372,7 +373,7 @@ locus SourceEditor {
             fmt_code = f.code;
             check_code = c.code;
             tries = tries + 1;
-            if c.code == 0 { done = true; } else { diagnostics = trim_nl(c.stderr); }
+            if c.code == 0 { done = true; } else { diagnostics = strip_root(trim_nl(c.stderr), self.tools.root); }
         }
         let attempt = req.work_id + "/a" + to_string(req.attempt_no + tries - 1);
         let mut changed = "";
@@ -462,7 +463,7 @@ locus SourceEditor {
             fmt_code = f.code;
             check_code = c.code;
             tries = tries + 1;
-            if c.code == 0 { done = true; } else { diagnostics = trim_nl(c.stderr); }
+            if c.code == 0 { done = true; } else { diagnostics = strip_root(trim_nl(c.stderr), self.tools.root); }
         }
         let attempt = req.work_id + "/a" + to_string(req.attempt_no + tries - 1);
         // The assessment is the deep tier's (assurance 2): it is what the

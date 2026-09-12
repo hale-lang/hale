@@ -16,6 +16,11 @@ behavior.
 - `hale dna models`: the catalog probed — one line per backend with one small request to each that is permitted; the organization is not started and nothing is journaled.
 - `HostedModel` is `OpenAiChat` (`adapter: openai-chat`), named for what it speaks; `FakeModel { fail_after }` refuses after that many calls, for tests that fail an Attempt on cue.
 
+### DNA: the tape, and the recorded fixture (GH #583 M4)
+
+- `RecordedModel { dir, mode, inner }` over any backend: `record` forwards to the inner and writes the answer under a key made of the request's identity (role, backend, model, prompt and context digests, data class, the grant normalized, and for a backend that works in place the workspace's starting tree) plus, for a workspace, the patch of what the backend changed there before any import; `replay` answers from the directory, applies the patch, leaves `adapter: recorded` evidence, and refuses a miss naming the request and the nearest entry's differing fields. The editor strips the worktree's path from the diagnostics it feeds back, so a retry's prompt is the same between runs.
+- `dna/acceptance/trio`: three services under a plan with routes and claims across them, deployed to two nodes; `dna_recorded_fixture.rs` drives its organization end to end from the checked-in tape (`dna/acceptance/trio.fixture`), keyless: a change deployed to both nodes, the organization grown by a supervisor under pressure, a change that checks but breaks the fleet's law denied. `HALE_DNA_TAPE=record` with a key re-records it.
+
 ### DNA: the harness works in an export; the genome is unreachable from it (GH #583 M3)
 
 - `HarnessModel`: an installed coding harness (`claude`, or `codex` with `output: text`) as a backend that works in place. For a source-editing request the editor exports the Mutation's worktree (a plain directory, never `.git`, never `.hale`), runs the harness there with the whole objective and its own tools on, and imports the export's diff back under the grant: a changed or new file is written through the tools, a deleted one removed, a change outside the grant counted and left behind; `files_changed` is derived from the diff, never from the answer. Then the same fmt, check, retry and assessment as the file-by-file flow. An answer-only call runs in an empty directory of its own. Evidence: one `model.called` row with the harness's own cost summary, `tool_grant: harness @export`, `confinement=<kind>`.
@@ -7989,51 +7994,6 @@ A parse + emit pass bringing generated JSON codecs near V8.
 - **Locus method names no longer mangled** (#104) — fixes inline /
   `accept`'d loci referenced in method bodies.
 
-### Language surface
-
-- **CQRS at the locus boundary (#18.6 / #81).** Methods on loci
-  may not return locus values. The compiler rejects
-  `fn lookup(id: String) -> Counter` on a registry locus at
-  typecheck. The rule keeps the substrate model honest — a
-  returned locus would be a stranger in the caller's scope, with
-  no lifecycle tower above it. Three canonical alternatives:
-  parent-child + contract (`accept`'d children, pair with an
-  index slot for name-based lookup), bus topic (publish typed
-  commands keyed by name), or delegation (collapse the per-child
-  operation onto the parent). See `spec/semantics.md § Locus
-  method dispatch`.
-
-- **`resets_per_epoch(...)` closure clause (F.34, #75).**
-  Closes the `low_corrupt_rate`-shaped friction (per-window rate
-  budgets). A closure paired with `epoch duration(N)` may now
-  declare `resets_per_epoch(field1, field2, ...);` — the
-  runtime zeros the named fields AFTER the assertion fires at
-  each duration boundary. Ordering matters: the assertion sees
-  the window's accumulated value, the reset prepares the next
-  window. Typecheck rejects pairing with non-duration epochs and
-  non-numeric fields. See `spec/semantics.md § Per-epoch field
-  reset` + `spec/design-rationale.md § F.34`.
-
-  ```hale
-  closure low_corrupt_rate {
-      self.corrupt_per_min ~~ 0 within 10;
-      epoch duration(1m);
-      resets_per_epoch(corrupt_per_min);
-  }
-  ```
-
-- **Nested long-running cooperative children rejected at typecheck
-  (#76 / F.31-followup).** A non-main locus with a non-trivial
-  `run()` body holding a `params` field of a locus type whose own
-  `run()` is also non-trivial — including `std::http::Server` and
-  the other entries on the known-long-running stdlib allowlist —
-  is now a compile error pointing at the sibling-in-main +
-  placement fix. The runtime starvation that motivated this rule
-  was silent (parent's `run()` simply never executed), so the
-  type-side rejection converts a class of hard-to-diagnose
-  runtime bugs into a clear compile-time signal. See
-  `spec/runtime.md § Long-running cooperative children`.
-
 ### Diagnostics
 
 - **`@form(hashmap)` cell-locus rejection improved (#77).** The
@@ -8052,53 +8012,6 @@ A parse + emit pass bringing generated JSON codecs near V8.
   drops on `deserialize → local-dispatch`; the lack of any signal
   was load-bearing on debug cycles. Same env-gated pattern as the
   existing `LOTUS_BUS_LOG_UNMATCHED`.
-
-### Internals
-
-- **Codegen refactor (#22).** `crates/hale-codegen` reorganized:
-  per-domain submodules (`locus/`, `bus/`, `shared/`, `stdlib/`),
-  `codegen.rs` reduced by 56.2%. No surface-level changes.
-
-### Documentation
-
-- **`docs/src/concepts/the-locus.md`** — CQRS rule paragraph.
-- **`docs/src/concepts/the-bus.md`** — routing keys +
-  `on_unmatched` policies (covering machinery shipped in v0.8.2).
-- **`docs/src/concepts/capacity-storage.md`** — hashmap cell-
-  locus rule with alternatives.
-- **`docs/src/concepts/error-handling.md`** — `resets_per_epoch`
-  coverage in the closures intro.
-- **`docs/src/how-tos/threading.md`** — nested-long-running
-  rejection in "What you can't do".
-- **`docs/src/how-tos/keeping-memory-bounded.md`** — factory /
-  cached-handle sections rewritten around the boot-time Int-
-  index resolution pattern (the previous example used the
-  now-rejected `reg.counter().inc()` shape).
-- **`spec/design-rationale.md`** — new F.34 entry.
-- **`spec/verification.md`** (new) — the canonical catalog of all
-  static checks: the default bus-graph rules, the `ring_layout`
-  conformance + geometry checks, and the opt-in memory/resource
-  analyses (with the `--check-resource-budget` TOML schema).
-- **`spec/memory.md`** — corrected to the shipped reclamation model
-  (value allocations live until the enclosing locus dissolves;
-  free-fn returns don't reclaim per call).
-- **`spec/stdlib.md`** — `std::term` + `std::io::{stdin,stdout}` raw
-  I/O rows; the `std::bytes` binary-pack reader/writer family;
-  `BytesBuilder.append_str`.
-- **`spec/ffi.md`** / **`spec/semantics.md`** / **`spec/grammar.ebnf`**
-  — StringView non-coercion at `@ffi` params; the `ring_layout`
-  declaration grammar + foreign-ring payload modes.
-- **mdBook** — `systems/performance.md` gains a "Catching it at
-  compile time" section (the analysis flags); `everyday/cli-config.md`
-  gains "Interactive terminal I/O" (`std::term` / raw byte I/O).
-
----
-
-## v0.8.1 — F.32 cache-aware substrate + #24 narrowing
-
-Cumulative changes since v0.8.0. No source-level breaking
-changes; one rule narrowing (open-question #24) lifts a
-previous restriction.
 
 ### Language surface
 

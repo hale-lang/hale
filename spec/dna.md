@@ -234,6 +234,45 @@ The organization's models are a catalog in source (GH #583 M1):
   bypass becomes a loud refusal. Outside the genome the harness has
   exactly the operator's account, which is what running it by hand
   has. The `Repository` interface names its `root` for the mask.
+- **The tape.** `RecordedModel { dir, mode, inner }` wraps any
+  backend (`dir_env` / `mode_env` name environment variables it reads
+  into `dir` / `mode` at birth, so a catalog function computes no
+  string: dna/FRICTION.md F.17). The key is `sha256` over the fields that identify a
+  request — role, the inner's name and model, the prompt and context
+  digests, the data class, the grant normalized (`… @grant`: its path
+  is where it ran, not what it was) and, for a backend that works in
+  place, a digest of the workspace's starting tree. `record` forwards
+  to `inner` (whose evidence is the call's) and writes `<key>.json`
+  with every keyed field in clear and the answer, and for a workspace
+  `<key>.patch`: what the backend changed there, before any import,
+  so a replay reproduces the edit and everything after it runs for
+  real. `replay` answers from the directory (evidence `adapter:
+  recorded`, `params: tape=<key> mode=replay`), applies the patch to
+  the workspace, and refuses a miss naming the request and, when an
+  entry shares the prompt digest, the fields that differed (`tape
+  miss <key> (role …, backend …, …): nearest <key> differs in:
+  context_digest tree`). Replay is pure; record reaches whatever
+  `inner` reaches. Anything that varies between runs must stay out of
+  the key, and recording finds what does: the editor therefore strips
+  the worktree's path from the diagnostics it feeds back. The tape is
+  a checked-in fixture, not a store. It proves how the organization
+  handles recorded outcomes; model quality is only ever tested by a
+  fresh run.
+- **The fixture.** `dna/acceptance/trio`: a gateway (the root seed),
+  an api and a worker under a plan of four instances on two nodes
+  with routes between them and claims across them
+  (`require_publishes` on the gateway and the api, `forbid_reaches`
+  gateway → worker avoiding the api). Its organization, with every
+  backend a `RecordedModel` over the real adapter
+  (`dna/acceptance/trio.fixture/catalog.hl`; mode from
+  `HALE_DNA_TAPE`, the tape from `HALE_DNA_TAPE_DIR`), is driven by
+  scripted asks end to end: a change to the gateway approved and
+  deployed to both nodes, the organization grown by a supervisor
+  under pressure from the worker and restarted with it, and a change
+  to one service that still checks but breaks the fleet's claim
+  denied — every model call answered from the tape, keyless. It is
+  the acceptance for every later change to the organization;
+  `HALE_DNA_TAPE=record` with a key re-records it.
 - **The catalog is source.** A backend is a constructor function
   (`frontier()`, `fast()`, `desk()` …); a position's router is a
   function composed from them (`leader_models()`, `editor_models()`,

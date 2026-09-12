@@ -1,0 +1,30 @@
+// dna/acceptance/trio/worker — the worker: fulfils what the api asks
+// and is the only service that may send mail (the fleet's law).
+
+effect mail;
+
+type Fulfilment { order: Int = 0; }
+topic Fulfil { payload: Fulfilment; subject: "trio.fulfil"; }
+
+locus Mailer {
+    params { sent: Int = 0; }
+    bus { subscribe Fulfil as on_fulfil; }
+    @effects(is: { mail })
+    fn on_fulfil(f: Fulfilment) { self.sent = self.sent + 1; }
+}
+
+main locus TrioWorker {
+    params { mailer: Mailer = Mailer { }; }
+    bus { publish Fulfil; }
+    run() {
+        Fulfil <- Fulfilment { order: 1 };
+        std::time::sleep(100ms);
+        println("worker: ", self.mailer.sent, " mail(s) sent");
+        if std::env::var_exists("HALE_DNA_ONESHOT") { return; }
+        while true { std::time::sleep(100ms); }
+    }
+}
+
+fn main() {
+    TrioWorker { };
+}

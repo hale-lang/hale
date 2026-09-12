@@ -1,0 +1,110 @@
+// dna/tests/recorded_model_test.hl — GH #583 M4: the tape.
+//
+// A RecordedModel over a scripted backend records answers under the
+// request's key and replays them into a fresh wrapper with the same
+// evidence; a miss is refused naming the request and the nearest
+// entry's differing fields; the grant's path is not part of the key.
+// Over a stand-in harness it records the PATCH of what the harness
+// changed in its workspace, bound to the workspace's starting tree,
+// and replays it onto a fresh copy without running the harness.
+
+import "../core" as dna;
+
+fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
+
+fn harness_script() -> String {
+    return "#!/bin/sh\n"
+        + "printf '// touched by the harness\\n' >> main.hl\n"
+        + "printf 'new\\n' > extra.txt\n"
+        + "printf '{\"type\": \"result\", \"subtype\": \"success\", \"is_error\": false, \"result\": \"touched main.hl and added extra.txt\", \"total_cost_usd\": 0.0021, \"usage\": {\"input_tokens\": 7, \"output_tokens\": 2}}\\n'\n";
+}
+
+main locus App {
+    params {
+        rec: dna::RecordedModel = dna::RecordedModel { };
+        play: dna::RecordedModel = dna::RecordedModel { };
+        rec_h: dna::RecordedModel = dna::RecordedModel { };
+        play_h: dna::RecordedModel = dna::RecordedModel { };
+        core: dna::Dna = dna::Dna { };
+    }
+    run() {
+        let base = "/tmp/dna-tape-" + to_string(std::process::pid());
+        let tape = base + "/tape";
+        std::io::fs::mkdir(base) or discard;
+        std::io::fs::write_file(base + "/claude", harness_script()) or discard;
+        let chmod = sh("chmod\n+x\n" + base + "/claude");
+
+        // ---- 1. record an answer, replay it
+        self.rec = dna::RecordedModel { name: "t", dir: tape, mode: "record", inner: dna::FakeModel { name: "quick", model: "quick-1", answer: "the answer", price_micros: 5 } };
+        let r = self.rec.complete(dna::ModelRequest { attempt_id: "w/a0", role: "edit", prompt: "rewrite it", context: "the file", data_class: "internal", tool_grant: "read edit fmt check @/tmp/somewhere/m1" });
+        std::test::assert(r.ok && r.output == "the answer", "recorded through the inner: " + r.refused);
+        std::test::assert_eq_int(self.rec.recorded, 1, "one entry written");
+        std::test::assert(std::io::fs::file_exists(tape + "/" + self.rec.last_key + ".json"), "the entry is a file under the key");
+        std::test::assert(!std::io::fs::file_exists(tape + "/" + self.rec.last_key + ".patch"), "no workspace, no patch");
+        let entry = std::io::fs::read_file(tape + "/" + self.rec.last_key + ".json") or "";
+        std::test::assert(std::str::contains(entry, "\"grant\": \"read edit fmt check @grant\""), "the grant is normalized in the entry: " + entry);
+        std::test::assert(std::str::contains(entry, "\"output\": \"the answer\"") && std::str::contains(entry, "\"cost_micros\": 5"), entry);
+        // a fresh wrapper over a backend that would answer differently: the tape answers
+        self.play = dna::RecordedModel { name: "t", dir: tape, mode: "replay", inner: dna::FakeModel { name: "quick", model: "quick-1", answer: "NOT THIS" } };
+        let p = self.play.complete(dna::ModelRequest { attempt_id: "w/a0", role: "edit", prompt: "rewrite it", context: "the file", data_class: "internal", tool_grant: "read edit fmt check @/elsewhere/m9" });
+        std::test::assert(p.ok && p.output == "the answer", "replayed from the tape, the grant's path aside: " + p.output + " " + p.refused);
+        std::test::assert_eq_int(p.cost_micros, 5, "the recorded cost");
+        std::test::assert_eq_int(self.play.hits, 1, "a hit");
+        std::test::assert_eq_str(self.play.last.adapter, "recorded", "the evidence says it was replayed");
+        std::test::assert(std::str::contains(self.play.last.params, "mode=replay"), self.play.last.params);
+        // ---- 2. a miss names the request and the nearest entry
+        let m = self.play.complete(dna::ModelRequest { attempt_id: "w/a1", role: "edit", prompt: "rewrite it", context: "another file", data_class: "internal", tool_grant: "read edit fmt check @/elsewhere/m9" });
+        std::test::assert(!m.ok && std::str::starts_with(m.refused, "tape miss "), m.refused);
+        std::test::assert(std::str::contains(m.refused, "role edit, backend quick, model quick-1"), "the request named: " + m.refused);
+        std::test::assert(std::str::contains(m.refused, "differs in: context_digest"), "the nearest entry's differing field: " + m.refused);
+        std::test::assert_eq_int(self.play.misses, 1, "a miss");
+        let m2 = self.play.complete(dna::ModelRequest { attempt_id: "w/a2", role: "edit", prompt: "something else entirely" });
+        std::test::assert(std::str::contains(m2.refused, "no entry shares this prompt digest"), m2.refused);
+
+        // ---- 3. a harness's edits: recorded as a patch, replayed onto a fresh workspace
+        let ws1 = base + "/ws1";
+        let ws2 = base + "/ws2";
+        std::io::fs::mkdir(ws1) or discard;
+        std::io::fs::mkdir(ws2) or discard;
+        std::io::fs::write_file(ws1 + "/main.hl", "// v1\n") or discard;
+        std::io::fs::write_file(ws1 + "/other.hl", "// other\n") or discard;
+        std::io::fs::write_file(ws2 + "/main.hl", "// v1\n") or discard;
+        std::io::fs::write_file(ws2 + "/other.hl", "// other\n") or discard;
+        self.rec_h = dna::RecordedModel { name: "h", dir: tape, mode: "record", inner: dna::HarnessModel { name: "quick", command: base + "/claude", confinement: dna::NoConfinement { }, allow_unconfined: true } };
+        let h = self.rec_h.complete(dna::ModelRequest { attempt_id: "w/a3", role: "edit", prompt: "touch it", workspace: ws1, tool_grant: "harness @export" });
+        std::test::assert(h.ok && std::str::starts_with(h.output, "touched main.hl"), "the harness ran: " + h.refused);
+        std::test::assert(std::io::fs::file_exists(tape + "/" + self.rec_h.last_key + ".patch"), "the patch is on the tape");
+        let patch = std::io::fs::read_file(tape + "/" + self.rec_h.last_key + ".patch") or "";
+        std::test::assert(std::str::contains(patch, "+// touched by the harness") && std::str::contains(patch, "+new"), "the harness's changes, before any import: " + patch);
+        std::test::assert(std::str::contains(std::io::fs::read_file(tape + "/" + self.rec_h.last_key + ".json") or "", "\"patched\": true"), "the entry says so");
+        // the same request on a fresh copy: the tape edits it, nothing runs
+        // (the stand-in is made unrunnable first: the inner's name and
+        // model are part of the key, so it is the same backend on paper)
+        let unrun = sh("chmod\n-x\n" + base + "/claude");
+        self.play_h = dna::RecordedModel { name: "h", dir: tape, mode: "replay", inner: dna::HarnessModel { name: "quick", command: base + "/claude", confinement: dna::NoConfinement { }, allow_unconfined: true } };
+        let hp = self.play_h.complete(dna::ModelRequest { attempt_id: "w/a3", role: "edit", prompt: "touch it", workspace: ws2, tool_grant: "harness @export" });
+        std::test::assert(hp.ok && std::str::starts_with(hp.output, "touched main.hl"), "replayed: " + hp.refused);
+        std::test::assert_eq_int(hp.cost_micros, 2100, "the recorded cost");
+        std::test::assert_eq_str(std::io::fs::read_file(ws2 + "/main.hl") or "", "// v1\n// touched by the harness\n", "the patch was applied to the fresh workspace");
+        std::test::assert_eq_str(std::io::fs::read_file(ws2 + "/extra.txt") or "", "new\n", "a new file too");
+        std::test::assert(self.play_h.works_in_place(), "the wrapper works in place when its inner does");
+        // a workspace whose starting tree differs is another request: a miss
+        std::io::fs::write_file(ws2 + "/other.hl", "// changed\n") or discard;
+        let hm = self.play_h.complete(dna::ModelRequest { attempt_id: "w/a4", role: "edit", prompt: "touch it", workspace: ws2, tool_grant: "harness @export" });
+        std::test::assert(!hm.ok && std::str::contains(hm.refused, "differs in: tree"), "bound to the starting tree: " + hm.refused);
+
+        // ---- 4. every replayed call is evidence like any other
+        std::time::sleep(100ms);
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.core.journal.revision() {
+            let e = self.core.journal.read(i);
+            if e.kind == "model.called" && std::str::contains(e.body, "\"adapter\": \"recorded\"") { n = n + 1; }
+            i = i + 1;
+        }
+        std::test::assert_eq_int(n, 5, "five replayed calls (two hits, three misses), five evidence rows");
+        let rm = sh("rm\n-rf\n" + base);
+    }
+}
+
+fn main() { App { }; }

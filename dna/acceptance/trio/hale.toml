@@ -1,0 +1,20 @@
+[deps]
+
+# the three services and the organization are four entrypoints; each
+# says where it deploys and adopts its own law (`hale check --matrix`)
+[claims]
+no_base = true
+
+[environments.local]
+source_only = true
+entrypoints = [".", "api", "worker"]
+
+[environments.org]
+source_only = true
+entrypoints = ["dna/org"]
+
+[fleets]
+production = "fleet.plan.json"
+
+[dna]
+fleet = "production"
