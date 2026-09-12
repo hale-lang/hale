@@ -47,9 +47,25 @@ locus WorktreeTools {
         self.reads = self.reads + 1;
         return std::io::fs::read_file(self.root + "/" + rel) or "";
     }
+    // The directories a path needs, created one segment at a time and
+    // only under the grant's root. A harness that adds a new seed writes
+    // `newdir/new.hl`, and the write failed with `not_found` while the
+    // import went on without it (the shakeout's finding 11).
+    @unbounded
+    fn ensure_parents(rel: String) {
+        let mut at = 0;
+        while true {
+            let rest = rel[at..len(rel)];
+            let slash = std::str::index_of(rest, "/");
+            if slash < 0 { return; }
+            at = at + slash + 1;
+            std::io::fs::mkdir(self.root + "/" + rel[0..(at - 1)]) or discard;
+        }
+    }
     @unbounded
     fn edit(rel: String, content: String) -> Bool {
         if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "edit outside the worktree: " + rel; return false; }
+        self.ensure_parents(rel);
         let before = self.refused;
         std::io::fs::write_file(self.root + "/" + rel, content) or self.write_failed(err);
         if self.refused > before { return false; }
@@ -63,12 +79,30 @@ locus WorktreeTools {
     }
     // A file the harness deleted in its export (GH #583 M3): removed
     // inside the grant, refused outside it like any edit.
+    //
+    // The failure travels, like a write's. This discarded the unlink
+    // error and reported the removal done, so the import's new
+    // incomplete-import check could never catch a deletion that did not
+    // happen: the candidate was proposed as if the file were gone while
+    // it was still there (the review's second round, finding 5).
     @unbounded
     fn remove(rel: String) -> Bool {
         if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "remove outside the worktree: " + rel; return false; }
-        std::io::fs::unlink(self.root + "/" + rel) or discard;
+        let before = self.refused;
+        std::io::fs::unlink(self.root + "/" + rel) or self.remove_failed(err);
+        if self.refused > before { return false; }
+        if std::io::fs::file_exists(self.root + "/" + rel) {
+            self.refused = self.refused + 1;
+            self.last_refusal = "remove failed: " + rel + " is still there";
+            return false;
+        }
         self.edits = self.edits + 1;
         return true;
+    }
+    @unbounded
+    fn remove_failed(e: IoError) {
+        self.refused = self.refused + 1;
+        self.last_refusal = "remove failed: " + e.kind;
     }
     @effects(is: { toolchain_run })
     fn fmt() -> RunResult { return run_tool(self.hale_bin + "\nfmt\n" + self.root); }
@@ -146,6 +180,7 @@ locus SourceEditor {
         imported: Int = 0; // files brought back from an export under the grant
         refused_outside: Int = 0; // files the harness changed outside the grant, left behind
         last_export: String = ""; // the last export's path (removed after the import)
+        import_error: String = ""; // an in-grant write that failed: the attempt fails, never a partial candidate
         last_summary: String = ""; // the harness's one-line answer
         bindings: String = ""; // the package the owner named on this attempt's request (GH #583 K2)
     }
@@ -296,6 +331,7 @@ locus SourceEditor {
     // Bounded by the files of one worktree.
     @unbounded
     fn import_from(dir: String) -> String {
+        self.import_error = "";
         let mut changed = "";
         let mut lines = self.listing(dir);
         while len(lines) > 0 {
@@ -308,7 +344,10 @@ locus SourceEditor {
             if after == before { continue; }
             let g = self.in_grant(rel);
             if len(g) == 0 { self.refused_outside = self.refused_outside + 1; continue; }
+            // inside the grant, so a refusal here is an I/O failure, not
+            // a boundary: a partial import must not become a candidate
             if self.tools.edit(g, after) { self.imported = self.imported + 1; changed = changed + g + " "; }
+            else { self.import_error = "could not import " + g + ": " + self.tools.last_refusal; return ""; }
         }
         let mut gone = self.listing(self.worktree);
         while len(gone) > 0 {
@@ -319,6 +358,7 @@ locus SourceEditor {
             let g = self.in_grant(rel);
             if len(g) == 0 { self.refused_outside = self.refused_outside + 1; continue; }
             if self.tools.remove(g) { self.imported = self.imported + 1; changed = changed + g + " "; }
+            else { self.import_error = "could not remove " + g + ": " + self.tools.last_refusal; return ""; }
         }
         return trim_nl(changed);
     }
@@ -365,6 +405,9 @@ locus SourceEditor {
             backends = r.backend;
             let brought = self.import_from(self.last_export);
             let rm = run_tool("rm\n-rf\n" + self.last_export);
+            if len(self.import_error) > 0 {
+                return WorkResult { disposition: "failed", narrative: "the import was incomplete: " + self.import_error, performer: self.name };
+            }
             if len(brought) > 0 { files = brought; }
             if len(files) == 0 {
                 return WorkResult { disposition: "failed", narrative: "the harness changed nothing under the grant (" + to_string(self.refused_outside) + " change(s) outside it left behind): " + self.last_summary, performer: self.name };

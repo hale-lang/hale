@@ -149,6 +149,26 @@ main locus App {
         let gave_up = self.bounded.perform(dna::WorkRequest { work_id: "w7", objective: "print v2", target: "main.hl", data_class: "internal" });
         std::test::assert_eq_str(gave_up.disposition, "failed", "two tries were not enough, and it says so");
         std::test::assert(std::str::contains(gave_up.evidence, "tries=2"), gave_up.evidence);
+
+        // ---- a removal that does not happen is not a removal --------------
+        // `remove` discarded the unlink error and returned true, so the
+        // import's incomplete-import check could never catch a deletion
+        // that failed: the candidate was proposed as if the file were
+        // gone while it was still there (the review's second round,
+        // finding 5). Here the path is a directory with something in
+        // it, which no user can unlink, root included.
+        let tools = dna::WorktreeTools { root: root3, hale_bin: toolchain() };
+        std::io::fs::mkdir(root3 + "/held") or discard;
+        std::io::fs::write_file(root3 + "/held/inside.hl", "fn held() { }\n") or discard;
+        let refused_before = tools.refused;
+        std::test::assert(!tools.remove("held"), "a removal that cannot happen is false");
+        std::test::assert_eq_int(tools.refused, refused_before + 1, "and counted as a refusal");
+        std::test::assert(std::str::contains(tools.last_refusal, "remove failed"), "named: " + tools.last_refusal);
+        std::test::assert(std::io::fs::file_exists(root3 + "/held/inside.hl"), "the file is still there");
+        // the ordinary removal still works
+        std::io::fs::write_file(root3 + "/gone.hl", "fn gone() { }\n") or discard;
+        std::test::assert(tools.remove("gone.hl"), "a file that can go, goes");
+        std::test::assert(!std::io::fs::file_exists(root3 + "/gone.hl"), "and is gone");
     }
 }
 fn main() { App { }; }

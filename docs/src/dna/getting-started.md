@@ -53,12 +53,18 @@ organization are two entrypoints, each checked against its own law
 — and `[claims] no_base = true`, because they deliberately share
 none.
 
-Commit it, and if you have a remote, push the record with the code:
+Commit it, and if you have a remote, push:
 
 ```sh
 git add -A && git commit -m "the organization"
-git push origin main 'refs/dna/*:refs/dna/*'
+git push origin main
+hale dna sync
 ```
+
+`hale dna sync` carries the record — the refs under `refs/dna/`, which
+`git push origin main` does not touch. The host syncs on every tick
+once the organization is running, so this is only for the first push,
+and a clone that already shares a record needs nothing by hand.
 
 ## Check nothing broke
 

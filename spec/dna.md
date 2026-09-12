@@ -38,7 +38,11 @@ repository:
   pushes. Local ahead: push. Remote ahead: fast-forward. Diverged: the
   local-only events are re-appended on top of the remote's head, bodies
   and authors unchanged, `seq` their new position, then pushed; a push
-  the remote refuses is fetched and reconciled again. Receipts travel
+  the remote refuses is fetched and reconciled again. **A remote with
+  no record yet is the local one's push**, not "up to date": the first
+  sync after an ordinary `git push origin main` carries the record, so
+  no one has to push `refs/dna/*` by hand for a second clone to have
+  the organization's history. Receipts travel
   by refspec both ways. The remote is `dna.remote` in git config, or
   `origin`. A plain clone has no record until it syncs.
 - **The membrane over the record.** From a clone with no organism,
@@ -54,6 +58,15 @@ repository:
 `.hale/dna/` holds only what is not the record: the membrane sockets,
 the status projection, worktrees, scratch inputs to the toolchain.
 Deleting it loses nothing the record holds.
+
+**The socket routes are relative on both sides.** A Unix address holds
+108 bytes, path included, and `.hale/dna/hale-dna.review.verdict.sock`
+already spends 39 of them, so an absolute route puts an ordinary
+project path over the limit. The organization binds these names
+relative to the root it runs in; the membrane client is run with the
+project root as its working directory and given the same relative
+routes, and a node's instances connect to `.hale/node/concern.raised.sock`
+the same way. A project's path therefore has no length rule.
 
 ## Event kinds
 
@@ -201,7 +214,10 @@ The organization's models are a catalog in source (GH #583 M1):
   <status> <the API's message>`; a transport failure as `http 0
   <kind> <detail>`.
 - **The harness.** `HarnessModel` runs an installed coding harness
-  (`command: claude`, or `codex` with `output: text`) per request with
+  (`command: claude`, or `codex` with `output: text` and `exec
+  --skip-git-repo-check --sandbox workspace-write`, because a
+  non-interactive codex is read-only by default and would answer
+  without ever editing its export) per request with
   its own tools on, as a backend that `works_in_place`: for a
   source-editing request the editor makes an EXPORT of the Mutation's
   worktree (a plain directory with the same files, never `.git`, never
@@ -210,7 +226,12 @@ The organization's models are a catalog in source (GH #583 M1):
   the grant — a file that differs or is new is written through the
   tools, one that is gone is removed, a change outside the grant is
   counted (`outside_grant`) and left behind; `files_changed` is
-  derived from that diff, never from the harness's answer. Then the
+  derived from that diff, never from the harness's answer. A written
+  file's parent directories are made under the grant first, so a
+  harness may add a module in a directory the worktree does not have
+  yet, and **an in-grant write or removal that fails is the attempt's
+  failure** (`the import was incomplete: …`), never a candidate
+  carrying part of the change. Then the
   same fmt, check, retry (the diagnostics in the next prompt) and
   assessment as the file-by-file flow. An answer-only request (a
   review) runs in an empty directory of its own. `complete` carries
@@ -226,10 +247,21 @@ The organization's models are a catalog in source (GH #583 M1):
   (Linux: the filesystem as the operator sees it — the harness's own
   home state, the toolchain, the network — with the repository and
   the worktree replaced by empty tmpfs mounts, `--die-with-parent`)
-  or `NoConfinement`. A harness whose confinement is unavailable is
-  refused (`unconfined harness not allowed`) unless the org chart's
-  `allow_unconfined` says otherwise; the evidence records which it
-  was. On every platform the assembly also checks that the
+  or `NoConfinement`. **The genome is the model's own, not the
+  request's**: `HarnessModel { genome, genome_env }` reads it at birth
+  (the host exports `HALE_DNA_GENOME`), every call masks it, and a
+  request's `mask` adds what that call knows besides — the worktree an
+  editor exported. Every verb the host runs is given
+  `HALE_DNA_GENOME`, not only the organization under `run` and `dev`:
+  `hale dna models` probes the catalog in a process of its own, and a
+  confined harness with nothing to mask is refused. An answer-only role (a review, a classification,
+  the catalog's probe) carries no request mask, so a genome on the
+  model itself is what makes the guarantee true for them. **A
+  confinement with nothing to mask is refused**, not run, so the claim
+  and the fact cannot diverge. A harness whose confinement is
+  unavailable is refused (`unconfined harness not allowed`) unless the
+  org chart's `allow_unconfined` says otherwise; the evidence records
+  which it was, and `masked=<n>` how many paths the boundary covered. On every platform the assembly also checks that the
   repository's head and the worktree's head did not move during the
   attempt and fails the Mutation (`mutation.failed`: `the genome
   moved during the attempt`) if they did: not a boundary, but a
@@ -243,7 +275,12 @@ The organization's models are a catalog in source (GH #583 M1):
   request — role, the inner's name and model, the prompt and context
   digests, the data class, the grant normalized (`… @grant`: its path
   is where it ran, not what it was) and, for a backend that works in
-  place, a digest of the workspace's starting tree. `record` forwards
+  place, a digest of the workspace's starting tree. `record` makes the
+  tape's directory before it writes anything into it, and an entry is
+  counted only once every file of it has landed: a patch or an entry
+  that could not be written is a refusal (`cannot write the tape: …`),
+  because an entry claiming a patch that is not there replays as a
+  miss on a request the tape appears to hold. `record` forwards
   to `inner` (whose evidence is the call's) and writes `<key>.json`
   with every keyed field in clear and the answer, and for a workspace
   `<key>.patch`: what the backend changed there, before any import,
@@ -354,7 +391,12 @@ authority.
   goals flow down, initiatives stay local — in ratification order),
   `count(what)`. `Pq` is Postgres (four tables: `knowledge_meta`,
   `knowledge_ideas`, `knowledge_bindings`, `knowledge_edges`; the
-  schema migrated at `open`; every write an upsert); `Mem` is the
+  schema migrated at `open`; every write an upsert; rows come back as
+  JSON built by the server, since the driver's tab- and
+  newline-separated rows cannot carry an ordinary paragraph; a signal
+  counts once per record row, keyed on that row's sequence, because
+  the projection write and the watermark advance are separate and a
+  crash between them replays the row); `Mem` is the
   same contract in memory. **The service is a consumer of the
   record**: `apply_record(store, journal, receipts)` walks
   `knowledge.*` rows from the watermark, resolves each digest to its
@@ -369,7 +411,15 @@ authority.
 - **The service program.** `dna/knowledge/service` (`hale dna
   knowledge [project] [--port N]`, default 8791): applies the record
   on every request (the reader sees it as it is now) and answers over
-  HTTP — `GET /` (store kind,
+  HTTP. The store is opened on the first request rather than at birth
+  — a database that is down must not hold the surface closed, because
+  the surface is where an operator reads that it is down — and the
+  connection is asked on each request afterwards (`healthy`), because
+  an open that succeeded once is not a connection that still answers:
+  a session dropped by a restart or a failover is re-established
+  (`reopen`), and only a store that cannot be reached at all answers
+  503. A package is never built from a store whose queries are
+  failing — `GET /` (store kind,
   watermark, record revision, counts), `GET
   /context?target=<locus path>&budget=<n>` (the bounded package: the
   ids included, their ideas with text, author and `ratified_seq`, and

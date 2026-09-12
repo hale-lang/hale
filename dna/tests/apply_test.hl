@@ -26,6 +26,7 @@ main locus App {
     params {
         repo: String = "";
         dna: dna::Dna = dna::Dna { };
+        plain: dna::LocalGit = dna::LocalGit { };
     }
     bus {
         publish dna::ReviewVerdict;
@@ -159,6 +160,40 @@ main locus App {
         dna::ExpressionObserved <- dna::Observation { mutation_id: "m4", outcome: "healthy" };
         std::time::sleep(150ms);
         std::test::assert_eq_int(self.count("mutation.retained"), 1, "only m1 was ever retained");
+
+        // ---- 7. a destination with uncommitted work of its own -----------
+        // A fast-forward KEEPS a maintainer's edit to another file and
+        // reports success: the genome's head would be the candidate
+        // while the files the host builds from are not the candidate's,
+        // and nobody reviewed the difference (the review's second
+        // round, finding 1). Refused, and their edit is left alone.
+        let before7 = self.head();
+        let out5 = self.dna.mutate("t5", "feature", "give A a limit while a maintainer is mid-edit", "main.hl", 500);
+        let cand5 = self.last("mutation.candidate", "m5");
+        std::io::fs::write_file(repo + "/.gitignore", "/.hale/\n# a maintainer, mid-edit\n") or discard;
+        self.approve("m5", cand5);
+        std::test::assert(std::str::contains(self.last("mutation.refused", "m5"), "uncommitted changes"), "refused: " + self.last("mutation.refused", "m5"));
+        std::test::assert_eq_str(self.head(), before7, "the genome did not move");
+        std::test::assert(std::str::contains(std::io::fs::read_file(repo + "/.gitignore") or "", "mid-edit"), "the maintainer's edit was not reset");
+        // and once they commit it, the same approval applies
+        let addm = sh("git\n-C\n" + repo + "\nadd\n-A");
+        let cm = sh("git\n-C\n" + repo + "\n-c\nuser.name=m\n-c\nuser.email=m@local\ncommit\n-q\n-m\nthe maintainer's own change");
+        std::test::assert_eq_int(cm.code, 0, "the maintainer commits: " + cm.stderr);
+        let retry = self.dna.apply_reviewed("m5", 501);
+        std::test::assert(std::str::contains(retry, "the genome moved since the review"), "on a new base it is a new proposal: " + retry);
+
+        // ---- 8. git's exit status is not the guarantee -------------------
+        // `merge --ff-only <ancestor>` is "already up to date": exit 0,
+        // and the genome is a commit nobody reviewed. This is what a
+        // destination advancing between the caller's check and the git
+        // call leaves behind, and the gateway must read the result back
+        // rather than trust the status.
+        self.plain = dna::LocalGit { repo: repo };
+        let ancestor = before7;
+        let applied = self.plain.apply(ancestor);
+        std::test::assert(!applied, "an ancestor is not an apply, whatever git exits");
+        std::test::assert(std::str::contains(self.plain.last_error, "it moved during the apply"), "and says what happened: " + self.plain.last_error);
+        std::test::assert_eq_int(self.plain.applied, 0, "nothing counted as applied");
         std::test::assert(self.dna.journal.verify_chain(), "chain intact");
     }
 }

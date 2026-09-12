@@ -42,6 +42,16 @@ fn json(body: String) -> std::http::Response {
     return std::http::Response { status: 200, content_type: "application/json", headers: "Cache-Control: no-store", body: body };
 }
 
+// The store cannot answer: say so with a status a caller notices,
+// rather than an empty package that reads like an answer.
+fn unavailable(why: String) -> std::http::Response {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("error", why);
+    b.end_object();
+    return std::http::Response { status: 503, content_type: "application/json", headers: "Cache-Control: no-store", body: b.result() };
+}
+
 locus Service {
     params {
         root: String = ".";
@@ -51,11 +61,43 @@ locus Service {
         applied: Int = 0;
         last_error: String = "";
         ticks: Int = 0;
+        // The store must be OPEN before it can answer: `Pq.open()` is
+        // what connects and migrates. Nothing opened it, so the Postgres
+        // path returned 200 with an empty graph and a normal-looking
+        // digest while every query failed (the shakeout's finding 4).
+        // `Mem.open()` is a no-op, which is why the tests never saw it.
+        opened: Bool = false;
+    }
+    // Opened on the first request, not at birth: a database that is
+    // down or slow to answer must not hold the HTTP surface closed —
+    // the surface is where an operator reads that it is down. Kept
+    // open once it opens, and retried while it will not, so a database
+    // that comes up late needs no restart.
+    fn ensure_open() -> Bool {
+        // An open that succeeded once is not a connection that still
+        // answers. A database restart, or anything else that drops the
+        // session, left this true forever: the summary said `open`, the
+        // record tail failed, and `/context` answered 200 with an empty
+        // package and a normal-looking digest until someone restarted
+        // the service by hand (the review's second round, finding 4).
+        // The connection is asked on each request, and a dead one is
+        // re-established here rather than reported as knowledge.
+        if self.opened && self.store.healthy() { return true; }
+        if self.opened { eprintln("hale dna knowledge: the store's connection is gone (", self.store.last_error(), "); dialling again"); }
+        self.opened = false;
+        if self.store.reopen() {
+            self.opened = true;
+            self.last_error = "";
+            return true;
+        }
+        self.last_error = "the store is not open: " + self.store.last_error();
+        return false;
     }
     // Tail the record: fetch is the host's job; this reads what the
     // repository has now (another process — the organization, a CLI —
     // may have moved the ref since the last read).
     fn apply() -> know::Applied {
+        if !self.ensure_open() { return know::Applied { error: self.last_error }; }
         let moved = self.j.refresh();
         let r = know::apply_record(self.store, self.j, self.receipts);
         self.applied = self.applied + r.ratified + r.proposed + r.declined;
@@ -63,9 +105,11 @@ locus Service {
         return r;
     }
     fn summary() -> String {
+        let up = self.ensure_open();
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("store", self.store.kind());
+        b.bool_field("open", self.opened);
         b.int_field("watermark", self.store.watermark());
         b.int_field("record", self.j.revision());
         b.int_field("ideas", self.store.count("ideas"));
@@ -122,7 +166,10 @@ locus Service {
         self.ticks = self.ticks + 1;
         let fresh = self.apply();
         let ctx = std::http::build_context(req);
+        // the summary is always answerable: it is where an operator reads
+        // that the store is down, and why
         if std::http::is_route(ctx, "GET", "/") { return json(self.summary()); }
+        if !self.ensure_open() { return unavailable(self.last_error); }
         if std::http::is_route(ctx, "GET", "/context") {
             let target = std::str::replace(std::http::query_param(ctx.params, "target"), "%2F", "/");
             let b = std::http::query_param(ctx.params, "budget");

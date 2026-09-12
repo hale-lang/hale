@@ -103,6 +103,36 @@ main locus App {
             i = i + 1;
         }
         std::test::assert_eq_int(n, 5, "five replayed calls (two hits, three misses), five evidence rows");
+        // ---- the FIRST entry of a fresh tape is an in-place edit
+        //      (the shakeout's finding 10): the patch used to be written
+        //      before anything created the directory, so it was lost
+        //      while the entry still claimed to have one.
+        let rex = sh("chmod\n+x\n" + base + "/claude");
+        let fresh_tape = base + "/fresh";
+        let ws3 = base + "/ws3";
+        std::io::fs::mkdir(ws3) or discard;
+        std::io::fs::write_file(ws3 + "/main.hl", "// v1\n") or discard;
+        let rec3 = dna::RecordedModel { name: "h", dir: fresh_tape, mode: "record", inner: dna::HarnessModel { name: "quick", command: base + "/claude", confinement: dna::NoConfinement { }, allow_unconfined: true } };
+        let h3 = rec3.complete(dna::ModelRequest { attempt_id: "w/a5", role: "edit", prompt: "touch it", workspace: ws3, tool_grant: "harness @export" });
+        std::test::assert(h3.ok, "recorded into a tape that did not exist: " + h3.refused);
+        std::test::assert(std::io::fs::file_exists(fresh_tape + "/" + rec3.last_key + ".patch"), "the patch is there");
+        std::test::assert_eq_int(rec3.recorded, 1, "counted once it landed");
+        // and it replays onto a fresh copy of the same starting workspace
+        let ws4 = base + "/ws4";
+        std::io::fs::mkdir(ws4) or discard;
+        std::io::fs::write_file(ws4 + "/main.hl", "// v1\n") or discard;
+        let unrun2 = sh("chmod\n-x\n" + base + "/claude");
+        let play3 = dna::RecordedModel { name: "h", dir: fresh_tape, mode: "replay", inner: dna::HarnessModel { name: "quick", command: base + "/claude", confinement: dna::NoConfinement { }, allow_unconfined: true } };
+        let p3 = play3.complete(dna::ModelRequest { attempt_id: "w/a5", role: "edit", prompt: "touch it", workspace: ws4, tool_grant: "harness @export" });
+        std::test::assert(p3.ok, "replayed the first entry: " + p3.refused);
+        std::test::assert_eq_str(std::io::fs::read_file(ws4 + "/main.hl") or "", "// v1\n// touched by the harness\n", "the patch applied");
+        // a tape it cannot write is a refusal, not a silent success
+        let nowhere = dna::RecordedModel { name: "h", dir: "/proc/hale-dna-cannot-write", mode: "record", inner: dna::FakeModel { name: "quick", answer: "x" } };
+        let n = nowhere.complete(dna::ModelRequest { attempt_id: "w/a6", role: "edit", prompt: "y" });
+        std::test::assert(!n.ok, "a tape it cannot write is a refusal");
+        std::test::assert(std::str::contains(n.refused, "cannot write the tape"), "and says so: " + n.refused);
+        std::test::assert_eq_int(nowhere.recorded, 0, "and counted nothing");
+
         let rm = sh("rm\n-rf\n" + base);
     }
 }

@@ -18,6 +18,15 @@ interface KnowledgeStore {
     fn kind() -> String;
     // Migrate and connect; false with `last_error` set when it cannot.
     fn open() -> Bool;
+    // Whether the connection this store holds still answers. An open
+    // that succeeded once says nothing about now: a database restart,
+    // or anything that drops the session, leaves a store that reports
+    // itself open and fails every query (the review's second round,
+    // finding 4). Cheap enough to ask on each request.
+    fn healthy() -> Bool;
+    // Drop whatever is held and connect again, whatever the store
+    // thinks its state is.
+    fn reopen() -> Bool;
     fn last_error() -> String;
     // The next record seq to apply (0 = nothing applied yet).
     fn watermark() -> Int;
@@ -98,6 +107,9 @@ locus Mem {
     }
     fn kind() -> String { return "memory"; }
     fn open() -> Bool { return true; }
+    // Nothing to lose and nothing to dial: memory is always both.
+    fn healthy() -> Bool { return true; }
+    fn reopen() -> Bool { return true; }
     fn last_error() -> String { return ""; }
     fn watermark() -> Int { return self.mark; }
     fn set_watermark(seq: Int) -> Bool { if seq > self.mark { self.mark = seq; } return true; }
@@ -234,6 +246,8 @@ locus Mem {
         while i < self.signal_rows.len() {
             let x = self.signal_rows.get(i) or Signal { };
             if x.kind == kind && x.source == source && x.what == what {
+                // the same record row twice is the same event once (finding 12)
+                if x.last_seq >= seq { return true; }
                 self.signal_rows.set(i, Signal { kind: kind, source: source, what: what, count: x.count + 1, last_seq: seq }) or discard;
                 return true;
             }
@@ -341,6 +355,17 @@ locus Pq {
         self.opened = true;
         return true;
     }
+    fn healthy() -> Bool {
+        if !self.opened { return false; }
+        let r = self.conn.query_one("SELECT 1");
+        if !r.ok { self.error = "connection: " + r.err.kind + " " + r.err.detail; return false; }
+        return true;
+    }
+    fn reopen() -> Bool {
+        self.conn.close();
+        self.opened = false;
+        return self.open();
+    }
     fn last_error() -> String { return self.error; }
     fn watermark() -> Int {
         let row = self.conn.query_one("SELECT value FROM knowledge_meta WHERE key = 'watermark'");
@@ -388,20 +413,31 @@ locus Pq {
         if !r.ok { return self.fail("link", r.err); }
         return true;
     }
+    // Read the row as JSON, not as tab-separated text. The driver's
+    // rows are newline- and tab-separated with no escaping, so an idea
+    // whose text contains either — an ordinary paragraph — came back
+    // truncated with its author, acceptance and sequence shifted into
+    // nothing (the shakeout's finding 9). JSON from the server escapes
+    // both, so the row survives the transport intact.
     fn idea(id: String) -> Stored {
         let a = db::Args { };
         a.add(id);
-        let rows = self.conn.query_params("SELECT id, kind, text, author, provenance, revision, accepted, ratified_seq FROM knowledge_ideas WHERE id = $1", a);
+        let rows = self.conn.query_params("SELECT row_to_json(t) FROM (SELECT id, kind, text, author, provenance, revision, accepted, ratified_seq FROM knowledge_ideas WHERE id = $1) t", a);
         if !rows.ok || rows.n == 0 { return Stored { }; }
-        let line = first_line(rows.csv);
+        let row = dna::trim_nl(first_line(rows.csv));
+        if len(row) == 0 { return Stored { }; }
         return Stored {
             present: true,
             idea: dna::Idea {
-                id: tab_field(line, 0), kind: tab_field(line, 1), text: tab_field(line, 2), author: tab_field(line, 3),
-                provenance: tab_field(line, 4), revision: std::str::parse_int(tab_field(line, 5)) or 0,
-                accepted: tab_field(line, 6) == "t" || tab_field(line, 6) == "true"
+                id: std::json::find_string_field(row, "id"),
+                kind: std::json::find_string_field(row, "kind"),
+                text: std::json::find_string_field(row, "text"),
+                author: std::json::find_string_field(row, "author"),
+                provenance: std::json::find_string_field(row, "provenance"),
+                revision: std::json::find_int_field(row, "revision"),
+                accepted: std::json::find_bool_field(row, "accepted")
             },
-            ratified_seq: std::str::parse_int(tab_field(line, 7)) or 0
+            ratified_seq: std::json::find_int_field(row, "ratified_seq")
         };
     }
     // The tower rule in one query: bound to the target, or to any prefix
@@ -411,7 +447,7 @@ locus Pq {
         let a = db::Args { };
         a.add(target);
         a.add(to_string(budget));
-        let rows = self.conn.query_params("SELECT i.id FROM knowledge_ideas i WHERE i.accepted AND EXISTS (SELECT 1 FROM knowledge_bindings b WHERE b.idea = i.id AND ($1 = b.target OR $1 LIKE b.target || '/%')) ORDER BY i.ratified_seq, i.id LIMIT $2::bigint", a);
+        let rows = self.conn.query_params("SELECT i.id FROM knowledge_ideas i WHERE i.accepted AND EXISTS (SELECT 1 FROM knowledge_bindings b WHERE b.idea = i.id AND ($1 = b.target OR left($1, length(b.target) + 1) = b.target || '/')) ORDER BY i.ratified_seq, i.id LIMIT $2::bigint", a);
         if !rows.ok { return ""; }
         return ids_of(rows.csv);
     }
@@ -422,7 +458,7 @@ locus Pq {
         a.add(target);
         a.add(query_vec);
         a.add(to_string(budget));
-        let rows = self.conn.query_params("SELECT i.id FROM knowledge_ideas i WHERE i.accepted AND EXISTS (SELECT 1 FROM knowledge_bindings b WHERE b.idea = i.id AND ($1 = b.target OR $1 LIKE b.target || '/%')) ORDER BY i.embedding <=> $2::vector, i.ratified_seq, i.id LIMIT $3::bigint", a);
+        let rows = self.conn.query_params("SELECT i.id FROM knowledge_ideas i WHERE i.accepted AND EXISTS (SELECT 1 FROM knowledge_bindings b WHERE b.idea = i.id AND ($1 = b.target OR left($1, length(b.target) + 1) = b.target || '/')) ORDER BY i.embedding <=> $2::vector, i.ratified_seq, i.id LIMIT $3::bigint", a);
         if !rows.ok { self.error = "ranked: " + rows.err.kind + " " + rows.err.detail; return ""; }
         return ids_of(rows.csv);
     }
@@ -432,7 +468,7 @@ locus Pq {
         a.add(name);
         a.add(to_string(seq));
         a.add(body);
-        let r = self.conn.exec_params("INSERT INTO knowledge_structure (kind, name, seq, body) VALUES ($1, $2, $3::bigint, $4) ON CONFLICT (kind, name) DO UPDATE SET seq = EXCLUDED.seq, body = EXCLUDED.body", a);
+        let r = self.conn.exec_params("INSERT INTO knowledge_structure (kind, name, seq, body) VALUES ($1, $2, $3::bigint, $4) ON CONFLICT (kind, name) DO UPDATE SET seq = EXCLUDED.seq, body = EXCLUDED.body WHERE knowledge_structure.seq <= EXCLUDED.seq", a);
         if !r.ok { return self.fail("structure", r.err); }
         return true;
     }
@@ -456,33 +492,23 @@ locus Pq {
         a.add(source);
         a.add(what);
         a.add(to_string(seq));
-        let r = self.conn.exec_params("INSERT INTO knowledge_signals (kind, source, what, count, last_seq) VALUES ($1, $2, $3, 1, $4::bigint) ON CONFLICT (kind, source, what) DO UPDATE SET count = knowledge_signals.count + 1, last_seq = EXCLUDED.last_seq", a);
+        // Counted once per record row: the projection write and the
+        // watermark advance are separate, so a crash between them
+        // replays the row, and an unconditional increment counted the
+        // same event twice (the shakeout's finding 12). `last_seq` is
+        // the dedupe key: a row at or before it changes nothing.
+        let r = self.conn.exec_params("INSERT INTO knowledge_signals (kind, source, what, count, last_seq) VALUES ($1, $2, $3, 1, $4::bigint) ON CONFLICT (kind, source, what) DO UPDATE SET count = knowledge_signals.count + 1, last_seq = EXCLUDED.last_seq WHERE knowledge_signals.last_seq < EXCLUDED.last_seq", a);
         if !r.ok { return self.fail("signal", r.err); }
         return true;
     }
-    @unbounded
+    // One JSON array, built by the server: a concern's text is free
+    // prose and carries tabs and newlines (finding 9).
     fn signals() -> String {
-        let rows = self.conn.query_all("SELECT kind, source, what, count, last_seq FROM knowledge_signals ORDER BY last_seq DESC, source");
-        let out = std::str::builder_new();
-        std::str::builder_append(out, "[");
-        if rows.ok {
-            let mut rest = rows.csv;
-            let mut first = true;
-            while len(rest) > 0 {
-                let nl = std::str::index_of(rest, "\n");
-                let line = if nl < 0 { rest } else { rest[0..nl] };
-                if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
-                if len(line) == 0 { continue; }
-                if !first { std::str::builder_append(out, ", "); }
-                first = false;
-                std::str::builder_append(out, signal_json(Signal {
-                    kind: tab_field(line, 0), source: tab_field(line, 1), what: tab_field(line, 2),
-                    count: std::str::parse_int(tab_field(line, 3)) or 0, last_seq: std::str::parse_int(tab_field(line, 4)) or 0
-                }));
-            }
-        }
-        std::str::builder_append(out, "]");
-        return std::str::builder_finish(out);
+        let rows = self.conn.query_all("SELECT coalesce(json_agg(row_to_json(t) ORDER BY t.last_seq DESC, t.source), '[]') FROM (SELECT kind, source, what, count, last_seq FROM knowledge_signals) t");
+        if !rows.ok { return "[]"; }
+        let row = dna::trim_nl(first_line(rows.csv));
+        if len(row) == 0 { return "[]"; }
+        return row;
     }
     fn count(what: String) -> Int {
         let sql = if what == "bindings" { "SELECT count(*) FROM knowledge_bindings" }

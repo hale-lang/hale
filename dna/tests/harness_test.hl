@@ -37,6 +37,37 @@ fn harness_script(genome_file: String) -> String {
         + "printf '{\"type\": \"result\", \"subtype\": \"success\", \"is_error\": false, \"result\": \"touched app/main.hl; genome bytes %s\", \"total_cost_usd\": 0.0123, \"usage\": {\"input_tokens\": 10, \"output_tokens\": 5}}\\n' \"$seen\"\n";
 }
 
+// The CONTRACT stand-in (the shakeout's findings 1 and 5): it records
+// exactly what it received — every argument on its own line, then the
+// stdin bytes — into a file OUTSIDE the workspace, and reports what it
+// could read of the genome. A stand-in that ignores its arguments
+// proves nothing about prompt delivery, which is how a prompt arriving
+// as several arguments went unnoticed.
+fn contract_script(record_file: String, genome_file: String) -> String {
+    return "#!/bin/sh\n"
+        + "genome=$(cat " + genome_file + ")\n"
+        + ": > " + record_file + "\n"
+        + "printf 'argc=%s\\n' \"$#\" >> " + record_file + "\n"
+        + "for a in \"$@\"; do printf 'arg=%s\\n' \"$a\" >> " + record_file + "; done\n"
+        + "printf 'stdin<<\\n' >> " + record_file + "\n"
+        + "cat >> " + record_file + "\n"
+        + "printf '\\n>>stdin\\n' >> " + record_file + "\n"
+        + "seen=$(cat \"$genome/app/main.hl\" 2>/dev/null | wc -c | tr -d ' ')\n"
+        + "printf '{\"type\": \"result\", \"subtype\": \"success\", \"is_error\": false, \"result\": \"read %s genome byte(s)\", \"total_cost_usd\": 0.001, \"usage\": {\"input_tokens\": 1, \"output_tokens\": 1}}\\n' \"$seen\"\n";
+}
+
+// A harness that adds a file in a directory the worktree does not have
+// yet — the ordinary shape of "add a module" (the shakeout's finding
+// 11: the import wrote through a path whose parent was missing, the
+// write failed with `not_found`, and the candidate went on without it).
+fn builder_script() -> String {
+    return "#!/bin/sh\n"
+        + "mkdir -p app/lib\n"
+        + "printf 'fn helper() -> Int {\\n    return 7;\\n}\\n' > app/lib/helper.hl\n"
+        + "printf '// the helper lives in app/lib\\n' >> app/main.hl\n"
+        + "printf '{\"type\": \"result\", \"subtype\": \"success\", \"is_error\": false, \"result\": \"added app/lib/helper.hl\", \"total_cost_usd\": 0.002, \"usage\": {\"input_tokens\": 2, \"output_tokens\": 2}}\\n'\n";
+}
+
 // A harness that reaches into the genome and moves it.
 fn mover_script(genome_file: String) -> String {
     return "#!/bin/sh\n"
@@ -53,6 +84,11 @@ main locus App {
         again: dna::Dna = dna::Dna { };
         direct: dna::HarnessModel = dna::HarnessModel { };
         strict: dna::HarnessModel = dna::HarnessModel { };
+        recorder: dna::HarnessModel = dna::HarnessModel { };
+        answering: dna::HarnessModel = dna::HarnessModel { };
+        unmasked: dna::HarnessModel = dna::HarnessModel { };
+        builder: dna::Dna = dna::Dna { };
+        stuck: dna::SourceEditor = dna::SourceEditor { };
     }
     @unbounded
     fn last_body(j: dna::Journal, kind: String) -> String {
@@ -191,11 +227,101 @@ main locus App {
         std::test::assert_eq_str(self.direct.last.tool_grant, "harness", "no export: no grant");
         std::test::assert(!std::io::fs::file_exists(repo + "/NOTES.txt"), "its scratch was not the repository");
 
+        // ---- 5. the contract: what the harness actually received
+        //         (findings 1 and 5). The prompt has newlines, a blank
+        //         line and a leading dash; argv is newline-separated, so
+        //         a prompt written there would arrive as arguments.
+        let record = scratch + "/received";
+        std::io::fs::write_file(scratch + "/contract", contract_script(record, scratch + "/genome")) or discard;
+        let cx = sh("chmod\n+x\n" + scratch + "/contract");
+        let prompt = "Rewrite main.hl so that: document it\n\n-- keep every other line\nAnd this third line.";
+        self.recorder = dna::HarnessModel { name: "quick", command: scratch + "/contract", confinement: dna::NoConfinement { }, allow_unconfined: true };
+        let c = self.recorder.complete(dna::ModelRequest { attempt_id: "c/a0", role: "edit", prompt: prompt, context: "THE FILE\nline two" });
+        std::test::assert(c.ok, "the contract stand-in answered: " + c.refused);
+        let got = std::io::fs::read_file(record) or "";
+        std::test::assert(std::str::contains(got, "argc=4\n"), "the harness got its four flags and NOTHING else: " + got);
+        std::test::assert(std::str::contains(got, "arg=-p\n") && std::str::contains(got, "arg=--output-format\n") && std::str::contains(got, "arg=json\n") && std::str::contains(got, "arg=--dangerously-skip-permissions\n"), got);
+        std::test::assert(!std::str::contains(got, "arg=Rewrite") && !std::str::contains(got, "arg=And this third line."), "no part of the prompt is an argument: " + got);
+        // the prompt arrives intact on stdin: context, a blank line, then
+        // the instruction, every line of it, in order
+        std::test::assert(std::str::contains(got, "stdin<<\nTHE FILE\nline two\n\nRewrite main.hl so that: document it\n\n-- keep every other line\nAnd this third line.\n>>stdin"), "the prompt, exactly, on stdin: " + got);
+
+        // ---- 6. an ANSWER-ONLY call masks the genome too (finding 1):
+        //         no workspace, so no request mask — the model's own
+        //         genome is what the confinement covers
+        self.answering = dna::HarnessModel { name: "deep", command: scratch + "/contract", genome: repo, confinement: dna::Bubblewrap { } };
+        let a = self.answering.complete(dna::ModelRequest { attempt_id: "c/a1", role: "review", prompt: "decide" });
+        if masked {
+            std::test::assert(a.ok, "the answer-only call ran: " + a.refused);
+            std::test::assert_eq_str(a.output, "read 0 genome byte(s)", "a review cannot read the genome either: " + a.output);
+            std::test::assert(std::str::contains(self.answering.last.params, "confinement=bubblewrap masked=1"), "the evidence counts what was masked: " + self.answering.last.params);
+        }
+        // and a confinement with nothing to mask is refused, not run
+        self.unmasked = dna::HarnessModel { name: "deep", command: scratch + "/contract", genome_env: "HALE_DNA_NO_GENOME_7f3d", confinement: dna::Bubblewrap { } };
+        let u = self.unmasked.complete(dna::ModelRequest { attempt_id: "c/a2", role: "review", prompt: "decide" });
+        if masked {
+            std::test::assert(!u.ok && std::str::contains(u.refused, "no genome to mask"), "a boundary it cannot establish is refused: " + u.refused);
+        }
+        std::test::assert_eq_int(dna::path_count(""), 0, "no paths");
+        std::test::assert_eq_int(dna::path_count("/a\n/b\n"), 2, "two paths");
+
         // the money arithmetic
         std::test::assert_eq_int(dna::usd_to_micros("0.0123"), 12300, "0.0123 USD");
         std::test::assert_eq_int(dna::usd_to_micros("1.5"), 1500000, "1.5 USD");
         std::test::assert_eq_int(dna::usd_to_micros("0"), 0, "0 USD");
         std::test::assert_eq_int(dna::usd_to_micros("0.00000049"), 0, "below a micro-dollar");
+
+        // ---- 7. a harness that adds a file in a NEW directory (finding
+        //         11): the import makes the parents under the grant, and
+        //         the candidate carries the new file
+        std::io::fs::write_file(scratch + "/builder", builder_script()) or discard;
+        let cb = sh("chmod\n+x\n" + scratch + "/builder");
+        self.builder = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees", base_exec_digest: "exec:base" },
+                repo: dna::LocalGit { repo: repo }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo, seed: "app" },
+            editor: dna::SourceEditor {
+                name: "editor",
+                models: dna::ModelRouter {
+                    quick: dna::HarnessModel { name: "quick", command: scratch + "/builder", confinement: dna::NoConfinement { }, allow_unconfined: true },
+                    deep: dna::FakeModel { name: "deep", answer: "pings_seen +" }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
+            genome_seed: "app"
+        };
+        let built = self.builder.mutate("t3", "docs", "put the helper in its own module", "", 3);
+        std::test::assert(std::str::contains(built, ": review"), "the new module reaches its Review: " + built);
+        std::time::sleep(100ms);
+        std::test::assert_eq_int(self.builder.editor.imported, 2, "the new file and the edited one");
+        let cand3 = std::json::find_string_field(self.last_body(self.builder.journal, "review.requested"), "candidate_commit");
+        let helper = sh("git\n-C\n" + repo + "\nshow\n" + cand3 + ":app/lib/helper.hl");
+        std::test::assert_eq_int(helper.code, 0, "the candidate has app/lib/helper.hl: " + helper.stderr);
+        std::test::assert(std::str::contains(helper.stdout, "return 7;"), "with its content: " + helper.stdout);
+
+        // ---- 8. an in-grant write that cannot land fails the attempt
+        //         (finding 11's other half): a partial import must never
+        //         become a candidate. Here the worktree has a DIRECTORY
+        //         where the export has a file, so the write fails for
+        //         any user, root included.
+        let wt = repo + "-wt";
+        let exp = repo + "-exp";
+        std::io::fs::mkdir(wt) or discard;
+        std::io::fs::mkdir(wt + "/app") or discard;
+        std::io::fs::mkdir(wt + "/app/main.hl") or discard;
+        std::io::fs::mkdir(exp) or discard;
+        std::io::fs::mkdir(exp + "/app") or discard;
+        std::io::fs::write_file(exp + "/app/main.hl", BASE) or discard;
+        self.stuck = dna::SourceEditor { name: "editor", tools: dna::WorktreeTools { hale_bin: toolchain() } };
+        self.stuck.place(wt, "app", repo);
+        let brought = self.stuck.import_from(exp);
+        std::test::assert_eq_str(brought, "", "nothing was brought back");
+        std::test::assert(std::str::contains(self.stuck.import_error, "could not import main.hl"), "and the failure is named: " + self.stuck.import_error);
+        std::test::assert_eq_int(self.stuck.imported, 0, "no file counted as imported");
     }
 }
 

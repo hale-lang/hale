@@ -52,10 +52,17 @@ main locus App {
             verdict: "abstain", reviewer: "riley", authority: "maintainer"
         });
         std::test::assert(abst && !self.review.settled, "abstain admitted, not settled");
-        // 5. The right verdict settles it, with provenance.
-        let ok = self.review.consider(dna::Verdict {
+        // 5. The right verdict settles it, with provenance. The claim is
+        //    ONE authority: a compound like `maintainer operator` used to
+        //    pass by substring, which is the shakeout's finding 3.
+        let compound = self.review.consider(dna::Verdict {
             review_id: "r1", subject_digest: "sha256:m7-candidate",
             verdict: "approve", reviewer: "riley", authority: "maintainer operator"
+        });
+        std::test::assert(!compound && !self.review.settled, "a compound authority name is not the authority it contains");
+        let ok = self.review.consider(dna::Verdict {
+            review_id: "r1", subject_digest: "sha256:m7-candidate",
+            verdict: "approve", reviewer: "riley", authority: "maintainer"
         });
         std::test::assert(ok && self.review.settled, "settled");
         std::test::assert_eq_str(self.review.outcome, "approve", "outcome recorded");
@@ -112,6 +119,16 @@ main locus App {
         std::test::assert_eq_int(self.boundary.current_grant().max_magnitude, 10, "ceiling halved");
         std::test::assert_eq_str(self.boundary.current_grant().review, "pre", "review tightened to pre");
         std::test::assert(self.boundary.audit_count() >= 13, "every decision is in the audit trail");
+
+        // An unknown authority name satisfies ONLY itself (the
+        // shakeout's finding 3): a substring test let `not-board` pass
+        // for `board`, and a Review admitted its verdict.
+        std::test::assert(dna::authority_satisfies("release-captain", "release-captain"), "a custom authority satisfies itself");
+        std::test::assert(!dna::authority_satisfies("not-board", "board"), "a name that merely contains `board` is not the board");
+        std::test::assert(!dna::authority_satisfies("operator-intern", "operator"), "nor a suffix of a custom name");
+        std::test::assert(!dna::authority_satisfies("board", "board-of-two"), "nor a prefix");
+        std::test::assert(!dna::authority_satisfies("release-captain", "reviewer"), "an unknown name does not outrank a known one");
+        std::test::assert(!dna::authority_satisfies("reviewer", "release-captain"), "and a known one does not satisfy an unknown");
     }
 }
 

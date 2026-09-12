@@ -28,8 +28,14 @@ fn hale(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> (bool, String) {
 }
 
 fn http(port: u16, req: &str) -> String {
+    http_within(port, req, 15)
+}
+
+/// A request whose answer may take a while: a store that is down is
+/// discovered by a connect timeout, and the service answers only after.
+fn http_within(port: u16, req: &str, secs: u64) -> String {
     let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) else { return String::new() };
-    let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = s.set_read_timeout(Some(Duration::from_secs(secs)));
     let _ = s.write_all(req.as_bytes());
     let mut out = String::new();
     let _ = s.read_to_string(&mut out);
@@ -84,6 +90,198 @@ fn main() {
     println(d);
 }
 "#;
+
+/// Proposes a practice and ratifies it in the same program: the Review
+/// is a live child of the Dna, so the verdict travels the ordinary way
+/// and the record ends with `knowledge.ratified`. The text is an
+/// ordinary paragraph — a newline and a tab — which the driver's rows
+/// carry unescaped (finding 9).
+const RATIFIER: &str = r#"import "vendor/dna" as dna;
+
+main locus App {
+    params {
+        core: dna::Dna = dna::Dna {
+            journal: dna::GitJournal { repo: "." },
+            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, repo: "." },
+            membrane: dna::Board { who: "board" }
+        };
+    }
+    bus { publish dna::ReviewVerdict; }
+    run() {
+        let d = self.core.propose_knowledge(dna::Idea { id: "p1", kind: "practice", text: "First line
+Second line	with a tab", author: "org" }, "org/served");
+        dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(d), subject_digest: d, verdict: "approve", reviewer: "riley", authority: "board" };
+        std::time::sleep(500ms);
+        println(d);
+    }
+}
+
+fn main() { App { }; }
+"#;
+
+/// A project with a record, for the service to tail.
+fn seeded_app(tag: &str) -> (PathBuf, PathBuf, String) {
+    let d = std::env::temp_dir().join(format!("hale_dna_ksvc_{}_{}", std::process::id(), tag));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let (ok, out) = hale(&["dna", "new", "served"], &d, &[]);
+    assert!(ok, "{out}");
+    let app = d.join("served");
+    Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
+    Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "commit", "-q", "-m", "genome"]).current_dir(&app).output().unwrap();
+    std::fs::create_dir_all(app.join("propose")).unwrap();
+    std::fs::write(app.join("propose/main.hl"), RATIFIER).unwrap();
+    let (ok, out) = hale(&["run", "propose"], &app, &[]);
+    assert!(ok, "proposer: {out}");
+    let digest = out.lines().rev().find(|l| l.starts_with("sha256:")).expect("the digest").trim().to_string();
+    (d, app, digest)
+}
+
+/// Run the service in the foreground against a DSN, answer one request,
+/// and stop it.
+fn serve<T>(app: &Path, dsn: &str, port: u16, body_of: impl FnOnce(u16) -> T) -> (T, String) {
+    let log = std::env::temp_dir().join(format!("hale_ksvc_{}_{}.log", std::process::id(), port));
+    let mut c = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["dna", "knowledge", ".", "--port", &port.to_string()])
+        .current_dir(app)
+        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
+        .env("HALE_DNA_KNOWLEDGE_DSN", dsn)
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .expect("hale dna knowledge");
+    // the first run builds the service into the toolchain cache, and a
+    // sibling test may hold that build's lock
+    // wait for the port to ACCEPT, not for a reply: the reply may be
+    // held up by the store the service is about to discover is down
+    let dl = Instant::now() + Duration::from_secs(300);
+    while Instant::now() < dl && TcpStream::connect(("127.0.0.1", port)).is_err() {
+        if let Ok(Some(st)) = c.try_wait() {
+            let log = std::fs::read_to_string(&log).unwrap_or_default();
+            panic!("hale dna knowledge exited early ({st}):\n{log}");
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let out = body_of(port);
+    let _ = c.kill();
+    let _ = c.wait();
+    (out, std::fs::read_to_string(&log).unwrap_or_default())
+}
+
+/// GH #583 K1, shakeout finding 4 — the service opens its store, and says
+/// so when it cannot. `Pq.open()` is what connects and migrates; nothing
+/// called it, so the Postgres path answered 200 with an empty graph and a
+/// normal-looking digest while every query failed. `Mem.open()` is a
+/// no-op, which is why every test passed.
+#[test]
+fn the_service_opens_its_store_and_refuses_to_answer_when_it_cannot() {
+    let (d, app, _digest) = seeded_app("down");
+    // a database that is not there: a port nothing listens on
+    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead_port = closed.local_addr().unwrap().port();
+    drop(closed);
+    let dsn = format!("postgres://dna:dna@127.0.0.1:{dead_port}/dna?sslmode=disable");
+    let ((summary, ctx), log) = serve(&app, &dsn, free_port(), |p| {
+        (
+            body(&http_within(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n", 240)),
+            http_within(p, "GET /context?target=org%2Fserved&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n", 240),
+        )
+    });
+    let _ = std::fs::remove_dir_all(&d);
+    // the surface is up even though the store is not: that is where an
+    // operator reads what is wrong
+    assert!(summary.contains("\"store\": \"postgres\"") && summary.contains("\"open\": false"), "the summary reports the store is not open: {summary}\n{log}");
+    assert!(summary.contains("the store is not open: open:"), "and why: {summary}");
+    // a package request is refused, not answered with an empty package
+    assert!(ctx.starts_with("HTTP/1.0 503") || ctx.starts_with("HTTP/1.1 503"), "a package is refused while the store is down: {ctx}");
+    assert!(body(&ctx).contains("the store is not open"), "{ctx}");
+    assert!(log.contains("postgres at 127.0.0.1"), "the service named the store it was pointed at: {log}");
+}
+
+/// The same service against a real Postgres, when one is configured
+/// (CI's service container; a developer's compose). This is the path the
+/// fixtures replaced with the memory store.
+#[test]
+fn the_service_serves_a_real_postgres() {
+    let Ok(dsn) = std::env::var("HALE_DNA_KNOWLEDGE_DSN") else {
+        eprintln!("the_service_serves_a_real_postgres: no HALE_DNA_KNOWLEDGE_DSN; skipped");
+        return;
+    };
+    if !dsn.starts_with("postgres") {
+        eprintln!("the_service_serves_a_real_postgres: DSN is not postgres; skipped");
+        return;
+    }
+    let (d, app, digest) = seeded_app("pg");
+    // A database of this run's own where the server will grant one. The
+    // tables here are global to a database, and the native knowledge
+    // fixture reads the same DSN: run unpartitioned, the two wipe each
+    // other's rows (the review's second round, the isolation note). The
+    // shared DSN is the fallback, wiped as before.
+    let own = format!("hale_dna_svc_{}", std::process::id());
+    let made = Command::new("psql")
+        .args([&dsn, "-v", "ON_ERROR_STOP=1", "-c", &format!("DROP DATABASE IF EXISTS {own}"), "-c", &format!("CREATE DATABASE {own}")])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let dsn = if made { with_database(&dsn, &own) } else { dsn.clone() };
+    if !made {
+        let wipe = Command::new("psql").args([&dsn, "-v", "ON_ERROR_STOP=1", "-c", "DROP TABLE IF EXISTS knowledge_bindings, knowledge_edges, knowledge_ideas, knowledge_meta, knowledge_structure, knowledge_signals"]).output();
+        assert!(wipe.map(|o| o.status.success()).unwrap_or(false), "psql is needed to reset the database for this test");
+    }
+    let kill = dsn.clone();
+    let ((summary, ctx, idea, after_kill, ctx2), log) = serve(&app, &dsn, free_port(), |p| {
+        // the service applies the record on every request
+        let s = body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n"));
+        let c = body(&http(p, "GET /context?target=org%2Fserved%2Fmain&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
+        let i = body(&http(p, &format!("GET /idea/{digest} HTTP/1.0\r\nHost: x\r\n\r\n")));
+        // The connection dies while the database stays healthy — a
+        // restart, a failover, an idle timeout. `opened` was sticky, so
+        // the service went on reporting `open` and answering 200 with an
+        // empty package and a normal-looking digest until someone
+        // restarted it by hand (the review's second round, finding 4).
+        let _ = Command::new("psql")
+            .args([&kill, "-v", "ON_ERROR_STOP=1", "-c", "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = current_database()"])
+            .output();
+        let k = body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n"));
+        let c2 = body(&http(p, "GET /context?target=org%2Fserved%2Fmain&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
+        (s, c, i, k, c2)
+    });
+    if made {
+        let _ = Command::new("psql").args([&std::env::var("HALE_DNA_KNOWLEDGE_DSN").unwrap(), "-c", &format!("DROP DATABASE IF EXISTS {own}")]).output();
+    }
+    let _ = std::fs::remove_dir_all(&d);
+    assert!(summary.contains("\"store\": \"postgres\"") && summary.contains("\"open\": true"), "the store is open: {summary}\n{log}");
+    assert!(summary.contains("\"error\": \"\""), "and nothing failed: {summary}");
+    // the record reached the database: the schema, the watermark, the projections
+    let n = |k: &str| -> i64 {
+        summary.split(&format!("\"{k}\": ")).nth(1).and_then(|t| t.split(|c: char| !c.is_ascii_digit()).next()).and_then(|t| t.parse().ok()).unwrap_or(-1)
+    };
+    assert!(n("watermark") > 0 && n("watermark") == n("record"), "the whole record was applied: {summary}");
+    assert!(n("ratified") == 1 && n("bindings") == 1 && n("structure") > 0, "ideas, bindings and structure are in Postgres: {summary}");
+    // the paragraph survives the driver's tab-separated rows (finding 9)
+    assert!(idea.contains("\"text\": \"First line\\nSecond line\\twith a tab\"") && idea.contains("\"author\": \"org\"") && idea.contains("\"accepted\": true"), "the idea round-trips intact: {idea}");
+    assert!(ctx.contains("\"included_n\": 1") && ctx.contains(&digest) && ctx.contains("Second line"), "and reaches the package: {ctx}");
+    // the connection died and the service dialled again by itself: the
+    // same knowledge, not an empty package with a well-formed digest
+    assert!(after_kill.contains("\"open\": true") && after_kill.contains("\"error\": \"\""), "the service re-established its connection: {after_kill}\n{log}");
+    assert!(after_kill.contains(&format!("\"watermark\": {}", n("watermark"))), "and is where it was: {after_kill}");
+    assert!(ctx2.contains("\"included_n\": 1") && ctx2.contains(&digest), "the package survives a lost connection: {ctx2}\n{log}");
+}
+
+/// The DSN with a different database, keeping user, host, port and
+/// parameters: `postgres://u:p@h:5432/<db>?sslmode=disable`.
+fn with_database(dsn: &str, db: &str) -> String {
+    let (head, query) = match dsn.find('?') {
+        Some(i) => (&dsn[..i], &dsn[i..]),
+        None => (dsn, ""),
+    };
+    let authority_end = head.find("//").map(|i| i + 2).unwrap_or(0);
+    match head[authority_end..].find('/') {
+        Some(i) => format!("{}/{db}{query}", &head[..authority_end + i]),
+        None => format!("{head}/{db}{query}"),
+    }
+}
 
 #[test]
 fn init_writes_compose_and_dev_runs_the_knowledge_service_that_tails_the_record() {

@@ -92,6 +92,14 @@ fn host_exec(verb: &str, dir: &Path, args: &[String]) -> ExitCode {
             .args(args)
             .current_dir(&root)
             .env("HALE_BIN", &me)
+            // GH #583: the genome a harness must never reach. The
+            // organization gets it from the host's child_envs, but a
+            // verb that runs a model itself — `hale dna models`, whose
+            // probe is its own process — is launched from here, and a
+            // confined harness with nothing to mask is refused rather
+            // than run, so the probe of a generated catalog failed
+            // outside `run`/`dev` (the review's second round, finding 2).
+            .env("HALE_DNA_GENOME", &root)
             .env("HALE_DNA_MEMBRANE", &membrane)
             .env("HALE_DNA_TOOLCHAIN", TOOLCHAIN)
             .env("HALE_DNA_KNOWLEDGE_BIN", &knowledge)
@@ -143,7 +151,10 @@ pub fn node(args: &[String]) -> ExitCode {
     let sock = node_dir.join("concern.raised.sock");
     let _ = fs::remove_file(&sock);
     let conf = node_dir.join("node.bus.conf");
-    if let Err(e) = fs::write(&conf, format!("dna.concern.raised = unix://{} : listen\n", sock.display())) {
+    // relative, and the host execs with the clone as its working
+    // directory: a Unix address holds 108 bytes of path, and an ordinary
+    // project path spends most of them (the shakeout's finding 6)
+    if let Err(e) = fs::write(&conf, "dna.concern.raised = unix://.hale/node/concern.raised.sock : listen\n") {
         eprintln!("hale node: cannot write {}: {e}", conf.display());
         return ExitCode::from(1);
     }
@@ -841,10 +852,22 @@ fn models_hl(found: &Discovery) -> String {
 // none available the harness is refused unless `allow_unconfined` says
 // otherwise — that is the org chart's word, and the evidence records
 // which it was. `output: "text"`: codex prints its final message.
+//
+// The export is deliberately not a repository, hence
+// `--skip-git-repo-check`; the prompt arrives on stdin, so no flag
+// carries it. `--sandbox workspace-write` because a non-interactive
+// codex is READ-ONLY by default: without it this backend can answer
+// but cannot edit the export it was given, and the attempt comes back
+// with nothing changed under the grant. It grants writes in the
+// working directory only, and DNA's own confinement still holds the
+// genome out of reach. Versions differ: check `codex exec --help` if
+// yours refuses these.
 
 fn harness() -> dna::HarnessModel {
     return dna::HarnessModel { name: "quick", command: "codex", argv: "exec
---full-auto", output: "text", confinement: dna::Bubblewrap { } };
+--skip-git-repo-check
+--sandbox
+workspace-write", output: "text", confinement: dna::Bubblewrap { } };
 }
 
 "#

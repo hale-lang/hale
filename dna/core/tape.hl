@@ -82,6 +82,7 @@ locus RecordedModel {
         hits: Int = 0;
         misses: Int = 0;
         recorded: Int = 0;
+        write_errors: Int = 0;
         last_key: String = "";
         last_miss: String = "";
         last: ModelEvidence = ModelEvidence { };
@@ -139,6 +140,29 @@ locus RecordedModel {
             patched: std::json::find_bool_field(t, "patched")
         };
     }
+    // The tape's directory, made before anything is written into it.
+    // The patch used to be written first, so the FIRST entry of a fresh
+    // tape lost it while the entry still claimed `patched: true`, and a
+    // replay of that request failed on a patch that was never there
+    // (the shakeout's finding 10). The existing fixture recorded a
+    // text-only answer first, which created the directory and hid it.
+    fn ensure_dir() -> Bool {
+        if len(self.dir) == 0 { self.last_miss = "the tape has no directory"; return false; }
+        std::io::fs::mkdir(self.dir) or discard;
+        if std::io::fs::file_exists(self.dir) { return true; }
+        self.write_errors = self.write_errors + 1;
+        self.last_miss = "cannot write the tape: " + self.dir + " could not be created";
+        return false;
+    }
+    fn put(path: String, text: String) -> Bool {
+        let before = self.write_errors;
+        std::io::fs::write_file(path, text) or self.on_write_error(err);
+        return self.write_errors == before;
+    }
+    fn on_write_error(e: IoError) {
+        self.write_errors = self.write_errors + 1;
+        self.last_miss = "cannot write the tape: " + e.kind;
+    }
     fn write_entry(e: TapeEntry) -> Bool {
         let b = std::json::Builder { };
         b.begin_object();
@@ -158,11 +182,9 @@ locus RecordedModel {
         b.int_field("cost_micros", e.cost_micros);
         b.bool_field("patched", e.patched);
         b.end_object();
-        std::io::fs::mkdir(self.dir) or discard;
-        std::io::fs::write_file(self.entry_path(e.key), b.result() + "\n") or self.write_failed(err);
-        return true;
+        if !self.ensure_dir() { return false; }
+        return self.put(self.entry_path(e.key), b.result() + "\n");
     }
-    fn write_failed(e: IoError) { self.last_miss = "cannot write the tape: " + e.kind; }
     // The nearest entry on a miss: one that shares the prompt digest,
     // and which of the other fields differed. Bounded by the tape.
     @unbounded
@@ -207,6 +229,7 @@ locus RecordedModel {
     // Forward to the inner (its evidence is the call's), then write the
     // answer and, for a workspace, the patch of what changed in it.
     fn record(req: ModelRequest, key: String) -> ModelResult {
+        if !self.ensure_dir() { return ModelResult { ok: false, backend: self.inner.identity(), model: self.inner.model_name(), refused: self.last_miss }; }
         let mut snap = "";
         if len(req.workspace) > 0 {
             let t = run_tool("mktemp\n-d\n/tmp/hale-dna-tape.XXXXXX");
@@ -224,12 +247,19 @@ locus RecordedModel {
             let cp = run_tool("sh\n-c\nmkdir -p \"$0/b\" && cp -r \"$1/.\" \"$0/b\"\n" + snap + "\n" + req.workspace);
             let d = run_tool("sh\n-c\ncd \"$0\" && diff -ruN -x vendor -x .hale -x .git a b\n" + snap);
             if d.code == 1 && len(d.stdout) > 0 {
-                std::io::fs::write_file(self.patch_path(key), d.stdout) or self.write_failed(err);
+                // a patch that did not land must not be claimed by an
+                // entry: a replay would find the entry and no patch
+                if !self.put(self.patch_path(key), d.stdout) {
+                    let rmf = run_tool("rm\n-rf\n" + snap);
+                    return ModelResult { ok: false, backend: self.inner.identity(), model: self.inner.model_name(), refused: self.last_miss };
+                }
                 e.patched = true;
             }
             let rm = run_tool("rm\n-rf\n" + snap);
         }
-        let w = self.write_entry(e);
+        if !self.write_entry(e) {
+            return ModelResult { ok: false, backend: self.inner.identity(), model: self.inner.model_name(), refused: self.last_miss };
+        }
         self.recorded = self.recorded + 1;
         return r;
     }

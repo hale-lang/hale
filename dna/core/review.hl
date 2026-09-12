@@ -32,7 +32,11 @@ fn authority_satisfies(claimed: String, required: String) -> Bool {
     if claimed == required { return true; }
     let c = authority_rank(claimed);
     let r = authority_rank(required);
-    if c == 0 || r == 0 { return std::str::contains(claimed, required); }
+    // An unknown name satisfies ONLY itself, which the equality above
+    // already decided. This was a substring test, so `not-board`
+    // satisfied `board` and `operator-intern` satisfied `operator`
+    // (the shakeout's finding 3).
+    if c == 0 || r == 0 { return false; }
     return c >= r;
 }
 
