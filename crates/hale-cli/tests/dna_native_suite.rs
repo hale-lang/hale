@@ -86,6 +86,7 @@ fn dna_fixture_set_is_complete() {
             "fanout_join_test.hl",
             "harness_test.hl",
             "journal_test.hl",
+            "knowledge_context_test.hl",
             "knowledge_events_test.hl",
             "knowledge_store_test.hl",
             "knowledge_test.hl",

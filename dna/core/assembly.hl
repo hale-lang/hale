@@ -187,6 +187,10 @@ locus Dna {
         // declares the policy; every model.called row is accounted here;
         // rehydrated from the record at birth.
         budget: Budget = Budget { };
+        // GH #583 K2: the owner's line to the knowledge service; the
+        // package it answers is folded into the objective the editor gets
+        knowledge_client: KnowledgeClient = KnowledgeClient { };
+        concern_threshold: Int = 3; // a concern raised this often from one source is proposed as knowledge
         genome_seed: String = "."; // the genome's seed, relative to the repository
         org_seed: String = "dna/org"; // the organization's own seed (GH #566 F3): what an `organization` change edits
         initiative: Bool = true; // persistent pressure becomes a growth Mutation, not only a note
@@ -234,6 +238,7 @@ locus Dna {
         subscribe WorkRequested as on_work_requested;
         subscribe TaskSettled as on_task_settled;
         subscribe PressureRaised as on_pressure;
+        subscribe ConcernRaised as on_concern;
         publish WorkDone;
         // GH #566 F2: a Review is announced as a typed fact, so a position
         // in the org (the Leader) can decide it inside its grant
@@ -642,6 +647,34 @@ locus Dna {
             }
         }
     }
+    // GH #583 K2: a concern — a child's signal about the part above it
+    // — is journaled; when it persists from one source it becomes a
+    // knowledge proposal by that source, bound to its parent (a concern
+    // by the tower rule), for the Board to ratify. A source with no
+    // parent has nothing to bind to and is refused, saying so.
+    @unbounded
+    fn on_concern(c: Concern) {
+        let mut seen = 1;
+        let n = self.journal.revision();
+        let mut i = 0;
+        let mut proposed = false;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "concern.raised" && e.entity == c.source { seen = seen + 1; }
+            if e.kind == "concern.proposed" && e.entity == c.source { proposed = true; }
+            i = i + 1;
+        }
+        let x = self.journal.append(self.journal.revision(), "concern.raised", c.source, c.what + " x" + to_string(seen) + " severity " + to_string(c.severity));
+        if seen < self.concern_threshold || proposed { return; }
+        let parent = parent_path(c.source);
+        if len(parent) == 0 {
+            let r = self.journal.append(self.journal.revision(), "knowledge.refused", "concern:" + c.source, "a concern binds to its source's parent, and `" + c.source + "` has none: name the source as a path under org");
+            return;
+        }
+        let digest = self.propose_knowledge(Idea { id: "concern:" + c.source, kind: "concern", text: c.what, author: c.source }, parent);
+        let y = self.journal.append(self.journal.revision(), "concern.proposed", c.source, (if len(digest) > 0 { digest } else { "refused" }) + " after " + to_string(seen) + " raise(s)");
+        self.membrane.notify("concern", c.source + ": `" + c.what + "` persists; proposed as knowledge for " + parent + ", the Board's to ratify");
+    }
     // Intent enters through the membrane and births a durable Task;
     // its birth and its settlement are Journal events (the causal
     // authority), the live locus is the expression.
@@ -725,6 +758,26 @@ locus Dna {
         let opened = self.gateway.open(self.journal, id, base, lease.token, now);
         if !opened.ok { return self.mutation_failed(id, "worktree: " + opened.refused); }
         let wt = opened.value;
+        // GH #583 K2: the owner asks the knowledge service what the
+        // organization ratified for this target and folds it into the
+        // objective; the editor never reaches knowledge, it receives a
+        // package by way of its owner, and its evidence names the package
+        let pkg = self.knowledge_client.package_for(knowledge_target(change_class, self.boundary.child, seed));
+        if self.knowledge_client.ready() {
+            let kb = std::json::Builder { };
+            kb.begin_object();
+            kb.string_field("target", pkg.target);
+            kb.string_field("digest", pkg.digest);
+            kb.int_field("revision", pkg.revision);
+            kb.int_field("included_n", pkg.included_n);
+            kb.string_field("included", pkg.included);
+            kb.string_field("error", pkg.error);
+            kb.end_object();
+            let kx = self.journal.append(self.journal.revision(), "knowledge.consulted", id, kb.result());
+        }
+        // what the editor gets: the ask with the practices under it. The
+        // record, the commit message and the Mutation keep the ask itself.
+        let handed = objective_with(objective, pkg);
         // the grant is the seed this change edits, inside THIS worktree;
         // the worktree is what a harness's export copies, the repository
         // what it must never reach (GH #583 M3)
@@ -748,7 +801,8 @@ locus Dna {
         let head_before = self.gateway.head();
         let wt_before = self.gateway.repo.head(wt);
         let r = self.editor.perform(WorkRequest {
-            work_id: id, task_id: task_id, objective: objective, target: file, data_class: "internal"
+            work_id: id, task_id: task_id, objective: handed, target: file, data_class: "internal",
+            context_digest: pkg.digest, knowledge_bindings: bindings_of(pkg)
         });
         if self.gateway.head() != head_before || self.gateway.repo.head(wt) != wt_before {
             let x = self.gateway.remove(self.journal, id, lease.token, now);

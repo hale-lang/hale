@@ -50,6 +50,7 @@ const VERDICT_SOCK_REL: &str = ".hale/dna/hale-dna.review.verdict.sock";
 const INTENT_SOCK_REL: &str = ".hale/dna/hale-dna.intent.offered.sock";
 const OBSERVED_SOCK_REL: &str = ".hale/dna/hale-dna.expression.observed.sock";
 const PRESSURE_SOCK_REL: &str = ".hale/dna/hale-dna.pressure.raised.sock";
+const CONCERN_SOCK_REL: &str = ".hale/dna/hale-dna.concern.raised.sock";
 
 /// GH #566 F8: the host is a Hale program (`dna/host`, embedded beside
 /// the core and built once into the toolchain cache). A verb that is
@@ -214,6 +215,7 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         Some("pressure") if args.get(1).map(|a| a == "raise").unwrap_or(false) => host_exec("raise", Path::new("."), &args[2..]),
         Some("pressure") => host_exec("pressure", Path::new("."), &args[1..]),
+        Some("concern") if args.get(1).map(|a| a == "raise").unwrap_or(false) => host_exec("concern-raise", Path::new("."), &args[2..]),
         Some("github") => host_exec("github", Path::new("."), &args[1..]),
         Some("fleet") => {
             let (dir, rest) = project_arg(&args[1..], true);
@@ -267,6 +269,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    (`[dna] fleet = \"<name>\"` in hale.toml names the plan; `hale node <name>` runs a node)");
     eprintln!("       hale dna pressure [raise <source> <what…>]");
     eprintln!("                                    pressure raised and answered; `raise` publishes one signal on the membrane");
+    eprintln!("       hale dna concern raise <source> <what…> [--severity N]");
+    eprintln!("                                    a concern from a locus path about the part above it; persistent ones become knowledge proposals");
     eprintln!("       hale dna ui [project] [--port N]");
     eprintln!("                                    the DNA surface in a browser, from the record alone: the Board's queue, the Reviews");
     eprintln!("                                    with their three views, the fleet, the history; verdicts, intent and pressure from forms");
@@ -1356,6 +1360,10 @@ main locus Org {{
             }},
             // The organization's spend: one policy (models.hl), one owner.
             budget: dna::Budget {{ policy: org_budget() }},
+            // The knowledge service, when the host runs one (`hale dna dev`):
+            // what the organization ratified for a target is folded into the
+            // objective the editor gets; the editor itself never reaches it.
+            knowledge_client: dna::KnowledgeClient {{ url_env: "HALE_DNA_KNOWLEDGE_URL" }},
             // The Leader's grant, owned by the Board: what the organization
             // may decide on its own terms. An `application` change is outside
             // this grant and escalates to the Board; widen it here, in a
@@ -1404,6 +1412,7 @@ main locus Org {{
         dna::IntentOffered: unix("{intent}", role: listen);
         dna::ExpressionObserved: unix("{observed}", role: listen);
         dna::PressureRaised: unix("{pressure}", role: listen);
+        dna::ConcernRaised: unix("{concern}", role: listen);
     }}
     run() {{
         if std::env::var_exists("HALE_DNA_ONESHOT") {{ return; }}
@@ -1419,6 +1428,7 @@ fn main() {{
         intent = INTENT_SOCK_REL,
         observed = OBSERVED_SOCK_REL,
         pressure = PRESSURE_SOCK_REL,
+        concern = CONCERN_SOCK_REL,
     )
 }
 
@@ -1441,7 +1451,7 @@ group leader = { dna::Leader };
 group substrate = { dna::Dna };
 group positions = { dna::Leader, dna::SourceEditor, dna::WorktreeTools, dna::AgentPerformer, dna::HumanWorkGateway, dna::ServicePerformer, dna::ScriptedPerformer };
 group editors = { dna::SourceEditor, dna::WorktreeTools };
-group knowledge = { dna::Knowledge };
+group knowledge = { dna::Knowledge, dna::KnowledgeClient };
 group credentials = { dna::CredentialSource, dna::HostedCredential };
 
 constitution Org {

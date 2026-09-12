@@ -92,6 +92,7 @@ locus Host {
         observer: Proc = Proc { };
         knowledge: Proc = Proc { }; // GH #583 K1: the knowledge service, under `dev`
         knowledge_dsn: String = "";
+        knowledge_url: String = ""; // where the organization asks for packages, once the service is up
         handled: String = "\n";
         relayed: String = "\n";
         app_gone_reported: Bool = false;
@@ -130,6 +131,8 @@ locus Host {
     fn child_envs(restart_for: String, expression: String) -> String {
         let mut e = "LOTUS_OBS=1\nHALE_BIN=" + self.hale;
         if len(restart_for) > 0 { e = e + "\nHALE_DNA_RESTART_FOR=" + restart_for + "\nHALE_DNA_EXPRESSION=" + expression; }
+        // GH #583 K2: the organization's line to the knowledge service
+        if len(self.knowledge_url) > 0 { e = e + "\nHALE_DNA_KNOWLEDGE_URL=" + self.knowledge_url; }
         return e;
     }
     // ---- the knowledge graph's environment (GH #583 K1) ----------------
@@ -167,6 +170,7 @@ locus Host {
         let port = if std::env::var_exists("HALE_DNA_KNOWLEDGE_PORT") { std::env::var("HALE_DNA_KNOWLEDGE_PORT") } else { "8791" };
         self.knowledge = start(self.dna_dir, "knowledge", self.root, self.child_envs("", "") + "\nHALE_DNA_KNOWLEDGE_DSN=" + dsn, bin + "\n" + self.root + "\n" + port);
         if self.knowledge.pid <= 0 { self.say("cannot start the knowledge service"); return; }
+        self.knowledge_url = "http://127.0.0.1:" + port;
         let kw = write_text(self.dna_dir + "/knowledge.pid", to_string(self.knowledge.pid)) or false;
         let kd = write_text(self.dna_dir + "/knowledge.dsn", dsn) or false;
         self.say("knowledge service (pid " + to_string(self.knowledge.pid) + ") at :" + port + " over " + (if dsn == "memory" { "an in-memory store" } else { "postgres" }));
@@ -176,6 +180,7 @@ locus Host {
         std::io::fs::unlink(self.dna_dir + "/" + INTENT_SOCK) or discard;
         std::io::fs::unlink(self.dna_dir + "/" + OBSERVED_SOCK) or discard;
         std::io::fs::unlink(self.dna_dir + "/" + PRESSURE_SOCK) or discard;
+        std::io::fs::unlink(self.dna_dir + "/" + CONCERN_SOCK) or discard;
     }
     fn wait_membrane(secs: Int) -> Bool {
         let deadline = std::time::now() + secs;
@@ -460,7 +465,10 @@ locus Host {
         // 1. the expression identity: a fresh artifact of the application
         let cut = self.cut_artifact(self.seed_dir(), self.dna_dir + "/current.topology");
         if len(cut) > 0 { self.say(cut); std::process::exit(1); }
-        // 2. the organization: built, started from the root, observable
+        // 2. dev: the knowledge service first, so the organization's
+        //    environment names it (GH #583 K2)
+        if self.verb == "dev" { self.start_knowledge(); }
+        // 3. the organization: built, started from the root, observable
         let org_bin = self.build_seed(org_seed);
         if len(org_bin) == 0 { std::process::exit(1); }
         self.remove_sockets();
@@ -474,9 +482,8 @@ locus Host {
         let bound = self.wait_membrane(20);
         if bound { self.say("membrane bound at " + self.dna_dir); }
         else if exit_code(self.org) == -2 { self.say("the membrane did not come up within 20s; the organization runs unobserved"); }
-        // 4. dev: the knowledge service and the application too, under this host
+        // 4. dev: the application too, under this host
         if self.verb == "dev" {
-            self.start_knowledge();
             let bin = self.build_seed(self.seed_dir());
             if len(bin) == 0 { stop_proc(self.org); std::process::exit(1); }
             self.app_bin = bin;

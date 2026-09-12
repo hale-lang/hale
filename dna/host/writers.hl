@@ -177,6 +177,22 @@ fn pressure_raise(root: String, source: String, what: String) -> Answer {
     return answer("pressure raised on " + source + ": " + what + "\n");
 }
 
+// A concern (GH #583 K2): a child's signal about the part above it,
+// live like pressure; persistent concerns become knowledge proposals.
+fn concern_raise(root: String, source: String, what: String, severity: Int) -> Answer {
+    if len(source) == 0 || len(what) == 0 { return fail("concern raise needs a <source> (a locus path under org) and what"); }
+    if !membrane_up(root) { return fail("the organization is not running here (no membrane); a concern is a live signal"); }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("source", source);
+    b.string_field("what", what);
+    b.int_field("severity", severity);
+    b.end_object();
+    let e = publish_on_membrane(root, "concern", b.result());
+    if len(e) > 0 { return fail(e); }
+    return answer("concern raised by " + source + ": " + what + "\n");
+}
+
 // ---- sync -----------------------------------------------------------
 
 fn sync_verb(root: String) -> Answer {
