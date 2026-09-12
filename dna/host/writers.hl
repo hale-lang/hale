@@ -181,16 +181,24 @@ fn pressure_raise(root: String, source: String, what: String) -> Answer {
 // live like pressure; persistent concerns become knowledge proposals.
 fn concern_raise(root: String, source: String, what: String, severity: Int) -> Answer {
     if len(source) == 0 || len(what) == 0 { return fail("concern raise needs a <source> (a locus path under org) and what"); }
-    if !membrane_up(root) { return fail("the organization is not running here (no membrane); a concern is a live signal"); }
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("source", source);
     b.string_field("what", what);
     b.int_field("severity", severity);
     b.end_object();
-    let e = publish_on_membrane(root, "concern", b.result());
-    if len(e) > 0 { return fail(e); }
-    return answer("concern raised by " + source + ": " + what + "\n");
+    if membrane_up(root) {
+        let e = publish_on_membrane(root, "concern", b.result());
+        if len(e) > 0 { return fail(e); }
+        return answer("concern raised by " + source + ": " + what + "\n");
+    }
+    // no organization here: into the record, and the host beside the
+    // organization relays it (GH #583 K4)
+    if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
+    if !append_as(root, "concern.requested", source, b.result(), "") { return fail("the record refused the append"); }
+    let s = sync_record(root);
+    if !s.ok { return fail(s.summary); }
+    return answer("concern from " + source + " requested in the record; the organization hears it there\n");
 }
 
 // ---- sync -----------------------------------------------------------

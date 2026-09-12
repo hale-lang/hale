@@ -1,27 +1,51 @@
 // dna/acceptance/trio/worker — the worker: fulfils what the api asks
 // and is the only service that may send mail (the fleet's law).
+//
+// The application side of the knowledge graph (GH #583 K4): the
+// worker observes a recurring condition — its mail backlog behind
+// fulfilment — and raises a CONCERN about it, once per observation
+// window, three times. It declares the fact itself: the same subject
+// and shape the organization listens on, with no import of the DNA.
+// The node it runs on routes the subject to its own socket
+// (LOTUS_BUS_CONFIG) and puts the concern into the record; the
+// organization proposes it as knowledge; the Board ratifies; the next
+// change to the trio is made with it in hand.
 
 effect mail;
 
 type Fulfilment { order: Int = 0; }
 topic Fulfil { payload: Fulfilment; subject: "trio.fulfil"; }
 
+// A concern, as the organization's membrane defines it on the wire.
+type Concern { source: String = ""; what: String = ""; severity: Int = 0; }
+topic WorkerConcerns { payload: Concern; subject: "dna.concern.raised"; }
+
 locus Mailer {
-    params { sent: Int = 0; }
+    params { sent: Int = 0; backlog: Int = 0; }
     bus { subscribe Fulfil as on_fulfil; }
     @effects(is: { mail })
-    fn on_fulfil(f: Fulfilment) { self.sent = self.sent + 1; }
+    fn on_fulfil(f: Fulfilment) { self.sent = self.sent + 1; self.backlog = self.backlog + 1; }
 }
 
 main locus TrioWorker {
-    params { mailer: Mailer = Mailer { }; }
-    bus { publish Fulfil; }
+    params { mailer: Mailer = Mailer { }; raised: Int = 0; windows: Int = 0; }
+    bus { publish Fulfil; publish WorkerConcerns; }
     run() {
         Fulfil <- Fulfilment { order: 1 };
         std::time::sleep(100ms);
         println("worker: ", self.mailer.sent, " mail(s) sent");
         if std::env::var_exists("HALE_DNA_ONESHOT") { return; }
-        while true { std::time::sleep(100ms); }
+        // every observation window the backlog is still there: say so,
+        // three times, then leave it to the organization
+        while true {
+            std::time::sleep(100ms);
+            self.windows = self.windows + 1;
+            if self.windows % 20 == 0 && self.raised < 3 && self.mailer.backlog > 0 {
+                self.raised = self.raised + 1;
+                WorkerConcerns <- Concern { source: "org/trio/worker", what: "mail backlog behind fulfilment", severity: 2 };
+                println("worker: concern raised (", self.raised, "/3)");
+            }
+        }
     }
 }
 

@@ -75,8 +75,8 @@ $ curl -s 'localhost:8791/context?target=org/leader/worker/mailer&budget=8'
 
 A **context package** is what a position receives: the accepted ideas
 bound to its locus path or to any path above it (goals flow down;
-initiatives stay where they were made), capped by a budget, with a
-digest over the target, the store's revision and the ids — the thing
+initiatives stay where they were made), capped by a budget, with the
+store's revision and a digest over the target and the ids — the thing
 a model call's evidence names. A sibling's package does not carry
 your wing's practice.
 
@@ -146,7 +146,21 @@ one is worth its cost.
 ## Concerns
 
 A **concern** is a child's signal about the part above it. An
-application raises one on the membrane, or you do:
+application raises one by declaring the fact itself — the same shape
+the membrane speaks, on the subject `dna.concern.raised`, with no
+import of the DNA — and publishing it when it sees something:
+
+```hale,fragment
+type Concern { source: String = ""; what: String = ""; severity: Int = 0; }
+topic WorkerConcerns { payload: Concern; subject: "dna.concern.raised"; }
+// …
+WorkerConcerns <- Concern { source: "org/trio/worker", what: "mail backlog behind fulfilment", severity: 2 };
+```
+
+The node the instance runs on hears it on a socket of its own and
+puts it in the record; the host beside the organization relays it
+onto the membrane; the organization writes `concern.raised`. Or you
+raise one yourself, from anywhere with the record:
 
 ```text
 $ hale dna concern raise org/trio/worker mail backlog behind fulfilment --severity 2
@@ -157,5 +171,14 @@ Each is `concern.raised` in the record. Three from one source and it
 becomes a proposal — by that source, bound to its parent, a concern
 by the tower rule — and lands in your queue for ratification. A
 source with no parent has nothing to bind to and is refused, saying
-so. What is not yet here — the application publishing its own
-observations, and the learning scenario end to end — is K4.
+so.
+
+## What it adds up to
+
+The in-repo fixture runs the whole loop, keyless, on every change to
+the organization: a worker on one node observes its mail backlog and
+says so three times; the third becomes a proposal; the Board ratifies
+the exact digest; the next change to that application is made with
+the concern under its objective, and every model call of the attempt
+names the package it was given. What was observed and ratified today
+informs the work done tomorrow, and the receipt says which package.

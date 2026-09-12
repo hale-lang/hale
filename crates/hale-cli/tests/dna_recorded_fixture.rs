@@ -6,6 +6,11 @@
 //! model call answered from the checked-in tape
 //! (`dna/acceptance/trio.fixture/tape`, its catalog beside it), keyless.
 //! This is the acceptance for every later change to the organization.
+//! GH #583 K4 — the learning scenario: the worker observes a recurring
+//! condition and raises a concern; the node puts it in the record; the
+//! organization proposes it; the Board ratifies the exact digest; the
+//! next change to the trio is made with it in hand, and the editor's
+//! evidence names the package.
 //!
 //! Re-record (a key in the environment, the tape rewritten):
 //!   HALE_DNA_TAPE=record cargo test --release -p hale-cli --test dna_recorded_fixture
@@ -71,6 +76,7 @@ struct Fixture {
     procs: Vec<std::process::Child>,
     tape: PathBuf,
     mode: String,
+    kport: u16, // the knowledge service (K4), in memory over the record
 }
 
 impl Fixture {
@@ -81,7 +87,10 @@ impl Fixture {
             .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
             .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
             .env("HALE_DNA_TAPE", &self.mode)
-            .env("HALE_DNA_TAPE_DIR", &self.tape);
+            .env("HALE_DNA_TAPE_DIR", &self.tape)
+            .env("HALE_DNA_KNOWLEDGE_DSN", "memory")
+            .env("HALE_DNA_KNOWLEDGE_PORT", self.kport.to_string())
+            .env("HALE_DNA_KNOWLEDGE_URL", format!("http://127.0.0.1:{}", self.kport));
         c
     }
     fn hale(&self, args: &[&str], cwd: &Path) -> (bool, String) {
@@ -113,7 +122,7 @@ impl Fixture {
             let _ = p.wait();
         }
         std::thread::sleep(Duration::from_millis(300));
-        for f in ["org.pid", "app.pid"] {
+        for f in ["org.pid", "app.pid", "knowledge.pid"] {
             if let Ok(pid) = std::fs::read_to_string(self.app.join(".hale/dna").join(f)) {
                 let _ = Command::new("kill").args(["-9", pid.trim()]).status();
             }
@@ -156,7 +165,8 @@ fn bring_up() -> Fixture {
     // from (its project's name), so it is fixed: the tape depends on it
     let app = d.join("trio");
     copy_dir(&repo.join("dna/acceptance/trio"), &app);
-    let mut f = Fixture { d: d.clone(), app: app.clone(), bare: d.join("origin.git"), edges: vec![d.join("edge-1"), d.join("edge-2")], procs: vec![], tape, mode };
+    let kport = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let mut f = Fixture { d: d.clone(), app: app.clone(), bare: d.join("origin.git"), edges: vec![d.join("edge-1"), d.join("edge-2")], procs: vec![], tape, mode, kport };
     git(&["init", "-q", "-b", "main"], &app);
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the trio and its fleet"], &app);
@@ -173,6 +183,9 @@ fn bring_up() -> Fixture {
     for e in &f.edges {
         git(&["clone", "-q", &f.bare.to_string_lossy(), &e.to_string_lossy()], &d);
     }
+    // the knowledge service over the record (K4), then the organization
+    // with its URL, then the nodes
+    f.spawn(&["dna", "knowledge", ".", "--port", &kport.to_string()], &app);
     f.spawn(&["dna", "run", ".", "--no-iris", "--observe", "4"], &app);
     let edges = f.edges.clone();
     for (i, e) in edges.iter().enumerate() {
@@ -203,7 +216,37 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     let mut f = bring_up();
     let app = f.app.clone();
 
-    // ---- 1. a change to the gateway, deployed to both nodes
+    // ---- 0. the learning scenario (K4): the worker on edge-2 observes
+    //         its mail backlog and raises a concern, three times; the
+    //         node puts each into the record; the host relays; the
+    //         organization proposes it as knowledge for org/trio; the
+    //         Board ratifies the exact digest; the service tails it
+    if !wait_row(&app, 240, |(_, k, e, _)| k == "concern.proposed" && e == "org/trio/worker") {
+        f.fail("the worker's concern did not become a proposal");
+    }
+    let rows = journal(&app);
+    let requested = rows.iter().filter(|(_, k, e, _)| k == "concern.requested" && e == "org/trio/worker").count();
+    let raised = rows.iter().filter(|(_, k, e, _)| k == "concern.raised" && e == "org/trio/worker").count();
+    assert!(requested >= 3 && raised >= 3, "three concerns travelled from the node into the record and onto the membrane: requested {requested}, raised {raised}");
+    assert!(rows.iter().any(|(_, k, e, b)| k == "concern.requested" && e == "org/trio/worker" && b.contains("\"node\": \"edge-2\"")), "the node that heard it is named");
+    let kprop = rows.iter().find(|(_, k, _, b)| k == "knowledge.proposed" && b.contains("\"author\": \"org/trio/worker\"")).expect("the proposal");
+    let kdigest = kprop.2.clone();
+    assert!(kprop.3.contains("\"class\": \"concern\"") && kprop.3.contains("\"target\": \"org/trio\""), "a concern by the tower rule, bound to the application: {}", kprop.3);
+    let (ok, reviews) = f.hale(&["dna", "review"], &app);
+    let kreview = format!("k:{}", &kdigest[7..19]);
+    assert!(ok && reviews.contains(&kreview) && reviews.contains("mail backlog behind fulfilment") && reviews.contains("needs board"), "the Board's queue has the concern:\n{reviews}");
+    let (ok, out) = f.hale(&["dna", "review", &kreview, "approve", "--as", "riley", "--authority", "board", "--comment", "true, and worth knowing"], &app);
+    if !ok {
+        f.fail(&format!("ratify: {out}"));
+    }
+    if !wait_row(&app, 60, |(_, k, e, _)| k == "knowledge.ratified" && *e == kdigest) {
+        f.fail("the concern was not ratified");
+    }
+
+    // ---- 1. a change to the gateway, deployed to both nodes — made with
+    //         the ratified concern in hand: the organization consults
+    //         the service for org/trio, folds it into the editor's
+    //         objective, and the editor's evidence names the package
     let (ok, out) = f.hale(&["dna", "ask", "document", "the", "Gateway", "locus", "in", "main.hl", "with", "a", "doc", "comment", "saying", "what", "it", "takes", "and", "where", "it", "hands", "it"], &app);
     if !ok {
         f.fail(&format!("ask: {out}"));
@@ -219,6 +262,11 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
         f.fail("m1 was not retained");
     }
     let rows = journal(&app);
+    // knowledge changed later work: the consult, the package on the evidence
+    let consulted = rows.iter().find(|(_, k, e, _)| k == "knowledge.consulted" && e == "m1").unwrap_or_else(|| panic!("m1 consulted the service:\n{}", dump(&app)));
+    assert!(consulted.3.contains("\"target\": \"org/trio\"") && consulted.3.contains("\"included_n\": 1") && consulted.3.contains(&format!("\"included\": \"{kdigest}\"")), "the package for the trio carries the ratified concern: {}", consulted.3);
+    let ev = rows.iter().find(|(_, k, e, b)| k == "model.called" && e == "m1/a0" && b.contains("\"knowledge_bindings\": \"package:")).unwrap_or_else(|| panic!("the editor's evidence names the package:\n{}", dump(&app)));
+    assert!(ev.3.contains(&kdigest), "and the concern's digest: {}", ev.3);
     let cand1 = rows.iter().find(|(_, k, e, _)| k == "mutation.candidate" && e == "m1").map(|r| r.3.clone()).unwrap_or_default();
     let deploy = rows.iter().find(|(_, k, e, b)| k == "fleet.deploy" && e == "m1" && b.contains("\"reason\": \"apply\"")).cloned();
     let Some(deploy) = deploy else { f.fail("no fleet.deploy for m1") };

@@ -131,8 +131,10 @@ locus Host {
     fn child_envs(restart_for: String, expression: String) -> String {
         let mut e = "LOTUS_OBS=1\nHALE_BIN=" + self.hale;
         if len(restart_for) > 0 { e = e + "\nHALE_DNA_RESTART_FOR=" + restart_for + "\nHALE_DNA_EXPRESSION=" + expression; }
-        // GH #583 K2: the organization's line to the knowledge service
-        if len(self.knowledge_url) > 0 { e = e + "\nHALE_DNA_KNOWLEDGE_URL=" + self.knowledge_url; }
+        // GH #583 K2: the organization's line to the knowledge service —
+        // the one this host started, or the one the operator named
+        let url = if len(self.knowledge_url) > 0 { self.knowledge_url } else if std::env::var_exists("HALE_DNA_KNOWLEDGE_URL") { std::env::var("HALE_DNA_KNOWLEDGE_URL") } else { "" };
+        if len(url) > 0 { e = e + "\nHALE_DNA_KNOWLEDGE_URL=" + url; }
         return e;
     }
     // ---- the knowledge graph's environment (GH #583 K1) ----------------
@@ -208,9 +210,10 @@ locus Host {
         if self.observer.pid > 0 { eprintln("hale dna run: iris at http://127.0.0.1:", self.port, "/  (l law · 4 review · 5 organism · m membrane)"); }
         else { eprintln("hale dna run: could not launch hale iris"); }
     }
-    // The membrane over the record: an `intent.requested` or a
-    // `review.verdict` row a CLI appended from any clone is relayed onto
-    // the organism's sockets, once.
+    // The membrane over the record: an `intent.requested`, a
+    // `review.verdict` or a `concern.requested` row a CLI or a node
+    // appended from any clone is relayed onto the organism's sockets,
+    // once.
     @unbounded
     fn relay_record_membrane() -> Int {
         if len(record_head(self.root)) == 0 { return 0; }
@@ -219,8 +222,8 @@ locus Host {
         let mut i = 0;
         while i < p.rows() {
             let r = p.row(i);
-            if !ids_has(self.relayed, r.seq) && (r.kind == "intent.requested" || r.kind == "review.verdict") {
-                let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else { " review.settled review.refused " };
+            if !ids_has(self.relayed, r.seq) && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested") {
+                let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised " } else { " review.settled review.refused " };
                 let answered = find_after(p, i + 1, answers, r.entity).seq >= 0;
                 if !answered {
                     let mut body = r.body;
@@ -230,7 +233,7 @@ locus Host {
                         let close = last_index_of(inner, "}");
                         if close > 0 { body = inner[0..close] + ", \"intent_id\": " + quote(r.entity) + "}"; }
                     }
-                    let e = publish_on_membrane(self.root, if r.kind == "intent.requested" { "intent" } else { "verdict" }, body);
+                    let e = publish_on_membrane(self.root, if r.kind == "intent.requested" { "intent" } else if r.kind == "concern.requested" { "concern" } else { "verdict" }, body);
                     if len(e) == 0 { self.relayed = ids_add(self.relayed, r.seq); n = n + 1; }
                 }
             }
