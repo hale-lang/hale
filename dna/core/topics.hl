@@ -68,6 +68,11 @@ type ReviewSettlement {
     decided_by: String = "";
     refusal: String = ""; // non-empty when a verdict was refused, with the reason
     comment: String = ""; // the deciding verdict's comment: a person's note, a model's reasoning (GH #566 F7)
+    // A settled approval approved AGAIN by a verdict the Review admitted
+    // in full — digest, authority, independence — so an approved
+    // candidate that never applied can be applied. Never set for any
+    // other verdict at a settled Review: those are refused.
+    reapproval: Bool = false;
 }
 topic ReviewSettled { payload: ReviewSettlement; subject: "dna.review.settled"; }
 

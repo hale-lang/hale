@@ -45,6 +45,32 @@ repository:
   the organization's history. Receipts travel
   by refspec both ways. The remote is `dna.remote` in git config, or
   `origin`. A plain clone has no record until it syncs.
+- **An apply expresses the candidate, tree and all.** An approval
+  applies exactly the reviewed candidate, or nothing: the candidate's
+  worktree head is the pinned digest, the genome's head is the base the
+  review was against, and the genome has nothing uncommitted — tracked
+  changes anywhere, and **every input of the candidate's build that
+  the tree does not hold**. The graph is the candidate's, read by the
+  compiler in the candidate's worktree (`hale inputs <seed>`: the
+  seed's `.hl` files and those of every directory they import,
+  transitively; the `hale.toml` of each such directory and every C
+  source it declares under `[ffi]`), because a reviewed change that
+  adds an import makes files an input the moment it lands; any file
+  of those kinds the genome holds untracked in one of the graph's
+  directories, or that the graph names outright, is dirt whether git
+  ignores it or quotes it. What no build reads — a binary, a log,
+  another program's source — is not dirt. A graph that cannot be
+  inspected is dirt: an inspection that failed authorises nothing. A
+  dirty genome is `mutation.refused` before any effect row exists,
+  the work untouched; the gateway checks it once more around the git
+  call and reads the head back, so an apply that reports success is
+  the candidate. **Approving again** an approved and unapplied
+  candidate re-runs the whole gate (`mutation.apply_retried`, then
+  `review.settled` again so a waiting `hale dna review` hears it):
+  the Review readmits only the same approval in full — digest,
+  authority, independence, the word `approve` — and refuses any other
+  verdict; a Review approved and never applied is rehydrated settled,
+  so the road survives a restart.
 - **The membrane over the record.** From a clone with no organism,
   `hale dna ask` appends `intent.requested` (the body: outcome, from,
   to) and a verdict appends `review.verdict` (the body: the verdict as
@@ -77,6 +103,7 @@ the same way. A project's path therefore has no length rule.
 `mutation.located`, `mutation.candidate`, `mutation.<disposition>`,
 `mutation.applied`, `mutation.retained`, `mutation.rolled_back`,
 `mutation.rejected`, `mutation.revise`, `mutation.refused`,
+`mutation.apply_retried`,
 `mutation.failed`, `effect.requested`, `effect.result`,
 `evidence.<step>`, `evidence.magnitude`, `review.requested`,
 `review.settled`, `review.refused`, `expression.restart_requested`,
@@ -226,9 +253,10 @@ The organization's models are a catalog in source (GH #583 M1):
   the grant — a file that differs or is new is written through the
   tools, one that is gone is removed, a change outside the grant is
   counted (`outside_grant`) and left behind; `files_changed` is
-  derived from that diff, never from the harness's answer. A written
-  file's parent directories are made under the grant first, so a
-  harness may add a module in a directory the worktree does not have
+  derived from that diff, never from the harness's answer. A file the
+  worktree does not have is new whatever it holds, empty included. A
+  written file's parent directories are made under the grant first, so
+  a harness may add a module in a directory the worktree does not have
   yet, and **an in-grant write or removal that fails is the attempt's
   failure** (`the import was incomplete: …`), never a candidate
   carrying part of the change. Then the
@@ -411,7 +439,12 @@ authority.
 - **The service program.** `dna/knowledge/service` (`hale dna
   knowledge [project] [--port N]`, default 8791): applies the record
   on every request (the reader sees it as it is now) and answers over
-  HTTP. The store is opened on the first request rather than at birth
+  HTTP. **A question it cannot answer is a refusal, never an empty
+  answer**: a package built from failing reads, or served while the
+  record's projection is stuck, is indistinguishable from "there is no
+  knowledge here" — so a read error or an `apply_record` error is 503
+  with the reason, and the summary carries whatever the counts hit.
+  The store is opened on the first request rather than at birth
   — a database that is down must not hold the surface closed, because
   the surface is where an operator reads that it is down — and the
   connection is asked on each request afterwards (`healthy`), because

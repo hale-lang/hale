@@ -229,8 +229,23 @@ fn the_service_serves_a_real_postgres() {
         let wipe = Command::new("psql").args([&dsn, "-v", "ON_ERROR_STOP=1", "-c", "DROP TABLE IF EXISTS knowledge_bindings, knowledge_edges, knowledge_ideas, knowledge_meta, knowledge_structure, knowledge_signals"]).output();
         assert!(wipe.map(|o| o.status.success()).unwrap_or(false), "psql is needed to reset the database for this test");
     }
+    // An EMPTY record over a fresh database first: no watermark row is
+    // the normal state of a store nothing has been applied to, and the
+    // read-error handling turned that absence into 503 (the fourth
+    // review round's P3). A plain clone has no record until it syncs.
+    let empty_d = std::env::temp_dir().join(format!("hale_dna_ksvc_{}_empty", std::process::id()));
+    let _ = std::fs::remove_dir_all(&empty_d);
+    std::fs::create_dir_all(&empty_d).unwrap();
+    let (ok, out) = hale(&["dna", "new", "unsynced"], &empty_d, &[]);
+    assert!(ok, "{out}");
+    let empty_app = empty_d.join("unsynced");
+    Command::new("git").args(["update-ref", "-d", "refs/dna/journal"]).current_dir(&empty_app).output().unwrap();
+    let (empty_ctx, empty_log) = serve(&empty_app, &dsn, free_port(), |p| http(p, "GET /context?target=org%2Funsynced&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
+    let _ = std::fs::remove_dir_all(&empty_d);
+    assert!(empty_ctx.starts_with("HTTP/1.0 200") || empty_ctx.starts_with("HTTP/1.1 200"), "an empty record is an empty package, not a failure: {empty_ctx}\n{empty_log}");
+    assert!(body(&empty_ctx).contains("\"included_n\": 0"), "{empty_ctx}");
     let kill = dsn.clone();
-    let ((summary, ctx, idea, after_kill, ctx2), log) = serve(&app, &dsn, free_port(), |p| {
+    let ((summary, ctx, idea, after_kill, ctx2, broken, broken_summary, healed), log) = serve(&app, &dsn, free_port(), |p| {
         // the service applies the record on every request
         let s = body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n"));
         let c = body(&http(p, "GET /context?target=org%2Fserved%2Fmain&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
@@ -245,7 +260,22 @@ fn the_service_serves_a_real_postgres() {
             .output();
         let k = body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n"));
         let c2 = body(&http(p, "GET /context?target=org%2Fserved%2Fmain&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
-        (s, c, i, k, c2)
+        // A live connection that cannot answer the question. `SELECT 1`
+        // says the session is healthy; it says nothing about whether
+        // the knowledge queries work. Failing reads used to reach the
+        // caller as an empty package with a well-formed digest — "there
+        // is no knowledge here" (the third-round review's finding 3).
+        // The schema is taken away here as controlled fault injection.
+        let hide = |sql: &str| {
+            let o = Command::new("psql").args([&kill, "-v", "ON_ERROR_STOP=1", "-c", sql]).output().expect("psql");
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        };
+        hide("ALTER TABLE knowledge_ideas RENAME TO knowledge_ideas_hidden");
+        let broken = http(p, "GET /context?target=org%2Fserved%2Fmain&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n");
+        let broken_summary = body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n"));
+        hide("ALTER TABLE knowledge_ideas_hidden RENAME TO knowledge_ideas");
+        let healed = body(&http(p, "GET /context?target=org%2Fserved%2Fmain&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
+        (s, c, i, k, c2, broken, broken_summary, healed)
     });
     if made {
         let _ = Command::new("psql").args([&std::env::var("HALE_DNA_KNOWLEDGE_DSN").unwrap(), "-c", &format!("DROP DATABASE IF EXISTS {own}")]).output();
@@ -267,6 +297,12 @@ fn the_service_serves_a_real_postgres() {
     assert!(after_kill.contains("\"open\": true") && after_kill.contains("\"error\": \"\""), "the service re-established its connection: {after_kill}\n{log}");
     assert!(after_kill.contains(&format!("\"watermark\": {}", n("watermark"))), "and is where it was: {after_kill}");
     assert!(ctx2.contains("\"included_n\": 1") && ctx2.contains(&digest), "the package survives a lost connection: {ctx2}\n{log}");
+    // a query the database cannot run is a refusal, not an empty answer
+    assert!(broken.starts_with("HTTP/1.0 503") || broken.starts_with("HTTP/1.1 503"), "a store that cannot answer is refused, not answered: {broken}\n{log}");
+    assert!(body(&broken).contains("knowledge_ideas") || body(&broken).contains("the store cannot answer"), "and says what failed: {}", body(&broken));
+    assert!(!broken_summary.contains("\"error\": \"\""), "the summary carries the failure: {broken_summary}");
+    // and it is the same service that answers again once it can
+    assert!(healed.contains("\"included_n\": 1") && healed.contains(&digest), "the practice comes back without a restart: {healed}\n{log}");
 }
 
 /// The DSN with a different database, keeping user, host, port and

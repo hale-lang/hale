@@ -366,6 +366,26 @@ locus Dna {
             let x = self.journal.append(self.journal.revision(), "review.refused", r.review_id, r.refusal);
             return;
         }
+        // An approved candidate that never applied, approved AGAIN by a
+        // verdict the Review admitted in full (the fourth review round's
+        // finding 1: a generic `already settled` used to stand in for
+        // this, and a rejection applied the candidate). The verdict is
+        // spent; the apply is not: the whole gate runs again over the
+        // same pinned candidate, and a candidate or a base that moved
+        // in the meantime is refused as ever.
+        if r.reapproval {
+            let d = self.disposition_of(r.review_id);
+            if len(self.request_of(r.review_id)) == 0 || d == "applied" || d == "retained" { return; }
+            let a = self.journal.append(self.journal.revision(), "mutation.apply_retried", r.review_id, "approved again by " + r.decided_by + "; the gate runs again");
+            let y = self.apply_reviewed(r.review_id, std::time::now());
+            // and the record answers the verdict as it answers a first
+            // one, so `hale dna review … approve` hears it: it waits on
+            // `review.settled` or `review.refused` and nothing else, and
+            // reported failure after applying (the fifth round's
+            // finding 2). The first settlement stands above this row.
+            let z = self.journal.append(self.journal.revision(), "review.settled", r.review_id, "approve by " + r.decided_by);
+            return;
+        }
         let x = self.journal.append(self.journal.revision(), "review.settled", r.review_id, r.outcome + " by " + r.decided_by);
         // the record says why (GH #566 F7): a person's note, or the Leader's
         // reasoning — the model's answer, not a digest of it
@@ -493,7 +513,7 @@ locus Dna {
         // the maintainer can commit or stash and approve again; the
         // gateway checks it once more immediately around the git call,
         // where a refusal is the race and the Mutation is done.
-        let dirty = self.gateway.dirty();
+        let dirty = self.gateway.dirty(self.genome_seed, wt);
         if len(dirty) > 0 && !(already.done && already.ok) {
             let z = self.journal.append(self.journal.revision(), "mutation.refused", mutation_id, "the genome has uncommitted changes; commit or stash them and approve again:\n" + dirty);
             self.membrane.notify("mutation", mutation_id + " refused: the genome has uncommitted changes");
@@ -968,10 +988,11 @@ locus Dna {
             if e.kind == "review.requested" && (std::str::contains(e.body, "\"mutation_id\"") || std::str::contains(e.body, "\"knowledge_digest\"")) {
                 let id = if std::str::contains(e.body, "\"mutation_id\"") { std::json::find_string_field(e.body, "mutation_id") } else { e.entity[7..len(e.entity)] };
                 let mut settled = false;
+                let mut settlement = "";
                 let mut k = i + 1;
                 while k < n {
                     let s = self.journal.read(k);
-                    if s.kind == "review.settled" && s.entity == id { settled = true; }
+                    if s.kind == "review.settled" && s.entity == id { settled = true; settlement = s.body; }
                     k = k + 1;
                 }
                 if !settled {
@@ -983,6 +1004,26 @@ locus Dna {
                         author: std::json::find_string_field(e.body, "author")
                     };
                     self.rehydrated = self.rehydrated + 1;
+                } else if std::str::starts_with(settlement, "approve by ") && std::str::contains(e.body, "\"mutation_id\"") {
+                    // Approved and never applied — the destination was
+                    // dirty, and the organization stopped before it was
+                    // cleared. The Review comes back settled, so that
+                    // approving again after the restart is admitted by
+                    // the same locus under the same rules (the fourth
+                    // review round's finding 3: with no Review, the
+                    // second approval met nothing at all).
+                    let d = self.disposition_of(id);
+                    if d != "applied" && d != "retained" && d != "rejected" && d != "rolled_back" {
+                        Review {
+                            review_id: id,
+                            question: std::json::find_string_field(e.body, "question"),
+                            subject_digest: std::json::find_string_field(e.body, "subject_digest"),
+                            required_authority: std::json::find_string_field(e.body, "required_authority"),
+                            author: std::json::find_string_field(e.body, "author"),
+                            settled: true, outcome: "approve", decided_by: settlement[11..len(settlement)]
+                        };
+                        self.rehydrated = self.rehydrated + 1;
+                    }
                 }
             }
             i = i + 1;

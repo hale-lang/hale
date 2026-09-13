@@ -340,8 +340,15 @@ locus SourceEditor {
             if nl < 0 { lines = ""; } else { lines = lines[(nl + 1)..len(lines)]; }
             if len(rel) == 0 { continue; }
             let after = std::io::fs::read_file(dir + "/" + rel) or "";
+            // A file the worktree does not have is new whatever it
+            // holds. Absence read as "" and the equality below then
+            // skipped it, so a new EMPTY file — a marker, a scaffold, a
+            // placeholder, and the directory it was there to create —
+            // never reached the candidate, and the import reported
+            // nothing wrong (the third-round review's finding 4).
+            let had = std::io::fs::file_exists(self.worktree + "/" + rel);
             let before = std::io::fs::read_file(self.worktree + "/" + rel) or "";
-            if after == before { continue; }
+            if had && after == before { continue; }
             let g = self.in_grant(rel);
             if len(g) == 0 { self.refused_outside = self.refused_outside + 1; continue; }
             // inside the grant, so a refusal here is an I/O failure, not
