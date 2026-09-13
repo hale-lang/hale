@@ -44,10 +44,20 @@ boundary: dna::AutonomyBoundary {
 review_policy: dna::OrgPolicy { },
 ```
 
+The Leader is the organism's **architect**: it proposes and the
+Board decides, and it thinks at two moments. When an ask enters, it
+reads its brief — the charter, the purpose, the law as the genome
+holds it, and the practices the Board has ratified — and says what
+the ask is: which kind of thing it concerns (the organism, an
+appendage, a product, or a person's job), what class of change, on
+what target, one change or several. The record keeps that as
+`task.planned`, and the Mutation carries the class it named. A plan
+only splits and classifies; it never widens what you asked.
+
 A change of a class in the grant and under its size is the Leader's
-to decide. It reads the source diff and the semantic diff with the
-deep model tier, answers `approve`, `revise` or `reject` with its
-reasoning, and the record has both: the call (which model, what it
+to decide. It reads the same brief above the source diff and the
+semantic diff with the deep model tier, answers `approve`, `revise`
+or `reject` with its reasoning, and the record has both: the call (which model, what it
 cost, the digests) and the reasoning in full (`review.reasoned`,
 rendered as `why:` by `hale dna review <id>`). The Board can answer first, or overrule nothing — a
 settled Review is settled — but it widens or narrows the grant in a

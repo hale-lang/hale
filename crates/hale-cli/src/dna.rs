@@ -619,6 +619,13 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         fs::write(&charter, charter_hl(&project)).map_err(|e| format!("write {}: {e}", charter.display()))?;
         out.push(format!("created {}", charter.display()));
     }
+    let main_text = fs::read_to_string(org_dir.join("main.hl")).unwrap_or_default();
+    if main_text.contains("dna::Leader {") && !main_text.contains("charter: charter()") {
+        out.push(format!(
+            "note    {}/main.hl builds its Leader without a brief; give it `charter: charter(), purpose: purpose(), knowledge: dna::KnowledgeClient {{ url_env: \"HALE_DNA_KNOWLEDGE_URL\" }}` so it reads the charter, the purpose, the law and the ratified design before it decides",
+            ORG_SEED
+        ));
+    }
     if record_head(&root).is_some() {
         let (proposed, superseded, waiting) = upgrade_design(&root)?;
         if proposed > 0 {
@@ -741,6 +748,14 @@ fn on_path(bin: &str) -> bool {
 }
 
 fn discover() -> Discovery {
+    // `HALE_DNA_DISCOVER=off`: find nothing. For fixtures, so that a
+    // developer's machine — a key in the shell, `claude` on PATH — makes
+    // the same organization CI makes, one whose leader has no model that
+    // answers and whose plans therefore take the defaults. Otherwise a
+    // fixture spends real calls and asserts on a live model's judgment.
+    if std::env::var("HALE_DNA_DISCOVER").map(|v| v == "off").unwrap_or(false) {
+        return Discovery { openai: false, anthropic: false, ollama: None, harnesses: Vec::new() };
+    }
     let key = |v: &str| std::env::var(v).map(|s| !s.trim().is_empty()).unwrap_or(false);
     let ollama = if on_path("ollama") {
         let first = Command::new("ollama")
@@ -1445,7 +1460,9 @@ main locus Org {{
             // The editing position: read, edit, fmt and check inside one
             // worktree — the law says so.
             editor: dna::SourceEditor {{ name: "editor", models: editor_models() }},
-            genome_seed: "{seed}"
+            genome_seed: "{seed}",
+            // GH #596 L: an ask is planned by the leader before it becomes a Mutation
+            planned: true
         }};
         // The Leader: decides the Reviews inside the grant, with the deep
         // tier, reading the source diff and the semantic diff; every
@@ -1454,7 +1471,13 @@ main locus Org {{
             name: "leader",
             models: leader_models(),
             receipts: dna::GitReceipts {{ repo: "." }},
-            source: dna::SourceReader {{ repo: "." }}
+            source: dna::SourceReader {{ repo: "." }},
+            // GH #596 L: what the leader reads before it thinks — its
+            // charter and the purpose from this program, the law from the
+            // genome, the ratified practices for `org` from the service
+            charter: charter(),
+            purpose: purpose(),
+            knowledge: dna::KnowledgeClient {{ url_env: "HALE_DNA_KNOWLEDGE_URL" }}
         }};
         // The baseline review: ratify purpose.hl. The Board's; it settles
         // only on a verdict naming this exact digest.

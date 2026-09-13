@@ -15,6 +15,7 @@ fn hale_in(args: &[&str], cwd: &Path) -> (bool, String) {
         .args(args)
         .current_dir(cwd)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .output()
         .expect("hale");
@@ -65,6 +66,7 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
         .current_dir(&a)
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

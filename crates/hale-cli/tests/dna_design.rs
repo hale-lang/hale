@@ -17,6 +17,7 @@ fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
         .args(args)
         .current_dir(cwd)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .output()
         .expect("hale");
@@ -81,6 +82,7 @@ fn start_org(app: &Path) -> std::process::Child {
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(app)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .env("HALE_DNA_KNOWLEDGE_DSN", "memory")
         .stdout(Stdio::null())
@@ -111,6 +113,7 @@ fn package(app: &Path) -> (Vec<String>, String) {
         .args(["dna", "knowledge", ".", "--port", &port.to_string()])
         .current_dir(app)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .env("HALE_DNA_KNOWLEDGE_DSN", "memory")
         .stdout(Stdio::null())

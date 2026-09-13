@@ -82,6 +82,33 @@ topic ReviewSettled { payload: ReviewSettlement; subject: "dna.review.settled"; 
 // bus carries the request and the settlement, keyed by work id).
 topic WorkRequested { payload: WorkRequest; subject: "dna.work.requested"; }
 
+// GH #596 L: an ask, before it becomes work — the leader says what it
+// is. The assembly asks; the leader answers with a plan that only
+// splits and classifies, never widens; the assembly journals it as
+// `task.planned` and proceeds under the class and target it names.
+type PlanRequest {
+    task_id: String = "";
+    work_id: String = "";
+    objective: String = "";
+    target: String = "";
+    requires: String = "";
+    data_class: String = "internal";
+}
+type Plan {
+    task_id: String = "";
+    work_id: String = "";
+    kind: String = "appendage"; // "organism" | "appendage" | "product" | "person" (not a software change)
+    change_class: String = "application";
+    target: String = "";
+    count: Int = 1; // one change, or several
+    narrative: String = "";
+    package: String = ""; // the knowledge package the plan read ("" = none)
+    by: String = "";
+    parsed: Bool = false; // the model's answer named a kind and a class; else the defaults stand
+}
+topic PlanRequested { payload: PlanRequest; subject: "dna.plan.requested"; }
+topic TaskPlanned { payload: Plan; subject: "dna.task.planned"; }
+
 type WorkSettlement {
     work_id: String = "";
     disposition: String = "";

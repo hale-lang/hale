@@ -41,6 +41,12 @@ locus WorktreeTools {
     }
     // Each call is one Attempt's: bounded by the attempt cap of the
     // Work that owns the editor, not by anything the grant can see.
+    // A path inside the grant that names no file. Outside the grant is
+    // the boundary's refusal, not a missing file's.
+    fn missing(rel: String) -> Bool {
+        if !self.inside(rel) { return false; }
+        return !std::io::fs::file_exists(self.root + "/" + rel);
+    }
     @unbounded
     fn read(rel: String) -> String {
         if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "read outside the worktree: " + rel; return ""; }
@@ -283,6 +289,10 @@ locus SourceEditor {
     @unbounded
     fn edit_one(attempt: String, file: String, objective: String, diagnostics: String, data_class: String) -> ModelResult {
         let refused_before = self.tools.refused;
+        // a file that is not there is not an empty file: an edit of it
+        // handed the model nothing, and its answer ("I don't have the
+        // contents…") was written under that name into the candidate
+        if self.tools.missing(file) { return ModelResult { ok: false, refused: "no such file under the grant: " + file }; }
         let current = self.tools.read(file);
         if self.tools.refused > refused_before { return ModelResult { ok: false, refused: self.tools.last_refusal }; }
         let mut prompt = "Rewrite " + file + " so that: " + objective + "\nChange only what the objective requires; keep every other line, comments included, exactly as it is.\nReturn the whole file as plain text: no code fence, no commentary, nothing before the first line of the file or after the last.";

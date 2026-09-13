@@ -60,7 +60,8 @@ fn the_surface_serves_the_record_and_a_verdict_from_the_form_lands_in_it() {
     std::fs::create_dir_all(&d).unwrap();
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
     let hale = |args: &[&str], cwd: &Path| -> (bool, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_hale")).args(args).current_dir(cwd).env("HALE_BIN", env!("CARGO_BIN_EXE_hale")).env("XDG_CACHE_HOME", &cache).output().expect("hale");
+        let out = Command::new(env!("CARGO_BIN_EXE_hale")).args(args).current_dir(cwd).env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off").env("XDG_CACHE_HOME", &cache).output().expect("hale");
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
     };
     let (ok, out) = hale(&["dna", "new", "uiapp"], &d);
@@ -84,6 +85,7 @@ fn the_surface_serves_the_record_and_a_verdict_from_the_form_lands_in_it() {
         .args(["dna", "ui", ".", "--port", &port.to_string()])
         .current_dir(&app)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", &cache)
         .stdout(Stdio::null())
         .stderr(Stdio::null())

@@ -14,6 +14,9 @@ fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
         .args(args)
         .current_dir(cwd)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("OPENAI_API_KEY")
         .env("HALE_DNA_ONESHOT", "1")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .output()
@@ -117,6 +120,9 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
         .current_dir(&app)
         .env("XDG_CACHE_HOME", &cache)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("OPENAI_API_KEY")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -147,6 +153,9 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
             .args(args)
             .current_dir(&app)
             .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("OPENAI_API_KEY")
             .env("XDG_CACHE_HOME", &cache)
             .output()
             .unwrap();
@@ -190,7 +199,9 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     assert!(has(&rows, "task.born", "t1"), "4: {dump}");
     assert!(requested, "5–8: no review.requested for m1 within 120s:\n{dump}");
     let proposed = rows.iter().find(|(k, e, _)| k == "mutation.proposed" && e == "m1").expect("6: proposed");
-    assert!(proposed.2.starts_with("task t1 application:"), "6: the Mutation names its Task: {}", proposed.2);
+    // the class is the leader's plan (GH #596 L): `application` when no model answered, else what it named
+    assert!(proposed.2.starts_with("task t1 ") && proposed.2.contains(": document the chat server in main.hl"), "6: the Mutation names its Task: {}", proposed.2);
+    assert!(has(&rows, "task.planned", "t1"), "6: the ask was planned before it became a Mutation:\n{dump}");
     assert!(rows.iter().any(|(k, e, b)| k == "mutation.located" && e == "m1" && b.contains("main.hl under read edit fmt check @")), "5: the Attempt inspects under its grant:\n{dump}");
     assert!(has(&rows, "mutation.worktree", "m1"), "6: {dump}");
     let cand = rows.iter().find(|(k, e, _)| k == "mutation.candidate" && e == "m1").map(|r| r.2.clone()).expect("6: candidate");

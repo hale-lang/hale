@@ -17,6 +17,12 @@
 // effect the law names; committing and applying are.
 locus SourceReader {
     params { repo: String = "."; reads: Int = 0; }
+    // A file as the genome holds it at HEAD, "" when it is not there.
+    fn read(path: String) -> String {
+        self.reads = self.reads + 1;
+        let r = run_tool("git\n-C\n" + self.repo + "\nshow\nHEAD:" + path);
+        return if r.code == 0 { r.stdout } else { "" };
+    }
     fn diff(base: String, candidate: String) -> String {
         self.reads = self.reads + 1;
         let r = run_tool("git\n-C\n" + self.repo + "\ndiff\n" + base + "\n" + candidate);
@@ -25,12 +31,44 @@ locus SourceReader {
     }
 }
 
+// The value after `<key>:` on its own line of a model's answer, "" when
+// the line is absent. The key may come back capitalised; the value is
+// the model's, leading blanks dropped.
+@unbounded
+fn plan_line(text: String, key: String) -> String {
+    let want = key + ":";
+    let mut rest = text + "\n";
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = trim_nl(if nl < 0 { rest } else { rest[0..nl] });
+        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+        if len(line) > len(want) && std::str::lower(line[0..len(want)]) == want {
+            let mut v = line[len(want)..len(line)];
+            while len(v) > 0 && v[0..1] == " " { v = v[1..len(v)]; }
+            return trim_nl(v);
+        }
+    }
+    return "";
+}
+
 locus Leader {
     params {
         name: String = "leader";
         models: ModelRouter = ModelRouter { };
         receipts: Receipts = FileReceipts { };
         source: SourceReader = SourceReader { };
+        // GH #596 L: the brief the leader reads before it thinks. The
+        // charter and the purpose are the org program's own text (the
+        // org chart passes `charter()` and `purpose()`); the law is
+        // read from the genome at HEAD; the ratified practices for
+        // `org` come from the knowledge service, and the package is
+        // named in the evidence of every decision that read it.
+        charter: String = "";
+        purpose: String = "";
+        law_path: String = "dna/org/law.hl";
+        knowledge: KnowledgeClient = KnowledgeClient { };
+        last_package: String = ""; // the package digest the last decision read ("" = none)
+        last_brief: String = ""; // the brief the last decision was given, above the diffs
         decisions: Int = 0;
         approved: Int = 0;
         revised: Int = 0;
@@ -40,6 +78,69 @@ locus Leader {
     bus {
         subscribe ReviewRequested as on_requested;
         publish ReviewVerdict;
+        subscribe PlanRequested as on_plan;
+        publish TaskPlanned;
+    }
+    // GH #596 L: an ask enters, and the leader's first act is to say
+    // what it is — which kind of child it concerns, one change or
+    // several, what class, or that it is a person's job — reading its
+    // brief first. A plan only splits and classifies; it never widens
+    // what was asked. A model answer that names no kind and no class
+    // leaves the defaults standing (an appendage, class `application`,
+    // the ask's own target), and the record says the answer did not
+    // parse. One plan per ask; bounded by the Tasks the membrane admits.
+    @unbounded
+    fn on_plan(req: PlanRequest) {
+        let brief = self.brief(req.objective);
+        let pkg_bindings = if len(self.last_package) > 0 { self.knowledge.bindings_for("org", req.objective) } else { "" };
+        let prompt = "You are the leader of this project: its architect. An ask has entered. Say what it is, by your charter, the purpose, the law and the ratified practices above; do not widen it.\n"
+            + "Ask: " + req.objective + "\n"
+            + "Target named by the asker: " + (if len(req.target) > 0 { req.target } else { "(none)" }) + "\n"
+            + "Answer with these lines, then one line of reasoning:\n"
+            + "kind: organism | appendage | product | person\n"
+            + "class: docs | refactor | feature | application | organization | constitutional | process-policy | topology\n"
+            + "target: <the file or locus this concerns, or the asker's>\n"
+            + "count: <how many changes this is>";
+        let r = self.models.ask(ModelRequest {
+            attempt_id: req.task_id + "/plan", role: "plan", target: req.target,
+            prompt: prompt, context: brief, context_bytes: len(brief) + len(prompt),
+            data_class: req.data_class, knowledge_bindings: pkg_bindings
+        });
+        let text = if r.ok { r.output } else { "" };
+        let kind = plan_line(text, "kind");
+        let class = plan_line(text, "class");
+        let known_kind = kind == "organism" || kind == "appendage" || kind == "product" || kind == "person";
+        let known_class = class == "docs" || class == "refactor" || class == "feature" || class == "application" || class == "organization" || class == "constitutional" || class == "process-policy" || class == "topology";
+        let parsed = known_kind && known_class;
+        let target = plan_line(text, "target");
+        let count = std::str::parse_int(plan_line(text, "count")) or 1;
+        TaskPlanned <- Plan {
+            task_id: req.task_id, work_id: req.work_id,
+            kind: if known_kind { kind } else { "appendage" },
+            change_class: if parsed { class } else { "application" },
+            target: if parsed && len(target) > 0 && target != "(none)" { target } else { req.target },
+            count: if count > 0 { count } else { 1 },
+            narrative: if r.ok { trim_nl(r.output) } else { "model refused: " + r.refused },
+            package: self.last_package, by: self.name, parsed: parsed
+        };
+    }
+    // What the leader knows before it thinks: its charter, the
+    // purpose, the law as the genome holds it, and the practices the
+    // Board has ratified for the whole organization — each under its
+    // own heading, the practices with the package they came from.
+    // Bounded like the caller.
+    @unbounded
+    fn brief(query: String) -> String {
+        let mut out = "";
+        if len(self.charter) > 0 { out = out + "CHARTER\n" + self.charter + "\n\n"; }
+        if len(self.purpose) > 0 { out = out + "PURPOSE\n" + self.purpose + "\n\n"; }
+        let law = self.source.read(self.law_path);
+        if len(law) > 0 { out = out + "LAW\n" + law + "\n"; }
+        let pkg = self.knowledge.package_for("org", query);
+        self.last_package = if pkg.included_n > 0 { pkg.digest } else { "" };
+        if pkg.included_n > 0 { out = out + "PRACTICES (ratified knowledge for org, package " + pkg.digest + "):\n" + pkg.text + "\n"; }
+        self.last_brief = out;
+        return out;
     }
     // One decision per Review the org announces; bounded by the
     // Mutations proposed.
@@ -52,17 +153,21 @@ locus Leader {
         }
         let source = self.source.diff(req.base_commit, req.subject_digest);
         let semantic = self.receipts.read(req.diff_text);
-        let prompt = "You are the leader of this project. Decide the change under review.\n"
+        let brief = self.brief(req.question);
+        let pkg_bindings = if len(self.last_package) > 0 { self.knowledge.bindings_for("org", req.question) } else { "" };
+        let prompt = "You are the leader of this project: its architect. Decide the change under review by your charter, the purpose, the law and the ratified practices above the diffs.\n"
             + "Question: " + req.question + "\n"
             + "Class: " + req.change_class + " · disposition under the grant: " + req.disposition + "\n"
             + "Evidence: " + req.evidence + "\nMagnitude: " + req.magnitude + "\n"
             + "Answer with one word first — approve, revise or reject — then why.";
+        let context = brief + "SOURCE DIFF\n" + source + "\nSEMANTIC DIFF\n" + semantic;
         let r = self.models.ask(ModelRequest {
             attempt_id: req.review_id + "/review", role: "review", assurance: 2,
             prompt: prompt,
-            context: "SOURCE DIFF\n" + source + "\nSEMANTIC DIFF\n" + semantic,
-            context_bytes: len(source) + len(semantic) + len(prompt),
-            data_class: "internal"
+            context: context,
+            context_bytes: len(context) + len(prompt),
+            data_class: "internal",
+            knowledge_bindings: pkg_bindings
         });
         self.decisions = self.decisions + 1;
         let verdict = if !r.ok { "abstain" } else { first_word(r.output) };

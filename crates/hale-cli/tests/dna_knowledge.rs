@@ -19,7 +19,8 @@ use std::time::{Duration, Instant};
 
 fn hale(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> (bool, String) {
     let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
-    c.args(args).current_dir(cwd).env("HALE_BIN", env!("CARGO_BIN_EXE_hale")).env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"));
+    c.args(args).current_dir(cwd).env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off").env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"));
     for (k, v) in env {
         c.env(k, v);
     }
@@ -145,6 +146,7 @@ fn serve<T>(app: &Path, dsn: &str, port: u16, body_of: impl FnOnce(u16) -> T) ->
         .args(["dna", "knowledge", ".", "--port", &port.to_string()])
         .current_dir(app)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .env("HALE_DNA_KNOWLEDGE_DSN", dsn)
         .stdout(Stdio::null())
@@ -352,6 +354,7 @@ fn init_writes_compose_and_dev_runs_the_knowledge_service_that_tails_the_record(
         .args(["dna", "dev", ".", "--no-iris"])
         .current_dir(&app)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .env("HALE_DNA_KNOWLEDGE_DSN", "memory")
         .env("HALE_DNA_KNOWLEDGE_PORT", kport.to_string())

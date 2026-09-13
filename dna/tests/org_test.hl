@@ -66,6 +66,10 @@ main locus Org {
         std::io::fs::mkdir(repo) or discard;
         std::io::fs::write_file(repo + "/main.hl", BASE) or discard;
         std::io::fs::write_file(repo + "/.gitignore", "/.hale/\n") or discard;
+        // the law, as the genome holds it: the leader reads it at HEAD (GH #596 L)
+        std::io::fs::mkdir(repo + "/dna") or discard;
+        std::io::fs::mkdir(repo + "/dna/org") or discard;
+        std::io::fs::write_file(repo + "/dna/org/law.hl", "// the law of this test's organization\nconstitution Org { nothing_here: forbid reaches(editors, effects(repo_write)); }\n") or discard;
         let init = sh("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
         let add = sh("git\n-C\n" + repo + "\nadd\n-A");
         let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
@@ -100,7 +104,9 @@ main locus Org {
                 deep: dna::FakeModel { name: "deep", answer: "Approve: documented, checks clean." }
             },
             receipts: dna::GitReceipts { repo: repo },
-            source: dna::SourceReader { repo: repo }
+            source: dna::SourceReader { repo: repo },
+            charter: "You are the architect of this organization: you propose, the Board decides.",
+            purpose: "keep the pings counted"
         };
 
         // ---- 1. outside the grant: the Board's ---------------------------
@@ -136,6 +142,15 @@ main locus Org {
         std::test::assert(std::str::contains(self.last("review.reasoned", "m2"), "model deep:"), "the Leader's reasoning is in the record: " + self.last("review.reasoned", "m2"));
         std::test::assert_eq_str(self.last("review.settled", "m2"), "approve by leader", "settled by the Leader: " + self.last("review.refused", "m2"));
         std::test::assert_eq_int(self.count_role("review"), 1, "the Leader's decision is a model call with evidence");
+        // the Leader decided with its brief above the diffs (GH #596 L):
+        // charter, purpose, the law as the genome holds it — and no
+        // practices, since no knowledge service is wired here
+        let brief = self.leader.last_brief;
+        std::test::assert(std::str::starts_with(brief, "CHARTER\nYou are the architect of this organization"), "the charter leads the brief: " + brief);
+        std::test::assert(std::str::contains(brief, "PURPOSE\nkeep the pings counted\n"), "then the purpose: " + brief);
+        std::test::assert(std::str::contains(brief, "LAW\n// the law of this test's organization\nconstitution Org"), "then the law, read from HEAD: " + brief);
+        std::test::assert(!std::str::contains(brief, "PRACTICES"), "no service, no practices: " + brief);
+        std::test::assert_eq_str(self.leader.last_package, "", "and no package named");
         let cand2 = self.last("mutation.candidate", "m2");
         std::test::assert_eq_str(self.head(), cand2, "applied on the Leader's verdict");
         std::test::assert(self.core.journal.verify_chain(), "chain intact");

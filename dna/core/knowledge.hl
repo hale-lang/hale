@@ -224,6 +224,14 @@ locus KnowledgeClient {
     // the service computed, and the ideas rendered for an objective. The
     // query — what the work is about — ranks the bounded set (K3); an
     // empty query is ratification order.
+    // What the evidence names for a target: the package and the ids it
+    // included, as `bindings_of` renders them.
+    @unbounded
+    fn bindings_for(target: String, query: String) -> String {
+        return bindings_of(self.package_for(target, query));
+    }
+    // One HTTP answer per call: bounded by the service's package, and by
+    // the caller (a per-Task consult, a per-Review brief).
     @unbounded
     fn package_for(target: String, query: String) -> ContextPackage {
         if !self.ready() { return ContextPackage { target: target, error: "no knowledge service" }; }

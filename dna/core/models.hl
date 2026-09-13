@@ -95,6 +95,8 @@ locus FakeModel {
         // on cue without a wire.
         fail_after: Int = 0;
         calls: Int = 0;
+        last_prompt: String = ""; // what the last call asked (a fixture reads these)
+        last_context: String = "";
     }
     // A fake leaves the same evidence a hosted call does (GH #529 D7):
     // the attempt, the digests, the tool grant — so a scripted run's
@@ -121,6 +123,8 @@ locus FakeModel {
     @effects(is: { external_model })
     fn complete(req: ModelRequest) -> ModelResult {
         self.calls = self.calls + 1;
+        self.last_prompt = req.prompt;
+        self.last_context = req.context;
         let mut ev = ModelEvidence {
             attempt_id: req.attempt_id, adapter: "fake", backend: self.name, endpoint: "fake://" + self.name,
             requested_model: self.model, reported_model: self.model,
