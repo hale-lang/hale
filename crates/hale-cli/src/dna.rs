@@ -508,6 +508,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     let purpose_digest = format!("sha256:{}", hex(&openssl::sha::sha256(purpose_text.as_bytes())));
     let org_dir = app.root.join(ORG_SEED);
     created(&mut out, &org_dir.join("purpose.hl"), &purpose_hl(&purpose_text))?;
+    created(&mut out, &org_dir.join("charter.hl"), &charter_hl(&app.project))?;
     created(&mut out, &org_dir.join("law.hl"), &org_law_hl())?;
     // GH #583 M1: the catalog, from what this machine has
     let found = discover();
@@ -541,6 +542,9 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     } else {
         let n = seed_journal(&app.root, &app, &art, &raw, &purpose_digest)?;
         out.push(format!("seeded  {RECORD_REF} ({n} event(s): application.attached, structure.observed, responsibility.proposed, review.requested)"));
+        // GH #596 C: the design, as proposals — one Review per practice
+        let d = seed_design(&app.root, None)?;
+        out.push(format!("seeded  design ({d} practice(s) proposed, one Board Review each: `hale dna review` lists them under `design`)"));
     }
     // 8. .gitignore hygiene
     let gi = app.root.join(".gitignore");
@@ -604,6 +608,21 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
                 "note    {}/main.hl wires its routers inline (dna::HostedModel is now dna::OpenAiChat); point each position at the catalog: `models: leader_models()`, `editor_models()`, `agent_models()`, and `budget: dna::Budget {{ policy: org_budget() }}` on the substrate",
                 ORG_SEED
             ));
+        }
+    }
+    // GH #596: an organization from before the charter gets one, and
+    // the toolchain's design is proposed again where it changed — each
+    // changed practice superseding the one it replaces, for the Board
+    let charter = org_dir.join("charter.hl");
+    if org_dir.join("main.hl").is_file() && !charter.is_file() {
+        let project = locate(&root).map(|a| a.project).unwrap_or_else(|_| "the project".to_string());
+        fs::write(&charter, charter_hl(&project)).map_err(|e| format!("write {}: {e}", charter.display()))?;
+        out.push(format!("created {}", charter.display()));
+    }
+    if record_head(&root).is_some() {
+        let (proposed, superseded) = upgrade_design(&root)?;
+        if proposed > 0 {
+            out.push(format!("design  {proposed} practice(s) proposed ({superseded} superseding an earlier version); the Board decides each: `hale dna review`"));
         }
     }
     Ok(out)
@@ -1637,4 +1656,213 @@ fn seed_journal(root: &Path, app: &App, art: &Value, raw: &str, purpose_digest: 
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+// ---------------------------------------------------------------
+// GH #596: the leader's charter, and the toolchain's design
+// ---------------------------------------------------------------
+
+/// `dna/org/charter.hl`: what the leader reads before it thinks. A
+/// function returning text, like `purpose`, so a change to the brief
+/// is a mutation of the org program the Board reviews.
+fn charter_hl(project: &str) -> String {
+    let text = format!(
+        "You are the architect of {project}'s organization: you propose, the Board decides. \
+The organization is a DNA organism, the nervous system of a software-enabled organization whose product may or may not be software. \
+Under it are three kinds of thing it can change about itself: the organism (its own positions, laws and purpose), appendages (software it grows to do its own work), and products (software it ships to others). \
+They differ by policy, not mechanism: how wide a grant is, who must sign, whether a change ships on approval or waits for a release. \
+Every ask enters the record as intent and a Task is born; your first act is to say what the ask is: which kind of thing it concerns, one change or several, what class of change, or that it is not a software change at all. A plan only splits and classifies; it never widens what was asked. \
+Nothing applies except through the gate: a change is a candidate the record can show, checked and reviewed, and it lands whole or not at all. \
+A grant is the Board's leash on you: inside it you decide, outside it you escalate, and a grant only narrows under failure. \
+The record is the organization's memory and yours: read it before you reason. \
+Structure follows intent: propose no change to the organism before its purpose, its law and its knowledge exist. \
+The organization grows by proposal, a position, a rule, a department, and you may propose your own team: when asks keep falling through to you for triage, a secretary that triages them is a proposal like any other, justified by that signal and by minimal structure and appropriate depth, and born only when the Board ratifies it. \
+A software change is one outcome among several; say when an ask is a person's job."
+    );
+    format!(
+        r#"// dna/org/charter.hl — the leader's brief (project-owned; generated by
+// `hale dna init`). The leader reads this, the purpose, the law and
+// the ratified design before it plans an ask and before it decides a
+// Review. Change it as you would any part of the organism: through a
+// reviewed change.
+
+const CHARTER: String = "{}";
+
+fn charter() -> String {{
+    return CHARTER;
+}}
+"#,
+        text.replace('\\', "\\\\").replace('"', "\\\"")
+    )
+}
+
+/// One seeded practice of the design: a stable name across versions of
+/// the toolchain, and the text the Board ratifies or declines.
+struct DesignPractice {
+    name: &'static str,
+    text: &'static str,
+}
+
+/// The design: how a DNA organization works, as practices bound to
+/// `org` — brained's structural knowledge adapted to DNA. Proposed at
+/// `init`, one Board Review each; never ratified by the toolchain.
+const DESIGN: &[DesignPractice] = &[
+    DesignPractice { name: "design/principles", text: "Minimal structure: add a position only when it serves the whole; complexity is cost. Clean cuts: responsibilities do not overlap, and work that keeps crossing a boundary says the boundary is wrong. Appropriate depth: specialize only when a domain genuinely bifurcates. Team size: three at least (triangulation), seven at most (the ceiling of attention); beyond seven, decompose. Contract invariance: when a part restructures inside, its parent's contract does not change; a position's capabilities are its effect contract, and the compiler holds it." },
+    DesignPractice { name: "design/evolution", text: "Start minimal: the Board, the leader, the substrate, one child. Let work reveal where structure is needed. Add operators before supervisors: an operator is cheap, a supervisor adds management. Promote a position to a department only when its domain bifurcates, not before. Re-evaluate on a cadence: structure should match current work, not history." },
+    DesignPractice { name: "design/structure-follows-intent", text: "Propose no change to the organism before its purpose (what), its law and grants (how) and its knowledge (the domain's terms and practices) exist. A structure proposed without them produces positions with empty identities, useless to anyone holding them. The sequence is: the Board states purpose and how, the leader proposes structure grounded in both, the Board reviews, the substrate materializes." },
+    DesignPractice { name: "design/standard-equipment", text: "Every part that supervises others is born with its architect: the position that holds the design for its path, proposes the rest of its team, and never decides. The architect's first proposal is usually the expert for its domain; after that, researchers, planners and deliverers as the work requires. At the root, the leader is the organism's architect." },
+    DesignPractice { name: "design/signals", text: "Read the record for structural signals. Asks that fall through to the leader with no route: routing is incomplete or a position is missing. A position with no work over a window: possibly unnecessary. Concerns accumulating at a child: that subtree is under strain and may need capacity or a different cut. Changes that cross between siblings: their shared parent is missing logic, or the boundary is wrong. A grant that keeps contracting: the work under it is failing and needs a different shape, not a wider leash. Each is an input to a proposal, or to saying the state is clean." },
+    DesignPractice { name: "design/signaling", text: "Goals flow down: authored above, bound below, they say what the whole wants of the part. Concerns flow up: authored below, bound above, they say what the part cannot solve alone. Initiatives bridge: self-authored, they turn a goal and its concerns into work. The direction is the classification; nothing else labels them. Three concerns from one source become a proposal by that source; a concern that persists across cycles is being ignored." },
+    DesignPractice { name: "design/optimize", text: "On a cadence the Board sets, walk the machinery, not the work: are the change classes right, are Reviews going to the right authority, is the routing catching what it should, does the topology still fit, is the knowledge still true. Propose one small change with its reasoning, or record that the state is clean. Never propose a large restructure unprompted, and never create work for the sake of activity." },
+    DesignPractice { name: "design/software-delivery", text: "For an appendage or a product: process boundaries first (what runs, fails and scales independently), then the shapes and verbs that flow between them. Deliver vertical slices that can be demonstrated, never horizontal layers that cannot. Know a change's kind before starting, aesthetic, functional or structural, and update in dependency order. The specification is the source of truth; changes flow from it. The primary test surface is an integration harness through the real system, with the model as the only injected dependency; unit tests sparingly, for pure logic." },
+];
+
+/// The canonical document of a seeded practice: the same fields the
+/// organization writes for its own proposals (`knowledge_document`),
+/// so the tail and the package treat both alike.
+fn design_document(p: &DesignPractice, supersedes: Option<&str>) -> String {
+    let mut doc = serde_json::Map::new();
+    doc.insert("kind".into(), "practice".into());
+    doc.insert("text".into(), p.text.into());
+    doc.insert("author".into(), "org".into());
+    doc.insert("target".into(), "org".into());
+    doc.insert("provenance".into(), "design".into());
+    doc.insert("name".into(), p.name.into());
+    doc.insert("toolchain".into(), TOOLCHAIN.into());
+    if let Some(old) = supersedes {
+        doc.insert("supersedes".into(), old.into());
+    }
+    serde_json::Value::Object(doc).to_string()
+}
+
+/// A receipt blob under `refs/dna/receipts/<sha256>`, as the
+/// organization's `GitReceipts.store` files it. Idempotent by digest.
+fn store_receipt(root: &Path, text: &str) -> Result<String, String> {
+    let digest = hex(&openssl::sha::sha256(text.as_bytes()));
+    let r = format!("refs/dna/receipts/{digest}");
+    if git(root, &["rev-parse", "-q", "--verify", &r]).is_ok() {
+        return Ok(digest);
+    }
+    let dna_dir = root.join(".hale/dna");
+    fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
+    let tmp = dna_dir.join(format!("receipt.{}.{digest}.tmp", std::process::id()));
+    fs::write(&tmp, text).map_err(|e| e.to_string())?;
+    let blob = git(root, &["hash-object", "-w", &tmp.to_string_lossy()])?;
+    let _ = fs::remove_file(&tmp);
+    git(root, &["update-ref", &r, &blob])?;
+    Ok(digest)
+}
+
+/// Propose one practice: its receipt, a `knowledge.proposed` row and a
+/// Review of its own, grouped `design` for the listing. Returns the
+/// review id.
+fn propose_design(root: &Path, p: &DesignPractice, supersedes: Option<&str>) -> Result<String, String> {
+    let doc = design_document(p, supersedes);
+    let raw = store_receipt(root, &doc)?;
+    let digest = format!("sha256:{raw}");
+    let review_id = format!("k:{}", &raw[..12]);
+    append_journal(
+        root,
+        "knowledge.proposed",
+        &digest,
+        &serde_json::json!({
+            "digest": digest, "review_id": review_id, "kind": "practice", "author": "org",
+            "target": "org", "class": "initiative", "provenance": "design", "name": p.name,
+            "supersedes": supersedes.unwrap_or("")
+        })
+        .to_string(),
+    )?;
+    let first: String = p.text.chars().take(72).collect();
+    let question = format!(
+        "ratify the design practice `{}`{}: {}{}",
+        p.name,
+        if supersedes.is_some() { " (replacing an earlier version)" } else { "" },
+        first,
+        if p.text.chars().count() > 72 { "…" } else { "" }
+    );
+    append_journal(
+        root,
+        "review.requested",
+        &format!("review:{review_id}"),
+        &serde_json::json!({
+            "question": question, "subject_digest": digest, "required_authority": "board",
+            "author": "org", "knowledge_digest": digest, "kind": "practice", "target": "org",
+            "class": "initiative", "group": "design", "name": p.name
+        })
+        .to_string(),
+    )?;
+    Ok(review_id)
+}
+
+/// Seed every practice of the design (at `init`). `only` restricts to
+/// names, for tests.
+fn seed_design(root: &Path, only: Option<&[&str]>) -> Result<usize, String> {
+    let mut n = 0;
+    for p in DESIGN {
+        if let Some(names) = only {
+            if !names.contains(&p.name) {
+                continue;
+            }
+        }
+        propose_design(root, p, None)?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// The design's proposals already in the record, by name: the latest
+/// (digest, text) proposed under each name, whoever proposed it.
+fn design_in_record(root: &Path) -> Result<std::collections::BTreeMap<String, (String, String)>, String> {
+    let text = match record_head(root) {
+        Some(_) => git(root, &["show", &format!("{RECORD_REF}:journal.jsonl")])?,
+        None => String::new(),
+    };
+    let mut by_name: std::collections::BTreeMap<String, (String, String)> = std::collections::BTreeMap::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if v["kind"] != "knowledge.proposed" {
+            continue;
+        }
+        let Ok(body) = serde_json::from_str::<serde_json::Value>(v["body"].as_str().unwrap_or("")) else { continue };
+        let digest = body["digest"].as_str().unwrap_or("").to_string();
+        if digest.is_empty() {
+            continue;
+        }
+        // the receipt is canonical: its name and its text decide
+        // whether the toolchain's current practice is already proposed
+        let raw = digest.strip_prefix("sha256:").unwrap_or(&digest).to_string();
+        let Ok(doc) = git(root, &["cat-file", "-p", &format!("refs/dna/receipts/{raw}")]) else { continue };
+        let Ok(d) = serde_json::from_str::<serde_json::Value>(&doc) else { continue };
+        let name = d["name"].as_str().unwrap_or("").to_string();
+        if !name.is_empty() {
+            by_name.insert(name, (digest, d["text"].as_str().unwrap_or("").to_string()));
+        }
+    }
+    Ok(by_name)
+}
+
+/// At `upgrade`: propose each practice whose current text is not yet in
+/// the record, superseding the version proposed under the same name
+/// when there is one. Unchanged practices propose nothing. Returns
+/// (proposed, of which superseding).
+fn upgrade_design(root: &Path) -> Result<(usize, usize), String> {
+    let have = design_in_record(root)?;
+    let mut proposed = 0;
+    let mut superseding = 0;
+    for p in DESIGN {
+        match have.get(p.name) {
+            // the latest proposal under this name already says this
+            Some((_, text)) if text == p.text => continue,
+            Some((old, _)) => {
+                propose_design(root, p, Some(old))?;
+                proposed += 1;
+                superseding += 1;
+            }
+            None => {
+                propose_design(root, p, None)?;
+                proposed += 1;
+            }
+        }
+    }
+    Ok((proposed, superseding))
 }

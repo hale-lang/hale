@@ -40,6 +40,7 @@ your application. What appeared:
 | what | where | yours? |
 |---|---|---|
 | **The purpose.** One sentence: what this codebase is for. The first review asks you to ratify it. | `dna/org/purpose.hl` | yes — edit it |
+| **The charter.** The leader's brief: it is the organism's architect, it proposes and you decide, and what it must know before it plans or judges. | `dna/org/charter.hl` | yes — edit it |
 | **The organization.** The Board, the Leader and its grant, the gateways. Ordinary Hale source; `hale check` validates it. | `dna/org/main.hl` | yes — edit it |
 | **The catalog.** Which model each position calls, and the budget, written from what your machine had. `hale dna models` probes it. | `dna/org/models.hl` | yes — edit it |
 | **The knowledge graph's environment.** Its Postgres, for `hale dna dev` through docker compose. | `dna/compose.yaml` | yes — edit it |
@@ -109,12 +110,14 @@ In another terminal:
 ```text
 $ hale dna status
 organism:   running (membrane bound)
-journal:    7 event(s), chain verified
+journal:    23 event(s), chain verified
 expression: attached Chat (shape 3c9b9327e480d349) · current shape 3c9b9327e480d349 · build 812f3c9bd9e4
 intents:    0 offered, 0 refused
 tasks:      none
-reviews:    1 pending of 1
+reviews:    9 pending of 9
   purpose [pending] needs board — ratify the declared purpose?
+  k:79c636063701 [pending] needs board — ratify the design practice `design/principles`: …
+  … (eight, one per practice of the design)
 mutations:  0 (none applies before a human's verdict on the exact candidate)
 ```
 
@@ -132,6 +135,22 @@ the sentence to what the codebase is actually for, and approve it:
 $ hale dna review purpose approve --as riley --comment "ratified"
 review purpose settled: approve by riley
 ```
+
+Eight more Reviews wait beside it: the **design**, the toolchain's
+practices about how an organization like this one works — how it
+grows, when a position is justified, what the signals mean. Each is
+its own Review, because a Review pins one thing and settles with one
+answer; `hale dna review` lists them under one heading, and you can
+decide them one by one or all at once:
+
+```text
+$ hale dna review design approve --as riley
+review k:1e0855febc99 settled: approve by riley
+…
+```
+
+Read them first. Nothing the toolchain proposes is ratified until you
+say so, and a practice you decline never reaches anyone's package.
 
 That is the whole review mechanism, on the smallest possible thing.
 `--as` is your name on the record; a verdict from the terminal

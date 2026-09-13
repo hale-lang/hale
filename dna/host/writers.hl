@@ -118,6 +118,26 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     if !local { let s = sync_record(root); }
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
     let p = open_projection(root, seed, "");
+    // GH #596 C: `design` names every pending seeded practice; each is
+    // decided by its own verdict, in turn — a convenience over the
+    // individual Reviews, never a batch object in the record
+    if id == "design" {
+        let ids = p.review_ids();
+        let n = list_len(ids);
+        let mut out = "";
+        let mut i = 0;
+        while i < n {
+            let r = p.review_of(nth(ids, i));
+            if r.state == "pending" && r.group == "design" {
+                let one = verdict_verb(root, seed, r.id, verdict, reviewer_flag, authority_flag, comment, "", no_wait);
+                if !one.ok { return one; }
+                out = out + one.text;
+            }
+            i = i + 1;
+        }
+        if len(out) == 0 { return fail("no pending design Review"); }
+        return answer(out);
+    }
     let r = p.review_of(id);
     if len(r.id) == 0 { return fail("no `review.requested` for `" + id + "` in the Journal (pending: " + pending_ids(p) + ")"); }
     if !local && len(record_remote(root)) == 0 { return fail("the organism is not running here (no membrane) and the repository has no remote to reach one through; start it with `hale dna run`"); }

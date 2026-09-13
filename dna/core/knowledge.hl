@@ -14,12 +14,21 @@
 
 type Idea {
     id: String = "";
-    kind: String = "idea"; // "idea" | "concept" | "practice" | "task_concept"
+    kind: String = "idea"; // "idea" | "concept" | "practice" | "task_concept" | "retirement"
     text: String = "";
     author: String = ""; // a locus path, e.g. "app/support"
-    provenance: String = ""; // "declared" | "observed" | "inferred" | "proposed" | "ratified"
+    provenance: String = ""; // "declared" | "observed" | "inferred" | "proposed" | "ratified" | "design"
     revision: Int = 0;
     accepted: Bool = false;
+    // A stable name across versions of the same practice (GH #596 C):
+    // `design/<slug>` for the toolchain's seeded design, so an upgrade
+    // can tell a changed practice from a new one.
+    name: String = "";
+    // The digest this proposal replaces. Ratifying a proposal that
+    // supersedes another retires the other (`knowledge.retired`);
+    // declining it leaves the other in force. A `retirement` proposal
+    // has this and no text of its own.
+    supersedes: String = "";
 }
 
 type KnowledgeEdge { from: String = ""; to: String = ""; rel: String = ""; }
@@ -169,6 +178,8 @@ fn knowledge_document(i: Idea, target: String) -> String {
     b.string_field("author", i.author);
     b.string_field("target", target);
     b.string_field("provenance", if len(i.provenance) > 0 { i.provenance } else { "proposed" });
+    if len(i.name) > 0 { b.string_field("name", i.name); }
+    if len(i.supersedes) > 0 { b.string_field("supersedes", i.supersedes); }
     b.end_object();
     return b.result();
 }

@@ -30,11 +30,11 @@ fn the_record_is_a_branch_every_clone_can_fetch() {
     assert!(app.join(".git").is_dir(), "hale dna new initializes a repository");
     assert!(!app.join(".hale/dna/journal.jsonl").exists(), "no JSONL file: the record is the branch");
     let count = git(&["rev-list", "--count", "refs/dna/journal"], &app);
-    assert_eq!(count, "7", "one commit per seed event");
+    assert_eq!(count, "23", "one commit per seed event");
     let first = git(&["log", "--reverse", "--format=%s", "refs/dna/journal"], &app);
     assert!(first.starts_with("application.attached ."), "the commit subject is the event: {first}");
     let (ok, st) = hale(&["dna", "status"], &app);
-    assert!(ok && st.contains("7 event(s), chain verified"), "{st}");
+    assert!(ok && st.contains("23 event(s), chain verified"), "{st}");
 
     // a clone with the record fetched answers the same, offline
     git(&["add", "-A"], &app);
@@ -45,7 +45,7 @@ fn the_record_is_a_branch_every_clone_can_fetch() {
     assert!(!ok && before.contains("no record at refs/dna/journal"), "a plain clone has no record yet: {before}");
     git(&["fetch", "-q", "origin", "refs/dna/*:refs/dna/*"], &clone);
     let (ok, after) = hale(&["dna", "history"], &clone);
-    assert!(ok && after.contains("7 event(s), chain verified") && after.contains("review.requested"), "{after}");
+    assert!(ok && after.contains("23 event(s), chain verified") && after.contains("review.requested"), "{after}");
     assert_eq!(git(&["rev-parse", "refs/dna/journal"], &clone), git(&["rev-parse", "refs/dna/journal"], &app), "same head in both");
 
     // the host appends as the user (a crash accounting, say): a commit with git's identity

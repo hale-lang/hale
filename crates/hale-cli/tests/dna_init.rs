@@ -138,7 +138,8 @@ fn the_journal_is_seeded_from_the_model_with_provenance_kept_distinct() {
     let guess = body(worker)["responsibility"].as_str().unwrap().to_string();
     assert!(guess.contains("Readings") && guess.contains("Cmds"), "the guess is from structure: {guess}");
     // the baseline review names the purpose digest and the artifact
-    let review = body(rows.last().unwrap());
+    // (the design's own Reviews follow it in the record — GH #596 C)
+    let review = body(rows.iter().find(|r| r["kind"] == "review.requested" && r["entity"] == "review:purpose").expect("the purpose review"));
     assert_eq!(review["provenance"], "declared");
     assert!(review["subject_digest"].as_str().unwrap().starts_with("sha256:"));
     let purpose = std::fs::read_to_string(app.join("dna/org/main.hl")).unwrap();

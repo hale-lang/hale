@@ -36,6 +36,9 @@ interface KnowledgeStore {
     fn set_watermark(seq: Int) -> Bool;
     // Idempotent by id: a second write with the same id updates in place.
     fn upsert(i: dna::Idea, ratified_seq: Int) -> Bool;
+    // The idea is no longer accepted (a ratified supersession retired
+    // it): it leaves every package but stays readable by id.
+    fn retire(id: String, seq: Int) -> Bool;
     fn bind(b: dna::KnowledgeBinding) -> Bool;
     fn link(e: dna::KnowledgeEdge) -> Bool;
     // One idea by id (`present` false when absent).
@@ -126,6 +129,19 @@ locus Mem {
             i = i + 1;
         }
         return -1;
+    }
+    @unbounded
+    fn retire(id: String, seq: Int) -> Bool {
+        let mut i = 0;
+        while i < self.ideas.len() {
+            let x = self.ideas.get(i) or dna::Idea { };
+            if x.id == id {
+                self.ideas.set(i, dna::Idea { id: x.id, kind: x.kind, text: x.text, author: x.author, provenance: "retired", revision: seq, accepted: false, name: x.name, supersedes: x.supersedes }) or discard;
+                return true;
+            }
+            i = i + 1;
+        }
+        return true;
     }
     fn upsert(i: dna::Idea, ratified_seq: Int) -> Bool {
         let at = self.index_of(i.id);
@@ -410,6 +426,14 @@ locus Pq {
         a.add(embed_text(i.text));
         let r = self.conn.exec_params("INSERT INTO knowledge_ideas (id, kind, text, author, provenance, revision, accepted, ratified_seq, embedding) VALUES ($1, $2, $3, $4, $5, $6::bigint, $7::boolean, $8::bigint, $9::vector) ON CONFLICT (id) DO UPDATE SET kind = EXCLUDED.kind, text = EXCLUDED.text, author = EXCLUDED.author, provenance = EXCLUDED.provenance, revision = EXCLUDED.revision, accepted = EXCLUDED.accepted, ratified_seq = EXCLUDED.ratified_seq, embedding = EXCLUDED.embedding", a);
         if !r.ok { return self.fail("upsert", r.err); }
+        return true;
+    }
+    fn retire(id: String, seq: Int) -> Bool {
+        let a = db::Args { };
+        a.add(id);
+        a.add(to_string(seq));
+        let r = self.conn.exec_params("UPDATE knowledge_ideas SET accepted = false, provenance = 'retired', revision = $2::bigint WHERE id = $1", a);
+        if !r.ok { return self.fail("retire", r.err); }
         return true;
     }
     fn bind(b: dna::KnowledgeBinding) -> Bool {

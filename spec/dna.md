@@ -103,7 +103,7 @@ the same way. A project's path therefore has no length rule.
 `mutation.located`, `mutation.candidate`, `mutation.<disposition>`,
 `mutation.applied`, `mutation.retained`, `mutation.rolled_back`,
 `mutation.rejected`, `mutation.revise`, `mutation.refused`,
-`mutation.apply_retried`,
+`mutation.apply_retried`, `knowledge.retired`,
 `mutation.failed`, `effect.requested`, `effect.result`,
 `evidence.<step>`, `evidence.magnitude`, `review.requested`,
 `review.settled`, `review.refused`, `expression.restart_requested`,
@@ -461,6 +461,35 @@ authority.
   `postgres://user:password@host:port/database?sslmode=…` URL, or
   `memory` for a store that lives only as long as the process; unset
   is a refusal that says so.
+- **The design, as proposals (GH #596 C).** `init` seeds the
+  toolchain's practices about how a DNA organization works — the
+  design principles, the evolution pattern, structure follows intent,
+  standard equipment, the structural signals, signaling, the optimize
+  pass, software delivery — as `knowledge.proposed` rows with receipts
+  bound to `org`, **one Review per practice** (`k:<12hex>`, grouped
+  `design` in `hale dna review`'s listing; `hale dna review design
+  approve|reject` is a convenience that decides each pending one in
+  turn, never a batch object in the record). A Review pins one digest
+  and settles with one outcome, so the Board decides practice by
+  practice, and nothing is ratified by the toolchain. Each receipt
+  carries a stable `name` (`design/<slug>`) and the toolchain version.
+  **Supersession is the Board's decision, not a side effect.**
+  Declining a proposal retires nothing (the projection keeps a
+  ratified idea a later `knowledge.declined` names). A proposal whose
+  receipt carries `supersedes: <digest>` retires that digest when it
+  is ratified — the assembly appends `knowledge.retired <old>` — and
+  leaves it in force when it is declined; a `retirement` proposal
+  carries only that. `hale dna upgrade` proposes each practice whose
+  current text is not the latest proposed under its name, superseding
+  the latest, and proposes nothing for the rest. The projection
+  retires an idea by marking it not accepted: it leaves every package
+  and stays readable by digest.
+- **The charter (GH #596 L).** `init` writes `dna/org/charter.hl`, a
+  function returning text like `purpose`: the leader's brief, saying
+  that it is the organism's architect — it proposes, the Board
+  decides — and what it must know before it plans an ask or decides a
+  Review. Project-owned; a change is a reviewed change to the
+  organism. `upgrade` writes it for an organization from before it.
 - **Dev relies on docker compose.** `init` writes `dna/compose.yaml`
   (the `knowledge-db` service, `pgvector/pgvector:pg16`, a named
   volume `hale-dna-<project>-knowledge`, a host port in 54xx from the

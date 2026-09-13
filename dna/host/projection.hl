@@ -25,6 +25,7 @@ type ReviewRow {
     has_reasoned: Bool = false;
     mutation_id: String = "";
     is_mutation: Bool = false;
+    group: String = ""; // "design" for the toolchain's seeded practices (GH #596 C): listed together, decided one by one
     change_class: String = "";
     seed: String = "";
     disposition: String = "";
@@ -184,6 +185,7 @@ locus Projection {
                         required_authority: std::json::find_string_field(b, "required_authority"),
                         subject_digest: std::json::find_string_field(b, "subject_digest"),
                         mutation_id: mid, is_mutation: len(mid) > 0,
+                        group: std::json::find_string_field(b, "group"),
                         change_class: std::json::find_string_field(b, "change_class"),
                         seed: std::json::find_string_field(b, "seed"),
                         disposition: std::json::find_string_field(b, "disposition"),
