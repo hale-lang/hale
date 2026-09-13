@@ -229,6 +229,21 @@ fn the_service_serves_a_real_postgres() {
         let wipe = Command::new("psql").args([&dsn, "-v", "ON_ERROR_STOP=1", "-c", "DROP TABLE IF EXISTS knowledge_bindings, knowledge_edges, knowledge_ideas, knowledge_meta, knowledge_structure, knowledge_signals"]).output();
         assert!(wipe.map(|o| o.status.success()).unwrap_or(false), "psql is needed to reset the database for this test");
     }
+    // An EMPTY record over a fresh database first: no watermark row is
+    // the normal state of a store nothing has been applied to, and the
+    // read-error handling turned that absence into 503 (the fourth
+    // review round's P3). A plain clone has no record until it syncs.
+    let empty_d = std::env::temp_dir().join(format!("hale_dna_ksvc_{}_empty", std::process::id()));
+    let _ = std::fs::remove_dir_all(&empty_d);
+    std::fs::create_dir_all(&empty_d).unwrap();
+    let (ok, out) = hale(&["dna", "new", "unsynced"], &empty_d, &[]);
+    assert!(ok, "{out}");
+    let empty_app = empty_d.join("unsynced");
+    Command::new("git").args(["update-ref", "-d", "refs/dna/journal"]).current_dir(&empty_app).output().unwrap();
+    let (empty_ctx, empty_log) = serve(&empty_app, &dsn, free_port(), |p| http(p, "GET /context?target=org%2Funsynced&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
+    let _ = std::fs::remove_dir_all(&empty_d);
+    assert!(empty_ctx.starts_with("HTTP/1.0 200") || empty_ctx.starts_with("HTTP/1.1 200"), "an empty record is an empty package, not a failure: {empty_ctx}\n{empty_log}");
+    assert!(body(&empty_ctx).contains("\"included_n\": 0"), "{empty_ctx}");
     let kill = dsn.clone();
     let ((summary, ctx, idea, after_kill, ctx2, broken, broken_summary, healed), log) = serve(&app, &dsn, free_port(), |p| {
         // the service applies the record on every request

@@ -85,6 +85,24 @@ locus Review {
     }
     @unbounded
     fn on_verdict(v: Verdict) {
+        if self.settled {
+            // A verdict at a settled Review. The verdict is spent — but
+            // an approved candidate that never applied can be applied
+            // by approving AGAIN, and that approval is admitted here, by
+            // the owning locus, under every rule a first one meets: the
+            // pinned digest, the required authority, independence from
+            // the author, and the word `approve` itself. A rejection,
+            // a wrong digest, a weak authority or the author's own
+            // verdict is refused; the fourth review round showed each
+            // of them applying the candidate when a generic refusal
+            // stood in for this admission.
+            if self.readmit(v) {
+                ReviewSettled <- ReviewSettlement { review_id: self.review_id, outcome: self.outcome, decided_by: v.reviewer, comment: v.comment, reapproval: true };
+            } else {
+                ReviewSettled <- ReviewSettlement { review_id: self.review_id, refusal: self.last_refusal };
+            }
+            return;
+        }
         let admitted = self.consider(v);
         if admitted && self.settled {
             ReviewSettled <- ReviewSettlement { review_id: self.review_id, outcome: self.outcome, decided_by: self.decided_by, comment: self.comment };
@@ -92,6 +110,20 @@ locus Review {
         if !admitted {
             ReviewSettled <- ReviewSettlement { review_id: self.review_id, refusal: self.last_refusal };
         }
+    }
+    // Whether a verdict at a settled Review is the same approval again.
+    // Reached per verdict from the membrane handler, like `consider`:
+    // bounded by the reviewers of one candidate.
+    @unbounded
+    fn readmit(v: Verdict) -> Bool {
+        self.refused = self.refused + 1;
+        if self.outcome != "approve" { self.last_refusal = "already settled: " + self.outcome; return false; }
+        if v.verdict != "approve" { self.last_refusal = "already settled: approve; a " + v.verdict + " does not reopen it"; return false; }
+        if v.subject_digest != self.subject_digest { self.last_refusal = "already settled; digest mismatch: " + v.subject_digest + " != " + self.subject_digest; return false; }
+        if !authority_satisfies(v.authority, self.required_authority) { self.last_refusal = "already settled; authority " + v.authority + " does not satisfy " + self.required_authority; return false; }
+        if v.reviewer == self.author { self.last_refusal = "already settled; reviewer " + v.reviewer + " authored the candidate"; return false; }
+        self.refused = self.refused - 1;
+        return true;
     }
     // A verdict is admitted only if it names THIS candidate, carries the
     // required authority, and is independent of the author. Reached

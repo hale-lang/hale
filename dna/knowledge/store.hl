@@ -383,6 +383,10 @@ locus Pq {
     fn forget_error() { self.error = ""; }
     fn watermark() -> Int {
         let row = self.conn.query_one("SELECT value FROM knowledge_meta WHERE key = 'watermark'");
+        // no row yet is the normal state of a store nothing has been
+        // applied to: zero, not a failure (the fourth review round's
+        // P3 — a fresh Postgres answered 503 over an empty record)
+        if !row.ok && row.err.kind == "no_row" { return 0; }
         if !row.ok { self.note("watermark", row.err); return 0; }
         return std::str::parse_int(dna::trim_nl(row.data)) or 0;
     }

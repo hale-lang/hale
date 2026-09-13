@@ -27,6 +27,8 @@ main locus App {
         repo: String = "";
         dna: dna::Dna = dna::Dna { };
         plain: dna::LocalGit = dna::LocalGit { };
+        imp: dna::Dna = dna::Dna { };
+        probe: dna::LocalGit = dna::LocalGit { };
     }
     bus {
         publish dna::ReviewVerdict;
@@ -40,6 +42,32 @@ main locus App {
     fn approve(id: String, digest: String) {
         dna::ReviewVerdict <- dna::Verdict { review_id: id, subject_digest: digest, verdict: "approve", reviewer: "riley", authority: "maintainer" };
         std::time::sleep(150ms);
+    }
+    fn verdict(id: String, digest: String, what: String, authority: String) {
+        dna::ReviewVerdict <- dna::Verdict { review_id: id, subject_digest: digest, verdict: what, reviewer: "riley", authority: authority };
+        std::time::sleep(150ms);
+    }
+    @unbounded
+    fn count_for(kind: String, entity: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.imp.journal.revision() {
+            let e = self.imp.journal.read(i);
+            if e.kind == kind && e.entity == entity { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn last_in(j: dna::Journal, kind: String, entity: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && e.entity == entity { out = e.body; }
+            i = i + 1;
+        }
+        return out;
     }
     @unbounded
     fn last(kind: String, entity: String) -> String {
@@ -223,6 +251,128 @@ main locus App {
         std::test::assert(!applied, "an ancestor is not an apply, whatever git exits");
         std::test::assert(std::str::contains(self.plain.last_error, "it moved during the apply"), "and says what happened: " + self.plain.last_error);
         std::test::assert_eq_int(self.plain.applied, 0, "nothing counted as applied");
+
+        // ---- 9. only the same approval again reopens the apply -----------
+        // A settled Review refused every later verdict with one word,
+        // and the retry read that word as "approve again": a rejection,
+        // a wrong digest or a weak authority applied the candidate (the
+        // fourth review round's finding 1). Readmission is the Review's,
+        // under every rule a first approval meets.
+        let out7 = self.dna.mutate("t7", "feature", "give A a limit, and then think again", "main.hl", 700);
+        let cand7 = self.last("mutation.candidate", "m7");
+        let head9 = self.head();
+        std::io::fs::write_file(repo + "/helper.hl", "fn helper() -> Int { return 2; }\n") or discard;
+        self.approve("m7", cand7);
+        std::test::assert(std::str::contains(self.last("mutation.refused", "m7"), "uncommitted changes"), "refused while dirty: " + self.last("mutation.refused", "m7"));
+        std::io::fs::unlink(repo + "/helper.hl") or discard;
+        // clean now — and none of these is the same approval again
+        self.verdict("m7", cand7, "reject", "maintainer");
+        std::test::assert(std::str::contains(self.last("review.refused", "m7"), "does not reopen"), "a rejection reopens nothing: " + self.last("review.refused", "m7"));
+        std::test::assert_eq_str(self.head(), head9, "and applied nothing");
+        self.verdict("m7", "sha256:0000000000000000000000000000000000000000000000000000000000000000", "approve", "maintainer");
+        std::test::assert(std::str::contains(self.last("review.refused", "m7"), "digest mismatch"), "a wrong digest is refused: " + self.last("review.refused", "m7"));
+        std::test::assert_eq_str(self.head(), head9, "and applied nothing");
+        self.verdict("m7", cand7, "approve", "reviewer");
+        std::test::assert(std::str::contains(self.last("review.refused", "m7"), "does not satisfy"), "a weak authority is refused: " + self.last("review.refused", "m7"));
+        std::test::assert_eq_str(self.head(), head9, "and applied nothing");
+        std::test::assert_eq_str(self.last("mutation.apply_retried", "m7"), "", "no retry was recorded for any of them");
+        // the same approval again, in full, is the one that applies
+        self.approve("m7", cand7);
+        std::test::assert(std::str::contains(self.last("mutation.apply_retried", "m7"), "approved again by riley"), "the gate ran again: " + self.last("mutation.apply_retried", "m7"));
+        std::test::assert_eq_str(self.head(), cand7, "and applied the pinned candidate");
+
+        // ---- 10. what the build reads, not what git tracks ---------------
+        // (the fourth review round's finding 2). A seed that imports a
+        // library reads the library's files; git prints some names
+        // quoted; an ignored file is compiled all the same. The inputs
+        // are the compiler's own word.
+        let repo2 = "/tmp/dna-apply-imp-" + to_string(std::process::pid());
+        std::io::fs::mkdir(repo2) or discard;
+        std::io::fs::mkdir(repo2 + "/app") or discard;
+        std::io::fs::mkdir(repo2 + "/lib") or discard;
+        std::io::fs::mkdir(repo2 + "/elsewhere") or discard;
+        std::io::fs::mkdir(repo2 + "/.hale") or discard;
+        std::io::fs::mkdir(repo2 + "/.hale/dna") or discard;
+        std::io::fs::write_file(repo2 + "/hale.toml", "[deps]\n") or discard;
+        std::io::fs::write_file(repo2 + "/app/main.hl", "import \"../lib\" as lib;\nfn main() { println(lib::one()); }\n") or discard;
+        std::io::fs::write_file(repo2 + "/lib/one.hl", "fn one() -> Int { return 1; }\n") or discard;
+        std::io::fs::write_file(repo2 + "/.gitignore", "/.hale/\n/app/app\n/app/ignored.hl\n") or discard;
+        let i2 = sh("git\n-C\n" + repo2 + "\ninit\n-q\n-b\nmain");
+        let a2 = sh("git\n-C\n" + repo2 + "\nadd\n-A");
+        let c2 = sh("git\n-C\n" + repo2 + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
+        std::test::assert_eq_int(c2.code, 0, "base commit: " + c2.stderr);
+        self.probe = dna::LocalGit { repo: repo2 };
+        std::test::assert_eq_str(self.probe.dirty_in("app"), "", "clean to begin with");
+        std::io::fs::write_file(repo2 + "/lib/helper.hl", "fn oops( {\n") or discard;
+        std::io::fs::write_file(repo2 + "/app/helper space.hl", "fn oops( {\n") or discard;
+        std::io::fs::write_file(repo2 + "/app/ignored.hl", "fn oops( {\n") or discard;
+        std::io::fs::write_file(repo2 + "/app/app", "ELF-ish, the seed's artifact\n") or discard;
+        std::io::fs::write_file(repo2 + "/elsewhere/driver.hl", "fn main() { }\n") or discard;
+        let d10 = self.probe.dirty_in("app");
+        std::test::assert(std::str::contains(d10, "?? lib/helper.hl"), "an imported seed's untracked file is an input: " + d10);
+        std::test::assert(std::str::contains(d10, "?? app/helper space.hl"), "a name git would quote is an input: " + d10);
+        std::test::assert(std::str::contains(d10, "?? app/ignored.hl"), "an ignored source file is an input: " + d10);
+        std::test::assert(!std::str::contains(d10, "app/app"), "the artifact is not: " + d10);
+        std::test::assert(!std::str::contains(d10, "elsewhere"), "another program's source is not: " + d10);
+        std::test::assert_eq_str(self.probe.dirty_in(""), "", "tracked files alone: nothing");
+        // and through the whole gate: the imported seed's stray file
+        // refuses the apply, by name
+        std::io::fs::unlink(repo2 + "/app/helper space.hl") or discard;
+        std::io::fs::unlink(repo2 + "/app/ignored.hl") or discard;
+        self.imp = dna::Dna {
+            journal: dna::GitJournal { repo: repo2 },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo2, root: repo2 + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo2 }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo2 }, scratch: repo2 + "/.hale/dna/scratch", repo: repo2, seed: "app" },
+            editor: dna::SourceEditor {
+                models: dna::ModelRouter {
+                    quick: dna::FakeModel { name: "quick", answer: "// counts with the library\nimport \"../lib\" as lib;\nfn main() { println(lib::one()); }\n" },
+                    deep: dna::FakeModel { name: "deep", answer: "clarity +" }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "feature", max_magnitude: 40, review: "pre" } },
+            genome_seed: "app"
+        };
+        let out8 = self.imp.mutate("t8", "feature", "say what main.hl counts with", "main.hl", 800);
+        std::test::assert_eq_str(out8, "m1: review", out8);
+        let cand8 = self.last_in(self.imp.journal, "mutation.candidate", "m1");
+        let head10 = dna::trim_nl(sh("git\n-C\n" + repo2 + "\nrev-parse\nHEAD").stdout);
+        self.approve("m1", cand8);
+        std::test::assert(std::str::contains(self.last_in(self.imp.journal, "mutation.refused", "m1"), "lib/helper.hl"), "refused by the imported seed's file: " + self.last_in(self.imp.journal, "mutation.refused", "m1"));
+        std::test::assert_eq_str(dna::trim_nl(sh("git\n-C\n" + repo2 + "\nrev-parse\nHEAD").stdout), head10, "the genome did not move");
+
+        // ---- 11. approving again after the organization restarted -------
+        // (the fourth review round's finding 3). Rehydration skipped
+        // every settled Review, so after a restart the second approval
+        // met nothing at all. A Review approved and never applied comes
+        // back settled, and admits the same approval again.
+        std::io::fs::unlink(repo2 + "/lib/helper.hl") or discard;
+        self.imp = dna::Dna {
+            journal: dna::GitJournal { repo: repo2 },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo2, root: repo2 + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo2 }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo2 }, scratch: repo2 + "/.hale/dna/scratch", repo: repo2, seed: "app" },
+            editor: dna::SourceEditor {
+                models: dna::ModelRouter {
+                    quick: dna::FakeModel { name: "quick", answer: "// counts with the library\nimport \"../lib\" as lib;\nfn main() { println(lib::one()); }\n" },
+                    deep: dna::FakeModel { name: "deep", answer: "clarity +" }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "feature", max_magnitude: 40, review: "pre" } },
+            genome_seed: "app"
+        };
+        std::test::assert(self.imp.rehydrated >= 1, "the settled, unapplied Review is back: " + to_string(self.imp.rehydrated));
+        self.approve("m1", cand8);
+        std::test::assert_eq_str(dna::trim_nl(sh("git\n-C\n" + repo2 + "\nrev-parse\nHEAD").stdout), cand8, "applied after the restart");
+        std::test::assert_eq_int(self.count_for("mutation.applied", "m1"), 1, "applied exactly once");
+        std::test::assert_eq_int(self.count_for("mutation.apply_retried", "m1"), 1, "one retry, by the one organization that is running");
+        std::test::assert(self.imp.journal.verify_chain(), "the second repository's chain is intact");
         std::test::assert(self.dna.journal.verify_chain(), "chain intact");
     }
 }

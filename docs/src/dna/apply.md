@@ -23,18 +23,26 @@ When a mutation's Review settles `approve`, the substrate:
 4. checks that the genome has nothing uncommitted. A fast-forward
    **keeps** a maintainer's uncommitted edit, so the head would be the
    candidate while the files the host builds from are not. Tracked
-   changes count, and so does **untracked source of the genome's own
-   seed** — `hale check` reads the directory, not the index, so an
-   untracked `helper.hl` beside the reviewed files is built by the very
-   seed that expresses the candidate. What that seed does not compile
-   is not dirt: the binary `hale build` leaves beside a seed, a log,
-   another program's source in a directory of its own, anything under
-   `.hale/`. A dirty destination is **refused**
-   (`mutation.refused: the genome has uncommitted changes`), the work
-   is left exactly as it is, and **approving again** re-runs the whole
-   gate once it is cleared — the verdict is spent, the apply is not,
-   and the record keeps `mutation.apply_retried`. Committing the work
-   instead moves the base, which is a new proposal's business;
+   changes count, and so does **every input of the seed's build that
+   the tree does not hold** — `hale check` reads the directory, not
+   the index, and a build follows imports, so an untracked `helper.hl`
+   beside the reviewed files, an unfinished file in a library the seed
+   imports, a `.gitignore`d source file, all compile exactly the same.
+   The inputs are asked of the compiler itself (`hale inputs <seed>`)
+   rather than guessed from git. What no build reads is not dirt: the
+   binary `hale build` leaves beside a seed, a log, another program's
+   source in a directory of its own, anything under `.hale/`. A dirty
+   destination is **refused** (`mutation.refused: the genome has
+   uncommitted changes`), the work is left exactly as it is, and
+   **approving again** re-runs the whole gate once it is cleared: the
+   verdict is spent, the apply is not, and the record keeps
+   `mutation.apply_retried`. The Review admits that second approval
+   under every rule the first one met — the pinned digest, the required
+   authority, independence from the author, and the word `approve`; a
+   rejection, a wrong digest or a weak authority reopens nothing. A
+   Review approved and never applied is rehydrated settled, so the
+   road is still there after a restart. Committing the work instead
+   moves the base, which is a new proposal's business;
 5. takes the Mutation's lease (a fencing token; a stale one is
    refused);
 6. applies through the gateway: a **fast-forward to the candidate, or
