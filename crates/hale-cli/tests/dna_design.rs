@@ -23,6 +23,24 @@ fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
     (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
 }
 
+fn hale_env(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> (bool, String) {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
+    c.args(args).current_dir(cwd).env("HALE_BIN", env!("CARGO_BIN_EXE_hale")).env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"));
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    let out = c.output().expect("hale");
+    (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+}
+
+/// The `supersedes` a proposal's receipt names ("" when none).
+fn supersedes_of(app: &Path, digest: &str) -> String {
+    let raw = digest.strip_prefix("sha256:").unwrap_or(digest);
+    let out = Command::new("git").args(["cat-file", "-p", &format!("refs/dna/receipts/{raw}")]).current_dir(app).output().unwrap();
+    let v: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap_or(serde_json::Value::Null);
+    v["supersedes"].as_str().unwrap_or("").to_string()
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
@@ -234,5 +252,49 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     let new_p = digest_of(&new_principles);
     assert!(included.contains(&new_p), "the ratified replacement is in the package: {ctx}");
     assert_eq!(included.len(), 4, "two from the first round, the old evolution, the new principles: {ctx}");
+
+    // ---- a rejected replacement is not a predecessor. The record now
+    // holds, for evolution: the old version ACTIVE and the toolchain's
+    // replacement REJECTED. A later toolchain (its text changed: the
+    // suffix knob stands in for it) must supersede the active old
+    // version, not the never-active rejected one — a review found the
+    // replacement naming the rejected one, retiring nothing, and the
+    // package serving old and new together.
+    let (ok, up3) = hale_env(&["dna", "upgrade"], &app, &[("HALE_DNA_DESIGN_SUFFIX", " (a later toolchain)")]);
+    assert!(ok, "{up3}");
+    // every text changed, so eight are proposed; only four names have
+    // something ACTIVE to supersede (the two approved in the first
+    // round, the ratified principles, the old evolution) — the six
+    // rejected in the first round have nothing to retire
+    assert!(up3.contains("design  8 practice(s) proposed (4 superseding an earlier version)"), "every practice changed; those with an active predecessor supersede it: {up3}");
+    let rows = journal(&app);
+    let later: Vec<(String, String, String)> = rows
+        .iter()
+        .filter(|r| r.0 == "review.requested")
+        .filter_map(|r| {
+            let b: serde_json::Value = serde_json::from_str(&r.2).ok()?;
+            if b["group"] != "design" { return None; }
+            let id = r.1.strip_prefix("review:")?.to_string();
+            // the third round's Reviews: neither the seeded nor the first upgrade's
+            if ids.contains(&id) || superseding.iter().any(|(s, _)| s == &id) { return None; }
+            Some((id, b["name"].as_str()?.to_string(), b["knowledge_digest"].as_str()?.to_string()))
+        })
+        .collect();
+    assert_eq!(later.len(), 8, "{later:?}");
+    let (later_evolution, later_evolution_digest) = later.iter().find(|(_, n, _)| n == "design/evolution").map(|(i, _, dg)| (i.clone(), dg.clone())).unwrap();
+    let (_, later_principles_digest) = later.iter().find(|(_, n, _)| n == "design/principles").map(|(i, _, dg)| (i.clone(), dg.clone())).unwrap();
+    assert_eq!(supersedes_of(&app, &later_evolution_digest), old_evolution, "the replacement of evolution supersedes the ACTIVE old version, not the rejected replacement");
+    assert_eq!(supersedes_of(&app, &later_principles_digest), new_p, "and the replacement of principles supersedes the ratified replacement, which is what is active there");
+    let mut host = start_org(&app);
+    let (ok, a) = hale(&["dna", "review", &later_evolution, "approve", "--as", "riley", "--authority", "board"], &app);
+    assert!(ok && a.contains("settled: approve by riley"), "{a}");
+    finish(&app, &mut host);
+    let rows = journal(&app);
+    let retired: Vec<String> = rows.iter().filter(|r| r.0 == "knowledge.retired").map(|r| r.1.clone()).collect();
+    assert!(retired.contains(&old_evolution), "the active old evolution was retired: {retired:?}");
+    let (included, ctx) = package(&app);
+    assert!(included.contains(&later_evolution_digest), "the later evolution is in the package: {ctx}");
+    assert!(!included.contains(&old_evolution) && !included.contains(&digest_of(&new_evolution)), "neither the retired old version nor the rejected replacement is: {ctx}");
+    assert_eq!(included.len(), 4, "two from the first round, the ratified principles, the later evolution: {ctx}");
     let _ = std::fs::remove_dir_all(&d);
 }

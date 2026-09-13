@@ -1723,7 +1723,7 @@ const DESIGN: &[DesignPractice] = &[
 fn design_document(p: &DesignPractice, supersedes: Option<&str>) -> String {
     let mut doc = serde_json::Map::new();
     doc.insert("kind".into(), "practice".into());
-    doc.insert("text".into(), p.text.into());
+    doc.insert("text".into(), design_text(p).into());
     doc.insert("author".into(), "org".into());
     doc.insert("target".into(), "org".into());
     doc.insert("provenance".into(), "design".into());
@@ -1772,13 +1772,14 @@ fn propose_design(root: &Path, p: &DesignPractice, supersedes: Option<&str>) -> 
         })
         .to_string(),
     )?;
-    let first: String = p.text.chars().take(72).collect();
+    let text = design_text(p);
+    let first: String = text.chars().take(72).collect();
     let question = format!(
         "ratify the design practice `{}`{}: {}{}",
         p.name,
         if supersedes.is_some() { " (replacing an earlier version)" } else { "" },
         first,
-        if p.text.chars().count() > 72 { "…" } else { "" }
+        if text.chars().count() > 72 { "…" } else { "" }
     );
     append_journal(
         root,
@@ -1810,53 +1811,94 @@ fn seed_design(root: &Path, only: Option<&[&str]>) -> Result<usize, String> {
     Ok(n)
 }
 
-/// The design's proposals already in the record, by name: the latest
-/// (digest, text) proposed under each name, whoever proposed it.
-fn design_in_record(root: &Path) -> Result<std::collections::BTreeMap<String, (String, String)>, String> {
+/// What the record holds under each practice name: the text of the
+/// LATEST proposal (so a text already proposed is not proposed again,
+/// whatever the Board said to it), and the ACTIVE digest — ratified and
+/// not retired — which is the one a replacement supersedes. These are
+/// different questions: after accepted A, rejected replacement B and a
+/// new text C, C must retire A, not the never-active B (a review found
+/// C naming B, so A and C both served).
+struct DesignState {
+    latest_text: String,
+    active: Option<String>,
+}
+
+fn design_in_record(root: &Path) -> Result<std::collections::BTreeMap<String, DesignState>, String> {
     let text = match record_head(root) {
         Some(_) => git(root, &["show", &format!("{RECORD_REF}:journal.jsonl")])?,
         None => String::new(),
     };
-    let mut by_name: std::collections::BTreeMap<String, (String, String)> = std::collections::BTreeMap::new();
+    let mut by_name: std::collections::BTreeMap<String, DesignState> = std::collections::BTreeMap::new();
+    // digest -> name, from the receipts the proposals point at
+    let mut name_of: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut ratified: Vec<String> = Vec::new();
+    let mut retired: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-        if v["kind"] != "knowledge.proposed" {
+        let kind = v["kind"].as_str().unwrap_or("");
+        let entity = v["entity"].as_str().unwrap_or("").to_string();
+        match kind {
+            "knowledge.proposed" => {
+                let Ok(body) = serde_json::from_str::<serde_json::Value>(v["body"].as_str().unwrap_or("")) else { continue };
+                let digest = body["digest"].as_str().unwrap_or("").to_string();
+                if digest.is_empty() {
+                    continue;
+                }
+                // the receipt is canonical: its name and its text
+                let raw = digest.strip_prefix("sha256:").unwrap_or(&digest).to_string();
+                let Ok(doc) = git(root, &["cat-file", "-p", &format!("refs/dna/receipts/{raw}")]) else { continue };
+                let Ok(d) = serde_json::from_str::<serde_json::Value>(&doc) else { continue };
+                let name = d["name"].as_str().unwrap_or("").to_string();
+                if name.is_empty() {
+                    continue;
+                }
+                name_of.insert(digest.clone(), name.clone());
+                let e = by_name.entry(name).or_insert(DesignState { latest_text: String::new(), active: None });
+                e.latest_text = d["text"].as_str().unwrap_or("").to_string();
+            }
+            "knowledge.ratified" => ratified.push(entity),
+            "knowledge.retired" => {
+                retired.insert(entity);
+            }
+            _ => {}
+        }
+    }
+    // the active digest under a name: the last ratified one not retired
+    for digest in ratified {
+        if retired.contains(&digest) {
             continue;
         }
-        let Ok(body) = serde_json::from_str::<serde_json::Value>(v["body"].as_str().unwrap_or("")) else { continue };
-        let digest = body["digest"].as_str().unwrap_or("").to_string();
-        if digest.is_empty() {
-            continue;
-        }
-        // the receipt is canonical: its name and its text decide
-        // whether the toolchain's current practice is already proposed
-        let raw = digest.strip_prefix("sha256:").unwrap_or(&digest).to_string();
-        let Ok(doc) = git(root, &["cat-file", "-p", &format!("refs/dna/receipts/{raw}")]) else { continue };
-        let Ok(d) = serde_json::from_str::<serde_json::Value>(&doc) else { continue };
-        let name = d["name"].as_str().unwrap_or("").to_string();
-        if !name.is_empty() {
-            by_name.insert(name, (digest, d["text"].as_str().unwrap_or("").to_string()));
+        if let Some(name) = name_of.get(&digest) {
+            if let Some(e) = by_name.get_mut(name) {
+                e.active = Some(digest.clone());
+            }
         }
     }
     Ok(by_name)
 }
 
-/// At `upgrade`: propose each practice whose current text is not yet in
-/// the record, superseding the version proposed under the same name
-/// when there is one. Unchanged practices propose nothing. Returns
+/// At `upgrade`: propose each practice whose current text is not the
+/// latest proposed under its name — superseding the ACTIVE digest under
+/// that name when there is one, and plainly when nothing is active
+/// (a pending or rejected proposal is not a predecessor: retiring it
+/// would retire nothing). Unchanged practices propose nothing. Returns
 /// (proposed, of which superseding).
 fn upgrade_design(root: &Path) -> Result<(usize, usize), String> {
     let have = design_in_record(root)?;
     let mut proposed = 0;
     let mut superseding = 0;
     for p in DESIGN {
+        let text = design_text(p);
         match have.get(p.name) {
             // the latest proposal under this name already says this
-            Some((_, text)) if text == p.text => continue,
-            Some((old, _)) => {
-                propose_design(root, p, Some(old))?;
+            Some(st) if st.latest_text == text => continue,
+            Some(st) => {
+                let old = st.active.clone();
+                propose_design(root, p, old.as_deref())?;
                 proposed += 1;
-                superseding += 1;
+                if old.is_some() {
+                    superseding += 1;
+                }
             }
             None => {
                 propose_design(root, p, None)?;
@@ -1865,4 +1907,16 @@ fn upgrade_design(root: &Path) -> Result<(usize, usize), String> {
         }
     }
     Ok((proposed, superseding))
+}
+
+/// A practice's text as this toolchain states it. `HALE_DNA_DESIGN_SUFFIX`
+/// appends to every practice, for fixtures only: it is how a test makes
+/// "a later toolchain whose text changed" out of the one binary it has,
+/// so that `upgrade`'s supersession is exercised against real record
+/// history rather than described.
+fn design_text(p: &DesignPractice) -> String {
+    match std::env::var("HALE_DNA_DESIGN_SUFFIX") {
+        Ok(s) if !s.is_empty() => format!("{}{s}", p.text),
+        _ => p.text.to_string(),
+    }
 }
