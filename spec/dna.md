@@ -479,9 +479,18 @@ authority.
   receipt carries `supersedes: <digest>` retires that digest when it
   is ratified — the assembly appends `knowledge.retired <old>` — and
   leaves it in force when it is declined; a `retirement` proposal
-  carries only that. `hale dna upgrade` proposes each practice whose
-  current text is not the latest proposed under its name, superseding
-  the latest, and proposes nothing for the rest. The projection
+  carries only that. A replacement is ratified only while what it
+  replaces is still active: an approval of a proposal whose
+  `supersedes` names a digest already retired is refused
+  (`knowledge.refused <digest>`, with what retired it) rather than
+  ratified — otherwise two replacements of one version would both be
+  served, the first never retired. `hale dna upgrade` proposes each
+  practice whose current text is not the latest proposed under its
+  name, superseding the active version under that name (a pending or
+  declined proposal is not a predecessor), one replacement at a time:
+  a practice whose latest proposal is still before the Board waits
+  (`upgrade` says so), and a refused one is proposed again against
+  what is active now. The projection
   retires an idea by marking it not accepted: it leaves every package
   and stays readable by digest.
 - **The charter (GH #596 L).** `init` writes `dna/org/charter.hl`, a

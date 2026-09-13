@@ -412,27 +412,50 @@ locus Dna {
             b.string_field("class", std::json::find_string_field(kreq, "class"));
             b.int_field("at", std::time::now());
             b.end_object();
-            let k = self.journal.append(self.journal.revision(), if r.outcome == "approve" { "knowledge.ratified" } else { "knowledge.declined" }, digest, b.result());
             // GH #596 C: supersession is the Board's decision, not a
             // side effect. Declining a proposal retires nothing (the
             // projection keeps a ratified idea a later `declined`
             // names); ratifying a proposal that SUPERSEDES another
             // retires the other, here, as its own row. A `retirement`
-            // proposal carries only that.
+            // proposal carries only that. And a replacement is ratified
+            // only while what it replaces is still active: two pending
+            // replacements of one version both name it, the first
+            // approved retires it, and ratifying the second would leave
+            // the first in force beside it, never retired (a review
+            // found both served). The second is refused, in the record,
+            // with what retired its predecessor; the Board sees a fresh
+            // proposal against the active version at the next `upgrade`.
+            let mut old = "";
             if r.outcome == "approve" {
                 let raw = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
                 let doc = self.verification.receipts.read(raw);
-                let old = std::json::find_string_field(doc, "supersedes");
-                if len(old) > 0 {
-                    let rb = std::json::Builder { };
-                    rb.begin_object();
-                    rb.string_field("digest", old);
-                    rb.string_field("by", digest);
-                    rb.string_field("review_id", r.review_id);
-                    rb.string_field("decided_by", r.decided_by);
-                    rb.end_object();
-                    let z = self.journal.append(self.journal.revision(), "knowledge.retired", old, rb.result());
+                old = std::json::find_string_field(doc, "supersedes");
+                let gone = if len(old) > 0 { self.retired_by(old) } else { "" };
+                if len(gone) > 0 {
+                    let fb = std::json::Builder { };
+                    fb.begin_object();
+                    fb.string_field("digest", digest);
+                    fb.string_field("supersedes", old);
+                    fb.string_field("retired_by", gone);
+                    fb.string_field("review_id", r.review_id);
+                    fb.string_field("decided_by", r.decided_by);
+                    fb.string_field("why", "supersedes a version already retired by " + gone + "; not ratified — propose again against the active version");
+                    fb.end_object();
+                    let f = self.journal.append(self.journal.revision(), "knowledge.refused", digest, fb.result());
+                    self.membrane.notify("knowledge", digest + " not ratified: it supersedes a version already retired by " + gone + "; `hale dna upgrade` proposes again against the active one");
+                    return;
                 }
+            }
+            let k = self.journal.append(self.journal.revision(), if r.outcome == "approve" { "knowledge.ratified" } else { "knowledge.declined" }, digest, b.result());
+            if r.outcome == "approve" && len(old) > 0 {
+                let rb = std::json::Builder { };
+                rb.begin_object();
+                rb.string_field("digest", old);
+                rb.string_field("by", digest);
+                rb.string_field("review_id", r.review_id);
+                rb.string_field("decided_by", r.decided_by);
+                rb.end_object();
+                let z = self.journal.append(self.journal.revision(), "knowledge.retired", old, rb.result());
             }
             return;
         }
@@ -459,6 +482,20 @@ locus Dna {
         let now = std::time::now();
         let lease = self.gateway.take(r.review_id, "dna", now);
         let w = self.gateway.remove(self.journal, r.review_id, lease.token, now);
+    }
+    // The digest that retired `digest` (`knowledge.retired <digest>`,
+    // its `by`), "" while it is not retired.
+    @unbounded
+    fn retired_by(digest: String) -> String {
+        let n = self.journal.revision();
+        let mut i = 0;
+        let mut out = "";
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "knowledge.retired" && e.entity == digest { out = std::json::find_string_field(e.body, "by"); }
+            i = i + 1;
+        }
+        return out;
     }
     // The `review.requested` body of a mutation's Review, "" for any
     // other (the purpose Review, an unknown id).

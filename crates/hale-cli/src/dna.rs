@@ -620,9 +620,12 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         out.push(format!("created {}", charter.display()));
     }
     if record_head(&root).is_some() {
-        let (proposed, superseded) = upgrade_design(&root)?;
+        let (proposed, superseded, waiting) = upgrade_design(&root)?;
         if proposed > 0 {
             out.push(format!("design  {proposed} practice(s) proposed ({superseded} superseding an earlier version); the Board decides each: `hale dna review`"));
+        }
+        if waiting > 0 {
+            out.push(format!("design  {waiting} practice(s) changed but wait: an earlier replacement is still before the Board (decide it, then `upgrade` again)"));
         }
     }
     Ok(out)
@@ -1821,6 +1824,11 @@ fn seed_design(root: &Path, only: Option<&[&str]>) -> Result<usize, String> {
 struct DesignState {
     latest_text: String,
     active: Option<String>,
+    /// the latest proposal under the name awaits the Board
+    pending: bool,
+    /// the latest proposal was refused at ratification (it superseded
+    /// a version retired meanwhile) — it must be proposed again
+    refused: bool,
 }
 
 fn design_in_record(root: &Path) -> Result<std::collections::BTreeMap<String, DesignState>, String> {
@@ -1833,6 +1841,9 @@ fn design_in_record(root: &Path) -> Result<std::collections::BTreeMap<String, De
     let mut name_of: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     let mut ratified: Vec<String> = Vec::new();
     let mut retired: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut decided: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut refused: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut latest: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
         let kind = v["kind"].as_str().unwrap_or("");
@@ -1853,10 +1864,21 @@ fn design_in_record(root: &Path) -> Result<std::collections::BTreeMap<String, De
                     continue;
                 }
                 name_of.insert(digest.clone(), name.clone());
-                let e = by_name.entry(name).or_insert(DesignState { latest_text: String::new(), active: None });
+                let e = by_name.entry(name.clone()).or_insert(DesignState { latest_text: String::new(), active: None, pending: false, refused: false });
                 e.latest_text = d["text"].as_str().unwrap_or("").to_string();
+                latest.insert(name, digest);
             }
-            "knowledge.ratified" => ratified.push(entity),
+            "knowledge.ratified" => {
+                decided.insert(entity.clone());
+                ratified.push(entity)
+            }
+            "knowledge.declined" => {
+                decided.insert(entity);
+            }
+            "knowledge.refused" => {
+                decided.insert(entity.clone());
+                refused.insert(entity);
+            }
             "knowledge.retired" => {
                 retired.insert(entity);
             }
@@ -1874,6 +1896,12 @@ fn design_in_record(root: &Path) -> Result<std::collections::BTreeMap<String, De
             }
         }
     }
+    for (name, digest) in latest {
+        if let Some(e) = by_name.get_mut(&name) {
+            e.pending = !decided.contains(&digest);
+            e.refused = refused.contains(&digest);
+        }
+    }
     Ok(by_name)
 }
 
@@ -1881,17 +1909,24 @@ fn design_in_record(root: &Path) -> Result<std::collections::BTreeMap<String, De
 /// latest proposed under its name — superseding the ACTIVE digest under
 /// that name when there is one, and plainly when nothing is active
 /// (a pending or rejected proposal is not a predecessor: retiring it
-/// would retire nothing). Unchanged practices propose nothing. Returns
-/// (proposed, of which superseding).
-fn upgrade_design(root: &Path) -> Result<(usize, usize), String> {
+/// would retire nothing). Unchanged practices propose nothing. One
+/// replacement at a time under a name: while the latest proposal awaits
+/// the Board, a changed text waits too — two pending replacements would
+/// both name the same predecessor, and the assembly refuses to ratify
+/// the second once the first has retired it. A refused one is proposed
+/// again, against what is active now. Returns (proposed, of which
+/// superseding, waiting on a pending Review).
+fn upgrade_design(root: &Path) -> Result<(usize, usize, usize), String> {
     let have = design_in_record(root)?;
     let mut proposed = 0;
     let mut superseding = 0;
+    let mut waiting = 0;
     for p in DESIGN {
         let text = design_text(p);
         match have.get(p.name) {
             // the latest proposal under this name already says this
-            Some(st) if st.latest_text == text => continue,
+            Some(st) if st.latest_text == text && !st.refused => continue,
+            Some(st) if st.pending => waiting += 1,
             Some(st) => {
                 let old = st.active.clone();
                 propose_design(root, p, old.as_deref())?;
@@ -1906,7 +1941,7 @@ fn upgrade_design(root: &Path) -> Result<(usize, usize), String> {
             }
         }
     }
-    Ok((proposed, superseding))
+    Ok((proposed, superseding, waiting))
 }
 
 /// A practice's text as this toolchain states it. `HALE_DNA_DESIGN_SUFFIX`

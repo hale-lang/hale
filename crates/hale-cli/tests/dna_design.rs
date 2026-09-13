@@ -282,7 +282,7 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
         .collect();
     assert_eq!(later.len(), 8, "{later:?}");
     let (later_evolution, later_evolution_digest) = later.iter().find(|(_, n, _)| n == "design/evolution").map(|(i, _, dg)| (i.clone(), dg.clone())).unwrap();
-    let (_, later_principles_digest) = later.iter().find(|(_, n, _)| n == "design/principles").map(|(i, _, dg)| (i.clone(), dg.clone())).unwrap();
+    let (later_principles, later_principles_digest) = later.iter().find(|(_, n, _)| n == "design/principles").map(|(i, _, dg)| (i.clone(), dg.clone())).unwrap();
     assert_eq!(supersedes_of(&app, &later_evolution_digest), old_evolution, "the replacement of evolution supersedes the ACTIVE old version, not the rejected replacement");
     assert_eq!(supersedes_of(&app, &later_principles_digest), new_p, "and the replacement of principles supersedes the ratified replacement, which is what is active there");
     let mut host = start_org(&app);
@@ -296,5 +296,45 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
     assert!(included.contains(&later_evolution_digest), "the later evolution is in the package: {ctx}");
     assert!(!included.contains(&old_evolution) && !included.contains(&digest_of(&new_evolution)), "neither the retired old version nor the rejected replacement is: {ctx}");
     assert_eq!(included.len(), 4, "two from the first round, the ratified principles, the later evolution: {ctx}");
+
+    // ---- one replacement at a time. Seven of the third round's
+    // proposals are still before the Board (principles among them,
+    // superseding the ratified principles). A yet later toolchain
+    // changes every text again: evolution, whose latest proposal was
+    // decided, is proposed superseding it; the seven wait — a second
+    // pending replacement would name the same predecessor, and the
+    // assembly refuses to ratify it once the first has retired that
+    // (a review found both served, the first never retired).
+    let (ok, up4) = hale_env(&["dna", "upgrade"], &app, &[("HALE_DNA_DESIGN_SUFFIX", " (a yet later toolchain)")]);
+    assert!(ok, "{up4}");
+    assert!(up4.contains("design  1 practice(s) proposed (1 superseding an earlier version)"), "only evolution, whose latest proposal is decided: {up4}");
+    assert!(up4.contains("design  7 practice(s) changed but wait: an earlier replacement is still before the Board"), "the rest wait: {up4}");
+    let proposals = |app: &Path| journal(app).iter().filter(|r| r.0 == "knowledge.proposed").count();
+    let n4 = proposals(&app);
+    let (ok, up4b) = hale_env(&["dna", "upgrade"], &app, &[("HALE_DNA_DESIGN_SUFFIX", " (a yet later toolchain)")]);
+    assert!(ok && !up4b.contains("practice(s) proposed") && up4b.contains("7 practice(s) changed but wait"), "again proposes nothing more: {up4b}");
+    assert_eq!(proposals(&app), n4, "and the record grew by nothing");
+    // the Board decides the pending principles; the next upgrade
+    // proposes the yet later principles against what is active NOW
+    let mut host = start_org(&app);
+    let (ok, a) = hale(&["dna", "review", &later_principles, "approve", "--as", "riley", "--authority", "board"], &app);
+    assert!(ok && a.contains("settled: approve by riley"), "{a}");
+    finish(&app, &mut host);
+    let (ok, up5) = hale_env(&["dna", "upgrade"], &app, &[("HALE_DNA_DESIGN_SUFFIX", " (a yet later toolchain)")]);
+    assert!(ok, "{up5}");
+    assert!(up5.contains("design  1 practice(s) proposed (1 superseding an earlier version)") && up5.contains("6 practice(s) changed but wait"), "{up5}");
+    let rows = journal(&app);
+    let yet_principles = rows
+        .iter()
+        .filter(|r| r.0 == "review.requested")
+        .filter_map(|r| {
+            let b: serde_json::Value = serde_json::from_str(&r.2).ok()?;
+            if b["group"] != "design" || b["name"] != "design/principles" { return None; }
+            Some(b["knowledge_digest"].as_str()?.to_string())
+        })
+        .last()
+        .unwrap();
+    assert_ne!(yet_principles, later_principles_digest);
+    assert_eq!(supersedes_of(&app, &yet_principles), later_principles_digest, "the yet later principles supersede the version the Board just ratified");
     let _ = std::fs::remove_dir_all(&d);
 }
