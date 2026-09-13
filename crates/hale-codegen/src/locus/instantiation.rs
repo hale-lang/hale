@@ -1129,6 +1129,23 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         // the parent's allocator outlives the child (F.4 depth-
         // first cascade: child dissolves first; parent dissolves
         // its own slot afterward).
+        // v1.x-4b: zero-init the synthetic __slot_borrowed_mask
+        // BEFORE the slot loop, whose borrow branch ORs bits into it.
+        {
+            let sbm_zero = self.context.i64_type().const_zero();
+            let sbm_ptr = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    self_ptr,
+                    info.slot_borrowed_mask_field_idx,
+                    &format!("{}.__slot_borrowed_mask.ptr", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(sbm_ptr, sbm_zero)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         for slot in &info.capacity_slots {
             let slot_field_ptr = self
                 .builder
@@ -2582,28 +2599,14 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         self.builder
             .build_store(dr_ptr, zero)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        // v1.x-4b: zero-init the synthetic __slot_borrowed_mask.
-        // Bits get OR'd in below during slot init when a parent
-        // has `as_parent_for ThisLocus` for one of this child's
-        // slots.
-        //
-        // NOTE: this zero-init runs AFTER slot init (line ~28018);
-        // a borrow that ORs a bit during slot init would be
-        // clobbered here. In practice no currently-exercised path
-        // combines borrow with this ordering, but the v1 layout
-        // ordering should be revisited.
-        let sbm_ptr = self
-            .builder
-            .build_struct_gep(
-                info.struct_ty,
-                self_ptr,
-                info.slot_borrowed_mask_field_idx,
-                &format!("{}.__slot_borrowed_mask.ptr", locus_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder
-            .build_store(sbm_ptr, zero)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // v1.x-4b: `__slot_borrowed_mask` is zero-init'd BEFORE the
+        // capacity-slot loop (see the block right above it). It used
+        // to be zeroed here, after slot init, which clobbered the bit
+        // the borrow branch had just OR'd in — so a child whose slot
+        // was borrowed from an `as_parent_for` parent destroyed the
+        // parent's allocator at its own teardown, and the parent
+        // destroyed it again (2026-09-13: surfaced once accepting
+        // owners reclaimed their children on every path).
         // F.29 follow-up: __locus_ref_owned_mask is zero-init'd
         // earlier — see the matching block right before the
         // field-init loop. The bits OR'd in by the field-init
@@ -4218,6 +4221,13 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             // loci held as `LocusRef`-typed param fields. Runs
             // AFTER outer's user dissolve body so the body can
             // still legitimately read its inner fields.
+            // Reclaim accept'd children BEFORE this locus's own fields
+            // go: a child may borrow a parent's capacity slot
+            // (`as_parent_for`), and a pool freed under a child that is
+            // then reclaimed is freed twice. The cascade inside
+            // emit_locus_arena_destroy stays as a latched no-op second
+            // pass (2026-09-13).
+            self.emit_accepted_children_reclaim(&info, self_ptr, locus_name)?;
             self.emit_locus_field_dissolves(&info, self_ptr, locus_name)?;
             // Wholesale-free the locus's arena. Per spec/memory.md:
             // "When the locus dissolves, the region is freed

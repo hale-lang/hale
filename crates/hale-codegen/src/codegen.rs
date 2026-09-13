@@ -7070,6 +7070,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             // Phase-2 (2): cascade dissolve for parent-owned child
             // loci. Mirrors the ephemeral path's ordering.
+            // Reclaim accept'd children BEFORE this locus's own fields
+            // go: a child may borrow a parent's capacity slot
+            // (`as_parent_for`), and a pool freed under a child that is
+            // then reclaimed is freed twice. The cascade inside
+            // emit_locus_arena_destroy stays as a latched no-op second
+            // pass (2026-09-13).
+            self.emit_accepted_children_reclaim(&info, self_ptr, &locus_name)?;
             self.emit_locus_field_dissolves(&info, self_ptr, &locus_name)?;
             // Arena released at scope exit, after the pinned thread
             // is joined or after the cooperative drain/dissolve has
@@ -7150,6 +7157,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i64_t = self.context.i64_type();
         let types: Vec<String> = self.user_loci.keys().cloned().collect();
+        // Declare every `__reclaim_<L>` BEFORE emitting any body. A
+        // body's teardown spine cascades to the locus's accept'd
+        // children through `emit_accepted_children_reclaim`, which
+        // looks the child's reclaim up by name — and the map used to
+        // be filled one locus at a time, after each body, in key
+        // order. An owner that sorts before its child (`Dna` before
+        // `Review`, `Holder` before `Sub`) therefore found nothing and
+        // silently skipped the cascade: reassigning such an owner freed
+        // its arena with the children's bus subscriptions still
+        // registered, and the next publish on a child's key delivered
+        // into whatever had reused the memory — a double delivery, or
+        // a fault in `lotus_arena_alloc` (2026-09-13, a DNA fixture
+        // reassigning an organization that accepts Reviews). Program
+        // exit never showed it: that cascade is emitted after every
+        // reclaim exists.
+        let fn_ty = void_t.fn_type(&[ptr_t.into()], false);
+        for locus_name in &types {
+            if self.reclaim_fns.contains_key(locus_name) {
+                continue;
+            }
+            let fn_name = format!("__reclaim_{}", locus_name);
+            let reclaim = self.module.add_function(&fn_name, fn_ty, None);
+            self.reclaim_fns.insert(locus_name.clone(), reclaim);
+        }
         for locus_name in &types {
             let info = match self.user_loci.get(locus_name) {
                 Some(i) => i.clone(),
@@ -7161,9 +7192,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // so the spine is harmless (and they're never in a
             // double-reclaim path, so the __arena-null latch being a
             // no-op for them doesn't matter).
-            let fn_name = format!("__reclaim_{}", locus_name);
-            let fn_ty = void_t.fn_type(&[ptr_t.into()], false);
-            let reclaim = self.module.add_function(&fn_name, fn_ty, None);
+            let reclaim = self
+                .reclaim_fns
+                .get(locus_name)
+                .copied()
+                .expect("every locus's __reclaim was declared above");
             let entry = self.context.append_basic_block(reclaim, "entry");
             let do_bb = self.context.append_basic_block(reclaim, "reclaim.do");
             let ret_bb = self.context.append_basic_block(reclaim, "reclaim.ret");
@@ -7333,6 +7366,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
             }
+            // Reclaim accept'd children BEFORE this locus's own fields
+            // go: a child may borrow a parent's capacity slot
+            // (`as_parent_for`), and a pool freed under a child that is
+            // then reclaimed is freed twice. The cascade inside
+            // emit_locus_arena_destroy stays as a latched no-op second
+            // pass (2026-09-13).
+            self.emit_accepted_children_reclaim(&info, self_arg, locus_name)?;
             self.emit_locus_field_dissolves(&info, self_arg, locus_name)?;
             // NB: removal of self from the owner's children tracker is
             // NOT done here — it belongs to the *self-reclaim* callers
@@ -7353,7 +7393,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_return(None)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             let _ = i64_t;
-            self.reclaim_fns.insert(locus_name.clone(), reclaim);
         }
         if let Some(bb) = saved_block {
             self.builder.position_at_end(bb);
