@@ -157,6 +157,48 @@ fn evidence_score(e: Evidence) -> Int {
 // reversibility, boundary crossings, inherited law); proceed only if
 // the grant permits the class AND no hard boundary is crossed AND
 // evidence satisfies required assurance.
+// How strict a review policy is: `pre` before anything, `sampled`,
+// `post`, then `audit` after the fact.
+fn review_rank(r: String) -> Int {
+    if r == "pre" { return 3; }
+    if r == "sampled" { return 2; }
+    if r == "post" { return 1; }
+    return 0;
+}
+
+// A grant contained in another (GH #596, layering): the classes both
+// allow, the smaller ceiling, the stricter review. A child's grant is
+// always read through its parent's CURRENT grant, so a parent that
+// contracted binds its children from that moment, whatever they were
+// born with. A ceiling with no child is no ceiling.
+@unbounded
+fn intersect_grants(child: Grant, ceiling: Grant) -> Grant {
+    if len(ceiling.child) == 0 { return child; }
+    let mut classes = "";
+    let mut rest = child.classes + " ";
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let w = if sp < 0 { rest } else { rest[0..sp] };
+        if sp < 0 { rest = ""; } else { rest = rest[(sp + 1)..len(rest)]; }
+        if len(w) > 0 && std::str::contains(" " + ceiling.classes + " ", " " + w + " ") { classes = classes + w + " "; }
+    }
+    return Grant {
+        child: child.child,
+        classes: if len(classes) > 0 { classes[0..(len(classes) - 1)] } else { "" },
+        max_magnitude: if child.max_magnitude < ceiling.max_magnitude { child.max_magnitude } else { ceiling.max_magnitude },
+        review: if review_rank(child.review) >= review_rank(ceiling.review) { child.review } else { ceiling.review },
+        may_expand_self: false
+    };
+}
+
+// Whether `child` is contained in `ceiling`: nothing it allows that the
+// ceiling does not.
+fn grant_within(child: Grant, ceiling: Grant) -> Bool {
+    if len(ceiling.child) == 0 { return true; }
+    let i = intersect_grants(child, ceiling);
+    return i.classes == child.classes && i.max_magnitude == child.max_magnitude && i.review == child.review;
+}
+
 fn dispose(g: Grant, change_class: String, m: Magnitude, e: Evidence) -> Disposition {
     if crosses_hard_boundary(m) { return Disposition::Review; }
     let permitted = std::str::contains(g.classes, change_class);

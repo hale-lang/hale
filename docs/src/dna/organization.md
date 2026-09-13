@@ -54,6 +54,13 @@ what target, one change or several. The record keeps that as
 `task.planned`, and the Mutation carries the class it named. A plan
 only splits and classifies; it never widens what you asked.
 
+A grant sits under the organization's own, when one is written: a
+child's grant is read through the organism's *current* grant at every
+assessment, so when the organization's leash shortens on repeated
+failure, every child's shortens with it, and the record says whom it
+now binds. A child written wider than the organization's grant is
+refused at birth and bound by it.
+
 A change of a class in the grant and under its size is the Leader's
 to decide. It reads the same brief above the source diff and the
 semantic diff with the deep model tier, answers `approve`, `revise`
