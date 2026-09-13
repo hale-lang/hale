@@ -1,0 +1,114 @@
+// dna/tests/plan_routing_test.hl — GH #596 L, the stack review's finding
+// 1: the governed child comes from the plan's KIND, and the class is
+// assessed under that child's policy. A plan of kind `organism` with
+// class `docs` used to give the editor the application's grant, change
+// the application, and ask the leader's own authority for a change to
+// the organism. An organism change is class `organization`, the
+// Board's, whatever its nature; and `organization` for a child that is
+// not the organism is refused before any editor is placed.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
+
+const APP: String = "fn main() { println(\"app\"); }\n";
+const ORG: String = "fn main() { println(\"org\"); }\n";
+const DOCUMENTED: String = "// documented by the organism\nfn main() { println(\"org\"); }\n";
+
+main locus App {
+    params {
+        repo: String = "";
+        one: dna::Dna = dna::Dna { };
+        lead_one: dna::Leader = dna::Leader {
+            name: "leader", org: "route", charter: "You are the architect.",
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: "kind: organism\nclass: docs\ntarget: main.hl\ncount: 1\nThe organism's own file." },
+                deep: dna::FakeModel { name: "deep", answer: "kind: organism\nclass: docs\ntarget: main.hl\ncount: 1\nThe organism's own file." }
+            }
+        };
+    }
+    @unbounded
+    fn last(j: dna::Journal, kind: String, entity: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    run() {
+        let repo = "/tmp/dna-route-" + to_string(std::process::pid());
+        self.repo = repo;
+        std::io::fs::mkdir(repo) or discard;
+        std::io::fs::mkdir(repo + "/app") or discard;
+        std::io::fs::mkdir(repo + "/org") or discard;
+        std::io::fs::mkdir(repo + "/.hale") or discard;
+        std::io::fs::mkdir(repo + "/.hale/dna") or discard;
+        std::io::fs::write_file(repo + "/hale.toml", "[deps]\n") or discard;
+        std::io::fs::write_file(repo + "/app/main.hl", APP) or discard;
+        std::io::fs::write_file(repo + "/org/main.hl", ORG) or discard;
+        std::io::fs::write_file(repo + "/.gitignore", "/.hale/\n") or discard;
+        let init = sh("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        let add = sh("git\n-C\n" + repo + "\nadd\n-A");
+        let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
+        std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
+        self.one = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            editor: dna::SourceEditor {
+                models: dna::ModelRouter {
+                    quick: dna::FakeModel { name: "quick", answer: DOCUMENTED, answer_role: "edit" },
+                    deep: dna::FakeModel { name: "deep", answer: "clarity +" }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
+            genome_seed: "app", org_seed: "org", planned: true, org_id: "route"
+        };
+
+        // ---- an organism plan is an organization change: the org seed, the Board
+        let t1 = self.one.ask(dna::Intent { id: "i1", outcome: "document the organism's main.hl; leave the application unchanged", from: "riley" }, dna::Knobs { routed: true, requires: "edit" });
+        std::time::sleep(2000ms);
+        let plan = self.last(self.one.journal, "task.planned", t1);
+        std::test::assert(std::str::contains(plan, "\"kind\": \"organism\"") && std::str::contains(plan, "\"change_class\": \"docs\"") && std::str::contains(plan, "\"class_applied\": \"organization\""), "the kind decides the class applied: " + plan);
+        let proposed = self.last(self.one.journal, "mutation.proposed", "m1");
+        std::test::assert(std::str::starts_with(proposed, "task " + t1 + " organization:"), "an organization change: " + proposed);
+        let req = self.last(self.one.journal, "review.requested", "review:m1");
+        std::test::assert(std::str::contains(req, "\"seed\": \"org\"") && std::str::contains(req, "\"required_authority\": \"board\""), "under the organism's seed, the Board's to decide: " + req);
+        let cand = self.last(self.one.journal, "mutation.candidate", "m1");
+        let org_after = sh("git\n-C\n" + repo + "\nshow\n" + cand + ":org/main.hl");
+        std::test::assert(std::str::contains(org_after.stdout, "// documented by the organism"), "the candidate changed the organism's file: " + org_after.stdout);
+        let app_after = sh("git\n-C\n" + repo + "\nshow\n" + cand + ":app/main.hl");
+        std::test::assert_eq_str(app_after.stdout, APP, "and left the application exactly as it was");
+
+        // ---- `organization` for a child that is not the organism is refused before an editor is placed.
+        // The exchange is one bus-wide conversation here, so the same leader
+        // is re-placed with the contradictory answer rather than a second one.
+        self.lead_one = dna::Leader {
+            name: "leader", org: "route", charter: "You are the architect.",
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: "kind: appendage\nclass: organization\ntarget: main.hl\ncount: 1\nA contradiction." },
+                deep: dna::FakeModel { name: "deep", answer: "kind: appendage\nclass: organization\ntarget: main.hl\ncount: 1\nA contradiction." }
+            }
+        };
+        let t2 = self.one.ask(dna::Intent { id: "i2", outcome: "reorganize", from: "riley" }, dna::Knobs { routed: true, requires: "edit" });
+        std::time::sleep(1000ms);
+        let refused = self.last(self.one.journal, "task.refused", t2);
+        std::test::assert(std::str::contains(refused, "child that is not the organism (kind appendage)"), "refused: " + refused);
+        std::test::assert(std::str::contains(self.last(self.one.journal, "task.failed", t2), "refused"), "and the Task failed: " + self.last(self.one.journal, "task.failed", t2));
+        std::test::assert_eq_str(self.last(self.one.journal, "mutation.proposed", "m2"), "", "nothing was proposed, no editor placed");
+        let rm = sh("rm\n-rf\n" + repo);
+    }
+}
+fn main() { App { }; }

@@ -519,9 +519,16 @@ authority.
   `TaskPlanned`, and the substrate journals `task.planned <task>`
   (kind — `organism`, `appendage`, `product` or `person` —
   `change_class`, `target`, `count`, the model's narrative, the
-  package read, `parsed`) and proceeds under the class and target the
-  plan names. **A plan only splits and classifies; it never widens
-  what was asked.** An answer that names no kind and no class leaves
+  package read, `parsed`, and `class_applied`) and proceeds under the
+  class and target the plan names. **The kind decides whose change
+  it is.** A plan of kind `organism` is a change to the organism
+  itself, and that is class `organization` whatever the plan called
+  it: it is expressed from the organism's seed and assessed under the
+  organism's policy, so it is the Board's to decide. Class
+  `organization` for a child that is not the organism is a
+  contradiction and is refused before any editor is placed
+  (`task.refused`, the Work fails, no Mutation). **A plan only splits
+  and classifies; it never widens what was asked.** An answer that names no kind and no class leaves
   the defaults standing — an appendage, class `application`, the
   ask's own target — and the record says it did not parse, so an
   organization with no model that answers behaves as before. A plan

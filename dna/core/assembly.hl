@@ -710,6 +710,7 @@ locus Dna {
         b.begin_object();
         b.string_field("kind", p.kind);
         b.string_field("change_class", p.change_class);
+        b.string_field("class_applied", if p.kind == "organism" { "organization" } else { p.change_class });
         b.string_field("target", p.target);
         b.int_field("count", p.count);
         b.string_field("narrative", p.narrative);
@@ -726,17 +727,36 @@ locus Dna {
             }
             return;
         }
+        // The governed child comes from the KIND, and the class is
+        // assessed under that child's policy (the stack review's
+        // finding 1: a plan of kind `organism` with class `docs` gave
+        // the editor the application's grant, changed the application,
+        // and asked the leader's authority for a change to the
+        // organism). An organism change is class `organization`
+        // whatever its nature — the Board's — and a class of
+        // `organization` for a child that is not the organism is a
+        // combination the gate refuses before any editor is placed.
+        let class = if p.kind == "organism" { "organization" } else { p.change_class };
+        if p.kind != "organism" && class == "organization" {
+            let why = "plan names an organization change for a child that is not the organism (kind " + p.kind + "); refused";
+            let z = self.journal.append(self.journal.revision(), "task.refused", req.task_id, why);
+            WorkDone <- WorkSettlement { work_id: req.work_id, disposition: "failed", result: why, attempts: 0, history: "a0:leader:refused " };
+            if self.task_state(req.task_id) == "pending" {
+                let x = self.journal.append(self.journal.revision(), "task.failed", req.task_id, req.work_id + " by leader: " + why);
+            }
+            return;
+        }
         // The plan's target is taken only when it names a file the
         // genome has under the seed the class edits; a model's prose
         // ("main.hl (Gateway locus)") is not a path, and used as one it
         // became an empty read, an apology written into a file of that
         // name, and a candidate carrying it. Else the ask's own target,
         // and the editor locates from the objective.
-        let seed = if p.change_class == "organization" { self.org_seed } else { self.genome_seed };
+        let seed = if class == "organization" { self.org_seed } else { self.genome_seed };
         let under = self.gateway.repo.root() + "/" + (if seed == "." { "" } else { seed + "/" }) + p.target;
         let planned_target = len(p.target) > 0 && !std::str::contains(p.target, " ") && std::io::fs::file_exists(under);
         let target = if planned_target { p.target } else { req.target };
-        let out = self.mutate(req.task_id, p.change_class, req.objective, target, std::time::now());
+        let out = self.mutate(req.task_id, class, req.objective, target, std::time::now());
         let ok = std::str::contains(out, ": review") || std::str::contains(out, ": release");
         WorkDone <- WorkSettlement {
             work_id: req.work_id,

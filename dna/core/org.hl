@@ -98,6 +98,7 @@ locus Leader {
             + "Target named by the asker: " + (if len(req.target) > 0 { req.target } else { "(none)" }) + "\n"
             + "Answer with these lines, then one line of reasoning:\n"
             + "kind: organism | appendage | product | person\n"
+            + "  (organism: this organization's own program under dna/org, its positions, laws and purpose, the Board's to decide; appendage: the software this organization runs for its own work, the application's own sources such as main.hl and its loci; product: software it ships to others; person: a job for a human, not a change to source)\n"
             + "class: docs | refactor | feature | application | organization | constitutional | process-policy | topology\n"
             + "target: <the file or locus this concerns, or the asker's>\n"
             + "count: <how many changes this is>";
