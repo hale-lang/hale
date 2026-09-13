@@ -1,0 +1,64 @@
+// An accept'd child's bus subscriptions end with its owner.
+//
+// The owner here never iterates `self.children`; it only accepts. Its
+// accepted Sub subscribes on a routing key. Reassigning the owner
+// dissolves it — and used to leave the Sub's keyed subscription
+// registered while the arena it lived in was freed: the next publish on
+// that key delivered into whatever had reused the memory (here, the new
+// Sub at the same address — so every publish was heard twice), or
+// faulted inside dispatch when a string had taken it. Two things were
+// wrong: an owner that did not iterate its children tracked none, so
+// its dissolve had nothing to cascade to; and an owner sorting before
+// its child by name was synthesized before the child's reclaim existed,
+// so the cascade looked it up and found nothing (2026-09-13).
+//
+// The names are chosen so the owner sorts BEFORE the child, which is
+// the order that hid it.
+
+type Ping { id: String = ""; n: Int = 0; }
+topic Pings { payload: Ping; subject: "t.pings"; keyed_by id; }
+type Heard { n: Int = 0; }
+topic Hearing { payload: Heard; subject: "t.heard"; }
+
+locus Zub {
+    params { key: String = ""; }
+    bus {
+        subscribe Pings as on_ping where key == self.key;
+        publish Hearing;
+    }
+    fn on_ping(p: Ping) { Hearing <- Heard { n: p.n }; }
+}
+locus Holder {
+    params { key: String = ""; accepted: Int = 0; }
+    accept(z: Zub) { self.accepted = self.accepted + 1; }
+    fn spawn() -> Int { Zub { key: self.key }; return self.accepted; }
+}
+main locus App {
+    params { a: Holder = Holder { }; b: Holder = Holder { }; heard: Int = 0; }
+    bus {
+        publish Pings;
+        subscribe Hearing as on_heard;
+    }
+    fn on_heard(h: Heard) { self.heard = self.heard + 1; }
+    run() {
+        self.a = Holder { key: "m1" };
+        let s1 = self.a.spawn();
+        std::test::assert_eq_int(s1, 1, "the owner accepted its child");
+        Pings <- Ping { id: "m1", n: 1 };
+        std::time::sleep(50ms);
+        std::test::assert_eq_int(self.heard, 1, "one live subscriber hears once");
+        // reassign: the first owner and its accepted child are gone
+        self.a = Holder { key: "m1" };
+        let s2 = self.a.spawn();
+        Pings <- Ping { id: "m1", n: 2 };
+        std::time::sleep(50ms);
+        std::test::assert_eq_int(self.heard, 2, "the dissolved child's subscription went with it: heard once, not twice");
+        // and a second owner on the same key: still one hearing per live child
+        self.b = Holder { key: "m1" };
+        let s3 = self.b.spawn();
+        Pings <- Ping { id: "m1", n: 3 };
+        std::time::sleep(50ms);
+        std::test::assert_eq_int(self.heard, 4, "two live children hear once each");
+    }
+}
+fn main() { App { }; }

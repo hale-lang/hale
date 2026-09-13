@@ -136,7 +136,12 @@ place that should know how sessions relate), or over the
 This is what makes cleanup sound: a child's memory is a
 sub-region of its parent's, no pointer ever crosses sideways, so
 when a locus dissolves its whole subtree frees wholesale — no
-garbage collector, no per-object bookkeeping.
+garbage collector, no per-object bookkeeping. A parent that
+accepts children tracks every one of them for exactly this moment,
+whether or not it ever reads `self.children`: when the parent goes
+— at shutdown, or because the field holding it was reassigned —
+each accepted child is torn down first, its bus subscriptions
+deregistered, before the memory it lived in is freed.
 
 ## Flow children vs residents
 

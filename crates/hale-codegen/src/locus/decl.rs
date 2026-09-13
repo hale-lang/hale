@@ -17,7 +17,7 @@ use inkwell::AddressSpace;
 use crate::codegen::{
     collect_sum_calls, count_self_field_accesses_in_locus,
     infer_accumulator_inner_type, locus_arena_elidable,
-    locus_reads_self_children, param_value, AccumulatorKind,
+    param_value, AccumulatorKind,
     AccumulatorSlot, CapacitySlotLayout, CodegenError, CodegenTy,
     Cx, DefaultInit, LocusInfo, ParamValue, SlotForm, SyncMode,
 };
@@ -367,28 +367,37 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let user_fields_start_idx: u32 = 1;
         let user_fields_end_idx: u32 = idx;
 
-        // If this locus declares accept AND any method body
-        // iterates `for child in self.children`, append a
-        // synthetic children array + counter at the end of the
-        // struct so each accept dispatch can record the child's
-        // self_ptr.
+        // If this locus declares accept, append a synthetic
+        // children array + counter at the end of the struct so each
+        // accept dispatch can record the child's self_ptr.
         //
-        // When `accept` is declared but no body reads
-        // `self.children`, we elide the storage entirely. The
-        // append at accept-time then becomes a no-op (the
-        // `children_field_idx` Option below gates it).
+        // This used to be elided when no method body iterated
+        // `for child in self.children`. But the tracker is not only
+        // the iteration's backing store: it is what the owner's
+        // dissolve walks to reclaim its accepted children
+        // (`emit_accepted_children_reclaim`), and a child's reclaim
+        // is what deregisters the child's bus subscriptions before
+        // the owner's arena — where the child lives — is freed.
+        // Without it an owner that accepted and never iterated freed
+        // its children's memory and left their `subscribe … where
+        // key == …` entries live: the next publish on that key
+        // deserialized into whatever had reused the memory — a
+        // double delivery into a new child at the same address, or
+        // a fault in `lotus_arena_alloc` when a string had taken it
+        // (2026-09-13, found by a DNA fixture reassigning an
+        // organization that accepts Reviews). An accepted child's
+        // lifetime is its owner's, so the owner always tracks them.
         //
-        // For loci that DO iterate, the storage is a growable
-        // heap buffer (2026-05-29): a `__children` pointer to a
-        // `void**` buffer plus `__child_count` / `__child_cap`
-        // i64 fields. `lotus_children_push` grows it on demand.
-        // This replaced a fixed `[16]` inline array whose
-        // unchecked accept-time append silently corrupted
-        // adjacent struct memory once a parent accepted more than
-        // 16 children (the bench surfaced it at k≈25) — fatal for
-        // the daemon-server pattern that accepts one child per
-        // connection.
-        let uses_children = has_accept && locus_reads_self_children(l);
+        // The storage is a growable heap buffer (2026-05-29): a
+        // `__children` pointer to a `void**` buffer plus
+        // `__child_count` / `__child_cap` i64 fields.
+        // `lotus_children_push` grows it on demand. This replaced a
+        // fixed `[16]` inline array whose unchecked accept-time
+        // append silently corrupted adjacent struct memory once a
+        // parent accepted more than 16 children (the bench surfaced
+        // it at k≈25) — fatal for the daemon-server pattern that
+        // accepts one child per connection.
+        let uses_children = has_accept;
         let (children_field_idx, child_count_field_idx, child_cap_field_idx) =
             if uses_children {
                 let i64_t = self.context.i64_type();

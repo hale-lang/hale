@@ -1,0 +1,38 @@
+// A child whose capacity slot is borrowed from its parent
+// (`as_parent_for`) is reclaimed by that parent at teardown — and
+// must not destroy the borrowed allocator on its way out. The bit
+// that marks the slot borrowed was zero-initialised AFTER the slot
+// loop that set it, so the child's own teardown destroyed the
+// parent's pool and the parent destroyed it again: a double free at
+// exit, hidden for as long as an owner that never iterated
+// `self.children` never reclaimed its children at all (2026-09-13).
+// The parent here accepts and does not iterate; the assertion is
+// that the program reaches its end.
+
+locus ChildL {
+    capacity { pool entries of Int; }
+    run() {
+        let c = self.entries.acquire();
+        self.entries.release (c);
+    }
+}
+locus ParentL {
+    params { accepted: Int = 0; }
+    capacity { pool entries of Int as_parent_for ChildL; }
+    accept(c: ChildL) { self.accepted = self.accepted + 1; }
+    run() {
+        ChildL { };
+        ChildL { };
+        std::test::assert_eq_int(self.accepted, 2, "two children borrowed the pool");
+    }
+}
+main locus App {
+    params { p: ParentL = ParentL { }; }
+    run() {
+        // reassigning the parent reclaims both children first, then the
+        // parent's own pool once
+        self.p = ParentL { };
+        std::test::assert_eq_int(self.p.accepted, 2, "the second parent accepted its own two");
+    }
+}
+fn main() { App { }; }

@@ -486,7 +486,18 @@ forgotten `accept`).
 `accept`s children dissolves, it reclaims each accept'd child it
 still tracks — running the child's full teardown (drain →
 dissolve → arena reclaim) before the parent's own arena (which
-backs the children's subregions) is freed. This is what makes the
+backs the children's subregions) is freed. A parent that accepts
+tracks every child it accepted, whether or not any of its methods
+iterates `self.children`, because this cascade is what the
+tracker exists for; and the cascade runs on every path that
+dissolves the parent — graceful shutdown, a reclaimed flow, and a
+mid-life reassignment of the field that holds it — so a child's
+bus subscriptions are deregistered before the memory they point
+at is freed, never left to receive into whatever reuses it. The
+order within the parent's teardown is children first, then the
+parent's own capacity slots, then its arena: a child may hold a
+slot borrowed from the parent (`as_parent_for`), and a borrowed
+slot is never destroyed by the child. This is what makes the
 "resident reclaimed only when the parent dissolves" rule above
 *observable*: a resident's `dissolve()` body (fd close, flush)
 runs at the parent's graceful shutdown, rather than the child
