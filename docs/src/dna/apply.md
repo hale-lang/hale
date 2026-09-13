@@ -23,20 +23,27 @@ When a mutation's Review settles `approve`, the substrate:
 4. checks that the genome has nothing uncommitted. A fast-forward
    **keeps** a maintainer's uncommitted edit, so the head would be the
    candidate while the files the host builds from are not. Tracked
-   changes count, and so does **every input of the seed's build that
-   the tree does not hold** — `hale check` reads the directory, not
-   the index, and a build follows imports, so an untracked `helper.hl`
-   beside the reviewed files, an unfinished file in a library the seed
-   imports, a `.gitignore`d source file, all compile exactly the same.
-   The inputs are asked of the compiler itself (`hale inputs <seed>`)
-   rather than guessed from git. What no build reads is not dirt: the
-   binary `hale build` leaves beside a seed, a log, another program's
-   source in a directory of its own, anything under `.hale/`. A dirty
-   destination is **refused** (`mutation.refused: the genome has
-   uncommitted changes`), the work is left exactly as it is, and
-   **approving again** re-runs the whole gate once it is cleared: the
-   verdict is spent, the apply is not, and the record keeps
-   `mutation.apply_retried`. The Review admits that second approval
+   changes count, and so does **every input of the candidate's build
+   that the tree does not hold** — `hale check` reads the directory,
+   not the index, and a build follows imports and reads manifests and
+   the C sources they declare, so an untracked `helper.hl` beside the
+   reviewed files, an unfinished file in a library the seed imports, a
+   `.gitignore`d source file, an untracked `hale.toml` beside a
+   library, all compile exactly the same. The graph is the
+   *candidate's*: a change that adds `import "../lib"` makes the
+   library's stray files inputs the moment it lands, so the inputs are
+   asked of the compiler in the candidate's worktree (`hale inputs
+   <seed>`) rather than guessed from git or read off the destination
+   as it is today; and an inspection that fails is a refusal, never a
+   clean tree. What no build reads is not dirt: the binary `hale
+   build` leaves beside a seed, a log, another program's source in a
+   directory of its own, anything under `.hale/`. A dirty destination
+   is **refused** (`mutation.refused: the genome has uncommitted
+   changes`), the work is left exactly as it is, and **approving
+   again** re-runs the whole gate once it is cleared: the verdict is
+   spent, the apply is not, and the record keeps
+   `mutation.apply_retried` and then a second `review.settled`, which
+   is what a waiting `hale dna review … approve` reports. The Review admits that second approval
    under every rule the first one met — the pinned digest, the required
    authority, independence from the author, and the word `approve`; a
    rejection, a wrong digest or a weak authority reopens nothing. A

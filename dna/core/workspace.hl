@@ -46,6 +46,16 @@ fn list_files(dir: String) -> String {
     return if r.code == 0 { r.stdout } else { "" };
 }
 
+// The last `/` in a path, -1 for a bare name.
+fn last_slash(s: String) -> Int {
+    let mut i = len(s) - 1;
+    while i >= 0 {
+        if s[i..(i + 1)] == "/" { return i; }
+        i = i - 1;
+    }
+    return -1;
+}
+
 fn trim_nl(s: String) -> String {
     let mut e = len(s);
     while e > 0 && (s[(e - 1)..e] == "\n" || s[(e - 1)..e] == "\r" || s[(e - 1)..e] == " ") { e = e - 1; }
@@ -131,10 +141,13 @@ interface Repository {
     // keeps: "apply failed" alone told an operator nothing about which
     // of the destination's states stopped it.
     fn why() -> String;
-    // What the destination has changed and not committed ("" = clean):
-    // tracked modifications, and untracked source of `seed` (empty
-    // asks about tracked files alone).
-    fn dirty_in(seed: String) -> String;
+    // What the destination has that the expression of `seed` from
+    // `worktree` would read and the candidate's tree does not hold
+    // ("" = clean): tracked modifications, and every input of the
+    // CANDIDATE's build — its graph, not the destination's — that the
+    // destination has untracked. `seed` empty asks about tracked
+    // files alone. A build whose inputs cannot be inspected is dirt.
+    fn dirty_for(seed: String, worktree: String) -> String;
 }
 
 // Local git. `apply` is the ONE method that changes the genome: it
@@ -144,6 +157,7 @@ locus LocalGit {
     params {
         repo: String = ".";
         author: String = "dna <dna@local>";
+        hale_bin: String = ""; // "" = HALE_BIN when set, else `hale` on PATH
         applied: Int = 0;
         last_error: String = "";
     }
@@ -178,21 +192,24 @@ locus LocalGit {
     // while the files the host builds from are not the candidate's, and
     // nobody reviewed the difference.
     //
-    // What the BUILD reads counts, not what git tracks. `hale check`
-    // reads the directory, not the index, and a build follows imports:
-    // an untracked `app/helper.hl` beside the reviewed `app/main.hl`,
-    // an unfinished `lib/helper.hl` in a seed the app imports, a
-    // `.gitignore`d source file, one whose name git prints quoted — the
-    // seed that expresses the candidate compiles every one of them
-    // (the third and fourth review rounds' finding 1). So the seed's
-    // inputs are asked of the compiler itself (`hale inputs`), and any
-    // of them the candidate's tree does not hold is dirt; tracked
-    // modifications and deletions anywhere are dirt as before. What no
-    // build reads — the binary `hale build` leaves beside a seed, a
-    // log, another program's source — is not. `seed` empty asks about
-    // tracked files alone; `.hale/` never counts.
+    // What the CANDIDATE's build reads counts, not what git tracks and
+    // not what the destination builds today. `hale check` reads the
+    // directory, not the index; a build follows imports and reads
+    // manifests and the C sources they declare. And the graph is the
+    // candidate's: a reviewed change that adds `import "../lib"` makes
+    // an untracked, unfinished `lib/helper.hl` an input the moment it
+    // lands, though the destination's own graph never reached `lib`
+    // (the fifth review round's finding 1). So the inputs are asked of
+    // the compiler in the candidate's worktree (`hale inputs`), and any
+    // file of the same kind that the destination has untracked in one
+    // of those directories — or that the graph names outright — is
+    // dirt; tracked modifications and deletions anywhere are dirt as
+    // before. What no build reads — a binary, a log, another program's
+    // source — is not. `seed` empty asks about tracked files alone;
+    // `.hale/` never counts. A graph that cannot be inspected is dirt:
+    // an inspection that failed authorises nothing (finding 4).
     @unbounded
-    fn dirty_in(seed: String) -> String {
+    fn dirty_for(seed: String, worktree: String) -> String {
         let r = run_tool("git\n-C\n" + self.repo + "\nstatus\n--porcelain");
         if r.code != 0 { return ""; }
         let mut out = "";
@@ -206,30 +223,51 @@ locus LocalGit {
             if what == ".hale" || std::str::starts_with(what, ".hale/") { continue; }
             out = out + line + "\n";
         }
-        if len(seed) > 0 { out = out + self.untracked_inputs(seed); }
+        if len(seed) > 0 { out = out + self.untracked_inputs(seed, worktree); }
         return trim_nl(out);
     }
-    // The compiler's inputs for `seed` that the tree does not hold,
-    // as `?? <path>` lines. A path is asked of git one at a time, so a
-    // name with a space or a quote is one argument and never parsed.
+    // The candidate's inputs that the destination has untracked, as
+    // `?? <path>` lines: the graph is read in `worktree`, its
+    // directories are looked at on the destination, and git names
+    // the destination's untracked files unquoted, one per line.
     @unbounded
-    fn untracked_inputs(seed: String) -> String {
-        let hale = resolve_toolchain("");
-        let dir = if seed == "." { self.repo } else { self.repo + "/" + seed };
+    fn untracked_inputs(seed: String, worktree: String) -> String {
+        let hale = resolve_toolchain(self.hale_bin);
+        let dir = if seed == "." { worktree } else { worktree + "/" + seed };
         let ins = run_tool(hale + "\ninputs\n" + dir);
-        if ins.code != 0 { return ""; }
-        let root = trim_nl(run_tool("git\n-C\n" + self.repo + "\nrev-parse\n--show-toplevel").stdout);
-        let mut out = "";
+        if ins.code != 0 { return "!! the candidate's build inputs cannot be inspected (`hale inputs " + dir + "` exited " + to_string(ins.code) + "): " + trim_nl(ins.stderr) + "\n"; }
+        let wroot = trim_nl(run_tool("git\n-C\n" + worktree + "\nrev-parse\n--show-toplevel").stdout);
+        if len(wroot) == 0 { return "!! the candidate's worktree is not a repository: " + worktree + "\n"; }
+        // the graph, as directories and as files, relative to the tree
+        let mut dirs = "\n";
+        let mut files = "\n";
         let mut rest = trim_nl(ins.stdout) + "\n";
         while len(rest) > 0 {
             let nl = std::str::index_of(rest, "\n");
             let f = if nl < 0 { rest } else { rest[0..nl] };
             if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
-            if len(f) == 0 || len(root) == 0 || !std::str::starts_with(f, root + "/") { continue; }
-            let rel = f[(len(root) + 1)..len(f)];
-            if std::str::starts_with(rel, ".hale/") || std::str::starts_with(rel, "vendor/") { continue; }
-            let tracked = run_tool("git\n-C\n" + self.repo + "\nls-files\n--error-unmatch\n--\n" + rel);
-            if tracked.code != 0 { out = out + "?? " + rel + "\n"; }
+            if len(f) == 0 || !std::str::starts_with(f, wroot + "/") { continue; }
+            let rel = f[(len(wroot) + 1)..len(f)];
+            files = files + rel + "\n";
+            let sl = last_slash(rel);
+            dirs = dirs + (if sl < 0 { "." } else { rel[0..sl] }) + "\n";
+        }
+        let others = run_tool("git\n-C\n" + self.repo + "\n-c\ncore.quotePath=false\nls-files\n--others");
+        if others.code != 0 { return "!! the destination's untracked files cannot be listed: " + trim_nl(others.stderr) + "\n"; }
+        let mut out = "";
+        let mut urest = trim_nl(others.stdout) + "\n";
+        while len(urest) > 0 {
+            let nl = std::str::index_of(urest, "\n");
+            let u = if nl < 0 { urest } else { urest[0..nl] };
+            if nl < 0 { urest = ""; } else { urest = urest[(nl + 1)..len(urest)]; }
+            if len(u) == 0 || std::str::starts_with(u, ".hale/") || std::str::starts_with(u, "vendor/") { continue; }
+            let sl = last_slash(u);
+            let udir = if sl < 0 { "." } else { u[0..sl] };
+            let name = if sl < 0 { u } else { u[(sl + 1)..len(u)] };
+            let named = std::str::contains(files, "\n" + u + "\n");
+            let in_graph = std::str::contains(dirs, "\n" + udir + "\n");
+            let kind = (len(name) > 3 && name[(len(name) - 3)..len(name)] == ".hl") || name == "hale.toml";
+            if named || (in_graph && kind) { out = out + "?? " + u + "\n"; }
         }
         return out;
     }
@@ -255,7 +293,7 @@ locus LocalGit {
     // the candidate, tree and all.
     @effects(is: { genome_apply, repo_write })
     fn apply(candidate: String) -> Bool {
-        let dirty = self.dirty_in("");
+        let dirty = self.dirty_for("", "");
         if len(dirty) > 0 {
             self.last_error = "the genome has uncommitted changes; commit or stash them before an apply:\n" + dirty;
             return false;
@@ -270,7 +308,7 @@ locus LocalGit {
             self.last_error = "the genome is " + now + ", not the candidate " + candidate + ": it moved during the apply; propose again on the new base";
             return false;
         }
-        let after = self.dirty_in("");
+        let after = self.dirty_for("", "");
         if len(after) > 0 {
             self.last_error = "the genome's files are not the candidate's after the apply:\n" + after;
             return false;
@@ -320,7 +358,7 @@ locus MutationGateway {
     }
     // What the destination has uncommitted, for the caller's check
     // before an apply is requested at all.
-    fn dirty(seed: String) -> String { return self.repo.dirty_in(seed); }
+    fn dirty(seed: String, worktree: String) -> String { return self.repo.dirty_for(seed, worktree); }
     fn refuse(why: String) -> GateResult {
         self.refusals = self.refusals + 1;
         return GateResult { refused: why };

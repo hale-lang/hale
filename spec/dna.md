@@ -49,20 +49,28 @@ repository:
   applies exactly the reviewed candidate, or nothing: the candidate's
   worktree head is the pinned digest, the genome's head is the base the
   review was against, and the genome has nothing uncommitted — tracked
-  changes anywhere, and **every input of the seed's build that the
-  tree does not hold**, asked of the compiler itself (`hale inputs
-  <seed>`: the seed's `.hl` files and those of every directory they
-  import, transitively, whether git tracks, ignores or quotes them).
-  What no build reads — a binary, a log, another program's source —
-  is not dirt. A dirty genome is `mutation.refused` before any effect
-  row exists, the work untouched; the gateway checks it once more
-  around the git call and reads the head back, so an apply that
-  reports success is the candidate. **Approving again** an approved
-  and unapplied candidate re-runs the whole gate
-  (`mutation.apply_retried`): the Review readmits only the same
-  approval in full — digest, authority, independence, the word
-  `approve` — and refuses any other verdict; a Review approved and
-  never applied is rehydrated settled, so the road survives a restart.
+  changes anywhere, and **every input of the candidate's build that
+  the tree does not hold**. The graph is the candidate's, read by the
+  compiler in the candidate's worktree (`hale inputs <seed>`: the
+  seed's `.hl` files and those of every directory they import,
+  transitively; the `hale.toml` of each such directory and every C
+  source it declares under `[ffi]`), because a reviewed change that
+  adds an import makes files an input the moment it lands; any file
+  of those kinds the genome holds untracked in one of the graph's
+  directories, or that the graph names outright, is dirt whether git
+  ignores it or quotes it. What no build reads — a binary, a log,
+  another program's source — is not dirt. A graph that cannot be
+  inspected is dirt: an inspection that failed authorises nothing. A
+  dirty genome is `mutation.refused` before any effect row exists,
+  the work untouched; the gateway checks it once more around the git
+  call and reads the head back, so an apply that reports success is
+  the candidate. **Approving again** an approved and unapplied
+  candidate re-runs the whole gate (`mutation.apply_retried`, then
+  `review.settled` again so a waiting `hale dna review` hears it):
+  the Review readmits only the same approval in full — digest,
+  authority, independence, the word `approve` — and refuses any other
+  verdict; a Review approved and never applied is rehydrated settled,
+  so the road survives a restart.
 - **The membrane over the record.** From a clone with no organism,
   `hale dna ask` appends `intent.requested` (the body: outcome, from,
   to) and a verdict appends `review.verdict` (the body: the verdict as
