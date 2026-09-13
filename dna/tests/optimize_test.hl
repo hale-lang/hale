@@ -1,0 +1,89 @@
+// dna/tests/optimize_test.hl — GH #596 O: the optimize pass.
+//
+// On a cadence the org chart sets, the substrate reads the record's
+// structural signals and asks the leader to walk the machinery, not
+// the work. The leader answers with one small proposal or none; the
+// record keeps `org.reviewed` either way — "if the state is clean, say
+// so" — and a proposal enters as an ask in the leader's name and takes
+// the whole road. Two organisms here, keyed apart on the one bus: one
+// whose leader finds the state clean, one whose leader proposes a
+// secretary (and whose plan of that ask calls it a person's job, so
+// nothing is mutated in this fixture).
+
+import "../core" as dna;
+
+const CLEAN: String = "proposal: none\nThe routing catches every ask, no grant contracted, no concern outstanding.";
+const SECRETARY: String = "proposal: add a secretary position that triages asks before the leader plans them\nkind: person\nclass: docs\ncount: 1\nAsks keep falling through to the leader for triage; minimal structure says one operator, not a department.";
+
+main locus App {
+    params {
+        one: dna::Dna = dna::Dna { journal: dna::MemJournal { }, org_id: "one", planned: true };
+        lead_one: dna::Leader = dna::Leader {
+            name: "leader", org: "one", charter: "You are the architect.",
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: CLEAN }, deep: dna::FakeModel { name: "deep", answer: CLEAN } }
+        };
+        two: dna::Dna = dna::Dna { journal: dna::MemJournal { }, org_id: "two", planned: true };
+        lead_two: dna::Leader = dna::Leader {
+            name: "leader", org: "two", charter: "You are the architect.",
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: SECRETARY }, deep: dna::FakeModel { name: "deep", answer: SECRETARY } }
+        };
+    }
+    @unbounded
+    fn last(j: dna::Journal, kind: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    @unbounded
+    fn count(j: dna::Journal, kind: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            if j.read(i).kind == kind { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    run() {
+        // ---- the cadence: nothing fires with no cadence set
+        self.one.tick(1000);
+        self.one.tick(200000);
+        std::test::assert_eq_int(self.one.optimizations, 0, "no cadence, no pass");
+        // a cadence of 60s: the first pass one window after the start,
+        // the next tick within the window does not fire
+        self.one.optimize_every_ms = 60000;
+        self.one.tick(1000);
+        std::test::assert_eq_int(self.one.optimizations, 0, "not before a window has passed");
+        self.one.tick(61000);
+        self.one.tick(90000);
+        std::time::sleep(300ms);
+        std::test::assert_eq_int(self.one.optimizations, 1, "one pass after the window, none within the next");
+        std::test::assert_eq_int(self.lead_one.optimizations, 1, "the leader walked the machinery once");
+        // ---- clean: the record says so, and nothing is born
+        let r1 = self.last(self.one.journal, "org.reviewed");
+        std::test::assert(std::str::contains(r1, "\"outcome\": \"clean\"") && std::str::contains(r1, "\"proposal\": \"\""), "clean is recorded: " + r1);
+        std::test::assert(std::str::contains(r1, "asks planned: 0") && std::str::contains(r1, "record rows: "), "the signals the leader read are in the row: " + r1);
+        std::test::assert_eq_int(self.count(self.one.journal, "task.born"), 0, "no work for the sake of activity");
+        std::test::assert_eq_int(self.lead_two.optimizations, 0, "the other organism's leader heard nothing: keyed apart");
+
+        // ---- a proposal: one small change, entering as an ask in the leader's name
+        self.two.optimize();
+        std::time::sleep(600ms);
+        let r2 = self.last(self.two.journal, "org.reviewed");
+        std::test::assert(std::str::contains(r2, "\"outcome\": \"proposed\"") && std::str::contains(r2, "\"proposal\": \"add a secretary position that triages asks before the leader plans them\"") && std::str::contains(r2, "\"by\": \"leader\""), "the proposal is recorded: " + r2);
+        std::test::assert_eq_int(self.count(self.two.journal, "task.born"), 1, "and became one ask");
+        std::test::assert(std::str::contains(self.last(self.two.journal, "task.born"), "add a secretary position"), "the ask is the proposal: " + self.last(self.two.journal, "task.born"));
+        std::test::assert(std::str::contains(self.last(self.two.journal, "intent.offered"), "add a secretary position"), "offered as intent");
+        // the ask took the road every ask takes: planned by the leader —
+        // here as a person's job, so it was handed rather than mutated
+        std::test::assert(std::str::contains(self.last(self.two.journal, "task.planned"), "\"kind\": \"person\""), "planned: " + self.last(self.two.journal, "task.planned"));
+        std::test::assert(std::str::contains(self.last(self.two.journal, "task.handed"), "handed: not a software change"), "handed: " + self.last(self.two.journal, "task.handed"));
+        std::test::assert_eq_int(self.count(self.one.journal, "task.born"), 0, "the clean organism stayed clean");
+    }
+}
+fn main() { App { }; }

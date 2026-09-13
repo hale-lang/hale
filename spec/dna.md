@@ -71,6 +71,26 @@ repository:
   authority, independence, the word `approve` — and refuses any other
   verdict; a Review approved and never applied is rehydrated settled,
   so the road survives a restart.
+- **A person's job (GH #596 W).** A plan of kind `person` hands the
+  Task on: the Work is done as far as the organism is concerned and the
+  record keeps `task.handed <task>`; nothing is mutated. The person
+  reports it done with `hale dna task done <id> [--as <who>] [--note
+  …]`, a `task.done` row in their name and nothing else. Refused for a
+  Task that is not handed: one the organism is working, or has settled,
+  is not a person's to close.
+- **The optimize pass (GH #596 O).** On a cadence the org chart sets
+  (`optimize_every_ms` on the substrate; 0 is never; the org program's
+  loop ticks it), the substrate reads the record's structural signals
+  — asks planned and how many took the defaults, concerns raised,
+  grant contractions, verdicts refused, mutations rolled back — and
+  asks the leader (`OptimizeRequested`, keyed by `org_id`) to walk the
+  machinery, not the work. The leader answers with one small proposal
+  or none (`OrgReviewed`), and the substrate journals `org.reviewed
+  <org>` either way, with the signals it read: "if the state is clean,
+  say so". A proposal enters as an ask in the leader's name and takes
+  the whole road — planned, proposed, reviewed by the Board as an
+  organization change. `hale dna` runs the pass on demand through the
+  substrate's `optimize()`.
 - **Grants layer by containment (GH #596).** The substrate may hold a
   `ceiling`: the grant above the child's — the organism's, the Board's
   to widen. A child's boundary reads its grant through the ceiling **as
@@ -117,7 +137,7 @@ the same way. A project's path therefore has no length rule.
 `mutation.applied`, `mutation.retained`, `mutation.rolled_back`,
 `mutation.rejected`, `mutation.revise`, `mutation.refused`,
 `mutation.apply_retried`, `knowledge.retired`, `task.planned`,
-`grant.refused`, `grant.contracted`,
+`grant.refused`, `grant.contracted`, `task.handed`, `org.reviewed`,
 `mutation.failed`, `effect.requested`, `effect.result`,
 `evidence.<step>`, `evidence.magnitude`, `review.requested`,
 `review.settled`, `review.refused`, `expression.restart_requested`,

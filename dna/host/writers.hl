@@ -48,6 +48,26 @@ fn find_after(p: Projection, from: Int, kinds: String, entity: String) -> dna::E
 // ---- ask ------------------------------------------------------------
 
 @unbounded
+// GH #596 W: a person reports a handed Task done. A row in the record
+// in their name; nothing runs, nothing is applied — the organism's
+// part ended when it handed the Task on. Refused for a Task that is
+// not handed: a Task the organism is working, or has settled, is not
+// a person's to close.
+fn task_done_verb(root: String, seed: String, id: String, who_flag: String, note: String) -> Answer {
+    if len(id) == 0 { return fail("task done: which Task? `hale dna task done <id>`"); }
+    let s = sync_record(root);
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let p = open_projection(root, seed, "");
+    let t = p.task_of(id);
+    if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
+    if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: nothing to report done"); }
+    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    let body = "by " + who + (if len(note) > 0 { ": " + note } else { "" });
+    if !append_as(root, "task.done", id, body, who) { return fail("the record refused the append"); }
+    let s2 = sync_record(root);
+    return answer("task " + id + " done " + body + "\n");
+}
+
 fn ask_verb(root: String, outcome: String, to: String, no_wait: Bool) -> Answer {
     if len(outcome) == 0 { return fail("ask: say what should happen — `hale dna ask \"<intent>\"`"); }
     let s0 = sync_record(root);

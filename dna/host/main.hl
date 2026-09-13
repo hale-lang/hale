@@ -102,7 +102,7 @@ fn main() {
     let fleet = arg(4);
     let plan = arg(5);
     let toolchain = std::env::var("HALE_DNA_TOOLCHAIN");
-    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity ");
+    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note ");
     let mut ans = Answer { ok: false, text: "unknown verb `" + verb + "`" };
     if (verb == "board" || verb == "review") && !membrane_up(root) { let s = sync_record(root); }
     if verb == "fleet" { let s = sync_record(root); }
@@ -145,6 +145,10 @@ fn main() {
     } else if verb == "concern-raise" {
         let sev = flag(a, "--severity");
         ans = concern_raise(root, word(a, 0), join_words(drop_first_word(a.words)), if len(sev) > 0 { std::str::parse_int(sev) or 1 } else { 1 });
+    } else if verb == "task" {
+        // GH #596 W: `hale dna task done <id> [--as <who>] [--note …]`
+        if word(a, 0) == "done" { ans = task_done_verb(root, seed, word(a, 1), flag(a, "--as"), flag(a, "--note")); }
+        else { ans = fail("task: `hale dna task done <id> [--as <who>] [--note <what was done>]`"); }
     } else if verb == "sync" {
         ans = sync_verb(root);
     } else if verb == "deploy" {

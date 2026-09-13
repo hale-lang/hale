@@ -93,6 +93,7 @@ fn dna_fixture_set_is_complete() {
             "knowledge_test.hl",
             "mutation_review_test.hl",
             "openai_chat_test.hl",
+            "optimize_test.hl",
             "org_test.hl",
             "performers_test.hl",
             "plan_routing_test.hl",

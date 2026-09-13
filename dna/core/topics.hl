@@ -87,6 +87,7 @@ topic WorkRequested { payload: WorkRequest; subject: "dna.work.requested"; }
 // splits and classifies, never widens; the assembly journals it as
 // `task.planned` and proceeds under the class and target it names.
 type PlanRequest {
+    org: String = "org"; // keys the exchange with this organism's leader
     task_id: String = "";
     work_id: String = "";
     objective: String = "";
@@ -95,6 +96,7 @@ type PlanRequest {
     data_class: String = "internal";
 }
 type Plan {
+    org: String = "org";
     task_id: String = "";
     work_id: String = "";
     kind: String = "appendage"; // "organism" | "appendage" | "product" | "person" (not a software change)
@@ -106,8 +108,27 @@ type Plan {
     by: String = "";
     parsed: Bool = false; // the model's answer named a kind and a class; else the defaults stand
 }
-topic PlanRequested { payload: PlanRequest; subject: "dna.plan.requested"; }
-topic TaskPlanned { payload: Plan; subject: "dna.task.planned"; }
+topic PlanRequested { payload: PlanRequest; subject: "dna.plan.requested"; keyed_by org; }
+
+// GH #596 O: the optimize pass. On a cadence the org chart sets, the
+// substrate reads the record's structural signals and asks the
+// leader to walk the machinery, not the work; the leader answers with
+// one small proposal or none, and the substrate journals `org.reviewed`
+// either way. "If the state is clean, say so."
+type OptimizeRequest {
+    org: String = "org";
+    signals: String = "";
+}
+type OrgReview {
+    org: String = "org";
+    proposal: String = ""; // "" = clean
+    narrative: String = "";
+    package: String = "";
+    by: String = "";
+}
+topic OptimizeRequested { payload: OptimizeRequest; subject: "dna.optimize.requested"; keyed_by org; }
+topic OrgReviewed { payload: OrgReview; subject: "dna.org.reviewed"; keyed_by org; }
+topic TaskPlanned { payload: Plan; subject: "dna.task.planned"; keyed_by org; }
 
 type WorkSettlement {
     work_id: String = "";
