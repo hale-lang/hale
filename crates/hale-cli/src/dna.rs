@@ -1508,7 +1508,7 @@ main locus Org {{
         if std::env::var_exists("HALE_DNA_ONESHOT") {{ return; }}
         // GH #596 O: the substrate's cadence — the optimize pass fires
         // every `optimize_every_ms` on the substrate above (0 = never)
-        while true {{ std::time::sleep(100ms); self.core.tick(std::time::now()); }}
+        while true {{ std::time::sleep(100ms); self.core.tick(std::time::monotonic_ns() / 1000000); }}
     }}
 }}
 

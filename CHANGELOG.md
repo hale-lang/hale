@@ -17,7 +17,7 @@ behavior.
 
 ### DNA Phase 5, fourth landing: the optimize pass, and a person's job (GH #596 O and W)
 
-- **The optimize pass.** On a cadence the org chart sets (`optimize_every_ms`, ticked by the org program's loop; 0 is never), the substrate reads the record's structural signals and asks the leader to walk the machinery, not the work. The leader answers with one small proposal or none, and the record keeps `org.reviewed` either way, with the signals it read. A proposal enters as an ask in the leader's name and takes the whole road. Two organisms on one bus are keyed apart by `org_id`.
+- **The optimize pass.** On a cadence the org chart sets (`optimize_every_ms`, ticked by the org program's loop with a millisecond monotonic clock; 0 is never), the substrate asks the budget first — the pass is model-backed work and is refused on an exhausted window (`optimize.refused`), like every other model-backed piece of work — then reads the record's structural signals and asks the leader to walk the machinery, not the work. The leader answers with one small proposal or none, and the record keeps `org.reviewed` either way, with the signals it read. A proposal enters as an ask in the leader's name and takes the whole road. Two organisms on one bus are keyed apart by `org_id`.
 - **A person's job.** A plan of kind `person` hands the Task on: the record keeps `task.handed`, nothing is mutated, and the person reports it done with `hale dna task done <id> [--as <who>] [--note …]`, a row in their name. A Task that is not handed is refused: one the organism is working, or has settled, is not a person's to close.
 
 ### DNA Phase 5, third landing: grants layer by containment (GH #596, layering)

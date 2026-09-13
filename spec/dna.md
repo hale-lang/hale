@@ -80,7 +80,10 @@ repository:
   is not a person's to close.
 - **The optimize pass (GH #596 O).** On a cadence the org chart sets
   (`optimize_every_ms` on the substrate; 0 is never; the org program's
-  loop ticks it), the substrate reads the record's structural signals
+  loop ticks it with a millisecond monotonic clock), the substrate
+  first asks the budget — the pass is model-backed work, and none is
+  routed on an exhausted window: `optimize.refused <org>`, and the
+  pass waits for the next window — then reads the record's structural signals
   — asks planned and how many took the defaults, concerns raised,
   grant contractions, verdicts refused, mutations rolled back — and
   asks the leader (`OptimizeRequested`, keyed by `org_id`) to walk the
@@ -138,6 +141,7 @@ the same way. A project's path therefore has no length rule.
 `mutation.rejected`, `mutation.revise`, `mutation.refused`,
 `mutation.apply_retried`, `knowledge.retired`, `task.planned`,
 `grant.refused`, `grant.contracted`, `task.handed`, `org.reviewed`,
+`optimize.refused`,
 `mutation.failed`, `effect.requested`, `effect.result`,
 `evidence.<step>`, `evidence.magnitude`, `review.requested`,
 `review.settled`, `review.refused`, `expression.restart_requested`,

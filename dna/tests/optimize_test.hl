@@ -23,6 +23,12 @@ main locus App {
             models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: CLEAN }, deep: dna::FakeModel { name: "deep", answer: CLEAN } }
         };
         two: dna::Dna = dna::Dna { journal: dna::MemJournal { }, org_id: "two", planned: true };
+        // an allowance one pass exhausts: the first pass is paid for, the second is refused
+        three: dna::Dna = dna::Dna { journal: dna::MemJournal { }, org_id: "three", planned: true, optimize_every_ms: 60000, budget: dna::Budget { policy: dna::BudgetPolicy { window: "none", allowance_micros: 1 } } };
+        lead_three: dna::Leader = dna::Leader {
+            name: "leader", org: "three", charter: "You are the architect.",
+            models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: CLEAN }, deep: dna::FakeModel { name: "deep", answer: CLEAN } }
+        };
         lead_two: dna::Leader = dna::Leader {
             name: "leader", org: "two", charter: "You are the architect.",
             models: dna::ModelRouter { quick: dna::FakeModel { name: "quick", answer: SECRETARY }, deep: dna::FakeModel { name: "deep", answer: SECRETARY } }
@@ -50,6 +56,23 @@ main locus App {
         return n;
     }
     run() {
+        // ---- the budget admits the pass, as it admits every model-backed piece of work.
+        // First, before the other organisms spend: every model call on this
+        // one bus is accounted by every organism on it (a fixture hazard,
+        // not a product one: production runs one organism per process).
+        self.three.tick(61000);
+        std::time::sleep(300ms);
+        std::test::assert_eq_int(self.three.optimizations, 1, "the first pass ran within the allowance");
+        std::test::assert_eq_int(self.count(self.three.journal, "org.reviewed"), 1, "and was answered");
+        self.three.tick(121000);
+        std::time::sleep(300ms);
+        std::test::assert_eq_int(self.three.optimizations, 1, "the second pass was not taken: the window is spent");
+        std::test::assert_eq_int(self.count(self.three.journal, "org.reviewed"), 1, "nothing was asked of the leader");
+        std::test::assert_eq_int(self.lead_three.optimizations, 1, "the leader was not walked again");
+        let refused = self.last(self.three.journal, "optimize.refused");
+        std::test::assert(std::str::contains(refused, "budget exhausted") && std::str::contains(refused, "waits for the next window"), "the record says why: " + refused);
+        std::test::assert_eq_int(self.count(self.three.journal, "budget.exhausted"), 1, "the window's exhaustion was announced once");
+
         // ---- the cadence: nothing fires with no cadence set
         self.one.tick(1000);
         self.one.tick(200000);

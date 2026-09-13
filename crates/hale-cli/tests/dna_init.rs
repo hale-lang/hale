@@ -85,6 +85,10 @@ fn init_attaches_the_dna_and_the_application_still_checks_builds_and_runs() {
     assert!(!app.join("dna_constitution.hl").exists(), "no law is written into the application");
     let org = std::fs::read_to_string(app.join("dna/org/main.hl")).unwrap();
     assert!(org.contains("dna::ReviewVerdict: unix(\".hale/dna/hale-dna.review.verdict.sock\", role: listen)"), "the organization binds the membrane: {org}");
+    // GH #596 O: the optimize cadence is milliseconds, so the loop ticks
+    // with a millisecond clock — `now()` is seconds and made a 60s
+    // cadence an hour's.
+    assert!(org.contains("self.core.tick(std::time::monotonic_ns() / 1000000)"), "the loop ticks the substrate with a millisecond clock: {org}");
 
     // …and it still passes its previous checks, plus the matrix, and builds.
     let (ok, out) = hale(&["check", "."], &app);

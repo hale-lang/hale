@@ -748,11 +748,22 @@ locus Dna {
     // Ask the leader to walk the machinery. Once per cadence, or on
     // demand.
     fn optimize() {
+        // GH #583 M1 holds here too: the pass is model-backed work, and
+        // none is routed on an exhausted budget; it waits for the next
+        // window rather than spending what the Board did not allow.
+        let now = std::time::now();
+        if self.budget_exhausted(now) {
+            let x = self.journal.append(self.journal.revision(), "optimize.refused", self.org_id, "budget exhausted (" + self.budget.describe(now) + "); the pass waits for the next window");
+            return;
+        }
         self.last_signals = self.signals();
         self.optimizations = self.optimizations + 1;
         OptimizeRequested <- OptimizeRequest { org: self.org_id, signals: self.last_signals };
     }
-    // The org program's loop calls this; the cadence is the Board's.
+    // The org program's loop calls this with a millisecond clock (the
+    // scaffold passes `std::time::monotonic_ns() / 1000000`; `now()` is
+    // seconds and would make a 60s cadence an hour's); the cadence is
+    // the Board's.
     fn tick(now: Int) {
         if self.optimize_every_ms <= 0 { return; }
         if now - self.last_optimized < self.optimize_every_ms { return; }
