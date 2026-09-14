@@ -184,6 +184,12 @@ locus Dna {
         work: WorkSystem = WorkSystem { };
         metabolism: Metabolism = Metabolism { };
         boundary: AutonomyBoundary = AutonomyBoundary { child: "app" };
+        // GH #596, layering: the grant above the child's — the
+        // organism's, the Board's to widen. A child's grant is read
+        // through it at every assessment, and a contraction of it
+        // binds the child from that moment (`grant.contracted`). No
+        // child on it means no ceiling.
+        ceiling: AutonomyBoundary = AutonomyBoundary { };
         review_policy: ReviewPolicy = HumanBeforeApply { };
         deployment: Deployment = NoDeployment { };
         membrane: Membrane = LocalHumanMembrane { };
@@ -231,6 +237,15 @@ locus Dna {
     release (r: Review) { self.reviews_open = self.reviews_open - 1; }
     birth() {
         self.rehydrate();
+        // GH #596, layering: a child grant wider than the organism's is
+        // the early error — refused in the record, and bound by the
+        // ceiling from here on (the use-time check does the binding)
+        if len(self.ceiling.child) > 0 && !grant_within(self.boundary.current_grant(), self.ceiling.current_grant()) {
+            let g = self.boundary.current_grant();
+            let c = self.ceiling.current_grant();
+            let x = self.journal.append(self.journal.revision(), "grant.refused", g.child,
+                "wider than the ceiling `" + c.child + "` at birth: classes `" + g.classes + "` under `" + c.classes + "`, magnitude " + to_string(g.max_magnitude) + " under " + to_string(c.max_magnitude) + ", review " + g.review + " under " + c.review + "; bound by the ceiling");
+        }
         // GH #529 D6: the host restarted this expression on a Mutation's
         // request; the fact is journaled by the expression itself.
         if std::env::var_exists("HALE_DNA_RESTART_FOR") {
@@ -932,9 +947,26 @@ locus Dna {
         }
         return id;
     }
+    // The child's boundary reads the ceiling as it is NOW, before each
+    // assessment (GH #596, layering).
+    fn bind_ceiling() {
+        if len(self.ceiling.child) > 0 { self.boundary.ceiling = self.ceiling.current_grant(); }
+    }
+    // An outcome under the organism's ceiling: a contraction binds
+    // every child at once, and the record names them.
+    fn ceiling_outcome(ok: Bool) {
+        let before = self.ceiling.current_grant().max_magnitude;
+        self.ceiling.note_outcome(ok);
+        let after = self.ceiling.current_grant().max_magnitude;
+        if after < before {
+            let x = self.journal.append(self.journal.revision(), "grant.contracted", self.ceiling.child,
+                "ceiling " + to_string(before) + " -> " + to_string(after) + " on repeated failure; binds " + self.boundary.child + " from now");
+        }
+    }
     // A staged mutation: assessed under the boundary, reviewed per
     // policy, and NEVER applied by this assembly's deployment.
     fn stage(change_class: String, candidate_digest: String, m: Magnitude, e: Evidence) -> String {
+        self.bind_ceiling();
         let d = self.boundary.assess(change_class, m, e);
         let name = disposition_name(d);
         let r = self.journal.append(self.journal.revision(), "mutation." + name, candidate_digest, change_class);
@@ -1088,6 +1120,7 @@ locus Dna {
     // renders: the evidence steps, the magnitude, where the diffs are.
     @unbounded
     fn review_mutation(m: Mutation, r: VerificationReport, author: String) -> String {
+        self.bind_ceiling();
         let d = self.boundary.assess(m.change_class, r.magnitude, r.evidence);
         let name = disposition_name(d);
         let x = self.journal.append(self.journal.revision(), "mutation." + name, m.id, m.change_class + " candidate " + m.candidate_commit);

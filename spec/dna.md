@@ -71,6 +71,19 @@ repository:
   authority, independence, the word `approve` — and refuses any other
   verdict; a Review approved and never applied is rehydrated settled,
   so the road survives a restart.
+- **Grants layer by containment (GH #596).** The substrate may hold a
+  `ceiling`: the grant above the child's — the organism's, the Board's
+  to widen. A child's boundary reads its grant through the ceiling **as
+  it is now** at every assessment: the classes both allow, the smaller
+  magnitude, the stricter review (`intersect_grants`). Grants contract
+  on their own (two failures in a row halve the ceiling), so a child
+  born within a ceiling of 100 is bound by 50 the moment its parent
+  contracts, and the record says so (`grant.contracted <parent>`,
+  naming the children it now binds). A child born wider than its
+  ceiling is the early error: `grant.refused <child>` names what is
+  wider, and the ceiling binds it from birth. Law layers by adoption:
+  every position lives under the org program's main, which adopts the
+  organism's law, so a department's law can only add to it.
 - **The membrane over the record.** From a clone with no organism,
   `hale dna ask` appends `intent.requested` (the body: outcome, from,
   to) and a verdict appends `review.verdict` (the body: the verdict as
@@ -104,6 +117,7 @@ the same way. A project's path therefore has no length rule.
 `mutation.applied`, `mutation.retained`, `mutation.rolled_back`,
 `mutation.rejected`, `mutation.revise`, `mutation.refused`,
 `mutation.apply_retried`, `knowledge.retired`, `task.planned`,
+`grant.refused`, `grant.contracted`,
 `mutation.failed`, `effect.requested`, `effect.result`,
 `evidence.<step>`, `evidence.magnitude`, `review.requested`,
 `review.settled`, `review.refused`, `expression.restart_requested`,

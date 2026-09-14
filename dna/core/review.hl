@@ -178,6 +178,7 @@ locus AutonomyBoundary {
     params {
         child: String = "";
         grant: Grant = Grant { };
+        ceiling: Grant = Grant { }; // the parent's grant, as it is now; no child = no ceiling
         audit: AuditRows = AuditRows { };
         decisions: Int = 0;
         contractions: Int = 0;
@@ -191,11 +192,16 @@ locus AutonomyBoundary {
         expose expansions_refused: Int;
     }
     fn current_grant() -> Grant { return self.grant; }
+    // The grant as it binds now: this boundary's, read through its
+    // parent's current grant (GH #596, layering). The owner sets
+    // `ceiling` from the parent before each assessment, so a parent's
+    // contraction reaches the child at use, not only at birth.
+    fn effective() -> Grant { return intersect_grants(self.grant, self.ceiling); }
     // The disposition of a proposed change under the current grant.
     // One audit row per assessment; bounded by the Mutations proposed.
     @unbounded
     fn assess(change_class: String, m: Magnitude, e: Evidence) -> Disposition {
-        let d = dispose(self.grant, change_class, m, e);
+        let d = dispose(self.effective(), change_class, m, e);
         self.decisions = self.decisions + 1;
         self.audit.push(AuditRow {
             seq: self.decisions, change_class: change_class,

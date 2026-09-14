@@ -1,0 +1,85 @@
+// dna/tests/grant_layering_test.hl — GH #596, layering: a child's grant
+// is contained in its parent's CURRENT grant, not the grant at birth.
+//
+// Grants contract on their own (two failures in a row halve the
+// ceiling), so a child ceiling of 80 under a parent ceiling of 100
+// stops fitting when the parent contracts to 50. The child's boundary
+// reads its grant through the parent's at every assessment; a child
+// born wider than the ceiling is refused in the record and bound by
+// it; a contraction of the ceiling is journaled naming the children it
+// now binds.
+
+import "../core" as dna;
+
+main locus App {
+    params {
+        wide: dna::AutonomyBoundary = dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor feature", max_magnitude: 8, review: "post" } };
+        dna: dna::Dna = dna::Dna {
+            journal: dna::MemJournal { },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
+            ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs refactor feature", max_magnitude: 10, review: "post" } }
+        };
+        born_wide: dna::Dna = dna::Dna {
+            journal: dna::MemJournal { },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs feature organization", max_magnitude: 8, review: "post" } },
+            ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs refactor", max_magnitude: 5, review: "pre" } }
+        };
+    }
+    @unbounded
+    fn last(j: dna::Journal, kind: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    run() {
+        // ---- the intersection: classes both allow, the smaller ceiling, the stricter review
+        let child = dna::Grant { child: "app", classes: "docs refactor feature", max_magnitude: 8, review: "post" };
+        let parent = dna::Grant { child: "org", classes: "docs feature", max_magnitude: 10, review: "sampled" };
+        let i = dna::intersect_grants(child, parent);
+        std::test::assert_eq_str(i.classes, "docs feature", "the classes both allow");
+        std::test::assert_eq_int(i.max_magnitude, 8, "the smaller ceiling");
+        std::test::assert_eq_str(i.review, "sampled", "the stricter review");
+        std::test::assert(!i.may_expand_self, "never self-expanding");
+        let none = dna::intersect_grants(child, dna::Grant { });
+        std::test::assert_eq_int(none.max_magnitude, 8, "no ceiling is no ceiling");
+        std::test::assert(dna::grant_within(dna::Grant { child: "a", classes: "docs", max_magnitude: 10, review: "pre" }, parent), "contained");
+        std::test::assert(!dna::grant_within(child, parent), "wider in classes and review: not contained");
+
+        // ---- a boundary assesses through its ceiling, as the ceiling is now
+        self.wide.ceiling = dna::Grant { child: "org", classes: "docs refactor feature", max_magnitude: 10, review: "post" };
+        let fits = dna::Magnitude { loci: 6 };
+        let strong = dna::Evidence { check_clean: true, verify_clean: true, tests_pass: true, replay_ok: true, independent_reviews: 3, rollback_rehearsed: true };
+        std::test::assert_eq_str(dna::disposition_name(self.wide.assess("docs", fits, strong)), "release", "6 fits a child of 8 under a parent of 10");
+        self.wide.ceiling = dna::Grant { child: "org", classes: "docs refactor feature", max_magnitude: 5, review: "post" };
+        std::test::assert_eq_str(dna::disposition_name(self.wide.assess("docs", fits, strong)), "escalate", "the same 6 no longer fits once the parent contracted to 5");
+        std::test::assert_eq_int(self.wide.effective().max_magnitude, 5, "the effective grant is the parent's ceiling");
+
+        // ---- through the substrate: the ceiling contracts on repeated failure,
+        //      the record names the children it binds, and the child's next
+        //      assessment is at the new ceiling
+        std::test::assert_eq_int(self.dna.boundary.effective().max_magnitude, 8, "born within: the child's own ceiling");
+        self.dna.ceiling_outcome(false);
+        std::test::assert_eq_str(self.last(self.dna.journal, "grant.contracted"), "", "one failure contracts nothing");
+        self.dna.ceiling_outcome(false);
+        std::test::assert(std::str::contains(self.last(self.dna.journal, "grant.contracted"), "ceiling 10 -> 5") && std::str::contains(self.last(self.dna.journal, "grant.contracted"), "binds app"), "the contraction is in the record, naming the child: " + self.last(self.dna.journal, "grant.contracted"));
+        let staged = self.dna.stage("docs", "sha256:cand", fits, strong);
+        std::test::assert_eq_int(self.dna.boundary.effective().max_magnitude, 5, "assessed at the parent's new ceiling: " + staged);
+        std::test::assert(std::str::contains(self.last(self.dna.journal, "mutation.escalate"), "docs"), "and 6 escalates now: " + staged);
+
+        // ---- born wider than the ceiling: refused in the record, bound by it
+        let refused = self.last(self.born_wide.journal, "grant.refused");
+        std::test::assert(std::str::contains(refused, "wider than the ceiling `org` at birth") && std::str::contains(refused, "magnitude 8 under 5") && std::str::contains(refused, "review post under pre"), "the early error names what is wider: " + refused);
+        self.born_wide.bind_ceiling();
+        let bound = self.born_wide.boundary.effective();
+        std::test::assert_eq_int(bound.max_magnitude, 5, "bound to the ceiling's magnitude");
+        std::test::assert_eq_str(bound.classes, "docs", "and to the classes both allow");
+        std::test::assert_eq_str(bound.review, "pre", "and to the stricter review");
+        std::test::assert_eq_str(self.last(self.dna.journal, "grant.refused"), "", "a child born within is not refused");
+    }
+}
+fn main() { App { }; }
