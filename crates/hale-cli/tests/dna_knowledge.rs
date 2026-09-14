@@ -120,8 +120,13 @@ Second line	with a tab", author: "org" }, "org/served");
 fn main() { App { }; }
 "#;
 
-/// A project with a record, for the service to tail.
-fn seeded_app(tag: &str) -> (PathBuf, PathBuf, String) {
+/// The record identity the summary reports (the sha of its first commit).
+fn scope_of(summary: &str) -> String {
+    summary.split("\"scope\": \"").nth(1).and_then(|t| t.split('"').next()).unwrap_or("").to_string()
+}
+
+/// A project with a record and nothing proposed into it yet.
+fn bare_app(tag: &str) -> (PathBuf, PathBuf) {
     let d = std::env::temp_dir().join(format!("hale_dna_ksvc_{}_{}", std::process::id(), tag));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
@@ -130,6 +135,12 @@ fn seeded_app(tag: &str) -> (PathBuf, PathBuf, String) {
     let app = d.join("served");
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
     Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "commit", "-q", "-m", "genome"]).current_dir(&app).output().unwrap();
+    (d, app)
+}
+
+/// A project with a record, for the service to tail.
+fn seeded_app(tag: &str) -> (PathBuf, PathBuf, String) {
+    let (d, app) = bare_app(tag);
     std::fs::create_dir_all(app.join("propose")).unwrap();
     std::fs::write(app.join("propose/main.hl"), RATIFIER).unwrap();
     let (ok, out) = hale(&["run", "propose"], &app, &[]);
@@ -272,18 +283,53 @@ fn the_service_serves_a_real_postgres() {
             let o = Command::new("psql").args([&kill, "-v", "ON_ERROR_STOP=1", "-c", sql]).output().expect("psql");
             assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
         };
-        hide("ALTER TABLE knowledge_ideas RENAME TO knowledge_ideas_hidden");
+        // the tables live in the record's own schema (GH #613)
+        let sch = format!("dna_{}", scope_of(&s));
+        hide(&format!("ALTER TABLE {sch}.knowledge_ideas RENAME TO knowledge_ideas_hidden"));
         let broken = http(p, "GET /context?target=org%2Fserved%2Fmain&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n");
         let broken_summary = body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n"));
-        hide("ALTER TABLE knowledge_ideas_hidden RENAME TO knowledge_ideas");
+        hide(&format!("ALTER TABLE {sch}.knowledge_ideas_hidden RENAME TO knowledge_ideas"));
         let healed = body(&http(p, "GET /context?target=org%2Fserved%2Fmain&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
         (s, c, i, k, c2, broken, broken_summary, healed)
     });
+    // GH #613 — the record is the scope. A second record on the same
+    // database has its own schema: none of the first record's ideas,
+    // its own watermark; and the first record is where it was after the
+    // second has been served. Before this, one schema held both: each
+    // read the other's ideas and advanced the other's watermark.
+    let (d2, app2) = bare_app("pg2");
+    let psql = |sql: &str| {
+        let o = Command::new("psql").args([&dsn, "-v", "ON_ERROR_STOP=1", "-c", sql]).output().expect("psql");
+        assert!(o.status.success(), "{sql}: {}", String::from_utf8_lossy(&o.stderr));
+    };
+    let ((summary2, idea2), log2) = serve(&app2, &dsn, free_port(), |p| {
+        (body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n")), http(p, &format!("GET /idea/{digest} HTTP/1.0\r\nHost: x\r\n\r\n")))
+    });
+    let (again, _) = serve(&app, &dsn, free_port(), |p| body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n")));
+    // a schema that names another record is refused, not read
+    let scope2 = scope_of(&summary2);
+    psql(&format!("UPDATE dna_{scope2}.knowledge_meta SET value = 'someone-else' WHERE key = 'record'"));
+    let (wrong, _) = serve(&app2, &dsn, free_port(), |p| body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n")));
+    let _ = std::fs::remove_dir_all(&d2);
+    // a store from before records were namespaced, in `public`, is
+    // refused with the way forward, never read as this record's
+    psql("CREATE TABLE public.knowledge_meta (key text PRIMARY KEY, value text NOT NULL)");
+    let (legacy, _) = serve(&app, &dsn, free_port(), |p| body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n")));
+    psql("DROP TABLE public.knowledge_meta");
     if made {
         let _ = Command::new("psql").args([&std::env::var("HALE_DNA_KNOWLEDGE_DSN").unwrap(), "-c", &format!("DROP DATABASE IF EXISTS {own}")]).output();
+    } else {
+        psql(&format!("DROP SCHEMA IF EXISTS dna_{} CASCADE; DROP SCHEMA IF EXISTS dna_{scope2} CASCADE", scope_of(&summary)));
     }
     let _ = std::fs::remove_dir_all(&d);
     assert!(summary.contains("\"store\": \"postgres\"") && summary.contains("\"open\": true"), "the store is open: {summary}\n{log}");
+    let scope = scope_of(&summary);
+    assert!(scope.len() == 40 && scope != scope2 && scope2.len() == 40, "each record is scoped by its first commit: {scope} / {scope2}");
+    assert!(summary2.contains("\"open\": true") && summary2.contains("\"ratified\": 0"), "the second record sees none of the first's ratified ideas (its own are the seeded proposals): {summary2}\n{log2}");
+    assert!(idea2.starts_with("HTTP/1.0 404") || idea2.starts_with("HTTP/1.1 404"), "the first record's idea is not in the second's graph: {idea2}");
+    assert!(again.contains(&format!("\"scope\": \"{scope}\"")) && again.contains("\"ratified\": 1") && again.contains(&format!("\"watermark\": {}", summary.split("\"watermark\": ").nth(1).unwrap().split(',').next().unwrap())), "and the first record is where it was: {again}");
+    assert!(wrong.contains("\"open\": false") && wrong.contains(&format!("belongs to record someone-else, not {scope2}; it is not read")), "a schema naming another record is refused: {wrong}");
+    assert!(legacy.contains("\"open\": false") && legacy.contains("from before stores were scoped by record; it is not migrated. Drop its tables"), "a legacy store in public is refused with the way forward: {legacy}");
     assert!(summary.contains("\"error\": \"\""), "and nothing failed: {summary}");
     // the record reached the database: the schema, the watermark, the projections
     let n = |k: &str| -> i64 {

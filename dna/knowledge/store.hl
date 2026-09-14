@@ -16,6 +16,13 @@ import "../pond/pq" as pq;
 
 interface KnowledgeStore {
     fn kind() -> String;
+    // The record this store projects, by its identity (the sha of its
+    // first commit). Set before `open`: a Postgres store keeps one
+    // schema per record, so two records on one database each see only
+    // their own graph, and a store opened for one record refuses
+    // another's schema (GH #613). Empty while the record has no rows.
+    fn scope(record: String);
+    fn record() -> String;
     // Migrate and connect; false with `last_error` set when it cannot.
     fn open() -> Bool;
     // Whether the connection this store holds still answers. An open
@@ -110,8 +117,11 @@ locus Mem {
         signal_rows: SignalRows = SignalRows { };
         structure: StructureRows = StructureRows { };
         mark: Int = 0;
+        record_id: String = "";
     }
     fn kind() -> String { return "memory"; }
+    fn scope(record: String) { self.record_id = record; }
+    fn record() -> String { return self.record_id; }
     fn open() -> Bool { return true; }
     // Nothing to lose and nothing to dial: memory is always both.
     fn healthy() -> Bool { return true; }
@@ -349,8 +359,36 @@ locus Pq {
         conn: pq::PgConn = pq::PgConn { sslmode: "prefer" };
         opened: Bool = false;
         error: String = "";
+        record_id: String = "";
     }
     fn kind() -> String { return "postgres"; }
+    fn scope(record: String) {
+        if record == self.record_id { return; }
+        self.record_id = record;
+        // a different record is a different schema: the connection
+        // must be opened again to select it
+        self.opened = false;
+    }
+    fn record() -> String { return self.record_id; }
+    // The schema this record's graph lives in: `dna_<identity>`, the
+    // identity lowercased with anything but a letter or digit folded to
+    // `_`, so a git sha names it as is. A record with no rows yet has
+    // no identity and opens under `dna_unscoped`, where nothing is ever
+    // applied (there is nothing to apply); its first row moves it to
+    // its own schema.
+    fn schema() -> String {
+        if len(self.record_id) == 0 { return "dna_unscoped"; }
+        let mut out = "dna_";
+        let mut i = 0;
+        while i < len(self.record_id) && i < 56 {
+            let c = self.record_id[i..(i + 1)];
+            let lower = std::str::lower(c);
+            let ok = (lower >= "a" && lower <= "z") || (lower >= "0" && lower <= "9");
+            out = out + (if ok { lower } else { "_" });
+            i = i + 1;
+        }
+        return out;
+    }
     fn fail(what: String, e: db::DbError) -> Bool {
         self.error = what + ": " + e.kind + " " + e.detail;
         return false;
@@ -372,6 +410,21 @@ locus Pq {
         // image compose and CI use, and a Postgres without it says so here
         let ext = self.conn.exec("CREATE EXTENSION IF NOT EXISTS vector");
         if !ext.ok { return self.fail("pgvector (CREATE EXTENSION vector)", ext.err); }
+        // A store from before records were namespaced lives in `public`
+        // and belongs to no record anyone can name. It is not migrated:
+        // the projection rebuilds from the record, so the way forward is
+        // to drop it (GH #613).
+        let legacy = self.conn.query_one("SELECT (to_regclass('public.knowledge_meta') IS NOT NULL)::text");
+        if !legacy.ok { return self.fail("scope", legacy.err); }
+        if dna::trim_nl(legacy.data) == "true" {
+            self.error = "scope: this database holds a knowledge store in `public` from before stores were scoped by record; it is not migrated. Drop its tables (knowledge_meta, knowledge_ideas, knowledge_bindings, knowledge_edges, knowledge_structure, knowledge_signals) or the database, and the service rebuilds the projection from the record";
+            return false;
+        }
+        // one schema per record, selected for this session; `public`
+        // stays on the path for the vector type
+        let sch = self.schema();
+        let ns = self.conn.exec("CREATE SCHEMA IF NOT EXISTS " + sch + "; SET search_path TO " + sch + ", public");
+        if !ns.ok { return self.fail("scope (schema " + sch + ")", ns.err); }
         let ddl = "CREATE TABLE IF NOT EXISTS knowledge_meta (key text PRIMARY KEY, value text NOT NULL);"
             + "CREATE TABLE IF NOT EXISTS knowledge_ideas (id text PRIMARY KEY, kind text NOT NULL, text text NOT NULL, author text NOT NULL, provenance text NOT NULL, revision bigint NOT NULL DEFAULT 0, accepted boolean NOT NULL DEFAULT false, ratified_seq bigint NOT NULL DEFAULT 0, embedding vector(" + to_string(DIM) + "));"
             + "ALTER TABLE knowledge_ideas ADD COLUMN IF NOT EXISTS embedding vector(" + to_string(DIM) + ");"
@@ -381,6 +434,23 @@ locus Pq {
             + "CREATE TABLE IF NOT EXISTS knowledge_signals (kind text NOT NULL, source text NOT NULL, what text NOT NULL, count bigint NOT NULL DEFAULT 0, last_seq bigint NOT NULL DEFAULT 0, PRIMARY KEY (kind, source, what));";
         let r = self.conn.exec(ddl);
         if !r.ok { return self.fail("migrate", r.err); }
+        // the schema names its record, and the record it names must be
+        // this one: a schema renamed or copied under another record's
+        // name is refused, not read
+        if len(self.record_id) > 0 {
+            let owner = self.conn.query_one("SELECT value FROM knowledge_meta WHERE key = 'record'");
+            if !owner.ok && owner.err.kind != "no_row" { return self.fail("scope", owner.err); }
+            if owner.ok && dna::trim_nl(owner.data) != self.record_id {
+                self.error = "scope: schema " + sch + " belongs to record " + dna::trim_nl(owner.data) + ", not " + self.record_id + "; it is not read";
+                return false;
+            }
+            if !owner.ok {
+                let a = db::Args { };
+                a.add(self.record_id);
+                let claim = self.conn.exec_params("INSERT INTO knowledge_meta (key, value) VALUES ('record', $1) ON CONFLICT (key) DO NOTHING", a);
+                if !claim.ok { return self.fail("scope", claim.err); }
+            }
+        }
         self.opened = true;
         return true;
     }
