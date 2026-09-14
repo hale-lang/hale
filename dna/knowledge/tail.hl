@@ -13,6 +13,7 @@ type Applied {
     ratified: Int = 0;
     proposed: Int = 0;
     declined: Int = 0;
+    retired: Int = 0; // ideas retired by a ratified supersession (GH #596 C)
     structure: Int = 0; // structure rows projected (K3)
     signals: Int = 0; // pressure and concern rows projected (K3)
     watermark: Int = 0; // the next seq to apply
@@ -69,8 +70,12 @@ fn apply_record(store: KnowledgeStore, j: dna::Journal, receipts: dna::Receipts)
             let target = std::json::find_string_field(doc, "target");
             let class = std::json::find_string_field(e.body, "class");
             if e.kind == "knowledge.ratified" {
-                if !store.upsert(idea_of(digest, doc, "ratified", true, i), i) { out.error = store.last_error(); return out; }
-                if !store.bind(dna::KnowledgeBinding { idea: digest, target: target, author: std::json::find_string_field(doc, "author"), class: class }) { out.error = store.last_error(); return out; }
+                // a retirement proposal carries no idea of its own: its
+                // effect is the `knowledge.retired` row that follows
+                if std::json::find_string_field(doc, "kind") != "retirement" {
+                    if !store.upsert(idea_of(digest, doc, "ratified", true, i), i) { out.error = store.last_error(); return out; }
+                    if !store.bind(dna::KnowledgeBinding { idea: digest, target: target, author: std::json::find_string_field(doc, "author"), class: class }) { out.error = store.last_error(); return out; }
+                }
                 out.ratified = out.ratified + 1;
             } else if e.kind == "knowledge.proposed" {
                 let have = store.idea(digest);
@@ -86,6 +91,13 @@ fn apply_record(store: KnowledgeStore, j: dna::Journal, receipts: dna::Receipts)
                 }
                 out.declined = out.declined + 1;
             }
+        }
+        // GH #596 C: a retired idea leaves every package; the row is
+        // the Board's decision, appended when a superseding proposal
+        // was ratified
+        if e.kind == "knowledge.retired" {
+            if !store.retire(e.entity, i) { out.error = store.last_error(); return out; }
+            out.retired = out.retired + 1;
         }
         i = i + 1;
         if !store.set_watermark(i) { out.error = store.last_error(); return out; }

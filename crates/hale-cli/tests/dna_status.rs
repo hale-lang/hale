@@ -24,7 +24,7 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     // offline: the Journal answers, and says the organism is not running
     let (ok, out) = hale(&["dna", "status"], &app);
     assert!(ok, "{out}");
-    assert!(out.contains("not running") && out.contains("chain verified") && out.contains("1 pending of 1") && out.contains("needs board"), "{out}");
+    assert!(out.contains("not running") && out.contains("chain verified") && out.contains("9 pending of 9") && out.contains("needs board"), "{out}");
     let (ok, out) = hale(&["dna", "ask", "anything"], &app);
     assert!(!ok && out.contains("not running"), "{out}");
     let (ok, out) = hale(&["dna", "history"], &app);
@@ -81,13 +81,15 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     assert!(asked, "ask: {ask_out}");
     assert!(refused, "review (wrong authority): {out1}");
     assert!(settled, "review (maintainer): {out2}");
-    assert!(ok3 && out3.contains("running (membrane bound)") && out3.contains("0 pending of 1") && out3.contains("settled approve by riley") && out3.contains("(1 verdict(s) refused)"), "status:\n{out3}");
+    assert!(ok3 && out3.contains("running (membrane bound)") && out3.contains("8 pending of 9") && out3.contains("settled approve by riley") && out3.contains("(1 verdict(s) refused)"), "status:\n{out3}");
     assert!(ok4, "{out4}");
     let st: serde_json::Value = serde_json::from_str(&out4).expect("status --json is JSON");
     assert_eq!(st["journal"]["chain"], "verified");
     assert_eq!(st["intents"]["offered"], 1);
     assert_eq!(st["tasks"][0]["id"], "t1");
-    assert_eq!(st["reviews"][0]["state"], "settled");
+    // the purpose review, not the first row: the seeded design's Reviews sit beside it (GH #596 C)
+    let purpose = st["reviews"].as_array().unwrap().iter().find(|r| r["id"] == "purpose").expect("the purpose review in the projection");
+    assert_eq!(purpose["state"], "settled");
     assert!(ok5 && out5.contains("history of t1") && out5.contains("task.born") && out5.contains("intent.offered"), "history:\n{out5}");
     let _ = std::fs::remove_dir_all(&d);
 }

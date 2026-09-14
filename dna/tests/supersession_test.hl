@@ -1,0 +1,81 @@
+// dna/tests/supersession_test.hl — GH #596 C, the stack review's second
+// pass: a replacement is ratified only while what it replaces is still
+// active. Two pending replacements of one version both name it; the
+// first approved retires it, and ratifying the second would leave the
+// first in force beside it, never retired. The second is refused in
+// the record with what retired its predecessor, and a replacement of
+// the version that IS active goes through.
+
+import "../core" as dna;
+
+main locus App {
+    params {
+        dna: dna::Dna = dna::Dna { };
+    }
+    bus {
+        publish dna::ReviewVerdict;
+    }
+    @unbounded
+    fn rows(j: dna::Journal, kind: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            if j.read(i).kind == kind { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn last(j: dna::Journal, kind: String) -> dna::Event {
+        let mut out = dna::Event { };
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind { out = e; }
+            i = i + 1;
+        }
+        return out;
+    }
+    fn approve(digest: String) {
+        dna::ReviewVerdict <- dna::Verdict { review_id: dna::knowledge_review_id(digest), subject_digest: digest, verdict: "approve", reviewer: "riley", authority: "board" };
+        std::time::sleep(150ms);
+    }
+    run() {
+        let repo = "/tmp/dna-super-" + to_string(std::process::pid());
+        std::io::fs::mkdir(repo) or discard;
+        std::io::fs::mkdir(repo + "/.hale") or discard;
+        std::io::fs::mkdir(repo + "/.hale/dna") or discard;
+        let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        self.dna = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+            membrane: dna::Board { who: "board" }
+        };
+        // C is active
+        let c = self.dna.propose_knowledge(dna::Idea { id: "c", kind: "practice", name: "design/principles", text: "minimal structure", author: "org/worker-supervisor" }, "org/worker-supervisor/worker");
+        self.approve(c);
+        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.ratified"), 1, "C ratified");
+        // two replacements of C, both pending
+        let d = self.dna.propose_knowledge(dna::Idea { id: "d", kind: "practice", name: "design/principles", text: "minimal structure, clean cuts", author: "org/worker-supervisor", supersedes: c }, "org/worker-supervisor/worker");
+        let e = self.dna.propose_knowledge(dna::Idea { id: "e", kind: "practice", name: "design/principles", text: "minimal structure, clean cuts, appropriate depth", author: "org/worker-supervisor", supersedes: c }, "org/worker-supervisor/worker");
+        // the first approved retires C
+        self.approve(d);
+        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.ratified"), 2, "D ratified");
+        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.retired"), 1, "C retired");
+        std::test::assert_eq_str(self.last(self.dna.journal, "knowledge.retired").entity, c, "it was C");
+        // the second is refused: C is gone, and D would never be retired
+        self.approve(e);
+        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.ratified"), 2, "E was not ratified");
+        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.retired"), 1, "and retired nothing twice");
+        let refused = self.last(self.dna.journal, "knowledge.refused");
+        std::test::assert_eq_str(refused.entity, e, "the refusal names E: " + refused.body);
+        std::test::assert(std::str::contains(refused.body, "\"supersedes\": \"" + c + "\"") && std::str::contains(refused.body, "\"retired_by\": \"" + d + "\"") && std::str::contains(refused.body, "already retired by"), "and says what retired its predecessor: " + refused.body);
+        // the same text against the active version goes through
+        let e2 = self.dna.propose_knowledge(dna::Idea { id: "e2", kind: "practice", name: "design/principles", text: "minimal structure, clean cuts, appropriate depth", author: "org/worker-supervisor", supersedes: d }, "org/worker-supervisor/worker");
+        self.approve(e2);
+        std::test::assert_eq_int(self.rows(self.dna.journal, "knowledge.ratified"), 3, "E' ratified");
+        std::test::assert_eq_str(self.last(self.dna.journal, "knowledge.retired").entity, d, "and D retired: one version in force");
+        let rm = dna::run_tool("rm\n-rf\n" + repo);
+    }
+}
+fn main() { App { }; }

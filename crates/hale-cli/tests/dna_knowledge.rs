@@ -375,7 +375,8 @@ fn init_writes_compose_and_dev_runs_the_knowledge_service_that_tails_the_record(
     let membrane = app.join(".hale/dna/hale-dna.review.verdict.sock");
     while Instant::now() < dl {
         let s = body(&http(kport, "GET / HTTP/1.0\r\nHost: x\r\n\r\n"));
-        if s.contains("\"store\": \"memory\"") && s.contains("\"ideas\": 1") && membrane.exists() {
+        // the eight seeded design practices are ideas too (GH #596 C), plus this proposal
+        if s.contains("\"store\": \"memory\"") && s.contains("\"ideas\": 9") && membrane.exists() {
             summary = s;
             break;
         }

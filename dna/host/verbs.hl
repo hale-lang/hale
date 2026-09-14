@@ -139,15 +139,30 @@ fn review_list(p: Projection) -> Answer {
     let n = list_len(ids);
     let mut out = to_string(p.pending_reviews()) + " pending review(s) of " + to_string(n) + "\n";
     let mut i = 0;
+    let mut design = 0;
     while i < n {
         let r = p.review_of(nth(ids, i));
-        if r.state == "pending" {
+        if r.state == "pending" && r.group != "design" {
             out = out + "  " + r.id + " needs " + r.required_authority + " — " + r.question + "\n";
             if r.is_mutation {
                 out = out + "      " + r.change_class + " · candidate " + short(r.candidate_commit) + " · evidence " + r.evidence + " · disposition " + r.disposition + "\n";
             }
         }
+        if r.state == "pending" && r.group == "design" { design = design + 1; }
         i = i + 1;
+    }
+    // GH #596 C: the toolchain's seeded design, one Review per practice
+    // (a Review pins one digest and settles with one outcome), listed
+    // under one heading so the Board can read them as a set
+    if design > 0 {
+        out = out + "  design — " + to_string(design) + " seeded practice(s), each its own Review:\n";
+        i = 0;
+        while i < n {
+            let r = p.review_of(nth(ids, i));
+            if r.state == "pending" && r.group == "design" { out = out + "      " + r.id + " — " + r.question + "\n"; }
+            i = i + 1;
+        }
+        out = out + "      decide one with `hale dna review <id> …`, or all pending with `hale dna review design approve|reject`\n";
     }
     return answer(out + "render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`\n");
 }

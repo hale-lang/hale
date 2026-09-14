@@ -26,8 +26,10 @@ login named in `dna.github.board`. Its queue:
 
 ```text
 $ hale dna board
-board: 1 review(s) need your verdict
+board: 9 review(s) need your verdict
   purpose  ratify the declared purpose?
+  k:79c636063701  ratify the design practice `design/principles`: Minimal structure: add a…
+  … (the eight practices of the design, one Review each)
 leader: 1 review(s) inside the grant, being decided
 decide with `hale dna review <id> approve|revise|reject`; `hale dna review <id>` renders one
 ```

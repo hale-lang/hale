@@ -145,7 +145,7 @@ fn persistent_pressure_grows_the_organization_through_the_board() {
     assert!(rows.iter().any(|(k, e, b)| k == "appendage.candidate" && e == "billing" && b == "m1: review"), "the proposal is a candidate:\n{dump}");
     let req = rows.iter().find(|(k, e, _)| k == "review.requested" && e == "review:m1").unwrap();
     assert!(req.2.contains("\"change_class\": \"organization\"") && req.2.contains("\"seed\": \"dna/org\"") && req.2.contains("\"required_authority\": \"board\""), "an organization change, the Board's: {}", req.2);
-    assert!(ok1 && board.contains("2 review(s) need your verdict") && board.contains("organization · dna/org") && board.contains("proposals: 1"), "board:\n{board}");
+    assert!(ok1 && board.contains("10 review(s) need your verdict") && board.contains("organization · dna/org") && board.contains("proposals: 1"), "board:\n{board}");
     assert!(ok2 && view.contains("! locus Org params: +billing: dna::Leader"), "the review shows the new position in the semantic diff, in author spelling:\n{view}");
     assert!(ok3 && verdict.contains("review m1 settled: approve by riley"), "{verdict}");
     assert!(retained, "the grown organization was not retained within 120s:\n{dump}");
