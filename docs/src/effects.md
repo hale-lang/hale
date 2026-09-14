@@ -264,6 +264,7 @@ rather than merely restrictive:
 | pure | effectful |
 |---|---|
 | `std::time::time_from_unix(n)` | `std::time::monotonic_ns()` — `time` |
+| `std::time::iso8601(t)`, `parse_time(s)` | `std::time::current()` — `time` |
 | `std::str::parse_int(s)` | `std::env::var(k)` — `env` |
 | `std::http::parse_request(b)` | `std::http::get(u)` — `syscall`, `block` |
 

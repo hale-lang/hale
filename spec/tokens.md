@@ -476,7 +476,10 @@ annotations are not in v1.
 
 - Duration suffixes: `ns`, `us`, `ms`, `s`, `m`, `h`, `d`.
   Examples: `100ms`, `5s`, `1h30m`. Compound forms permitted.
-- Time literals: ISO-8601 between backticks: `` `2026-05-08T12:00:00Z` ``.
+- Time literals: ISO-8601 UTC between backticks: `` `2026-05-08T12:00:00Z` ``,
+  `` `2026-09-14T08:30:15.25Z` `` (a fraction of one to nine digits; the
+  `Z` is optional; an offset is a compile error). Parsed at check time
+  into an instant (GH #607).
 
 ### String literals
 

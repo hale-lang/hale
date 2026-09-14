@@ -607,7 +607,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // arrays — never a loaded first-class value).
                 self.context.ptr_type(AddressSpace::default()).into()
             }
-            CodegenTy::Int | CodegenTy::Duration => {
+            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time => {
+                // GH #607: Time is i64 nanoseconds since the epoch.
                 self.context.i64_type().into()
             }
             CodegenTy::FnPtr { .. } => {
@@ -656,7 +657,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             CodegenTy::String
             | CodegenTy::Bytes
-            | CodegenTy::Time
             | CodegenTy::LocusRef(_)
             | CodegenTy::TypeRef(_)
             | CodegenTy::Array(_, _)

@@ -1248,10 +1248,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )),
             // #353: the INVERSE of `time_from_unix`.
             //
-            // Formatting was never missing — `lotus_time_from_unix`
-            // already returns ISO-8601 text, which is why `println(t)`
-            // on a Time renders a date. Parsing had no counterpart, so
-            // a timestamp could be produced and never read back.
+            // Formatting was never missing — a Time renders as
+            // ISO-8601 text (`to_string`, `println`, `iso8601`).
+            // Parsing had no counterpart, so a timestamp could be
+            // produced and never read back.
             //
             // UTC only. A timezone database is megabytes and the wasm
             // target carries whatever ships; local time additionally
@@ -1260,6 +1260,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // distinct, effectful call rather than be smuggled in.
             ["std", "time", "parse_iso8601"] => Ok(Some(
                 self.lower_std_time_parse_iso8601_fallible(args, scope)?,
+            )),
+            // GH #607: the same parse, yielding the instant itself.
+            ["std", "time", "parse_time"] => Ok(Some(
+                self.lower_std_time_parse_time_fallible(args, scope)?,
             )),
             ["std", "str", "parse_int"] => Ok(Some(
                 self.lower_std_str_parse_int_fallible(args, scope)?,

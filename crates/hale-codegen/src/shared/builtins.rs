@@ -814,6 +814,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .add_function("lotus_time_parse_iso8601", parse_iso_ty, None);
         // Pure over immutable input — no clock read, no TZ read.
         self.mark_pure_read(parse_iso_fn);
+        // GH #607: the same parse in nanoseconds, for `parse_time`.
+        let parse_iso_ns_fn = self
+            .module
+            .add_function("lotus_time_parse_iso8601_ns", parse_iso_ty, None);
+        self.mark_pure_read(parse_iso_ns_fn);
 
         // m38: starts_with / contains string predicates.
         // declare i32 @lotus_str_starts_with(ptr s, ptr prefix)
@@ -3411,15 +3416,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i64_t.fn_type(&[], false),
             None,
         );
-        // declare ptr @lotus_time_from_unix(i64 n)
-        // Returns a NUL-terminated ISO 8601 UTC string in the
-        // caller arena, the runtime representation of a Time value.
-        let time_from_unix_ty = ptr_t.fn_type(&[i64_t.into()], false);
+        // GH #607: Time is i64 nanoseconds since the epoch.
+        // declare i64 @lotus_time_now_ns()  — CLOCK_REALTIME, replayable
         self.module.add_function(
-            "lotus_time_from_unix",
-            time_from_unix_ty,
+            "lotus_time_now_ns",
+            i64_t.fn_type(&[], false),
             None,
         );
+        // declare ptr @lotus_str_from_time(ptr arena, i64 ns) — ISO-8601 UTC
+        self.module.add_function(
+            "lotus_str_from_time",
+            ptr_t.fn_type(&[ptr_t.into(), i64_t.into()], false),
+            None,
+        );
+        // declare i64 @lotus_time_unix_seconds(i64 ns) — floor to seconds
+        let unix_seconds_fn = self.module.add_function(
+            "lotus_time_unix_seconds",
+            i64_t.fn_type(&[i64_t.into()], false),
+            None,
+        );
+        self.mark_pure_read(unix_seconds_fn);
 
         // Phase 2e: list_dir index API. count + at over the
         // cached newline-blob; both share the global payload arena.
