@@ -189,7 +189,7 @@ the same way. A project's path therefore has no length rule.
 `mutation.apply_retried`, `knowledge.retired`, `task.planned`,
 `grant.refused`, `grant.contracted`, `task.handed`, `org.reviewed`,
 `task.resumed`, `intent.unrecovered`, `task.reassigned`, `person.retired`,
-`concern.refused`,
+`concern.refused`, `body.claimed`, `body.released`,
 `optimize.refused`,
 `mutation.failed`, `effect.requested`, `effect.result`,
 `evidence.<step>`, `evidence.magnitude`, `review.requested`,
@@ -258,6 +258,43 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   under `.hale/dna`. Under `run` alone a restart request is logged,
   not answered: expressing an application deployed elsewhere is a
   deployment gateway's job.
+- **One body per record: the body lease.** A record admits one body
+  at a time (bounded attachment; the initial controller model). The
+  host takes `refs/dna/lease/body` before it builds or runs anything
+  — at the record's remote when it has one, so two hosts on two
+  clones fence each other through the remote itself (the lease blob
+  is pushed with `--force-with-lease`, git's compare-and-swap), in
+  the clone otherwise. The blob is a `GitLeases` lease
+  (`holder\ntoken\nexpires\npresent`), the holder
+  `user@host:<clone>`, so the same clone restarting is the same
+  holder and takes its lease back at once; a second clone is refused
+  with who holds it and exits 3. The lease lives 30s and is renewed
+  when a third of that is gone; the host **asserts it at the top of
+  every tick, before it relays, restarts or applies**, and stops
+  itself (exit 3, the organization with it) when the lease is
+  someone else's or released. While the remote cannot be reached the
+  lease is kept unrenewed until it expires, then the host stops: a
+  partitioned body executes nothing past its TTL. Taking the lease
+  is a row (`body.claimed <holder> {token, forced, by}`), giving it
+  up at exit another (`body.released`). `hale dna body` reads the
+  lease; `hale dna body claim --force` releases a live lease that
+  belongs to a body that is gone, as a `body.claimed` row with
+  `forced: true` in the forcer's name (that body stops when it next
+  asserts; the next `hale dna run` takes the lease); `hale dna body
+  release [--force]` releases it explicitly.
+- **The combination is detected, never stored.** An organism is one
+  point in a space of independent capabilities — where the body
+  runs, whether a hosted head exists, whether a fleet expresses it,
+  which records it is connected to — declared by its pieces. `hale
+  dna profile` prints one line per axis from the pieces alone: the
+  record's remote, the body lease and its last tick, `[dna] fleet`,
+  the knowledge store's environment, `dna.trust`, `dna.github`; the
+  status projection carries a `profile:` and a `body:` line. `hale
+  dna new --profile local|remote-body [--remote <url>] [--body
+  <user@host>]` sets pieces (a remote, `dna.body`); the profile name
+  is not written anywhere. Profiles are examples of combinations,
+  not a closed set; the toolchain refuses only what breaks a
+  commitment (a second body on one record).
 
 ## The organization evolves
 

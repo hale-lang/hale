@@ -159,6 +159,11 @@ fn main() {
         ans = retire_verb(root, seed, word(a, 0), flag(a, "--to"), flag(a, "--as"));
     } else if verb == "sync" {
         ans = sync_verb(root);
+    } else if verb == "body" {
+        // GH #617: the body lease from the CLI
+        ans = body_verb(root, word(a, 0), has_flag(a, "--force"), flag(a, "--as"));
+    } else if verb == "profile" {
+        ans = profile_verb(root);
     } else if verb == "deploy" {
         ans = deploy_verb(root, fleet, plan, word(a, 0), false);
     } else if verb == "rollback" {

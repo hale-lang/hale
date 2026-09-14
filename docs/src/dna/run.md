@@ -45,6 +45,36 @@ hale dna run: membrane bound at …/.hale/dna
 hale dna run: the fleet `production` (…/fleet.plan.json) is the expression; `hale node <name>` runs its nodes
 ```
 
+## One body per record
+
+A record admits one body at a time. Before the host builds or runs
+anything it takes the body lease — at the record's remote when
+there is one, so a second host on another clone is refused by the
+remote itself:
+
+```text
+$ hale dna run . --no-iris
+hale dna run: a body for this record is live on riley@srv:/srv/chat (ticked 2s ago, lease expires in 28s); a record admits one body — `hale dna body claim --force` takes it over when that body is gone
+```
+
+The holder is `user@host:<clone>`, so the same clone restarting takes
+its lease straight back. The host renews the lease every ten seconds
+and asserts it at the top of every tick, before it relays anything
+onto the membrane or restarts anything: a host whose lease is no
+longer its own stops, and takes the organization with it. A host
+that cannot reach the remote keeps its lease until it expires and
+then stops too — a partitioned body executes nothing past thirty
+seconds.
+
+`hale dna body` says who runs the record. When a body is gone but its
+lease is still live, `hale dna body claim --force` releases it as a
+row in your name (`body.claimed`, `forced: true`); that body stops
+the next time it asserts, and the next `hale dna run` takes the
+lease. `hale dna profile` prints the combination the organism is —
+record, body, head, fleet, knowledge, trust — detected from the
+pieces, never from a stored label; `status` carries the same two
+lines at its foot.
+
 ## The membrane
 
 The organization binds four typed topics on unix sockets under

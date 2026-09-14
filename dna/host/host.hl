@@ -119,8 +119,40 @@ locus Host {
         relayed: String = "\n";
         app_gone_reported: Bool = false;
         exit_code: Int = 0;
+        lease: BodyLease = BodyLease { }; // GH #617: this body's lease on the record
+        holder: String = "";
     }
     fn say(what: String) { eprintln("hale dna ", self.verb, ": ", what); }
+    // GH #617: the lease is asserted before every consequential act
+    // (relay, restart, apply). Renewed when a third of its life is
+    // gone; kept, unrenewed, while the remote cannot be reached, until
+    // it expires — a partitioned body executes nothing past its TTL.
+    // False once the lease is someone else's or gone: the body stops.
+    fn body_alive() -> Bool {
+        let now = std::time::now();
+        if now < self.lease.expires - (2 * BODY_TTL / 3) { return true; }
+        let r = body_renew(self.root, self.lease, now);
+        if !r.ok {
+            if now < self.lease.expires { return true; }
+            self.say("the body lease could not be renewed and has expired (the remote cannot be reached); a body that cannot prove its lease executes nothing");
+            return false;
+        }
+        if !r.present || r.holder != self.holder {
+            self.say("the body lease is no longer mine: " + (if len(r.holder) > 0 && r.holder != self.holder { "held by " + r.holder } else { "released" }) + "; a record admits one body — stopping");
+            return false;
+        }
+        self.lease = r;
+        return true;
+    }
+    fn stop_body(code: Int) {
+        stop_proc(self.org);
+        if self.observer.pid > 0 { stop_proc(self.observer); }
+        if self.knowledge.pid > 0 { stop_proc(self.knowledge); std::io::fs::unlink(self.dna_dir + "/knowledge.pid") or discard; }
+        if self.app.pid > 0 { stop_proc(self.app); }
+        std::io::fs::unlink(self.dna_dir + "/org.pid") or discard;
+        std::io::fs::unlink(self.dna_dir + "/app.pid") or discard;
+        std::process::exit(code);
+    }
     fn seed_dir() -> String {
         if self.seed == "." || self.seed == "" { return self.root; }
         return self.root + "/" + self.seed;
@@ -460,6 +492,7 @@ locus Host {
     }
     @unbounded
     fn tick() {
+        if !self.body_alive() { self.stop_body(3); }
         self.org_log = drain_log(self.org, self.org_log);
         if self.app.pid > 0 {
             self.app_log = drain_log(self.app, self.app_log);
@@ -498,6 +531,19 @@ locus Host {
         self.status_path = self.dna_dir + "/status.json";
         let org_seed = self.root + "/" + ORG_SEED;
         if !std::io::fs::file_exists(org_seed + "/main.hl") { self.say("no organization at " + org_seed + " (run `hale dna init`)"); std::process::exit(2); }
+        // 0. the body lease (GH #617): a record admits one body at a
+        //    time; nothing is built or run under a lease that is not ours
+        self.holder = body_holder(self.root);
+        let now0 = std::time::now();
+        let l = body_acquire(self.root, self.holder, now0, false);
+        if !l.ok { self.say("the record's remote cannot be reached, so the body lease cannot be taken; a body runs only under a lease it can prove"); std::process::exit(3); }
+        if !l.present || l.holder != self.holder {
+            self.say("a body for this record is live on " + l.holder + " (ticked " + ago(now0 - (l.expires - BODY_TTL)) + ", lease expires in " + to_string(l.expires - now0) + "s); a record admits one body — `hale dna body claim --force` takes it over when that body is gone");
+            std::process::exit(3);
+        }
+        self.lease = l;
+        let claimed = append_as(self.root, "body.claimed", self.holder, "{\"token\": " + to_string(l.token) + ", \"forced\": false, \"by\": \"host\"}", "host");
+        self.say("body lease taken as " + self.holder + " (token " + to_string(l.token) + ")");
         // 1. the expression identity: a fresh artifact of the application
         let cut = self.cut_artifact(self.seed_dir(), self.dna_dir + "/current.topology");
         if len(cut) > 0 { self.say(cut); std::process::exit(1); }
@@ -551,6 +597,10 @@ locus Host {
         std::io::fs::unlink(self.dna_dir + "/org.pid") or discard;
         std::io::fs::unlink(self.dna_dir + "/app.pid") or discard;
         self.write_status();
+        if body_release(self.root, self.lease) {
+            let released = append_as(self.root, "body.released", self.holder, "{\"token\": " + to_string(self.lease.token) + ", \"by\": \"host\"}", "host");
+            let s3 = sync_record(self.root);
+        }
         self.say("organization exited (" + to_string(code) + "); " + RECORD_REF + " in " + self.root + " is the record");
         if self.exit_code != 0 { std::process::exit(self.exit_code); }
         std::process::exit(if code < 0 { 1 } else { code });
