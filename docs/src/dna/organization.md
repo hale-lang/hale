@@ -54,6 +54,19 @@ what target, one change or several. The record keeps that as
 `task.planned`, and the Mutation carries the class it named. A plan
 only splits and classifies; it never widens what you asked.
 
+On a cadence you set, the Leader walks the machinery rather than the
+work: it reads the record's signals — asks it could not plan, concerns
+piling up, grants that contracted, verdicts refused, rollbacks — and
+either proposes one small change to the organization, which enters as
+an ordinary ask for you to decide, or records that the state is clean.
+It never proposes a large restructure unprompted, and never creates
+work for the sake of activity.
+
+Some asks are nobody's software change. When the Leader plans one as a
+person's job, the organization hands it on and the record keeps it
+*handed* until the person reports it done: `hale dna task done <id>
+--as <you> --note "what happened"`. One row, in their name.
+
 A grant sits under the organization's own, when one is written: a
 child's grant is read through the organism's *current* grant at every
 assessment, so when the organization's leash shortens on repeated

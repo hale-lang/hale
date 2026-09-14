@@ -225,6 +225,8 @@ pub fn run(args: &[String]) -> ExitCode {
             host_exec("status", &dir, &rest)
         }
         Some("ask") => host_exec("ask", Path::new("."), &args[1..]),
+        // GH #596 W: `hale dna task done <id> [--as <who>] [--note …]`
+        Some("task") => host_exec("task", Path::new("."), &args[1..]),
         Some("history") => {
             let (dir, rest) = project_arg(&args[1..], false);
             host_exec("history", &dir, &rest)
@@ -1462,7 +1464,10 @@ main locus Org {{
             editor: dna::SourceEditor {{ name: "editor", models: editor_models() }},
             genome_seed: "{seed}",
             // GH #596 L: an ask is planned by the leader before it becomes a Mutation
-            planned: true
+            planned: true,
+            // GH #596 O: the optimize pass — the leader walks the machinery
+            // on this cadence, in milliseconds; 0 is never. The Board's to set.
+            optimize_every_ms: 0
         }};
         // The Leader: decides the Reviews inside the grant, with the deep
         // tier, reading the source diff and the semantic diff; every
@@ -1501,7 +1506,9 @@ main locus Org {{
     }}
     run() {{
         if std::env::var_exists("HALE_DNA_ONESHOT") {{ return; }}
-        while true {{ std::time::sleep(100ms); }}
+        // GH #596 O: the substrate's cadence — the optimize pass fires
+        // every `optimize_every_ms` on the substrate above (0 = never)
+        while true {{ std::time::sleep(100ms); self.core.tick(std::time::monotonic_ns() / 1000000); }}
     }}
 }}
 

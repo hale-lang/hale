@@ -69,6 +69,8 @@ locus Leader {
         knowledge: KnowledgeClient = KnowledgeClient { };
         last_package: String = ""; // the package digest the last decision read ("" = none)
         last_brief: String = ""; // the brief the last decision was given, above the diffs
+        org: String = "org"; // keys the optimize exchange with this organism's substrate (GH #596 O)
+        optimizations: Int = 0;
         decisions: Int = 0;
         approved: Int = 0;
         revised: Int = 0;
@@ -78,8 +80,39 @@ locus Leader {
     bus {
         subscribe ReviewRequested as on_requested;
         publish ReviewVerdict;
-        subscribe PlanRequested as on_plan;
+        subscribe PlanRequested as on_plan where key == self.org;
         publish TaskPlanned;
+        subscribe OptimizeRequested as on_optimize where key == self.org;
+        publish OrgReviewed;
+    }
+    // GH #596 O: walk the machinery, not the work. Reading the brief and
+    // the record's signals, propose one small structural change with
+    // its reasoning, or say the state is clean. Never a large
+    // restructure unprompted; never work for the sake of activity. One
+    // answer per pass; bounded by the cadence.
+    @unbounded
+    fn on_optimize(req: OptimizeRequest) {
+        self.optimizations = self.optimizations + 1;
+        let brief = self.brief("optimize: is the organization's machinery still right?");
+        let pkg_bindings = if len(self.last_package) > 0 { self.knowledge.bindings_for("org", "optimize") } else { "" };
+        let prompt = "You are the leader of this project: its architect. This is the optimize pass: walk the machinery, not the work. By your charter, the purpose, the law and the ratified practices above, and by the record's signals below, say whether the organization's structure, routing, review policy and knowledge still fit — and propose ONE small change with its reasoning, or say the state is clean.\n"
+            + "SIGNALS\n" + req.signals + "\n"
+            + "Answer with these lines, then your reasoning:\n"
+            + "proposal: none | <one small structural change, in one sentence, as an ask>";
+        let r = self.models.ask(ModelRequest {
+            attempt_id: "optimize/" + to_string(self.optimizations), role: "optimize",
+            prompt: prompt, context: brief, context_bytes: len(brief) + len(prompt),
+            data_class: "internal", knowledge_bindings: pkg_bindings
+        });
+        let text = if r.ok { r.output } else { "" };
+        let proposal = plan_line(text, "proposal");
+        let none = len(proposal) == 0 || std::str::lower(proposal) == "none" || std::str::lower(proposal) == "none." || std::str::lower(proposal) == "clean";
+        OrgReviewed <- OrgReview {
+            org: req.org,
+            proposal: if none { "" } else { proposal },
+            narrative: if r.ok { trim_nl(r.output) } else { "model refused: " + r.refused },
+            package: self.last_package, by: self.name
+        };
     }
     // GH #596 L: an ask enters, and the leader's first act is to say
     // what it is — which kind of child it concerns, one change or
@@ -116,7 +149,7 @@ locus Leader {
         let target = plan_line(text, "target");
         let count = std::str::parse_int(plan_line(text, "count")) or 1;
         TaskPlanned <- Plan {
-            task_id: req.task_id, work_id: req.work_id,
+            org: req.org, task_id: req.task_id, work_id: req.work_id,
             kind: if known_kind { kind } else { "appendage" },
             change_class: if parsed { class } else { "application" },
             target: if parsed && len(target) > 0 && target != "(none)" { target } else { req.target },

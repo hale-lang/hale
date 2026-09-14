@@ -215,6 +215,15 @@ locus Dna {
         planned: Bool = false;
         pending_plans: PendingWork = PendingWork { };
         plans: Int = 0;
+        // GH #596 O: the optimize pass. `org_id` keys the exchange with
+        // this organism's leader; `optimize_every_ms` is the cadence
+        // the Board sets on the org chart (0 = never); the org program's
+        // loop calls `tick`.
+        org_id: String = "org";
+        optimize_every_ms: Int = 0;
+        last_optimized: Int = 0;
+        optimizations: Int = 0;
+        last_signals: String = "";
         org_seed: String = "dna/org"; // the organization's own seed (GH #566 F3): what an `organization` change edits
         initiative: Bool = true; // persistent pressure becomes a growth Mutation, not only a note
         baseline: String = ""; // the diff's base artifact; "" = cut from the genome's seed per mutation
@@ -268,8 +277,10 @@ locus Dna {
         // assembly (its editor, its gateway); a root Task's settlement
         // is journaled here; persistent pressure proposes, never grows.
         subscribe WorkRequested as on_work_requested;
-        subscribe TaskPlanned as on_planned;
+        subscribe TaskPlanned as on_planned where key == self.org_id;
         publish PlanRequested;
+        subscribe OrgReviewed as on_org_reviewed where key == self.org_id;
+        publish OptimizeRequested;
         subscribe TaskSettled as on_task_settled;
         subscribe PressureRaised as on_pressure;
         subscribe ConcernRaised as on_concern;
@@ -705,6 +716,79 @@ locus Dna {
         }
         self.rollback_to_base(o.mutation_id, o.outcome, now);
     }
+    // GH #596 O: the record's structural signals, as the leader reads
+    // them — what the design's practice on signals names, counted from
+    // the record. Bounded by the record.
+    @unbounded
+    fn signals() -> String {
+        let n = self.journal.revision();
+        let mut unparsed = 0;
+        let mut plans = 0;
+        let mut concerns = 0;
+        let mut contractions = 0;
+        let mut refused_reviews = 0;
+        let mut rolled_back = 0;
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "task.planned" { plans = plans + 1; if std::str::contains(e.body, "\"parsed\": false") { unparsed = unparsed + 1; } }
+            if e.kind == "concern.raised" { concerns = concerns + 1; }
+            if e.kind == "grant.contracted" { contractions = contractions + 1; }
+            if e.kind == "review.refused" { refused_reviews = refused_reviews + 1; }
+            if e.kind == "mutation.rolled_back" { rolled_back = rolled_back + 1; }
+            i = i + 1;
+        }
+        return "asks planned: " + to_string(plans) + " (" + to_string(unparsed) + " with no plan the leader could name, taking the defaults)\n"
+            + "concerns raised: " + to_string(concerns) + "\n"
+            + "grant contractions: " + to_string(contractions) + "\n"
+            + "verdicts refused: " + to_string(refused_reviews) + "\n"
+            + "mutations rolled back: " + to_string(rolled_back) + "\n"
+            + "record rows: " + to_string(n);
+    }
+    // Ask the leader to walk the machinery. Once per cadence, or on
+    // demand.
+    fn optimize() {
+        // GH #583 M1 holds here too: the pass is model-backed work, and
+        // none is routed on an exhausted budget; it waits for the next
+        // window rather than spending what the Board did not allow.
+        let now = std::time::now();
+        if self.budget_exhausted(now) {
+            let x = self.journal.append(self.journal.revision(), "optimize.refused", self.org_id, "budget exhausted (" + self.budget.describe(now) + "); the pass waits for the next window");
+            return;
+        }
+        self.last_signals = self.signals();
+        self.optimizations = self.optimizations + 1;
+        OptimizeRequested <- OptimizeRequest { org: self.org_id, signals: self.last_signals };
+    }
+    // The org program's loop calls this with a millisecond clock (the
+    // scaffold passes `std::time::monotonic_ns() / 1000000`; `now()` is
+    // seconds and would make a 60s cadence an hour's); the cadence is
+    // the Board's.
+    fn tick(now: Int) {
+        if self.optimize_every_ms <= 0 { return; }
+        if now - self.last_optimized < self.optimize_every_ms { return; }
+        self.last_optimized = now;
+        self.optimize();
+    }
+    // The leader's answer: clean, or one small proposal — which enters
+    // as an ask in the leader's name and takes the whole road (planned,
+    // proposed, reviewed by the Board as an organization change).
+    @unbounded
+    fn on_org_reviewed(r: OrgReview) {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("outcome", if len(r.proposal) > 0 { "proposed" } else { "clean" });
+        b.string_field("proposal", r.proposal);
+        b.string_field("narrative", r.narrative);
+        b.string_field("package", r.package);
+        b.string_field("by", r.by);
+        b.string_field("signals", self.last_signals);
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "org.reviewed", self.org_id, b.result());
+        if len(r.proposal) > 0 {
+            let id = self.ask(Intent { id: "opt" + to_string(self.optimizations), outcome: r.proposal, from: r.by }, Knobs { routed: true, requires: "edit" });
+        }
+    }
     // A planned ask becomes a Mutation under the class and target the
     // leader named; an ask the leader calls a person's job is handed
     // rather than mutated. Bounded by the Tasks the membrane admits.
@@ -735,11 +819,13 @@ locus Dna {
         b.end_object();
         let j = self.journal.append(self.journal.revision(), "task.planned", req.task_id, b.result());
         if p.kind == "person" {
+            // GH #596 W: a person's job. The Work is done as far as the
+            // organism is concerned — it handed the Task on — and the
+            // Task stays HANDED in the record until the person reports
+            // it done (`hale dna task done <id> --as <who>`).
             let handed = "handed: not a software change — " + p.narrative;
             WorkDone <- WorkSettlement { work_id: req.work_id, disposition: "done", result: handed, attempts: 0, history: "a0:leader:handed " };
-            if self.task_state(req.task_id) == "pending" {
-                let x = self.journal.append(self.journal.revision(), "task.done", req.task_id, req.work_id + " by leader: " + handed);
-            }
+            let x = self.journal.append(self.journal.revision(), "task.handed", req.task_id, req.work_id + " by leader: " + handed);
             return;
         }
         // The governed child comes from the KIND, and the class is
@@ -808,7 +894,7 @@ locus Dna {
         if !std::str::contains(req.requires, "edit") { return; }
         if self.planned {
             self.pending_plans.push(req);
-            PlanRequested <- PlanRequest { task_id: req.task_id, work_id: req.work_id, objective: req.objective, target: req.target, requires: req.requires, data_class: req.data_class };
+            PlanRequested <- PlanRequest { org: self.org_id, task_id: req.task_id, work_id: req.work_id, objective: req.objective, target: req.target, requires: req.requires, data_class: req.data_class };
             return;
         }
         let out = self.mutate(req.task_id, "application", req.objective, req.target, std::time::now());
