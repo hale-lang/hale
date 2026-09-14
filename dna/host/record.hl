@@ -108,11 +108,13 @@ fn count_lines(text: String) -> Int {
     return n;
 }
 
-// Append one event to the record in `author`'s name ("" = git's
-// identity for whoever runs this): one commit on the ref,
-// compare-and-swapped, re-appended at the new tail when the ref moved.
-@unbounded
-fn append_as(repo: String, kind: String, entity: String, body: String, author: String) -> Bool {
+// One commit for `journal.jsonl` plus one row on top of `head`, whose
+// journal text is `text`; the row is numbered `seq` and carries `who`
+// as its author. Returns the commit, "" when a plumbing step failed.
+// Touches no ref: `append_as` swaps one in under compare-and-swap, and
+// a reconcile builds a whole chain of these beside the live ref and
+// swaps once (GH #603).
+fn commit_row(repo: String, head: String, text: String, seq: Int, kind: String, entity: String, body: String, who: String) -> String {
     let dna_dir = repo + "/.hale/dna";
     std::io::fs::mkdir(repo + "/.hale") or discard;
     std::io::fs::mkdir(dna_dir) or discard;
@@ -121,47 +123,62 @@ fn append_as(repo: String, kind: String, entity: String, body: String, author: S
     let idx = dna_dir + "/index.host." + pid + ".tmp";
     let user = git_out(repo, "config\nuser.name");
     let identity = if len(user) == 0 { "-c\nuser.name=host\n-c\nuser.email=host@dna\n" } else { "" };
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.int_field("seq", seq);
+    b.string_field("kind", kind);
+    b.string_field("entity", entity);
+    b.string_field("body", body);
+    b.string_field("author", who);
+    b.end_object();
+    let wrote = write_text(tmp, text + b.result() + "\n") or false;
+    if !wrote { return ""; }
+    let blob = git_out(repo, "hash-object\n-w\n" + tmp);
+    if len(blob) == 0 { return ""; }
+    std::io::fs::unlink(idx) or discard;
+    let withidx = "env\nGIT_INDEX_FILE=" + idx + "\ngit\n-C\n" + repo + "\n";
+    let rt = dna::run_tool(withidx + (if len(head) > 0 { "read-tree\n" + head } else { "read-tree\n--empty" }));
+    if rt.code != 0 { return ""; }
+    let ui = dna::run_tool(withidx + "update-index\n--add\n--cacheinfo\n100644," + blob + ",journal.jsonl");
+    if ui.code != 0 { return ""; }
+    let wt = dna::run_tool(withidx + "write-tree");
+    if wt.code != 0 { return ""; }
+    let tree = dna::trim_nl(wt.stdout);
+    let parent = if len(head) > 0 { "-p\n" + head + "\n" } else { "" };
+    let commit = git_out(repo, identity + "commit-tree\n" + tree + "\n" + parent + "-m\n" + kind + " " + entity);
+    std::io::fs::unlink(tmp) or discard;
+    std::io::fs::unlink(idx) or discard;
+    return commit;
+}
+
+// The journal text at a commit ("" for none), newline-terminated.
+@unbounded
+fn journal_text_at(repo: String, commit: String) -> String {
+    if len(commit) == 0 { return ""; }
+    let t = dna::trim_nl(git_out(repo, "show\n" + commit + ":journal.jsonl"));
+    return if len(t) == 0 { "" } else { t + "\n" };
+}
+
+// Append one event to the record in `author`'s name ("" = git's
+// identity for whoever runs this): one commit on the ref,
+// compare-and-swapped, re-appended at the new tail when the ref moved.
+// A lost race is not a failure: the tail moved, so the append goes
+// round with the new tail — as many times as it takes within a bound
+// that only a wedged repository reaches. Three tries used to be the
+// bound, and a host reconciling beside a busy organism lost them all
+// and dropped the row (GH #603).
+@unbounded
+fn append_as(repo: String, kind: String, entity: String, body: String, author: String) -> Bool {
+    let user = git_out(repo, "config\nuser.name");
     let who = if len(author) > 0 { author } else { if len(user) > 0 { user } else { "host" } };
     let mut tries = 0;
-    while tries < 3 {
+    while tries < 200 {
         tries = tries + 1;
         let head = record_head(repo);
-        let mut text = "";
-        if len(head) > 0 {
-            let r = git(repo, "show\n" + RECORD_REF + ":journal.jsonl");
-            if r.code != 0 { return false; }
-            text = dna::trim_nl(r.stdout) + "\n";
-        }
-        let seq = count_lines(text);
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.int_field("seq", seq);
-        b.string_field("kind", kind);
-        b.string_field("entity", entity);
-        b.string_field("body", body);
-        b.string_field("author", who);
-        b.end_object();
-        let wrote = write_text(tmp, text + b.result() + "\n") or false;
-        if !wrote { return false; }
-        let blob = git_out(repo, "hash-object\n-w\n" + tmp);
-        if len(blob) == 0 { return false; }
-        std::io::fs::unlink(idx) or discard;
-        let withidx = "env\nGIT_INDEX_FILE=" + idx + "\ngit\n-C\n" + repo + "\n";
-        let rt = dna::run_tool(withidx + (if len(head) > 0 { "read-tree\n" + head } else { "read-tree\n--empty" }));
-        if rt.code != 0 { return false; }
-        let ui = dna::run_tool(withidx + "update-index\n--add\n--cacheinfo\n100644," + blob + ",journal.jsonl");
-        if ui.code != 0 { return false; }
-        let wt = dna::run_tool(withidx + "write-tree");
-        if wt.code != 0 { return false; }
-        let tree = dna::trim_nl(wt.stdout);
-        let parent = if len(head) > 0 { "-p\n" + head + "\n" } else { "" };
-        let commit = git_out(repo, identity + "commit-tree\n" + tree + "\n" + parent + "-m\n" + kind + " " + entity);
+        let text = journal_text_at(repo, head);
+        let commit = commit_row(repo, head, text, count_lines(text), kind, entity, body, who);
         if len(commit) == 0 { return false; }
-        if git_ok(repo, "update-ref\n" + RECORD_REF + "\n" + commit + "\n" + head) {
-            std::io::fs::unlink(tmp) or discard;
-            std::io::fs::unlink(idx) or discard;
-            return true;
-        }
+        if git_ok(repo, "update-ref\n" + RECORD_REF + "\n" + commit + "\n" + head) { return true; }
         // the ref moved under us: re-read and re-append at the new tail
     }
     return false;
@@ -219,22 +236,44 @@ fn sync_record(repo: String) -> SyncResult {
             summary = "pulled " + git_out(repo, "rev-list\n--count\n" + local + ".." + remote_head) + " event(s)";
             return SyncResult { ok: true, summary: summary };
         } else {
-            // diverged: re-append the local-only events on top of the remote
+            // diverged: the local-only events are re-appended on top of
+            // the remote's head — on a chain built BESIDE the live ref,
+            // swapped in with one compare-and-swap once it is whole. The
+            // ref used to be rewound to the remote's head first and the
+            // events re-appended behind it one by one: for that whole
+            // window the record had lost rows it held a moment before —
+            // a reader saw a Review vanish from the board, an organism
+            // whose append lost the ref race reloaded without its own
+            // rows, and a re-append that lost three races left them
+            // lost for good (GH #603). Nothing here changes the ref
+            // until the whole chain exists; a local-only commit with no
+            // row is a refusal, never a silent skip.
             let mine = git_out(repo, "rev-list\n--reverse\n" + remote_head + ".." + local) + "\n";
-            if !git_ok(repo, "update-ref\n" + RECORD_REF + "\n" + remote_head + "\n" + local) { return sync_failed("update-ref failed"); }
+            let mut chain = remote_head;
             let mut n = 0;
             let mut rest = mine;
-            while len(rest) > 0 {
+            let mut broken = "";
+            while len(rest) > 0 && len(broken) == 0 {
                 let nl = std::str::index_of(rest, "\n");
                 let c = if nl < 0 { rest } else { rest[0..nl] };
                 if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
                 if len(c) == 0 { continue; }
-                let text = git_out(repo, "show\n" + c + ":journal.jsonl");
-                let line = last_line(text);
-                if len(line) == 0 { continue; }
-                let ok = append_as(repo, std::json::find_string_field(line, "kind"), std::json::find_string_field(line, "entity"), std::json::find_string_field(line, "body"), std::json::find_string_field(line, "author"));
-                if !ok { return sync_failed("re-append failed"); }
+                let line = last_line(git_out(repo, "show\n" + c + ":journal.jsonl"));
+                if len(line) == 0 { broken = "local event " + c + " has no row"; continue; }
+                let text = journal_text_at(repo, chain);
+                let commit = commit_row(repo, chain, text, count_lines(text),
+                    std::json::find_string_field(line, "kind"), std::json::find_string_field(line, "entity"),
+                    std::json::find_string_field(line, "body"), std::json::find_string_field(line, "author"));
+                if len(commit) == 0 { broken = "re-append of " + c + " failed"; continue; }
+                chain = commit;
                 n = n + 1;
+            }
+            if len(broken) > 0 { return sync_failed(broken + "; the record was not changed"); }
+            if !git_ok(repo, "update-ref\n" + RECORD_REF + "\n" + chain + "\n" + local) {
+                // this clone appended while the chain was built: the
+                // record was not changed; go round with the new tail
+                summary = "the record moved while reconciling";
+                continue;
             }
             summary = "re-appended " + to_string(n) + " local event(s) onto the remote's " + git_out(repo, "rev-list\n--count\n" + local + ".." + remote_head);
         }
@@ -246,6 +285,7 @@ fn sync_record(repo: String) -> SyncResult {
         // the remote moved again: fetch and go round
         if !git_ok(repo, "fetch\n-q\n" + remote + "\n+" + RECORD_REF + ":" + REMOTE_TRACK) { return sync_failed("fetch failed"); }
     }
+    if summary == "the record moved while reconciling" { return sync_failed(summary + " three times; nothing was changed — sync again"); }
     return SyncResult { ok: true, summary: summary };
 }
 

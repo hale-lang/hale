@@ -6,6 +6,13 @@ behavior.
 
 ---
 
+## Unreleased
+
+### DNA: a reconcile never rewinds the record, and an append never gives up (GH #603)
+
+- **The record lost rows under load.** `hale dna sync` (and the host, every tick) reconciled a diverged record by rewinding the live ref to the remote's head and re-appending the local-only events behind it, one compare-and-swap at a time. For that whole window the record had lost rows it held a moment before: `hale dna board` answered without a Review the record had just gained, an organism whose append lost the ref race reloaded without its own rows, and — the cause of the trio replay failing under a parallel test run — the organism's `GitJournal` gave up an append after three lost races and every caller dropped the result, so a Mutation's `mutation.applied` and its restart request vanished and the Mutation was never retained. The reconciled chain is now built beside the ref and swapped in once; a lost race is retried until it lands; a local-only event with no row refuses the reconcile instead of being skipped; and the host keys what it has relayed and handled by a fact's content and its place among identical rows, not its `seq`, which a reconcile renumbers (three identical concerns are three facts). `dna_record_sync.rs` watches a reconcile against a clone that keeps appending and asserts every head a reader sees holds every row of the one before; `dna/tests/journal_contention_test.hl` appends forty rows beside a shell writer appending two hundred and expects all of them, once.
+- The issue's first description — "a single approval arrives twice" — was wrong: in the trio the leader approves the docs change within its authority and the fixture's human approves it too, so the second is a reapproval, refused as already applied, by design.
+
 ## v0.20.0 — an organization written in Hale (2026-09-14)
 
 ### DNA Phase 5, first landing: the charter, and the design as proposals (GH #596 L and C)

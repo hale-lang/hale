@@ -22,7 +22,8 @@ e9d9359 evidence.diff bf94e503c1c002f277248b14b6afd1910bb8ce6f
   the head it read and updates the ref with that head as the expected
   old value. A writer that lost the race reloads and re-appends at
   the new tail; `seq` is the position in the record, never a promise
-  made before the append. Two people answering at once lose nothing.
+  made before the append. A lost race is retried until the row lands,
+  not given up on. Two people answering at once lose nothing.
 - **Authorship is git's.** The organization's events carry its
   configured author; a person's facts — a verdict, an intent through
   the CLI, a host's crash accounting, a node's reports — carry the
@@ -48,7 +49,12 @@ Fetches the remote's record into `refs/dna/remote/journal`,
 reconciles, and pushes. Local ahead: push. Remote ahead:
 fast-forward. Diverged: the local-only events are re-appended on top
 of the remote's head, bodies and authors unchanged, then pushed; a
-push the remote refuses is fetched and reconciled again. Receipts and
+push the remote refuses is fetched and reconciled again. The
+reconciled chain is built beside the ref and swapped in with one
+compare-and-swap, so the record never loses a row it held a moment
+before: a reader's view only grows, a writer that reloads finds its
+own rows, and a clone that appended meanwhile is not overwritten (the
+swap fails and the reconcile goes round). Receipts and
 leases travel by refspec both ways. The remote is `dna.remote` in
 git config, or `origin`. The host does this every second; a plain
 clone has no record until it syncs.
