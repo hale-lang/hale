@@ -207,13 +207,17 @@ locus GitJournal {
     // against `expected`, then git's CAS on the ref. A CAS lost to another
     // process reloads and, when the caller was appending at the tail,
     // re-appends at the new tail (the intent "append after everything"
-    // is preserved; the seq moves).
+    // is preserved; the seq moves). A lost race is not an error: it is
+    // retried until it lands, within a bound only a wedged repository
+    // reaches — three tries used to be the bound, a host reconciling
+    // beside a busy organism won every one, and the organism's own rows
+    // (an apply, a restart request) were dropped in silence (GH #603).
     @effects(is: { journal_io })
     fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let rev = self.rows.len();
         if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
         let mut attempt = 0;
-        while attempt < 3 {
+        while attempt < 200 {
             let seq = self.rows.len();
             let b = std::json::Builder { };
             b.begin_object();
@@ -241,7 +245,7 @@ locus GitJournal {
             attempt = attempt + 1;
         }
         self.io_errors = self.io_errors + 1;
-        self.last_error = "append lost the ref race three times";
+        self.last_error = "append lost the ref race two hundred times";
         return AppendResult { error: "io", expected: expected, actual: self.rows.len() };
     }
     // Build the commit for `journal.jsonl` + `line`, on top of the head.

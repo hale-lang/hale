@@ -197,3 +197,135 @@ fn the_first_sync_carries_a_record_the_remote_does_not_have() {
     assert!(ok && st.contains("chain verified"), "{st}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// GH #603. A diverged reconcile used to rewind the live ref to the
+/// remote's head and then re-append the local-only events behind it
+/// one compare-and-swap at a time. For that whole window the record
+/// had lost rows it held a moment before: a reader saw a Review
+/// vanish from the board, an organism whose append lost the ref race
+/// reloaded without its own rows, and a re-append that lost three
+/// races left them lost for good. The reconciled chain is now built
+/// beside the ref and swapped in once. Two invariants, watched while
+/// a reconcile runs against a clone that keeps appending: every head a
+/// reader sees holds every row of the head it saw before, and nothing
+/// appended meanwhile is lost.
+#[test]
+fn a_reconcile_never_rewinds_the_record_and_keeps_rows_appended_meanwhile() {
+    let d = std::env::temp_dir().join(format!("hale_dna_sync_swap_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let bare = d.join("origin.git");
+    git(&["init", "-q", "--bare", "-b", "main", &bare.to_string_lossy()], &d);
+    let (ok, out) = hale_in(&["dna", "new", "swapsync"], &d);
+    assert!(ok, "{out}");
+    let a: PathBuf = d.join("swapsync");
+    git(&["config", "user.name", "organism-host"], &a);
+    git(&["config", "user.email", "host@dna"], &a);
+    git(&["add", "-A"], &a);
+    git(&["commit", "-q", "-m", "the app"], &a);
+    git(&["remote", "add", "origin", &bare.to_string_lossy()], &a);
+    git(&["push", "-q", "origin", "main", "refs/dna/*:refs/dna/*"], &a);
+    let b = d.join("riley");
+    git(&["clone", "-q", &bare.to_string_lossy(), &b.to_string_lossy()], &d);
+    git(&["config", "user.name", "riley"], &b);
+    git(&["config", "user.email", "riley@l"], &b);
+    let (ok, out) = hale_in(&["dna", "sync"], &b);
+    assert!(ok && out.contains("pulled the record"), "{out}");
+    let seed = record(&a).len();
+
+    // A appends twelve events offline (its pushes go nowhere, so the
+    // rows stay local); B appends four, each pushed: diverged.
+    git(&["config", "remote.origin.pushurl", &d.join("nowhere.git").to_string_lossy()], &a);
+    for i in 0..12 {
+        let (ok, out) = hale_in(&["dna", "ask", "--no-wait", &format!("local ask {i}")], &a);
+        assert!(ok, "{out}");
+    }
+    for i in 0..4 {
+        let (ok, out) = hale_in(&["dna", "ask", "--no-wait", &format!("remote ask {i}")], &b);
+        assert!(ok, "{out}");
+    }
+    let (ok, out) = hale_in(&["dna", "sync"], &b);
+    assert!(ok, "{out}");
+    assert_eq!(record(&a).len(), seed + 12);
+    assert_eq!(record(&b).len(), seed + 4);
+    git(&["config", "--unset", "remote.origin.pushurl"], &a);
+
+    // a reader polls A's record throughout: a head must hold every row of the head before it
+    let rows_of = |cwd: &Path| -> std::collections::BTreeSet<String> {
+        record(cwd).iter().map(|v| format!("{}|{}|{}", v["kind"], v["entity"], v["body"])).collect()
+    };
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = {
+        let a = a.clone();
+        let done = done.clone();
+        std::thread::spawn(move || {
+            let mut last_head = String::new();
+            let mut last_rows: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            let mut violations: Vec<String> = Vec::new();
+            let mut heads = 0;
+            while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                let head = Command::new("git").args(["rev-parse", "-q", "--verify", "refs/dna/journal"]).current_dir(&a).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+                if !head.is_empty() && head != last_head {
+                    let rows = rows_of(&a);
+                    if !rows.is_empty() {
+                        let missing: Vec<&String> = last_rows.difference(&rows).collect();
+                        if !missing.is_empty() {
+                            violations.push(format!("head {} dropped {} row(s) the head before it held, e.g. {}", &head[..8], missing.len(), missing[0]));
+                        }
+                        last_rows = rows;
+                        last_head = head;
+                        heads += 1;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            (heads, violations)
+        })
+    };
+    // …and A keeps appending while its reconcile runs
+    let appender = {
+        let a = a.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            for i in 0..3 {
+                let (ok, out) = hale_in(&["dna", "ask", "--no-wait", &format!("meanwhile ask {i}")], &a);
+                assert!(ok, "{out}");
+            }
+        })
+    };
+    let mut synced = false;
+    let mut last = String::new();
+    for _ in 0..6 {
+        let (ok, out) = hale_in(&["dna", "sync"], &a);
+        last = out.clone();
+        if ok && (out.contains("re-appended") || out.contains("up to date") || out.contains("pushed")) {
+            synced = true;
+            break;
+        }
+    }
+    appender.join().unwrap();
+    // one more sync carries whatever the appender added after the swap
+    let (ok, out) = hale_in(&["dna", "sync"], &a);
+    assert!(ok, "{out}");
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (heads, violations) = reader.join().unwrap();
+    assert!(synced, "the reconcile did not settle: {last}");
+    assert!(heads >= 2, "the reader saw the record move ({heads} head(s))");
+    assert!(violations.is_empty(), "the record rewound during the reconcile:\n{}", violations.join("\n"));
+    let rows = rows_of(&a);
+    for i in 0..12 {
+        assert!(rows.iter().any(|r| r.contains(&format!("local ask {i}"))), "local ask {i} survived the reconcile");
+    }
+    for i in 0..4 {
+        assert!(rows.iter().any(|r| r.contains(&format!("remote ask {i}"))), "remote ask {i} was pulled");
+    }
+    for i in 0..3 {
+        assert!(rows.iter().any(|r| r.contains(&format!("meanwhile ask {i}"))), "meanwhile ask {i}, appended during the reconcile, was kept");
+    }
+    assert_eq!(record(&a).len(), seed + 12 + 4 + 3, "every event once");
+    // and B, after its own sync, has the identical record
+    let (ok, out) = hale_in(&["dna", "sync"], &b);
+    assert!(ok, "{out}");
+    assert_eq!(git(&["rev-parse", "refs/dna/journal"], &a), git(&["rev-parse", "refs/dna/journal"], &b), "identical heads");
+    let _ = std::fs::remove_dir_all(&d);
+}

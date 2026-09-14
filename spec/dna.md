@@ -21,7 +21,9 @@ repository:
   commit on the head it read and updates the ref with that head as the
   expected old value. A writer that lost the race reloads and, when it
   was appending at the tail, re-appends at the new tail; `seq` is the
-  position in the record, never a promise made before the append.
+  position in the record, never a promise made before the append. A
+  lost race is not a failure: the append goes round with the new tail
+  until it lands, within a bound only a wedged repository reaches.
 - **Authorship is git's.** The organism's own events carry its
   configured author; a human's facts (a verdict, an intent through the
   CLI, a host's crash accounting) carry the git identity of whoever
@@ -38,7 +40,19 @@ repository:
   pushes. Local ahead: push. Remote ahead: fast-forward. Diverged: the
   local-only events are re-appended on top of the remote's head, bodies
   and authors unchanged, `seq` their new position, then pushed; a push
-  the remote refuses is fetched and reconciled again. **A remote with
+  the remote refuses is fetched and reconciled again. **The reconciled
+  chain is built beside the ref and swapped in with one
+  compare-and-swap**: the ref never points at a record missing a row
+  it held a moment before, so a reader's position only grows, a writer
+  that reloads after a lost race finds its own rows, and a clone that
+  appended while the chain was built is not overwritten — the swap
+  fails and the reconcile goes round. A local-only event with no row
+  refuses the reconcile rather than being skipped. A fact's identity
+  in the record is its content and its place among rows of the same
+  content, never its `seq` (a reconcile renumbers, and a node raising
+  one concern three times writes three identical rows, each a fact):
+  a host relays and handles by that identity, so a renumbered fact is
+  not relayed twice and a repeated one is not relayed once. **A remote with
   no record yet is the local one's push**, not "up to date": the first
   sync after an ordinary `git push origin main` carries the record, so
   no one has to push `refs/dna/*` by hand for a second clone to have

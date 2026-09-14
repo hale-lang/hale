@@ -13,12 +13,34 @@ import "../core" as dna;
 
 const ORG_SEED: String = "dna/org";
 
-fn ids_has(list: String, n: Int) -> Bool {
-    return std::str::contains(list, "\n" + to_string(n) + "\n");
+// A fact's identity in the record is its content and its place among
+// rows of the same content, never its `seq`: a reconcile re-appends
+// local-only events on top of the remote's and renumbers them, and a
+// host that remembered what it had relayed or handled by seq relayed
+// it again after one (GH #603). Content alone is not enough either —
+// a node raising the same concern three times writes three identical
+// rows, each a fact of its own — so the key counts the identical rows
+// before this one; a reconcile keeps a source's rows in order, so the
+// count holds across it.
+@unbounded
+fn fact_key(p: Projection, i: Int) -> String {
+    let e = p.row(i);
+    let mut before = 0;
+    let mut j = 0;
+    while j < i {
+        let o = p.row(j);
+        if o.kind == e.kind && o.entity == e.entity && o.body == e.body { before = before + 1; }
+        j = j + 1;
+    }
+    return e.kind + "|" + e.entity + "|" + dna::hex(std::crypto::sha256(std::bytes::from_string(e.body))) + "#" + to_string(before);
 }
 
-fn ids_add(list: String, n: Int) -> String {
-    return list + to_string(n) + "\n";
+fn keys_has(list: String, key: String) -> Bool {
+    return std::str::contains(list, "\n" + key + "\n");
+}
+
+fn keys_add(list: String, key: String) -> String {
+    return (if len(list) == 0 { "\n" } else { list }) + key + "\n";
 }
 
 // The latest `expression.restart_requested` this host has not handled
@@ -28,7 +50,7 @@ fn pending_restart(p: Projection, handled: String) -> dna::Event {
     let mut i = 0;
     while i < p.rows() {
         let r = p.row(i);
-        if r.kind == "expression.restart_requested" && !ids_has(handled, r.seq) {
+        if r.kind == "expression.restart_requested" && !keys_has(handled, fact_key(p, i)) {
             let mut answered = false;
             let mut k = i + 1;
             while k < p.rows() {
@@ -224,7 +246,7 @@ locus Host {
         let mut i = 0;
         while i < p.rows() {
             let r = p.row(i);
-            if !ids_has(self.relayed, r.seq) && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested") {
+            if (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested") && !keys_has(self.relayed, fact_key(p, i)) && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested") {
                 let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised " } else { " review.settled review.refused " };
                 let answered = find_after(p, i + 1, answers, r.entity).seq >= 0;
                 if !answered {
@@ -236,7 +258,7 @@ locus Host {
                         if close > 0 { body = inner[0..close] + ", \"intent_id\": " + quote(r.entity) + "}"; }
                     }
                     let e = publish_on_membrane(self.root, if r.kind == "intent.requested" { "intent" } else if r.kind == "concern.requested" { "concern" } else { "verdict" }, body);
-                    if len(e) == 0 { self.relayed = ids_add(self.relayed, r.seq); n = n + 1; }
+                    if len(e) == 0 { self.relayed = keys_add(self.relayed, fact_key(p, i)); n = n + 1; }
                 }
             }
             i = i + 1;
@@ -451,7 +473,7 @@ locus Host {
         let p = open_projection(self.root, self.seed, self.toolchain);
         let req = pending_restart(p, self.handled);
         if req.seq < 0 { return; }
-        self.handled = ids_add(self.handled, req.seq);
+        self.handled = keys_add(self.handled, fact_key(p, req.seq));
         let rollback = std::str::starts_with(req.body, "rollback ");
         let seed_named = seed_named_in(req.body);
         if seed_named == ORG_SEED { self.answer_org(req.entity, rollback); return; }
