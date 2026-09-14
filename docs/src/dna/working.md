@@ -38,7 +38,7 @@ Monday morning. The org chart declares them in its `birth()`, and
 they take the same road as anything you ask by hand — planned by the
 leader, handed or proposed, reviewed:
 
-```hale
+```hale,fragment
 birth() {
     let why = self.core.schedule(dna::Schedule { id: "nightly", cron: "0 2 * * *", ask: "reconcile the day's records" });
     let w2 = self.core.schedule(dna::Schedule { id: "weekly", cron: "0 9 * * 1", ask: "export last week's ledger" });
