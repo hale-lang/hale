@@ -31,6 +31,14 @@ hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*)
 hale dna profile [project]   the organism's combination, detected from its pieces
 hale dna body                who runs this record (the body lease); `claim --force` takes it from a
                              body that is gone; `release [--force]` gives it up; rows in your name
+hale dna body provision <user@host> [--dsn <url>] [--dir <path>] [--dry-run]
+                             a body over ssh: the pinned toolchain, the record cloned, Postgres from
+                             compose or the DSN, a systemd user unit; writes nothing it cannot finish
+hale dna body start|stop|logs [--body <user@host>]
+                             the body's unit, over ssh
+hale dna secret set <NAME> [--body <user@host>]
+                             a credential from stdin into ~/.config/hale-dna/<project>.env there or
+                             here; `secret rotate <NAME>`; the record gets `secret.rotated` only
 hale dna board [project]     the Board's queue: verdicts needed, escalations, proposals, reports
 hale dna report [project]    file a report from the record since the last one
 hale dna concern raise <source> <what…> [--severity N]

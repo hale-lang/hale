@@ -189,7 +189,8 @@ the same way. A project's path therefore has no length rule.
 `mutation.apply_retried`, `knowledge.retired`, `task.planned`,
 `grant.refused`, `grant.contracted`, `task.handed`, `org.reviewed`,
 `task.resumed`, `intent.unrecovered`, `task.reassigned`, `person.retired`,
-`concern.refused`, `body.claimed`, `body.released`,
+`concern.refused`, `body.claimed`, `body.released`, `body.provisioned`,
+`secret.rotated`, `body.credential_missing`, `body.credential_present`,
 `optimize.refused`,
 `mutation.failed`, `effect.requested`, `effect.result`,
 `evidence.<step>`, `evidence.magnitude`, `review.requested`,
@@ -295,6 +296,39 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   is not written anywhere. Profiles are examples of combinations,
   not a closed set; the toolchain refuses only what breaks a
   commitment (a second body on one record).
+- **The body on a server.** `hale dna body provision <user@host>
+  [--dsn <url>] [--dir <path>] [--dry-run]` makes a body over ssh, in
+  order: the toolchain `hale.lock` pins (installed with the site's
+  installer at that version, verified, or stop), the record's remote
+  cloned (fetched into a clone that exists), `vendor/dna` and the
+  record brought up, the knowledge database from `dna/compose.yaml`
+  or a DSN (which goes into the body's env file, never the record),
+  and a systemd user unit `hale-dna-<project>` supervising `hale dna
+  dev . --no-iris` — on one server the body is the organization, the
+  application and the knowledge service under one host — with
+  `Restart=on-failure` so a failure flows up one more level. It stops
+  before writing anything when the record has no remote or one local
+  to this machine, when ssh cannot reach the host, or when the host
+  lacks git, curl, systemd, or (without a DSN) docker compose. It
+  records `dna.body` and `dna.body.dir` here and a `body.provisioned
+  <user@host> {dir, toolchain, knowledge, by}` row. `--dry-run` prints
+  the exact script. `hale dna body start|stop|logs [--body …]` reach
+  the unit over ssh. Postgres, Docker, ssh and systemd are the
+  reference setup; the definition admits other implementations.
+- **Secrets.** `hale dna secret set <NAME> [--body <user@host>]`
+  reads the value from stdin — never argv (a `NAME=value` argument is
+  refused), never the record — and writes `NAME=value` into
+  `~/.config/hale-dna/<project>.env` (mode 600; one line per name,
+  the newest) on the body over ssh's stdin, or on this machine. The
+  host loads that file into its children's environment. `secret
+  rotate <NAME>` is the same for a name already set. The record gets
+  `secret.rotated <NAME> {where, by}` and nothing else. At start the
+  host checks the credentials its catalog names (`env_var` in
+  `dna/org/models.hl`): when none is set in its environment or the
+  file it says so and appends `body.credential_missing model
+  {any_of}`; `status` and `board` carry "no credential for the
+  model" until a start finds one and appends
+  `body.credential_present`.
 
 ## The organization evolves
 
