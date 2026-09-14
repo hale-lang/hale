@@ -1,0 +1,46 @@
+// GH #604 rule 4 — a Task the leader hands to a person stays HANDED in
+// the record until the person reports it done. The metabolism settles
+// the handed Work at once (the organism's part is over), and that
+// settlement used to be journaled as `task.done` right after
+// `task.handed`, so a live handed Task showed done and `hale dna task
+// done` refused it as not handed.
+
+import "../core" as dna;
+
+main locus App {
+    params {
+        one: dna::Dna = dna::Dna { planned: true, org_id: "hand" };
+        lead: dna::Leader = dna::Leader {
+            name: "leader", org: "hand", charter: "You are the architect.",
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: noor\ncall the supplier" },
+                deep: dna::FakeModel { name: "deep", answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: noor\ncall the supplier" }
+            }
+        };
+    }
+    @unbounded
+    fn rows(kind: String, entity: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.one.journal.revision() {
+            let e = self.one.journal.read(i);
+            if e.kind == kind && e.entity == entity { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    run() {
+        let t = self.one.ask(dna::Intent { id: "i1", outcome: "get the invoice paid", from: "riley" }, dna::Knobs { routed: true, requires: "edit" });
+        std::time::sleep(300ms);
+        std::test::assert(std::str::starts_with(t, "t"), "the Task was born: " + t);
+        std::test::assert_eq_int(self.rows("task.planned", t), 1, "planned by the leader");
+        std::test::assert_eq_int(self.rows("task.handed", t), 1, "and handed to a person");
+        std::test::assert_eq_int(self.rows("task.done", t), 0, "not settled by the organism: the person reports it done");
+        std::test::assert_eq_str(self.one.task_state(t), "handed", "it stays handed in the record");
+        // the person's report is the settlement (`hale dna task done` appends it in their name)
+        let r = self.one.journal.append(self.one.journal.revision(), "task.done", t, "paid, by noor");
+        std::test::assert_eq_str(self.one.task_state(t), "done", "done once the person says so");
+    }
+}
+
+fn main() { App { }; }
