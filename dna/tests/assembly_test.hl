@@ -14,6 +14,7 @@ import "../core" as dna;
 // issue asks for, proving DNA's owning logic does not change).
 locus CountingJournal {
     params { appends: Int = 0; }
+    fn refresh() -> Bool { return false; }
     fn revision() -> Int { return self.appends; }
     fn head() -> String { return "fake"; }
     fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {

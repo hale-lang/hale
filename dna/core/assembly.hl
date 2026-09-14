@@ -223,6 +223,11 @@ locus Dna {
         optimize_every_ms: Int = 0;
         last_optimized: Int = 0;
         optimizations: Int = 0;
+        // GH #610: the schedules the org chart declared (`schedule`),
+        // with their state; `optimize_every_ms` becomes one at birth
+        schedules: ScheduleRows = ScheduleRows { };
+        schedules_read: Int = 0; // record rows read for pause/resume
+        last_refresh: Int = 0;
         last_signals: String = "";
         org_seed: String = "dna/org"; // the organization's own seed (GH #566 F3): what an `organization` change edits
         initiative: Bool = true; // persistent pressure becomes a growth Mutation, not only a note
@@ -246,6 +251,10 @@ locus Dna {
     release (r: Review) { self.reviews_open = self.reviews_open - 1; }
     birth() {
         self.rehydrate();
+        // GH #610: the optimize pass is a schedule, not a special case
+        if self.optimize_every_ms > 0 {
+            let why = self.schedule(Schedule { id: "optimize", every_ms: self.optimize_every_ms, action: "optimize", requires: "" });
+        }
         // GH #596, layering: a child grant wider than the organism's is
         // the early error — refused in the record, and bound by the
         // ceiling from here on (the use-time check does the binding)
@@ -768,11 +777,137 @@ locus Dna {
     // scaffold passes `std::time::monotonic_ns() / 1000000`; `now()` is
     // seconds and would make a 60s cadence an hour's); the cadence is
     // the Board's.
+    @unbounded
     fn tick(now: Int) {
-        if self.optimize_every_ms <= 0 { return; }
-        if now - self.last_optimized < self.optimize_every_ms { return; }
-        self.last_optimized = now;
-        self.optimize();
+        // the cadence is the Board's and may be set after birth
+        if self.optimize_every_ms > 0 {
+            let mut have = -1;
+            let mut k = 0;
+            while k < self.schedules.len() {
+                let x = self.schedules.get(k) or Schedule { };
+                if x.id == "optimize" { have = x.every_ms; }
+                k = k + 1;
+            }
+            if have != self.optimize_every_ms { let why = self.schedule(Schedule { id: "optimize", every_ms: self.optimize_every_ms, action: "optimize", requires: "" }); }
+        }
+        let n = self.schedules.len();
+        if n == 0 { return; }
+        // pause/resume rows appended from a clone reach the record the
+        // organism holds; read what arrived (a git journal is re-read
+        // from its ref at most every 5s of wall time)
+        let wall = std::time::now();
+        if wall - self.last_refresh >= 5 { self.last_refresh = wall; let moved = self.journal.refresh(); }
+        self.read_schedule_controls();
+        let mut i = 0;
+        while i < n {
+            let mut s = self.schedules.get(i) or Schedule { };
+            if s.paused { i = i + 1; continue; }
+            let mut due = false;
+            if s.every_ms > 0 {
+                // armed at the first tick; then once per interval
+                // an interval counts from the clock's origin (the optimize
+                // pass always did), or from its last fire in the record,
+                // so a restart does not fire again before its time
+                if !s.armed {
+                    s.armed = true;
+                    if s.last_at > 0 { s.last_ms = now - (wall - s.last_at) * 1000; }
+                }
+                if now - s.last_ms >= s.every_ms { s.last_ms = now; due = true; }
+            } else if len(s.cron) > 0 {
+                let minute = wall / 60;
+                if minute != s.last_minute && cron_matches(s.cron, wall) { s.last_minute = minute; due = true; }
+            }
+            if due {
+                if s.action == "optimize" {
+                    self.optimize();
+                    s.fired = s.fired + 1;
+                    let x = self.journal.append(self.journal.revision(), "schedule.fired", s.id, "{\"action\": \"optimize\", \"at\": " + to_string(wall) + "}");
+                } else {
+                    // overlap: never while the last Task it fired is open — the skip is a row
+                    let st = if len(s.task) > 0 { self.task_state(s.task) } else { "done" };
+                    if len(s.task) > 0 && st != "done" && st != "failed" {
+                        let x = self.journal.append(self.journal.revision(), "schedule.skipped", s.id, "{\"task\": \"" + s.task + "\", \"state\": \"" + (if len(st) == 0 { "pending" } else { st }) + "\", \"at\": " + to_string(wall) + "}");
+                    } else {
+                        s.fired = s.fired + 1;
+                        let t = self.ask(Intent { id: "s:" + s.id + "/" + to_string(s.fired), outcome: s.ask, from: "schedule:" + s.id }, Knobs { routed: len(s.requires) > 0, requires: s.requires });
+                        if std::str::starts_with(t, "refused") {
+                            let x = self.journal.append(self.journal.revision(), "schedule.refused", s.id, t);
+                        } else {
+                            s.task = t;
+                            let x = self.journal.append(self.journal.revision(), "schedule.fired", s.id, "{\"task\": \"" + t + "\", \"at\": " + to_string(wall) + "}");
+                        }
+                    }
+                }
+            }
+            self.schedules.set(i, s) or discard;
+            i = i + 1;
+        }
+    }
+    // GH #610: declare a schedule. A malformed cron is refused here,
+    // not when it would first fire; the declaration is a row when it
+    // is new or changed. "" when accepted, else why.
+    @unbounded
+    fn schedule(s: Schedule) -> String {
+        if len(s.id) == 0 { return "a schedule needs an id"; }
+        if s.every_ms <= 0 && len(s.cron) == 0 { return "schedule " + s.id + ": an interval (every_ms) or a cron expression"; }
+        if s.every_ms > 0 && len(s.cron) > 0 { return "schedule " + s.id + ": an interval or a cron, not both"; }
+        if s.action == "ask" && len(s.ask) == 0 { return "schedule " + s.id + ": an ask to fire"; }
+        if len(s.cron) > 0 {
+            let why = cron_check(s.cron);
+            if len(why) > 0 {
+                let x = self.journal.append(self.journal.revision(), "schedule.refused", s.id, "cron `" + s.cron + "`: " + why);
+                return "schedule " + s.id + ": cron `" + s.cron + "`: " + why;
+            }
+        }
+        // state from the record: the last Task it fired, paused or not
+        let mut fresh = Schedule { id: s.id, every_ms: s.every_ms, cron: s.cron, ask: s.ask, requires: s.requires, action: s.action };
+        let mut last_decl = "";
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.entity == s.id && e.kind == "schedule.declared" { last_decl = e.body; }
+            if e.entity == s.id && e.kind == "schedule.fired" {
+                let t = std::json::find_string_field(e.body, "task");
+                if len(t) > 0 { fresh.task = t; }
+                fresh.fired = fresh.fired + 1;
+                fresh.last_at = std::json::find_int_field(e.body, "at");
+            }
+            if e.entity == s.id && e.kind == "schedule.paused" { fresh.paused = true; }
+            if e.entity == s.id && e.kind == "schedule.resumed" { fresh.paused = false; }
+            i = i + 1;
+        }
+        let decl = schedule_json(fresh);
+        if decl != last_decl { let x = self.journal.append(self.journal.revision(), "schedule.declared", s.id, decl); }
+        let mut k = 0;
+        while k < self.schedules.len() {
+            let have = self.schedules.get(k) or Schedule { };
+            if have.id == s.id { self.schedules.set(k, fresh) or discard; return ""; }
+            k = k + 1;
+        }
+        self.schedules.push(fresh);
+        self.schedules_read = self.journal.revision();
+        return "";
+    }
+    // Pause/resume rows appended since the last read (by `hale dna
+    // schedule pause|resume`, from any clone) change the state here.
+    @unbounded
+    fn read_schedule_controls() {
+        let n = self.journal.revision();
+        let mut i = self.schedules_read;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "schedule.paused" || e.kind == "schedule.resumed" {
+                let mut k = 0;
+                while k < self.schedules.len() {
+                    let mut s = self.schedules.get(k) or Schedule { };
+                    if s.id == e.entity { s.paused = e.kind == "schedule.paused"; self.schedules.set(k, s) or discard; }
+                    k = k + 1;
+                }
+            }
+            i = i + 1;
+        }
+        self.schedules_read = n;
     }
     // The leader's answer: clean, or one small proposal — which enters
     // as an ask in the leader's name and takes the whole road (planned,
@@ -1569,4 +1704,137 @@ locus Dna {
         b.end_object();
         return b.result();
     }
+}
+
+// ---- schedules (GH #610) ---------------------------------------------
+
+@form(vec)
+locus ScheduleRows { capacity { heap rows of Schedule; } }
+
+// The civil date of a unix second, UTC: "minute hour dom month dow"
+// space-separated (dow 0 = Sunday). Days-to-civil after Hinnant.
+fn civil_fields(secs: Int) -> String {
+    let days = if secs >= 0 { secs / 86400 } else { (secs - 86399) / 86400 };
+    let rem = secs - days * 86400;
+    let hour = rem / 3600;
+    let minute = (rem - hour * 3600) / 60;
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let dom = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let dow = (days + 4) - ((days + 4) / 7) * 7;
+    return to_string(minute) + " " + to_string(hour) + " " + to_string(dom) + " " + to_string(month) + " " + to_string(if dow < 0 { dow + 7 } else { dow });
+}
+
+fn nth_word(s: String, n: Int) -> String {
+    let mut rest = s + " ";
+    let mut k = 0;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        if sp < 0 { return ""; }
+        let w = rest[0..sp];
+        rest = rest[(sp + 1)..len(rest)];
+        if len(w) == 0 { continue; }
+        if k == n { return w; }
+        k = k + 1;
+    }
+    return "";
+}
+
+fn word_count(s: String) -> Int {
+    let mut n = 0;
+    while len(nth_word(s, n)) > 0 { n = n + 1; }
+    return n;
+}
+
+// One cron field against a value: `*`, `*/n`, `a`, `a-b`, `a-b/n`, and
+// lists of those. Returns "match" / "no" / "bad: <why>".
+fn cron_field(field: String, lo: Int, hi: Int, v: Int, name: String) -> String {
+    let mut any = false;
+    let mut rest = field + ",";
+    while len(rest) > 0 {
+        let c = std::str::index_of(rest, ",");
+        if c < 0 { break; }
+        let item = rest[0..c];
+        rest = rest[(c + 1)..len(rest)];
+        if len(item) == 0 { return "bad: empty item in " + name; }
+        let mut range = item;
+        let mut step = 1;
+        let slash = std::str::index_of(item, "/");
+        if slash >= 0 {
+            range = item[0..slash];
+            step = std::str::parse_int(item[(slash + 1)..len(item)]) or 0;
+            if step <= 0 { return "bad: step `" + item[(slash + 1)..len(item)] + "` in " + name; }
+        }
+        let mut a = lo;
+        let mut b = hi;
+        if range != "*" {
+            let dash = std::str::index_of(range, "-");
+            if dash >= 0 {
+                a = std::str::parse_int(range[0..dash]) or - 1;
+                b = std::str::parse_int(range[(dash + 1)..len(range)]) or - 1;
+            } else {
+                a = std::str::parse_int(range) or - 1;
+                b = if slash >= 0 { hi } else { a };
+            }
+            if a < 0 || b < 0 { return "bad: `" + range + "` is not a number or range in " + name; }
+            if a < lo || b > hi || a > b { return "bad: `" + range + "` is outside " + to_string(lo) + "-" + to_string(hi) + " in " + name; }
+        }
+        // dow 7 is Sunday too
+        let vv = if name == "day-of-week" && v == 0 && a > 0 { 7 } else { v };
+        if vv >= a && vv <= b && (vv - a) - ((vv - a) / step) * step == 0 { any = true; }
+    }
+    return if any { "match" } else { "no" };
+}
+
+// Validate a cron expression: "" when well-formed, else why.
+fn cron_check(expr: String) -> String {
+    if word_count(expr) != 5 { return "a cron expression has five fields (minute hour day-of-month month day-of-week), not " + to_string(word_count(expr)); }
+    let r0 = cron_field(nth_word(expr, 0), 0, 59, 0, "minute");
+    if std::str::starts_with(r0, "bad") { return r0[5..len(r0)]; }
+    let r1 = cron_field(nth_word(expr, 1), 0, 23, 0, "hour");
+    if std::str::starts_with(r1, "bad") { return r1[5..len(r1)]; }
+    let r2 = cron_field(nth_word(expr, 2), 1, 31, 1, "day-of-month");
+    if std::str::starts_with(r2, "bad") { return r2[5..len(r2)]; }
+    let r3 = cron_field(nth_word(expr, 3), 1, 12, 1, "month");
+    if std::str::starts_with(r3, "bad") { return r3[5..len(r3)]; }
+    let r4 = cron_field(nth_word(expr, 4), 0, 7, 0, "day-of-week");
+    if std::str::starts_with(r4, "bad") { return r4[5..len(r4)]; }
+    return "";
+}
+
+// Whether a well-formed cron expression names this unix second's
+// minute (UTC). Day-of-month and day-of-week both restricted: either.
+fn cron_matches(expr: String, secs: Int) -> Bool {
+    let f = civil_fields(secs);
+    let minute = std::str::parse_int(nth_word(f, 0)) or 0;
+    let hour = std::str::parse_int(nth_word(f, 1)) or 0;
+    let dom = std::str::parse_int(nth_word(f, 2)) or 1;
+    let month = std::str::parse_int(nth_word(f, 3)) or 1;
+    let dow = std::str::parse_int(nth_word(f, 4)) or 0;
+    if cron_field(nth_word(expr, 0), 0, 59, minute, "minute") != "match" { return false; }
+    if cron_field(nth_word(expr, 1), 0, 23, hour, "hour") != "match" { return false; }
+    if cron_field(nth_word(expr, 3), 1, 12, month, "month") != "match" { return false; }
+    let dom_f = nth_word(expr, 2);
+    let dow_f = nth_word(expr, 4);
+    let dom_ok = cron_field(dom_f, 1, 31, dom, "day-of-month") == "match";
+    let dow_ok = cron_field(dow_f, 0, 7, dow, "day-of-week") == "match";
+    if dom_f != "*" && dow_f != "*" { return dom_ok || dow_ok; }
+    return dom_ok && dow_ok;
+}
+
+fn schedule_json(s: Schedule) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("action", s.action);
+    b.int_field("every_ms", s.every_ms);
+    b.string_field("cron", s.cron);
+    b.string_field("ask", s.ask);
+    b.string_field("requires", s.requires);
+    b.end_object();
+    return b.result();
 }

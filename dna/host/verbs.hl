@@ -752,3 +752,78 @@ fn credential_gap(p: Projection) -> String {
     }
     return missing;
 }
+
+// ---- schedules (GH #610) ---------------------------------------------
+// `hale dna schedule [list | pause <id> | resume <id>]`: the schedules
+// the org chart declared, as the record has them; pause and resume are
+// rows in your name that the organism reads at its next tick.
+@unbounded
+fn schedule_verb(root: String, sub: String, id: String, who_flag: String) -> Answer {
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    if sub == "pause" || sub == "resume" {
+        if len(id) == 0 { return fail("schedule " + sub + ": which one? `hale dna schedule` lists them"); }
+        let s = sync_record(root);
+        let p = open_projection(root, ".", "");
+        let mut known = false;
+        let mut paused = false;
+        let mut i = 0;
+        while i < p.rows() {
+            let e = p.row(i);
+            if e.entity == id && e.kind == "schedule.declared" { known = true; }
+            if e.entity == id && e.kind == "schedule.paused" { paused = true; }
+            if e.entity == id && e.kind == "schedule.resumed" { paused = false; }
+            i = i + 1;
+        }
+        if !known { return fail("schedule " + sub + ": no schedule `" + id + "` is declared in the record"); }
+        if sub == "pause" && paused { return answer("schedule " + id + " is already paused\n"); }
+        if sub == "resume" && !paused { return answer("schedule " + id + " is not paused\n"); }
+        let ok = append_as(root, "schedule." + (if sub == "pause" { "paused" } else { "resumed" }), id, "{\"by\": " + quote(who) + "}", who);
+        if !ok { return fail("the record refused the append"); }
+        let s2 = sync_record(root);
+        return answer("schedule " + id + " " + (if sub == "pause" { "paused (schedule.paused; it never fires until resumed)" } else { "resumed (schedule.resumed)" }) + "\n");
+    }
+    if len(sub) > 0 && sub != "list" { return fail("schedule: `hale dna schedule`, `schedule pause <id>`, or `schedule resume <id>`"); }
+    let p = open_projection(root, ".", "");
+    let mut out = "";
+    let mut ids = "\n";
+    let mut i = 0;
+    while i < p.rows() {
+        let e = p.row(i);
+        if e.kind == "schedule.declared" && !std::str::contains(ids, "\n" + e.entity + "\n") { ids = ids + e.entity + "\n"; }
+        i = i + 1;
+    }
+    let mut rest = ids[1..len(ids)];
+    let mut n = 0;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let sid = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(sid) == 0 { continue; }
+        n = n + 1;
+        let mut decl = "";
+        let mut paused = false;
+        let mut fired = 0;
+        let mut skipped = 0;
+        let mut task = "";
+        let mut k = 0;
+        while k < p.rows() {
+            let e = p.row(k);
+            if e.entity == sid {
+                if e.kind == "schedule.declared" { decl = e.body; }
+                if e.kind == "schedule.paused" { paused = true; }
+                if e.kind == "schedule.resumed" { paused = false; }
+                if e.kind == "schedule.fired" { fired = fired + 1; let t = std::json::find_string_field(e.body, "task"); if len(t) > 0 { task = t; } }
+                if e.kind == "schedule.skipped" { skipped = skipped + 1; }
+            }
+            k = k + 1;
+        }
+        let every = std::json::find_int_field(decl, "every_ms");
+        let cron = std::json::find_string_field(decl, "cron");
+        let when = if every > 0 { "every " + to_string(every) + "ms" } else { "cron `" + cron + "` (UTC)" };
+        let what = if std::json::find_string_field(decl, "action") == "optimize" { "the optimize pass" } else { "ask: " + std::json::find_string_field(decl, "ask") };
+        out = out + "  " + sid + " [" + (if paused { "paused" } else { "live" }) + "] " + when + " — " + what + " · fired " + to_string(fired) + ", skipped " + to_string(skipped) + (if len(task) > 0 { " · last task " + task } else { "" }) + "\n";
+    }
+    if n == 0 { return answer("schedules: none declared (the org chart's `birth()` declares them: `self.core.schedule(dna::Schedule { … })`)\n"); }
+    return answer("schedules: " + to_string(n) + "\n" + out);
+}

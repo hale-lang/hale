@@ -31,6 +31,38 @@ grant, format, check, a commit there, and then the verification. It
 takes seconds; the next command tells you when there is something
 to look at.
 
+## On a schedule
+
+Some asks recur: reconcile the books every night, export the week on
+Monday morning. The org chart declares them in its `birth()`, and
+they take the same road as anything you ask by hand — planned by the
+leader, handed or proposed, reviewed:
+
+```hale
+birth() {
+    let why = self.core.schedule(dna::Schedule { id: "nightly", cron: "0 2 * * *", ask: "reconcile the day's records" });
+    let w2 = self.core.schedule(dna::Schedule { id: "weekly", cron: "0 9 * * 1", ask: "export last week's ledger" });
+}
+```
+
+A cron is five fields (minute, hour, day of month, month, day of
+week) in UTC, and a malformed one is refused when it is declared, not
+at two in the morning. `every_ms` names an interval instead. A
+schedule never fires while the last Task it fired is still open; the
+skip is a row you can read. `hale dna schedule` lists them, and
+`hale dna schedule pause nightly` / `resume nightly` are rows in your
+name that the organization reads at its next tick:
+
+```text
+$ hale dna schedule
+schedules: 2
+  nightly [live] cron `0 2 * * *` (UTC) — ask: reconcile the day's records · fired 3, skipped 1 · last task t9
+  weekly [paused] cron `0 9 * * 1` (UTC) — ask: export last week's ledger · fired 1, skipped 0 · last task t4
+```
+
+The optimize pass is a schedule too: `optimize_every_ms` on the org
+chart declares one named `optimize`.
+
 ## Review
 
 ```text

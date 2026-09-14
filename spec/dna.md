@@ -115,6 +115,34 @@ repository:
   work is accounted for, never dropped. Refused for a Task that is not
   handed: one the organism is working, or has settled, is not a
   person's to close.
+- **Schedules (GH #610).** An ask fired on an interval or a cron, in
+  the organism's own name, taking the ordinary road. The org chart
+  declares them in its `birth()` — `self.core.schedule(Schedule {
+  id, every_ms | cron, ask, requires })` — and the substrate's clock
+  (the org program's loop, `tick` with a millisecond monotonic clock)
+  checks them. A declaration is a row, `schedule.declared <id>
+  {action, every_ms, cron, ask, requires}`, when new or changed; a
+  malformed cron (five fields, minute hour day-of-month month
+  day-of-week; `*`, `a`, `a-b`, `*/n`, lists; ranges checked) is
+  refused at declaration, never when it would first fire, with a
+  `schedule.refused` row. An interval counts from the first tick and
+  fires once per interval; a cron fires once in the UTC minute it
+  names (day-of-month and day-of-week both restricted: either). Firing
+  is `ask` with `Intent { id: "s:<id>/<n>", from: "schedule:<id>" }`,
+  routed as `requires` says, and a `schedule.fired <id> {task, at}`
+  row; a refusal by the membrane is `schedule.refused`. **Overlap:** a
+  schedule never fires while the last Task it fired is open (born,
+  pending, handed — anything but done or failed); the skip is a
+  `schedule.skipped <id> {task, state, at}` row, never silent. `hale
+  dna schedule pause <id>` / `resume <id>` append `schedule.paused` /
+  `schedule.resumed` in your name from any clone; the organism reads
+  them at its tick (a git journal is re-read from its ref at most
+  every 5s) and a paused schedule never fires. `hale dna schedule`
+  lists them as the record has them. At birth a schedule's state —
+  its last Task, paused or not — is read back from the record. The
+  optimize pass is a schedule: `optimize_every_ms` declares
+  `optimize` (`action: "optimize"`) at birth and each run is a
+  `schedule.fired optimize` row.
 - **The optimize pass (GH #596 O).** On a cadence the org chart sets
   (`optimize_every_ms` on the substrate; 0 is never; the org program's
   loop ticks it with a millisecond monotonic clock), the substrate
@@ -191,6 +219,8 @@ the same way. A project's path therefore has no length rule.
 `task.resumed`, `intent.unrecovered`, `task.reassigned`, `person.retired`,
 `concern.refused`, `body.claimed`, `body.released`, `body.provisioned`,
 `secret.rotated`, `body.credential_missing`, `body.credential_present`,
+`schedule.declared`, `schedule.refused`, `schedule.fired`,
+`schedule.skipped`, `schedule.paused`, `schedule.resumed`,
 `optimize.refused`,
 `mutation.failed`, `effect.requested`, `effect.result`,
 `evidence.<step>`, `evidence.magnitude`, `review.requested`,

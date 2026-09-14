@@ -36,6 +36,9 @@ hale dna body provision <user@host> [--dsn <url>] [--dir <path>] [--dry-run]
                              compose or the DSN, a systemd user unit; writes nothing it cannot finish
 hale dna body start|stop|logs [--body <user@host>]
                              the body's unit, over ssh
+hale dna schedule [pause <id> | resume <id>]
+                             the schedules the org chart declared, as the record has them;
+                             pause and resume are rows in your name
 hale dna secret set <NAME> [--body <user@host>]
                              a credential from stdin into ~/.config/hale-dna/<project>.env there or
                              here; `secret rotate <NAME>`; the record gets `secret.rotated` only
