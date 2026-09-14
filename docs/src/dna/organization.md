@@ -64,8 +64,12 @@ work for the sake of activity.
 
 Some asks are nobody's software change. When the Leader plans one as a
 person's job, the organization hands it on and the record keeps it
-*handed* until the person reports it done: `hale dna task done <id>
---as <you> --note "what happened"`. One row, in their name.
+*handed* — to the person the Leader named — until that person reports
+it done: `hale dna task done <id> --as <you> --note "what happened"`.
+One row, in their name, and only theirs: someone else is refused and
+told to `hale dna task reassign <id> --to <them>` first. When a person
+leaves, `hale dna retire <who> --to <successor>` moves everything they
+hold, as rows, and refuses to drop any of it.
 
 A grant sits under the organization's own, when one is written: a
 child's grant is read through the organism's *current* grant at every

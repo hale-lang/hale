@@ -815,6 +815,7 @@ locus Dna {
         b.string_field("change_class", p.change_class);
         b.string_field("class_applied", if p.kind == "organism" { "organization" } else { p.change_class });
         b.string_field("target", p.target);
+        b.string_field("assignee", p.assignee);
         b.int_field("count", p.count);
         b.string_field("narrative", p.narrative);
         b.string_field("package", p.package);
@@ -838,7 +839,17 @@ locus Dna {
             // it done (`hale dna task done <id> --as <who>`).
             let handed = "handed: not a software change — " + p.narrative;
             WorkDone <- WorkSettlement { work_id: req.work_id, disposition: "done", result: handed, attempts: 0, history: "a0:leader:handed " };
-            let x = self.journal.append(self.journal.revision(), "task.handed", req.task_id, req.work_id + " by leader: " + handed);
+            // GH #604 rule 4: the row names the assignee the plan named,
+            // so completion can be checked against them at admission.
+            let hb = std::json::Builder { };
+            hb.begin_object();
+            hb.string_field("work", req.work_id);
+            hb.string_field("assignee", p.assignee);
+            hb.string_field("by", "leader");
+            hb.string_field("narrative", handed);
+            hb.end_object();
+            let x = self.journal.append(self.journal.revision(), "task.handed", req.task_id, hb.result());
+            self.membrane.notify("task", req.task_id + " handed to " + (if len(p.assignee) > 0 { p.assignee } else { "a person (unassigned)" }));
             return;
         }
         // The governed child comes from the KIND, and the class is
@@ -1444,6 +1455,7 @@ locus Dna {
                                 narrative: std::json::find_string_field(plan, "narrative"),
                                 package: std::json::find_string_field(plan, "package"),
                                 by: std::json::find_string_field(plan, "by"),
+                                assignee: std::json::find_string_field(plan, "assignee"),
                                 parsed: true
                             });
                         } else {

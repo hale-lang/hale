@@ -148,7 +148,11 @@ fn main() {
     } else if verb == "task" {
         // GH #596 W: `hale dna task done <id> [--as <who>] [--note …]`
         if word(a, 0) == "done" { ans = task_done_verb(root, seed, word(a, 1), flag(a, "--as"), flag(a, "--note")); }
-        else { ans = fail("task: `hale dna task done <id> [--as <who>] [--note <what was done>]`"); }
+        else if word(a, 0) == "reassign" { ans = task_reassign_verb(root, seed, word(a, 1), flag(a, "--to"), flag(a, "--as")); }
+        else { ans = fail("task: `hale dna task done <id> [--as <who>] [--note <what was done>]` or `hale dna task reassign <id> --to <who> [--as <by>]`"); }
+    } else if verb == "retire" {
+        // GH #604 rule 5: `hale dna retire <who> [--to <successor>] [--as <by>]`
+        ans = retire_verb(root, seed, word(a, 0), flag(a, "--to"), flag(a, "--as"));
     } else if verb == "sync" {
         ans = sync_verb(root);
     } else if verb == "deploy" {

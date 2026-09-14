@@ -39,10 +39,10 @@ const PERSON_CATALOG: &str = r#"// a catalog for the task-done test
 import "vendor/dna" as dna;
 
 fn frontier() -> dna::FakeModel {
-    return dna::FakeModel { name: "deep", model: "deep-1", answer: "kind: person\nclass: docs\ntarget: \ncount: 1\nThis is a call to make, not a change to the software.", price_micros: 50 };
+    return dna::FakeModel { name: "deep", model: "deep-1", answer: "kind: person\nclass: docs\ntarget: \ncount: 1\nassignee: noor\nThis is a call to make, not a change to the software.", price_micros: 50 };
 }
 fn fast() -> dna::FakeModel {
-    return dna::FakeModel { name: "quick", model: "quick-1", answer: "kind: person\nclass: docs\ntarget: \ncount: 1\nThis is a call to make, not a change to the software.", price_micros: 5 };
+    return dna::FakeModel { name: "quick", model: "quick-1", answer: "kind: person\nclass: docs\ntarget: \ncount: 1\nassignee: noor\nThis is a call to make, not a change to the software.", price_micros: 5 };
 }
 fn desk() -> dna::OpenAiChat {
     return dna::OpenAiChat { name: "private", model: "gpt-4o", credential: dna::HostedCredential { env_var: "HALE_DNA_NO_SUCH_KEY_9c1e" } };
@@ -111,16 +111,44 @@ fn a_persons_job_is_handed_and_reported_done_in_their_name() {
     let rows = journal(&app);
     assert!(rows.iter().any(|(k, e, b, _)| k == "task.planned" && e == "t1" && b.contains("\"kind\": \"person\"")), "planned as a person's job");
     assert!(!rows.iter().any(|(k, e, _, _)| k == "mutation.proposed" && e == "m1"), "nothing was mutated");
-    // the person reports it done, in their name
-    let (ok, out) = hale(&["dna", "task", "done", "t1", "--as", "riley", "--note", "called them; pallets land Thursday"], &app);
-    assert!(ok && out.contains("task t1 done by riley: called them; pallets land Thursday"), "{out}");
+    // GH #604 rule 4: the row names the assignee, and only they may close it
+    let handed_row = rows.iter().find(|(k, e, _, _)| k == "task.handed" && e == "t1").expect("task.handed");
+    assert!(handed_row.2.contains("\"assignee\": \"noor\""), "the handed row names noor: {}", handed_row.2);
+    let (ok, out) = hale(&["dna", "task", "done", "t1", "--as", "riley", "--note", "called them"], &app);
+    assert!(!ok && out.contains("handed to noor, not to riley"), "riley cannot close noor's task: {out}");
+    // GH #604 rule 5: reassignment is a row naming both; the Task stays handed
+    let (ok, out) = hale(&["dna", "task", "reassign", "t1", "--to", "dev", "--as", "noor"], &app);
+    assert!(ok && out.contains("task t1 reassigned from noor to dev by noor"), "{out}");
+    let (ok, out) = hale(&["dna", "task", "done", "t1", "--as", "noor"], &app);
+    assert!(!ok && out.contains("handed to dev, not to noor"), "after reassignment noor cannot close it: {out}");
+    let (ok, out) = hale(&["dna", "task", "done", "t1", "--as", "dev", "--note", "called them; pallets land Thursday"], &app);
+    assert!(ok && out.contains("task t1 done by dev: called them; pallets land Thursday"), "{out}");
     let rows = journal(&app);
     let done = rows.iter().find(|(k, e, _, _)| k == "task.done" && e == "t1").expect("task.done");
-    assert_eq!(done.3, "riley", "in the person's name");
+    assert_eq!(done.3, "dev", "in the assignee's name");
     assert!(done.2.contains("pallets land Thursday"), "{}", done.2);
     // and not twice, and not for a Task that is not handed
-    let (ok, out) = hale(&["dna", "task", "done", "t1", "--as", "riley"], &app);
+    let (ok, out) = hale(&["dna", "task", "done", "t1", "--as", "dev"], &app);
     assert!(!ok && out.contains("is done, not handed"), "{out}");
+    // retirement: a second job handed to noor moves to dev when noor retires, as rows
+    let (ok, out) = hale(&["dna", "ask", "--no-wait", "call", "the", "supplier", "again", "next", "week"], &app);
+    assert!(ok, "{out}");
+    let dl = Instant::now() + Duration::from_secs(60);
+    let mut handed2 = false;
+    while Instant::now() < dl && !handed2 {
+        handed2 = journal(&app).iter().any(|(k, e, _, _)| k == "task.handed" && e == "t2");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert!(handed2, "the second ask was handed on");
+    let (ok, out) = hale(&["dna", "retire", "noor", "--as", "riley"], &app);
+    assert!(!ok && out.contains("noor holds 1 handed task(s): t2"), "retirement refused while work is held and no successor named: {out}");
+    let (ok, out) = hale(&["dna", "retire", "noor", "--to", "dev", "--as", "riley"], &app);
+    assert!(ok && out.contains("noor retired by riley; 1 task(s) transferred to dev"), "{out}");
+    let rows = journal(&app);
+    assert!(rows.iter().any(|(k, e, b, _)| k == "task.reassigned" && e == "t2" && b.contains("\"to\": \"dev\"")), "the transfer is a row");
+    assert!(rows.iter().any(|(k, e, _, _)| k == "person.retired" && e == "noor"), "the retirement is a row");
+    let (ok, out) = hale(&["dna", "task", "done", "t2", "--as", "dev", "--note", "done after the handover"], &app);
+    assert!(ok, "the successor closes it: {out}");
     finish(&mut host);
     let (ok, st) = hale(&["dna", "status"], &app);
     assert!(ok && st.contains("t1") && st.contains("done"), "{st}");

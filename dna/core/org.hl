@@ -134,7 +134,8 @@ locus Leader {
             + "  (organism: this organization's own program under dna/org, its positions, laws and purpose, the Board's to decide; appendage: the software this organization runs for its own work, the application's own sources such as main.hl and its loci; product: software it ships to others; person: a job for a human, not a change to source)\n"
             + "class: docs | refactor | feature | application | organization | constitutional | process-policy | topology\n"
             + "target: <the file or locus this concerns, or the asker's>\n"
-            + "count: <how many changes this is>";
+            + "count: <how many changes this is>\n"
+            + "assignee: <who does it, when kind is person; else none>";
         let r = self.models.ask(ModelRequest {
             attempt_id: req.task_id + "/plan", role: "plan", target: req.target,
             prompt: prompt, context: brief, context_bytes: len(brief) + len(prompt),
@@ -147,6 +148,7 @@ locus Leader {
         let known_class = class == "docs" || class == "refactor" || class == "feature" || class == "application" || class == "organization" || class == "constitutional" || class == "process-policy" || class == "topology";
         let parsed = known_kind && known_class;
         let target = plan_line(text, "target");
+        let assignee = plan_line(text, "assignee");
         let count = std::str::parse_int(plan_line(text, "count")) or 1;
         TaskPlanned <- Plan {
             org: req.org, task_id: req.task_id, work_id: req.work_id,
@@ -155,7 +157,8 @@ locus Leader {
             target: if parsed && len(target) > 0 && target != "(none)" { target } else { req.target },
             count: if count > 0 { count } else { 1 },
             narrative: if r.ok { trim_nl(r.output) } else { "model refused: " + r.refused },
-            package: self.last_package, by: self.name, parsed: parsed
+            package: self.last_package, by: self.name, parsed: parsed,
+            assignee: if std::str::lower(assignee) == "none" { "" } else { assignee }
         };
     }
     // What the leader knows before it thinks: its charter, the
