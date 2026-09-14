@@ -12960,7 +12960,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .into(),
                     ));
                 }
-                Some(CodegenTy::Int) | Some(CodegenTy::Duration) => self
+                Some(CodegenTy::Int) | Some(CodegenTy::Duration) | Some(CodegenTy::Time) => self
                     .context
                     .i64_type()
                     .fn_type(&llvm_param_tys, false),
@@ -12992,7 +12992,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .fn_type(&llvm_param_tys, false),
                 Some(CodegenTy::String)
                 | Some(CodegenTy::Bytes)
-                | Some(CodegenTy::Time)
                 | Some(CodegenTy::LocusRef(_))
                 | Some(CodegenTy::TypeRef(_))
                 | Some(CodegenTy::Array(_, _))
@@ -18475,15 +18474,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         match ty {
             CodegenTy::String => Ok(v),
             CodegenTy::Time => {
-                // v0 Time at runtime is a ptr to a NUL-terminated
-                // ISO 8601 string (literals store the source
-                // spelling directly; `std::time::time_from_unix`
-                // emits the gmtime_r+strftime-formatted string).
-                // The String ABI is the same single-pointer shape,
-                // so to_string(Time) is identity. Resolves brained
-                // FRICTION F.2. Real i64-since-epoch lowering with
-                // a value→string trip stays deferred.
-                Ok(v)
+                // GH #607: an instant renders as ISO-8601 UTC, the
+                // fraction only when it is not zero.
+                let arena_ptr = self.current_arena_ptr()?;
+                let f = self
+                    .module
+                    .get_function("lotus_str_from_time")
+                    .expect("lotus_str_from_time declared");
+                let res = self
+                    .builder
+                    .build_call(
+                        f,
+                        &[arena_ptr.into(), v.into_int_value().into()],
+                        "to_string.time",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_str_from_time returns ptr");
+                Ok(res)
             }
             CodegenTy::Int => {
                 let arena_ptr = self.current_arena_ptr()?;
@@ -19346,7 +19355,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         name: &str,
     ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
         match ty {
-            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Bool | CodegenTy::Decimal => self
+            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time | CodegenTy::Bool | CodegenTy::Decimal => self
                 .builder
                 .build_int_compare(
                     inkwell::IntPredicate::EQ,
@@ -19368,7 +19377,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // the lotus_str_eq runtime helper. Used both by match
             // arms with String literals and by enum-deep-eq when
             // a payload field is String-typed.
-            CodegenTy::String | CodegenTy::Time => {
+            CodegenTy::String => {
                 let eq_fn = self
                     .module
                     .get_function("lotus_str_eq")
@@ -21786,7 +21795,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // reused across iterations matches the dynamic-alloca
         // shape semantically while not growing the frame.
         let llvm_ty: inkwell::types::BasicTypeEnum = match ty {
-            CodegenTy::Int | CodegenTy::Duration => {
+            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time => {
                 self.context.i64_type().into()
             }
             CodegenTy::Bounded(_, _) => {
@@ -21819,7 +21828,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             CodegenTy::String
             | CodegenTy::Bytes
-            | CodegenTy::Time
             | CodegenTy::LocusRef(_)
             | CodegenTy::TypeRef(_)
             | CodegenTy::Array(_, _)
@@ -22108,11 +22116,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((v.into(), CodegenTy::Decimal))
             }
             Expr::Literal(Literal::Time(s), _) => {
-                // v0 codegen mirrors the interpreter: store the
-                // source spelling as a NUL-terminated global. Real
-                // i64-since-epoch arithmetic lands later.
-                let p = self.global_string(s);
-                Ok((p.into(), CodegenTy::Time))
+                // GH #607: an instant, i64 nanoseconds since the
+                // epoch, parsed at compile time (the checker has
+                // already refused a malformed one).
+                let ns = hale_syntax::time_literal::parse_iso8601_utc_ns(s)
+                    .ok_or_else(|| CodegenError::Unsupported(format!(
+                        "time literal `{s}` is not an ISO-8601 UTC instant"
+                    )))?;
+                Ok((self.context.i64_type().const_int(ns as u64, true).into(), CodegenTy::Time))
             }
             Expr::Path(qn) => {
                 // m47 + payloads: enum variant construction
@@ -22634,6 +22645,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     return self.lower_binop(
                         *op, lv, rv, &CodegenTy::Duration,
                     );
+                }
+                // GH #607: an instant shifts by a Duration and two
+                // instants differ by one; both sides are i64
+                // nanoseconds, so these are the Duration arms with
+                // the result typed as the checker typed it.
+                if matches!(op, BinOp::Add | BinOp::Sub)
+                    && lt == CodegenTy::Time
+                    && rt == CodegenTy::Duration
+                {
+                    return self.lower_binop(*op, lv, rv, &CodegenTy::Time);
+                }
+                if *op == BinOp::Add && lt == CodegenTy::Duration && rt == CodegenTy::Time {
+                    return self.lower_binop(*op, lv, rv, &CodegenTy::Time);
+                }
+                if *op == BinOp::Sub && lt == CodegenTy::Time && rt == CodegenTy::Time {
+                    return self.lower_binop(*op, lv, rv, &CodegenTy::Duration);
                 }
                 if lt != rt {
                     return Err(CodegenError::Unsupported(format!(
@@ -23509,7 +23536,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 CodegenTy::Decimal,
             ),
             ParamValue::Time(s) => {
-                (self.global_string(s).into(), CodegenTy::Time)
+                let ns = hale_syntax::time_literal::parse_iso8601_utc_ns(s).unwrap_or(0);
+                (self.context.i64_type().const_int(ns as u64, true).into(), CodegenTy::Time)
             }
         }
     }
@@ -23608,8 +23636,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((v.into(), CodegenTy::Duration))
             }
+            // GH #607: Time ± Duration → Time (routed here by
+            // Expr::Binary), plain i64 arithmetic.
+            (BinOp::Add | BinOp::Sub, CodegenTy::Time) => {
+                let l = lv.into_int_value();
+                let r = rv.into_int_value();
+                let v = match op {
+                    BinOp::Add => self.builder.build_int_add(l, r, "tadd"),
+                    BinOp::Sub => self.builder.build_int_sub(l, r, "tsub"),
+                    _ => unreachable!(),
+                };
+                let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((v.into(), CodegenTy::Time))
+            }
             (BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq,
-                CodegenTy::Duration) =>
+                CodegenTy::Duration | CodegenTy::Time) =>
             {
                 let l = lv.into_int_value();
                 let r = rv.into_int_value();
@@ -24114,13 +24155,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         chosen.into_pointer_value(),
                     ));
                 }
-                CodegenTy::String | CodegenTy::Time | CodegenTy::StringView => {
+                CodegenTy::String | CodegenTy::StringView => {
                     // F.30b: unpack a StringView to its underlying
                     // C-string ptr (with epoch check) before printf.
                     let val = self.unpack_view_if_needed(val, &ty)?;
                     format.push_str("%s");
                     printf_args.push(BasicMetadataValueEnum::PointerValue(
                         val.into_pointer_value(),
+                    ));
+                }
+                CodegenTy::Time => {
+                    // GH #607: an instant renders through the same
+                    // ISO-8601 formatter as `to_string`.
+                    let rendered = self.value_to_string(val, &ty)?;
+                    format.push_str("%s");
+                    printf_args.push(BasicMetadataValueEnum::PointerValue(
+                        rendered.into_pointer_value(),
                     ));
                 }
                 CodegenTy::Duration => {
@@ -25284,6 +25334,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "time", "time_from_unix"] => {
                 let _ = self.lower_std_time_from_unix(args, scope)?;
+                Ok(())
+            }
+            // GH #607: the Time-valued surface, statement position.
+            ["std", "time", "current"] => {
+                let _ = self.lower_std_time_current(args)?;
+                Ok(())
+            }
+            ["std", "time", "iso8601"] => {
+                let _ = self.lower_std_time_iso8601(args, scope)?;
+                Ok(())
+            }
+            ["std", "time", "unix"] => {
+                let _ = self.lower_std_time_unix(args, scope)?;
+                Ok(())
+            }
+            ["std", "time", "nanos"] => {
+                let _ = self.lower_std_time_nanos(args, scope)?;
+                Ok(())
+            }
+            ["std", "time", "from_nanos"] => {
+                let _ = self.lower_std_time_from_nanos(args, scope)?;
                 Ok(())
             }
             // m79: std::process::exit. Calls libc exit() with the
@@ -26574,6 +26645,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "time", "time_from_unix"] => {
                 self.lower_std_time_from_unix(args, scope)
             }
+            // GH #607: the Time-valued surface.
+            ["std", "time", "current"] => self.lower_std_time_current(args),
+            ["std", "time", "iso8601"] => self.lower_std_time_iso8601(args, scope),
+            ["std", "time", "unix"] => self.lower_std_time_unix(args, scope),
+            ["std", "time", "nanos"] => self.lower_std_time_nanos(args, scope),
+            ["std", "time", "from_nanos"] => self.lower_std_time_from_nanos(args, scope),
             // #353: the `can_` probe beside the fallible parse, the
             // same pairing `str::parse_int` / `can_parse_int` has.
             ["std", "time", "can_parse_iso8601"] => {

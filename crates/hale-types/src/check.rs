@@ -11114,7 +11114,24 @@ impl<'a> Checker<'a> {
 
     fn check_expr(&mut self, expr: &Expr) -> Ty {
         match expr {
-            Expr::Literal(lit, _) => lit_ty(lit),
+            Expr::Literal(lit, span) => {
+                // GH #607: a Time literal is an instant, parsed here so
+                // a malformed one is the author's error, not the
+                // program's at runtime.
+                if let Literal::Time(s) = lit {
+                    if hale_syntax::time_literal::parse_iso8601_utc_ns(s).is_none() {
+                        self.diags.push(Diag::ty(
+                            *span,
+                            format!(
+                                "time literal `{s}` is not an ISO-8601 UTC instant \
+                                 (`YYYY-MM-DDTHH:MM:SS[.fraction]Z`; an offset such as \
+                                 `+01:00` is rejected, UTC only)"
+                            ),
+                        ));
+                    }
+                }
+                lit_ty(lit)
+            }
             Expr::Ident(id) => {
                 if let Some(s) = self.locals.lookup(&id.name) {
                     s.ty.clone()
@@ -13202,6 +13219,15 @@ impl<'a> Checker<'a> {
                 (lt, rt),
                 (Ty::Prim(PrimType::Duration), Ty::Prim(PrimType::Int))
             );
+        // GH #607: Time is an instant, i64 nanoseconds since the
+        // epoch. `Time ± Duration` (and `Duration + Time`) is a Time;
+        // `Time - Time` is a Duration; anything else with a Time in
+        // it has no meaning and is refused here.
+        let is_time = |t: &Ty| matches!(t, Ty::Prim(PrimType::Time));
+        let is_dur = |t: &Ty| matches!(t, Ty::Prim(PrimType::Duration));
+        let is_time_shift = (matches!(op, Add | Sub) && is_time(lt) && is_dur(rt))
+            || (matches!(op, Add) && is_dur(lt) && is_time(rt));
+        let is_time_diff = matches!(op, Sub) && is_time(lt) && is_time(rt);
         match op {
             Add | Sub | Mul | Div | Mod | BitAnd | BitOr | BitXor | Shl | Shr => {
                 if is_int_float_mix {
@@ -13209,6 +13235,22 @@ impl<'a> Checker<'a> {
                 }
                 if is_dur_scalar_mul || is_dur_scalar_div {
                     return Ty::Prim(PrimType::Duration);
+                }
+                if is_time_shift {
+                    return Ty::Prim(PrimType::Time);
+                }
+                if is_time_diff {
+                    return Ty::Prim(PrimType::Duration);
+                }
+                if is_time(lt) || is_time(rt) {
+                    self.diags.push(Diag::ty(
+                        span,
+                        "`Time` arithmetic: an instant shifts by a `Duration` \
+                         (`t + 5s`, `t - 1h`) and two instants differ by one \
+                         (`t2 - t1`); nothing else has a meaning"
+                            .to_string(),
+                    ));
+                    return Ty::Prim(PrimType::Time);
                 }
                 // Duration × Duration (and ÷ / %) has no unit-
                 // sane meaning (ns² / a dimensionless ratio) —

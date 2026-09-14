@@ -6236,6 +6236,7 @@ const void *lotus_replay_serve_blob(uint32_t jkind, const void *args,
 #define LOTUS_JK_ENV_VAR_EXISTS 6u
 #define LOTUS_JK_ENV_ARG 7u
 #define LOTUS_JK_ENV_ARGS_COUNT 8u
+#define LOTUS_JK_TIME_NOW_NS 9u
 
 /* One branch on the default path (both flags weak process-constant
  * ints), mirroring the probe discipline. */
@@ -11201,17 +11202,21 @@ int lotus_time_can_parse_iso8601(const char *s) {
     return lotus_time_parse_iso8601_raw(s) == INT64_MIN ? 0 : 1;
 }
 
+static int64_t lotus_floor_div_i64(int64_t a, int64_t b);
 int64_t lotus_time_parse_iso8601(const char *s) {
     int64_t v = lotus_time_parse_iso8601_raw(s);
-    return v == INT64_MIN ? 0 : v;
+    return v == INT64_MIN ? 0 : lotus_floor_div_i64(v, 1000000000LL);
 }
 
 static int64_t lotus_time_parse_iso8601_raw(const char *s) {
-    /* Fixed shape: YYYY-MM-DDTHH:MM:SS with an optional trailing 'Z'.
-     * Parsed by hand rather than with sscanf — the wasm target does
-     * not declare it, and a fixed-width format needs no scanner. A
-     * trailing offset like `+01:00` is REJECTED rather than ignored,
-     * so a local-time string is never silently read as UTC. */
+    /* GH #607: YYYY-MM-DDTHH:MM:SS, an optional fraction of one to
+     * nine digits, an optional trailing 'Z'; the value is NANOSECONDS
+     * since the epoch. Parsed by hand rather than with sscanf — the
+     * wasm target does not declare it, and a fixed-width format needs
+     * no scanner. A trailing offset like `+01:00` is REJECTED rather
+     * than ignored, so a local-time string is never silently read as
+     * UTC. The compile-time literal parser (hale-syntax
+     * time_literal.rs) accepts exactly this shape. */
     if (!s) return INT64_MIN;
     for (int i = 0; i < 19; i++) {
         if (s[i] == '\0') return INT64_MIN;
@@ -11224,9 +11229,6 @@ static int64_t lotus_time_parse_iso8601_raw(const char *s) {
             return INT64_MIN;
         }
     }
-    if (s[19] != '\0' && !(s[19] == 'Z' && s[20] == '\0')) {
-        return INT64_MIN;
-    }
     int y  = (s[0]-'0')*1000 + (s[1]-'0')*100 + (s[2]-'0')*10 + (s[3]-'0');
     int mo = (s[5]-'0')*10 + (s[6]-'0');
     int d  = (s[8]-'0')*10 + (s[9]-'0');
@@ -11235,8 +11237,81 @@ static int64_t lotus_time_parse_iso8601_raw(const char *s) {
     int se = (s[17]-'0')*10 + (s[18]-'0');
     if (mo < 1 || mo > 12 || d < 1 || d > 31) return INT64_MIN;
     if (h > 23 || mi > 59 || se > 60) return INT64_MIN;
+    size_t i = 19;
+    int64_t frac = 0;
+    if (s[i] == '.') {
+        i++;
+        int digits = 0;
+        while (s[i] >= '0' && s[i] <= '9') {
+            if (digits < 9) frac = frac * 10 + (s[i] - '0');
+            digits++;
+            i++;
+        }
+        if (digits == 0 || digits > 9) return INT64_MIN;
+        for (int k = digits; k < 9; k++) frac *= 10;
+    }
+    if (s[i] == 'Z') i++;
+    if (s[i] != '\0') return INT64_MIN;
     int64_t days = lotus_days_from_civil(y, (unsigned)mo, (unsigned)d);
-    return days * 86400 + (int64_t)h * 3600 + (int64_t)mi * 60 + se;
+    int64_t secs = days * 86400 + (int64_t)h * 3600 + (int64_t)mi * 60 + se;
+    return secs * 1000000000LL + frac;
+}
+
+/* The inverse of lotus_days_from_civil (Hinnant). */
+static void lotus_civil_from_days(int64_t z, int64_t *y, unsigned *m, unsigned *d) {
+    z += 719468;
+    int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    int64_t doe = z - era * 146097;
+    int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    int64_t yy = yoe + era * 400;
+    int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    int64_t mp = (5 * doy + 2) / 153;
+    unsigned dd = (unsigned)(doy - (153 * mp + 2) / 5 + 1);
+    unsigned mm = (unsigned)(mp < 10 ? mp + 3 : mp - 9);
+    *y = mm <= 2 ? yy + 1 : yy;
+    *m = mm;
+    *d = dd;
+}
+
+static int64_t lotus_floor_div_i64(int64_t a, int64_t b) {
+    int64_t q = a / b;
+    if ((a % b != 0) && ((a < 0) != (b < 0))) q--;
+    return q;
+}
+
+/* GH #607: the instant's ISO-8601 UTC text — the fraction only when
+ * it is not zero, trailing zeros dropped — in the caller's arena. */
+char *lotus_str_from_time(lotus_arena_t *a, int64_t ns) {
+    char *out = (char *)lotus_arena_alloc(a, 40, 1);
+    if (!out) return NULL;
+    int64_t secs = lotus_floor_div_i64(ns, 1000000000LL);
+    int64_t frac = ns - secs * 1000000000LL;
+    int64_t days = lotus_floor_div_i64(secs, 86400);
+    int64_t sod = secs - days * 86400;
+    int64_t y; unsigned m, d;
+    lotus_civil_from_days(days, &y, &m, &d);
+    int n = snprintf(out, 40, "%04lld-%02u-%02uT%02lld:%02lld:%02lld",
+                     (long long)y, m, d, (long long)(sod / 3600),
+                     (long long)((sod % 3600) / 60), (long long)(sod % 60));
+    if (frac != 0) {
+        char f[10];
+        snprintf(f, sizeof f, "%09lld", (long long)frac);
+        int len = 9;
+        while (len > 0 && f[len - 1] == '0') len--;
+        f[len] = '\0';
+        n += snprintf(out + n, 40 - (size_t)n, ".%s", f);
+    }
+    snprintf(out + n, 40 - (size_t)n, "Z");
+    return out;
+}
+
+int64_t lotus_time_unix_seconds(int64_t ns) {
+    return lotus_floor_div_i64(ns, 1000000000LL);
+}
+
+int64_t lotus_time_parse_iso8601_ns(const char *s) {
+    int64_t v = lotus_time_parse_iso8601_raw(s);
+    return v == INT64_MIN ? 0 : v;
 }
 
 char *lotus_str_from_duration(lotus_arena_t *a, int64_t ns) {
@@ -20275,23 +20350,23 @@ int64_t lotus_time_monotonic_ns(void) {
  * Returns "" on any failure (gmtime returns NULL, strftime
  * truncates, arena alloc fails).
  */
-const char *lotus_time_from_unix(int64_t n) {
-    static const char empty[1] = { 0 };
-    lotus_arena_t *arena = lotus_caller_arena_or_global();
-    if (!arena) return empty;
-    char *buf = (char *)lotus_arena_alloc(arena, 24, 1);
-    if (!buf) return empty;
-    time_t t = (time_t)n;
-    struct tm tm;
-    if (!gmtime_r(&t, &tm)) {
-        buf[0] = '\0';
-        return buf;
+/* GH #607: the wall clock as an instant — CLOCK_REALTIME in
+ * nanoseconds; journaled and replayed like lotus_time_now_seconds. */
+int64_t lotus_time_now_ns(void) {
+    if (lotus_replay_on()) {
+        int64_t v;
+        if (lotus_replay_serve_i64(LOTUS_JK_TIME_NOW_NS, NULL, 0, &v)) {
+            if (lotus_journal_on())
+                lotus_obs_journal_i64(LOTUS_JK_TIME_NOW_NS, NULL, 0, v);
+            return v;
+        }
     }
-    size_t k = strftime(buf, 24, "%Y-%m-%dT%H:%M:%SZ", &tm);
-    if (k == 0) {
-        buf[0] = '\0';
-    }
-    return buf;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    int64_t r = (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+    if (lotus_journal_on())
+        lotus_obs_journal_i64(LOTUS_JK_TIME_NOW_NS, NULL, 0, r);
+    return r;
 }
 
 /*

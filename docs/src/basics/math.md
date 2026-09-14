@@ -142,12 +142,33 @@ std::time::sleep(100ms);
 
 ## Time — wall-clock instants
 
-A `Time` is a specific instant, written as an ISO-8601 literal in
-backticks:
+A `Time` is a specific instant — nanoseconds since the Unix epoch,
+UTC — written as an ISO-8601 literal in backticks:
 
 ```hale,fragment
 let launch = `2026-05-08T12:00:00Z`;
+let precise = `2026-09-14T08:30:15.25Z`;   // a fraction, up to nanoseconds
 ```
+
+The literal is checked when the program is: `` `2026-05-08T12:00:00+01:00` ``
+is a compile error, because a local time read as UTC in silence is the
+bug this type exists to prevent. An instant shifts by a `Duration` and
+two instants differ by one — those are the only arithmetic it admits —
+and it orders:
+
+```hale,fragment
+let deadline = launch + 30m;
+let slack = deadline - std::time::current();    // a Duration
+if std::time::current() > deadline { escalate(); }
+println(deadline);                                // 2026-05-08T12:30:00Z
+```
+
+`std::time::current()` is the wall clock as a `Time`; `iso8601(t)` and
+`parse_time(s)` go to and from text (`parse_time` is fallible, so a
+malformed string is an `or` branch, not a sentinel); `unix(t)`,
+`nanos(t)`, `from_nanos(n)` and `time_from_unix(secs)` are the integer
+views. `now()` keeps returning epoch seconds as an `Int` for code that
+wants a number.
 
 For *measuring elapsed time*, reach for the monotonic clock —
 it never jumps backward when the wall clock is adjusted:

@@ -1,0 +1,39 @@
+// tests/hale/time_test.hl — GH #607: `Time` is a value, i64
+// nanoseconds since the Unix zero, UTC. A literal is parsed at
+// compile time; an instant shifts by a Duration and two instants
+// differ by one; it orders, formats as ISO-8601 (the fraction only
+// when it is not zero), parses back, and the wall clock reads as one.
+
+fn main() {
+    let zero = `1970-01-01T00:00:00Z`;
+    std::test::assert_eq_int(std::time::nanos(zero), 0, "the zero is zero");
+    let t = `2026-05-08T12:00:00Z`;
+    std::test::assert_eq_int(std::time::unix(t), 1778241600, "unix seconds of the literal");
+    std::test::assert_eq_str(std::time::iso8601(t), "2026-05-08T12:00:00Z", "formats back");
+    std::test::assert_eq_str(to_string(t), "2026-05-08T12:00:00Z", "to_string is the same text");
+    let f = `2026-09-14T08:30:15.25Z`;
+    std::test::assert_eq_int(std::time::nanos(f) - std::time::unix(f) * 1000000000, 250000000, "the fraction, in nanoseconds");
+    std::test::assert_eq_str(std::time::iso8601(f), "2026-09-14T08:30:15.25Z", "trailing zeros dropped");
+    let later = t + 90s;
+    std::test::assert(later > t && t < later && later != t, "an instant orders");
+    std::test::assert(later - t == 90s, "two instants differ by a Duration");
+    std::test::assert(t - 1h < t && (t - 1h) + 1h == t, "shift back and forth");
+    std::test::assert(1h + t == t + 1h, "Duration + Time");
+    std::test::assert_eq_str(std::time::iso8601(std::time::time_from_unix(1778241600)), "2026-05-08T12:00:00Z", "from seconds");
+    std::test::assert(std::time::from_nanos(std::time::nanos(f)) == f, "nanos round trip");
+    let p = std::time::parse_time("2026-05-08T12:00:00Z") or zero;
+    std::test::assert(p == t, "parse_time reads the literal's text");
+    let q = std::time::parse_time("2026-09-14T08:30:15.25Z") or zero;
+    std::test::assert(q == f, "and a fraction");
+    let bad = std::time::parse_time("2026-05-08T12:00:00+01:00") or zero;
+    std::test::assert(bad == zero, "an offset is refused, not read as UTC");
+    let now_s = std::time::now();
+    let cur = std::time::current();
+    std::test::assert(cur > `2026-01-01T00:00:00Z`, "the wall clock reads as an instant");
+    let d = std::time::unix(cur) - now_s;
+    std::test::assert(d >= 0 && d <= 1, "current() agrees with now()");
+    let before = `1969-12-31T23:59:59Z`;
+    std::test::assert(before < zero && std::time::nanos(before) == 0 - 1000000000, "before the zero is negative, not an error");
+    std::test::assert_eq_str(std::time::iso8601(before), "1969-12-31T23:59:59Z", "and formats");
+    std::test::assert_eq_int(std::time::unix(before), 0 - 1, "unix floors");
+}

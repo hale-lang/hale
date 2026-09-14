@@ -674,6 +674,8 @@ pub const SURFACES: &[NsSurface] = &[
         ns: &["time"],
         fns: &[
             e("parse_iso8601", EffectSet::PURE), e("can_parse_iso8601", EffectSet::PURE),
+            e("current", EffectSet::TIME), e("iso8601", EffectSet::PURE), e("parse_time", EffectSet::PURE),
+            e("unix", EffectSet::PURE), e("nanos", EffectSet::PURE), e("from_nanos", EffectSet::PURE),
             e("monotonic", EffectSet::TIME), e("monotonic_ns", EffectSet::TIME), e("now", EffectSet::TIME), e("sleep", EffectSet::SYSCALL.union(EffectSet::BLOCK).union(EffectSet::TIME)), e("time_from_unix", EffectSet::PURE),
         ],
         open_prefixes: &[],
@@ -914,6 +916,16 @@ pub const SIGS: &[FnSig] = &[
     sig!(NS_TIME, "sleep", [Duration], Unit),
     sig!(NS_TIME, "now", [], Int),
     sig!(NS_TIME, "time_from_unix", [Int], Time),
+    // GH #607: Time is a value. `current()` reads the wall clock as an
+    // instant (the `now()` above stays epoch seconds as Int);
+    // `iso8601` / `parse_time` round-trip through text; `unix` and
+    // `nanos` / `from_nanos` are the integer views.
+    sig!(NS_TIME, "current", [], Time),
+    sig!(NS_TIME, "iso8601", [Time], Str),
+    sig!(NS_TIME, "parse_time", [Str], Time, "ParseError"),
+    sig!(NS_TIME, "unix", [Time], Int),
+    sig!(NS_TIME, "nanos", [Time], Int),
+    sig!(NS_TIME, "from_nanos", [Int], Time),
     // #353: the inverse of `time_from_unix`, which already yields
     // ISO-8601 text. Returns unix seconds. UTC only, and PURE — it
     // reads no clock and no TZ.

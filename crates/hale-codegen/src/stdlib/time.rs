@@ -44,6 +44,62 @@ pub(crate) trait TimeStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(), CodegenError>;
+
+    // GH #607: Time is a value — i64 nanoseconds since the epoch.
+    fn lower_std_time_current(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_time_iso8601(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_time_unix(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_time_nanos(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_time_from_nanos(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_time_parse_time_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
+}
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// One `Time` argument, as its i64.
+    fn lower_time_arg(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::time::{name} takes 1 arg (t: Time), got {}",
+                args.len()
+            )));
+        }
+        let (v, ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(ty, CodegenTy::Time) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::time::{name}: t must be Time, got {:?}",
+                ty
+            )));
+        }
+        Ok(v.into_int_value())
+    }
 }
 
 impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
@@ -133,11 +189,6 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
         Ok((sec.into(), CodegenTy::Int))
     }
 
-    /// `std::time::time_from_unix(n: Int) -> Time` — direct
-    /// construction from epoch seconds. Lowers to a call into
-    /// `lotus_time_from_unix`, which gmtime_r + strftime's the
-    /// epoch into a 24-byte ISO 8601 UTC buffer in the caller arena.
-    /// Mirrors the runtime shape of compile-time Time literals.
     fn lower_std_time_parse_iso8601_fallible(
         &mut self,
         args: &[Expr],
@@ -194,6 +245,8 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
         )
     }
 
+    /// `std::time::time_from_unix(n: Int) -> Time` — the instant `n`
+    /// seconds after the epoch: `n * 1_000_000_000`, no runtime call.
     fn lower_std_time_from_unix(
         &mut self,
         args: &[Expr],
@@ -212,19 +265,168 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
                 n_ty
             )));
         }
-        let from_unix_fn = self
-            .module
-            .get_function("lotus_time_from_unix")
-            .expect("lotus_time_from_unix declared");
-        let call = self
+        let ns = self
             .builder
-            .build_call(from_unix_fn, &[n_val.into()], "time.from_unix")
+            .build_int_mul(
+                n_val.into_int_value(),
+                self.context.i64_type().const_int(1_000_000_000, false),
+                "time.from_unix",
+            )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let ptr = call
+        Ok((ns.into(), CodegenTy::Time))
+    }
+
+    /// `std::time::current() -> Time` — the wall clock as an instant
+    /// (`CLOCK_REALTIME` in nanoseconds), through a named runtime
+    /// primitive so record/replay can interpose like `now()`.
+    fn lower_std_time_current(
+        &mut self,
+        args: &[Expr],
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if !args.is_empty() {
+            return Err(CodegenError::Unsupported(format!(
+                "std::time::current takes 0 arguments, got {}",
+                args.len()
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_time_now_ns")
+            .expect("lotus_time_now_ns declared");
+        let v = self
+            .builder
+            .build_call(f, &[], "time.current")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .try_as_basic_value()
             .left()
-            .expect("lotus_time_from_unix returns ptr");
-        Ok((ptr, CodegenTy::Time))
+            .expect("lotus_time_now_ns returns i64");
+        Ok((v, CodegenTy::Time))
+    }
+
+    fn lower_std_time_iso8601(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let t = self.lower_time_arg("iso8601", args, scope)?;
+        let arena_ptr = self.current_arena_ptr()?;
+        let f = self
+            .module
+            .get_function("lotus_str_from_time")
+            .expect("lotus_str_from_time declared");
+        let v = self
+            .builder
+            .build_call(f, &[arena_ptr.into(), t.into()], "time.iso8601")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_str_from_time returns ptr");
+        Ok((v, CodegenTy::String))
+    }
+
+    fn lower_std_time_unix(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let t = self.lower_time_arg("unix", args, scope)?;
+        let f = self
+            .module
+            .get_function("lotus_time_unix_seconds")
+            .expect("lotus_time_unix_seconds declared");
+        let v = self
+            .builder
+            .build_call(f, &[t.into()], "time.unix")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_time_unix_seconds returns i64");
+        Ok((v, CodegenTy::Int))
+    }
+
+    fn lower_std_time_nanos(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let t = self.lower_time_arg("nanos", args, scope)?;
+        Ok((t.into(), CodegenTy::Int))
+    }
+
+    fn lower_std_time_from_nanos(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::time::from_nanos takes 1 arg (n), got {}",
+                args.len()
+            )));
+        }
+        let (v, ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(ty, CodegenTy::Int) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::time::from_nanos: n must be Int, got {:?}",
+                ty
+            )));
+        }
+        Ok((v, CodegenTy::Time))
+    }
+
+    /// `std::time::parse_time(s) -> Time fallible(ParseError)` — the
+    /// same parse as `parse_iso8601`, yielding the instant.
+    fn lower_std_time_parse_time_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::time::parse_time takes 1 arg (s), got {}",
+                args.len()
+            )));
+        }
+        let (v, ty) = self.lower_expr(&args[0], scope)?;
+        let s_val = self.unpack_view_if_needed(v, &ty)?;
+        let can_fn = self
+            .module
+            .get_function("lotus_time_can_parse_iso8601")
+            .expect("lotus_time_can_parse_iso8601 declared");
+        let can = self
+            .builder
+            .build_call(can_fn, &[s_val.into()], "time.can")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32");
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                can.into_int_value(),
+                self.context.i32_type().const_zero(),
+                "time.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let parse_fn = self
+            .module
+            .get_function("lotus_time_parse_iso8601_ns")
+            .expect("lotus_time_parse_iso8601_ns declared");
+        let ns = self
+            .builder
+            .build_call(parse_fn, &[s_val.into()], "time.value")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        self.complete_parse_fallible_call(
+            is_err,
+            s_val,
+            "parse_time",
+            Some((ns, CodegenTy::Time)),
+            "time.parse_time",
+        )
     }
 
     /// Lower `time::sleep(duration)` to a monotonic-clock,
