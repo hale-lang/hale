@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: the record holds a Task's birth before anything runs, and work survives a restart (GH #604, rules 1 and 2)
+
+- `ask` minted the Task, ran it, and journaled the birth afterwards; a crash in between left an `intent.offered` the record could not explain. The id is now minted, `task.born` appended, and only then is the Task born; a birth the record refuses stops there and nothing has run. On restart a Task born and not settled re-enters the tower from its last durable state (`task.resumed`): under the plan in the record when there is one — never replanned — or planned for the first time when there is none; a Task whose Mutation was in flight settles `failed` with it; one whose Mutation awaits its Review settles from that Mutation's outcome now that the Work which would have settled it is gone; a handed Task waits for its person. The pre-rule shape — an offered intent with no birth — is noted as `intent.unrecovered` and never re-offered, because work may already have run. `dna/tests/rehydrate_work_test.hl` writes the shapes a stopped organism leaves and births one over them.
+
 ### `Time` is a value (GH #607)
 
 - `Time` was a string-shaped placeholder: a literal lowered to its own source text, `time_from_unix` produced formatted text, and nothing could compare, order or shift an instant. It is now i64 nanoseconds since the Unix epoch, UTC. A literal — `` `2026-05-08T12:00:00Z` ``, with an optional fraction of up to nine digits — is parsed at check time, and an offset such as `+01:00` is a compile error rather than a local time read as UTC in silence. `Time ± Duration` and `Duration + Time` are a `Time`, `Time − Time` is a `Duration`, and any other arithmetic with a `Time` operand is refused with the two forms named; instants order and compare; `to_string` and `println` render ISO-8601 with the fraction only when it is not zero; before the epoch is negative, not an error. On the wire and in a struct it is the same 8 bytes as `Int`.

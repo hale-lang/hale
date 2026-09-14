@@ -184,7 +184,12 @@ history of m1: 37 event(s)
 The whole story of one change: the ask that started it, the sandbox,
 the model calls (what was asked and what it cost, never the prompt),
 each check with its receipt, the review, the verdict, the apply, the
-restart, the outcome. `hale dna history t1` starts from the request
+restart, the outcome. If the organization itself stops mid-way —
+the laptop closes, the host is restarted — the record is what it
+comes back from: a task it had planned resumes under that plan, one
+it had not planned yet is planned then, one whose change was being
+edited fails and says so, and one handed to a person is still
+theirs. `hale dna history t1` starts from the request
 instead. The receipts are blobs under `refs/dna/receipts/`, named by
 their hash; `git cat-file -p` reads one.
 
