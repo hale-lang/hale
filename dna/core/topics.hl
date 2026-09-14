@@ -154,6 +154,12 @@ type ModelEvidence {
     params: String = ""; // decoding knobs as sent, "temperature=0.0 max_tokens=512"
     prompt_digest: String = "";
     context_digest: String = "";
+    // GH #611: the prompt and the context as sent. The substrate files
+    // them as receipts under the two digests above (a customer-class
+    // call stores neither); the `model.called` row carries only the
+    // digests.
+    prompt: String = "";
+    context: String = "";
     knowledge_bindings: String = ""; // ids of the bindings the context was assembled from
     tool_grant: String = ""; // tools offered on this call, "" when none
     response_digest: String = "";

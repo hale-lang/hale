@@ -120,7 +120,8 @@ new position gets its own router function. Costs are metered per
 call, journaled, and counted against the one budget; when a window
 is spent, intent is refused with the reason and the Reviews wait for
 you. `hale dna history m1/a0` shows what one attempt asked for and
-what it cost. The prompt itself is never recorded, only its hash.
+what it cost, and the prompt and context it sent, from their receipts
+(a customer-class call keeps only their hashes).
 
 ## The backends
 

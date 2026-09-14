@@ -129,7 +129,7 @@ locus FakeModel {
             attempt_id: req.attempt_id, adapter: "fake", backend: self.name, endpoint: "fake://" + self.name,
             requested_model: self.model, reported_model: self.model,
             prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
-            context_digest: digest_of(req.context),
+            context_digest: digest_of(req.context), prompt: req.prompt, context: req.context,
             knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
             retry_of: req.retry_of, data_class: req.data_class
         };
@@ -198,8 +198,9 @@ locus LocalFakeModel {
 //                  external_model class, any data class.
 //
 // Every call publishes `ModelCalled` with the evidence list; the
-// assembly journals it. The prompt's digest, not the prompt, is what
-// the record carries.
+// assembly journals it with the prompt's and the context's digests and
+// files the bodies as receipts under them (GH #611), none for a
+// customer-class call.
 
 fn temperature_param(milli: Int) -> String {
     if milli < 0 { return "temperature=default"; }
@@ -349,7 +350,7 @@ locus OpenAiChat {
             requested_model: self.model,
             params: temperature_param(self.temperature_milli) + " max_tokens=" + to_string(self.max_tokens),
             prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
-            context_digest: digest_of(req.context),
+            context_digest: digest_of(req.context), prompt: req.prompt, context: req.context,
             knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
             retry_of: req.retry_of, data_class: req.data_class
         };
@@ -465,7 +466,7 @@ locus AnthropicMessages {
             requested_model: self.model,
             params: temperature_param(self.temperature_milli) + " max_tokens=" + to_string(if self.max_tokens > 0 { self.max_tokens } else { 4096 }),
             prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
-            context_digest: digest_of(req.context),
+            context_digest: digest_of(req.context), prompt: req.prompt, context: req.context,
             knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
             retry_of: req.retry_of, data_class: req.data_class
         };
@@ -530,7 +531,7 @@ locus LocalModel {
             endpoint: self.endpoint, requested_model: self.model,
             params: temperature_param(self.temperature_milli) + " max_tokens=" + to_string(self.max_tokens),
             prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
-            context_digest: digest_of(req.context),
+            context_digest: digest_of(req.context), prompt: req.prompt, context: req.context,
             knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
             retry_of: req.retry_of, data_class: req.data_class
         };
@@ -828,7 +829,7 @@ locus HarnessModel {
             endpoint: self.command, requested_model: self.model_name(),
             params: "confinement=" + kind + " masked=" + to_string(path_count(self.effective_mask(req.mask))) + " output=" + self.output,
             prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
-            context_digest: digest_of(req.context),
+            context_digest: digest_of(req.context), prompt: req.prompt, context: req.context,
             knowledge_bindings: req.knowledge_bindings,
             tool_grant: if len(req.workspace) > 0 { "harness @export" } else { "harness" },
             retry_of: req.retry_of, data_class: req.data_class
