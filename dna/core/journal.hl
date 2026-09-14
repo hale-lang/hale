@@ -457,7 +457,12 @@ fn lease_fences(c: Coordination, key: String, token: Int, now: Int) -> Bool {
 // a retry after a crash finds the key and does not dispatch again;
 // the result is appended once. Both facts are Journal events, so the
 // ledger is a projection and can be rebuilt.
-type EffectStatus { requested: Bool = false; done: Bool = false; ok: Bool = false; }
+type EffectStatus {
+    requested: Bool = false;
+    done: Bool = false;
+    ok: Bool = false;
+    unknown: Bool = false; // resulted, but nobody knows the outcome (GH #604 rule 3)
+}
 
 fn effect_status(j: Journal, key: String) -> EffectStatus {
     let mut st = EffectStatus { };
@@ -467,7 +472,11 @@ fn effect_status(j: Journal, key: String) -> EffectStatus {
         let e = j.read(i);
         if e.entity == key {
             if e.kind == "effect.requested" { st.requested = true; }
-            if e.kind == "effect.result" { st.done = true; st.ok = e.body == "ok"; }
+            if e.kind == "effect.result" {
+                st.done = true;
+                st.ok = std::str::starts_with(e.body, "ok");
+                st.unknown = std::str::starts_with(e.body, "unknown");
+            }
         }
         i = i + 1;
     }
@@ -477,11 +486,25 @@ fn effect_status(j: Journal, key: String) -> EffectStatus {
 // Returns true if THIS call should dispatch the effect (first time),
 // false if it was already requested (a retry) — the caller then only
 // waits for / records the result.
+// GH #604 rule 3: the claim is exclusive. Two writers may both find the
+// key unrequested and both append (the loser's append lands after a
+// lost race and a reload, without re-reading); only the writer whose
+// row is the FIRST request for the key dispatches — the other's row
+// stays in the record as a contended claim, and it does not act.
+@unbounded
 fn effect_request(j: Journal, key: String, body: String) -> Bool {
     let st = effect_status(j, key);
     if st.requested { return false; }
     let r = j.append(j.revision(), "effect.requested", key, body);
-    return r.ok;
+    if !r.ok { return false; }
+    let mut i = 0;
+    let n = j.revision();
+    while i < n {
+        let e = j.read(i);
+        if e.kind == "effect.requested" && e.entity == key { return e.seq == r.revision - 1; }
+        i = i + 1;
+    }
+    return false;
 }
 
 fn effect_result(j: Journal, key: String, ok: Bool) -> Bool {

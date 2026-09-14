@@ -35,6 +35,19 @@ repository:
 - **Leases** are blobs under `refs/dna/lease/<key>` (`:` in a key
   becomes `/`), `holder`, `token`, `expires`, `present` on four lines,
   compare-and-swapped on the ref. Tokens are monotonic per key.
+- **Effects are requested before they run, and the claim is exclusive
+  (GH #604 rule 3).** `effect.requested <key>` is appended before a
+  dispatch and `effect.result <key>` once after; a retry finds the
+  request and does not dispatch again. Two writers may both append a
+  request for one key; only the writer whose row is the first request
+  dispatches, the other's row stays as a contended claim and it does
+  not act. A request with no result when the organism restarts is
+  resolved by evidence where evidence exists (an `apply:<candidate>`
+  whose genome is at the candidate is `ok`; a `worktree.open` with no
+  worktree is `failed`) and marked `unknown` where it does not; the
+  gate refuses an unknown effect until a person resolves it —
+  `hale dna effect resolve <key> --outcome ok|failed`, one row in
+  their name, the last result for the key being its status.
 - **Sync.** `hale dna sync` (and the host, every tick) fetches the
   remote's record into `refs/dna/remote/journal`, reconciles, and
   pushes. Local ahead: push. Remote ahead: fast-forward. Diverged: the
@@ -136,7 +149,17 @@ repository:
   to) and a verdict appends `review.verdict` (the body: the verdict as
   the socket membrane carries it), each in the appender's git identity;
   the host beside the organism relays unanswered rows onto the
-  membrane once, and the organism's answers (`intent.offered`,
+  membrane once, admitting each under `dna.trust` (GH #604 rule 6): `local`,
+  the default, trusts every writer to the record — the operator's
+  profile; `signed` admits a row only when its commit carries a
+  signature git verifies (`git verify-commit`; git's keyring or
+  allowed-signers file is the list of who may act), and a row that
+  does not is refused in the record in the host's name
+  (`intent.refused`, `review.refused`, `concern.refused`: "unverified
+  writer") and never relayed. Under `signed`, rows this clone writes
+  are signed commits. Signing is one mechanism for this edge, not the
+  boundary itself: a hosted head is admitted through a reviewed mapping
+  of principals to authority and acts as the user, never as itself. and the organism's answers (`intent.offered`,
   `task.born`, `review.settled`, `review.refused`) return the same way.
   A row is answered when a later row of the answering kind names its
   entity. `hale dna ask --no-wait` appends and returns.
@@ -166,6 +189,7 @@ the same way. A project's path therefore has no length rule.
 `mutation.apply_retried`, `knowledge.retired`, `task.planned`,
 `grant.refused`, `grant.contracted`, `task.handed`, `org.reviewed`,
 `task.resumed`, `intent.unrecovered`, `task.reassigned`, `person.retired`,
+`concern.refused`,
 `optimize.refused`,
 `mutation.failed`, `effect.requested`, `effect.result`,
 `evidence.<step>`, `evidence.magnitude`, `review.requested`,

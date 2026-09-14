@@ -1,0 +1,104 @@
+// dna/tests/effect_outcomes_test.hl — GH #604 rule 3. The claim on an
+// effect key is exclusive: a second writer whose request lands after a
+// lost race does not dispatch. An effect requested and never resulted
+// when the organism stopped is reconciled at restart by evidence — an
+// apply whose genome is at the candidate is ok, an open with no
+// worktree failed — or marked unknown; and the gate refuses an unknown
+// effect until a person resolves it.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
+
+main locus App {
+    params {
+        j1: dna::GitJournal = dna::GitJournal { };
+        j2: dna::GitJournal = dna::GitJournal { };
+        one: dna::Dna = dna::Dna { };
+    }
+    @unbounded
+    fn result_of(key: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.one.journal.revision() {
+            let e = self.one.journal.read(i);
+            if e.kind == "effect.result" && e.entity == key { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    @unbounded
+    fn requests(j: dna::GitJournal, key: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "effect.requested" && e.entity == key { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    run() {
+        let repo = "/tmp/dna-eff-" + to_string(std::process::pid());
+        std::io::fs::mkdir(repo) or discard;
+        std::io::fs::mkdir(repo + "/app") or discard;
+        std::io::fs::mkdir(repo + "/.hale") or discard;
+        std::io::fs::mkdir(repo + "/.hale/dna") or discard;
+        std::io::fs::write_file(repo + "/hale.toml", "[deps]\n") or discard;
+        std::io::fs::write_file(repo + "/app/main.hl", "fn main() { println(\"app\"); }\n") or discard;
+        std::io::fs::write_file(repo + "/.gitignore", "/.hale/\n") or discard;
+        let init = sh("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        let add = sh("git\n-C\n" + repo + "\nadd\n-A");
+        let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
+        std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
+        let head = dna::trim_nl(sh("git\n-C\n" + repo + "\nrev-parse\nHEAD").stdout);
+
+        // ---- the claim is exclusive: two journals over one record, the second stale
+        self.j1 = dna::GitJournal { repo: repo, author: "one" };
+        self.j2 = dna::GitJournal { repo: repo, author: "two" };
+        let seed = self.j1.append(self.j1.revision(), "seed", "s", "row");
+        self.j2.load();
+        let first = dna::effect_request(self.j1, "apply:" + head, "m1");
+        std::test::assert(first, "the first writer holds the claim");
+        let second = dna::effect_request(self.j2, "apply:" + head, "m1");
+        std::test::assert(!second, "the second writer's request landed after a lost race and does not dispatch");
+        self.j1.load();
+        std::test::assert_eq_int(self.requests(self.j1, "apply:" + head), 2, "both requests are in the record; only the first is the claim");
+        std::test::assert(!dna::effect_request(self.j1, "apply:" + head, "m1"), "a retry finds the claim");
+
+        // ---- requested and never resulted: reconciled at restart
+        // apply:<head> — the genome IS at head: ok. apply:<other> — unknown.
+        // worktree.open:m7 with no worktree — failed.
+        let r1 = self.j1.append(self.j1.revision(), "effect.requested", "apply:0000000000000000000000000000000000000000", "m2");
+        let r2 = self.j1.append(self.j1.revision(), "effect.requested", "worktree.open:m7", head);
+        self.one = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            genome_seed: "app", org_seed: "org", org_id: "eff"
+        };
+        std::time::sleep(500ms);
+        std::test::assert(std::str::starts_with(self.result_of("apply:" + head), "ok (reconciled"), "the apply whose genome is at the candidate is ok: " + self.result_of("apply:" + head));
+        std::test::assert(std::str::starts_with(self.result_of("apply:0000000000000000000000000000000000000000"), "unknown (reconciled"), "an apply the genome does not show is unknown: " + self.result_of("apply:0000000000000000000000000000000000000000"));
+        std::test::assert(std::str::starts_with(self.result_of("worktree.open:m7"), "failed (reconciled"), "an open with no worktree failed: " + self.result_of("worktree.open:m7"));
+
+        // ---- the gate refuses an unknown effect until a person resolves it
+        let now = std::time::now();
+        let lease = self.one.gateway.take("m2", "dna", now);
+        let g = self.one.gateway.apply(self.one.journal, "m2", "0000000000000000000000000000000000000000", lease.token, now);
+        std::test::assert(!g.ok && std::str::contains(g.refused, "outcome of apply:0000000000000000000000000000000000000000 is unknown"), "refused until resolved: " + g.refused);
+        let resolved = self.one.journal.append(self.one.journal.revision(), "effect.result", "apply:0000000000000000000000000000000000000000", "failed (resolved by riley: never landed)");
+        let st = dna::effect_status(self.one.journal, "apply:0000000000000000000000000000000000000000");
+        std::test::assert(st.done && !st.ok && !st.unknown, "the last result is the status");
+        let rm = sh("rm\n-rf\n" + repo);
+    }
+}
+fn main() { App { }; }

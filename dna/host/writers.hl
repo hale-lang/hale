@@ -139,6 +139,33 @@ fn retire_verb(root: String, seed: String, who: String, to: String, by_flag: Str
     return answer(who + " retired by " + by + "; " + to_string(n) + " task(s) transferred" + (if n > 0 { " to " + to } else { "" }) + "\n");
 }
 
+// GH #604 rule 3: a person resolves an effect whose outcome the
+// organism could not establish after a restart. The last
+// `effect.result` for a key is its status, so the resolution is one
+// row in the resolver's name, and the gate proceeds or stops on it.
+fn effect_resolve_verb(root: String, seed: String, key: String, outcome: String, who_flag: String, note: String) -> Answer {
+    if len(key) == 0 || !(outcome == "ok" || outcome == "failed") { return fail("effect resolve: `hale dna effect resolve <key> --outcome ok|failed [--as <who>] [--note …]`"); }
+    let s = sync_record(root);
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let p = open_projection(root, seed, "");
+    let mut requested = false;
+    let mut last = "";
+    let mut i = 0;
+    while i < p.rows() {
+        let e = p.row(i);
+        if e.entity == key && e.kind == "effect.requested" { requested = true; }
+        if e.entity == key && e.kind == "effect.result" { last = e.body; }
+        i = i + 1;
+    }
+    if !requested { return fail("no effect `" + key + "` in the record"); }
+    if !std::str::starts_with(last, "unknown") { return fail("effect `" + key + "` is " + (if len(last) == 0 { "still in flight" } else { last }) + ", not unknown: nothing to resolve"); }
+    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    let body = outcome + " (resolved by " + who + (if len(note) > 0 { ": " + note } else { "" }) + ")";
+    if !append_as(root, "effect.result", key, body, who) { return fail("the record refused the append"); }
+    let s2 = sync_record(root);
+    return answer("effect " + key + " " + body + "\n");
+}
+
 fn ask_verb(root: String, outcome: String, to: String, no_wait: Bool) -> Answer {
     if len(outcome) == 0 { return fail("ask: say what should happen — `hale dna ask \"<intent>\"`"); }
     let s0 = sync_record(root);

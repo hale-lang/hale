@@ -1357,9 +1357,48 @@ locus Dna {
         self.metabolism.resume(tasks);
         if mutations > self.mutations_minted { self.mutations_minted = mutations; }
         self.budget.rehydrate(self.journal, std::time::now());
+        self.reconcile_effects();
         self.fail_in_flight();
         self.note_unrecovered_intents();
         self.resume_work();
+    }
+    // GH #604 rule 3: an effect requested and never resulted was in
+    // dispatch when the organism stopped, and the outside may have
+    // changed. Each is resolved by evidence where evidence exists and
+    // marked unknown where it does not; an unknown effect is never
+    // re-dispatched in silence — the gate refuses it until a person
+    // resolves it (`hale dna effect resolve`).
+    @unbounded
+    fn reconcile_effects() {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "effect.requested" {
+                let key = e.entity;
+                let st = effect_status(self.journal, key);
+                if !st.done {
+                    let mut verdict = "unknown (reconciled after a restart: no evidence either way)";
+                    if std::str::starts_with(key, "apply:") {
+                        let cand = key[6..len(key)];
+                        let head = self.gateway.head();
+                        verdict = if head == cand { "ok (reconciled after a restart: the genome is at the candidate)" } else { "unknown (reconciled after a restart: the genome is at " + head + ", not the candidate)" };
+                    } else if std::str::starts_with(key, "rollback:") {
+                        let after = key[9..len(key)];
+                        let c = std::str::index_of(after, ":");
+                        let base = if c < 0 { after } else { after[(c + 1)..len(after)] };
+                        let head = self.gateway.head();
+                        verdict = if head == base { "ok (reconciled after a restart: the genome is at the base)" } else { "unknown (reconciled after a restart: the genome is at " + head + ", not the base)" };
+                    } else if std::str::starts_with(key, "worktree.open:") {
+                        let m = key[14..len(key)];
+                        verdict = if std::io::fs::file_exists(self.gateway.workspaces.path_of(m)) { "ok (reconciled after a restart: the worktree is there)" } else { "failed (reconciled after a restart: no worktree was opened)" };
+                    }
+                    let x = self.journal.append(self.journal.revision(), "effect.result", key, verdict);
+                    if std::str::starts_with(verdict, "unknown") { self.membrane.notify("effect", key + ": outcome unknown after a restart; `hale dna effect resolve " + key + " --outcome ok|failed`"); }
+                }
+            }
+            i = i + 1;
+        }
     }
     // GH #604 rule 1, the shape from before it: an `intent.offered` with
     // no `task.born` naming it was admitted and lost, or never admitted —

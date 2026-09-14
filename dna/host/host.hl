@@ -242,11 +242,20 @@ locus Host {
     fn relay_record_membrane() -> Int {
         if len(record_head(self.root)) == 0 { return 0; }
         let p = open_projection(self.root, self.seed, self.toolchain);
+        let trust = trust_mode(self.root);
         let mut n = 0;
         let mut i = 0;
         while i < p.rows() {
             let r = p.row(i);
-            if (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested") && !keys_has(self.relayed, fact_key(p, i)) && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested") {
+            if (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested") && !keys_has(self.relayed, fact_key(p, i)) && trust == "signed" && !row_verified(self.root, r.digest) {
+                // GH #604 rule 6: an unverified writer's row is refused in
+                // the record, in the host's name, and never relayed; the
+                // refusal is the answer a waiting CLI reads
+                let refused = if r.kind == "intent.requested" { "intent.refused" } else if r.kind == "concern.requested" { "concern.refused" } else { "review.refused" };
+                let ok = append_as(self.root, refused, r.entity, "unverified writer: commit " + r.digest + " carries no signature git accepts (dna.trust = signed); not relayed", "host");
+                self.relayed = keys_add(self.relayed, fact_key(p, i));
+                self.say("refused an unverified " + r.kind + " (" + r.entity + ") from the record");
+            } else if (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested") && !keys_has(self.relayed, fact_key(p, i)) && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested") {
                 let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised " } else { " review.settled review.refused " };
                 let answered = find_after(p, i + 1, answers, r.entity).seq >= 0;
                 if !answered {
