@@ -103,7 +103,7 @@ the same way. A project's path therefore has no length rule.
 `mutation.located`, `mutation.candidate`, `mutation.<disposition>`,
 `mutation.applied`, `mutation.retained`, `mutation.rolled_back`,
 `mutation.rejected`, `mutation.revise`, `mutation.refused`,
-`mutation.apply_retried`, `knowledge.retired`,
+`mutation.apply_retried`, `knowledge.retired`, `task.planned`,
 `mutation.failed`, `effect.requested`, `effect.result`,
 `evidence.<step>`, `evidence.magnitude`, `review.requested`,
 `review.settled`, `review.refused`, `expression.restart_requested`,
@@ -499,6 +499,42 @@ authority.
   decides — and what it must know before it plans an ask or decides a
   Review. Project-owned; a change is a reviewed change to the
   organism. `upgrade` writes it for an organization from before it.
+- **The leader reads its brief at both moments it thinks.** The org
+  chart hands the `Leader` its `charter` and `purpose` (the program's
+  own text) and a `KnowledgeClient`; before a review and before a
+  plan it composes its brief — `CHARTER`, `PURPOSE`, the `LAW` as the
+  genome holds it at HEAD, and `PRACTICES` from the package for `org`
+  when the service has any — and puts it above the diffs. The model
+  call carries `knowledge_bindings` naming the package, so the
+  evidence of every decision that read it says so.
+- **`HALE_DNA_DISCOVER=off`** makes `init`'s discovery find nothing —
+  no key, no local model, no harness — so a fixture on a developer's
+  machine makes the organization CI makes: one whose leader has no
+  model that answers, whose plans take the defaults, and which spends
+  nothing. The CLI fixtures set it.
+- **An ask is planned before it becomes a Mutation.** With `planned:
+  true` on the substrate (the generated org chart says so), routed
+  edit Work is not a Mutation of class `application` at once: the
+  substrate publishes `PlanRequested`, the leader answers
+  `TaskPlanned`, and the substrate journals `task.planned <task>`
+  (kind — `organism`, `appendage`, `product` or `person` —
+  `change_class`, `target`, `count`, the model's narrative, the
+  package read, `parsed`, and `class_applied`) and proceeds under the
+  class and target the plan names. **The kind decides whose change
+  it is.** A plan of kind `organism` is a change to the organism
+  itself, and that is class `organization` whatever the plan called
+  it: it is expressed from the organism's seed and assessed under the
+  organism's policy, so it is the Board's to decide. Class
+  `organization` for a child that is not the organism is a
+  contradiction and is refused before any editor is placed
+  (`task.refused`, the Work fails, no Mutation). **A plan only splits
+  and classifies; it never widens what was asked.** An answer that names no kind and no class leaves
+  the defaults standing — an appendage, class `application`, the
+  ask's own target — and the record says it did not parse, so an
+  organization with no model that answers behaves as before. A plan
+  of kind `person` settles the Work as handed rather than mutating
+  anything. A `task.planned` row is not a settlement: the task's state
+  is its last other `task.*` row.
 - **Dev relies on docker compose.** `init` writes `dna/compose.yaml`
   (the `knowledge-db` service, `pgvector/pgvector:pg16`, a named
   volume `hale-dna-<project>-knowledge`, a host port in 54xx from the

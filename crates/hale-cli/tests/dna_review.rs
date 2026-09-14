@@ -17,6 +17,7 @@ fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
         .args(args)
         .current_dir(cwd)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .output()
         .expect("hale");
@@ -115,6 +116,7 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
         .current_dir(&app)
         .env("XDG_CACHE_HOME", &cache)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
