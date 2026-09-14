@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.20.0 — an organization written in Hale (2026-09-14)
 
 ### DNA Phase 5, first landing: the charter, and the design as proposals (GH #596 L and C)
 

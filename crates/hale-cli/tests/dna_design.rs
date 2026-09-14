@@ -187,7 +187,24 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
         journal(&app).iter().find(|r| r.0 == "review.requested" && r.1 == format!("review:{id}")).map(|r| serde_json::from_str::<serde_json::Value>(&r.2).unwrap()["knowledge_digest"].as_str().unwrap().to_string()).unwrap_or_else(|| panic!("no review.requested for {id}"))
     };
 
-    // the Board approves two and rejects the rest, one verdict each
+    // the Board approves two and rejects the rest, one verdict each.
+    // The two are chosen by NAME, and are neither principles nor
+    // evolution: the rounds below put older versions of those two into
+    // the record and count what is active under each name. Review ids
+    // are digests, and a receipt carries the toolchain version, so the
+    // listing's order moves with every release — picking by position
+    // approved principles at v0.20.0 and one active predecessor vanished.
+    let review_of = |name: &str| -> String {
+        journal(&app)
+            .iter()
+            .find(|r| r.0 == "review.requested" && serde_json::from_str::<serde_json::Value>(&r.2).map(|b| b["name"] == name).unwrap_or(false))
+            .map(|r| r.1.strip_prefix("review:").unwrap().to_string())
+            .unwrap()
+    };
+    let ids: Vec<String> = {
+        let first = [review_of("design/signals"), review_of("design/optimize")];
+        first.iter().cloned().chain(ids.into_iter().filter(|i| !first.contains(i))).collect()
+    };
     let mut host = start_org(&app);
     let (ok, a) = hale(&["dna", "review", &ids[0], "approve", "--as", "riley", "--authority", "board"], &app);
     assert!(ok && a.contains("settled: approve by riley"), "{a}");
