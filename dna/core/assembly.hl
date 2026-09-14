@@ -1059,8 +1059,12 @@ locus Dna {
         let born_id = self.metabolism.offer_as(id, i, k);
         let s = self.metabolism.find(id);
         // settled already (in-tower performers answer synchronously);
-        // routed Work settles later and `on_task_settled` journals it
-        if s.id != "" {
+        // routed Work settles later and `on_task_settled` journals it.
+        // A Task the leader handed to a person is settled as far as the
+        // metabolism goes — the organism's part is over — but stays
+        // HANDED in the record until the person reports it done (GH
+        // #604 rule 4): no settlement row here.
+        if s.id != "" && self.task_state(id) != "handed" {
             let r2 = self.journal.append(self.journal.revision(), "task." + s.disposition, id, s.detail);
         }
         return id;
