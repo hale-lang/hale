@@ -1384,6 +1384,7 @@ locus Dna {
         self.metabolism.resume(tasks);
         if mutations > self.mutations_minted { self.mutations_minted = mutations; }
         self.budget.rehydrate(self.journal, std::time::now());
+        self.pend_born_tasks();
         self.fail_in_flight();
         self.note_unrecovered_intents();
         self.resume_work();
@@ -1439,6 +1440,23 @@ locus Dna {
         if len(t) == 0 || !std::str::starts_with(t, "t") { return; }
         if self.task_state(t) != "pending" { return; }
         let x = self.journal.append(self.journal.revision(), "task." + disposition, t, mutation_id + " " + detail);
+    }
+    // A Task whose restart fell between its `task.born` and its
+    // `task.pending` is unsettled all the same: the record says so first,
+    // so every settlement (each requires `pending`) can end it — its plan
+    // resumed, or its in-flight Mutation's outcome (the second review of
+    // #618). Bounded by the Tasks born.
+    @unbounded
+    fn pend_born_tasks() {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "task.born" && self.task_state(e.entity) == "" {
+                let x = self.journal.append(self.journal.revision(), "task.pending", e.entity, "after a restart: born, and not yet pending when the organization stopped");
+            }
+            i = i + 1;
+        }
     }
     // GH #604 rule 2: a Task born and not settled re-enters the tower
     // after a restart from its last durable state. With a plan in the
