@@ -6,9 +6,11 @@
 // journal fetch the host makes hangs, so its tick blocks in the sync; and
 // the lease's own transport turns slow: each read takes seven seconds and
 // each write hangs. Every git call is bounded, but one renewal's calls
-// together would outlast the lease. The body fence must stop the
-// organization AND its worker before the lease it last proved expires,
-// while the host is still blocked — and the host, released, exits 3.
+// together would outlast the lease. And then the organism crashes, leaving
+// its worker reparented, out of reach of a walk from the organism's pid.
+// The body fence must stop that worker before the lease it last proved
+// expires, while the host is still blocked — and the host, released,
+// exits 3.
 //
 // The host binary runs directly (as `hale dna run` would exec it) with a
 // `git` first on its PATH that misbehaves while a flag file exists.
@@ -89,7 +91,9 @@ main locus App {
         let mut up = false;
         let mut tries = 0;
         while !up && tries < 720 {
-            if log_has(a + "/a.log", "organization (pid") && last_number(a + "/worker.tick") > 0 { up = true; } else { std::time::sleep(250ms); }
+            // past the host's wait for a membrane (this organization binds
+            // none), so the host is in its ticks
+            if log_has(a + "/a.log", "the organization runs unobserved") && last_number(a + "/worker.tick") > 0 { up = true; } else { std::time::sleep(250ms); }
             tries = tries + 1;
         }
         std::test::assert(up, "host A came up with its worker: " + (std::io::fs::read_file(a + "/a.log") or ""));
@@ -100,6 +104,10 @@ main locus App {
         // the transport turns bad: the host's tick blocks, the renewal is slow
         std::io::fs::write_file(block, "hang") or discard;
         let blocked_at = std::time::now();
+        // the host's tick is in its hung sync by now; the organism crashes
+        std::time::sleep(3s);
+        let crashed = dna::run_tool("kill\n-KILL\n" + org);
+        std::test::assert_eq_int(crashed.code, 0, "the organism crashed: " + crashed.stderr);
         let mut proven = 0;
         let mut died_at = -1;
         tries = 0;
@@ -107,16 +115,16 @@ main locus App {
             let status = dna::trim_nl(std::io::fs::read_file(a + "/.hale/dna/body.fence.status") or "");
             let at = std::str::index_of(status, " ok ");
             if at > 0 { proven = std::str::parse_int(status[(at + 4)..len(status)]) or proven; }
-            if !alive(org) { died_at = std::time::now(); } else { std::time::sleep(250ms); }
+            if !alive(worker) { died_at = std::time::now(); } else { std::time::sleep(250ms); }
             tries = tries + 1;
         }
         let log = std::io::fs::read_file(a + "/a.log") or "";
-        std::test::assert(died_at > 0 && proven > 0, "the organization was stopped while its host was blocked: " + log);
-        std::test::assert(!std::io::fs::file_exists(a + "/a.exit"), "the host was still blocked when its organization stopped: " + log);
-        std::test::assert(died_at <= proven, "the organization stopped before the lease it last proved expired: died " + to_string(died_at) + ", expires " + to_string(proven) + " (blocked at " + to_string(blocked_at) + ")");
+        std::test::assert(died_at > 0 && proven > 0, "the orphaned worker was stopped while its host was blocked: " + log);
+        std::test::assert(!std::io::fs::file_exists(a + "/a.exit"), "the host was still blocked when the worker stopped: " + log);
+        std::test::assert(died_at <= proven, "the worker stopped before the lease it last proved expired: died " + to_string(died_at) + ", expires " + to_string(proven) + " (blocked at " + to_string(blocked_at) + ")");
         std::time::sleep(1500ms);
         let tick = last_number(a + "/worker.tick");
-        std::test::assert(!alive(worker) && tick <= proven, "its worker tool stopped with it, before the lease expired: last tick " + to_string(tick) + ", expires " + to_string(proven) + ", worker alive " + (if alive(worker) { "yes" } else { "no" }));
+        std::test::assert(!alive(worker) && tick <= proven, "its last tick came before the lease expired: last tick " + to_string(tick) + ", expires " + to_string(proven) + ", worker alive " + (if alive(worker) { "yes" } else { "no" }));
 
         // released, the host finds the lease unproved and exits 3
         std::io::fs::unlink(block) or discard;
