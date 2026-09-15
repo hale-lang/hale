@@ -306,7 +306,11 @@ main locus App {
         // ---- 7. a week, from the record alone
         let export_argv = "sh\n-c\nBOOKS_MODE=export BOOKS_FROM=2026-09-07 BOOKS_TO=2026-09-13 exec \"$1\" run .\nsh\n" + toolchain();
         let week = in_dir(app, export_argv).stdout;
-        let head = dna::trim_nl(in_dir(app, "git\nrev-parse\nrefs/dna/journal").stdout);
+        // the organism is live: the export names the head it read, which is
+        // the record's (the ref may have moved on since)
+        let head = word_after(week, "from the record at ");
+        let at_record = in_dir(app, "git\nmerge-base\n--is-ancestor\n" + head + "\nrefs/dna/journal");
+        std::test::assert(len(head) == 40 && at_record.code == 0, "the export names a head of the record: " + head);
         std::test::assert(std::str::starts_with(week, "bill,supplier,payer,purpose,date,amount,currency,treatment,evidence,task,assignee,state,completion,practice\n"), "an open CSV: " + week);
         std::test::assert(!std::str::contains(week, "B-0999"), "last month's bill is outside the week");
         std::test::assert(std::str::contains(week, "B-1001,Northwind Rail,mara,travel to the client,2026-09-07,120.00,CU,pending," + bill1 + ",t1,mara,done,evidence " + r1001 + "," + v1), "B-1001 with its evidence: " + week);
@@ -314,7 +318,17 @@ main locus App {
         std::test::assert(std::str::contains(week, ",t2,mara,done,exception: the taxi driver gave no receipt (authorized by dana)," + v1), "B-1003 closed by an exception");
         std::test::assert(std::str::contains(week, ",t5,mara,done,evidence " + r1005 + "," + v2), "B-1005 under the adopted practice");
         std::test::assert(std::str::contains(week, "total CU 470") && std::str::contains(week, "bills: 5; open obligations: 0") && std::str::contains(week, "from the record at " + head), "control totals, and the record they came from: " + week);
-        std::test::assert_eq_str(in_dir(app, export_argv).stdout, week, "the same record, the same export");
+        // the same record gives the same export: two exports that read the
+        // same head (the live organism may append between two reads)
+        let mut first = in_dir(app, export_argv).stdout;
+        let mut second = in_dir(app, export_argv).stdout;
+        let mut rereads = 0;
+        while word_after(first, "from the record at ") != word_after(second, "from the record at ") && rereads < 10 {
+            first = second;
+            second = in_dir(app, export_argv).stdout;
+            rereads = rereads + 1;
+        }
+        std::test::assert_eq_str(second, first, "the same record, the same export");
         // a document filed twice is one bill: the export counts it once
         let refiled = dna_cli(app, "receipt\nfile\n" + app + "/inbox/done/b1001.bill\n--as\nintake");
         std::test::assert_eq_int(count(app, "receipt.filed", bill1, ""), 2, "filed a second time by hand: " + refiled);

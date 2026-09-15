@@ -319,8 +319,10 @@ fn drain_once() {
 // obligation as the record has it; totals by currency; the record's head.
 @unbounded
 fn export_week(from: String, to: String) -> String {
+    // the journal at the head the export names, read once: a live organism
+    // moving the ref in between cannot make the rows and the head disagree
     let head = std::str::trim(git("rev-parse\nrefs/dna/journal"));
-    let journal = git("show\nrefs/dna/journal:journal.jsonl");
+    let journal = git("show\n" + head + ":journal.jsonl");
     let lo = day_number(from);
     let hi = day_number(to);
     let mut out = "bill,supplier,payer,purpose,date,amount,currency,treatment,evidence,task,assignee,state,completion,practice\n";
