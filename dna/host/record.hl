@@ -17,9 +17,25 @@ const CONCERN_SOCK: String = "hale-dna.concern.raised.sock";
 // `git -C <repo> <args…>`; argv newline-separated.
 fn git(repo: String, args: String) -> dna::RunResult {
     // the body fence bounds every git call it makes (the second review of
-    // #622): a hung transport fails a renewal instead of blocking it
+    // #622): a hung transport fails a renewal instead of blocking it — and
+    // never past the deadline the fence last proved (`body.deadline`), so a
+    // renewal of several bounded calls cannot outlast the lease together
+    // (the third review of #622)
+    // (only the calls that cross the network: a local read cut off at the
+    // deadline would look like no lease at all)
     let t = std::env::var("HALE_DNA_GIT_TIMEOUT");
-    if len(t) > 0 { return dna::run_tool("timeout\n" + t + "\ngit\n-C\n" + repo + "\n" + args); }
+    let nl = std::str::index_of(args, "\n");
+    let sub = if nl < 0 { args } else { args[0..nl] };
+    if len(t) > 0 && (sub == "fetch" || sub == "push" || sub == "ls-remote") {
+        let mut secs = std::str::parse_int(t) or 8;
+        let deadline = std::str::parse_int(dna::trim_nl(std::io::fs::read_file(repo + "/.hale/dna/body.deadline") or "")) or 0;
+        if deadline > 0 {
+            let left = deadline - std::time::now();
+            if left <= 0 { return dna::RunResult { code: 124, stdout: "", stderr: "the body lease's deadline has passed; no more git is tried" }; }
+            if left < secs { secs = left; }
+        }
+        return dna::run_tool("timeout\n" + to_string(secs) + "\ngit\n-C\n" + repo + "\n" + args);
+    }
     return dna::run_tool("git\n-C\n" + repo + "\n" + args);
 }
 
@@ -481,6 +497,9 @@ fn body_renew(repo: String, mine: BodyLease, now: Int) -> BodyLease {
     if !body_lease_write(repo, l, cur.sha) {
         let again = body_lease_read(repo);
         if !again.ok { return again; }
+        // the write failed and the lease is still ours as it was: not lost,
+        // only unrenewed — kept until it expires, like a partition
+        if again.present && again.holder == mine.holder && again.token == mine.token { return BodyLease { ok: false }; }
         return BodyLease { present: false, holder: again.holder, token: again.token, expires: again.expires, sha: again.sha };
     }
     return BodyLease { present: true, holder: mine.holder, token: mine.token, expires: l.expires, sha: git_out(repo, "rev-parse\n-q\n--verify\n" + BODY_LEASE_REF) };

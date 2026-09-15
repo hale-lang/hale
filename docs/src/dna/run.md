@@ -60,10 +60,12 @@ hale dna run: a body for this record is live on riley@srv:/srv/chat (ticked 2s a
 The holder is `user@host:<clone>`, so the same clone restarting takes
 its lease straight back. Beside the host runs the **body fence**, a
 small process of its own that renews the lease every ten seconds,
-with every git call it makes cut off after eight. It never waits on
+with every git call it makes cut off after eight, and all of them cut
+off at the deadline the lease allows. It never waits on
 the host: when the lease is someone else's, or it cannot prove the
 lease within five seconds of its expiry, or the host is gone, it
-kills the organization and the expression and writes why to
+kills the organization and the expression, with every tool they
+started, and writes why to
 `.hale/dna/body.fence.status`. The host reads that file at the top of
 every tick, before it relays anything onto the membrane or restarts
 anything, and again the moment before it starts a process, and exits
