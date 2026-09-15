@@ -82,9 +82,18 @@ locus Service {
         // the service by hand (the review's second round, finding 4).
         // The connection is asked on each request, and a dead one is
         // re-established here rather than reported as knowledge.
+        // The store is scoped by the record's identity, its first
+        // commit (GH #613): a record that had no rows when the store
+        // opened, and has some now, moves to its own schema here.
+        let scope = self.j.genesis();
+        if self.opened && scope != self.store.record() {
+            eprintln("hale dna knowledge: the record has its first row; the store is scoped to record ", scope);
+            self.opened = false;
+        }
         if self.opened && self.store.healthy() { return true; }
         if self.opened { eprintln("hale dna knowledge: the store's connection is gone (", self.store.last_error(), "); dialling again"); }
         self.opened = false;
+        self.store.scope(scope);
         if self.store.reopen() {
             self.opened = true;
             self.last_error = "";
@@ -97,9 +106,12 @@ locus Service {
     // repository has now (another process — the organization, a CLI —
     // may have moved the ref since the last read).
     fn apply() -> know::Applied {
+        // read the record before opening the store: the scope is the
+        // record's identity as loaded, and what is applied is the same
+        // loaded record
+        let moved = self.j.refresh();
         if !self.ensure_open() { return know::Applied { error: self.last_error }; }
         self.store.forget_error();
-        let moved = self.j.refresh();
         let r = know::apply_record(self.store, self.j, self.receipts);
         self.applied = self.applied + r.ratified + r.proposed + r.declined;
         self.last_error = r.error;
@@ -116,6 +128,7 @@ locus Service {
         b.begin_object();
         b.string_field("store", self.store.kind());
         b.bool_field("open", self.opened);
+        b.string_field("scope", self.store.record());
         b.int_field("watermark", self.store.watermark());
         b.int_field("record", self.j.revision());
         b.int_field("ideas", self.store.count("ideas"));

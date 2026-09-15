@@ -136,6 +136,7 @@ locus GitJournal {
         rows: EventRows = EventRows { };
         text: String = ""; // journal.jsonl as of `head_sha`
         head_sha: String = "";
+        root_sha: String = ""; // the first commit: the record's identity (GH #613)
         loaded: Int = 0;
         retries: Int = 0; // appends that lost a CAS race and re-appended at the new tail
         io_errors: Int = 0;
@@ -151,10 +152,12 @@ locus GitJournal {
         while self.rows.len() > 0 { let gone = self.rows.pop() or Event { }; }
         self.loaded = 0;
         self.head_sha = git_out(self.repo, "rev-parse\n-q\n--verify\n" + self.ref_name);
-        if self.head_sha == "" { self.text = ""; return; }
+        if self.head_sha == "" { self.text = ""; self.root_sha = ""; return; }
         self.text = git_out(self.repo, "show\n" + self.ref_name + ":journal.jsonl");
         if len(self.text) > 0 { self.text = self.text + "\n"; }
         let shas = git_out(self.repo, "rev-list\n--reverse\n" + self.ref_name) + "\n";
+        let first_nl = std::str::index_of(shas, "\n");
+        self.root_sha = if first_nl < 0 { shas } else { shas[0..first_nl] };
         let mut rest = self.text;
         let mut srest = shas;
         let mut prev = "genesis";
@@ -189,6 +192,11 @@ locus GitJournal {
         return true;
     }
     fn revision() -> Int { return self.rows.len(); }
+    // The record's identity: the sha of its first commit, the same in
+    // every clone of the record and different for every record. Empty
+    // while the record has no rows. The knowledge store is scoped by it
+    // (GH #613).
+    fn genesis() -> String { return self.root_sha; }
     fn head() -> String {
         if self.head_sha == "" { return "genesis"; }
         return self.head_sha;

@@ -57,7 +57,17 @@ hale dna dev: expression chat (pid 41240) under LOTUS_OBS=1
 so and runs without a knowledge service; point
 `HALE_DNA_KNOWLEDGE_DSN` at a Postgres of your own
 (`postgres://user:password@host:port/db`) to use one anyway, or at
-`memory` for the in-process store. Beyond one machine, and under
+`memory` for the in-process store.
+
+One Postgres can hold many records. The store is scoped by the
+record — its identity is the sha of the record's first commit, the
+same in every clone and different for every record — and each record
+gets its own schema, `dna_<sha>`, so two projects pointed at the same
+database see two graphs, each with its own watermark. The summary
+reports the scope. A schema that names a different record than the
+service was opened for is refused, not read; so is a store in
+`public` from before stores were scoped (drop its tables, and the
+service rebuilds the projection from the record). Beyond one machine, and under
 `hale dna run`, the service is an instance in the plan against your
 Postgres, like any other service; `hale dna knowledge` runs it in
 the foreground.
@@ -66,7 +76,7 @@ the foreground.
 
 ```text
 $ curl -s localhost:8791/
-{"store": "postgres", "watermark": 58, "record": 58, "ideas": 3, "ratified": 1, "bindings": 1, "ticks": 412, "error": ""}
+{"store": "postgres", "open": true, "scope": "9f3c…e1a0", "watermark": 58, "record": 58, "ideas": 3, "ratified": 1, "bindings": 1, "structure": 12, "ticks": 412, "error": ""}
 
 $ curl -s 'localhost:8791/context?target=org/leader/worker/mailer&budget=8'
 {"target": "org/leader/worker/mailer", "revision": 58, "digest": "sha256:…", "included": "sha256:8f17…", "included_n": 1,

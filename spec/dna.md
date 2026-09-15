@@ -510,9 +510,10 @@ authority.
   digest), `bind`, `link`, `idea(id)`, `context_ids(target, budget)`
   (accepted ideas bound to the target or any prefix of its path —
   goals flow down, initiatives stay local — in ratification order),
-  `count(what)`. `Pq` is Postgres (four tables: `knowledge_meta`,
-  `knowledge_ideas`, `knowledge_bindings`, `knowledge_edges`; the
-  schema migrated at `open`; every write an upsert; rows come back as
+  `count(what)`. `Pq` is Postgres (six tables: `knowledge_meta`,
+  `knowledge_ideas`, `knowledge_bindings`, `knowledge_edges`,
+  `knowledge_structure`, `knowledge_signals`; the schema migrated at
+  `open`; every write an upsert; rows come back as
   JSON built by the server, since the driver's tab- and
   newline-separated rows cannot carry an ordinary paragraph; a signal
   counts once per record row, keyed on that row's sequence, because
@@ -529,6 +530,27 @@ authority.
   lag, never disagree. The observed and inferred tier (K3) lives only
   in Postgres and is backed up like any Postgres; the ratified tier
   rebuilds from git.
+- **The record is the scope of its store.** A store is opened for one
+  record, named by the record's identity — the sha of the journal's
+  first commit, the same in every clone of the record and different
+  for every record (`GitJournal.genesis()`; `scope(record)` on the
+  store before `open`, `record()` to read it back). `Pq` keeps one
+  Postgres schema per record, `dna_<identity>`, selected for the
+  session at `open` (with `public` behind it for the vector type), so
+  two records on one database — an operator's `HALE_DNA_KNOWLEDGE_DSN`
+  shared across projects — each see only their own ideas, bindings,
+  structure, signals and watermark; `hale dna dev`'s compose database
+  is one record's anyway. The schema's `knowledge_meta` carries a
+  `record` row naming its owner, written on first open and checked on
+  every open: a schema that names another record is refused (`scope:
+  schema … belongs to record …; it is not read`), never read. A store
+  in `public` from before stores were scoped is refused with the way
+  forward (drop its tables or the database; the projection rebuilds
+  from the record), never read as any record's. A record with no
+  rows yet has no identity: its service opens under `dna_unscoped`,
+  where nothing is ever applied, and moves to the record's own schema
+  on the request after its first row lands. The summary reports the
+  scope (`"scope"`).
 - **The service program.** `dna/knowledge/service` (`hale dna
   knowledge [project] [--port N]`, default 8791): applies the record
   on every request (the reader sees it as it is now) and answers over
