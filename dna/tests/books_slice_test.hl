@@ -180,8 +180,8 @@ main locus App {
         let v1_out = dna_cli(app, "practice\npropose\nacceptance/expense-receipt\n--text\nA bill closes with its receipt, or with an exception someone other than the payer authorizes. evidence: required\n--because\nthe books practice this organization starts with\n--as\nriley");
         let v1 = digest_in(v1_out);
         std::test::assert(len(v1) == 71 && std::str::contains(v1_out, "practice acceptance/expense-receipt proposed by riley"), "proposed: " + v1_out);
-        let v1_ok = dna_cli(app, "review\n" + word_after(v1_out, "hale dna review ") + "\napprove\n--as\ndana\n--authority\nboard");
-        std::test::assert(wait_rows(app, "knowledge.ratified", v1, "", 1, 30), "ratified by the Board: " + v1_ok);
+        let v1_ok = dna_cli(app, "review\n" + word_after(v1_out, "hale dna review ") + "\napprove\n--as\ndana\n--authority\nboard\n--no-wait");
+        std::test::assert(wait_rows(app, "knowledge.ratified", v1, "", 1, 120), "ratified by the Board: " + v1_ok);
 
         // ---- 1 + 2. bills arrive; each missing receipt is a Task, bound and handed
         drop_bill(fixture, app, "b0999.bill");
@@ -246,8 +246,11 @@ main locus App {
         std::test::assert(wait_rows(app, "review.requested", "review:m1", "", 1, 240), "the optimize pass proposed a change and it became a Review: " + journal(app));
         std::test::assert(count(app, "org.reviewed", "", "concerns raised: 3") >= 1, "prompted by the concerns in the record");
         std::test::assert(std::str::contains(body(app, "mutation.proposed", "m1"), "change the intake to request the receipt from the supplier"), "the change names what it is for: " + body(app, "mutation.proposed", "m1"));
-        let approved = dna_cli(app, "review\nm1\napprove\n--as\nriley\n--comment\nask the supplier at capture");
-        std::test::assert(std::str::contains(approved, "review m1 settled: approve by riley"), "approved: " + approved);
+        // the verdict is sent and the Review answers in the record; a fixture
+        // running beside others waits on the record, not on the CLI
+        let approved = dna_cli(app, "review\nm1\napprove\n--as\nriley\n--comment\nask the supplier at capture\n--no-wait");
+        std::test::assert(std::str::contains(approved, "verdict approve on m1 by riley sent"), "approved: " + approved);
+        std::test::assert(wait_rows(app, "review.settled", "m1", "approve", 1, 120), "the Review settled on the approval: " + journal(app));
         std::test::assert(wait_rows(app, "mutation.retained", "m1", "", 1, 300), "adopted: applied, restarted, observed healthy: " + journal(app));
         std::test::assert(std::str::contains(in_dir(app, "git\nshow\nHEAD:main.hl").stdout, "books intake 2"), "the Genome is the adopted intake");
 
@@ -255,8 +258,8 @@ main locus App {
         let v2_out = dna_cli(app, "practice\npropose\nacceptance/expense-receipt\n--text\nA bill closes with its receipt; the copy a supplier sends when asked at capture is the receipt. evidence: required\n--supersedes\n" + v1 + "\n--because\nthree bills arrived without receipts (concern.raised org/books/intake)\n--as\nriley");
         let v2 = digest_in(v2_out);
         std::test::assert(len(v2) == 71 && v2 != v1, "a new version proposed: " + v2_out);
-        let v2_ok = dna_cli(app, "review\n" + word_after(v2_out, "hale dna review ") + "\napprove\n--as\ndana\n--authority\nboard");
-        std::test::assert(wait_rows(app, "knowledge.ratified", v2, "", 1, 30) && wait_rows(app, "knowledge.retired", v1, "", 1, 30), "ratified, and the first version retired: " + v2_ok);
+        let v2_ok = dna_cli(app, "review\n" + word_after(v2_out, "hale dna review ") + "\napprove\n--as\ndana\n--authority\nboard\n--no-wait");
+        std::test::assert(wait_rows(app, "knowledge.ratified", v2, "", 1, 120) && wait_rows(app, "knowledge.retired", v1, "", 1, 120), "ratified, and the first version retired: " + v2_ok);
         std::test::assert(std::str::contains(dna_cli(app, "practice"), "[in force] A bill closes with its receipt; the copy a supplier sends"), "the adopted version is the one in force");
 
         // ---- 5. the next bill uses both
