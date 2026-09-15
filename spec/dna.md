@@ -49,7 +49,11 @@ repository:
   /receipt/<digest>?as=<reader>&purpose=<purpose>` only when a
   `receipt.disclosed <digest> {recipient, purpose, by}` row names both,
   and appends `receipt.read` on an answer and `receipt.read_refused` on a
-  refusal. `Dna.evidence_class(digest)` is the class a request carries
+  refusal. The answer is given only once its `receipt.read` row is in
+  the record: a read the record cannot hold (the journal refuses the
+  append) is refused with 503 and discloses nothing, and a body kept
+  while the record refuses its `receipt.classified` row is answered 503
+  so it is filed again. `Dna.evidence_class(digest)` is the class a request carries
   when it puts the body in a prompt, so a hosted model refuses it. This
   is the third trust profile #606 names: the readers of a clone hold
   digests and classes, never protected bodies. Under local trust a
