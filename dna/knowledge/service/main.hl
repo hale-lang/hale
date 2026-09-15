@@ -338,18 +338,25 @@ locus Service {
             let moved = self.j.refresh();
             let hold = self.hold_of(digest);
             if len(hold) > 0 { return refusal(409, "held: " + hold + "; redaction waits for the hold's release"); }
-            if self.has_row("receipt.redacted", digest) { return refusal(409, digest + " is already redacted"); }
             let p = self.protected.get(digest);
-            if p.present && !self.protected.erase(digest) { return refusal(503, "the protected store could not erase " + digest + ": " + self.protected.last_error()); }
-            let rb = std::json::Builder { };
-            rb.begin_object();
-            rb.string_field("by", by);
-            rb.string_field("why", why);
-            rb.string_field("policy", policy);
-            rb.string_field("class", if p.present { p.class } else { "" });
-            rb.string_field("store", if p.present { self.protected.kind() } else { "none (the body was not kept here)" });
-            rb.end_object();
-            let x = self.j.append(self.j.revision(), "receipt.redacted", digest, rb.result());
+            let already = self.has_row("receipt.redacted", digest);
+            if already && !p.present { return refusal(409, digest + " is already redacted"); }
+            // the decision is in the record before a byte is erased, at the
+            // revision the hold was read at: a redaction the record cannot
+            // hold erases nothing, and a hold that arrived in between refuses it
+            if !already {
+                let rb = std::json::Builder { };
+                rb.begin_object();
+                rb.string_field("by", by);
+                rb.string_field("why", why);
+                rb.string_field("policy", policy);
+                rb.string_field("class", if p.present { p.class } else { "" });
+                rb.string_field("store", if p.present { self.protected.kind() } else { "none (the body was not kept here)" });
+                rb.end_object();
+                let x = self.j.append_exact(self.j.revision(), "receipt.redacted", digest, rb.result());
+                if !x.ok { return refusal(if x.error == "stale_revision" { 409 } else { 503 }, "the redaction of " + digest + " could not be recorded (" + x.error + "); nothing was erased"); }
+            }
+            if p.present && !self.protected.erase(digest) { return refusal(503, "the redaction of " + digest + " is recorded, but the protected store could not erase it: " + self.protected.last_error() + "; a read answers 410 already, and redacting again erases it"); }
             return json("{\"digest\": \"" + digest + "\", \"redacted\": true}");
         }
         if std::str::starts_with(req.path, "/receipt/") && req.method == "GET" {

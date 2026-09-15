@@ -960,7 +960,8 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
             i = i + 1;
         }
         if len(held) > 0 { return fail("receipt redact: held: " + held + "; redaction waits for the hold's release"); }
-        if redacted { return fail("receipt redact: " + digest + " is already redacted"); }
+        let local_hex = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+        if redacted && (classified || withheld || !receipt_read(root, local_hex).present) { return fail("receipt redact: " + digest + " is already redacted"); }
         if classified {
             let url = knowledge_url(root);
             if len(url) == 0 { return fail("receipt redact: " + digest + " is kept by the knowledge service, and no service is known here (HALE_DNA_KNOWLEDGE_URL, or `hale dna dev`)"); }
@@ -978,16 +979,21 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
         let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
         let had = receipt_read(root, hexd).present;
         if !withheld && !had { return fail("receipt redact: no receipt " + digest + " in this clone or the record"); }
+        // the decision is in the record before the ref goes; a redaction the
+        // record refuses removes nothing (one recorded before a failed removal
+        // is completed here)
+        if !redacted {
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("by", who);
+            b.string_field("why", why);
+            b.string_field("policy", policy);
+            b.string_field("class", class);
+            b.string_field("store", if withheld { "none (withheld)" } else { "git" });
+            b.end_object();
+            if !append_as(root, "receipt.redacted", digest, b.result(), who) { return fail("receipt redact: the record refused the redaction of " + digest + "; nothing was erased"); }
+        }
         if had { let d = git(root, "update-ref\n-d\nrefs/dna/receipts/" + hexd); }
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.string_field("by", who);
-        b.string_field("why", why);
-        b.string_field("policy", policy);
-        b.string_field("class", class);
-        b.string_field("store", if withheld { "none (withheld)" } else { "git" });
-        b.end_object();
-        if !append_as(root, "receipt.redacted", digest, b.result(), who) { return fail("the record refused the append"); }
         let s2 = sync_record(root);
         return answer("receipt " + digest + " redacted (" + (if withheld { "withheld, so no body was kept" } else { "its ref removed here and from the remote" }) + "; receipt.redacted, by " + who + " under " + policy + "). The blob stays in each object store until git collects it.\n");
     }

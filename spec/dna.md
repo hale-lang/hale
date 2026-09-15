@@ -61,11 +61,15 @@ repository:
   #612's. **Retention (part 2).** `receipt.held <digest> {by, why}`
   stands until `receipt.hold_released`, and refuses redaction while it
   stands. `Dna.redact_evidence(digest, by, why, policy)` (`hale dna
-  receipt redact <digest> --why --policy`) removes the body and appends
-  `receipt.redacted <digest> {by, why, policy, class, store}`: a git
-  receipt's ref is deleted (`Receipts.erase`), a protected body is erased
-  by the knowledge service (`POST /receipt/<digest>/erase`, which writes
-  the row), a withheld one had no body. The record keeps the digest, so
+  receipt redact <digest> --why --policy`) appends `receipt.redacted
+  <digest> {by, why, policy, class, store}` and then removes the body: a
+  git receipt's ref is deleted (`Receipts.erase`), a protected body is
+  erased by the knowledge service (`POST /receipt/<digest>/erase`, which
+  writes the row), a withheld one had no body. **The redaction is in the
+  record before a byte is erased**, appended exactly at the revision the
+  hold was read at: a redaction the record refuses erases nothing, a hold
+  that arrived in between refuses it, and a redaction recorded before an
+  erase that failed is completed by redacting again. The record keeps the digest, so
   provenance survives and a reader learns the body is gone — the service
   answers a read with 410 `redacted by … under …`, and `hale dna history`
   says so under a redacted prompt. Every `sync` deletes redacted
