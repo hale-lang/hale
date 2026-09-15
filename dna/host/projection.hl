@@ -205,7 +205,7 @@ locus Projection {
                     } else { t.waiting = std::json::find_string_field(e.body, "why"); }
                 }
                 else if e.kind == "task.reassigned" && len(t.id) > 0 { t.assignee = std::json::find_string_field(e.body, "to"); t.detail = e.body; }
-                else if std::str::starts_with(e.kind, "task.") && len(t.id) > 0 { t.state = e.kind[5..len(e.kind)]; t.detail = e.body; }
+                else if std::str::starts_with(e.kind, "task.") && e.kind != "task.resumed" && len(t.id) > 0 { t.state = e.kind[5..len(e.kind)]; t.detail = e.body; }
             }
             i = i + 1;
         }

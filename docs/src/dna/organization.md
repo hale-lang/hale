@@ -114,8 +114,9 @@ hale dna review c-acct-41 approve --authority board    # someone else on the Boa
 hale dna handoff acct task t7
 ```
 
-The Task appears in the accountant's record with where it came from, its
-history here and its purpose. A receipt crosses as its digest, never its
+The Task arrives in the accountant's mailbox for your record — never
+their journal, and nothing of their record comes back to you but their
+acceptances — with where it came from, its history here and its purpose. A receipt crosses as its digest, never its
 body, and only if the connection carries its class. Their side admits it
 only through a connection of their own back to you, and when they run
 `hale dna handoff accept`, your `hale dna handoff sync` settles the Task.

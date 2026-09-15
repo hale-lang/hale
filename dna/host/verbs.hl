@@ -616,6 +616,14 @@ fn body_target(root: String, flag: String) -> String {
 
 fn sq(s: String) -> String { return "'" + std::str::replace(s, "'", "'\\''") + "'"; }
 
+// A path for the body's shell: `$HOME/...` keeps `$HOME` expandable (the
+// default directory is under the body's home, which only its shell
+// knows); anything else is quoted as given.
+fn shell_path(dir: String) -> String {
+    if std::str::starts_with(dir, "$HOME/") { return "\"$HOME\"/" + sq(dir[6..len(dir)]); }
+    return sq(dir);
+}
+
 fn unit_text(name: String, dir: String) -> String {
     // systemd expands %h, not $HOME
     let wd = if std::str::starts_with(dir, "$HOME/") { "%h/" + dir[6..len(dir)] } else { dir };
@@ -627,7 +635,7 @@ fn unit_text(name: String, dir: String) -> String {
 // record, the database (compose, or the DSN into the body's env
 // file), the unit, enabled and started.
 fn provision_script(name: String, pin: String, remote_url: String, dir: String, dsn: String) -> String {
-    let mut s = "set -eu\nPIN=" + sq(pin) + "\nREMOTE=" + sq(remote_url) + "\nDIR=" + sq(dir) + "\nNAME=" + sq(name) + "\nDSN=" + sq(dsn) + "\n";
+    let mut s = "set -eu\nPIN=" + sq(pin) + "\nREMOTE=" + sq(remote_url) + "\nDIR=" + shell_path(dir) + "\nNAME=" + sq(name) + "\nDSN=" + sq(dsn) + "\n";
     s = s + "have=$(\"$HOME/.hale/bin/hale\" --version 2>/dev/null | awk '{print $2}' || true)\n";
     s = s + "if [ \"$have\" != \"$PIN\" ]; then echo \"installing hale $PIN\"; HALE_VERSION=\"v$PIN\" sh -c \"$(curl -fsSL https://hale-lang.org/install.sh)\" >/dev/null; fi\n";
     s = s + "\"$HOME/.hale/bin/hale\" --version | grep -q \"$PIN\" || { echo \"the toolchain did not install at $PIN; nothing else was written\"; exit 4; }\n";
@@ -645,6 +653,10 @@ fn provision_script(name: String, pin: String, remote_url: String, dir: String, 
 // Over ssh, run a script from the body's stdin; `-o BatchMode=yes`
 // so nothing ever prompts inside a tool.
 fn ssh_script(target: String, script: String, tmp: String) -> dna::RunResult {
+    // the script can carry a credential (a DSN): its file is created
+    // empty under umask 077 before a byte is written, as a secret's is
+    let mk = dna::run_tool("sh\n-c\numask 077 && : > \"$1\"\nsh\n" + tmp);
+    if mk.code != 0 { return dna::RunResult { code: -1, stderr: "cannot create " + tmp + " privately" }; }
     let w = write_text(tmp, script) or false;
     if !w { return dna::RunResult { code: -1, stderr: "cannot write " + tmp }; }
     let r = dna::run_tool("sh\n-c\nssh -o BatchMode=yes -o ConnectTimeout=15 \"$1\" 'sh -s' < \"$2\"\nsh\n" + target + "\n" + tmp);
@@ -693,7 +705,10 @@ fn body_ctl_verb(root: String, sub: String, body_flag: String) -> Answer {
     let target = body_target(root, body_flag);
     if len(target) == 0 { return fail("body " + sub + ": no body is known here (`hale dna body provision <user@host>` sets `dna.body`; `--body <user@host>` names one)"); }
     let name = project_name(root);
-    let cmd = if sub == "logs" { "journalctl --user -u hale-dna-" + name + " -n 200 --no-pager 2>/dev/null || tail -n 200 \"$HOME\"/dna/" + name + "/.hale/dna/org.log" } else { "systemctl --user " + sub + " hale-dna-" + name + " && systemctl --user is-active hale-dna-" + name };
+    let unit = "hale-dna-" + name;
+    // a stopped unit is `inactive`, and `is-active` exits non-zero for it:
+    // stop succeeds when the unit is no longer active
+    let cmd = if sub == "logs" { "journalctl --user -u " + unit + " -n 200 --no-pager 2>/dev/null || tail -n 200 \"$HOME\"/dna/" + name + "/.hale/dna/org.log" } else if sub == "stop" { "systemctl --user stop " + unit + " || exit 1; if systemctl --user is-active --quiet " + unit + "; then echo still active; exit 1; else echo inactive; fi" } else { "systemctl --user " + sub + " " + unit + " && systemctl --user is-active " + unit };
     let r = dna::run_tool("sh\n-c\nssh -o BatchMode=yes -o ConnectTimeout=15 \"$1\" \"$2\"\nsh\n" + target + "\n" + cmd);
     if r.code != 0 { return fail("body " + sub + " on " + target + ": " + dna::trim_nl(r.stderr + r.stdout)); }
     return answer("body " + sub + " on " + target + ":\n" + indent_lines(dna::trim_nl(r.stdout), "    ") + "\n");
@@ -853,6 +868,7 @@ fn schedule_verb(root: String, sub: String, id: String, who_flag: String) -> Ans
                 if e.kind == "schedule.paused" { paused = true; }
                 if e.kind == "schedule.resumed" { paused = false; }
                 if e.kind == "schedule.fired" { fired = fired + 1; let t = std::json::find_string_field(e.body, "task"); if len(t) > 0 { task = t; } }
+                if e.kind == "schedule.admitted" { let at = std::json::find_string_field(e.body, "task"); if len(at) > 0 { task = at; } }
                 if e.kind == "schedule.skipped" { skipped = skipped + 1; }
             }
             k = k + 1;
@@ -955,7 +971,8 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
             i = i + 1;
         }
         if len(held) > 0 { return fail("receipt redact: held: " + held + "; redaction waits for the hold's release"); }
-        if redacted { return fail("receipt redact: " + digest + " is already redacted"); }
+        let local_hex = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+        if redacted && (classified || withheld || !receipt_read(root, local_hex).present) { return fail("receipt redact: " + digest + " is already redacted"); }
         if classified {
             let url = knowledge_url(root);
             if len(url) == 0 { return fail("receipt redact: " + digest + " is kept by the knowledge service, and no service is known here (HALE_DNA_KNOWLEDGE_URL, or `hale dna dev`)"); }
@@ -973,16 +990,21 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
         let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
         let had = receipt_read(root, hexd).present;
         if !withheld && !had { return fail("receipt redact: no receipt " + digest + " in this clone or the record"); }
+        // the decision is in the record before the ref goes; a redaction the
+        // record refuses removes nothing (one recorded before a failed removal
+        // is completed here)
+        if !redacted {
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("by", who);
+            b.string_field("why", why);
+            b.string_field("policy", policy);
+            b.string_field("class", class);
+            b.string_field("store", if withheld { "none (withheld)" } else { "git" });
+            b.end_object();
+            if !append_as(root, "receipt.redacted", digest, b.result(), who) { return fail("receipt redact: the record refused the redaction of " + digest + "; nothing was erased"); }
+        }
         if had { let d = git(root, "update-ref\n-d\nrefs/dna/receipts/" + hexd); }
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.string_field("by", who);
-        b.string_field("why", why);
-        b.string_field("policy", policy);
-        b.string_field("class", class);
-        b.string_field("store", if withheld { "none (withheld)" } else { "git" });
-        b.end_object();
-        if !append_as(root, "receipt.redacted", digest, b.result(), who) { return fail("the record refused the append"); }
         let s2 = sync_record(root);
         return answer("receipt " + digest + " redacted (" + (if withheld { "withheld, so no body was kept" } else { "its ref removed here and from the remote" }) + "; receipt.redacted, by " + who + " under " + policy + "). The blob stays in each object store until git collects it.\n");
     }
