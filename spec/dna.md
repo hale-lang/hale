@@ -489,8 +489,11 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   **The renewal and the fence do not wait on the host.** Beside the
   host runs the body fence (the host binary's `body-fence`), which
   renews the lease every 10s with every git call bounded to 8s and
-  writes what it proved to `.hale/dna/body.fence.status`; the host
-  reads that file instead of renewing. When the lease is someone
+  writes what it proved to `.hale/dna/body.fence.status`, each line
+  prefixed with its host's pid; the host reads its own lines there
+  instead of renewing. The fence's mandate is `.hale/dna/body.fence`,
+  naming its host's pid: a fence whose mandate is gone or names another
+  host (a host restarted on the same clone) stops and kills nothing. When the lease is someone
   else's or released, when the fence cannot prove it within 5s of its
   expiry, or when the host is gone, the fence kills the organization
   and the expression (by their pid files) and says why, and the host
