@@ -18,6 +18,10 @@ const IDENTITY_REF: String = "refs/dna/identity";
 
 // `git -C <repo> <args…>`; argv newline-separated.
 fn git(repo: String, args: String) -> dna::RunResult {
+    // the body fence bounds every git call it makes (the second review of
+    // #622): a hung transport fails a renewal instead of blocking it
+    let t = std::env::var("HALE_DNA_GIT_TIMEOUT");
+    if len(t) > 0 { return dna::run_tool("timeout\n" + t + "\ngit\n-C\n" + repo + "\n" + args); }
     return dna::run_tool("git\n-C\n" + repo + "\n" + args);
 }
 
@@ -221,7 +225,12 @@ fn sync_record(repo: String) -> SyncResult {
     let s = sync_record_rows(repo);
     if s.ok {
         let r = apply_redactions(repo);
-        let i = publish_identity(repo);
+        // a remote that had no record had no identity either, whatever this
+        // clone published to the remote it had before
+        if std::str::contains(s.summary, "(the remote had none)") { let u = git(repo, "config\n--unset\ndna.identitypublished"); }
+        if !publish_identity(repo) && len(record_remote(repo)) > 0 && len(record_identity(repo)) > 0 {
+            return SyncResult { ok: true, summary: s.summary + "; the record's identity (" + IDENTITY_REF + ") could not be published to " + record_remote(repo) + " — no other record can connect to this one until a sync publishes it" };
+        }
     }
     return s;
 }
@@ -233,20 +242,35 @@ fn record_identity(repo: String) -> String {
     return git_out(repo, "rev-list\n--max-parents=0\n" + RECORD_REF);
 }
 
+// The ref in this clone is not publication (the second review of #631: a
+// record synced before it had a remote, or whose first push of its
+// identity failed, kept a local ref and never published it). Until a push
+// to the remote as it is now has succeeded — `dna.identitypublished`
+// names that remote and blob — every sync asks the remote and pushes.
+// Never forced: a remote holding another record's identity is refused.
 fn publish_identity(repo: String) -> Bool {
     let genesis = record_identity(repo);
     if len(genesis) == 0 { return false; }
-    if git_out(repo, "cat-file\n-p\n" + IDENTITY_REF) == genesis { return true; }
-    std::io::fs::mkdir(repo + "/.hale") or discard;
-    std::io::fs::mkdir(repo + "/.hale/dna") or discard;
-    let tmp = repo + "/.hale/dna/identity." + to_string(std::process::pid()) + ".tmp";
-    let w = write_text(tmp, genesis) or false;
-    let blob = git_out(repo, "hash-object\n-w\n" + tmp);
-    std::io::fs::unlink(tmp) or discard;
-    if len(blob) == 0 || !git_ok(repo, "update-ref\n" + IDENTITY_REF + "\n" + blob) { return false; }
+    if git_out(repo, "cat-file\n-p\n" + IDENTITY_REF) != genesis {
+        std::io::fs::mkdir(repo + "/.hale") or discard;
+        std::io::fs::mkdir(repo + "/.hale/dna") or discard;
+        let tmp = repo + "/.hale/dna/identity." + to_string(std::process::pid()) + ".tmp";
+        let w = write_text(tmp, genesis) or false;
+        let made = git_out(repo, "hash-object\n-w\n" + tmp);
+        std::io::fs::unlink(tmp) or discard;
+        if len(made) == 0 || !git_ok(repo, "update-ref\n" + IDENTITY_REF + "\n" + made) { return false; }
+    }
     let remote = record_remote(repo);
-    if len(remote) > 0 { let p = git(repo, "push\n-q\n" + remote + "\n" + IDENTITY_REF + ":" + IDENTITY_REF); }
-    return true;
+    if len(remote) == 0 { return true; }
+    let blob = git_out(repo, "rev-parse\n-q\n--verify\n" + IDENTITY_REF);
+    let url = git_out(repo, "remote\nget-url\n" + remote);
+    let mark = (if len(url) > 0 { url } else { remote }) + " " + blob;
+    if git_out(repo, "config\n--get\ndna.identitypublished") == mark { return true; }
+    let there = git_out(repo, "ls-remote\n" + remote + "\n" + IDENTITY_REF);
+    if !std::str::starts_with(there, blob) {
+        if !git_ok(repo, "push\n-q\n" + remote + "\n" + IDENTITY_REF + ":" + IDENTITY_REF) { return false; }
+    }
+    return git_ok(repo, "config\ndna.identitypublished\n" + mark);
 }
 
 // GH #606: a redacted git receipt's ref goes from this clone and from
@@ -418,6 +442,10 @@ fn publish_on_membrane(root: String, kind: String, body: String) -> String {
 const BODY_LEASE_REF: String = "refs/dna/lease/body";
 const BODY_LEASE_TRACK: String = "refs/dna/remote/lease/body";
 const BODY_TTL: Int = 30;
+// The body fence stops the organism this many seconds before the lease
+// it could last prove expires; another body can take the lease only once
+// it has expired.
+const FENCE_MARGIN: Int = 5;
 
 type BodyLease {
     ok: Bool = true; // false: the remote could not be read (a partition)

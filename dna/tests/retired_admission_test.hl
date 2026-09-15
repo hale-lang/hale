@@ -46,12 +46,24 @@ main locus App {
         std::test::assert(self.one.retired("noor").retired && self.one.retired("noor").successor == "dev", "noor retired, to dev");
         std::test::assert(self.one.retired("lee").retired && len(self.one.retired("lee").successor) == 0, "lee retired, no successor");
         std::test::assert(!self.one.retired("mara").retired, "mara works here");
+        // the successor is followed to someone who works here
+        std::test::assert_eq_str(self.one.admissible("noor"), "dev", "noor's work goes to dev while dev works here");
+        std::test::assert_eq_str(self.one.admissible("lee"), "", "lee's work is unassigned");
+        let r3 = self.one.journal.append(self.one.journal.revision(), "person.retired", "ana", "{\"by\": \"riley\", \"to\": \"bo\", \"transferred\": 0}");
+        let r4 = self.one.journal.append(self.one.journal.revision(), "person.retired", "bo", "{\"by\": \"riley\", \"to\": \"ana\", \"transferred\": 0}");
+        std::test::assert_eq_str(self.one.admissible("ana"), "", "a chain that comes back on itself is unassigned");
 
         // a fresh job planned for noor goes to dev
         let t = self.one.ask(dna::Intent { id: "i1", outcome: "call the supplier about the pallets", from: "riley" }, dna::Knobs { routed: true, requires: "edit" });
         std::time::sleep(300ms);
         let handed = self.last("task.handed", t);
         std::test::assert(std::json::find_string_field(handed, "assignee") == "dev" && std::json::find_string_field(handed, "retired_assignee") == "noor", "handed to the successor, not the retired person: " + handed);
+        // dev retires too, to mara: the next job planned for noor goes to mara
+        let r5 = self.one.journal.append(self.one.journal.revision(), "person.retired", "dev", "{\"by\": \"riley\", \"to\": \"mara\", \"transferred\": 0}");
+        let t2 = self.one.ask(dna::Intent { id: "i2", outcome: "call the supplier about the crates", from: "riley" }, dna::Knobs { routed: true, requires: "edit" });
+        std::time::sleep(300ms);
+        let handed2 = self.last("task.handed", t2);
+        std::test::assert(std::json::find_string_field(handed2, "assignee") == "mara" && std::json::find_string_field(handed2, "retired_assignee") == "noor", "a retired successor passes the work on: " + handed2);
 
         // ---- through the CLI: no reassignment to a retired person
         let scratch = "/tmp/dna-retired-" + to_string(std::process::pid());
@@ -66,6 +78,8 @@ main locus App {
         let a3 = self.j.append(self.j.revision(), "person.retired", "noor", "{\"by\": \"riley\", \"to\": \"dev\", \"transferred\": 0}");
         let refused = in_dir(app, toolchain() + "\ndna\ntask\nreassign\nt9\n--to\nnoor\n--as\nriley");
         std::test::assert(refused.code != 0 && std::str::contains(refused.stdout + refused.stderr, "noor retired"), "no work to a retired person: " + refused.stdout + refused.stderr);
+        let bad_successor = in_dir(app, toolchain() + "\ndna\nretire\nkai\n--to\nnoor\n--as\nriley");
+        std::test::assert(bad_successor.code != 0 && std::str::contains(bad_successor.stdout + bad_successor.stderr, "noor retired"), "no retired successor: " + bad_successor.stdout + bad_successor.stderr);
         let moved = in_dir(app, toolchain() + "\ndna\ntask\nreassign\nt9\n--to\ndev\n--as\nriley");
         std::test::assert(moved.code == 0 && std::str::contains(moved.stdout, "task t9 reassigned from mara to dev by riley"), "to someone who works here: " + moved.stdout + moved.stderr);
         let rm = dna::run_tool("rm\n-rf\n" + scratch);
