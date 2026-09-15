@@ -1,0 +1,62 @@
+// GH #643: `&&` and `||` evaluate left to right, and the right operand
+// only when the left does not already decide the result. Both operands
+// used to be evaluated: a call on the right ran after a false `&&` or a
+// true `||`, and a guard like `d != 0 && 10 / d > 1` divided by zero.
+
+main locus App {
+    params {
+        calls: Int = 0;
+    }
+    // Counts that it ran, and answers `result`.
+    fn touch(result: Bool) -> Bool {
+        self.calls = self.calls + 1;
+        return result;
+    }
+    run() {
+        // `&&`: the right operand runs only after a true left
+        std::test::assert(!(false && self.touch(true)), "false && x is false");
+        std::test::assert_eq_int(self.calls, 0, "and x did not run");
+        std::test::assert(true && self.touch(true), "true && true is true");
+        std::test::assert_eq_int(self.calls, 1, "and the right side ran once");
+        std::test::assert(!(true && self.touch(false)), "true && false is false");
+        std::test::assert_eq_int(self.calls, 2, "the right side decides");
+
+        // `||`: the right operand runs only after a false left
+        std::test::assert(true || self.touch(false), "true || x is true");
+        std::test::assert_eq_int(self.calls, 2, "and x did not run");
+        std::test::assert(!(false || self.touch(false)), "false || false is false");
+        std::test::assert_eq_int(self.calls, 3, "the right side ran once");
+
+        // chains, with `&&` binding tighter than `||`
+        std::test::assert(false && self.touch(true) || self.touch(true), "(false && x) || true");
+        std::test::assert_eq_int(self.calls, 4, "only the `||` operand ran");
+        std::test::assert(true || self.touch(true) && self.touch(true), "true || (x && y)");
+        std::test::assert_eq_int(self.calls, 4, "neither ran");
+
+        // a guard whose right side would fault without it
+        let d = 0;
+        std::test::assert(!(d != 0 && 10 / d > 1), "a zero divisor is never divided by");
+        std::test::assert(d == 0 || 10 / d > 1, "nor under ||");
+        let s = "ab";
+        std::test::assert(!(len(s) >= 3 && s[0..3] == "abc"), "a short string is never sliced past its end");
+
+        // in conditions: if, while
+        let mut ran = 0;
+        if false && self.touch(true) { ran = 1; }
+        std::test::assert_eq_int(ran, 0, "if: not taken");
+        std::test::assert_eq_int(self.calls, 4, "if: the right side did not run");
+        let mut i = 0;
+        while i < 3 && self.touch(true) {
+            i = i + 1;
+        }
+        std::test::assert_eq_int(i, 3, "while: three rounds");
+        std::test::assert_eq_int(self.calls, 7, "while: the right side ran once per true left, not on the exit test");
+
+        // the value is a Bool like any other
+        let both = true && false;
+        let either = false || true;
+        std::test::assert(!both && either, "stored and combined");
+    }
+}
+
+fn main() { App { }; }

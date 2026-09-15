@@ -29,6 +29,15 @@ Comparisons don't chain: `a < b < c` is a parse error — write
 `a < b && b < c`. This is deliberate; chained comparison is a
 common source of silent bugs.
 
+`&&` and `||` short-circuit: the right side is evaluated only when
+the left side doesn't already decide the answer. So a guard protects
+what follows it:
+
+```hale,fragment
+let safe = d != 0 && total / d > 10;   // never divides by zero
+let found = cached || lookup(key);     // lookup runs only on a miss
+```
+
 ## Int and Float
 
 `Int` is 64-bit signed; `Float` is a 64-bit IEEE double. Hale
