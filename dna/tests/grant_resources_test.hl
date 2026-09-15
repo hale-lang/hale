@@ -47,6 +47,7 @@ main locus App {
         app: dna::Dna = dna::Dna { };
         billing: dna::Dna = dna::Dna { };
         restarted: dna::Dna = dna::Dna { };
+        billing_restarted: dna::Dna = dna::Dna { };
         brief: dna::Dna = dna::Dna { };
         racy: dna::Dna = dna::Dna { };
     }
@@ -155,6 +156,18 @@ main locus App {
         let fenced = self.billing.admits(b1);
         std::test::assert(std::str::starts_with(fenced, "fenced: the grant changed after `b1` was admitted (epoch 0 -> 1)"), "a contraction fences it: " + fenced);
         std::test::assert_eq_int(self.rows(repo, "grant.fenced", "billing"), 1, "in the record");
+        std::test::assert(std::str::contains(self.last(repo, "grant.contracted"), "\"to\": 5") && std::str::contains(self.last(repo, "grant.contracted"), "\"epoch\": 1"), "the contraction row carries what it leaves: " + self.last(repo, "grant.contracted"));
+        // a contraction survives a restart: born over the same record with
+        // the same authored grants, the ceiling is still contracted and the
+        // admission made before it is still fenced
+        self.billing_restarted = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            boundary: dna::AutonomyBoundary { child: "billing", grant: dna::Grant { child: "billing", classes: "docs", max_magnitude: 8, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
+            ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 10, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
+            org_id: "billing-restarted"
+        };
+        std::test::assert(std::str::starts_with(self.billing_restarted.admits(b1), "fenced: the grant changed after `b1` was admitted (epoch 0 -> 1)"), "an admission fenced by a contraction stays fenced after a restart: " + self.billing_restarted.admits(b1));
+        std::test::assert_eq_int(self.billing_restarted.ceiling.current_grant().max_magnitude, 5, "and the ceiling's magnitude stays halved");
 
         // revocation is the parent's; afterwards nothing is granted
         std::test::assert(!self.app.revoke_grant("app"), "a child cannot revoke its own grant");
@@ -172,7 +185,9 @@ main locus App {
             ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 10, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
             org_id: "app-restarted"
         };
-        std::test::assert(std::str::starts_with(self.restarted.admits(a3), "fenced: the grant changed after `a3` was admitted (epoch 0 -> 1)"), "an admission fenced before the restart stays fenced: " + self.restarted.admits(a3));
+        // (epoch 2: app's revocation, and the ceiling `org`'s contraction,
+        // which binds every child born under it)
+        std::test::assert(std::str::starts_with(self.restarted.admits(a3), "fenced: the grant changed after `a3` was admitted (epoch 0 -> 2)"), "an admission fenced before the restart stays fenced: " + self.restarted.admits(a3));
         let reborn = self.restarted.reserve(spend("a6", "1", "USD"));
         std::test::assert(!reborn.ok && std::str::contains(reborn.refused, "currency: USD is not granted"), "and nothing is granted after it: " + reborn.refused);
         std::test::assert(std::str::contains(self.last(repo, "grant.revoked"), "\"epoch\": 1"), "the revocation row carries its epoch: " + self.last(repo, "grant.revoked"));
