@@ -396,3 +396,16 @@ locus ReceiptVault {
         return VaultRead { present: true, class: std::json::find_string_field(body, "class"), text: std::json::find_string_field(body, "text") };
     }
 }
+
+// What an erasure of a protected body does, from what the store answered
+// (the third review of #628): "" to record the redaction when it is not in
+// the record yet and erase the body when there is one; `unread: <why>` when
+// the store could not say whether it keeps the body — nothing is recorded,
+// nothing reported erased; `already` when the record holds the redaction
+// and the store, answering, keeps no body. A body the store could not read
+// is never a body it does not keep.
+fn protected_erase_step(present: Bool, read_error: String, already: Bool) -> String {
+    if !present && len(read_error) > 0 { return "unread: " + read_error; }
+    if already && !present { return "already"; }
+    return "";
+}
