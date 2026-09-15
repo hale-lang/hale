@@ -843,13 +843,20 @@ locus Dna {
             // so completion can be checked against them at admission.
             let hb = std::json::Builder { };
             hb.begin_object();
+            // GH #604 rule 5: retirement stops admission. A job planned for a
+            // person who retired goes to the successor their retirement named
+            // (unassigned when it named none), and the row says for whom it
+            // was planned.
+            let gone = self.retired(p.assignee);
+            let assignee = if gone.retired { gone.successor } else { p.assignee };
             hb.string_field("work", req.work_id);
-            hb.string_field("assignee", p.assignee);
+            hb.string_field("assignee", assignee);
+            if gone.retired { hb.string_field("retired_assignee", p.assignee); }
             hb.string_field("by", "leader");
             hb.string_field("narrative", handed);
             hb.end_object();
             let x = self.journal.append(self.journal.revision(), "task.handed", req.task_id, hb.result());
-            self.membrane.notify("task", req.task_id + " handed to " + (if len(p.assignee) > 0 { p.assignee } else { "a person (unassigned)" }));
+            self.membrane.notify("task", req.task_id + " handed to " + (if len(assignee) > 0 { assignee } else { "a person (unassigned)" }));
             return;
         }
         // The governed child comes from the KIND, and the class is
@@ -937,6 +944,20 @@ locus Dna {
             let x = self.journal.append(self.journal.revision(), "task." + (if ok { "done" } else { "failed" }), req.task_id,
                 req.work_id + " by " + self.editor.identity() + ": " + out);
         }
+    }
+    // GH #604 rule 5: whether `who` retired, and to whom their work goes.
+    @unbounded
+    fn retired(who: String) -> RetiredPerson {
+        if len(who) == 0 { return RetiredPerson { }; }
+        let n = self.journal.revision();
+        let mut out = RetiredPerson { };
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "person.retired" && e.entity == who { out = RetiredPerson { retired: true, successor: std::json::find_string_field(e.body, "to") }; }
+            i = i + 1;
+        }
+        return out;
     }
     // The last `task.<state>` journaled for an id ("" when only born).
     @unbounded
