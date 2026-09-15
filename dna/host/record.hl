@@ -16,6 +16,10 @@ const CONCERN_SOCK: String = "hale-dna.concern.raised.sock";
 
 // `git -C <repo> <args…>`; argv newline-separated.
 fn git(repo: String, args: String) -> dna::RunResult {
+    // the body fence bounds every git call it makes (the second review of
+    // #622): a hung transport fails a renewal instead of blocking it
+    let t = std::env::var("HALE_DNA_GIT_TIMEOUT");
+    if len(t) > 0 { return dna::run_tool("timeout\n" + t + "\ngit\n-C\n" + repo + "\n" + args); }
     return dna::run_tool("git\n-C\n" + repo + "\n" + args);
 }
 
@@ -387,6 +391,10 @@ fn publish_on_membrane(root: String, kind: String, body: String) -> String {
 const BODY_LEASE_REF: String = "refs/dna/lease/body";
 const BODY_LEASE_TRACK: String = "refs/dna/remote/lease/body";
 const BODY_TTL: Int = 30;
+// The body fence stops the organism this many seconds before the lease
+// it could last prove expires; another body can take the lease only once
+// it has expired.
+const FENCE_MARGIN: Int = 5;
 
 type BodyLease {
     ok: Bool = true; // false: the remote could not be read (a partition)
