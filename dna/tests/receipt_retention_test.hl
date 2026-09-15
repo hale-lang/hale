@@ -38,6 +38,18 @@ main locus App {
         }
         return out;
     }
+    @unbounded
+    fn rows_of(repo: String, kind: String, entity: String) -> Int {
+        let j = dna::GitJournal { repo: repo };
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && e.entity == entity { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
     run() {
         let scratch = "/tmp/dna-retention-" + to_string(std::process::pid());
         std::io::fs::mkdir(scratch) or discard;
@@ -164,6 +176,21 @@ main locus App {
         std::test::assert(unerased.code != 0 && std::str::contains(unerased.stdout + unerased.stderr, "nothing was erased"), "an erasure the record cannot hold is refused: " + unerased.stdout + unerased.stderr);
         let still = self.core.vault.read(p2, "tomasz", "audit");
         std::test::assert(still.present && still.text == secret2, "and the protected body is intact: " + still.refused);
+        // a redaction recorded, its erasure interrupted: the body is still
+        // kept, and redacting again through the CLI completes it
+        let rec2 = self.core.journal.append(self.core.journal.revision(), "receipt.redacted", p2, "{\"by\": \"mara\", \"why\": \"left the company\", \"policy\": \"gdpr-erasure\", \"class\": \"confidential\", \"store\": \"memory\"}");
+        std::test::assert(rec2.ok, "the interrupted redaction's row: " + rec2.error);
+        let completed = in_dir(app, toolchain() + "\ndna\nreceipt\nredact\n" + p2 + "\n--why\nleft the company\n--policy\ngdpr-erasure\n--as\nmara");
+        std::test::assert(completed.code == 0 && std::str::contains(completed.stdout, "the redaction already in the record is completed"), "a retry through the CLI completes the erasure: " + completed.stdout + completed.stderr);
+        let twice = in_dir(app, toolchain() + "\ndna\nreceipt\nredact\n" + p2 + "\n--why\nleft the company\n--policy\ngdpr-erasure\n--as\nmara");
+        std::test::assert(twice.code != 0 && std::str::contains(twice.stdout + twice.stderr, "already redacted"), "and then nothing is left to erase: " + twice.stdout + twice.stderr);
+        std::test::assert_eq_int(self.rows_of(app, "receipt.redacted", p2), 1, "one redaction in the record");
+        // …and through the core
+        let secret3 = "payroll line for employee 93: 4200.00";
+        let p3 = self.core.file_evidence(secret3, "confidential", "mara");
+        let rec3 = self.core.journal.append(self.core.journal.revision(), "receipt.redacted", p3, "{\"by\": \"mara\", \"why\": \"left the company\", \"policy\": \"gdpr-erasure\", \"class\": \"confidential\", \"store\": \"memory\"}");
+        std::test::assert_eq_str(self.core.redact_evidence(p3, "mara", "left the company", "gdpr-erasure"), "", "a retry through the core completes the erasure");
+        std::test::assert(std::str::contains(self.core.redact_evidence(p3, "mara", "left the company", "gdpr-erasure"), "already redacted"), "and then nothing is left to erase");
 
         // ---- a redacted knowledge receipt does not stop the projection
         let proposed = self.core.propose_knowledge(dna::Idea { id: "k1", kind: "practice", text: "keep supplier notes a month", author: "org" }, "org");

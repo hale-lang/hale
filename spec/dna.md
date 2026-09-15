@@ -69,7 +69,11 @@ repository:
   record before a byte is erased**, appended exactly at the revision the
   hold was read at: a redaction the record refuses erases nothing, a hold
   that arrived in between refuses it, and a redaction recorded before an
-  erase that failed is completed by redacting again. The record keeps the digest, so
+  erase that failed is completed by redacting again — through the CLI and
+  `Dna.redact_evidence` alike, for a protected body too: both hand a
+  classified receipt to the knowledge service, which erases a body still
+  kept under a recorded redaction and answers `already redacted` once
+  nothing is left. The record keeps the digest, so
   provenance survives and a reader learns the body is gone — the service
   answers a read with 410 `redacted by … under …`, and `hale dna history`
   says so under a redacted prompt. Every `sync` deletes redacted
@@ -158,9 +162,11 @@ repository:
   reaching a person: every handed Task they hold is transferred as its
   own `task.reassigned` row and `person.retired <who>` records it (`by`, `to`, `transferred`). From then
   no new work reaches them: a job the leader plans for them is handed
-  to that successor, with `retired_assignee` on the `task.handed` row
-  (unassigned when the retirement named none), and a Task is never
-  reassigned to them;
+  to that successor, with `retired_assignee` on the `task.handed` row —
+  followed on through each successor who retired in turn to the first
+  person still working, unassigned when the chain ends in a retirement
+  that named none or comes back on itself — and a Task is never
+  reassigned to them, nor are they named anyone's successor;
   refused while they hold work and no successor is named — pending
   work is accounted for, never dropped. Refused for a Task that is not
   handed: one the organism is working, or has settled, is not a
@@ -302,8 +308,11 @@ repository:
   magnitude, the stricter review (`intersect_grants`). Grants contract
   on their own (two failures in a row halve the ceiling), so a child
   born within a ceiling of 100 is bound by 50 the moment its parent
-  contracts, and the record says so (`grant.contracted <parent>`,
-  naming the children it now binds). A child born wider than its
+  contracts, and the record says so (`grant.contracted <parent>`
+  `{boundary, from, to, epoch, binds, note}`, appended before the
+  contraction takes effect). An organism born over the record restores
+  the last contraction of its ceiling — its magnitude and its epoch —
+  before anything is admitted, as it restores a revocation. A child born wider than its
   ceiling is the early error: `grant.refused <child>` names what is
   wider, and the ceiling binds it from birth. Law layers by adoption:
   every position lives under the org program's main, which adopts the
@@ -524,9 +533,20 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   **the moment before it starts a process** — the organization and
   the expression at startup and at every restart — and once more
   before relaying after the tick's sync: a build or a sync that
-  outlasts a takeover starts and relays nothing, and the host exits 3. While the remote cannot be reached the
-  lease is kept unrenewed until it expires, then the host stops: a
-  partitioned body executes nothing past its TTL. Taking the lease
+  outlasts a takeover starts and relays nothing, and the host exits 3.
+  **The renewal and the fence do not wait on the host.** Beside the
+  host runs the body fence (the host binary's `body-fence`), which
+  renews the lease every 10s with every git call bounded to 8s and
+  writes what it proved to `.hale/dna/body.fence.status`; the host
+  reads that file instead of renewing. When the lease is someone
+  else's or released, when the fence cannot prove it within 5s of its
+  expiry, or when the host is gone, the fence kills the organization
+  and the expression (by their pid files) and says why, and the host
+  exits 3 when it next looks. A host blocked in a sync, a build or an
+  observation window therefore cannot keep its organism executing past
+  the lease; while the remote cannot be reached the lease is kept
+  unrenewed until then: a partitioned body executes nothing past its
+  TTL. Taking the lease
   is a row (`body.claimed <holder> {token, forced, by}`), giving it
   up at exit another (`body.released`). `hale dna body` reads the
   lease; `hale dna body claim --force` releases a live lease that

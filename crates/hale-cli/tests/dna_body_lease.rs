@@ -154,8 +154,17 @@ fn a_record_admits_one_body_and_a_partitioned_body_stops() {
     let st = host_a.wait().unwrap();
     assert_eq!(st.code(), Some(3));
     std::fs::rename(&hidden, &bare).unwrap();
-    let (ok, _, body) = hale_in(&["dna", "body"], &b);
-    assert!(ok && body.contains("body: stale: ") && body.contains("its lease has expired"), "{body}");
+    // the fence stopped the body before its lease expired; the lease goes stale once it has
+    let mut stale = (false, String::new());
+    for _ in 0..40 {
+        let (ok, _, body) = hale_in(&["dna", "body"], &b);
+        stale = (ok && body.contains("body: stale: ") && body.contains("its lease has expired"), body);
+        if stale.0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert!(stale.0, "{}", stale.1);
     kill_org(&a);
     let _ = std::fs::remove_dir_all(&d);
 }
