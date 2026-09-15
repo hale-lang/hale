@@ -246,6 +246,28 @@ type MutationProposal {
     check_output: String = ""; // the toolchain's diagnostics when !check_clean
 }
 
+// GH #610: a schedule — an ask fired on an interval or a cron, in the
+// organism's own name, taking the ordinary road (planned, proposed,
+// reviewed). `action` is `ask` (the default) or `optimize` (the
+// optimize pass, which is a schedule and no longer a special case).
+type Schedule {
+    id: String = "";
+    every_ms: Int = 0; // an interval, on the organism's millisecond clock
+    cron: String = ""; // or a cron expression (minute hour day-of-month month day-of-week), UTC
+    ask: String = ""; // the intent text
+    requires: String = "edit"; // routed as this kind of Work; "" births a Task and routes nothing
+    action: String = "ask";
+    // state, kept by the organism
+    armed: Bool = false; // the first tick places `last_ms`
+    last_at: Int = 0; // wall seconds of the last fire, from the record
+    last_ms: Int = 0;
+    last_minute: Int = 0;
+    task: String = ""; // the last Task it fired
+    fired: Int = 0;
+    paused: Bool = false;
+    pending_intent: String = ""; // an occurrence claimed in the record and not yet admitted (a restart admits it once)
+}
+
 // GH #604 rule 5: whether a person retired, and the successor their
 // retirement named ("" when it named none).
 type RetiredPerson {

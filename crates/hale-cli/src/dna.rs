@@ -242,6 +242,7 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         Some("body") => host_exec("body", Path::new("."), &args[1..]),
         Some("secret") => host_exec("secret", Path::new("."), &args[1..]),
+        Some("schedule") => host_exec("schedule", Path::new("."), &args[1..]),
         Some("profile") => {
             let (dir, rest) = project_arg(&args[1..], true);
             host_exec("profile", &dir, &rest)
@@ -313,6 +314,9 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    over ssh: the toolchain hale.lock pins, the record's remote cloned, Postgres from");
     eprintln!("                                    dna/compose.yaml or the DSN, a systemd user unit supervising the host; writes nothing");
     eprintln!("                                    when ssh or the toolchain is unavailable. Then `body start|stop|logs [--body <user@host>]`");
+    eprintln!("       hale dna schedule [pause <id> | resume <id>]");
+    eprintln!("                                    the schedules the org chart declared (an ask on an interval or a cron), as the");
+    eprintln!("                                    record has them; pause and resume are rows in your name (--as <who>)");
     eprintln!("       hale dna secret set <NAME> [--body <user@host>]");
     eprintln!("                                    a credential from stdin (never argv, never the record) into ~/.config/hale-dna/<project>.env");
     eprintln!("                                    on the body or here; `secret rotate <NAME>`; the record gets `secret.rotated <NAME>` only");

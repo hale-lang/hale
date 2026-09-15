@@ -31,6 +31,9 @@ type AppendResult {
 interface Journal {
     fn revision() -> Int;
     fn head() -> String;
+    // Re-read what another writer appended (a git journal from its
+    // ref; nothing for a memory journal). True when it had moved.
+    fn refresh() -> Bool;
     fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult;
     fn read(i: Int) -> Event;
     fn verify_chain() -> Bool;
@@ -63,6 +66,7 @@ locus EventRows {
 locus MemJournal {
     params { rows: EventRows = EventRows { }; }
     fn revision() -> Int { return self.rows.len(); }
+    fn refresh() -> Bool { return false; }
     fn head() -> String {
         if self.rows.len() == 0 { return "genesis"; }
         let e = self.rows.get(self.rows.len() - 1) or Event { };

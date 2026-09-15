@@ -169,6 +169,9 @@ fn main() {
         if sub == "provision" { ans = body_provision_verb(root, word(a, 1), flag(a, "--dsn"), flag(a, "--dir"), has_flag(a, "--dry-run"), flag(a, "--as")); }
         else if sub == "start" || sub == "stop" || sub == "logs" { ans = body_ctl_verb(root, sub, flag(a, "--body")); }
         else { ans = body_verb(root, sub, has_flag(a, "--force"), flag(a, "--as")); }
+    } else if verb == "schedule" {
+        // GH #610: the schedules, and pause/resume as rows
+        ans = schedule_verb(root, word(a, 0), word(a, 1), flag(a, "--as"));
     } else if verb == "secret" {
         ans = secret_verb(root, word(a, 0), word(a, 1), flag(a, "--body"), flag(a, "--as"));
     } else if verb == "profile" {
