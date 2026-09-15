@@ -848,7 +848,7 @@ locus Dna {
             // (unassigned when it named none), and the row says for whom it
             // was planned.
             let gone = self.retired(p.assignee);
-            let assignee = if gone.retired { gone.successor } else { p.assignee };
+            let assignee = if gone.retired { self.admissible(p.assignee) } else { p.assignee };
             hb.string_field("work", req.work_id);
             hb.string_field("assignee", assignee);
             if gone.retired { hb.string_field("retired_assignee", p.assignee); }
@@ -958,6 +958,25 @@ locus Dna {
             i = i + 1;
         }
         return out;
+    }
+    // Who receives work planned for `who`: `who` while they work here,
+    // else their successor's successor, and so on, to the first person
+    // not retired; "" (unassigned) when the chain ends in a retirement
+    // that named nobody, or comes back on itself (the second review of
+    // #619: a successor who also retired still received the work).
+    // Bounded by the retirements in the record.
+    @unbounded
+    fn admissible(who: String) -> String {
+        let mut at = who;
+        let mut seen = " ";
+        while len(at) > 0 {
+            let r = self.retired(at);
+            if !r.retired { return at; }
+            if std::str::contains(seen, " " + at + " ") { return ""; }
+            seen = seen + at + " ";
+            at = r.successor;
+        }
+        return "";
     }
     // The last `task.<state>` journaled for an id ("" when only born).
     @unbounded

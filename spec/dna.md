@@ -99,9 +99,11 @@ repository:
   reaching a person: every handed Task they hold is transferred as its
   own `task.reassigned` row and `person.retired <who>` records it (`by`, `to`, `transferred`). From then
   no new work reaches them: a job the leader plans for them is handed
-  to that successor, with `retired_assignee` on the `task.handed` row
-  (unassigned when the retirement named none), and a Task is never
-  reassigned to them;
+  to that successor, with `retired_assignee` on the `task.handed` row —
+  followed on through each successor who retired in turn to the first
+  person still working, unassigned when the chain ends in a retirement
+  that named none or comes back on itself — and a Task is never
+  reassigned to them, nor are they named anyone's successor;
   refused while they hold work and no successor is named — pending
   work is accounted for, never dropped. Refused for a Task that is not
   handed: one the organism is working, or has settled, is not a
