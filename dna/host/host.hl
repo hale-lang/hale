@@ -182,6 +182,7 @@ locus Host {
     }
     fn stop_body(code: Int) {
         self.stop_fence();
+        kill_marked(body_mark(self.holder, self.lease.token, std::process::pid()));
         // what the organization and the expression started goes with them
         if self.org.pid > 0 { kill_tree(to_string(self.org.pid)); }
         if self.app.pid > 0 { kill_tree(to_string(self.app.pid)); }
@@ -245,6 +246,9 @@ locus Host {
         // GH #583: the genome a harness must never reach, whatever its
         // role. A HarnessModel reads it at birth (finding 1).
         let mut e = "LOTUS_OBS=1\nHALE_BIN=" + self.hale + "\nHALE_DNA_GENOME=" + self.root;
+        // the fourth review of #622: the body's mark, inherited by every tool
+        // a child starts, so the fence finds them even once that child is gone
+        if len(self.holder) > 0 { e = e + "\nHALE_DNA_BODY=" + body_mark(self.holder, self.lease.token, std::process::pid()); }
         if len(restart_for) > 0 { e = e + "\nHALE_DNA_RESTART_FOR=" + restart_for + "\nHALE_DNA_EXPRESSION=" + expression; }
         // GH #583 K2: the organization's line to the knowledge service —
         // the one this host started, or the one the operator named
@@ -666,6 +670,8 @@ locus Host {
         }
         // the fence stopped it: the lease is not ours to keep
         if !self.body_alive() { self.stop_body(3); }
+        // the organization is gone; what it started goes with it
+        kill_marked(body_mark(self.holder, self.lease.token, std::process::pid()));
         self.org_log = drain_log(self.org, self.org_log);
         if self.observer.pid > 0 { stop_proc(self.observer); }
         if self.knowledge.pid > 0 { stop_proc(self.knowledge); std::io::fs::unlink(self.dna_dir + "/knowledge.pid") or discard; }
@@ -704,22 +710,23 @@ fn count_words(s: String) -> Int {
 fn fence_main(holder: String, token: Int, expires: Int, host_pid: Int) {
     let dir = ".hale/dna";
     let mut lease = BodyLease { present: true, holder: holder, token: token, expires: expires };
+    let mark = body_mark(holder, token, host_pid);
     let mut renewed = 0;
     while fence_mandate(dir, host_pid) {
         let now = std::time::now();
         // every git call a renewal makes stops at this deadline
         let d = write_text(dir + "/body.deadline", to_string(lease.expires - FENCE_MARGIN)) or false;
-        if dna::run_tool("kill\n-0\n" + to_string(host_pid)).code != 0 { fence_stop(dir, host_pid, "orphaned: the host is gone"); return; }
+        if dna::run_tool("kill\n-0\n" + to_string(host_pid)).code != 0 { fence_stop(dir, host_pid, mark, "orphaned: the host is gone"); return; }
         if now - renewed >= BODY_TTL / 3 {
             let r = body_renew(".", lease, now);
             if r.ok {
-                if !r.present || r.holder != holder { fence_stop(dir, host_pid, "lost " + r.holder); return; }
+                if !r.present || r.holder != holder { fence_stop(dir, host_pid, mark, "lost " + r.holder); return; }
                 lease = r;
                 renewed = now;
                 let w = write_text(dir + "/body.fence.status", to_string(host_pid) + " ok " + to_string(lease.expires)) or false;
             }
         }
-        if std::time::now() >= lease.expires - FENCE_MARGIN { fence_stop(dir, host_pid, "expired " + to_string(lease.expires)); return; }
+        if std::time::now() >= lease.expires - FENCE_MARGIN { fence_stop(dir, host_pid, mark, "expired " + to_string(lease.expires)); return; }
         std::time::sleep(1s);
     }
 }
@@ -733,12 +740,14 @@ fn fence_mandate(dir: String, host_pid: Int) -> Bool {
 
 // Say why, then kill what executes under the lease — unless the mandate
 // has passed to another host in the meantime, whose processes these are.
-fn fence_stop(dir: String, host_pid: Int, why: String) {
+fn fence_stop(dir: String, host_pid: Int, mark: String, why: String) {
     if !fence_mandate(dir, host_pid) { return; }
     let w = write_text(dir + "/body.fence.status", to_string(host_pid) + " " + why) or false;
-    // each with every process it started
+    // each with every process it started — still under it, and, carrying the
+    // body's mark, anywhere else (a tool whose organism already died)
     kill_tree(dna::trim_nl(std::io::fs::read_file(dir + "/org.pid") or ""));
     kill_tree(dna::trim_nl(std::io::fs::read_file(dir + "/app.pid") or ""));
+    kill_marked(mark);
 }
 
 fn host_main(verb: String, root: String, seed: String, fleet: String, plan: String, toolchain: String, a: Args) {
