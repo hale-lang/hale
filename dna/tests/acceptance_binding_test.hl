@@ -1,0 +1,59 @@
+// GH #604 — the organism binds a person's job's acceptance condition at
+// hand-off. The leader's plan names the obligation; `task.handed` carries
+// the practice `acceptance/<obligation>` in force at that moment and
+// whether it requires evidence. A retired practice binds nothing, and a
+// job handed after the retirement carries no condition.
+
+import "../core" as dna;
+
+main locus App {
+    params {
+        // receipts outside the working directory: this fixture files a practice
+        one: dna::Dna = dna::Dna { planned: true, org_id: "bind", verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: "/tmp/dna-binding-receipts" } } };
+        lead: dna::Leader = dna::Leader {
+            name: "leader", org: "bind", charter: "You are the architect.",
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: mara\nobligation: expense-receipt\nfile the receipt" },
+                deep: dna::FakeModel { name: "deep", answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: mara\nobligation: expense-receipt\nfile the receipt" }
+            }
+        };
+    }
+    fn last(kind: String, entity: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.one.journal.revision() {
+            let e = self.one.journal.read(i);
+            if e.kind == kind && e.entity == entity { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    run() {
+        std::io::fs::mkdir("/tmp/dna-binding-receipts") or discard;
+        // the Board's practice, ratified in the record
+        let doc = dna::knowledge_document(dna::Idea { kind: "practice", text: "An expense closes with its receipt.\nevidence: required", author: "org", name: "acceptance/expense-receipt" }, "org");
+        let digest = "sha256:" + self.one.verification.receipts.store(doc);
+        let p = self.one.journal.append(self.one.journal.revision(), "knowledge.proposed", digest, "{\"digest\": \"" + digest + "\", \"name\": \"acceptance/expense-receipt\"}");
+        std::test::assert_eq_str(self.one.practice_in_force("acceptance/expense-receipt"), "", "proposed is not in force");
+        let r = self.one.journal.append(self.one.journal.revision(), "knowledge.ratified", digest, "{}");
+        std::test::assert_eq_str(self.one.practice_in_force("acceptance/expense-receipt"), digest, "ratified is in force");
+
+        let t = self.one.ask(dna::Intent { id: "i1", outcome: "file the March taxi receipt", from: "riley" }, dna::Knobs { routed: true, requires: "edit" });
+        std::time::sleep(300ms);
+        let handed = self.last("task.handed", t);
+        std::test::assert(std::str::contains(handed, "\"obligation\": \"expense-receipt\"") && std::str::contains(handed, "\"acceptance\": \"" + digest + "\"") && std::str::contains(handed, "\"evidence_required\": true"), "bound at hand-off: " + handed);
+
+        // retired: in force no more, and the next job is handed without a condition
+        let x = self.one.journal.append(self.one.journal.revision(), "knowledge.retired", digest, "{\"by\": \"sha256:next\"}");
+        std::test::assert_eq_str(self.one.practice_in_force("acceptance/expense-receipt"), "", "retired is not in force");
+        let t2 = self.one.ask(dna::Intent { id: "i2", outcome: "file the April taxi receipt", from: "riley" }, dna::Knobs { routed: true, requires: "edit" });
+        std::time::sleep(300ms);
+        let handed2 = self.last("task.handed", t2);
+        std::test::assert(std::str::contains(handed2, "\"acceptance\": \"\"") && std::str::contains(handed2, "\"evidence_required\": false"), "nothing bound: " + handed2);
+        std::test::assert(std::str::contains(self.last("task.handed", t), "\"evidence_required\": true"), "and the first job's row is unchanged");
+
+        let rm = dna::run_tool("rm\n-rf\n/tmp/dna-binding-receipts");
+    }
+}
+
+fn main() { App { }; }

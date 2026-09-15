@@ -53,7 +53,7 @@ fn find_after(p: Projection, from: Int, kinds: String, entity: String) -> dna::E
 // part ended when it handed the Task on. Refused for a Task that is
 // not handed: a Task the organism is working, or has settled, is not
 // a person's to close.
-fn task_done_verb(root: String, seed: String, id: String, who_flag: String, note: String) -> Answer {
+fn task_done_verb(root: String, seed: String, id: String, who_flag: String, note: String, evidence_flag: String, exception: String, authorized_by: String) -> Answer {
     if len(id) == 0 { return fail("task done: which Task? `hale dna task done <id>`"); }
     let s = sync_record(root);
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
@@ -67,10 +67,106 @@ fn task_done_verb(root: String, seed: String, id: String, who_flag: String, note
     if len(t.assignee) > 0 && t.assignee != who {
         return fail("Task `" + id + "` is handed to " + t.assignee + ", not to " + who + "; `hale dna task reassign " + id + " --to " + who + "` first");
     }
+    // GH #604: the acceptance condition bound at hand-off. A note never
+    // verifies anything: the evidence is linked, or an exception someone
+    // else authorized is recorded as such, or the completion is shown as
+    // human-reported.
+    let evidence = if len(evidence_flag) > 0 { dna::evidence_digest(evidence_flag) } else { "" };
+    let refusal = dna::completion_refusal(who, t.evidence_required, evidence, exception, authorized_by);
+    if refusal == "evidence required" {
+        return fail("Task `" + id + "` closes only with its evidence, under acceptance/" + t.obligation + " (" + t.acceptance + ") as it stood when the Task was handed: link it with `--evidence <digest>` (file it first: `hale dna receipt file <path>`), or record an exception with `--exception <why> --authorized-by <who>`; a note alone does not verify it");
+    }
+    if len(refusal) > 0 { return fail("task done: " + refusal); }
+    if len(evidence) > 0 {
+        if !dna::digest_well_formed(evidence) { return fail("task done: `" + evidence_flag + "` is not a receipt digest (sha256:<64 hex digits>)"); }
+        if !evidence_held(root, p, evidence) { return fail("task done: no receipt " + evidence + " in the record; file it first: `hale dna receipt file <path>`"); }
+        let lb = std::json::Builder { };
+        lb.begin_object();
+        lb.string_field("task", id);
+        lb.string_field("evidence", evidence);
+        lb.string_field("by", who);
+        lb.string_field("practice", t.acceptance);
+        lb.end_object();
+        if !append_as(root, "completion.linked", id, lb.result(), who) { return fail("the record refused the append"); }
+    }
+    if len(exception) > 0 {
+        // an exception is its authorizer's act, in their own name: the
+        // assignee's naming someone is not an authorization
+        // and it closes the Task only as it was authorized: the exception
+        // text the authorizer approved, under the practice bound to the Task
+        // — never another the assignee writes over it (the second review
+        // of #632)
+        let mut authorized = "";
+        let mut matched = false;
+        let mut k = 0;
+        while k < p.rows() {
+            let e = p.row(k);
+            if e.kind == "exception.authorized" && e.entity == id && dna::same_party(std::json::find_string_field(e.body, "by"), authorized_by) {
+                authorized = std::json::find_string_field(e.body, "why");
+                if authorized == exception && std::json::find_string_field(e.body, "practice") == t.acceptance { matched = true; }
+            }
+            k = k + 1;
+        }
+        if len(authorized) == 0 { return fail("task done: no exception for `" + id + "` authorized by " + authorized_by + " in the record; " + authorized_by + " authorizes it: `hale dna task authorize " + id + " --exception <why> --as " + authorized_by + "`"); }
+        if !matched { return fail("task done: " + authorized_by + " authorized a different exception for `" + id + "` (\"" + authorized + "\"); an exception closes a Task only as it was authorized — close it with that exception, or " + authorized_by + " authorizes this one: `hale dna task authorize " + id + " --exception <why> --as " + authorized_by + "`"); }
+        let xb = std::json::Builder { };
+        xb.begin_object();
+        xb.string_field("task", id);
+        xb.string_field("why", exception);
+        xb.string_field("authorized_by", authorized_by);
+        xb.string_field("by", who);
+        xb.string_field("practice", t.acceptance);
+        xb.end_object();
+        if !append_as(root, "completion.excepted", id, xb.result(), who) { return fail("the record refused the append"); }
+    }
     let body = "by " + who + (if len(note) > 0 { ": " + note } else { "" });
     if !append_as(root, "task.done", id, body, who) { return fail("the record refused the append"); }
     let s2 = sync_record(root);
-    return answer("task " + id + " done " + body + "\n");
+    let label = if len(evidence) > 0 { " — evidence " + evidence + " linked" } else if len(exception) > 0 { " — exception authorized by " + authorized_by + ": " + exception } else { " — human-reported, no evidence linked" };
+    return answer("task " + id + " done " + body + label + "\n");
+}
+
+// Evidence the record holds: a receipt under refs/dna/receipts, or a
+// protected one the record classified or withheld.
+fn evidence_held(root: String, p: Projection, evidence: String) -> Bool {
+    return receipt_read(root, evidence[7..len(evidence)]).present || p.has_row("receipt.classified", evidence) || p.has_row("receipt.withheld", evidence);
+}
+
+// GH #604 (the review of #632): an exception to a Task's acceptance
+// condition is authorized by its authorizer, in their own name, as a row;
+// the assignee then closes the Task citing it. Not the assignee's own, and
+// only one of the people the bound practice names when it names them.
+@unbounded
+fn task_authorize_verb(root: String, seed: String, id: String, exception: String, who_flag: String) -> Answer {
+    if len(id) == 0 || len(exception) == 0 { return fail("task authorize: `hale dna task authorize <id> --exception <why> [--as <authorizer>]`"); }
+    let s = sync_record(root);
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let p = open_projection(root, seed, "");
+    let t = p.task_of(id);
+    if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
+    if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: no exception to authorize"); }
+    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    if dna::same_party(who, t.assignee) { return fail("task authorize: " + who + " holds `" + id + "`; an exception is authorized by someone other than its assignee"); }
+    if len(t.acceptance) > 0 {
+        let doc = receipt_read(root, t.acceptance[7..len(t.acceptance)]);
+        // the bound practice is read, or nothing is authorized under it: a
+        // practice absent from this clone, unreadable or redacted is not a
+        // practice that names no one (the second review of #632)
+        if !doc.present { return fail("task authorize: the practice bound to `" + id + "` (" + t.acceptance + ") cannot be read here; an exception is authorized only under the practice it binds — `hale dna sync` fetches it where the record has it"); }
+        let text = std::json::find_string_field(doc.text, "text");
+        if len(text) == 0 { return fail("task authorize: the practice bound to `" + id + "` (" + t.acceptance + ") has no text this host reads; nothing is authorized under it"); }
+        if !dna::may_authorize(text, who) { return fail("task authorize: acceptance/" + t.obligation + " (" + t.acceptance + ") lets only " + dna::exception_authorizers(text) + " authorize an exception"); }
+    }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("task", id);
+    b.string_field("why", exception);
+    b.string_field("by", who);
+    b.string_field("practice", t.acceptance);
+    b.end_object();
+    if !append_as(root, "exception.authorized", id, b.result(), who) { return fail("the record refused the append"); }
+    let s2 = sync_record(root);
+    return answer("task " + id + ": exception authorized by " + who + ": " + exception + " (exception.authorized); " + t.assignee + " closes it with `hale dna task done " + id + " --exception \"" + exception + "\" --authorized-by " + who + "`\n");
 }
 
 // GH #616: a person reports a decision someone else made — a manager,
@@ -97,16 +193,19 @@ fn task_decide_verb(root: String, seed: String, id: String, decided_by: String, 
     }
     let evidence = dna::evidence_digest(evidence_flag);
     if !dna::digest_well_formed(evidence) { return fail("task decide: `" + evidence_flag + "` is not a receipt digest (sha256:<64 hex digits>)"); }
-    let held = receipt_read(root, evidence[7..len(evidence)]).present || p.has_row("receipt.classified", evidence) || p.has_row("receipt.withheld", evidence);
+    let held = evidence_held(root, p, evidence);
     if !held { return fail("task decide: no receipt " + evidence + " in the record; file the mail or document first: `hale dna receipt file <path>`"); }
     let practice = if len(t.obligation) > 0 { dna::acceptance_practice(t.obligation) } else { "" };
-    let policy = if len(practice) > 0 { p.practice_in_force(practice) } else { "" };
+    // the practice bound when the Task was handed governs every way it
+    // closes; only a Task handed before practices were bound reads the one
+    // in force now
+    let policy = if t.acceptance_bound { t.acceptance } else if len(practice) > 0 { p.practice_in_force(practice) } else { "" };
     let mut accepted = false;
     let mut why = "";
     if len(t.obligation) == 0 {
         why = "the Task names no obligation class, so no acceptance practice lets a report settle it; its assignee closes it with `hale dna task done " + id + "`";
     } else if len(policy) == 0 {
-        why = "no ratified practice `" + practice + "`: a reported decision does not settle a `" + t.obligation + "` obligation; its assignee closes it with `hale dna task done " + id + "`";
+        why = (if t.acceptance_bound { "no practice `" + practice + "` was in force when the Task was handed" } else { "no ratified practice `" + practice + "`" }) + ": a reported decision does not settle a `" + t.obligation + "` obligation; its assignee closes it with `hale dna task done " + id + "`";
     } else {
         let doc = receipt_read(root, policy[7..len(policy)]);
         if dna::acceptance_allows_reports(std::json::find_string_field(doc.text, "text")) { accepted = true; }
