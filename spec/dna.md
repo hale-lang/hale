@@ -319,9 +319,14 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   to this machine, when ssh cannot reach the host, or when the host
   lacks git, curl, systemd, or (without a DSN) docker compose. It
   records `dna.body` and `dna.body.dir` here and a `body.provisioned
-  <user@host> {dir, toolchain, knowledge, by}` row. `--dry-run` prints
-  the exact script. `hale dna body start|stop|logs [--body …]` reach
-  the unit over ssh. Postgres, Docker, ssh and systemd are the
+  <user@host> {dir, toolchain, knowledge, by}` row. The default
+  directory is `$HOME/dna/<project>` on the body, expanded by the body's
+  shell (the unit's `WorkingDirectory=%h/dna/<project>` is the same
+  place). The script can carry the DSN, so its file here is created
+  empty with mode 600 before it is written, and removed once ssh has
+  read it. `--dry-run` prints the exact script. `hale dna body
+  start|stop|logs [--body …]` reach the unit over ssh; `stop` succeeds
+  when the unit is no longer active, and says so. Postgres, Docker, ssh and systemd are the
   reference setup; the definition admits other implementations.
 - **Secrets.** `hale dna secret set <NAME> [--body <user@host>]`
   reads the value from stdin — never argv (a `NAME=value` argument is
