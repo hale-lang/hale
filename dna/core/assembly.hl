@@ -1340,14 +1340,27 @@ locus Dna {
     }
     // An outcome under the organism's ceiling: a contraction binds
     // every child at once, and the record names them.
+    // The contraction is recorded before it takes effect, with the
+    // magnitude and epoch it leaves, so a restart restores it (the second
+    // review of #626: a contraction lived only in the live boundary, and an
+    // organism born again over the same record had its authority back).
     fn ceiling_outcome(ok: Bool) {
-        let before = self.ceiling.current_grant().max_magnitude;
-        self.ceiling.note_outcome(ok);
-        let after = self.ceiling.current_grant().max_magnitude;
-        if after < before {
-            let x = self.journal.append(self.journal.revision(), "grant.contracted", self.ceiling.child,
-                "ceiling " + to_string(before) + " -> " + to_string(after) + " on repeated failure; binds " + self.boundary.child + " from now");
+        if self.ceiling.would_contract(ok) {
+            let before = self.ceiling.current_grant().max_magnitude;
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("boundary", "ceiling");
+            b.int_field("from", before);
+            b.int_field("to", before / 2);
+            b.int_field("epoch", self.ceiling.current_grant().authority_epoch + 1);
+            b.string_field("binds", self.boundary.child);
+            b.string_field("note", "ceiling " + to_string(before) + " -> " + to_string(before / 2) + " on repeated failure; binds " + self.boundary.child + " from now");
+            b.end_object();
+            let x = self.journal.append(self.journal.revision(), "grant.contracted", self.ceiling.child, b.result());
         }
+        // contracted whether or not the record took the row: less
+        // authority is never the unsafe direction
+        self.ceiling.note_outcome(ok);
     }
     // ---- resources (GH #605) -------------------------------------
     // A spend is admitted against the child's grant as it binds now
@@ -1498,6 +1511,37 @@ locus Dna {
             return why;
         }
         return "";
+    }
+    // A ceiling's contractions are the record's too: read back at birth,
+    // the last one leaves the ceiling's magnitude and epoch where it left
+    // them, before anything is admitted. A row from before the body was
+    // structured (`ceiling <from> -> <to> …`) is read too, each such row
+    // one epoch.
+    @unbounded
+    fn restore_contractions() {
+        let parent = self.ceiling.child;
+        if len(parent) == 0 { return; }
+        let n = self.journal.revision();
+        let mut to = -1;
+        let mut last_epoch = 0;
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "grant.contracted" && e.entity == parent {
+                if std::str::starts_with(e.body, "{") {
+                    to = std::json::find_int_field(e.body, "to");
+                    last_epoch = std::json::find_int_field(e.body, "epoch");
+                } else {
+                    let arrow = std::str::index_of(e.body, "-> ");
+                    let rest = if arrow < 0 { "" } else { e.body[(arrow + 3)..len(e.body)] };
+                    let sp = std::str::index_of(rest, " ");
+                    to = std::str::parse_int(if sp < 0 { rest } else { rest[0..sp] }) or 0;
+                    last_epoch = last_epoch + 1;
+                }
+            }
+            i = i + 1;
+        }
+        if to >= 0 && to < self.ceiling.current_grant().max_magnitude { self.ceiling.restore_contraction(to, last_epoch); }
     }
     // A revocation is the record's, not the live boundary's alone: read
     // back at birth, it leaves nothing granted and the epoch where it left
@@ -1764,6 +1808,7 @@ locus Dna {
     @unbounded
     fn rehydrate() {
         // a revocation in the record binds before anything is admitted
+        self.restore_contractions();
         self.restore_revocations();
         let n = self.journal.revision();
         let mut i = 0;

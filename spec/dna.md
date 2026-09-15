@@ -182,8 +182,11 @@ repository:
   magnitude, the stricter review (`intersect_grants`). Grants contract
   on their own (two failures in a row halve the ceiling), so a child
   born within a ceiling of 100 is bound by 50 the moment its parent
-  contracts, and the record says so (`grant.contracted <parent>`,
-  naming the children it now binds). A child born wider than its
+  contracts, and the record says so (`grant.contracted <parent>`
+  `{boundary, from, to, epoch, binds, note}`, appended before the
+  contraction takes effect). An organism born over the record restores
+  the last contraction of its ceiling — its magnitude and its epoch —
+  before anything is admitted, as it restores a revocation. A child born wider than its
   ceiling is the early error: `grant.refused <child>` names what is
   wider, and the ceiling binds it from birth. Law layers by adoption:
   every position lives under the org program's main, which adopts the
