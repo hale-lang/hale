@@ -2,25 +2,35 @@
 //
 // A replica of this record is inside the horizon: sync carries all of
 // it, to equally trusted readers. A handoff crosses a horizon into a
-// SEPARATE record: one selected fact written into that record with its
-// origin, lineage and purpose. A connection is the only path. It names
-// the other record by its genesis, the position this record acts as
-// there, its purpose and the data classes it may carry; it is proposed
-// as a Review for the Board, is in force once a board member other than
-// its proposer approves it, and stays in force until it is closed. The
-// other record admits what arrives under its OWN connection back, and its
-// acceptance returns the same way: a Task handed across settles here only
-// when the receiver's acceptance arrives (`task.transfer_accepted`).
+// SEPARATE record: one selected fact written with its origin, lineage and
+// purpose. A connection is the only path. It names the other record by
+// its identity, the position this record acts as there, its purpose and
+// the data classes it may carry; it is proposed as a Review for the
+// Board, is in force once a board member other than its proposer approves
+// it, and stays in force until it is closed.
+//
+// Neither record reads the other's journal (the review of #631: a
+// connection that fetched the peer's journal copied its whole private
+// history into this clone). A record publishes only its identity — the
+// root commit of its journal, as a blob under `refs/dna/identity` — and a
+// handoff is an envelope in the other record's mailbox for this record,
+// `refs/dna/exchange/<this record's identity>`: a chain of rows only this
+// record writes. Each record reads its own mailboxes, which its sync
+// fetches from its remote. The other record admits what arrives under its
+// OWN connection back, and its acceptance returns the same way: a Task
+// handed across settles here only when that acceptance arrives
+// (`task.transfer_accepted`).
 
 import "../core" as dna;
 
 const PEERS_DIR: String = ".hale/dna/peers";
+const EXCHANGE_PREFIX: String = "refs/dna/exchange/";
 
 type Connection {
     present: Bool = false;
     name: String = "";
     url: String = "";
-    peer: String = ""; // the other record's genesis
+    peer: String = ""; // the other record's identity
     position: String = "";
     purpose: String = "";
     classes: String = "";
@@ -36,11 +46,6 @@ type PeerWrite {
     why: String = "";
 }
 
-// A record's identity: the root commit of its journal.
-fn record_genesis(repo: String) -> String {
-    return git_out(repo, "rev-list\n--max-parents=0\n" + RECORD_REF);
-}
-
 // A path relative to the project, made absolute (git resolves a relative
 // url against the directory it runs in, which is the peer cache).
 fn absolute_url(root: String, url: String) -> String {
@@ -48,11 +53,11 @@ fn absolute_url(root: String, url: String) -> String {
     return git_out(root, "rev-parse\n--show-toplevel") + "/" + url;
 }
 
-// A bare cache of a connected record's journal, fetched fresh; "" when
-// no record can be read at `url`. The cache is checked to be its own
-// bare repository before anything is fetched into it, so a fetch can
-// never land in this project's repository.
-fn peer_fetch(root: String, name: String, url: String) -> String {
+// A bare repository of this clone's own for one connection, checked to be
+// its own before anything is fetched into it, so a fetch can never land in
+// this project's repository. It holds the other record's identity and this
+// record's mailbox there — nothing else of the other record.
+fn peer_cache(root: String, name: String) -> String {
     std::io::fs::mkdir(root + "/.hale") or discard;
     std::io::fs::mkdir(root + "/.hale/dna") or discard;
     std::io::fs::mkdir(root + "/" + PEERS_DIR) or discard;
@@ -61,34 +66,84 @@ fn peer_fetch(root: String, name: String, url: String) -> String {
         let i = dna::run_tool("git\ninit\n-q\n--bare\n" + cache);
         if i.code != 0 || git_out(cache, "rev-parse\n--is-bare-repository") != "true" { return ""; }
     }
-    if !git_ok(cache, "fetch\n-q\n" + url + "\n+" + RECORD_REF + ":" + RECORD_REF) { return ""; }
     return cache;
 }
 
-// One row appended to the connected record and pushed there under
-// compare-and-swap, re-read and re-appended when the other record moved.
+// The identity the record at `url` publishes ("" when it publishes none).
+fn peer_identity(root: String, name: String, url: String) -> String {
+    let cache = peer_cache(root, name);
+    if len(cache) == 0 { return ""; }
+    if !git_ok(cache, "fetch\n-q\n" + url + "\n+" + IDENTITY_REF + ":refs/dna/peer/identity") { return ""; }
+    return git_out(cache, "cat-file\n-p\nrefs/dna/peer/identity");
+}
+
+// This record's mailbox in the connected record, fetched fresh into the
+// cache: the envelopes this record sent there, and nothing else.
+fn outbound_mailbox(cache: String, c: Connection, mine: String) -> String {
+    let ref = EXCHANGE_PREFIX + mine;
+    let dropped = git(cache, "update-ref\n-d\n" + ref);
+    let fetched = git(cache, "fetch\n-q\n" + c.url + "\n+" + ref + ":" + ref);
+    return git_out(cache, "rev-parse\n-q\n--verify\n" + ref);
+}
+
+// One envelope into the connected record's mailbox for this record,
+// pushed there under compare-and-swap, re-read and re-appended when it moved.
 @unbounded
 fn peer_append(root: String, c: Connection, kind: String, entity: String, body: String, author: String) -> PeerWrite {
+    let mine = record_identity(root);
+    if len(mine) == 0 { return PeerWrite { why: "this record has no identity yet (no journal)" }; }
+    let ref = EXCHANGE_PREFIX + mine;
     let mut tries = 0;
     while tries < 5 {
         tries = tries + 1;
-        let cache = peer_fetch(root, c.name, c.url);
-        if len(cache) == 0 { return PeerWrite { why: "no record could be read at " + c.url }; }
-        if record_genesis(cache) != c.peer { return PeerWrite { why: c.url + " no longer serves record " + short(c.peer) }; }
-        let before = record_head(cache);
-        if !append_as(cache, kind, entity, body, author) { return PeerWrite { why: "the row could not be written" }; }
-        let after = record_head(cache);
-        if git_ok(cache, "push\n-q\n" + c.url + "\n--force-with-lease=" + RECORD_REF + ":" + before + "\n" + RECORD_REF + ":" + RECORD_REF) { return PeerWrite { commit: after }; }
+        let cache = peer_cache(root, c.name);
+        if len(cache) == 0 { return PeerWrite { why: "no cache for connection " + c.name }; }
+        if peer_identity(root, c.name, c.url) != c.peer { return PeerWrite { why: c.url + " no longer serves record " + short(c.peer) }; }
+        let before = outbound_mailbox(cache, c, mine);
+        let text = journal_text_at(cache, before);
+        let commit = commit_row(cache, before, text, count_lines(text), kind, entity, body, author);
+        if len(commit) == 0 { return PeerWrite { why: "the envelope could not be written" }; }
+        if !git_ok(cache, "update-ref\n" + ref + "\n" + commit) { continue; }
+        if git_ok(cache, "push\n-q\n" + c.url + "\n--force-with-lease=" + ref + ":" + before + "\n" + ref + ":" + ref) { return PeerWrite { commit: commit }; }
     }
-    return PeerWrite { why: "the other record kept moving; nothing was written" };
+    return PeerWrite { why: "the other record's mailbox kept moving; nothing was written" };
+}
+
+// Whether this record's mailbox in the connected record already holds an
+// envelope of `kind` about `entity`.
+@unbounded
+fn delivered(root: String, c: Connection, kind: String, entity: String) -> Bool {
+    let cache = peer_cache(root, c.name);
+    if len(cache) == 0 { return false; }
+    let head = outbound_mailbox(cache, c, record_identity(root));
+    let mut rest = journal_text_at(cache, head);
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::json::find_string_field(line, "kind") == kind && std::json::find_string_field(line, "entity") == entity { return true; }
+    }
+    return false;
+}
+
+// The envelope rows a mailbox in this clone holds ("" when absent).
+fn mailbox_text(root: String, ref: String) -> String {
+    return journal_text_at(root, git_out(root, "rev-parse\n-q\n--verify\n" + ref));
+}
+
+// This clone's inbound mailboxes (its sync fetches them from its remote),
+// newline-separated ref names.
+fn mailboxes(root: String) -> String {
+    return git_out(root, "for-each-ref\n--format=%(refname)\n" + EXCHANGE_PREFIX) + "\n";
 }
 
 // A connection as the record has it: its latest proposal, an approval by
-// a board member other than its proposer, its Review's settlement, its
-// closing.
+// a board member other than its proposer (a verified row under signed
+// trust), its Review's settlement, its closing.
 @unbounded
 fn connection_of(p: Projection, name: String) -> Connection {
     let ent = "connection:" + name;
+    let signed = trust_mode(p.root) == "signed";
     let mut c = Connection { };
     let mut i = 0;
     while i < p.rows() {
@@ -105,7 +160,7 @@ fn connection_of(p: Projection, name: String) -> Connection {
                 by: std::json::find_string_field(b, "by"),
                 review_id: std::json::find_string_field(b, "review_id")
             };
-        } else if c.present && e.kind == "review.verdict" && p.review_id_of(e) == c.review_id && len(c.approved_by) == 0 && len(c.closed) == 0 {
+        } else if c.present && e.kind == "review.verdict" && p.review_id_of(e) == c.review_id && len(c.approved_by) == 0 && len(c.closed) == 0 && (!signed || row_verified(p.root, e.digest)) {
             let reviewer = std::json::find_string_field(e.body, "reviewer");
             if std::json::find_string_field(e.body, "verdict") == "approve" && std::json::find_string_field(e.body, "authority") == "board" && reviewer != c.by { c.approved_by = reviewer; }
         } else if c.present && e.kind == "review.settled" && p.review_id_of(e) == c.review_id {
@@ -181,11 +236,10 @@ fn connect_verb(root: String, seed: String, url_in: String, name: String, positi
     let prior = connection_of(p, name);
     if prior.present && len(prior.closed) == 0 { return fail("connect: a connection `" + name + "` exists (" + connection_state(prior) + ")"); }
     let url = absolute_url(root, url_in);
-    let cache = peer_fetch(root, name, url);
-    if len(cache) == 0 { return fail("connect: no record at " + url + " (nothing under " + RECORD_REF + " to read)"); }
-    let peer = record_genesis(cache);
-    if len(peer) == 0 { return fail("connect: no record at " + url); }
-    if peer == record_genesis(root) { return fail("connect: " + url + " serves this record itself; a replica is inside the horizon and sync carries it — a connection crosses to a separate record"); }
+    let peer = peer_identity(root, name, url);
+    if len(peer) == 0 { return fail("connect: no record identity at " + url + " (`" + IDENTITY_REF + "`; a record publishes it when it syncs — `hale dna sync` there)"); }
+    if peer == record_identity(root) { return fail("connect: " + url + " serves this record itself; a replica is inside the horizon and sync carries it — a connection crosses to a separate record"); }
+    let published = publish_identity(root);
     let by = if len(by_flag) > 0 { by_flag } else { who_am_i() };
     let review_id = "c-" + name + "-" + to_string(p.rows());
     let norm = dna::classes_normal(classes);
@@ -272,7 +326,8 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
     if len(c.closed) > 0 { return fail("handoff: connection `" + name + "` is closed (" + c.closed + "): nothing further crosses it"); }
     if len(c.approved_by) == 0 { return fail("handoff: connection `" + name + "` is " + connection_state(c)); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
-    let mine = record_genesis(root);
+    let mine = record_identity(root);
+    let published = publish_identity(root);
     let mut subject = subject_in;
     let mut class = "internal";
     let mut fact = "";
@@ -360,7 +415,7 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
     pb.string_field("by", who);
     pb.string_field("note", note);
     pb.end_object();
-    if !append_as(root, "handoff.published", "handoff:" + hid, pb.result(), who) { return fail("handoff: written into record " + short(c.peer) + " as " + short(landed.commit) + ", but this record refused the append"); }
+    if !append_as(root, "handoff.published", "handoff:" + hid, pb.result(), who) { return fail("handoff: written into record " + short(c.peer) + "'s mailbox as " + short(landed.commit) + ", but this record refused the append"); }
     if kind == "task" {
         let tb = std::json::Builder { };
         tb.begin_object();
@@ -372,7 +427,7 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
         let t = append_as(root, "task.transfer_requested", subject, tb.result(), who);
     }
     let s2 = sync_record(root);
-    return answer("handoff " + hid + ": " + kind + " " + subject + " [" + class + "] written into record " + short(c.peer) + " as " + short(landed.commit) + ", for `" + c.purpose + "`" + (if kind == "task" { "; the Task settles here when that record accepts it (`hale dna handoff sync`)" } else { "" }) + "\n");
+    return answer("handoff " + hid + ": " + kind + " " + subject + " [" + class + "] written into record " + short(c.peer) + "'s mailbox as " + short(landed.commit) + ", for `" + c.purpose + "`" + (if kind == "task" { "; the Task settles here when that record accepts it (`hale dna handoff sync`)" } else { "" }) + "\n");
 }
 
 // Why a received handoff is not admitted here ("" when it is): a
@@ -386,13 +441,38 @@ fn admission_refusal(p: Projection, body: String) -> String {
     return "";
 }
 
+// A received envelope: its row line from this clone's mailboxes, the one a
+// mailbox holds under its own sender's name ("" when none).
+@unbounded
+fn received_line(root: String, entity: String) -> String {
+    let mut refs = mailboxes(root);
+    while len(refs) > 0 {
+        let nl = std::str::index_of(refs, "\n");
+        let ref = if nl < 0 { refs } else { refs[0..nl] };
+        refs = if nl < 0 { "" } else { refs[(nl + 1)..len(refs)] };
+        if len(ref) == 0 { continue; }
+        let sender = ref[len(EXCHANGE_PREFIX)..len(ref)];
+        let mut rest = mailbox_text(root, ref);
+        while len(rest) > 0 {
+            let lnl = std::str::index_of(rest, "\n");
+            let line = if lnl < 0 { rest } else { rest[0..lnl] };
+            rest = if lnl < 0 { "" } else { rest[(lnl + 1)..len(rest)] };
+            if std::json::find_string_field(line, "kind") != "handoff.received" { continue; }
+            if len(entity) > 0 && std::json::find_string_field(line, "entity") != entity { continue; }
+            // a row claiming another origin than the mailbox it is in is not its sender's
+            if std::json::find_string_field(std::json::find_string_field(line, "body"), "origin_record") != sender { continue; }
+            return line;
+        }
+    }
+    return "";
+}
+
 @unbounded
 fn handoff_list_verb(root: String, seed: String) -> Answer {
     let s = sync_record(root);
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
     let p = open_projection(root, seed, "");
     let mut sent = "";
-    let mut got = "";
     let mut i = 0;
     while i < p.rows() {
         let e = p.row(i);
@@ -401,14 +481,30 @@ fn handoff_list_verb(root: String, seed: String) -> Answer {
             let back = if p.has_row("handoff.accepted_by_peer", e.entity) { "accepted there" } else { "awaiting acceptance" };
             sent = sent + "  " + e.entity[8..len(e.entity)] + " → " + std::json::find_string_field(b, "connection") + ": " + std::json::find_string_field(b, "kind") + " " + std::json::find_string_field(b, "subject") + " [" + std::json::find_string_field(b, "class") + "] by " + std::json::find_string_field(b, "by") + " — " + back + "\n";
         }
-        if e.kind == "handoff.received" {
-            let b = e.body;
-            let why = admission_refusal(p, b);
-            let c = connection_to(p, std::json::find_string_field(b, "origin_record"));
-            let state = if p.has_row("handoff.accepted", e.entity) { "accepted" } else if len(why) == 0 { "admitted under `" + c.name + "`" } else { "not admitted: " + why };
-            got = got + "  " + e.entity[8..len(e.entity)] + " ← " + std::json::find_string_field(b, "kind") + " " + std::json::find_string_field(b, "subject") + " from record " + short(std::json::find_string_field(b, "origin_record")) + " (" + std::json::find_string_field(b, "origin_author") + " as `" + std::json::find_string_field(b, "position") + "`, for `" + std::json::find_string_field(b, "purpose") + "`) [" + std::json::find_string_field(b, "class") + "] " + std::json::find_string_field(b, "fact") + " · lineage " + std::json::find_string_field(b, "lineage") + " — " + state + "\n";
-        }
         i = i + 1;
+    }
+    let mut got = "";
+    let mut refs = mailboxes(root);
+    while len(refs) > 0 {
+        let nl = std::str::index_of(refs, "\n");
+        let ref = if nl < 0 { refs } else { refs[0..nl] };
+        refs = if nl < 0 { "" } else { refs[(nl + 1)..len(refs)] };
+        if len(ref) == 0 { continue; }
+        let sender = ref[len(EXCHANGE_PREFIX)..len(ref)];
+        let mut rest = mailbox_text(root, ref);
+        while len(rest) > 0 {
+            let lnl = std::str::index_of(rest, "\n");
+            let line = if lnl < 0 { rest } else { rest[0..lnl] };
+            rest = if lnl < 0 { "" } else { rest[(lnl + 1)..len(rest)] };
+            if std::json::find_string_field(line, "kind") != "handoff.received" { continue; }
+            let ent = std::json::find_string_field(line, "entity");
+            let b = std::json::find_string_field(line, "body");
+            if std::json::find_string_field(b, "origin_record") != sender { continue; }
+            let why = admission_refusal(p, b);
+            let c = connection_to(p, sender);
+            let state = if p.has_row("handoff.accepted", ent) { "accepted" } else if len(why) == 0 { "admitted under `" + c.name + "`" } else { "not admitted: " + why };
+            got = got + "  " + ent[8..len(ent)] + " ← " + std::json::find_string_field(b, "kind") + " " + std::json::find_string_field(b, "subject") + " from record " + short(sender) + " (" + std::json::find_string_field(b, "origin_author") + " as `" + std::json::find_string_field(b, "position") + "`, for `" + std::json::find_string_field(b, "purpose") + "`) [" + std::json::find_string_field(b, "class") + "] " + std::json::find_string_field(b, "fact") + " · lineage " + std::json::find_string_field(b, "lineage") + " — " + state + "\n";
+        }
     }
     return answer("handed across: " + (if len(sent) == 0 { "none\n" } else { "\n" + sent }) + "received: " + (if len(got) == 0 { "none\n" } else { "\n" + got }));
 }
@@ -420,40 +516,57 @@ fn handoff_accept_verb(root: String, seed: String, hid: String, note: String, wh
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
     let p = open_projection(root, seed, "");
     let ent = "handoff:" + hid;
-    let mut body = "";
-    let mut i = 0;
-    while i < p.rows() {
-        let e = p.row(i);
-        if e.kind == "handoff.received" && e.entity == ent { body = e.body; }
-        i = i + 1;
-    }
-    if len(body) == 0 { return fail("handoff accept: no handoff `" + hid + "` received in this record"); }
-    if p.has_row("handoff.accepted", ent) { return fail("handoff accept: " + hid + " is already accepted"); }
+    let line = received_line(root, ent);
+    if len(line) == 0 { return fail("handoff accept: no handoff `" + hid + "` received in this record's mailboxes"); }
+    let body = std::json::find_string_field(line, "body");
     let why = admission_refusal(p, body);
     if len(why) > 0 { return fail("handoff accept: " + hid + " is not admitted — " + why); }
     let origin = std::json::find_string_field(body, "origin_record");
     let c = connection_to(p, origin);
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
-    let b = std::json::Builder { };
-    b.begin_object();
-    b.string_field("by", who);
-    b.string_field("note", note);
-    b.string_field("connection", c.name);
-    b.string_field("origin_record", origin);
-    b.end_object();
-    if !append_as(root, "handoff.accepted", ent, b.result(), who) { return fail("the record refused the append"); }
-    let s2 = sync_record(root);
+    let already = p.has_row("handoff.accepted", ent);
+    if already && delivered(root, c, "handoff.accepted", ent) { return fail("handoff accept: " + hid + " is already accepted"); }
+    if !already {
+        // admitted into this record: the fact, with its origin and purpose
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("by", who);
+        b.string_field("note", note);
+        b.string_field("connection", c.name);
+        b.string_field("origin_record", origin);
+        b.string_field("origin_author", std::json::find_string_field(body, "origin_author"));
+        b.string_field("origin_row", std::json::find_string_field(body, "origin_row"));
+        b.string_field("lineage", std::json::find_string_field(body, "lineage"));
+        b.string_field("purpose", std::json::find_string_field(body, "purpose"));
+        b.string_field("kind", std::json::find_string_field(body, "kind"));
+        b.string_field("subject", std::json::find_string_field(body, "subject"));
+        b.string_field("class", std::json::find_string_field(body, "class"));
+        b.string_field("fact", std::json::find_string_field(body, "fact"));
+        b.end_object();
+        if !append_as(root, "handoff.accepted", ent, b.result(), who) { return fail("the record refused the append"); }
+        let s2 = sync_record(root);
+    }
+    // the acceptance goes back into the origin's mailbox for this record
+    let ab = std::json::Builder { };
+    ab.begin_object();
+    ab.string_field("by", who);
+    ab.string_field("note", note);
+    ab.string_field("origin_record", origin);
+    ab.string_field("connection", c.name);
+    ab.end_object();
+    let back = peer_append(root, c, "handoff.accepted", ent, ab.result(), who);
+    if len(back.commit) == 0 { return fail("handoff accept: " + hid + " is accepted here, but the acceptance could not reach record " + short(origin) + " (" + back.why + "); `hale dna handoff accept " + hid + "` again delivers it"); }
     return answer("handoff " + hid + " accepted by " + who + " under connection `" + c.name + "`: " + std::json::find_string_field(body, "kind") + " " + std::json::find_string_field(body, "subject") + " from record " + short(origin) + "; that record settles it when it reads this acceptance\n");
 }
 
-// Every connection in force is read for acceptances of what this record
-// handed across; each is admitted once. A closed connection is not read.
+// Every connection in force: the acceptances its other record sent to this
+// record's own mailbox, each admitted once. A closed connection is not read.
 @unbounded
 fn handoff_sync_verb(root: String, seed: String) -> Answer {
     let s = sync_record(root);
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
     let p = open_projection(root, seed, "");
-    let mine = record_genesis(root);
+    let mine = record_identity(root);
     let mut out = "";
     let mut n = 0;
     let mut names = connection_names(p);
@@ -465,10 +578,7 @@ fn handoff_sync_verb(root: String, seed: String) -> Answer {
         let c = connection_of(p, name);
         if len(c.closed) > 0 { out = out + "  " + name + ": closed — nothing admitted from it\n"; continue; }
         if !connection_live(c) { continue; }
-        let cache = peer_fetch(root, name, c.url);
-        if len(cache) == 0 || record_genesis(cache) != c.peer { out = out + "  " + name + ": record " + short(c.peer) + " could not be read at " + c.url + "\n"; continue; }
-        let text = git_out(cache, "show\n" + RECORD_REF + ":journal.jsonl") + "\n";
-        let mut rest = text;
+        let mut rest = mailbox_text(root, EXCHANGE_PREFIX + c.peer);
         while len(rest) > 0 {
             let lnl = std::str::index_of(rest, "\n");
             let line = if lnl < 0 { rest } else { rest[0..lnl] };

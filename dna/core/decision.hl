@@ -73,3 +73,39 @@ fn completion_refusal(reporter: String, evidence_required: Bool, evidence: Strin
     if evidence_required && len(evidence) == 0 && len(exception) == 0 { return "evidence required"; }
     return "";
 }
+
+// The people an acceptance practice lets authorize an exception: the
+// names after `exceptions by:` up to the end of that line ("" when the
+// practice names none, and anyone other than the assignee may).
+@unbounded
+fn exception_authorizers(text: String) -> String {
+    let lower = std::str::lower(text);
+    let at = std::str::index_of(lower, "exceptions by:");
+    if at < 0 { return ""; }
+    let rest = text[(at + 14)..len(text)];
+    let nl = std::str::index_of(rest, "\n");
+    let line = std::str::replace(std::str::replace(if nl < 0 { rest } else { rest[0..nl] }, ",", " "), ".", " ");
+    let mut out = "";
+    let mut words = line + " ";
+    while len(words) > 0 {
+        let sp = std::str::index_of(words, " ");
+        let w = std::str::trim(words[0..sp]);
+        words = words[(sp + 1)..len(words)];
+        if len(w) > 0 { out = out + (if len(out) > 0 { " " } else { "" }) + w; }
+    }
+    return out;
+}
+
+// Whether `who` may authorize an exception under a practice's text.
+@unbounded
+fn may_authorize(text: String, who: String) -> Bool {
+    let names = exception_authorizers(text);
+    if len(names) == 0 { return true; }
+    let mut rest = names + " ";
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        if same_party(rest[0..sp], who) { return true; }
+        rest = rest[(sp + 1)..len(rest)];
+    }
+    return false;
+}

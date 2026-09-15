@@ -77,6 +77,7 @@ type PendingSignIn {
     state: String = "";
     nonce: String = "";
     at: Int = 0;
+    binding: String = ""; // the `dna_signin` cookie of the browser that started it
 }
 
 @form(vec)
@@ -144,21 +145,29 @@ locus Ui {
         if !self.discovered() { return page(503, "the issuer " + self.issuer + " did not answer its discovery document"); }
         let state = dna::hex(std::os::getrandom(16) or b"");
         let nonce = dna::hex(std::os::getrandom(16) or b"");
-        if len(state) < 32 || len(nonce) < 32 { return page(503, "no randomness for a sign-in"); }
-        self.pending.push(PendingSignIn { state: state, nonce: nonce, at: std::time::now() });
+        // the sign-in is bound to the browser that starts it: a callback
+        // carrying this state from any other browser is refused, so a
+        // callback URL handed to someone else cannot sign them in as its
+        // starter (login CSRF)
+        let binding = dna::hex(std::os::getrandom(16) or b"");
+        if len(state) < 32 || len(nonce) < 32 || len(binding) < 32 { return page(503, "no randomness for a sign-in"); }
+        self.pending.push(PendingSignIn { state: state, nonce: nonce, at: std::time::now(), binding: binding });
         let sep = if std::str::contains(self.authorize_url, "?") { "&" } else { "?" };
+        let secure = if std::str::starts_with(self.redirect_uri, "https://") { "; Secure" } else { "" };
         return redirect(self.authorize_url + sep + "response_type=code&client_id=" + dna::url_encode(self.client)
-                + "&redirect_uri=" + dna::url_encode(self.redirect_uri) + "&scope=openid%20email&state=" + state + "&nonce=" + nonce, "");
+                + "&redirect_uri=" + dna::url_encode(self.redirect_uri) + "&scope=openid%20email&state=" + state + "&nonce=" + nonce, "dna_signin=" + binding + "; HttpOnly; SameSite=Lax; Path=/auth" + secure);
     }
-    // The nonce of the sign-in `state` names, consumed; "" when unknown or
-    // older than ten minutes.
+    // The nonce of the sign-in `state` names, consumed; "" when unknown,
+    // older than ten minutes, or not started by this browser (a mismatch
+    // leaves it for the browser that did start it).
     @unbounded
-    fn take_pending(state: String) -> String {
-        if len(state) == 0 { return ""; }
+    fn take_pending(state: String, binding: String) -> String {
+        if len(state) == 0 || len(binding) == 0 { return ""; }
         let now = std::time::now();
         let mut i = 0;
         while i < self.pending.len() {
             let p = self.pending.get(i) or PendingSignIn { };
+            if p.state == state && p.binding != binding { return ""; }
             if p.state == state {
                 self.pending.set(i, PendingSignIn { }) or discard;
                 return if now - p.at <= 600 { p.nonce } else { "" };
@@ -168,9 +177,9 @@ locus Ui {
         return "";
     }
     @unbounded
-    fn finish_sign_in(code: String, state: String) -> std::http::Response {
-        let nonce = self.take_pending(state);
-        if len(nonce) == 0 { return page(400, "this sign-in was not started here, was used already, or took too long; start again at /auth/login"); }
+    fn finish_sign_in(code: String, state: String, binding: String) -> std::http::Response {
+        let nonce = self.take_pending(state, binding);
+        if len(nonce) == 0 { return page(400, "this sign-in was not started in this browser, was used already, or took too long; start again at /auth/login"); }
         if !self.exchange.ready() { return page(503, "no client secret: HALE_DNA_OIDC_SECRET is not set where the head runs"); }
         if !self.discovered() { return page(503, "the issuer " + self.issuer + " did not answer its discovery document"); }
         let token = self.exchange.id_token(self.token_url, code, self.redirect_uri, self.client);
@@ -221,7 +230,7 @@ locus Ui {
         if self.principal == "oidc" {
             if std::http::is_route(ctx, "GET", "/auth/login") { return self.begin_sign_in(); }
             if std::http::is_route(ctx, "GET", "/auth/callback") {
-                return self.finish_sign_in(std::http::query_param(ctx.params, "code"), std::http::query_param(ctx.params, "state"));
+                return self.finish_sign_in(std::http::query_param(ctx.params, "code"), std::http::query_param(ctx.params, "state"), dna::cookie_value(std::http::header(req, "Cookie"), "dna_signin"));
             }
             if std::http::is_route(ctx, "GET", "/auth/logout") {
                 self.end_session(req);

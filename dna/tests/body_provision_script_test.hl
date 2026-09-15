@@ -1,0 +1,71 @@
+// GH #617 asks 3 and 4 (the review of #623) — provisioning, executed.
+// A fake `ssh` runs what `hale dna body provision` sends on this machine
+// under a fake home, with stub tools for what a body has. The default
+// directory is the body's `$HOME/dna/<project>` (not a directory named
+// `$HOME`), where systemd's unit points; the script that carries the DSN
+// reaches ssh from a file only its owner can read; `body stop` of a unit
+// that stopped reports it inactive and succeeds, and `body start` after it
+// reports it active.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` in `dir` with the fake tools first on PATH and the fake body's
+// home named for them.
+fn in_dir(dir: String, fake: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off FAKE=\"$1\" PATH=\"$1/bin:$PATH\" && shift && exec \"$@\"\nsh\n" + dir + "\n" + fake + "\n" + argv);
+}
+
+fn stub(path: String, text: String) {
+    std::io::fs::write_file(path, text) or discard;
+    let x = dna::run_tool("chmod\n+x\n" + path);
+}
+
+main locus App {
+    run() {
+        let scratch = "/tmp/dna-provision-" + to_string(std::process::pid());
+        let fake = scratch + "/fake";
+        let home = fake + "/home";
+        let r0 = dna::run_tool("mkdir\n-p\n" + fake + "/bin\n" + home + "/.hale/bin");
+        // this machine's side: ssh runs the body's commands here, under the fake home
+        stub(fake + "/bin/ssh", "#!/bin/sh\nwhile [ \"$1\" = -o ]; do shift 2; done\nshift\nexport HOME=\"$FAKE/home\" PATH=\"$FAKE/home/.hale/bin:$PATH\"\ncase \"$*\" in\n  'sh -s') stat -L -c %a /proc/self/fd/0 > \"$FAKE/stdin.mode\"; cd \"$HOME\" && exec sh -s ;;\n  'command -v git'*) echo git=yes; echo systemd=yes; echo compose=yes; echo curl=yes; echo Linux x86_64 ;;\n  *) cd \"$HOME\" && exec sh -c \"$*\" ;;\nesac\n");
+        // the body's side: the pinned toolchain, git, systemd, compose, curl
+        let pin = dna::trim_nl(dna::run_tool("sh\n-c\n\"$1\" --version | awk '{print $2}'\nsh\n" + toolchain()).stdout);
+        stub(home + "/.hale/bin/hale", "#!/bin/sh\n[ \"$1\" = --version ] && { echo \"hale " + pin + "\"; exit 0; }\nexit 0\n");
+        stub(home + "/.hale/bin/git", "#!/bin/sh\ncase \"$1\" in\n  clone) mkdir -p \"$4/.git\" ;;\nesac\nexit 0\n");
+        stub(home + "/.hale/bin/systemctl", "#!/bin/sh\nstate=\"$FAKE/unit.state\"\ncase \"$2\" in\n  stop) echo inactive > \"$state\" ;;\n  start|enable) echo active > \"$state\" ;;\n  is-active) s=$(cat \"$state\" 2>/dev/null || echo inactive); [ \"$3\" = --quiet ] || echo \"$s\"; [ \"$s\" = active ] ;;\nesac\n");
+        stub(home + "/.hale/bin/loginctl", "#!/bin/sh\nexit 0\n");
+        stub(home + "/.hale/bin/docker", "#!/bin/sh\nexit 0\n");
+        stub(home + "/.hale/bin/curl", "#!/bin/sh\nexit 0\n");
+
+        let made = in_dir(scratch, fake, toolchain() + "\ndna\nnew\nprov");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let app = scratch + "/prov";
+        let g1 = in_dir(app, fake, "git\nconfig\nuser.name\nriley");
+        let g2 = in_dir(app, fake, "git\nconfig\nuser.email\nriley@local");
+        let g3 = in_dir(app, fake, "git\nremote\nadd\norigin\nhttps://example.invalid/prov.git");
+
+        let provisioned = in_dir(app, fake, toolchain() + "\ndna\nbody\nprovision\nriley@srv\n--dsn\npostgres://books:s3cret@db.invalid/books");
+        std::test::assert_eq_int(provisioned.code, 0, "provisioned: " + provisioned.stdout + provisioned.stderr);
+        std::test::assert(std::io::fs::file_exists(home + "/dna/prov/.git"), "cloned into the body's home: " + provisioned.stdout);
+        std::test::assert(!std::io::fs::file_exists(home + "/$HOME") && !std::io::fs::file_exists(app + "/$HOME"), "not into a directory named `$HOME`");
+        let unit = std::io::fs::read_file(home + "/.config/systemd/user/hale-dna-prov.service") or "";
+        std::test::assert(std::str::contains(unit, "WorkingDirectory=%h/dna/prov\n"), "the unit runs where the clone is: " + unit);
+        std::test::assert_eq_str(dna::trim_nl(std::io::fs::read_file(fake + "/stdin.mode") or ""), "600", "the script carrying the DSN reached ssh from a file only its owner reads");
+        std::test::assert(std::str::contains(std::io::fs::read_file(home + "/.config/hale-dna/prov.env") or "", "HALE_DNA_KNOWLEDGE_DSN=postgres://books:s3cret@db.invalid/books"), "the DSN landed in the body's env file");
+        std::test::assert_eq_str(dna::trim_nl(in_dir(app, fake, "sh\n-c\nls .hale/dna/provision.*.sh 2>/dev/null | wc -l").stdout), "0", "and the script file is gone here");
+
+        let stopped = in_dir(app, fake, toolchain() + "\ndna\nbody\nstop");
+        std::test::assert(stopped.code == 0 && std::str::contains(stopped.stdout, "inactive"), "a stopped unit is a stop that succeeded: " + stopped.stdout + stopped.stderr);
+        let started = in_dir(app, fake, toolchain() + "\ndna\nbody\nstart");
+        std::test::assert(started.code == 0 && std::str::contains(started.stdout, "active"), "and it starts again: " + started.stdout + started.stderr);
+
+        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+    }
+}
+
+fn main() { App { }; }

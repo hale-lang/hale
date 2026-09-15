@@ -172,6 +172,18 @@ main locus App {
         let retired = dna_cli(app, decide + "t44\n--decided-by\ndana@client\n--via\nmail\n--evidence\n" + digest + "\n--as\nmara");
         std::test::assert(std::str::contains(retired, "task t44 still handed") && std::str::contains(retired, "no ratified practice `acceptance/expense-approval`"), "retired: " + retired);
 
+        // ---- a Task handed under a practice keeps it: a later practice that
+        // allows reports does not settle a case handed when a native decision
+        // was required
+        self.j.refresh();
+        let h1 = self.j.append(self.j.revision(), "task.born", "t45", "i-t45: sign the lease renewal");
+        let h2 = self.j.append(self.j.revision(), "task.handed", "t45", "{\"work\": \"t45/w\", \"assignee\": \"mara\", \"by\": \"leader\", \"obligation\": \"contract-signature\", \"acceptance\": \"" + native + "\", \"evidence_required\": false}");
+        let relaxed = self.practice("acceptance/contract-signature", "A contract may be signed by the client and reported by the assignee.\nreported decisions: allowed");
+        self.j.refresh();
+        let r1 = self.j.append(self.j.revision(), "knowledge.retired", native, "{\"digest\": \"" + native + "\", \"by\": \"" + relaxed + "\"}");
+        let bound = dna_cli(app, decide + "t45\n--decided-by\ndana@client\n--via\nmail\n--evidence\n" + digest + "\n--as\nmara");
+        std::test::assert(std::str::contains(bound, "task t45 still handed") && std::str::contains(bound, "practice `acceptance/contract-signature` (" + native + ") requires a native decision"), "decided under the practice it was handed with: " + bound);
+
         let rm = dna::run_tool("rm\n-rf\n" + scratch);
     }
 }

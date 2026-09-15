@@ -14,6 +14,7 @@ const OBSERVED_SOCK: String = "hale-dna.expression.observed.sock";
 const PRESSURE_SOCK: String = "hale-dna.pressure.raised.sock";
 const CONCERN_SOCK: String = "hale-dna.concern.raised.sock";
 const PRACTICE_SOCK: String = "hale-dna.practice.requested.sock";
+const IDENTITY_REF: String = "refs/dna/identity";
 
 // `git -C <repo> <args…>`; argv newline-separated.
 fn git(repo: String, args: String) -> dna::RunResult {
@@ -218,8 +219,34 @@ fn sync_failed(why: String) -> SyncResult {
 @unbounded
 fn sync_record(repo: String) -> SyncResult {
     let s = sync_record_rows(repo);
-    if s.ok { let r = apply_redactions(repo); }
+    if s.ok {
+        let r = apply_redactions(repo);
+        let i = publish_identity(repo);
+    }
     return s;
+}
+
+// GH #615: a record's identity is the root commit of its journal. It is
+// published as a blob under refs/dna/identity, so another record can name
+// this one (and write into its mailbox for it) without reading its journal.
+fn record_identity(repo: String) -> String {
+    return git_out(repo, "rev-list\n--max-parents=0\n" + RECORD_REF);
+}
+
+fn publish_identity(repo: String) -> Bool {
+    let genesis = record_identity(repo);
+    if len(genesis) == 0 { return false; }
+    if git_out(repo, "cat-file\n-p\n" + IDENTITY_REF) == genesis { return true; }
+    std::io::fs::mkdir(repo + "/.hale") or discard;
+    std::io::fs::mkdir(repo + "/.hale/dna") or discard;
+    let tmp = repo + "/.hale/dna/identity." + to_string(std::process::pid()) + ".tmp";
+    let w = write_text(tmp, genesis) or false;
+    let blob = git_out(repo, "hash-object\n-w\n" + tmp);
+    std::io::fs::unlink(tmp) or discard;
+    if len(blob) == 0 || !git_ok(repo, "update-ref\n" + IDENTITY_REF + "\n" + blob) { return false; }
+    let remote = record_remote(repo);
+    if len(remote) > 0 { let p = git(repo, "push\n-q\n" + remote + "\n" + IDENTITY_REF + ":" + IDENTITY_REF); }
+    return true;
 }
 
 // GH #606: a redacted git receipt's ref goes from this clone and from
@@ -255,7 +282,7 @@ fn apply_redactions(repo: String) -> Int {
 fn sync_record_rows(repo: String) -> SyncResult {
     let remote = record_remote(repo);
     if len(remote) == 0 { return SyncResult { ok: true, summary: "no remote: the record is local" }; }
-    let f = git(repo, "fetch\n-q\n" + remote + "\n+" + RECORD_REF + ":" + REMOTE_TRACK + "\n+refs/dna/receipts/*:refs/dna/receipts/*");
+    let f = git(repo, "fetch\n-q\n" + remote + "\n+" + RECORD_REF + ":" + REMOTE_TRACK + "\n+refs/dna/receipts/*:refs/dna/receipts/*\n+refs/dna/exchange/*:refs/dna/exchange/*");
     if f.code != 0 {
         // a remote with no record yet is not an error
         if !std::str::contains(f.stderr, "ouldn't find remote ref") { return sync_failed("fetch " + remote + ": " + dna::trim_nl(f.stderr)); }

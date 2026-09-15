@@ -102,7 +102,7 @@ main locus App {
         self.j = dna::GitJournal { repo: app };
         self.r = dna::GitReceipts { repo: app };
 
-        let strict = self.practice("acceptance/expense-receipt", "An expense closes with its receipt.\nevidence: required");
+        let strict = self.practice("acceptance/expense-receipt", "An expense closes with its receipt.\nevidence: required\nexceptions by: dana");
         self.handed("t51", "file the March taxi receipt", "expense-receipt", strict, true);
         self.handed("t52", "call the landlord", "", "", false);
         let mail = in_dir(scratch, "sh\n-c\nprintf '%s' \"$1\" > receipt.txt\nsh\nTaxi, 14 March, 23.40");
@@ -141,6 +141,13 @@ main locus App {
         self.handed("t54", "file the May taxi receipt", "expense-receipt", relaxed, false);
         std::test::assert(std::str::contains(dna_cli(app, "task\ndone\nt53\n--as\nmara\n--note\npaid"), "closes only with its evidence"), "the older case keeps its contract");
         std::test::assert(std::str::contains(dna_cli(app, "task\ndone\nt54\n--as\nmara\n--note\npaid"), "task t54 done by mara: paid — human-reported"), "the newer case closes under the new practice");
+        // an exception is its authorizer's own act, not a name the assignee gives
+        std::test::assert(std::str::contains(dna_cli(app, "task\ndone\nt53\n--as\nmara\n--exception\nthe driver gave no receipt\n--authorized-by\nnobody"), "no exception for `t53` authorized by nobody in the record"), "an invented authorizer closes nothing");
+        std::test::assert(std::str::contains(dna_cli(app, "task\nauthorize\nt53\n--exception\nthe driver gave no receipt\n--as\nmara"), "authorized by someone other than its assignee"), "the assignee cannot authorize their own exception");
+        std::test::assert(std::str::contains(dna_cli(app, "task\nauthorize\nt53\n--exception\nthe driver gave no receipt\n--as\nlee"), "lets only dana authorize an exception"), "only whom the bound practice names");
+        let authorized = dna_cli(app, "task\nauthorize\nt53\n--exception\nthe driver gave no receipt\n--as\ndana");
+        std::test::assert(std::str::contains(authorized, "task t53: exception authorized by dana"), "dana authorizes it: " + authorized);
+        std::test::assert_eq_int(record_lines_with(app, "\"kind\": \"exception.authorized\"\t\"entity\": \"t53\"\t\"author\": \"dana\""), 1, "in dana's name");
         let excepted = dna_cli(app, "task\ndone\nt53\n--as\nmara\n--exception\nthe driver gave no receipt\n--authorized-by\ndana");
         std::test::assert(std::str::contains(excepted, "task t53 done by mara — exception authorized by dana: the driver gave no receipt"), "an authorized exception closes it: " + excepted);
         std::test::assert_eq_int(record_lines_with(app, "\"kind\": \"completion.excepted\"\t\"entity\": \"t53\"\t\\\"why\\\": \\\"the driver gave no receipt\\\"\t\\\"authorized_by\\\": \\\"dana\\\"\t\\\"by\\\": \\\"mara\\\""), 1, "recorded as an exception");
