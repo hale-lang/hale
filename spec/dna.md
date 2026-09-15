@@ -511,7 +511,10 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   the body's mark (`HALE_DNA_BODY=<holder>#<token>#<host pid>#`, set in
   the environment of everything the host starts and inherited by every
   tool they start, so a tool whose organism already died and which was
-  reparented is found too; Linux's `/proc`) — and says why, and the host
+  reparented is found too; Linux's `/proc`) — and says why (the
+  host does the same, before it stops the fence, on every exit it takes
+  once it holds the lease: a failed build, a refused start, its
+  organization's exit), and the host
   exits 3 when it next looks. A host blocked in a sync, a build or an
   observation window therefore cannot keep its organism executing past
   the lease; while the remote cannot be reached the lease is kept
