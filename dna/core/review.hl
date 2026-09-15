@@ -266,6 +266,12 @@ locus AutonomyBoundary {
         self.audit.push(AuditRow { seq: self.decisions, disposition: "revoke", note: "by " + parent });
         return true;
     }
+    // A revocation read back from the record at birth: nothing granted,
+    // the epoch where the revocation left it.
+    fn restore_revocation(revoked_at: Int) {
+        self.grant = Grant { child: self.grant.child, classes: "", max_magnitude: 0, review: "pre", may_expand_self: false, window: self.grant.window, authority_epoch: revoked_at };
+        self.audit.push(AuditRow { seq: self.decisions, disposition: "revoke", note: "restored from the record" });
+    }
     fn audit_count() -> Int { return self.audit.len(); }
     fn audit_at(i: Int) -> AuditRow { return self.audit.get(i) or AuditRow { }; }
 }

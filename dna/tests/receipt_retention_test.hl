@@ -91,6 +91,18 @@ main locus App {
         std::test::assert(std::str::contains(row, "\"by\": \"mara\"") && std::str::contains(row, "\"why\": \"no longer needed\"") && std::str::contains(row, "\"policy\": \"retention:30d\"") && std::str::contains(row, "\"store\": \"git\""), "the record keeps who, why and the policy: " + row);
         std::test::assert(std::str::contains(self.core.redact_evidence(d, "mara", "again", "retention:30d"), "already redacted"), "a redaction is once");
 
+        // ---- a redaction the record cannot hold erases nothing
+        let second = "a second supplier note under the same policy";
+        let d2 = self.core.file_evidence(second, "internal", "mara");
+        std::io::fs::write_file(app + "/.git/refs/dna/journal.lock", "held by the test") or discard;
+        let unrecorded = self.core.redact_evidence(d2, "mara", "no longer needed", "retention:30d");
+        let cli_unrecorded = in_dir(app, toolchain() + "\ndna\nreceipt\nredact\n" + d2 + "\n--why\nno longer needed\n--policy\nretention:30d\n--as\nmara");
+        std::io::fs::unlink(app + "/.git/refs/dna/journal.lock") or discard;
+        std::test::assert(std::str::contains(unrecorded, "nothing was erased"), "the organism refuses it: " + unrecorded);
+        std::test::assert(cli_unrecorded.code != 0 && std::str::contains(cli_unrecorded.stdout + cli_unrecorded.stderr, "nothing was erased"), "and so does the CLI: " + cli_unrecorded.stdout + cli_unrecorded.stderr);
+        std::test::assert_eq_str(receipts.read(hex_of(d2)), second, "the body is intact");
+        std::test::assert_eq_str(self.last(app, "receipt.redacted", d2), "", "and no redaction is in the record");
+
         // ---- sync forgets it everywhere
         let s1 = in_dir(app, toolchain() + "\ndna\nsync");
         std::test::assert_eq_int(s1.code, 0, "this clone syncs: " + s1.stdout + s1.stderr);
@@ -142,6 +154,16 @@ main locus App {
         std::test::assert(!gone.present && std::str::contains(gone.refused, "was redacted: by mara under gdpr-erasure: left the company"), "a read learns the body is gone, not missing: " + gone.refused);
         let listing = in_dir(app, toolchain() + "\ndna\nreceipt");
         std::test::assert(std::str::contains(listing.stdout, "redacted by mara under gdpr-erasure"), "the list says so: " + listing.stdout);
+        // the service records the redaction before it erases: refused, the body stays
+        let secret2 = "payroll line for employee 91: 3900.00";
+        let p2 = self.core.file_evidence(secret2, "confidential", "mara");
+        let d22 = in_dir(app, toolchain() + "\ndna\nreceipt\ndisclose\n" + p2 + "\n--to\ntomasz\n--purpose\naudit\n--as\nmara");
+        std::io::fs::write_file(app + "/.git/refs/dna/journal.lock", "held by the test") or discard;
+        let unerased = in_dir(app, toolchain() + "\ndna\nreceipt\nredact\n" + p2 + "\n--why\nleft the company\n--policy\ngdpr-erasure\n--as\nmara");
+        std::io::fs::unlink(app + "/.git/refs/dna/journal.lock") or discard;
+        std::test::assert(unerased.code != 0 && std::str::contains(unerased.stdout + unerased.stderr, "nothing was erased"), "an erasure the record cannot hold is refused: " + unerased.stdout + unerased.stderr);
+        let still = self.core.vault.read(p2, "tomasz", "audit");
+        std::test::assert(still.present && still.text == secret2, "and the protected body is intact: " + still.refused);
 
         // ---- a redacted knowledge receipt does not stop the projection
         let proposed = self.core.propose_knowledge(dna::Idea { id: "k1", kind: "practice", text: "keep supplier notes a month", author: "org" }, "org");

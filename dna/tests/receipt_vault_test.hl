@@ -143,6 +143,13 @@ main locus App {
         let listing = in_dir(app, toolchain() + "\ndna\nreceipt");
         std::test::assert(std::str::contains(listing.stdout, d1) && std::str::contains(listing.stdout, "confidential") && std::str::contains(listing.stdout, "disclosed to tomasz for audit") && std::str::contains(listing.stdout, "withheld"), "the list: " + listing.stdout);
         std::test::assert_eq_str(objects_with(app, "bank account ending 3321"), "0", "after every read, still no git object holds it");
+        // a read the record cannot hold is not answered: with the journal's
+        // ref locked, the service refuses and discloses nothing
+        std::io::fs::write_file(app + "/.git/refs/dna/journal.lock", "held by the test") or discard;
+        let unrecorded = self.served.vault.read(d1, "tomasz", "audit");
+        std::io::fs::unlink(app + "/.git/refs/dna/journal.lock") or discard;
+        std::test::assert(!unrecorded.present && len(unrecorded.text) == 0 && std::str::contains(unrecorded.refused, "could not be recorded"), "no plaintext without its read row: " + unrecorded.refused);
+        std::test::assert_eq_int(self.rows(app, "receipt.read", d1), 1, "and no read row either");
         let stop = dna::run_tool("kill\n" + pid);
 
         // ---- over Postgres: encrypted at rest, and a wrong key reads nothing

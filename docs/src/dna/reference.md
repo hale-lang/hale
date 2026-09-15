@@ -126,7 +126,6 @@ tree, one JSON object per line: `seq`, `kind`, `entity`, `body`,
 | `grant.reserved` | a child | a spend admitted: op, amount, currency, counterparty, route, ceiling, epoch, at |
 | `grant.released` | a child | a reservation settled at what was actually spent |
 | `grant.fenced` | a child | an admission refused because the grant's epoch moved since |
-| `grant.revoked` | a child | the parent revoked the grant; the new epoch |
 | `receipt.classified` | a digest | a protected body the knowledge service keeps: class, by, store |
 | `receipt.withheld` | a digest | a protected body no service could keep: class, by, why |
 | `receipt.disclosed` | a digest | a reader authorized: recipient, purpose, by |
@@ -140,6 +139,7 @@ tree, one JSON object per line: `seq`, `kind`, `entity`, `body`,
 | `decision.reported` | `t<n>` | a decision someone outside made, reported by the assignee: reporter, decider, channel, evidence, scope, obligation, practice, policy, accepted, why, note |
 | `receipt.held` / `receipt.hold_released` | a digest | a hold that refuses redaction, and its release: by, why |
 | `receipt.redacted` | a digest | the body removed, the digest kept: by, why, policy, class, store |
+| `grant.revoked` | a child | the parent revoked the grant, recorded before it takes effect and restored at birth: by, parent, epoch |
 | `model.called` | `<work>/a<n>` or a review id | the model evidence; the prompt and context are receipts under its digests (`bodies`), none for a customer-class call |
 
 ## `status.json`

@@ -183,6 +183,7 @@ fn receipt_file_verb(root: String, path: String, class_flag: String, who_flag: S
 
 // GH #604 rule 5: a handed Task moves to another person as a row that
 // names both; the Task stays handed. Reached per command.
+@unbounded
 fn task_reassign_verb(root: String, seed: String, id: String, to: String, by_flag: String) -> Answer {
     if len(id) == 0 || len(to) == 0 { return fail("task reassign: `hale dna task reassign <id> --to <who> [--as <by>]`"); }
     let s = sync_record(root);
@@ -192,6 +193,15 @@ fn task_reassign_verb(root: String, seed: String, id: String, to: String, by_fla
     if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
     if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: nothing to reassign"); }
     let by = if len(by_flag) > 0 { by_flag } else { who_am_i() };
+    // GH #604 rule 5: no new work reaches a person who retired
+    let mut gone = false;
+    let mut k = 0;
+    while k < p.rows() {
+        let e = p.row(k);
+        if e.kind == "person.retired" && e.entity == to { gone = true; }
+        k = k + 1;
+    }
+    if gone { return fail("task reassign: " + to + " retired; no new work reaches them — reassign to someone who works here"); }
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("from", t.assignee);
