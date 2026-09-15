@@ -23,6 +23,13 @@ fn dna_fixtures_pass() {
     // in the environment (CI's service container; a developer's compose)
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_hale"));
     cmd.arg("test").arg(&dir).env("HALE_BIN", env!("CARGO_BIN_EXE_hale"));
+    // Fixtures run from a directory of their own, never from inside this
+    // repository: an organism's defaults are relative to where it runs
+    // (a gateway's worktrees, a file store's receipts), and a fixture
+    // that trips one must not write into the checkout — a worktree of the
+    // whole repository under crates/hale-cli moved the corpus baseline
+    // for a parallel test.
+    cmd.current_dir(std::env::temp_dir());
     if let Ok(dsn) = std::env::var("HALE_DNA_KNOWLEDGE_DSN") {
         cmd.env("HALE_DNA_KNOWLEDGE_DSN", dsn);
     }
