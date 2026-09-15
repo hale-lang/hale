@@ -167,16 +167,23 @@ main locus App {
         let login = curl("GET", ui + "/auth/login", "", "");
         let authorize = dna::response_header(login.headers, "Location");
         std::test::assert(login.status == 302 && std::str::starts_with(authorize, "http://127.0.0.1:47811/authorize?response_type=code&client_id=dna-ui") && std::str::contains(authorize, "&state=") && std::str::contains(authorize, "&nonce="), "sign-in starts at the issuer: " + authorize);
+        let signin_line = dna::response_header(login.headers, "Set-Cookie");
+        std::test::assert(std::str::starts_with(signin_line, "dna_signin=") && std::str::contains(signin_line, "HttpOnly"), "the browser that starts a sign-in is bound to it: " + login.headers);
+        let signin = signin_line[0..std::str::index_of(signin_line, ";")];
         let signed = curl("GET", authorize, "", "");
         let callback = dna::response_header(signed.headers, "Location");
         std::test::assert(signed.status == 302 && std::str::starts_with(callback, ui + "/auth/callback?code="), "the issuer sends the browser back: " + callback);
-        let landed = curl("GET", callback, "", "");
+        // a callback delivered to another browser signs no one in, and leaves
+        // the sign-in to the browser that started it
+        let hijack = curl("GET", callback, "", "");
+        std::test::assert(hijack.status == 400 && std::str::contains(hijack.body, "not started in this browser") && len(dna::response_header(hijack.headers, "Set-Cookie")) == 0, "no session for a browser that did not start the sign-in: " + hijack.body);
+        let landed = curl("GET", callback, signin, "");
         let cookie_line = dna::response_header(landed.headers, "Set-Cookie");
         std::test::assert(landed.status == 302 && std::str::starts_with(cookie_line, "dna_session=") && std::str::contains(cookie_line, "HttpOnly"), "a session: " + landed.headers + landed.body);
         let semi = std::str::index_of(cookie_line, ";");
         let cookie = cookie_line[0..semi];
         std::test::assert(len(cookie) > 60, "a long random session id");
-        let replay = curl("GET", callback, "", "");
+        let replay = curl("GET", callback, signin, "");
         std::test::assert(replay.status == 400 && std::str::contains(replay.body, "was used already"), "a sign-in is used once: " + replay.body);
         std::test::assert_eq_int(curl("GET", ui + "/api/board", cookie, "").status, 200, "the API answers with the session");
 
@@ -211,7 +218,8 @@ main locus App {
         let eve_login = curl("GET", ui + "/auth/login", "", "");
         let eve_authorize = dna::response_header(eve_login.headers, "Location") + "&login_hint=eve-sub";
         let eve_back = dna::response_header(curl("GET", eve_authorize, "", "").headers, "Location");
-        let eve = curl("GET", eve_back, "", "");
+        let eve_line = dna::response_header(eve_login.headers, "Set-Cookie");
+        let eve = curl("GET", eve_back, eve_line[0..std::str::index_of(eve_line, ";")], "");
         std::test::assert(eve.status == 403 && std::str::contains(eve.body, "not a member: subject `eve-sub`") && len(dna::response_header(eve.headers, "Set-Cookie")) == 0, "no session for eve: " + eve.body);
 
         // ---- a sign-out ends the session
