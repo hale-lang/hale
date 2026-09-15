@@ -90,6 +90,27 @@ decisions: allowed`, and reports settle expense approvals. Without such
 a practice the report is kept, the Task waits for the assignee's own
 `task done`, and `hale dna board` says why.
 
+Some work leaves the organization altogether: the year-end ledger goes
+to your accountant, who runs their own organism on their own record.
+Sync never does this. It copies your whole record to people inside it.
+Instead, connect the two records, and the connection says what may
+cross:
+
+```text
+hale dna connect git@example.com:acct/record.git --name acct --as accountant \
+    --purpose "year-end books" --classes internal,customer
+hale dna review c-acct-41 approve --authority board    # someone else on the Board
+hale dna handoff acct task t7
+```
+
+The Task appears in the accountant's record with where it came from, its
+history here and its purpose. A receipt crosses as its digest, never its
+body, and only if the connection carries its class. Their side admits it
+only through a connection of their own back to you, and when they run
+`hale dna handoff accept`, your `hale dna handoff sync` settles the Task.
+`hale dna disconnect acct --why "the engagement ended"` stops anything
+further crossing, and both records keep what already did.
+
 A grant sits under the organization's own, when one is written: a
 child's grant is read through the organism's *current* grant at every
 assessment, so when the organization's leash shortens on repeated

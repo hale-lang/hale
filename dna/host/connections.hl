@@ -1,0 +1,507 @@
+// dna/host/connections.hl — cross-record handoff (GH #615).
+//
+// A replica of this record is inside the horizon: sync carries all of
+// it, to equally trusted readers. A handoff crosses a horizon into a
+// SEPARATE record: one selected fact written into that record with its
+// origin, lineage and purpose. A connection is the only path. It names
+// the other record by its genesis, the position this record acts as
+// there, its purpose and the data classes it may carry; it is proposed
+// as a Review for the Board, is in force once a board member other than
+// its proposer approves it, and stays in force until it is closed. The
+// other record admits what arrives under its OWN connection back, and its
+// acceptance returns the same way: a Task handed across settles here only
+// when the receiver's acceptance arrives (`task.transfer_accepted`).
+
+import "../core" as dna;
+
+const PEERS_DIR: String = ".hale/dna/peers";
+
+type Connection {
+    present: Bool = false;
+    name: String = "";
+    url: String = "";
+    peer: String = ""; // the other record's genesis
+    position: String = "";
+    purpose: String = "";
+    classes: String = "";
+    by: String = "";
+    review_id: String = "";
+    approved_by: String = "";
+    settled: Bool = false;
+    closed: String = ""; // why, once closed
+}
+
+type PeerWrite {
+    commit: String = "";
+    why: String = "";
+}
+
+// A record's identity: the root commit of its journal.
+fn record_genesis(repo: String) -> String {
+    return git_out(repo, "rev-list\n--max-parents=0\n" + RECORD_REF);
+}
+
+// A path relative to the project, made absolute (git resolves a relative
+// url against the directory it runs in, which is the peer cache).
+fn absolute_url(root: String, url: String) -> String {
+    if std::str::starts_with(url, "/") || std::str::contains(url, "://") || std::str::contains(url, "@") { return url; }
+    return git_out(root, "rev-parse\n--show-toplevel") + "/" + url;
+}
+
+// A bare cache of a connected record's journal, fetched fresh; "" when
+// no record can be read at `url`. The cache is checked to be its own
+// bare repository before anything is fetched into it, so a fetch can
+// never land in this project's repository.
+fn peer_fetch(root: String, name: String, url: String) -> String {
+    std::io::fs::mkdir(root + "/.hale") or discard;
+    std::io::fs::mkdir(root + "/.hale/dna") or discard;
+    std::io::fs::mkdir(root + "/" + PEERS_DIR) or discard;
+    let cache = root + "/" + PEERS_DIR + "/" + name + ".git";
+    if git_out(cache, "rev-parse\n--is-bare-repository") != "true" {
+        let i = dna::run_tool("git\ninit\n-q\n--bare\n" + cache);
+        if i.code != 0 || git_out(cache, "rev-parse\n--is-bare-repository") != "true" { return ""; }
+    }
+    if !git_ok(cache, "fetch\n-q\n" + url + "\n+" + RECORD_REF + ":" + RECORD_REF) { return ""; }
+    return cache;
+}
+
+// One row appended to the connected record and pushed there under
+// compare-and-swap, re-read and re-appended when the other record moved.
+@unbounded
+fn peer_append(root: String, c: Connection, kind: String, entity: String, body: String, author: String) -> PeerWrite {
+    let mut tries = 0;
+    while tries < 5 {
+        tries = tries + 1;
+        let cache = peer_fetch(root, c.name, c.url);
+        if len(cache) == 0 { return PeerWrite { why: "no record could be read at " + c.url }; }
+        if record_genesis(cache) != c.peer { return PeerWrite { why: c.url + " no longer serves record " + short(c.peer) }; }
+        let before = record_head(cache);
+        if !append_as(cache, kind, entity, body, author) { return PeerWrite { why: "the row could not be written" }; }
+        let after = record_head(cache);
+        if git_ok(cache, "push\n-q\n" + c.url + "\n--force-with-lease=" + RECORD_REF + ":" + before + "\n" + RECORD_REF + ":" + RECORD_REF) { return PeerWrite { commit: after }; }
+    }
+    return PeerWrite { why: "the other record kept moving; nothing was written" };
+}
+
+// A connection as the record has it: its latest proposal, an approval by
+// a board member other than its proposer, its Review's settlement, its
+// closing.
+@unbounded
+fn connection_of(p: Projection, name: String) -> Connection {
+    let ent = "connection:" + name;
+    let mut c = Connection { };
+    let mut i = 0;
+    while i < p.rows() {
+        let e = p.row(i);
+        if e.kind == "connection.proposed" && e.entity == ent {
+            let b = e.body;
+            c = Connection {
+                present: true, name: name,
+                url: std::json::find_string_field(b, "url"),
+                peer: std::json::find_string_field(b, "peer"),
+                position: std::json::find_string_field(b, "position"),
+                purpose: std::json::find_string_field(b, "purpose"),
+                classes: std::json::find_string_field(b, "classes"),
+                by: std::json::find_string_field(b, "by"),
+                review_id: std::json::find_string_field(b, "review_id")
+            };
+        } else if c.present && e.kind == "review.verdict" && p.review_id_of(e) == c.review_id && len(c.approved_by) == 0 && len(c.closed) == 0 {
+            let reviewer = std::json::find_string_field(e.body, "reviewer");
+            if std::json::find_string_field(e.body, "verdict") == "approve" && std::json::find_string_field(e.body, "authority") == "board" && reviewer != c.by { c.approved_by = reviewer; }
+        } else if c.present && e.kind == "review.settled" && p.review_id_of(e) == c.review_id {
+            c.settled = true;
+        } else if c.present && e.kind == "connection.closed" && e.entity == ent {
+            c.closed = std::json::find_string_field(e.body, "why");
+        }
+        i = i + 1;
+    }
+    return c;
+}
+
+fn connection_live(c: Connection) -> Bool { return c.present && len(c.approved_by) > 0 && len(c.closed) == 0; }
+
+fn connection_state(c: Connection) -> String {
+    if len(c.closed) > 0 { return "closed: " + c.closed; }
+    if len(c.approved_by) > 0 { return "in force (approved by " + c.approved_by + ")"; }
+    return "proposed: Review " + c.review_id + " needs an approval by a board member other than " + c.by;
+}
+
+// An approved connection's Review is settled once, in its approver's name.
+fn settle_connection(root: String, c: Connection) {
+    if len(c.approved_by) == 0 || c.settled { return; }
+    let ok = append_as(root, "review.settled", "review:" + c.review_id, "approve by " + c.approved_by + " (board): connection `" + c.name + "` in force", c.approved_by);
+}
+
+// The connection names the record holds, newline-separated, first-proposed first.
+@unbounded
+fn connection_names(p: Projection) -> String {
+    let mut names = "\n";
+    let mut i = 0;
+    while i < p.rows() {
+        let e = p.row(i);
+        if e.kind == "connection.proposed" && std::str::starts_with(e.entity, "connection:") {
+            let name = e.entity[11..len(e.entity)];
+            if !std::str::contains(names, "\n" + name + "\n") { names = names + name + "\n"; }
+        }
+        i = i + 1;
+    }
+    return names;
+}
+
+// The connection in force to record `peer`, if any.
+@unbounded
+fn connection_to(p: Projection, peer: String) -> Connection {
+    let mut rest = connection_names(p);
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let name = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(name) == 0 { continue; }
+        let c = connection_of(p, name);
+        if connection_live(c) && c.peer == peer { return c; }
+    }
+    return Connection { };
+}
+
+// ---- hale dna connect | disconnect ------------------------------------
+
+@unbounded
+fn connect_verb(root: String, seed: String, url_in: String, name: String, position: String, purpose: String, classes: String, by_flag: String) -> Answer {
+    if len(url_in) == 0 { return connections_list(root, seed); }
+    if len(name) == 0 || len(position) == 0 || len(purpose) == 0 || len(classes) == 0 {
+        return fail("connect: `hale dna connect <record-url> --name <name> --as <position> --purpose <purpose> --classes <internal,customer,…> [--by <who>]`");
+    }
+    let bad_name = dna::connection_name_refusal(name);
+    if len(bad_name) > 0 { return fail("connect: " + bad_name); }
+    let bad_classes = dna::classes_refusal(classes);
+    if len(bad_classes) > 0 { return fail("connect: " + bad_classes); }
+    let s = sync_record(root);
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let p = open_projection(root, seed, "");
+    let prior = connection_of(p, name);
+    if prior.present && len(prior.closed) == 0 { return fail("connect: a connection `" + name + "` exists (" + connection_state(prior) + ")"); }
+    let url = absolute_url(root, url_in);
+    let cache = peer_fetch(root, name, url);
+    if len(cache) == 0 { return fail("connect: no record at " + url + " (nothing under " + RECORD_REF + " to read)"); }
+    let peer = record_genesis(cache);
+    if len(peer) == 0 { return fail("connect: no record at " + url); }
+    if peer == record_genesis(root) { return fail("connect: " + url + " serves this record itself; a replica is inside the horizon and sync carries it — a connection crosses to a separate record"); }
+    let by = if len(by_flag) > 0 { by_flag } else { who_am_i() };
+    let review_id = "c-" + name + "-" + to_string(p.rows());
+    let norm = dna::classes_normal(classes);
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("name", name);
+    b.string_field("url", url);
+    b.string_field("peer", peer);
+    b.string_field("position", position);
+    b.string_field("purpose", purpose);
+    b.string_field("classes", norm);
+    b.string_field("by", by);
+    b.string_field("review_id", review_id);
+    b.end_object();
+    if !append_as(root, "connection.proposed", "connection:" + name, b.result(), by) { return fail("the record refused the append"); }
+    let question = "connect this record to record " + short(peer) + " at " + url + " as `" + position + "` for `" + purpose + "`, carrying " + norm + "?";
+    let q = std::json::Builder { };
+    q.begin_object();
+    q.string_field("question", question);
+    q.string_field("subject_digest", peer);
+    q.string_field("required_authority", "board");
+    q.string_field("author", by);
+    q.string_field("kind", "connection");
+    q.string_field("target", position);
+    q.end_object();
+    if !append_as(root, "review.requested", "review:" + review_id, q.result(), by) { return fail("the record refused the append"); }
+    let s2 = sync_record(root);
+    return answer("connection " + name + " proposed: record " + short(peer) + " at " + url + ", as `" + position + "`, for `" + purpose + "`, carrying " + norm + "\nthe Board decides it: `hale dna review " + review_id + " approve --authority board`, by someone other than " + by + "\n");
+}
+
+@unbounded
+fn connections_list(root: String, seed: String) -> Answer {
+    let s = sync_record(root);
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let p = open_projection(root, seed, "");
+    let mut out = "";
+    let mut n = 0;
+    let mut rest = connection_names(p);
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let name = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(name) == 0 { continue; }
+        let c = connection_of(p, name);
+        settle_connection(root, c);
+        out = out + "  " + name + " → record " + short(c.peer) + " (" + c.url + ") as `" + c.position + "` for `" + c.purpose + "`, carrying " + c.classes + " — " + connection_state(c) + "\n";
+        n = n + 1;
+    }
+    return answer("connections: " + (if n == 0 { "none" } else { to_string(n) }) + "\n" + out);
+}
+
+fn disconnect_verb(root: String, seed: String, name: String, why: String, by_flag: String) -> Answer {
+    if len(name) == 0 || len(why) == 0 { return fail("disconnect: `hale dna disconnect <name> --why <why> [--by <who>]`"); }
+    let s = sync_record(root);
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let p = open_projection(root, seed, "");
+    let c = connection_of(p, name);
+    if !c.present { return fail("disconnect: no connection `" + name + "`"); }
+    if len(c.closed) > 0 { return fail("disconnect: `" + name + "` is already closed: " + c.closed); }
+    let by = if len(by_flag) > 0 { by_flag } else { who_am_i() };
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("by", by);
+    b.string_field("why", why);
+    b.end_object();
+    if !append_as(root, "connection.closed", "connection:" + name, b.result(), by) { return fail("the record refused the append"); }
+    let s2 = sync_record(root);
+    return answer("connection " + name + " closed by " + by + ": " + why + "; its history stays in both records, and nothing further crosses it\n");
+}
+
+// ---- hale dna handoff -------------------------------------------------
+
+@unbounded
+fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, subject_in: String, note: String, who_flag: String) -> Answer {
+    if (kind != "task" && kind != "receipt") || len(subject_in) == 0 {
+        return fail("handoff: `hale dna handoff <connection> task <id> | receipt <digest> [--note …] [--as <who>]`, `handoff accept <id>`, `handoff sync`, or `hale dna handoff` to list");
+    }
+    let s = sync_record(root);
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let p = open_projection(root, seed, "");
+    let c = connection_of(p, name);
+    if !c.present { return fail("handoff: no connection `" + name + "`; `hale dna connect <record-url> --name " + name + " …` proposes one"); }
+    settle_connection(root, c);
+    if len(c.closed) > 0 { return fail("handoff: connection `" + name + "` is closed (" + c.closed + "): nothing further crosses it"); }
+    if len(c.approved_by) == 0 { return fail("handoff: connection `" + name + "` is " + connection_state(c)); }
+    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    let mine = record_genesis(root);
+    let mut subject = subject_in;
+    let mut class = "internal";
+    let mut fact = "";
+    if kind == "task" {
+        let t = p.task_of(subject);
+        if len(t.id) == 0 { return fail("handoff: no Task `" + subject + "` in the record"); }
+        if t.state != "handed" { return fail("handoff: Task `" + subject + "` is " + t.state + "; only a person's job, handed and not yet transferred, crosses to another record"); }
+        fact = t.outcome;
+    } else {
+        subject = dna::evidence_digest(subject_in);
+        if !dna::digest_well_formed(subject) { return fail("handoff: `" + subject_in + "` is not a receipt digest (sha256:<64 hex digits>)"); }
+        let mut known = receipt_read(root, subject[7..len(subject)]).present;
+        let mut redacted = false;
+        let mut i = 0;
+        while i < p.rows() {
+            let e = p.row(i);
+            if e.entity == subject {
+                if e.kind == "receipt.filed" || e.kind == "receipt.classified" || e.kind == "receipt.withheld" { known = true; class = std::json::find_string_field(e.body, "class"); }
+                if e.kind == "receipt.redacted" { redacted = true; }
+            }
+            i = i + 1;
+        }
+        if !known { return fail("handoff: no receipt " + subject + " in the record"); }
+        if redacted { return fail("handoff: receipt " + subject + " is redacted"); }
+        fact = subject + " (" + class + "; its body stays in this record)";
+    }
+    // the subject's lineage here, and the row it is handed from
+    let mut lineage = "";
+    let mut source = "";
+    let mut i = 0;
+    while i < p.rows() {
+        let e = p.row(i);
+        if e.entity == subject {
+            lineage = lineage + (if len(lineage) > 0 { " " } else { "" }) + e.kind + "#" + to_string(e.seq);
+            source = if len(e.digest) > 0 { e.digest } else { dna::digest_of(e.kind + "\n" + e.entity + "\n" + e.body) };
+        }
+        i = i + 1;
+    }
+    let hid = dna::handoff_id(mine, c.peer, kind, subject);
+    if !dna::classes_allow(c.classes, class) {
+        let why = "`" + class + "` does not cross connection `" + name + "` (it carries " + c.classes + ")";
+        let rb = std::json::Builder { };
+        rb.begin_object();
+        rb.string_field("connection", name);
+        rb.string_field("kind", kind);
+        rb.string_field("subject", subject);
+        rb.string_field("class", class);
+        rb.string_field("by", who);
+        rb.string_field("why", why);
+        rb.end_object();
+        let refused = append_as(root, "handoff.refused", "handoff:" + hid, rb.result(), who);
+        let s3 = sync_record(root);
+        return fail("handoff: " + why + "; refused at the edge (handoff.refused), nothing was written across");
+    }
+    if p.has_row("handoff.published", "handoff:" + hid) { return fail("handoff: " + kind + " " + subject + " was already handed into record " + short(c.peer) + " as " + hid); }
+    let remote = record_remote(root);
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("handoff", hid);
+    b.string_field("origin_record", mine);
+    b.string_field("origin_url", if len(remote) > 0 { git_out(root, "remote\nget-url\n" + remote) } else { "" });
+    b.string_field("origin_author", who);
+    b.string_field("origin_row", source);
+    b.string_field("lineage", lineage);
+    b.string_field("purpose", c.purpose);
+    b.string_field("position", c.position);
+    b.string_field("via", name);
+    b.string_field("kind", kind);
+    b.string_field("subject", subject);
+    b.string_field("class", class);
+    b.string_field("fact", fact);
+    b.string_field("note", note);
+    b.end_object();
+    let landed = peer_append(root, c, "handoff.received", "handoff:" + hid, b.result(), who);
+    if len(landed.commit) == 0 { return fail("handoff: " + landed.why + "; nothing was recorded here"); }
+    let pb = std::json::Builder { };
+    pb.begin_object();
+    pb.string_field("connection", name);
+    pb.string_field("peer", c.peer);
+    pb.string_field("kind", kind);
+    pb.string_field("subject", subject);
+    pb.string_field("class", class);
+    pb.string_field("purpose", c.purpose);
+    pb.string_field("peer_row", landed.commit);
+    pb.string_field("by", who);
+    pb.string_field("note", note);
+    pb.end_object();
+    if !append_as(root, "handoff.published", "handoff:" + hid, pb.result(), who) { return fail("handoff: written into record " + short(c.peer) + " as " + short(landed.commit) + ", but this record refused the append"); }
+    if kind == "task" {
+        let tb = std::json::Builder { };
+        tb.begin_object();
+        tb.string_field("connection", name);
+        tb.string_field("peer", c.peer);
+        tb.string_field("handoff", hid);
+        tb.string_field("by", who);
+        tb.end_object();
+        let t = append_as(root, "task.transfer_requested", subject, tb.result(), who);
+    }
+    let s2 = sync_record(root);
+    return answer("handoff " + hid + ": " + kind + " " + subject + " [" + class + "] written into record " + short(c.peer) + " as " + short(landed.commit) + ", for `" + c.purpose + "`" + (if kind == "task" { "; the Task settles here when that record accepts it (`hale dna handoff sync`)" } else { "" }) + "\n");
+}
+
+// Why a received handoff is not admitted here ("" when it is): a
+// connection in force back to its origin record, carrying its class.
+fn admission_refusal(p: Projection, body: String) -> String {
+    let origin = std::json::find_string_field(body, "origin_record");
+    let class = std::json::find_string_field(body, "class");
+    let c = connection_to(p, origin);
+    if !c.present { return "no connection in force to record " + short(origin) + ": this record admits nothing from it (`hale dna connect <its url>`)"; }
+    if !dna::classes_allow(c.classes, class) { return "`" + class + "` does not cross connection `" + c.name + "` (it carries " + c.classes + ")"; }
+    return "";
+}
+
+@unbounded
+fn handoff_list_verb(root: String, seed: String) -> Answer {
+    let s = sync_record(root);
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let p = open_projection(root, seed, "");
+    let mut sent = "";
+    let mut got = "";
+    let mut i = 0;
+    while i < p.rows() {
+        let e = p.row(i);
+        if e.kind == "handoff.published" {
+            let b = e.body;
+            let back = if p.has_row("handoff.accepted_by_peer", e.entity) { "accepted there" } else { "awaiting acceptance" };
+            sent = sent + "  " + e.entity[8..len(e.entity)] + " → " + std::json::find_string_field(b, "connection") + ": " + std::json::find_string_field(b, "kind") + " " + std::json::find_string_field(b, "subject") + " [" + std::json::find_string_field(b, "class") + "] by " + std::json::find_string_field(b, "by") + " — " + back + "\n";
+        }
+        if e.kind == "handoff.received" {
+            let b = e.body;
+            let why = admission_refusal(p, b);
+            let c = connection_to(p, std::json::find_string_field(b, "origin_record"));
+            let state = if p.has_row("handoff.accepted", e.entity) { "accepted" } else if len(why) == 0 { "admitted under `" + c.name + "`" } else { "not admitted: " + why };
+            got = got + "  " + e.entity[8..len(e.entity)] + " ← " + std::json::find_string_field(b, "kind") + " " + std::json::find_string_field(b, "subject") + " from record " + short(std::json::find_string_field(b, "origin_record")) + " (" + std::json::find_string_field(b, "origin_author") + " as `" + std::json::find_string_field(b, "position") + "`, for `" + std::json::find_string_field(b, "purpose") + "`) [" + std::json::find_string_field(b, "class") + "] " + std::json::find_string_field(b, "fact") + " · lineage " + std::json::find_string_field(b, "lineage") + " — " + state + "\n";
+        }
+        i = i + 1;
+    }
+    return answer("handed across: " + (if len(sent) == 0 { "none\n" } else { "\n" + sent }) + "received: " + (if len(got) == 0 { "none\n" } else { "\n" + got }));
+}
+
+@unbounded
+fn handoff_accept_verb(root: String, seed: String, hid: String, note: String, who_flag: String) -> Answer {
+    if len(hid) == 0 { return fail("handoff accept: `hale dna handoff accept <id> [--note …] [--as <who>]`"); }
+    let s = sync_record(root);
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let p = open_projection(root, seed, "");
+    let ent = "handoff:" + hid;
+    let mut body = "";
+    let mut i = 0;
+    while i < p.rows() {
+        let e = p.row(i);
+        if e.kind == "handoff.received" && e.entity == ent { body = e.body; }
+        i = i + 1;
+    }
+    if len(body) == 0 { return fail("handoff accept: no handoff `" + hid + "` received in this record"); }
+    if p.has_row("handoff.accepted", ent) { return fail("handoff accept: " + hid + " is already accepted"); }
+    let why = admission_refusal(p, body);
+    if len(why) > 0 { return fail("handoff accept: " + hid + " is not admitted — " + why); }
+    let origin = std::json::find_string_field(body, "origin_record");
+    let c = connection_to(p, origin);
+    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("by", who);
+    b.string_field("note", note);
+    b.string_field("connection", c.name);
+    b.string_field("origin_record", origin);
+    b.end_object();
+    if !append_as(root, "handoff.accepted", ent, b.result(), who) { return fail("the record refused the append"); }
+    let s2 = sync_record(root);
+    return answer("handoff " + hid + " accepted by " + who + " under connection `" + c.name + "`: " + std::json::find_string_field(body, "kind") + " " + std::json::find_string_field(body, "subject") + " from record " + short(origin) + "; that record settles it when it reads this acceptance\n");
+}
+
+// Every connection in force is read for acceptances of what this record
+// handed across; each is admitted once. A closed connection is not read.
+@unbounded
+fn handoff_sync_verb(root: String, seed: String) -> Answer {
+    let s = sync_record(root);
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let p = open_projection(root, seed, "");
+    let mine = record_genesis(root);
+    let mut out = "";
+    let mut n = 0;
+    let mut names = connection_names(p);
+    while len(names) > 0 {
+        let nl = std::str::index_of(names, "\n");
+        let name = if nl < 0 { names } else { names[0..nl] };
+        names = if nl < 0 { "" } else { names[(nl + 1)..len(names)] };
+        if len(name) == 0 { continue; }
+        let c = connection_of(p, name);
+        if len(c.closed) > 0 { out = out + "  " + name + ": closed — nothing admitted from it\n"; continue; }
+        if !connection_live(c) { continue; }
+        let cache = peer_fetch(root, name, c.url);
+        if len(cache) == 0 || record_genesis(cache) != c.peer { out = out + "  " + name + ": record " + short(c.peer) + " could not be read at " + c.url + "\n"; continue; }
+        let text = git_out(cache, "show\n" + RECORD_REF + ":journal.jsonl") + "\n";
+        let mut rest = text;
+        while len(rest) > 0 {
+            let lnl = std::str::index_of(rest, "\n");
+            let line = if lnl < 0 { rest } else { rest[0..lnl] };
+            rest = if lnl < 0 { "" } else { rest[(lnl + 1)..len(rest)] };
+            if std::json::find_string_field(line, "kind") != "handoff.accepted" { continue; }
+            let ent = std::json::find_string_field(line, "entity");
+            let body = std::json::find_string_field(line, "body");
+            if std::json::find_string_field(body, "origin_record") != mine { continue; }
+            if !has_row(p, "handoff.published", ent, "\"connection\": \"" + name + "\"") { continue; }
+            if p.has_row("handoff.accepted_by_peer", ent) { continue; }
+            let mut kind = "";
+            let mut subject = "";
+            let mut i = 0;
+            while i < p.rows() {
+                let e = p.row(i);
+                if e.kind == "handoff.published" && e.entity == ent { kind = std::json::find_string_field(e.body, "kind"); subject = std::json::find_string_field(e.body, "subject"); }
+                i = i + 1;
+            }
+            let by = std::json::find_string_field(body, "by");
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("connection", name);
+            b.string_field("peer", c.peer);
+            b.string_field("handoff", ent[8..len(ent)]);
+            b.string_field("accepted_by", by);
+            b.string_field("note", std::json::find_string_field(body, "note"));
+            b.end_object();
+            if !append_as(root, "handoff.accepted_by_peer", ent, b.result(), "") { return fail("the record refused the append"); }
+            if kind == "task" { let t = append_as(root, "task.transfer_accepted", subject, b.result(), ""); }
+            out = out + "  " + ent[8..len(ent)] + ": " + kind + " " + subject + " accepted by " + by + " in record " + short(c.peer) + "\n";
+            n = n + 1;
+        }
+    }
+    let s2 = sync_record(root);
+    return answer("handoff sync: " + to_string(n) + " acceptance(s) admitted\n" + out);
+}

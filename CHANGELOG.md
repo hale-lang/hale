@@ -20,6 +20,12 @@ behavior.
 - `hale dna body` reads the lease; `hale dna body claim --force` releases a live lease of a body that is gone (a forced `body.claimed` row in your name; that body stops when it next asserts); `hale dna body release [--force]`.
 - `hale dna profile` prints the organism's combination — record, body, head, fleet, knowledge, trust, github, connections — detected from the pieces, never from a stored label; `status` gains `profile:` and `body:` lines. `hale dna new --profile local|remote-body [--remote <url>] [--body <user@host>]` sets the pieces.
 
+### DNA: cross-record handoff — selected facts across a connection, with origin and purpose (GH #615)
+
+- `hale dna connect <record-url> --name <n> --as <position> --purpose <p> --classes <…>` proposes a connection to a separate record as a Board Review. It is in force once someone other than its proposer approves it, and `hale dna disconnect` closes it.
+- `hale dna handoff <n> task <id> | receipt <digest>` writes one `handoff.received` row into the other record, carrying its origin record, author, source row digest, lineage and purpose. A receipt crosses as its digest, never its body. A class the connection does not carry is refused at the edge as `handoff.refused`.
+- The receiving record admits a handoff only under its own connection back that carries the class, and `hale dna handoff accept` accepts it. `hale dna handoff sync` reads acceptances back: a Task handed across settles only then, as `task.transfer_accepted`. A closed connection admits nothing further, and both records keep their history.
+
 ### DNA: an attributed external decision — a client's approval, reported under an acceptance policy (GH #616)
 
 - `hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest>` records a decision someone outside Hale made as a `decision.reported` row in the reporter's name, naming the decider, the channel, the evidence and the Task. Only the Task's assignee may report, the decider is never the reporter, and the evidence must be a receipt the record holds.

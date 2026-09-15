@@ -153,6 +153,43 @@ repository:
   work is accounted for, never dropped. Refused for a Task that is not
   handed: one the organism is working, or has settled, is not a
   person's to close.
+- **Cross-record handoff (GH #615).** A replica of one record is inside
+  the horizon: sync carries all of it, to equally trusted readers. A
+  *handoff* crosses a horizon into a separate record, and a connection is
+  its only path; nothing selective leaves a record by sync. `hale dna
+  connect <record-url> --name <name> --as <position> --purpose <purpose>
+  --classes <internal,customer,confidential> [--by <who>]` reads the
+  other record's genesis (the root commit of its journal, fetched into a
+  bare cache under `.hale/dna/peers/<name>.git`), refuses this record's
+  own, and appends `connection.proposed` (`name`, `url`, `peer`,
+  `position`, `purpose`, `classes`, `by`, `review_id`) with a Board
+  Review `c-<name>-<n>`. The connection is in force once a `board`
+  verdict approves that Review from someone other than its proposer —
+  the host then settles the Review in the approver's name — and until
+  `hale dna disconnect <name> --why <why>` appends `connection.closed`.
+  `hale dna handoff <name> task <id> | receipt <digest> [--note …] [--as
+  <who>]` writes one `handoff.received` row into the other record,
+  pushed there under compare-and-swap: `handoff` (`h` and twelve hex
+  digits of the origin genesis, kind and subject, so a fact crosses
+  once), `origin_record`, `origin_url`, `origin_author`, `origin_row`
+  (the source row's digest), `lineage` (the subject's rows here, as
+  `kind#seq`), `purpose`, `position`, `via`, `kind`, `subject`, `class`,
+  `fact`, `note`. This record then appends `handoff.published` (with
+  `peer_row`, the commit it landed as) and, for a Task,
+  `task.transfer_requested`. Only a handed Task crosses. A receipt
+  crosses as its digest and class; its body never leaves this record. A
+  fact whose class the connection does not carry is refused at the edge
+  as `handoff.refused`, with nothing written across. The receiving record
+  admits what arrives under its own policy: `hale dna handoff` lists a
+  received handoff as admitted only under a connection in force back to
+  its origin record that carries its class, and `hale dna handoff accept
+  <id> [--as <who>]` appends `handoff.accepted` only for an admitted one.
+  `hale dna handoff sync` reads every connection in force: each
+  acceptance of a handoff published through it is admitted once, as
+  `handoff.accepted_by_peer` and, for a Task, `task.transfer_accepted`.
+  The Task settles only then, the rule retirement follows (GH #604 rule
+  5). A closed connection is not read, so history stays in both records
+  and nothing further is admitted.
 - **An attributed external decision (GH #616).** A decision made by
   someone who does not run Hale — a manager, a client, an accountant —
   enters as a fact reported by a position inside the horizon, never as

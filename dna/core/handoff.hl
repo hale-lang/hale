@@ -1,0 +1,64 @@
+// dna/core/handoff.hl — cross-record handoff (GH #615): the pure rules.
+//
+// A replica of one record is inside the horizon; a handoff crosses it
+// into a separate record, through a connection that names the data
+// classes it may carry. These are the checks that need no record: the
+// class list, a connection's name, and a handoff's identity.
+
+fn class_known(c: String) -> Bool {
+    return c == "internal" || c == "customer" || c == "confidential";
+}
+
+// A comma-separated class list, each trimmed, joined by commas.
+@unbounded
+fn classes_normal(classes: String) -> String {
+    let mut out = "";
+    let mut rest = classes + ",";
+    while len(rest) > 0 {
+        let i = std::str::index_of(rest, ",");
+        let c = std::str::trim(rest[0..i]);
+        rest = rest[(i + 1)..len(rest)];
+        if len(c) > 0 { out = if len(out) > 0 { out + "," + c } else { c }; }
+    }
+    return out;
+}
+
+// Why a class list is refused ("" when every class is known and there is one).
+@unbounded
+fn classes_refusal(classes: String) -> String {
+    let norm = classes_normal(classes);
+    if len(norm) == 0 { return "name the data classes the connection may carry: `--classes internal[,customer][,confidential]`"; }
+    let mut rest = norm + ",";
+    while len(rest) > 0 {
+        let i = std::str::index_of(rest, ",");
+        let c = rest[0..i];
+        rest = rest[(i + 1)..len(rest)];
+        if !class_known(c) { return "`" + c + "` is not a data class (internal, customer, confidential)"; }
+    }
+    return "";
+}
+
+// Whether a connection carrying `classes` carries `class`.
+fn classes_allow(classes: String, class: String) -> Bool {
+    return len(class) > 0 && std::str::contains("," + classes_normal(classes) + ",", "," + class + ",");
+}
+
+// Why a connection name is refused ("" when it is usable).
+@unbounded
+fn connection_name_refusal(name: String) -> String {
+    if len(name) == 0 || len(name) > 40 { return "a connection name is 1 to 40 characters"; }
+    if name == "accept" || name == "sync" { return "`" + name + "` is a handoff verb, not a connection name"; }
+    let mut i = 0;
+    while i < len(name) {
+        if !std::str::contains("abcdefghijklmnopqrstuvwxyz0123456789-", name[i..(i + 1)]) { return "a connection name is lowercase letters, digits and `-`: `" + name + "`"; }
+        i = i + 1;
+    }
+    return "";
+}
+
+// A handoff's identity: the same fact from one record into another is
+// one handoff, whichever connection between the two carries it.
+fn handoff_id(origin: String, peer: String, kind: String, subject: String) -> String {
+    let d = digest_of(origin + "\n" + peer + "\n" + kind + "\n" + subject);
+    return "h" + d[7..19];
+}

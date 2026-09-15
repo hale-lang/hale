@@ -102,7 +102,7 @@ fn main() {
     let fleet = arg(4);
     let plan = arg(5);
     let toolchain = std::env::var("HALE_DNA_TOOLCHAIN");
-    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class ");
+    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by ");
     let mut ans = Answer { ok: false, text: "unknown verb `" + verb + "`" };
     if (verb == "board" || verb == "review") && !membrane_up(root) { let s = sync_record(root); }
     if verb == "fleet" { let s = sync_record(root); }
@@ -167,6 +167,17 @@ fn main() {
         if sub == "provision" { ans = body_provision_verb(root, word(a, 1), flag(a, "--dsn"), flag(a, "--dir"), has_flag(a, "--dry-run"), flag(a, "--as")); }
         else if sub == "start" || sub == "stop" || sub == "logs" { ans = body_ctl_verb(root, sub, flag(a, "--body")); }
         else { ans = body_verb(root, sub, has_flag(a, "--force"), flag(a, "--as")); }
+    } else if verb == "connect" {
+        // GH #615: `hale dna connect [<record-url> --name <n> --as <position> --purpose <p> --classes <c,…>]`
+        ans = connect_verb(root, seed, word(a, 0), flag(a, "--name"), flag(a, "--as"), flag(a, "--purpose"), flag(a, "--classes"), flag(a, "--by"));
+    } else if verb == "disconnect" {
+        ans = disconnect_verb(root, seed, word(a, 0), flag(a, "--why"), flag(a, "--by"));
+    } else if verb == "handoff" {
+        let sub = word(a, 0);
+        if len(sub) == 0 { ans = handoff_list_verb(root, seed); }
+        else if sub == "accept" { ans = handoff_accept_verb(root, seed, word(a, 1), flag(a, "--note"), flag(a, "--as")); }
+        else if sub == "sync" { ans = handoff_sync_verb(root, seed); }
+        else { ans = handoff_publish_verb(root, seed, sub, word(a, 1), word(a, 2), flag(a, "--note"), flag(a, "--as")); }
     } else if verb == "receipt" {
         // GH #606: protected evidence
         if word(a, 0) == "file" { ans = receipt_file_verb(root, word(a, 1), flag(a, "--class"), flag(a, "--as")); }
