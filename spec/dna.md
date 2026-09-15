@@ -595,7 +595,11 @@ authority.
   restart, a Task born and not settled re-enters the tower from its
   last durable state (`task.resumed <task>`): under the plan in the
   record when there is one, never replanned; planned for the first
-  time when there is none. A Task whose Mutation was in flight settles
+  time when there is none. `task.resumed` is an event of a restart,
+  never a state: a resumed Task not yet settled is still pending, it
+  settles like any other, and a restart that stopped between its
+  `task.resumed` and the dispatch leaves it to be resumed again at the
+  next one. A Task whose Mutation was in flight settles
   `failed` with the Mutation; one whose Mutation is beyond proposal
   waits on that Mutation's outcome, and settles from it when the Work
   that would have settled it is gone. A handed Task is a person's and
