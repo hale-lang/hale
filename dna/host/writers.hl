@@ -322,6 +322,17 @@ fn retire_verb(root: String, seed: String, who: String, to: String, by_flag: Str
         i = i + 1;
     }
     if n > 0 && len(to) == 0 { return fail(who + " holds " + to_string(n) + " handed task(s): " + dna::trim_nl(held) + "; name a successor: `hale dna retire " + who + " --to <who>`"); }
+    // a successor is someone who works here: not the person retiring, and
+    // not a person who retired before
+    if len(to) > 0 {
+        if to == who { return fail("retire: " + who + " cannot succeed themselves"); }
+        let mut k = 0;
+        while k < p.rows() {
+            let e = p.row(k);
+            if e.kind == "person.retired" && e.entity == to { return fail("retire: " + to + " retired; name a successor who works here"); }
+            k = k + 1;
+        }
+    }
     let mut rest = held;
     while len(rest) > 0 {
         let sp = std::str::index_of(rest, " ");

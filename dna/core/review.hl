@@ -230,6 +230,26 @@ locus AutonomyBoundary {
             self.audit.push(AuditRow { seq: self.decisions, disposition: "contract", note: "repeated failure" });
         }
     }
+    // Whether this outcome contracts the grant (what `note_outcome` is
+    // about to do), so the contraction can be recorded before it happens.
+    fn would_contract(ok: Bool) -> Bool {
+        return !ok && self.failures_in_row + 1 >= 2 && self.grant.max_magnitude > 0;
+    }
+    // A contraction read back from the record at birth (the second review
+    // of #626): the magnitude and the epoch where it left the grant, review
+    // `pre`, the resources as granted.
+    fn restore_contraction(max_magnitude: Int, at_epoch: Int) {
+        self.grant = Grant {
+            child: self.grant.child, classes: self.grant.classes,
+            max_magnitude: max_magnitude,
+            review: "pre", may_expand_self: false,
+            amounts: self.grant.amounts, window_amounts: self.grant.window_amounts, window: self.grant.window,
+            counterparties: self.grant.counterparties, routes: self.grant.routes, expires: self.grant.expires,
+            authority_epoch: at_epoch
+        };
+        self.contractions = self.contractions + 1;
+        self.audit.push(AuditRow { seq: self.decisions, disposition: "contract", note: "restored from the record" });
+    }
     // ...and expansion needs the PARENT. A request from the child (or
     // anyone who is not the owning parent) is refused and recorded.
     fn expand(requested_by: String, parent: String, new_max: Int, add_classes: String) -> Bool {

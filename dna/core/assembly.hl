@@ -378,11 +378,14 @@ locus Dna {
         let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
         let kept_here = !protected_class(class) && len(self.verification.receipts.read(hexd)) > 0;
         let already = self.has_evidence_row("receipt.redacted", digest);
-        if already && !kept_here { return digest + " is already redacted"; }
         if protected_class(class) && self.has_evidence_row("receipt.classified", digest) {
-            // the service keeps the body: it records the redaction, then erases
+            // the service keeps the body: it records the redaction, then
+            // erases — and completes one recorded before an interrupted
+            // erasure, or answers that it is already redacted (the second
+            // review of #628)
             return self.vault.erase(digest, by, why, policy);
         }
+        if already && !kept_here { return digest + " is already redacted"; }
         // the decision is in the record before a byte is erased, at the
         // revision the hold was read at: a redaction the record cannot hold
         // erases nothing (one recorded before a failed erase is completed)
@@ -1224,7 +1227,7 @@ locus Dna {
             // (unassigned when it named none), and the row says for whom it
             // was planned.
             let gone = self.retired(p.assignee);
-            let assignee = if gone.retired { gone.successor } else { p.assignee };
+            let assignee = if gone.retired { self.admissible(p.assignee) } else { p.assignee };
             hb.string_field("work", req.work_id);
             hb.string_field("assignee", assignee);
             if gone.retired { hb.string_field("retired_assignee", p.assignee); }
@@ -1343,6 +1346,25 @@ locus Dna {
             i = i + 1;
         }
         return out;
+    }
+    // Who receives work planned for `who`: `who` while they work here,
+    // else their successor's successor, and so on, to the first person
+    // not retired; "" (unassigned) when the chain ends in a retirement
+    // that named nobody, or comes back on itself (the second review of
+    // #619: a successor who also retired still received the work).
+    // Bounded by the retirements in the record.
+    @unbounded
+    fn admissible(who: String) -> String {
+        let mut at = who;
+        let mut seen = " ";
+        while len(at) > 0 {
+            let r = self.retired(at);
+            if !r.retired { return at; }
+            if std::str::contains(seen, " " + at + " ") { return ""; }
+            seen = seen + at + " ";
+            at = r.successor;
+        }
+        return "";
     }
     // The last `task.<state>` journaled for an id ("" when only born).
     @unbounded
@@ -1484,14 +1506,27 @@ locus Dna {
     }
     // An outcome under the organism's ceiling: a contraction binds
     // every child at once, and the record names them.
+    // The contraction is recorded before it takes effect, with the
+    // magnitude and epoch it leaves, so a restart restores it (the second
+    // review of #626: a contraction lived only in the live boundary, and an
+    // organism born again over the same record had its authority back).
     fn ceiling_outcome(ok: Bool) {
-        let before = self.ceiling.current_grant().max_magnitude;
-        self.ceiling.note_outcome(ok);
-        let after = self.ceiling.current_grant().max_magnitude;
-        if after < before {
-            let x = self.journal.append(self.journal.revision(), "grant.contracted", self.ceiling.child,
-                "ceiling " + to_string(before) + " -> " + to_string(after) + " on repeated failure; binds " + self.boundary.child + " from now");
+        if self.ceiling.would_contract(ok) {
+            let before = self.ceiling.current_grant().max_magnitude;
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("boundary", "ceiling");
+            b.int_field("from", before);
+            b.int_field("to", before / 2);
+            b.int_field("epoch", self.ceiling.current_grant().authority_epoch + 1);
+            b.string_field("binds", self.boundary.child);
+            b.string_field("note", "ceiling " + to_string(before) + " -> " + to_string(before / 2) + " on repeated failure; binds " + self.boundary.child + " from now");
+            b.end_object();
+            let x = self.journal.append(self.journal.revision(), "grant.contracted", self.ceiling.child, b.result());
         }
+        // contracted whether or not the record took the row: less
+        // authority is never the unsafe direction
+        self.ceiling.note_outcome(ok);
     }
     // ---- resources (GH #605) -------------------------------------
     // A spend is admitted against the child's grant as it binds now
@@ -1642,6 +1677,37 @@ locus Dna {
             return why;
         }
         return "";
+    }
+    // A ceiling's contractions are the record's too: read back at birth,
+    // the last one leaves the ceiling's magnitude and epoch where it left
+    // them, before anything is admitted. A row from before the body was
+    // structured (`ceiling <from> -> <to> …`) is read too, each such row
+    // one epoch.
+    @unbounded
+    fn restore_contractions() {
+        let parent = self.ceiling.child;
+        if len(parent) == 0 { return; }
+        let n = self.journal.revision();
+        let mut to = -1;
+        let mut last_epoch = 0;
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "grant.contracted" && e.entity == parent {
+                if std::str::starts_with(e.body, "{") {
+                    to = std::json::find_int_field(e.body, "to");
+                    last_epoch = std::json::find_int_field(e.body, "epoch");
+                } else {
+                    let arrow = std::str::index_of(e.body, "-> ");
+                    let rest = if arrow < 0 { "" } else { e.body[(arrow + 3)..len(e.body)] };
+                    let sp = std::str::index_of(rest, " ");
+                    to = std::str::parse_int(if sp < 0 { rest } else { rest[0..sp] }) or 0;
+                    last_epoch = last_epoch + 1;
+                }
+            }
+            i = i + 1;
+        }
+        if to >= 0 && to < self.ceiling.current_grant().max_magnitude { self.ceiling.restore_contraction(to, last_epoch); }
     }
     // A revocation is the record's, not the live boundary's alone: read
     // back at birth, it leaves nothing granted and the epoch where it left
@@ -1908,6 +1974,7 @@ locus Dna {
     @unbounded
     fn rehydrate() {
         // a revocation in the record binds before anything is admitted
+        self.restore_contractions();
         self.restore_revocations();
         let n = self.journal.revision();
         let mut i = 0;
@@ -1965,6 +2032,7 @@ locus Dna {
         self.metabolism.resume(tasks);
         if mutations > self.mutations_minted { self.mutations_minted = mutations; }
         self.budget.rehydrate(self.journal, std::time::now());
+        self.pend_born_tasks();
         self.reconcile_effects();
         self.fail_in_flight();
         self.note_unrecovered_intents();
@@ -2059,6 +2127,23 @@ locus Dna {
         if len(t) == 0 || !std::str::starts_with(t, "t") { return; }
         if self.task_state(t) != "pending" { return; }
         let x = self.journal.append(self.journal.revision(), "task." + disposition, t, mutation_id + " " + detail);
+    }
+    // A Task whose restart fell between its `task.born` and its
+    // `task.pending` is unsettled all the same: the record says so first,
+    // so every settlement (each requires `pending`) can end it — its plan
+    // resumed, or its in-flight Mutation's outcome (the second review of
+    // #618). Bounded by the Tasks born.
+    @unbounded
+    fn pend_born_tasks() {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "task.born" && self.task_state(e.entity) == "" {
+                let x = self.journal.append(self.journal.revision(), "task.pending", e.entity, "after a restart: born, and not yet pending when the organization stopped");
+            }
+            i = i + 1;
+        }
     }
     // GH #604 rule 2: a Task born and not settled re-enters the tower
     // after a restart from its last durable state. With a plan in the
