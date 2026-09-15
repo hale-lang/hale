@@ -47,6 +47,19 @@ main locus App {
         std::test::assert(dna::issuer_allowed("https://accounts.google.com"), "https");
         std::test::assert(dna::issuer_allowed("http://127.0.0.1:47811"), "plain http on this machine");
         std::test::assert(!dna::issuer_allowed("http://id.example"), "plain http elsewhere is refused");
+        std::test::assert(!dna::issuer_allowed("http://localhost:@evil.example"), "userinfo is no host (#635)");
+        std::test::assert(!dna::issuer_allowed("http://127.0.0.1:80@evil.example/"), "nor this one");
+        std::test::assert(!dna::issuer_allowed("http://localhost.evil.example"), "a host that only starts like this machine");
+        std::test::assert(!dna::issuer_allowed("http://127.0.0.1:47811x"), "a port that is not a number");
+        std::test::assert(!dna::issuer_allowed("https://"), "https to no host");
+        std::test::assert(dna::issuer_allowed("http://localhost"), "this machine, no port");
+        // the discovery document's endpoints (#635)
+        std::test::assert_eq_str(dna::discovery_refusal("https://accounts.google.com", "https://accounts.google.com/o/oauth2/v2/auth", "https://oauth2.googleapis.com/token"), "", "https endpoints, on another host of the provider's");
+        std::test::assert(std::str::contains(dna::discovery_refusal("https://id.example", "https://id.example/authorize", "http://id.example/token"), "token_endpoint `http://id.example/token` is not https"), "a plain-http token endpoint is refused");
+        std::test::assert(std::str::contains(dna::discovery_refusal("https://id.example", "https://id.example/authorize", "http://127.0.0.1:9/token"), "token_endpoint"), "and a loopback one, for an issuer elsewhere");
+        std::test::assert(std::str::contains(dna::discovery_refusal("https://id.example", "http://id.example/authorize", "https://id.example/token"), "authorization_endpoint"), "a plain-http authorization endpoint is refused");
+        std::test::assert_eq_str(dna::discovery_refusal("http://127.0.0.1:47811", "http://127.0.0.1:47811/authorize", "http://127.0.0.1:47811/token"), "", "an issuer on this machine, its endpoints too");
+        std::test::assert(len(dna::discovery_refusal("https://id.example", "", "https://id.example/token")) > 0, "a document with no endpoint");
 
         // cookies and client headers
         std::test::assert_eq_str(dna::cookie_value("theme=dark; dna_session=abc123; x=y", "dna_session"), "abc123", "a cookie among others");

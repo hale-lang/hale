@@ -98,6 +98,16 @@ main locus App {
         let resolved = self.one.journal.append(self.one.journal.revision(), "effect.result", "apply:0000000000000000000000000000000000000000", "failed (resolved by riley: never landed)");
         let st = dna::effect_status(self.one.journal, "apply:0000000000000000000000000000000000000000");
         std::test::assert(st.done && !st.ok && !st.unknown, "the last result is the status");
+
+        // ---- open and commit dispatch nothing while another request holds the claim (#635)
+        let lease9 = self.one.gateway.take("m9", "dna", now);
+        std::test::assert(dna::effect_request(self.one.journal, "worktree.open:m9", head), "another request holds the open's claim");
+        let opened = self.one.gateway.open(self.one.journal, "m9", head, lease9.token, now);
+        std::test::assert(!opened.ok && std::str::contains(opened.refused, "open in flight"), "an open under a held claim is refused: " + opened.refused);
+        std::test::assert(!std::io::fs::file_exists(repo + "/.hale/dna/worktrees/m9"), "and no worktree was made");
+        std::test::assert(dna::effect_request(self.one.journal, "commit:m9:s1", "the candidate"), "another request holds the commit's claim");
+        let committed = self.one.gateway.commit(self.one.journal, "m9", "s1", "the candidate", lease9.token, now);
+        std::test::assert(!committed.ok && std::str::contains(committed.refused, "commit in flight"), "a commit under a held claim is refused: " + committed.refused);
         let rm = sh("rm\n-rf\n" + repo);
     }
 }
