@@ -45,6 +45,45 @@ hale dna run: membrane bound at …/.hale/dna
 hale dna run: the fleet `production` (…/fleet.plan.json) is the expression; `hale node <name>` runs its nodes
 ```
 
+## One body per record
+
+A record admits one body at a time. Before the host builds or runs
+anything it takes the body lease — at the record's remote when
+there is one, so a second host on another clone is refused by the
+remote itself:
+
+```text
+$ hale dna run . --no-iris
+hale dna run: a body for this record is live on riley@srv:/srv/chat (ticked 2s ago, lease expires in 28s); a record admits one body — `hale dna body claim --force` takes it over when that body is gone
+```
+
+The holder is `user@host:<clone>`, so the same clone restarting takes
+its lease straight back. Beside the host runs the **body fence**, a
+small process of its own that renews the lease every ten seconds,
+with every git call it makes cut off after eight, and all of them cut
+off at the deadline the lease allows. It never waits on
+the host: when the lease is someone else's, or it cannot prove the
+lease within five seconds of its expiry, or the host is gone, it
+kills the organization and the expression, with every tool they
+started (even one whose organization already crashed: everything the
+body starts carries its mark in `HALE_DNA_BODY`), and writes why to
+`.hale/dna/body.fence.status`. The host reads that file at the top of
+every tick, before it relays anything onto the membrane or restarts
+anything, and again the moment before it starts a process, and exits
+3 when the lease is not its own. So a host stuck in a hung sync or a
+long build cannot keep its organization running on a lease it lost,
+and a body that cannot reach the remote executes nothing past thirty
+seconds.
+
+`hale dna body` says who runs the record. When a body is gone but its
+lease is still live, `hale dna body claim --force` releases it as a
+row in your name (`body.claimed`, `forced: true`); that body stops
+the next time it asserts, and the next `hale dna run` takes the
+lease. `hale dna profile` prints the combination the organism is —
+record, body, head, fleet, knowledge, trust — detected from the
+pieces, never from a stored label; `status` carries the same two
+lines at its foot.
+
 ## The membrane
 
 The organization binds four typed topics on unix sockets under

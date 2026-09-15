@@ -33,7 +33,104 @@ fn status_verb(root: String, seed: String, toolchain: String, json: Bool) -> Ans
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
     let p = open_projection(root, seed, toolchain);
     if json { return answer(p.json() + "\n"); }
-    return answer(p.text());
+    // GH #617: the combination this organism is, detected from its
+    // pieces, and who runs it — never a stored label
+    let now = std::time::now();
+    return answer(p.text() + "profile:    " + profile_name(root) + "\n" + "body:       " + body_line(root, now) + "\n");
+}
+
+// ---- the organism's combination (GH #617) ---------------------------
+// An organism is one point in a space of independent capabilities —
+// where the body runs, whether a hosted head exists, whether a fleet
+// expresses it, which records it is connected to — declared by its
+// pieces and detected here, never stored. Each line is one axis.
+
+fn fleet_name(root: String) -> String {
+    let toml = std::io::fs::read_file(root + "/hale.toml") or "";
+    let at = std::str::index_of(toml, "[dna]");
+    if at < 0 { return ""; }
+    let sect = toml[at..len(toml)];
+    let f = std::str::index_of(sect, "fleet");
+    if f < 0 { return ""; }
+    let rest = sect[f..len(sect)];
+    let q1 = std::str::index_of(rest, "\"");
+    if q1 < 0 { return ""; }
+    let after = rest[(q1 + 1)..len(rest)];
+    let q2 = std::str::index_of(after, "\"");
+    if q2 < 0 { return ""; }
+    return after[0..q2];
+}
+
+fn this_host() -> String {
+    let h = dna::run_tool("hostname");
+    return if h.code == 0 { dna::trim_nl(h.stdout) } else { "localhost" };
+}
+
+fn holder_host(holder: String) -> String {
+    let at = std::str::index_of(holder, "@");
+    let colon = std::str::index_of(holder, ":");
+    if at < 0 || colon < at { return ""; }
+    return holder[(at + 1)..colon];
+}
+
+fn profile_name(root: String) -> String {
+    let remote = record_remote(root);
+    let l = body_lease_read(root);
+    let live = l.ok && body_live(l, std::time::now());
+    let here = live && holder_host(l.holder) == this_host();
+    let mut name = if len(remote) == 0 { "local" } else if live && !here { "remote body" } else if live { "local body, shared record" } else { "shared record, no body" };
+    if len(fleet_name(root)) > 0 { name = name + " + fleet"; }
+    if len(github_repo(root)) > 0 { name = name + " + github"; }
+    return name + " (detected)";
+}
+
+fn profile_verb(root: String) -> Answer {
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let now = std::time::now();
+    let remote = record_remote(root);
+    let url = if len(remote) > 0 { git_out(root, "remote\nget-url\n" + remote) } else { "" };
+    let mut out = "profile:     " + profile_name(root) + "\n";
+    out = out + "record:      " + (if len(remote) == 0 { "this clone only (no remote; `git remote add origin …` shares it)" } else { "shared over " + remote + " (" + url + ")" }) + "\n";
+    out = out + "body:        " + body_line(root, now) + "\n";
+    out = out + "head:        this clone (" + root + "); hosted head: none\n";
+    let fleet = fleet_name(root);
+    out = out + "fleet:       " + (if len(fleet) == 0 { "none (`[dna] fleet = \"<name>\"` in hale.toml names one)" } else { fleet }) + "\n";
+    let dsn = if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") { std::env::var("HALE_DNA_KNOWLEDGE_DSN") } else { "" };
+    let compose = std::io::fs::file_exists(root + "/dna/compose.yaml");
+    out = out + "knowledge:   " + (if len(dsn) > 0 { (if dsn == "memory" { "in-memory (HALE_DNA_KNOWLEDGE_DSN=memory)" } else { "a Postgres of your own (HALE_DNA_KNOWLEDGE_DSN)" }) } else if compose { "compose (dna/compose.yaml, under `hale dna dev`)" } else { "none" }) + "\n";
+    out = out + "trust:       " + trust_mode(root) + (if trust_mode(root) == "signed" { " (rows from the record are admitted only with a signature git verifies)" } else { " (every writer to the record is trusted)" }) + "\n";
+    let gh = github_repo(root);
+    out = out + "github:      " + (if len(gh) == 0 { "none" } else { gh }) + "\n";
+    out = out + "connections: none\n";
+    return answer(out);
+}
+
+// `hale dna body [claim [--force] | release] [--as <who>]`
+fn body_verb(root: String, sub: String, force: Bool, who_flag: String) -> Answer {
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let now = std::time::now();
+    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    if len(sub) == 0 { return answer("body: " + body_line(root, now) + "\n"); }
+    let cur = body_lease_read(root);
+    if !cur.ok { return fail("body: the record's remote cannot be reached"); }
+    if sub == "claim" {
+        if !body_live(cur, now) { return answer("body: " + body_line(root, now) + "\n"); }
+        if !force { return fail("body: live on " + cur.holder + ", ticked " + ago(now - (cur.expires - BODY_TTL)) + "; a record admits one body. `hale dna body claim --force` takes the lease from a body that is gone (it stops itself when it next asserts the lease)"); }
+        if !body_lease_write(root, BodyLease { present: false, holder: cur.holder, token: cur.token, expires: 0 }, cur.sha) { return fail("body: the lease moved while claiming; try again"); }
+        let ok = append_as(root, "body.claimed", cur.holder, "{\"token\": " + to_string(cur.token) + ", \"forced\": true, \"from\": " + quote(cur.holder) + ", \"by\": " + quote(who) + "}", who);
+        let s = sync_record(root);
+        return answer("body: the lease of " + cur.holder + " was taken by " + who + " (body.claimed, forced); that body stops when it next asserts the lease, and the next `hale dna run` takes it\n");
+    }
+    if sub == "release" {
+        if !cur.present { return answer("body: " + body_line(root, now) + "\n"); }
+        let mine = body_holder(root);
+        if cur.holder != mine && !force { return fail("body: the lease is held by " + cur.holder + ", not this clone (" + mine + "); `hale dna body release --force` releases another's"); }
+        if !body_lease_write(root, BodyLease { present: false, holder: cur.holder, token: cur.token, expires: 0 }, cur.sha) { return fail("body: the lease moved while releasing; try again"); }
+        let ok = append_as(root, "body.released", cur.holder, "{\"token\": " + to_string(cur.token) + ", \"by\": " + quote(who) + "}", who);
+        let s = sync_record(root);
+        return answer("body: released the lease of " + cur.holder + " (body.released)\n");
+    }
+    return fail("body: `hale dna body`, `hale dna body claim [--force]`, or `hale dna body release [--force]`");
 }
 
 // ---- history --------------------------------------------------------

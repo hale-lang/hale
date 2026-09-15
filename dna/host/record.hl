@@ -16,6 +16,26 @@ const CONCERN_SOCK: String = "hale-dna.concern.raised.sock";
 
 // `git -C <repo> <args…>`; argv newline-separated.
 fn git(repo: String, args: String) -> dna::RunResult {
+    // the body fence bounds every git call it makes (the second review of
+    // #622): a hung transport fails a renewal instead of blocking it — and
+    // never past the deadline the fence last proved (`body.deadline`), so a
+    // renewal of several bounded calls cannot outlast the lease together
+    // (the third review of #622)
+    // (only the calls that cross the network: a local read cut off at the
+    // deadline would look like no lease at all)
+    let t = std::env::var("HALE_DNA_GIT_TIMEOUT");
+    let nl = std::str::index_of(args, "\n");
+    let sub = if nl < 0 { args } else { args[0..nl] };
+    if len(t) > 0 && (sub == "fetch" || sub == "push" || sub == "ls-remote") {
+        let mut secs = std::str::parse_int(t) or 8;
+        let deadline = std::str::parse_int(dna::trim_nl(std::io::fs::read_file(repo + "/.hale/dna/body.deadline") or "")) or 0;
+        if deadline > 0 {
+            let left = deadline - std::time::now();
+            if left <= 0 { return dna::RunResult { code: 124, stdout: "", stderr: "the body lease's deadline has passed; no more git is tried" }; }
+            if left < secs { secs = left; }
+        }
+        return dna::run_tool("timeout\n" + to_string(secs) + "\ngit\n-C\n" + repo + "\n" + args);
+    }
     return dna::run_tool("git\n-C\n" + repo + "\n" + args);
 }
 
@@ -333,4 +353,182 @@ fn publish_on_membrane(root: String, kind: String, body: String) -> String {
     std::io::fs::unlink(conf) or discard;
     if r.code != 0 { return "membrane client failed: " + r.stderr; }
     return "";
+}
+
+// ---- the body lease (GH #617) ---------------------------------------
+// A record admits one body at a time: the host that runs its organism
+// holds `refs/dna/lease/body` — at the remote when the record has
+// one, so two hosts on two clones fence each other through the remote
+// itself (a blob pushed with `--force-with-lease`, git's own
+// compare-and-swap), and in the clone otherwise. The blob is the
+// lease as `GitLeases` writes it: "holder\ntoken\nexpires\npresent".
+// The holder is `user@host:<clone>`, so the same clone restarting is
+// the same holder and takes its lease back at once, and a second
+// clone — a second body — is refused until the lease expires or
+// someone forces it. The host renews on tick and asserts the lease
+// before every consequential act; a body whose lease is no longer its
+// own stops (a partitioned server executes nothing past its TTL).
+const BODY_LEASE_REF: String = "refs/dna/lease/body";
+const BODY_LEASE_TRACK: String = "refs/dna/remote/lease/body";
+const BODY_TTL: Int = 30;
+// The body fence stops the organism this many seconds before the lease
+// it could last prove expires; another body can take the lease only once
+// it has expired.
+const FENCE_MARGIN: Int = 5;
+
+type BodyLease {
+    ok: Bool = true; // false: the remote could not be read (a partition)
+    present: Bool = false;
+    holder: String = "";
+    token: Int = 0;
+    expires: Int = 0;
+    sha: String = ""; // the blob the ref points at ("" = no lease)
+}
+
+fn body_holder(root: String) -> String {
+    let user = std::env::var("USER");
+    let h = dna::run_tool("hostname");
+    let host = if h.code == 0 { dna::trim_nl(h.stdout) } else { "localhost" };
+    let abs = dna::run_tool("sh\n-c\ncd \"$1\" && pwd -P\nsh\n" + root);
+    let place = if abs.code == 0 { dna::trim_nl(abs.stdout) } else { root };
+    return (if len(user) > 0 { user } else { "body" }) + "@" + host + ":" + place;
+}
+
+fn parse_body_lease(sha: String, text: String) -> BodyLease {
+    if len(text) == 0 { return BodyLease { }; }
+    let a = std::str::index_of(text, "\n");
+    if a < 0 { return BodyLease { }; }
+    let holder = text[0..a];
+    let rest = text[(a + 1)..len(text)];
+    let b = std::str::index_of(rest, "\n");
+    if b < 0 { return BodyLease { }; }
+    let token = std::str::parse_int(rest[0..b]) or 0;
+    let rest2 = rest[(b + 1)..len(rest)];
+    let c = std::str::index_of(rest2, "\n");
+    if c < 0 { return BodyLease { }; }
+    let expires = std::str::parse_int(rest2[0..c]) or 0;
+    let present = dna::trim_nl(rest2[(c + 1)..len(rest2)]) == "1";
+    return BodyLease { present: present, holder: holder, token: token, expires: expires, sha: sha };
+}
+
+// The lease as the record's authority has it: the remote's ref when
+// there is a remote (fetched now), the clone's otherwise. `ok` false
+// when the remote could not be reached.
+fn body_lease_read(repo: String) -> BodyLease {
+    let remote = record_remote(repo);
+    let mut ref = BODY_LEASE_REF;
+    if len(remote) > 0 {
+        let f = git(repo, "fetch\n-q\n" + remote + "\n+" + BODY_LEASE_REF + ":" + BODY_LEASE_TRACK);
+        if f.code != 0 {
+            if !std::str::contains(f.stderr, "ouldn't find remote ref") { return BodyLease { ok: false }; }
+            let gone = git(repo, "update-ref\n-d\n" + BODY_LEASE_TRACK);
+            return BodyLease { };
+        }
+        ref = BODY_LEASE_TRACK;
+    }
+    let sha = git_out(repo, "rev-parse\n-q\n--verify\n" + ref);
+    if len(sha) == 0 { return BodyLease { }; }
+    let r = git(repo, "cat-file\n-p\n" + sha);
+    if r.code != 0 { return BodyLease { }; }
+    return parse_body_lease(sha, r.stdout);
+}
+
+// Write a lease where `expected` is the blob the ref points at now
+// ("" = no lease): compare-and-swap at the remote (push with
+// --force-with-lease) or in the clone (update-ref with the old value).
+// The clone's own ref mirrors what was written. False when someone
+// else moved it first.
+fn body_lease_write(repo: String, l: BodyLease, expected: String) -> Bool {
+    std::io::fs::mkdir(repo + "/.hale") or discard;
+    std::io::fs::mkdir(repo + "/.hale/dna") or discard;
+    let tmp = repo + "/.hale/dna/body-lease." + to_string(std::process::pid()) + ".tmp";
+    let w = write_text(tmp, l.holder + "\n" + to_string(l.token) + "\n" + to_string(l.expires) + "\n" + (if l.present { "1" } else { "0" })) or false;
+    if !w { return false; }
+    let blob = git_out(repo, "hash-object\n-w\n" + tmp);
+    std::io::fs::unlink(tmp) or discard;
+    if len(blob) == 0 { return false; }
+    let remote = record_remote(repo);
+    if len(remote) > 0 {
+        let p = git(repo, "push\n-q\n" + remote + "\n" + blob + ":" + BODY_LEASE_REF + "\n--force-with-lease=" + BODY_LEASE_REF + ":" + expected);
+        if p.code != 0 { return false; }
+        let t = git(repo, "update-ref\n" + BODY_LEASE_TRACK + "\n" + blob);
+        let m = git(repo, "update-ref\n" + BODY_LEASE_REF + "\n" + blob);
+        return true;
+    }
+    let cas = if len(expected) > 0 { git(repo, "update-ref\n" + BODY_LEASE_REF + "\n" + blob + "\n" + expected) } else { git(repo, "update-ref\n" + BODY_LEASE_REF + "\n" + blob + "\n" + "0000000000000000000000000000000000000000") };
+    return cas.code == 0;
+}
+
+fn body_live(l: BodyLease, now: Int) -> Bool { return l.present && l.expires > now; }
+
+// Take the body lease for `holder`, or learn who holds it: a live
+// lease of another holder is refused (present false, holder theirs),
+// unless `force`. A refused acquire because of a partition is `ok`
+// false.
+fn body_acquire(repo: String, holder: String, now: Int, force: Bool) -> BodyLease {
+    let cur = body_lease_read(repo);
+    if !cur.ok { return cur; }
+    if body_live(cur, now) && cur.holder != holder && !force {
+        // theirs, not ours: `present` is false for the caller, `holder` says whose
+        return BodyLease { present: false, holder: cur.holder, token: cur.token, expires: cur.expires, sha: cur.sha };
+    }
+    let l = BodyLease { present: true, holder: holder, token: cur.token + 1, expires: now + BODY_TTL };
+    if !body_lease_write(repo, l, cur.sha) {
+        let again = body_lease_read(repo);
+        if !again.ok { return again; }
+        if again.holder == holder && body_live(again, now) { return again; }
+        return BodyLease { present: false, holder: again.holder, token: again.token, expires: again.expires, sha: again.sha };
+    }
+    let mine = body_lease_read(repo);
+    return if mine.ok && mine.holder == holder && mine.token == l.token { mine } else { BodyLease { present: true, holder: holder, token: l.token, expires: l.expires, sha: git_out(repo, "rev-parse\n-q\n--verify\n" + BODY_LEASE_REF) } };
+}
+
+// Renew a lease that is still ours; the renewed lease, or the lease as
+// someone else now has it (present false for us), or `ok` false when
+// the remote could not be reached — the caller keeps the lease it had
+// until that one expires.
+fn body_renew(repo: String, mine: BodyLease, now: Int) -> BodyLease {
+    let cur = body_lease_read(repo);
+    if !cur.ok { return cur; }
+    if !(cur.present && cur.holder == mine.holder && cur.token == mine.token) {
+        return BodyLease { present: false, holder: cur.holder, token: cur.token, expires: cur.expires, sha: cur.sha };
+    }
+    let l = BodyLease { present: true, holder: mine.holder, token: mine.token, expires: now + BODY_TTL };
+    if !body_lease_write(repo, l, cur.sha) {
+        let again = body_lease_read(repo);
+        if !again.ok { return again; }
+        // the write failed and the lease is still ours as it was: not lost,
+        // only unrenewed — kept until it expires, like a partition
+        if again.present && again.holder == mine.holder && again.token == mine.token { return BodyLease { ok: false }; }
+        return BodyLease { present: false, holder: again.holder, token: again.token, expires: again.expires, sha: again.sha };
+    }
+    return BodyLease { present: true, holder: mine.holder, token: mine.token, expires: l.expires, sha: git_out(repo, "rev-parse\n-q\n--verify\n" + BODY_LEASE_REF) };
+}
+
+// Give the lease up (present false, token kept so a late renewal of it
+// is refused). True when it was ours to give up.
+fn body_release(repo: String, mine: BodyLease) -> Bool {
+    let cur = body_lease_read(repo);
+    if !cur.ok || !cur.present || cur.holder != mine.holder || cur.token != mine.token { return false; }
+    return body_lease_write(repo, BodyLease { present: false, holder: cur.holder, token: cur.token, expires: 0 }, cur.sha);
+}
+
+fn ago(secs: Int) -> String {
+    if secs < 0 { return "just now"; }
+    if secs < 90 { return to_string(secs) + "s ago"; }
+    if secs < 5400 { return to_string(secs / 60) + "m ago"; }
+    if secs < 172800 { return to_string(secs / 3600) + "h ago"; }
+    return to_string(secs / 86400) + "d ago";
+}
+
+// The body line of `status` and `profile`: who runs this record's
+// organism, from the lease alone.
+fn body_line(repo: String, now: Int) -> String {
+    let l = body_lease_read(repo);
+    if !l.ok { return "unknown (the remote cannot be reached)"; }
+    if len(l.holder) == 0 { return "none (no body has run this record; `hale dna run` takes the lease)"; }
+    let ticked = ago(now - (l.expires - BODY_TTL));
+    if body_live(l, now) { return "live on " + l.holder + ", ticked " + ticked + ", lease expires in " + to_string(l.expires - now) + "s"; }
+    if l.present { return "stale: " + l.holder + " last ticked " + ticked + " and its lease has expired; `hale dna run` takes it, `hale dna body claim` says so"; }
+    return "released by " + l.holder + "; `hale dna run` takes the lease";
 }

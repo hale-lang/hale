@@ -187,8 +187,13 @@ pub fn run(args: &[String]) -> ExitCode {
             report(init(&dir))
         }
         Some("new") => match args.get(1) {
-            Some(name) => report(new_project(Path::new(name))),
-            None => usage(2),
+            Some(name) if !name.starts_with("--") => {
+                // GH #617: `--profile local|remote-body [--remote <url>] [--body <user@host>]`
+                // sets the pieces the combination is detected from; nothing is stored as a label
+                let flag = |n: &str| args[2..].windows(2).find(|w| w[0] == n).map(|w| w[1].clone());
+                report(new_project(Path::new(name), flag("--profile").as_deref(), flag("--remote").as_deref(), flag("--body").as_deref()))
+            }
+            _ => usage(2),
         },
         Some("upgrade") => {
             let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
@@ -234,6 +239,11 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("history") => {
             let (dir, rest) = project_arg(&args[1..], false);
             host_exec("history", &dir, &rest)
+        }
+        Some("body") => host_exec("body", Path::new("."), &args[1..]),
+        Some("profile") => {
+            let (dir, rest) = project_arg(&args[1..], true);
+            host_exec("profile", &dir, &rest)
         }
         Some("sync") => {
             let (dir, rest) = project_arg(&args[1..], true);
@@ -293,6 +303,11 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    offer intent over the membrane; prints the Task born or the refusal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
     eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");
+    eprintln!("       hale dna new <name> [--profile local|remote-body --remote <url> [--body <user@host>]]");
+    eprintln!("                                    the profile sets the pieces (a remote, a body host); the combination is always detected");
+    eprintln!("       hale dna profile [project]   the organism's combination, detected from its pieces: record, body, head, fleet, knowledge, trust");
+    eprintln!("       hale dna body                who runs this record (the body lease); `body claim --force` takes it from a body that is gone;");
+    eprintln!("                                    `body release [--force]` gives it up — both are rows in your name (--as <who>)");
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
     eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
     eprintln!("       hale dna retire <who>        a person retires: the handed Tasks they hold move to --to <successor>, as rows");
@@ -1285,7 +1300,20 @@ fn ui_cmd(args: &[String]) -> ExitCode {
 // new
 // ---------------------------------------------------------------
 
-fn new_project(dir: &Path) -> Result<Vec<String>, String> {
+fn new_project(dir: &Path, profile: Option<&str>, remote: Option<&str>, body: Option<&str>) -> Result<Vec<String>, String> {
+    match profile {
+        None | Some("local") => {
+            if remote.is_some() || body.is_some() {
+                return Err("`--remote` and `--body` set the pieces of `--profile remote-body`; the local profile has neither".to_string());
+            }
+        }
+        Some("remote-body") => {
+            if remote.is_none() {
+                return Err("`--profile remote-body` needs `--remote <url>`: the record shared over that remote is what the body and every head attach to".to_string());
+            }
+        }
+        Some(other) => return Err(format!("unknown profile `{other}`; profiles are examples of combinations — `local` (everything in this clone) or `remote-body` (the record over a remote, the body on a server); `hale dna profile` detects the combination from the pieces")),
+    }
     if dir.exists() && fs::read_dir(dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
         return Err(format!("{} exists and is not empty; `hale dna init` attaches to an existing application", dir.display()));
     }
@@ -1357,6 +1385,14 @@ fn main() {{
     }
     let mut rest = init(dir)?;
     out.append(&mut rest);
+    if let Some(url) = remote {
+        git(dir, &["remote", "add", "origin", url])?;
+        out.push(format!("remote origin = {url} (the record is shared over it: `hale dna sync`, and a body on a server takes the lease there)"));
+    }
+    if let Some(host) = body {
+        git(dir, &["config", "dna.body", host])?;
+        out.push(format!("dna.body = {host} (where `hale dna body provision` puts the body; `hale dna profile` reports what runs)"));
+    }
     Ok(out)
 }
 

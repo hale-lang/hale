@@ -4,7 +4,8 @@
 
 ```text
 hale dna init [app-dir]      generate the organization (dna/org) for an existing application
-hale dna new <name>          a greenfield application with its organization
+hale dna new <name> [--profile local|remote-body --remote <url> [--body <user@host>]]
+                             a greenfield application with its organization; the profile sets pieces
 hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain (and write a catalog for an organization from before it)
 hale dna models [project]    the catalog (dna/org/models.hl): every backend, one small request to each
 hale dna knowledge [project] [--port N]
@@ -27,6 +28,9 @@ hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authorit
                              [--comment <c>] [--digest <sha>] [--no-wait]
 hale dna history [<entity>]  walk the record by causal links (offline)
 hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*)
+hale dna profile [project]   the organism's combination, detected from its pieces
+hale dna body                who runs this record (the body lease); `claim --force` takes it from a
+                             body that is gone; `release [--force]` gives it up; rows in your name
 hale dna board [project]     the Board's queue: verdicts needed, escalations, proposals, reports
 hale dna report [project]    file a report from the record since the last one
 hale dna concern raise <source> <what…> [--severity N]

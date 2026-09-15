@@ -119,8 +119,89 @@ locus Host {
         relayed: String = "\n";
         app_gone_reported: Bool = false;
         exit_code: Int = 0;
+        lease: BodyLease = BodyLease { }; // GH #617: this body's lease on the record
+        holder: String = "";
+        fence: Proc = Proc { }; // the second review of #622: the renewer that fences the organism
     }
     fn say(what: String) { eprintln("hale dna ", self.verb, ": ", what); }
+    // GH #617: the lease is asserted before every consequential act
+    // (relay, restart, apply). The fence renews it beside the host and
+    // writes what it proved to `body.fence.status`; the host reads that,
+    // so a host blocked in a sync or a build holds nothing up (the second
+    // review of #622). False once the lease is someone else's, released,
+    // or past what the fence last proved: the body stops.
+    fn body_alive() -> Bool {
+        let now = std::time::now();
+        // only this host's fence speaks for it: a line from the fence of a
+        // host that ran here before (killed, its fence not yet gone) is not news
+        let raw = dna::trim_nl(std::io::fs::read_file(self.dna_dir + "/body.fence.status") or "");
+        let mine = to_string(std::process::pid()) + " ";
+        let st = if std::str::starts_with(raw, mine) { raw[len(mine)..len(raw)] } else { "" };
+        if std::str::starts_with(st, "ok ") {
+            self.lease.expires = std::str::parse_int(st[3..len(st)]) or self.lease.expires;
+        } else if std::str::starts_with(st, "lost") {
+            let who = if len(st) > 5 { st[5..len(st)] } else { "" };
+            self.say("the body lease is no longer mine: " + (if len(who) > 0 && who != self.holder { "held by " + who } else { "released" }) + "; a record admits one body — stopping");
+            return false;
+        } else if len(st) > 0 {
+            self.say("the body lease could not be renewed and has expired (the remote cannot be reached); a body that cannot prove its lease executes nothing");
+            return false;
+        }
+        if now >= self.lease.expires - FENCE_MARGIN {
+            self.say("the body lease could not be renewed and has expired (the remote cannot be reached); a body that cannot prove its lease executes nothing");
+            return false;
+        }
+        return true;
+    }
+    // The fence: a process of its own (this binary, `body-fence`) that
+    // renews the lease every third of its life with every git call
+    // bounded, and — when the lease is someone else's or released, when it
+    // cannot prove the lease within FENCE_MARGIN of its expiry, or when the
+    // host is gone — kills the organization and the expression by their
+    // pid files and says why. It never waits on the host: a body executes
+    // nothing past its TTL even while its host is blocked.
+    fn start_fence() {
+        std::io::fs::unlink(self.dna_dir + "/body.fence.status") or discard;
+        // the mandate names this host: a fence left by a host that ran here
+        // before stops at once, and kills nothing, when it reads another
+        let m = write_text(self.dna_dir + "/body.fence", to_string(std::process::pid()) + "\n" + self.holder) or false;
+        let exe = dna::run_tool("readlink\n-f\n/proc/" + to_string(std::process::pid()) + "/exe");
+        let bin = if exe.code == 0 && len(dna::trim_nl(exe.stdout)) > 0 { dna::trim_nl(exe.stdout) } else { std::env::arg(0) };
+        self.fence = start(self.dna_dir, "fence", self.root, "HALE_DNA_GIT_TIMEOUT=8",
+            bin + "\nbody-fence\n.\n.\n-\n-\n--holder\n" + self.holder + "\n--token\n" + to_string(self.lease.token) + "\n--expires\n" + to_string(self.lease.expires) + "\n--host-pid\n" + to_string(std::process::pid()));
+        if self.fence.pid <= 0 { self.say("the body fence did not start; a body that cannot fence its organism runs nothing"); std::process::exit(3); }
+    }
+    fn stop_fence() {
+        std::io::fs::unlink(self.dna_dir + "/body.fence") or discard;
+        if self.fence.pid > 0 { stop_proc(self.fence); }
+        self.fence = Proc { };
+    }
+    // What the body started, gone: the organization's and the expression's
+    // trees, and every process carrying the body's mark wherever it is now.
+    // Every exit once the lease is held runs it BEFORE the fence stops (the
+    // fifth review of #622: a failed application build stopped the
+    // organization's pid and then the fence, and its tool ran on).
+    fn stop_started() {
+        if self.org.pid > 0 { kill_tree(to_string(self.org.pid)); }
+        if self.app.pid > 0 { kill_tree(to_string(self.app.pid)); }
+        kill_marked(body_mark(self.holder, self.lease.token, std::process::pid()));
+    }
+    fn quit(code: Int) {
+        self.stop_started();
+        self.stop_fence();
+        std::process::exit(code);
+    }
+    fn stop_body(code: Int) {
+        self.stop_started();
+        self.stop_fence();
+        stop_proc(self.org);
+        if self.observer.pid > 0 { stop_proc(self.observer); }
+        if self.knowledge.pid > 0 { stop_proc(self.knowledge); std::io::fs::unlink(self.dna_dir + "/knowledge.pid") or discard; }
+        if self.app.pid > 0 { stop_proc(self.app); }
+        std::io::fs::unlink(self.dna_dir + "/org.pid") or discard;
+        std::io::fs::unlink(self.dna_dir + "/app.pid") or discard;
+        std::process::exit(code);
+    }
     fn seed_dir() -> String {
         if self.seed == "." || self.seed == "" { return self.root; }
         return self.root + "/" + self.seed;
@@ -137,6 +218,25 @@ locus Host {
         return "";
     }
     // Build a seed; its binary path, or "" (the error said).
+    // The lease proved again at the moment a process starts: read from
+    // the record's authority now, and still this host's under the token it
+    // took. A build longer than the lease's life, during which another
+    // body took the lease, starts nothing (the review of GH #617: the
+    // organism must never run under a lease that is not ours).
+    fn body_assert(what: String) -> Bool {
+        let now = std::time::now();
+        let r = body_lease_read(self.root);
+        if r.ok && (!r.present || r.holder != self.holder || r.token != self.lease.token) {
+            self.say("before starting " + what + ": the body lease is no longer mine (" + (if len(r.holder) > 0 && r.holder != self.holder { "held by " + r.holder } else { "released" }) + "); nothing is started");
+            return false;
+        }
+        if !self.body_alive() {
+            self.say("before starting " + what + ": the body lease could not be proved; nothing is started");
+            return false;
+        }
+        if r.ok && r.expires > self.lease.expires { self.lease.expires = r.expires; }
+        return true;
+    }
     fn build_seed(seed_dir: String) -> String {
         let b = dna::run_tool(self.hale + "\nbuild\n" + seed_dir);
         if b.code != 0 { self.say("`hale build " + seed_dir + "` failed"); return ""; }
@@ -154,6 +254,9 @@ locus Host {
         // GH #583: the genome a harness must never reach, whatever its
         // role. A HarnessModel reads it at birth (finding 1).
         let mut e = "LOTUS_OBS=1\nHALE_BIN=" + self.hale + "\nHALE_DNA_GENOME=" + self.root;
+        // the fourth review of #622: the body's mark, inherited by every tool
+        // a child starts, so the fence finds them even once that child is gone
+        if len(self.holder) > 0 { e = e + "\nHALE_DNA_BODY=" + body_mark(self.holder, self.lease.token, std::process::pid()); }
         if len(restart_for) > 0 { e = e + "\nHALE_DNA_RESTART_FOR=" + restart_for + "\nHALE_DNA_EXPRESSION=" + expression; }
         // GH #583 K2: the organization's line to the knowledge service —
         // the one this host started, or the one the operator named
@@ -298,6 +401,7 @@ locus Host {
         let expression = (if rollback { "rollback " } else { "" }) + shape_of(art) + " build " + self.sha12(bin);
         stop_proc(self.org);
         self.remove_sockets();
+        if !self.body_assert("the organization again") { self.stop_body(3); }
         self.org = start(self.dna_dir, "org", self.root, self.child_envs(id, expression), bin);
         self.org_log = 0;
         let w = write_text(self.dna_dir + "/org.pid", to_string(self.org.pid)) or false;
@@ -390,6 +494,7 @@ locus Host {
         let shape = shape_of(current);
         let expression = (if rollback { "rollback " } else { "" }) + shape + " build " + self.sha12(bin);
         if self.app.pid > 0 { stop_proc(self.app); }
+        if !self.body_assert("the expression again") { self.stop_body(3); }
         self.app = start(self.dna_dir, "app", self.root, self.child_envs(id, expression), bin);
         self.app_log = 0;
         let pw = write_text(self.dna_dir + "/app.pid", to_string(self.app.pid)) or false;
@@ -460,6 +565,7 @@ locus Host {
     }
     @unbounded
     fn tick() {
+        if !self.body_alive() { self.stop_body(3); }
         self.org_log = drain_log(self.org, self.org_log);
         if self.app.pid > 0 {
             self.app_log = drain_log(self.app, self.app_log);
@@ -475,6 +581,9 @@ locus Host {
             let g = github_sync(self.root, self.seed);
             if g.ok { print(indent_lines(dna::trim_nl(g.text), "hale dna " + self.verb + ": github: ")); } else { self.say("github: " + g.text); }
         }
+        // the sync above may have blocked past the lease's life: prove it
+        // again before relaying anything onto the membrane
+        if !self.body_alive() { self.stop_body(3); }
         let n = self.relay_record_membrane();
         if n > 0 { self.say("relayed " + to_string(n) + " fact(s) from the record onto the membrane"); let s2 = sync_record(self.root); }
         self.write_status();
@@ -498,20 +607,38 @@ locus Host {
         self.status_path = self.dna_dir + "/status.json";
         let org_seed = self.root + "/" + ORG_SEED;
         if !std::io::fs::file_exists(org_seed + "/main.hl") { self.say("no organization at " + org_seed + " (run `hale dna init`)"); std::process::exit(2); }
+        // 0. the body lease (GH #617): a record admits one body at a
+        //    time; nothing is built or run under a lease that is not ours
+        self.holder = body_holder(self.root);
+        let now0 = std::time::now();
+        let l = body_acquire(self.root, self.holder, now0, false);
+        if !l.ok { self.say("the record's remote cannot be reached, so the body lease cannot be taken; a body runs only under a lease it can prove"); std::process::exit(3); }
+        if !l.present || l.holder != self.holder {
+            self.say("a body for this record is live on " + l.holder + " (ticked " + ago(now0 - (l.expires - BODY_TTL)) + ", lease expires in " + to_string(l.expires - now0) + "s); a record admits one body — `hale dna body claim --force` takes it over when that body is gone");
+            std::process::exit(3);
+        }
+        self.lease = l;
+        let claimed = append_as(self.root, "body.claimed", self.holder, "{\"token\": " + to_string(l.token) + ", \"forced\": false, \"by\": \"host\"}", "host");
+        self.say("body lease taken as " + self.holder + " (token " + to_string(l.token) + ")");
+        self.start_fence();
         // 1. the expression identity: a fresh artifact of the application
         let cut = self.cut_artifact(self.seed_dir(), self.dna_dir + "/current.topology");
-        if len(cut) > 0 { self.say(cut); std::process::exit(1); }
+        if len(cut) > 0 { self.say(cut); self.quit(1); }
         // 2. dev: the knowledge service first, so the organization's
         //    environment names it (GH #583 K2)
         if self.verb == "dev" { self.start_knowledge(); }
         // 3. the organization: built, started from the root, observable
         let org_bin = self.build_seed(org_seed);
-        if len(org_bin) == 0 { std::process::exit(1); }
+        if len(org_bin) == 0 { self.quit(1); }
         self.remove_sockets();
         std::io::fs::unlink(self.dna_dir + "/org.log") or discard;
         std::io::fs::unlink(self.dna_dir + "/app.log") or discard;
+        if !self.body_assert("the organization") {
+            if self.knowledge.pid > 0 { stop_proc(self.knowledge); }
+            self.quit(3);
+        }
         self.org = start(self.dna_dir, "org", self.root, self.child_envs("", ""), org_bin);
-        if self.org.pid <= 0 { self.say("cannot start " + org_bin); std::process::exit(1); }
+        if self.org.pid <= 0 { self.say("cannot start " + org_bin); self.quit(1); }
         let pw = write_text(self.dna_dir + "/org.pid", to_string(self.org.pid)) or false;
         self.say("organization (pid " + to_string(self.org.pid) + ") from " + self.root + " under LOTUS_OBS=1");
         // 3. the membrane comes up
@@ -521,10 +648,15 @@ locus Host {
         // 4. dev: the application too, under this host
         if self.verb == "dev" {
             let bin = self.build_seed(self.seed_dir());
-            if len(bin) == 0 { stop_proc(self.org); std::process::exit(1); }
+            if len(bin) == 0 { stop_proc(self.org); self.quit(1); }
             self.app_bin = bin;
+            if !self.body_assert("the expression") {
+                stop_proc(self.org);
+                if self.knowledge.pid > 0 { stop_proc(self.knowledge); }
+                self.quit(3);
+            }
             self.app = start(self.dna_dir, "app", self.root, self.child_envs("", ""), bin);
-            if self.app.pid <= 0 { self.say("cannot start " + bin); stop_proc(self.org); std::process::exit(1); }
+            if self.app.pid <= 0 { self.say("cannot start " + bin); stop_proc(self.org); self.quit(1); }
             let aw = write_text(self.dna_dir + "/app.pid", to_string(self.app.pid)) or false;
             self.say("expression " + self.app_name() + " (pid " + to_string(self.app.pid) + ") under LOTUS_OBS=1");
         }
@@ -544,6 +676,10 @@ locus Host {
                 std::time::sleep(1s);
             }
         }
+        // the fence stopped it: the lease is not ours to keep
+        if !self.body_alive() { self.stop_body(3); }
+        // the organization is gone; what it started goes with it
+        self.stop_started();
         self.org_log = drain_log(self.org, self.org_log);
         if self.observer.pid > 0 { stop_proc(self.observer); }
         if self.knowledge.pid > 0 { stop_proc(self.knowledge); std::io::fs::unlink(self.dna_dir + "/knowledge.pid") or discard; }
@@ -551,9 +687,14 @@ locus Host {
         std::io::fs::unlink(self.dna_dir + "/org.pid") or discard;
         std::io::fs::unlink(self.dna_dir + "/app.pid") or discard;
         self.write_status();
+        self.stop_fence();
+        if body_release(self.root, self.lease) {
+            let released = append_as(self.root, "body.released", self.holder, "{\"token\": " + to_string(self.lease.token) + ", \"by\": \"host\"}", "host");
+            let s3 = sync_record(self.root);
+        }
         self.say("organization exited (" + to_string(code) + "); " + RECORD_REF + " in " + self.root + " is the record");
-        if self.exit_code != 0 { std::process::exit(self.exit_code); }
-        std::process::exit(if code < 0 { 1 } else { code });
+        if self.exit_code != 0 { self.quit(self.exit_code); }
+        self.quit(if code < 0 { 1 } else { code });
     }
 }
 
@@ -566,6 +707,55 @@ fn count_words(s: String) -> Int {
         rest = rest[(sp + 1)..len(rest)];
     }
     return n;
+}
+
+// `body-fence` (the second review of #622): the renewer beside a body.
+// The host's `body.fence` file, naming that host's pid, is its mandate; it
+// ends when that file is gone or names another host (a host restarted on
+// the same clone). Every status line it writes starts with its host's pid.
+// Bounded by the life of the body it fences.
+@unbounded
+fn fence_main(holder: String, token: Int, expires: Int, host_pid: Int) {
+    let dir = ".hale/dna";
+    let mut lease = BodyLease { present: true, holder: holder, token: token, expires: expires };
+    let mark = body_mark(holder, token, host_pid);
+    let mut renewed = 0;
+    while fence_mandate(dir, host_pid) {
+        let now = std::time::now();
+        // every git call a renewal makes stops at this deadline
+        let d = write_text(dir + "/body.deadline", to_string(lease.expires - FENCE_MARGIN)) or false;
+        if dna::run_tool("kill\n-0\n" + to_string(host_pid)).code != 0 { fence_stop(dir, host_pid, mark, "orphaned: the host is gone"); return; }
+        if now - renewed >= BODY_TTL / 3 {
+            let r = body_renew(".", lease, now);
+            if r.ok {
+                if !r.present || r.holder != holder { fence_stop(dir, host_pid, mark, "lost " + r.holder); return; }
+                lease = r;
+                renewed = now;
+                let w = write_text(dir + "/body.fence.status", to_string(host_pid) + " ok " + to_string(lease.expires)) or false;
+            }
+        }
+        if std::time::now() >= lease.expires - FENCE_MARGIN { fence_stop(dir, host_pid, mark, "expired " + to_string(lease.expires)); return; }
+        std::time::sleep(1s);
+    }
+}
+
+// Whether the mandate at `dir` is still the one `host_pid` wrote.
+fn fence_mandate(dir: String, host_pid: Int) -> Bool {
+    let m = std::io::fs::read_file(dir + "/body.fence") or "";
+    let nl = std::str::index_of(m, "\n");
+    return len(m) > 0 && (if nl < 0 { m } else { m[0..nl] }) == to_string(host_pid);
+}
+
+// Say why, then kill what executes under the lease — unless the mandate
+// has passed to another host in the meantime, whose processes these are.
+fn fence_stop(dir: String, host_pid: Int, mark: String, why: String) {
+    if !fence_mandate(dir, host_pid) { return; }
+    let w = write_text(dir + "/body.fence.status", to_string(host_pid) + " " + why) or false;
+    // each with every process it started — still under it, and, carrying the
+    // body's mark, anywhere else (a tool whose organism already died)
+    kill_tree(dna::trim_nl(std::io::fs::read_file(dir + "/org.pid") or ""));
+    kill_tree(dna::trim_nl(std::io::fs::read_file(dir + "/app.pid") or ""));
+    kill_marked(mark);
 }
 
 fn host_main(verb: String, root: String, seed: String, fleet: String, plan: String, toolchain: String, a: Args) {
