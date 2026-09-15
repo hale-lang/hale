@@ -185,8 +185,12 @@ repository:
   contracts, and the record says so (`grant.contracted <parent>`
   `{boundary, from, to, epoch, binds, note}`, appended before the
   contraction takes effect). An organism born over the record restores
-  the last contraction of its ceiling — its magnitude and its epoch —
-  before anything is admitted, as it restores a revocation. A child born wider than its
+  the last contraction of its ceiling — its epoch and `pre` review
+  whatever the authored ceiling now says, and the stricter of the
+  recorded and authored magnitudes — before anything is admitted, as it
+  restores a revocation. A contraction whose row the record refuses
+  still binds live, and is appended again before every `reserve` and
+  `admits`; until the record holds it, nothing is admitted. A child born wider than its
   ceiling is the early error: `grant.refused <child>` names what is
   wider, and the ceiling binds it from birth. Law layers by adoption:
   every position lives under the org program's main, which adopts the
