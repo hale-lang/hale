@@ -79,20 +79,61 @@ fn git(args: String) -> String {
     return if out.code == 0 { out.stdout } else { "" };
 }
 
-// File one bill; ask for its follow-through when its receipt is missing.
+fn hex_of(b: Bytes) -> String {
+    let digits = "0123456789abcdef";
+    let mut out = "";
+    let mut i = 0;
+    while i < len(b) {
+        let v = std::bytes::at(b, i) or 0;
+        out = out + digits[(v / 16)..(v / 16 + 1)] + digits[(v % 16)..(v % 16 + 1)];
+        i = i + 1;
+    }
+    return out;
+}
+
+// A document's digest, as the record names evidence.
+fn digest_of(text: String) -> String {
+    return "sha256:" + hex_of(std::crypto::sha256(std::bytes::from_string(text)));
+}
+
+// Whether a row of `kind` whose entity or body names `needle` is in the journal text.
+@unbounded
+fn journal_has(journal: String, kind: String, needle: String) -> Bool {
+    let mut rest = journal;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::json::find_string_field(line, "kind") != kind { continue; }
+        if std::json::find_string_field(line, "entity") == needle || std::str::contains(std::json::find_string_field(line, "body"), needle) { return true; }
+    }
+    return false;
+}
+
+// File one bill and ask for its follow-through when its receipt is
+// missing. "ok: …" once all it needs is in the record, "retry: …" when a
+// step failed, "rejected: …" for a document that is not a bill. Each step
+// is skipped when the record already holds it, so a bill delivered twice,
+// or retried after a partial failure, is filed once and followed up once.
 @unbounded
 fn capture(path: String) -> String {
     let text = std::io::fs::read_file(path) or "";
     let b = parse_bill(text);
-    if !readable(b) { return "books: " + path + " is not a bill this intake reads (bill, supplier, payer, date, amount, currency)"; }
-    let filed = hale("dna\nreceipt\nfile\n" + path + "\n--as\nintake");
-    let at = std::str::index_of(filed.stdout, "sha256:");
-    if filed.code != 0 || at < 0 { return "books: " + b.id + " not filed: " + filed.stdout + filed.stderr; }
-    let evidence = filed.stdout[at..(at + 71)];
-    if b.receipt == "attached" { return "books: " + b.id + " captured with its receipt, as " + evidence; }
+    if !readable(b) { return "rejected: books: " + path + " is not a bill this intake reads (bill, supplier, payer, date, amount, currency)"; }
+    let journal = git("show\nrefs/dna/journal:journal.jsonl");
+    let mut evidence = digest_of(text);
+    if !journal_has(journal, "receipt.filed", evidence) {
+        let filed = hale("dna\nreceipt\nfile\n" + path + "\n--as\nintake");
+        let at = std::str::index_of(filed.stdout, "sha256:");
+        if filed.code != 0 || at < 0 { return "retry: books: " + b.id + " not filed: " + filed.stdout + filed.stderr; }
+        evidence = filed.stdout[at..(at + 71)];
+    }
+    if b.receipt == "attached" { return "ok: books: " + b.id + " captured with its receipt, as " + evidence; }
+    if journal_has(journal, "intent.offered", evidence) || journal_has(journal, "task.born", evidence) { return "ok: books: " + b.id + " was captured and followed up already, as " + evidence; }
     let asked = hale("dna\nask\n--no-wait\n--as\nintake\n" + follow_up(b, evidence));
+    if asked.code != 0 { return "retry: books: " + b.id + " filed as " + evidence + ", but its follow-through was not asked: " + std::str::trim(asked.stdout + asked.stderr); }
     let raised = hale("dna\nconcern\nraise\norg/books/intake\nbill " + b.id + " from " + b.supplier + " arrived without its receipt");
-    return "books: " + b.id + " captured as " + evidence + "; follow-through asked: " + std::str::trim(asked.stdout + asked.stderr) + "; " + std::str::trim(raised.stdout + raised.stderr);
+    return "ok: books: " + b.id + " captured as " + evidence + "; follow-through asked: " + std::str::trim(asked.stdout + asked.stderr) + "; " + std::str::trim(raised.stdout + raised.stderr);
 }
 
 // Whether `a` sorts before `b` (lowercase names, digits, `-`, `.`).
@@ -109,15 +150,16 @@ fn name_before(a: String, b: String) -> Bool {
     return len(a) < len(b);
 }
 
-// The first bill waiting in `inbox/`, by name ("" when none).
+// The first bill waiting in `inbox/`, by name, not among `skip`
+// (newline-separated names); "" when none.
 @unbounded
-fn next_bill() -> String {
+fn next_bill(skip: String) -> String {
     let n = std::io::fs::list_dir_count("inbox") or 0;
     let mut next = "";
     let mut i = 0;
     while i < n {
         let name = std::io::fs::list_dir_at("inbox", i) or "";
-        if has_suffix(name, ".bill") && (len(next) == 0 || name_before(name, next)) { next = name; }
+        if has_suffix(name, ".bill") && !std::str::contains(skip, "\n" + name + "\n") && (len(next) == 0 || name_before(name, next)) { next = name; }
         i = i + 1;
     }
     return next;
@@ -197,6 +239,36 @@ fn add_total(totals: String, currency: String, amount: String) -> String {
     return out;
 }
 
+// One bill's outcome: archived to `done/` once captured, to `rejected/`
+// when it is not a bill; left in the inbox, to be tried again, otherwise.
+fn settle_bill(name: String, result: String) -> Bool {
+    if std::str::starts_with(result, "ok:") {
+        std::io::fs::rename("inbox/" + name, "inbox/done/" + name) or discard;
+        return true;
+    }
+    if std::str::starts_with(result, "rejected:") {
+        std::io::fs::mkdir("inbox/rejected") or discard;
+        std::io::fs::rename("inbox/" + name, "inbox/rejected/" + name) or discard;
+        return true;
+    }
+    return false;
+}
+
+// Every bill in the inbox, tried once (BOOKS_MODE=once).
+@unbounded
+fn drain_once() {
+    std::io::fs::mkdir("inbox/done") or discard;
+    let mut tried = "\n";
+    while true {
+        let next = next_bill(tried);
+        if len(next) == 0 { return; }
+        let result = capture("inbox/" + next);
+        println(result);
+        let settled = settle_bill(next, result);
+        tried = tried + next + "\n";
+    }
+}
+
 // Every bill filed as evidence whose date falls in [from, to], with its
 // obligation as the record has it; totals by currency; the record's head.
 @unbounded
@@ -209,6 +281,7 @@ fn export_week(from: String, to: String) -> String {
     let mut totals = "";
     let mut bills = 0;
     let mut open = 0;
+    let mut seen = "\n";
     let mut rest = journal;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
@@ -217,6 +290,9 @@ fn export_week(from: String, to: String) -> String {
         if std::json::find_string_field(line, "kind") != "receipt.filed" { continue; }
         if !has_suffix(std::json::find_string_field(std::json::find_string_field(line, "body"), "name"), ".bill") { continue; }
         let evidence = std::json::find_string_field(line, "entity");
+        // a document filed twice is one bill
+        if std::str::contains(seen, "\n" + evidence + "\n") { continue; }
+        seen = seen + evidence + "\n";
         let b = parse_bill(git("cat-file\n-p\nrefs/dna/receipts/" + evidence[7..len(evidence)]));
         let day = day_number(b.date);
         if day < lo || day > hi { continue; }
@@ -249,26 +325,43 @@ fn export_week(from: String, to: String) -> String {
 }
 
 main locus Intake {
-    params { captured: Int = 0; }
+    params {
+        captured: Int = 0;
+        // bills that failed recently, tried again once `deferred_at` is ten seconds old
+        deferred: String = "\n";
+        deferred_at: Int = 0;
+    }
     run() {
         std::io::fs::mkdir("inbox") or discard;
         std::io::fs::mkdir("inbox/done") or discard;
         println(INTAKE, ": watching inbox/");
         if std::env::var_exists("HALE_DNA_ONESHOT") { return; }
         while true {
-            let next = next_bill();
+            if std::time::now() - self.deferred_at >= 10 { self.deferred = "\n"; }
+            let next = next_bill(self.deferred);
             if len(next) == 0 {
                 std::time::sleep(300ms);
                 continue;
             }
-            println(capture("inbox/" + next));
-            std::io::fs::rename("inbox/" + next, "inbox/done/" + next) or discard;
-            self.captured = self.captured + 1;
+            let result = capture("inbox/" + next);
+            println(result);
+            if settle_bill(next, result) {
+                self.captured = self.captured + 1;
+            } else {
+                // not captured: it stays in the inbox and is tried again later
+                if self.deferred == "\n" { self.deferred_at = std::time::now(); }
+                self.deferred = self.deferred + next + "\n";
+            }
         }
     }
 }
 
 fn main() {
+    if std::env::var_exists("BOOKS_MODE") && std::env::var("BOOKS_MODE") == "once" {
+        std::io::fs::mkdir("inbox") or discard;
+        drain_once();
+        return;
+    }
     if std::env::var_exists("BOOKS_MODE") && std::env::var("BOOKS_MODE") == "export" {
         println(export_week(std::env::var("BOOKS_FROM"), std::env::var("BOOKS_TO")));
         return;

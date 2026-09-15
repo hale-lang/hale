@@ -168,6 +168,11 @@ main locus App {
         let g6 = in_dir(app, "git\nadd\n-A");
         let g7 = in_dir(app, "git\ncommit\n-q\n-m\nattach the DNA");
 
+        // a bill that cannot be filed is not archived: it stays in the inbox, to be tried again
+        let unfiled = in_dir(app, "sh\n-c\nmkdir -p inbox && cp \"$1\" inbox/b1001.bill && BOOKS_MODE=once HALE_BIN=/bin/false exec \"$2\" run .\nsh\n" + fixture + "/bills/b1001.bill\n" + toolchain());
+        std::test::assert(std::str::contains(unfiled.stdout, "retry: books: B-1001 not filed") && std::io::fs::file_exists(app + "/inbox/b1001.bill") && !std::io::fs::file_exists(app + "/inbox/done/b1001.bill"), "a bill that was not filed stays in the inbox: " + unfiled.stdout + unfiled.stderr);
+        let cleared = dna::run_tool("rm\n-f\n" + app + "/inbox/b1001.bill");
+
         let mut dev = start_dev(app);
         std::test::assert(membrane_up(app, 240), "the organism and the intake came up: " + (std::io::fs::read_file(app + "/.hale/dev.log") or ""));
 
@@ -195,6 +200,18 @@ main locus App {
         let bill1 = digest_in(born1);
         std::test::assert(std::str::contains(born1, "obtain the receipt for bill B-1001 from Northwind Rail: 120.00 CU for travel to the client, paid by mara on 2026-09-07, treatment pending, bill sha256:") && count(app, "receipt.filed", bill1, "b1001.bill") == 1, "the bill's facts, captured, with the bill as evidence: " + born1);
         std::test::assert_eq_int(count(app, "task.born", "", "B-1002"), 0, "a bill with its receipt asks for nothing");
+        // the same bill delivered again is filed once and followed up once
+        let again = dna::run_tool("sh\n-c\ncp \"$1\" \"$2/inbox/.b1001-again.part\" && mv \"$2/inbox/.b1001-again.part\" \"$2/inbox/b1001-again.bill\"\nsh\n" + fixture + "/bills/b1001.bill\n" + app);
+        let mut archived = false;
+        let mut polls = 0;
+        while !archived && polls < 120 {
+            if std::io::fs::file_exists(app + "/inbox/done/b1001-again.bill") { archived = true; } else { std::time::sleep(500ms); }
+            polls = polls + 1;
+        }
+        std::test::assert(archived, "the second delivery was taken in");
+        std::test::assert_eq_int(count(app, "receipt.filed", bill1, ""), 1, "filed once");
+        std::test::assert_eq_int(count(app, "task.born", "", "B-1001"), 1, "followed up once");
+        std::test::assert_eq_int(count(app, "concern.raised", "org/books/intake", ""), 3, "and no second concern");
         let handed1 = body(app, "task.handed", "t1");
         std::test::assert(std::json::find_string_field(handed1, "assignee") == "mara" && std::json::find_string_field(handed1, "obligation") == "expense-receipt" && std::json::find_string_field(handed1, "acceptance") == v1 && std::str::contains(handed1, "\"evidence_required\": true"), "handed to the payer under the books practice: " + handed1);
 
@@ -220,6 +237,8 @@ main locus App {
         // ---- 4. evidence, or an authorized exception
         let note_only = dna_cli(app, "task\ndone\nt2\n--as\nmara\n--note\npaid cash");
         std::test::assert(std::str::contains(note_only, "closes only with its evidence"), "a note does not verify a missing receipt: " + note_only);
+        let authorized = dna_cli(app, "task\nauthorize\nt2\n--exception\nthe taxi driver gave no receipt\n--as\ndana");
+        std::test::assert(std::str::contains(authorized, "exception authorized by dana"), "dana authorizes the exception in her own name: " + authorized);
         let excepted = dna_cli(app, "task\ndone\nt2\n--as\nmara\n--exception\nthe taxi driver gave no receipt\n--authorized-by\ndana");
         std::test::assert(std::str::contains(excepted, "task t2 done by mara — exception authorized by dana: the taxi driver gave no receipt"), "an authorized exception: " + excepted);
 
@@ -269,6 +288,11 @@ main locus App {
         std::test::assert(std::str::contains(week, ",t5,mara,done,evidence " + r1005 + "," + v2), "B-1005 under the adopted practice");
         std::test::assert(std::str::contains(week, "total CU 470") && std::str::contains(week, "bills: 5; open obligations: 0") && std::str::contains(week, "from the record at " + head), "control totals, and the record they came from: " + week);
         std::test::assert_eq_str(in_dir(app, export_argv).stdout, week, "the same record, the same export");
+        // a document filed twice is one bill: the export counts it once
+        let refiled = dna_cli(app, "receipt\nfile\n" + app + "/inbox/done/b1001.bill\n--as\nintake");
+        std::test::assert_eq_int(count(app, "receipt.filed", bill1, ""), 2, "filed a second time by hand: " + refiled);
+        let week2 = in_dir(app, export_argv).stdout;
+        std::test::assert(std::str::contains(week2, "total CU 470") && std::str::contains(week2, "bills: 5; open obligations: 0"), "and still counted once: " + week2);
         std::test::assert_eq_int(count(app, "grant.reserved", "", ""), 0, "no money moved");
 
         stop_dev(app, dev);
