@@ -1,0 +1,39 @@
+// GH #605: money moves only outside the positions. The position quotes;
+// the program reserves the spend against the grant through the
+// substrate and only then calls the processor. The constitution holds.
+import "../../../core" as dna;
+
+group positions = { Quoter };
+group substrate = { dna::Dna };
+
+constitution Money {
+    money_only_through_the_substrate: forbid reaches(positions, effects(money)) avoiding substrate;
+}
+
+locus Processor {
+    @effects(is: { money })
+    fn charge(amount: String, to: String) -> Bool { return len(amount) > 0 && len(to) > 0; }
+}
+
+// A position that decides what to pay and moves nothing.
+locus Quoter {
+    @effects(none: { money })
+    fn quote(item: String) -> String { return if item == "invoice" { "12.00" } else { "0" }; }
+}
+
+main locus App {
+    params {
+        dna: dna::Dna = dna::Dna { };
+        quoter: Quoter = Quoter { };
+        processor: Processor = Processor { };
+    }
+    claims { adopt Money; }
+    run() {
+        let amount = self.quoter.quote("invoice");
+        let admitted = self.dna.reserve(dna::Spend { id: "pay-1", amount: amount, currency: "USD", counterparty: "acme", route: "bank" });
+        if admitted.ok && len(self.dna.admits(admitted)) == 0 {
+            let ok = self.processor.charge(amount, "acme");
+        }
+    }
+}
+fn main() { App { }; }

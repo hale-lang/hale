@@ -19,8 +19,25 @@ fn harness_script() -> String {
         + "printf '{\"type\": \"result\", \"subtype\": \"success\", \"is_error\": false, \"result\": \"touched main.hl and added extra.txt\", \"total_cost_usd\": 0.0021, \"usage\": {\"input_tokens\": 7, \"output_tokens\": 2}}\\n'\n";
 }
 
+// A backend asked the same thing twice that answers differently, as a
+// live model may.
+locus TwoMinds {
+    params { calls: Int = 0; }
+    fn identity() -> String { return "quick"; }
+    fn model_name() -> String { return "minds-1"; }
+    fn allows(data_class: String) -> Bool { return true; }
+    fn capacity_bytes() -> Int { return 100000; }
+    fn works_in_place() -> Bool { return false; }
+    fn complete(req: dna::ModelRequest) -> dna::ModelResult {
+        self.calls = self.calls + 1;
+        return dna::ModelResult { ok: true, backend: "quick", model: "minds-1", output: if self.calls == 1 { "kind: appendage" } else { "kind: organism" } };
+    }
+}
+
 main locus App {
     params {
+        rec2: dna::RecordedModel = dna::RecordedModel { };
+        play2: dna::RecordedModel = dna::RecordedModel { };
         rec: dna::RecordedModel = dna::RecordedModel { };
         play: dna::RecordedModel = dna::RecordedModel { };
         rec_h: dna::RecordedModel = dna::RecordedModel { };
@@ -132,6 +149,30 @@ main locus App {
         std::test::assert(!n.ok, "a tape it cannot write is a refusal");
         std::test::assert(std::str::contains(n.refused, "cannot write the tape"), "and says so: " + n.refused);
         std::test::assert_eq_int(nowhere.recorded, 0, "and counted nothing");
+
+        // ---- 5. the same request twice, answered differently: two
+        //      entries, replayed in order (a retried Work is planned again
+        //      with an identical request; one key for both let the second
+        //      answer overwrite the first)
+        let tape2 = base + "/tape2";
+        self.rec2 = dna::RecordedModel { name: "t2", dir: tape2, mode: "record", inner: TwoMinds { } };
+        let q = dna::ModelRequest { attempt_id: "t2/plan", role: "plan", prompt: "what is this ask", context: "the brief", data_class: "internal" };
+        let first = self.rec2.complete(q);
+        // cloned: a local bound from a child's String field follows the field when it is replaced
+        let first_key = std::str::clone(self.rec2.last_key);
+        let second = self.rec2.complete(q);
+        std::test::assert(first.output == "kind: appendage" && second.output == "kind: organism", "recorded both answers: " + first.output + " / " + second.output);
+        std::test::assert(self.rec2.last_key != first_key, "the second occurrence has its own key");
+        std::test::assert_eq_int(self.rec2.recorded, 2, "two entries written");
+        std::test::assert(std::io::fs::file_exists(tape2 + "/" + first_key + ".json") && std::io::fs::file_exists(tape2 + "/" + self.rec2.last_key + ".json"), "both are on the tape");
+        self.play2 = dna::RecordedModel { name: "t2", dir: tape2, mode: "replay", inner: TwoMinds { } };
+        let r1 = self.play2.complete(q);
+        std::test::assert_eq_str(r1.output, "kind: appendage", "the first answer to the first call");
+        std::test::assert_eq_str(self.play2.last_key, first_key, "under the plain key, as every tape recorded before reads");
+        let r2 = self.play2.complete(q);
+        std::test::assert_eq_str(r2.output, "kind: organism", "the second answer to the second call");
+        let r3 = self.play2.complete(q);
+        std::test::assert(!r3.ok && std::str::contains(r3.refused, "occurrence 2 of an identical request was never recorded"), "a third was never recorded, and the miss says so: " + r3.refused);
 
         let rm = sh("rm\n-rf\n" + base);
     }

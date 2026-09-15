@@ -111,6 +111,39 @@ That is the whole shape of autonomy here: nothing about it is a
 runtime flag. The policy is a locus the organization constructs, the
 grant is data the Board owns, and `hale check` sees both.
 
+## Money, parties, routes and time
+
+A grant can delegate more than change classes. The same containment
+covers what a position may spend, with whom, through which route, and
+until when:
+
+```hale,fragment
+grant: dna::Grant {
+    child: "books", classes: "docs", max_magnitude: 4, review: "pre",
+    amounts: "USD 500.00",          // per operation
+    window_amounts: "USD 2000",     // per window
+    window: "week",
+    counterparties: "suppliers",
+    routes: "operating-account",
+    expires: 1798761600             // unix seconds; 0 never
+}
+```
+
+Nothing named, nothing allowed: a grant without `amounts` spends
+nothing, which is what every grant written before these fields meant.
+A child's resources sit inside its ceiling's the way its classes do —
+the currencies both grant at the smaller ceiling, the parties and
+routes both name, the earlier expiry — and a child born wider is
+refused in the record, naming the field.
+
+A spend goes through the substrate. `reserve` checks each predicate
+and the windows, and writes `grant.reserved`; `settle_spend` records
+what was actually spent. A window's remainder is read at one revision
+of the record and the reservation lands only at that revision, so two
+children under one ceiling cannot both spend its last 500. When the
+Board contracts or revokes a grant, its epoch moves, and `admits`
+refuses a spend admitted before the change (`grant.fenced`).
+
 ## What a position cannot do
 
 - **Expand its own grant.** `boundary.expand(requested_by, parent,
@@ -124,6 +157,10 @@ grant is data the Board owns, and `hale check` sees both.
   the Leader — is forbidden by law from reaching `genome_apply`
   except through the substrate, and the substrate applies only after
   a settled Review.
+- **Move money around the substrate.** The law forbids any position
+  from reaching the `money` effect except through `dna::Dna`, which
+  reserves the spend against the grant first; a wiring that hands a
+  position the processor itself is a build failure with a witness.
 
 ## Pressure, and growth
 

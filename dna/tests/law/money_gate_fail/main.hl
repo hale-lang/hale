@@ -1,0 +1,35 @@
+// GH #605: a position reaches a money effect directly, avoiding the
+// substrate that reserves a spend against the grant first. The
+// constitution refuses the build with a witness.
+import "../../../core" as dna;
+
+group positions = { Payer };
+group substrate = { dna::Dna };
+
+constitution Money {
+    money_only_through_the_substrate: forbid reaches(positions, effects(money)) avoiding substrate;
+}
+
+// The processor: calling it moves money.
+locus Processor {
+    @effects(is: { money })
+    fn charge(amount: String, to: String) -> Bool { return len(amount) > 0 && len(to) > 0; }
+}
+
+// A position holding the processor itself — the bypass.
+locus Payer {
+    params { processor: Processor = Processor { }; }
+    fn pay(amount: String, to: String) -> Bool { return self.processor.charge(amount, to); }
+}
+
+main locus App {
+    params {
+        dna: dna::Dna = dna::Dna { };
+        payer: Payer = Payer { };
+    }
+    claims { adopt Money; }
+    run() {
+        let ok = self.payer.pay("12.00", "acme");
+    }
+}
+fn main() { App { }; }

@@ -218,7 +218,13 @@ locus AutonomyBoundary {
             self.grant = Grant {
                 child: self.grant.child, classes: self.grant.classes,
                 max_magnitude: self.grant.max_magnitude / 2,
-                review: "pre", may_expand_self: false
+                review: "pre", may_expand_self: false,
+                // GH #605: the resources stay as granted, and the epoch
+                // advances so an admission made before the contraction
+                // is fenced
+                amounts: self.grant.amounts, window_amounts: self.grant.window_amounts, window: self.grant.window,
+                counterparties: self.grant.counterparties, routes: self.grant.routes, expires: self.grant.expires,
+                authority_epoch: self.grant.authority_epoch + 1
             };
             self.contractions = self.contractions + 1;
             self.audit.push(AuditRow { seq: self.decisions, disposition: "contract", note: "repeated failure" });
@@ -239,9 +245,25 @@ locus AutonomyBoundary {
             classes: self.grant.classes + " " + add_classes,
             max_magnitude: new_max,
             review: self.grant.review,
-            may_expand_self: false
+            may_expand_self: false,
+            amounts: self.grant.amounts, window_amounts: self.grant.window_amounts, window: self.grant.window,
+            counterparties: self.grant.counterparties, routes: self.grant.routes, expires: self.grant.expires,
+            authority_epoch: self.grant.authority_epoch
         };
         self.audit.push(AuditRow { seq: self.decisions, disposition: "expand", note: "by " + parent });
+        return true;
+    }
+    // GH #605: revocation is the parent's, like expansion. Nothing is
+    // left granted and the epoch advances, so every admission made under
+    // the old grant is fenced.
+    fn revoke(requested_by: String, parent: String) -> Bool {
+        if requested_by == self.child || requested_by != parent {
+            self.expansions_refused = self.expansions_refused + 1;
+            self.audit.push(AuditRow { seq: self.decisions, disposition: "refuse-revoke", note: "requested by " + requested_by });
+            return false;
+        }
+        self.grant = Grant { child: self.grant.child, classes: "", max_magnitude: 0, review: "pre", may_expand_self: false, window: self.grant.window, authority_epoch: self.grant.authority_epoch + 1 };
+        self.audit.push(AuditRow { seq: self.decisions, disposition: "revoke", note: "by " + parent });
         return true;
     }
     fn audit_count() -> Int { return self.audit.len(); }

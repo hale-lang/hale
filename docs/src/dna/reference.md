@@ -110,6 +110,10 @@ tree, one JSON object per line: `seq`, `kind`, `entity`, `body`,
 | `pressure.remeasured` | `m<n>` | the Task, the declared fitness signals, the outcome |
 | `appendage.proposed` / `appendage.candidate` | a source | the organ proposed / the organization mutation that proposes it |
 | `report.filed` | `r<n>` | the summary since the last report |
+| `grant.reserved` | a child | a spend admitted: op, amount, currency, counterparty, route, ceiling, epoch, at |
+| `grant.released` | a child | a reservation settled at what was actually spent |
+| `grant.fenced` | a child | an admission refused because the grant's epoch moved since |
+| `grant.revoked` | a child | the parent revoked the grant; the new epoch |
 | `model.called` | `<work>/a<n>` or a review id | the model evidence; the prompt and context are receipts under its digests (`bodies`), none for a customer-class call |
 
 ## `status.json`

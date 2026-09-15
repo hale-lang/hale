@@ -35,6 +35,11 @@ interface Journal {
     // ref; nothing for a memory journal). True when it had moved.
     fn refresh() -> Bool;
     fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult;
+    // Append only at `expected`: when the record has moved past it,
+    // refuse as stale instead of re-appending at the new tail. A caller
+    // that read something at a revision — a window's remainder (GH
+    // #605) — must not land after another writer that changed it.
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult;
     fn read(i: Int) -> Event;
     fn verify_chain() -> Bool;
 }
@@ -67,6 +72,8 @@ locus MemJournal {
     params { rows: EventRows = EventRows { }; }
     fn revision() -> Int { return self.rows.len(); }
     fn refresh() -> Bool { return false; }
+    // In memory every append is already exact.
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return self.append(expected, kind, entity, body); }
     fn head() -> String {
         if self.rows.len() == 0 { return "genesis"; }
         let e = self.rows.get(self.rows.len() - 1) or Event { };
@@ -259,6 +266,39 @@ locus GitJournal {
         self.io_errors = self.io_errors + 1;
         self.last_error = "append lost the ref race two hundred times";
         return AppendResult { error: "io", expected: expected, actual: self.rows.len() };
+    }
+    // One compare-and-swap at `expected`: the ref read now, the row
+    // committed on it, the swap refused if another writer moved the ref
+    // in between — and then stale, never retried at the tail.
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        let moved = self.refresh();
+        let seq = self.rows.len();
+        if expected != seq { return AppendResult { error: "stale_revision", expected: expected, actual: seq }; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.int_field("seq", seq);
+        b.string_field("kind", kind);
+        b.string_field("entity", entity);
+        b.string_field("body", body);
+        b.string_field("author", self.author);
+        b.end_object();
+        let line = b.result() + "\n";
+        let commit = self.commit_line(line, kind + " " + entity);
+        if len(commit) == 0 {
+            self.io_errors = self.io_errors + 1;
+            return AppendResult { error: "io", expected: expected, actual: seq };
+        }
+        let old = self.head_sha;
+        let cas = run_tool("git\n-C\n" + self.repo + "\nupdate-ref\n" + self.ref_name + "\n" + commit + "\n" + old);
+        if cas.code == 0 {
+            self.rows.push(Event { seq: seq, kind: kind, entity: entity, body: body, prev: self.head(), digest: commit });
+            self.text = self.text + line;
+            self.head_sha = commit;
+            return AppendResult { ok: true, revision: seq + 1 };
+        }
+        self.retries = self.retries + 1;
+        self.load();
+        return AppendResult { error: "stale_revision", expected: expected, actual: self.rows.len() };
     }
     // Build the commit for `journal.jsonl` + `line`, on top of the head.
     // Returns the commit sha, or "" when any plumbing step failed.

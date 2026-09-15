@@ -1,0 +1,140 @@
+// GH #605 — grants delegate resources. Each predicate refuses a spend
+// by name; two children under one ceiling share the ceiling's window
+// and cannot each spend the same remainder (the reservation is appended
+// only at the revision its remainder was read at); a settlement replaces
+// a reservation with what was actually spent; a contraction or a
+// revocation advances the authority epoch and fences an admission made
+// before it; and a grant written before resources existed spends nothing.
+
+import "../core" as dna;
+
+fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
+
+fn spend(id: String, amount: String, currency: String) -> dna::Spend {
+    return dna::Spend { id: id, amount: amount, currency: currency, counterparty: "acme", route: "bank" };
+}
+
+main locus App {
+    params {
+        app: dna::Dna = dna::Dna { };
+        billing: dna::Dna = dna::Dna { };
+    }
+    // What the record holds now, read fresh (each organism's journal is
+    // its own view of the ref).
+    @unbounded
+    fn rows(repo: String, kind: String, entity: String) -> Int {
+        let j = dna::GitJournal { repo: repo };
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn last(repo: String, kind: String) -> String {
+        let j = dna::GitJournal { repo: repo };
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    run() {
+        // ---- each predicate refuses by name
+        let now = std::time::now();
+        let g = dna::Grant { child: "app", classes: "docs", max_magnitude: 4, review: "pre", amounts: "USD 500.00", window_amounts: "USD 800", window: "day", counterparties: "acme globex", routes: "bank" };
+        std::test::assert_eq_str(dna::permits(g, spend("p1", "120.50", "USD"), now), "", "a spend inside every predicate");
+        std::test::assert(std::str::starts_with(dna::permits(g, spend("p2", "10", "EUR"), now), "currency: EUR is not granted"), "a currency the grant does not name");
+        std::test::assert(std::str::starts_with(dna::permits(g, spend("p3", "600", "USD"), now), "amount: 600 USD exceeds the per-operation ceiling of 500.00"), dna::permits(g, spend("p3", "600", "USD"), now));
+        std::test::assert(std::str::starts_with(dna::permits(g, spend("p4", "-3", "USD"), now), "amount: `-3` is not a positive decimal"), "a negative amount");
+        std::test::assert(std::str::starts_with(dna::permits(g, spend("p5", "lots", "USD"), now), "amount: `lots` is not a positive decimal"), "an amount that is not a number");
+        std::test::assert(std::str::starts_with(dna::permits(g, dna::Spend { id: "p6", amount: "1", currency: "USD", counterparty: "initech", route: "bank" }, now), "counterparty: `initech` is not granted"), "a counterparty the grant does not name");
+        std::test::assert(std::str::starts_with(dna::permits(g, dna::Spend { id: "p7", amount: "1", currency: "USD", counterparty: "acme", route: "card" }, now), "route: `card` is not granted"), "a route the grant does not name");
+        let lapsed = dna::Grant { child: "app", amounts: "USD 500", counterparties: "acme", routes: "bank", expires: now - 10 };
+        std::test::assert(std::str::starts_with(dna::permits(lapsed, spend("p8", "1", "USD"), now), "expires: the grant expired at "), dna::permits(lapsed, spend("p8", "1", "USD"), now));
+        std::test::assert(std::str::starts_with(dna::permits(g, dna::Spend { amount: "1", currency: "USD", counterparty: "acme", route: "bank" }, now), "operation: a spend needs a durable id"), "a spend with no id");
+        std::test::assert(std::str::starts_with(dna::permits(dna::Grant { child: "app", classes: "docs", max_magnitude: 4 }, spend("p9", "1", "USD"), now), "currency: USD is not granted"), "a grant from before resources spends nothing");
+        // 2026-09-14T03:00:00Z is in the day that starts at 2026-09-14T00:00:00Z
+        std::test::assert_eq_int(dna::window_start_of("day", 1789354800), 1789344000, "a day window starts at midnight UTC");
+        std::test::assert_eq_int(dna::window_start_of("none", 1789351200), 0, "no window is one window");
+
+        // ---- two children under one ceiling, over one record
+        let repo = "/tmp/dna-grants-" + to_string(std::process::pid());
+        std::io::fs::mkdir(repo) or discard;
+        let init = sh("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n--allow-empty\n-m\nbase");
+        std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
+        // one window for the record's lifetime, so no test straddles midnight
+        self.app = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs", max_magnitude: 8, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
+            ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 10, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
+            org_id: "app"
+        };
+        self.billing = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            boundary: dna::AutonomyBoundary { child: "billing", grant: dna::Grant { child: "billing", classes: "docs", max_magnitude: 8, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
+            ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 10, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
+            org_id: "billing"
+        };
+        std::test::assert_eq_int(self.rows(repo, "grant.refused", ""), 0, "both children are born within the ceiling");
+
+        let a1 = self.app.reserve(spend("a1", "400", "USD"));
+        std::test::assert(a1.ok, "app reserves 400 of the shared 1000: " + a1.refused);
+        let b1 = self.billing.reserve(spend("b1", "400", "USD"));
+        std::test::assert(b1.ok, "billing reserves 400, having read app's reservation: " + b1.refused);
+        let a2 = self.app.reserve(spend("a2", "300", "USD"));
+        std::test::assert(!a2.ok && std::str::contains(a2.refused, "would bring the ceiling `org`'s none to 1100 of 1000 (shared by its children)"), "the remainder is shared, not each child's: " + a2.refused);
+        std::test::assert(std::str::contains(self.last(repo, "grant.refused"), "spend `a2` (300 USD to acme via bank): window:"), "the refusal is in the record, naming the field: " + self.last(repo, "grant.refused"));
+        std::test::assert_eq_int(self.rows(repo, "grant.reserved", ""), 2, "two reservations in the record");
+        let reserved = self.last(repo, "grant.reserved");
+        std::test::assert(std::str::contains(reserved, "\"op\": \"b1\"") && std::str::contains(reserved, "\"ceiling\": \"org\"") && std::str::contains(reserved, "\"epoch\": 0"), "a reservation names its op, ceiling and authority_epoch: " + reserved);
+
+        // the atomic step: an exact append at a revision the record has
+        // moved past is refused, never re-appended at the new tail
+        let moved_before = self.billing.journal.refresh();
+        let rev = self.billing.journal.revision();
+        let noise = self.app.journal.append(self.app.journal.revision(), "task.born", "t9", "someone else moved the record");
+        std::test::assert(noise.ok, "app moved the record");
+        let stale = self.billing.journal.append_exact(rev, "grant.reserved", "billing", "{\"op\": \"stale\"}");
+        std::test::assert(!stale.ok && stale.error == "stale_revision", "a stale exact append is refused: " + stale.error);
+        std::test::assert(!std::str::contains(self.last(repo, "grant.reserved"), "\"op\": \"stale\""), "and nothing was appended at the tail");
+        let plain = self.billing.journal.append(self.billing.journal.revision(), "task.born", "t10", "an ordinary append still lands");
+        std::test::assert(plain.ok, "an ordinary append after the refresh lands: " + plain.error);
+
+        // settlement: what was actually spent replaces the reservation
+        std::test::assert_eq_str(self.app.settle_spend("a1", "150.00"), "", "app settles a1 at what it spent");
+        std::test::assert(std::str::contains(self.app.settle_spend("a1", "1"), "already settled"), "a settlement is once");
+        std::test::assert(std::str::contains(self.app.settle_spend("zz", "1"), "no reservation `zz`"), "a settlement needs its reservation");
+        let a3 = self.app.reserve(spend("a3", "300", "USD"));
+        std::test::assert(a3.ok, "150 spent + 400 held + 300 = 850 fits the shared 1000: " + a3.refused);
+        let dup = self.app.reserve(spend("a3", "1", "USD"));
+        std::test::assert(!dup.ok && std::str::contains(dup.refused, "operation: `a3` is already reserved"), "an operation is reserved once: " + dup.refused);
+
+        // fencing: a contraction advances the epoch
+        std::test::assert_eq_str(self.billing.admits(b1), "", "an admission is carried out under the grant it was made under");
+        self.billing.ceiling_outcome(false);
+        self.billing.ceiling_outcome(false);
+        let fenced = self.billing.admits(b1);
+        std::test::assert(std::str::starts_with(fenced, "fenced: the grant changed after `b1` was admitted (epoch 0 -> 1)"), "a contraction fences it: " + fenced);
+        std::test::assert_eq_int(self.rows(repo, "grant.fenced", "billing"), 1, "in the record");
+
+        // revocation is the parent's; afterwards nothing is granted
+        std::test::assert(!self.app.revoke_grant("app"), "a child cannot revoke its own grant");
+        std::test::assert(self.app.revoke_grant("org"), "the parent revokes it");
+        std::test::assert_eq_int(self.rows(repo, "grant.revoked", "app"), 1, "the revocation is a row");
+        std::test::assert(std::str::starts_with(self.app.admits(a3), "fenced: the grant changed after `a3` was admitted (epoch 0 -> 1)"), "an earlier admission is fenced: " + self.app.admits(a3));
+        let after = self.app.reserve(spend("a5", "1", "USD"));
+        std::test::assert(!after.ok && std::str::contains(after.refused, "currency: USD is not granted"), "nothing is granted after revocation: " + after.refused);
+
+        let rm = sh("rm\n-rf\n" + repo);
+    }
+}
+
+fn main() { App { }; }
