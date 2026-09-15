@@ -86,6 +86,22 @@ main locus App {
         std::test::assert(std::str::contains(requested, "practice acceptance/expense-receipt requested in the record by riley (p"), "requested: " + requested);
         let journal = in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout;
         std::test::assert(std::str::contains(journal, "\"kind\": \"practice.requested\"") && std::str::contains(journal, "\\\"because\\\": \\\"bills without receipts\\\""), "the row, with why");
+        // a practice's text arrives byte for byte: newlines, a backslash,
+        // UTF-8 and words that look like flags
+        let multi = "Receipts must be collected.\nevidence: required\nexceptions by: dana, lee — a \\ backslash, é, and --as nobody";
+        std::io::fs::write_file(scratch + "/practice.txt", multi) or discard;
+        let sent = in_dir(app, "sh\n-c\nexec \"$1\" dna practice propose acceptance/multiline --text \"$(cat \"$2\")\" --as riley\nsh\n" + toolchain() + "\n" + scratch + "/practice.txt");
+        std::test::assert(std::str::contains(sent.stdout, "practice acceptance/multiline requested in the record by riley"), "sent: " + sent.stdout + sent.stderr);
+        let mut stored = "";
+        let mut lines = in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout + "\n";
+        while len(lines) > 0 {
+            let nl = std::str::index_of(lines, "\n");
+            let line = lines[0..nl];
+            lines = lines[(nl + 1)..len(lines)];
+            let body = std::json::find_string_field(line, "body");
+            if std::json::find_string_field(line, "kind") == "practice.requested" && std::json::find_string_field(body, "name") == "acceptance/multiline" { stored = std::json::find_string_field(body, "text"); }
+        }
+        std::test::assert_eq_str(stored, multi, "the text, whole");
         let listed = dna_cli(app, "practice");
         std::test::assert(std::str::contains(listed, "acceptance/expense-receipt [requested by riley, not yet heard by the organization]"), "listed as not yet heard: " + listed);
         std::test::assert(std::str::contains(listed, "design/principles ") && std::str::contains(listed, "[awaiting the Board (k:"), "the seeded design practices, awaiting the Board: " + listed);

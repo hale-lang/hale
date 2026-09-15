@@ -197,6 +197,9 @@ repository:
   `practice.proposed <request_id>` (`name`, `digest`, `review_id`, `by`,
   `because`, `supersedes`); a request without a name or a text is
   `practice.refused`. Nothing is in force until the Board ratifies it.
+  The text arrives byte for byte, newlines included: the host escapes an
+  argument's own backslashes and newlines in its argument list and
+  unescapes every value it reads.
   `hale dna practice` lists every named practice with its state (in
   force, awaiting the Board, declined, retired), its first line, who
   proposed it and why, and requests not yet heard. The generated

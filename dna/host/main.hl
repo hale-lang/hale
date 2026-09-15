@@ -13,11 +13,38 @@ import "../core" as dna;
 
 fn arg(i: Int) -> String { return std::env::arg_or(i, ""); }
 
+// An argument's own backslashes and newlines are escaped in the
+// newline-separated argument list, and unescaped when a value is read back
+// (`flag`, `word`), so a multi-line value — a practice's text — arrives
+// whole, byte for byte (the review of #633).
+fn escape_arg(s: String) -> String {
+    return std::str::replace(std::str::replace(s, "\\", "\\\\"), "\n", "\\n");
+}
+
+@unbounded
+fn unescape_arg(s: String) -> String {
+    if !std::str::contains(s, "\\") { return s; }
+    let mut out = "";
+    let mut i = 0;
+    while i < len(s) {
+        let c = s[i..(i + 1)];
+        if c == "\\" && i + 1 < len(s) {
+            let d = s[(i + 1)..(i + 2)];
+            out = out + (if d == "n" { "\n" } else { d });
+            i = i + 2;
+        } else {
+            out = out + c;
+            i = i + 1;
+        }
+    }
+    return out;
+}
+
 fn rest_args(from: Int) -> String {
     let mut out = "";
     let mut i = from;
     while i < std::env::args_count() {
-        out = out + std::env::arg(i) + "\n";
+        out = out + escape_arg(std::env::arg(i)) + "\n";
         i = i + 1;
     }
     return out;
@@ -38,8 +65,8 @@ fn flag(a: Args, name: String) -> String {
     if i < 0 { return ""; }
     let rest = a.flags[(i + len(name) + 2)..len(a.flags)];
     let nl = std::str::index_of(rest, "\n");
-    if nl < 0 { return rest; }
-    return rest[0..nl];
+    if nl < 0 { return unescape_arg(rest); }
+    return unescape_arg(rest[0..nl]);
 }
 
 fn word(a: Args, n: Int) -> String {
@@ -48,7 +75,7 @@ fn word(a: Args, n: Int) -> String {
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let w = if nl < 0 { rest } else { rest[0..nl] };
-        if k == n { return w; }
+        if k == n { return unescape_arg(w); }
         k = k + 1;
         if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
     }
@@ -62,7 +89,7 @@ fn join_words(words: String) -> String {
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let w = if nl < 0 { rest } else { rest[0..nl] };
-        if len(w) > 0 { out = out + (if len(out) > 0 { " " } else { "" }) + w; }
+        if len(w) > 0 { out = out + (if len(out) > 0 { " " } else { "" }) + unescape_arg(w); }
         if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
     }
     return out;
