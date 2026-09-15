@@ -129,7 +129,7 @@ fn main() {
     let fleet = arg(4);
     let plan = arg(5);
     let toolchain = std::env::var("HALE_DNA_TOOLCHAIN");
-    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes ");
+    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid ");
     let mut ans = Answer { ok: false, text: "unknown verb `" + verb + "`" };
     if (verb == "board" || verb == "review") && !membrane_up(root) { let s = sync_record(root); }
     if verb == "fleet" { let s = sync_record(root); }
@@ -153,6 +153,10 @@ fn main() {
             if verb == "pressure" { ans = pressure_list(p); }
             if verb == "fleet" { ans = fleet_list(p, fleet, plan); }
         }
+    }
+    if verb == "body-fence" {
+        fence_main(flag(a, "--holder"), std::str::parse_int(flag(a, "--token")) or 0, std::str::parse_int(flag(a, "--expires")) or 0, std::str::parse_int(flag(a, "--host-pid")) or 0);
+        return;
     }
     if verb == "run" || verb == "dev" {
         host_main(verb, root, seed, fleet, plan, toolchain, a);
