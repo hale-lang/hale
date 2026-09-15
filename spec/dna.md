@@ -339,7 +339,11 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   expiry, or when the host is gone, the fence kills the organization
   and the expression (by their pid files), each with every process it
   started — the tree frozen, then killed, since a tool run through
-  `run_tool` has a process group of its own — and says why, and the host
+  `run_tool` has a process group of its own — and every process carrying
+  the body's mark (`HALE_DNA_BODY=<holder>#<token>#<host pid>#`, set in
+  the environment of everything the host starts and inherited by every
+  tool they start, so a tool whose organism already died and which was
+  reparented is found too; Linux's `/proc`) — and says why, and the host
   exits 3 when it next looks. A host blocked in a sync, a build or an
   observation window therefore cannot keep its organism executing past
   the lease; while the remote cannot be reached the lease is kept
