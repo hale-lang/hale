@@ -81,6 +81,7 @@ fn dna_fixture_set_is_complete() {
             "assembly_test.hl",
             "body_lease_blocked_test.hl",
             "body_lease_start_test.hl",
+            "body_provision_script_test.hl",
             "budget_test.hl",
             "deployment_test.hl",
             "editing_test.hl",

@@ -124,6 +124,43 @@ locus Host {
         fence: Proc = Proc { }; // the second review of #622: the renewer that fences the organism
     }
     fn say(what: String) { eprintln("hale dna ", self.verb, ": ", what); }
+    // `~/.config/hale-dna/<project>.env`: NAME=value lines, one per
+    // credential, as `hale dna secret set` wrote them ("" when none).
+    fn secrets_file() -> String {
+        let home = std::env::var("HOME");
+        if len(home) == 0 { return ""; }
+        let text = std::io::fs::read_file(home + "/.config/hale-dna/" + project_name(self.root) + ".env") or "";
+        return dna::trim_nl(text);
+    }
+    // GH #617: a missing credential surfaces at once — on the board and
+    // in `status` — instead of on a task hours later. The catalog names
+    // the credentials its hosted backends read; the body is short of one
+    // when NONE of them is set here or in the secrets file. Rows only
+    // name the variables.
+    fn check_credentials() {
+        let names = catalog_credentials(self.root);
+        if len(names) == 0 { return; }
+        let file = "\n" + self.secrets_file() + "\n";
+        let mut have = false;
+        let mut rest = names + " ";
+        while len(rest) > 1 {
+            let sp = std::str::index_of(rest, " ");
+            let name = rest[0..sp];
+            rest = rest[(sp + 1)..len(rest)];
+            if len(name) > 0 && (std::env::var_exists(name) || std::str::contains(file, "\n" + name + "=")) { have = true; }
+        }
+        let p = open_projection(self.root, self.seed, self.toolchain);
+        let was_missing = len(credential_gap(p)) > 0;
+        if !have && !was_missing {
+            self.say("no credential for the model: none of " + names + " is set here or in ~/.config/hale-dna/" + project_name(self.root) + ".env (`hale dna secret set <NAME>`); the board says so until one is");
+            let r = append_as(self.root, "body.credential_missing", "model", "{\"any_of\": " + quote(names) + ", \"holder\": " + quote(self.holder) + "}", "host");
+        }
+        if !have && was_missing { self.say("no credential for the model (still): none of " + names + " is set"); }
+        if have && was_missing {
+            self.say("the model's credential is present now");
+            let r = append_as(self.root, "body.credential_present", "model", "{\"holder\": " + quote(self.holder) + "}", "host");
+        }
+    }
     // GH #617: the lease is asserted before every consequential act
     // (relay, restart, apply). The fence renews it beside the host and
     // writes what it proved to `body.fence.status`; the host reads that,
@@ -254,6 +291,10 @@ locus Host {
         // GH #583: the genome a harness must never reach, whatever its
         // role. A HarnessModel reads it at birth (finding 1).
         let mut e = "LOTUS_OBS=1\nHALE_BIN=" + self.hale + "\nHALE_DNA_GENOME=" + self.root;
+        // GH #617: the credentials `hale dna secret set` put on this
+        // machine, for the organization and the knowledge service
+        let file = self.secrets_file();
+        if len(file) > 0 { e = e + "\n" + file; }
         // the fourth review of #622: the body's mark, inherited by every tool
         // a child starts, so the fence finds them even once that child is gone
         if len(self.holder) > 0 { e = e + "\nHALE_DNA_BODY=" + body_mark(self.holder, self.lease.token, std::process::pid()); }
@@ -621,6 +662,7 @@ locus Host {
         let claimed = append_as(self.root, "body.claimed", self.holder, "{\"token\": " + to_string(l.token) + ", \"forced\": false, \"by\": \"host\"}", "host");
         self.say("body lease taken as " + self.holder + " (token " + to_string(l.token) + ")");
         self.start_fence();
+        self.check_credentials();
         // 1. the expression identity: a fresh artifact of the application
         let cut = self.cut_artifact(self.seed_dir(), self.dna_dir + "/current.topology");
         if len(cut) > 0 { self.say(cut); self.quit(1); }

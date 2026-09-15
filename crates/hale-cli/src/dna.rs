@@ -241,6 +241,7 @@ pub fn run(args: &[String]) -> ExitCode {
             host_exec("history", &dir, &rest)
         }
         Some("body") => host_exec("body", Path::new("."), &args[1..]),
+        Some("secret") => host_exec("secret", Path::new("."), &args[1..]),
         Some("profile") => {
             let (dir, rest) = project_arg(&args[1..], true);
             host_exec("profile", &dir, &rest)
@@ -308,6 +309,13 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna profile [project]   the organism's combination, detected from its pieces: record, body, head, fleet, knowledge, trust");
     eprintln!("       hale dna body                who runs this record (the body lease); `body claim --force` takes it from a body that is gone;");
     eprintln!("                                    `body release [--force]` gives it up — both are rows in your name (--as <who>)");
+    eprintln!("       hale dna body provision <user@host> [--dsn <postgres://…>] [--dir <path>] [--dry-run]");
+    eprintln!("                                    over ssh: the toolchain hale.lock pins, the record's remote cloned, Postgres from");
+    eprintln!("                                    dna/compose.yaml or the DSN, a systemd user unit supervising the host; writes nothing");
+    eprintln!("                                    when ssh or the toolchain is unavailable. Then `body start|stop|logs [--body <user@host>]`");
+    eprintln!("       hale dna secret set <NAME> [--body <user@host>]");
+    eprintln!("                                    a credential from stdin (never argv, never the record) into ~/.config/hale-dna/<project>.env");
+    eprintln!("                                    on the body or here; `secret rotate <NAME>`; the record gets `secret.rotated <NAME>` only");
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
     eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
     eprintln!("       hale dna retire <who>        a person retires: the handed Tasks they hold move to --to <successor>, as rows");

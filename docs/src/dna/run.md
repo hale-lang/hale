@@ -84,6 +84,48 @@ record, body, head, fleet, knowledge, trust — detected from the
 pieces, never from a stored label; `status` carries the same two
 lines at its foot.
 
+## A body on a server
+
+The first combination beyond local is a local head with a remote
+body: the organization on a server, your clone as the head, the
+record over the git remote as the membrane between them.
+`hale dna body provision` makes the body over ssh:
+
+```text
+$ hale dna body provision riley@srv --dsn postgres://dna:…@db:5432/dna
+body provision: riley@srv
+    installing hale 0.20.0
+    cloned into $HOME/dna/chat
+    knowledge: the DSN given
+    unit hale-dna-chat enabled and started (systemctl --user)
+    dna.body = riley@srv (start/stop/logs go there); the body takes the lease when its unit starts
+```
+
+In order: the toolchain `hale.lock` pins, the record's remote cloned,
+Postgres from `dna/compose.yaml` or the DSN you give, and a systemd
+user unit that supervises the host and restarts it on failure, so a
+failure flows up one more level before it reaches you. It stops
+before writing anything when ssh cannot reach the host, when the
+record has no remote the body could reach, or when the host lacks
+git, curl, systemd or (without a DSN) docker compose. `--dry-run`
+prints the exact script. Afterwards `hale dna body start`, `stop` and
+`logs` reach the unit, and `hale dna profile` says `remote body`.
+
+Credentials go where the body runs, and never into the record:
+
+```text
+$ hale dna secret set ANTHROPIC_API_KEY --body riley@srv
+value for ANTHROPIC_API_KEY on riley@srv, on one line:
+secret set: ANTHROPIC_API_KEY is in /home/riley/.config/hale-dna/chat.env on riley@srv (secret.rotated ANTHROPIC_API_KEY; the value is nowhere in the record)
+```
+
+The value is read from stdin — never from the command line — and
+lands in a file only that user can read; the host loads it for the
+organization and the knowledge service. Without `--body` it goes on
+this machine. A body that starts with no credential for its model
+says so at once, on the board and in `status`, instead of on a task
+hours later.
+
 ## The membrane
 
 The organization binds four typed topics on unix sockets under
