@@ -244,6 +244,10 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("secret") => host_exec("secret", Path::new("."), &args[1..]),
         Some("schedule") => host_exec("schedule", Path::new("."), &args[1..]),
         Some("receipt") => host_exec("receipt", Path::new("."), &args[1..]),
+        // GH #615: connections to other records, and what crosses them
+        Some("connect") => host_exec("connect", Path::new("."), &args[1..]),
+        Some("disconnect") => host_exec("disconnect", Path::new("."), &args[1..]),
+        Some("handoff") => host_exec("handoff", Path::new("."), &args[1..]),
         Some("profile") => {
             let (dir, rest) = project_arg(&args[1..], true);
             host_exec("profile", &dir, &rest)
@@ -331,6 +335,12 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
     eprintln!("       hale dna task decide <id>    report a decision someone else made (--decided-by <party> --via <channel> --evidence <digest>, --as <reporter>)");
     eprintln!("       hale dna retire <who>        a person retires: the handed Tasks they hold move to --to <successor>, as rows");
+    eprintln!("       hale dna connect <record-url> --name <n> --as <position> --purpose <p> --classes <internal,customer,…>");
+    eprintln!("                                    propose a connection to another record (a Board Review); `hale dna connect` lists them;");
+    eprintln!("                                    `hale dna disconnect <n> --why <w>` closes one");
+    eprintln!("       hale dna handoff <n> task <id> | receipt <digest>");
+    eprintln!("                                    write one fact into the connected record, with origin, lineage and purpose;");
+    eprintln!("                                    `handoff` lists, `handoff accept <id>` accepts one received, `handoff sync` reads acceptances back");
     eprintln!("       hale dna effect resolve <key> an effect whose outcome is unknown after a restart: --outcome ok|failed, in your name");
     eprintln!("       hale dna report [project]    file a report from the record since the last one (report.filed)");
     eprintln!("       hale dna github sync         mirror pending Reviews to pull requests and read their reviews back as verdicts");

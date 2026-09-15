@@ -1,0 +1,258 @@
+// GH #615 — a cross-record handoff between two organizations, two
+// records, through the CLI. A firm connects to its accountant's record;
+// the connection is a Board Review, in force once someone other than its
+// proposer approves it. A Task handed across arrives in the accountant's
+// mailbox for the firm with its origin, lineage and purpose; a `customer`
+// receipt crosses as its digest, never its body, and a connection that
+// does not carry `customer` refuses it at the edge. The accountant admits
+// what arrives only under its own connection back, and accepts it; the
+// firm's Task settles only when that acceptance arrives. Neither record
+// reads the other's journal: nothing of the accountant's unrelated
+// private history reaches the firm's clone. Disconnecting leaves history
+// in both records and admits nothing further.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` (newline-separated) in `dir`, model discovery off.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+fn dna_cli(app: String, args: String) -> String {
+    let r = in_dir(app, toolchain() + "\ndna\n" + args);
+    return r.stdout + r.stderr;
+}
+
+// The lines of a chain of rows at `ref` that carry every one of `needles` (tab-separated).
+@unbounded
+fn lines_with(repo: String, ref: String, needles: String) -> Int {
+    let text = in_dir(repo, "git\nshow\n" + ref + ":journal.jsonl").stdout + "\n";
+    let mut n = 0;
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let mut all = len(line) > 0;
+        let mut ns = needles + "\t";
+        while len(ns) > 0 && all {
+            let t = std::str::index_of(ns, "\t");
+            let needle = ns[0..t];
+            ns = ns[(t + 1)..len(ns)];
+            if len(needle) > 0 && !std::str::contains(line, needle) { all = false; }
+        }
+        if all { n = n + 1; }
+    }
+    return n;
+}
+
+fn record_lines_with(repo: String, needles: String) -> Int { return lines_with(repo, "refs/dna/journal", needles); }
+
+// How many of a repository's git objects contain `needle`.
+fn objects_with(repo: String, needle: String) -> String {
+    return dna::trim_nl(in_dir(repo, "sh\n-c\ngit cat-file --batch-all-objects --batch 2>/dev/null | grep -c -F \"$1\" || true\nsh\n" + needle).stdout);
+}
+
+// A project with its record pushed to a bare remote beside it, its identity published.
+fn project(scratch: String, name: String, user: String) -> String {
+    let made = in_dir(scratch, toolchain() + "\ndna\nnew\n" + name);
+    std::test::assert_eq_int(made.code, 0, "hale dna new " + name + ": " + made.stdout + made.stderr);
+    let app = scratch + "/" + name;
+    let bare = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + scratch + "/" + name + ".git");
+    let g1 = in_dir(app, "git\nconfig\nuser.name\n" + user);
+    let g2 = in_dir(app, "git\nconfig\nuser.email\n" + user + "@local");
+    let g3 = in_dir(app, "git\nadd\n-A");
+    let g4 = in_dir(app, "git\ncommit\n-q\n-m\nthe app");
+    let g5 = in_dir(app, "git\nremote\nadd\norigin\n" + scratch + "/" + name + ".git");
+    let g6 = in_dir(app, "git\npush\n-q\norigin\nmain");
+    let synced = in_dir(app, toolchain() + "\ndna\nsync");
+    std::test::assert_eq_int(synced.code, 0, "synced " + name + ": " + synced.stdout + synced.stderr);
+    return app;
+}
+
+// The text after `marker` up to the next space.
+fn word_after(text: String, marker: String) -> String {
+    let at = std::str::index_of(text, marker);
+    if at < 0 { return ""; }
+    let rest = text[(at + len(marker))..len(text)];
+    let sp = std::str::index_of(rest, " ");
+    return if sp < 0 { dna::trim_nl(rest) } else { rest[0..sp] };
+}
+
+main locus App {
+    params {
+        // pointed at the projects in run(); never at the working directory
+        j: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/dna-handoff" };
+        k: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/dna-handoff" };
+    }
+    fn row(kind: String, entity: String, body: String) {
+        self.j.refresh();
+        let x = self.j.append(self.j.revision(), kind, entity, body);
+    }
+    run() {
+        // the pure rules
+        std::test::assert_eq_str(dna::classes_refusal("internal, customer"), "", "known classes");
+        std::test::assert(std::str::contains(dna::classes_refusal("internal,secret"), "`secret` is not a data class"), "an unknown class");
+        std::test::assert(dna::classes_allow("internal, customer", "customer") && !dna::classes_allow("internal", "customer") && !dna::classes_allow("internal", "intern"), "a class is carried whole or not at all");
+        std::test::assert(len(dna::connection_name_refusal("Acct")) > 0 && len(dna::connection_name_refusal("sync")) > 0 && len(dna::connection_name_refusal("acct-2")) == 0, "connection names");
+        std::test::assert(dna::handoff_id("g", "p", "task", "t7") == dna::handoff_id("g", "p", "task", "t7") && dna::handoff_id("g", "p", "task", "t7") != dna::handoff_id("g", "p", "receipt", "t7") && dna::handoff_id("g", "p", "task", "t7") != dna::handoff_id("g", "q", "task", "t7"), "one fact into one record, one handoff");
+
+        let scratch = "/tmp/dna-handoff-" + to_string(std::process::pid());
+        std::io::fs::mkdir(scratch) or discard;
+        let firm = project(scratch, "firm", "riley");
+        let acct = project(scratch, "acct", "noor");
+        let firm_url = scratch + "/firm.git";
+        let acct_url = scratch + "/acct.git";
+        let firm_genesis = dna::trim_nl(in_dir(firm, "git\nrev-list\n--max-parents=0\nrefs/dna/journal").stdout);
+        let acct_genesis = dna::trim_nl(in_dir(acct, "git\nrev-list\n--max-parents=0\nrefs/dna/journal").stdout);
+        std::test::assert(len(firm_genesis) == 40 && firm_genesis != acct_genesis, "two records: " + firm_genesis + " " + acct_genesis);
+        std::test::assert_eq_str(dna::trim_nl(in_dir(acct_url, "git\ncat-file\n-p\nrefs/dna/identity").stdout), acct_genesis, "a record publishes its identity when it syncs");
+
+        // a record synced before it had a remote publishes its identity once
+        // it has one, and a push of it the remote refused is tried again
+        let made_late = in_dir(scratch, toolchain() + "\ndna\nnew\nlate");
+        std::test::assert_eq_int(made_late.code, 0, "hale dna new late: " + made_late.stdout + made_late.stderr);
+        let late = scratch + "/late";
+        let l1 = in_dir(late, "git\nconfig\nuser.name\nlee");
+        let l2 = in_dir(late, "git\nconfig\nuser.email\nlee@local");
+        let l3 = in_dir(late, "git\nadd\n-A");
+        let l4 = in_dir(late, "git\ncommit\n-q\n-m\nthe app");
+        let local_only = in_dir(late, toolchain() + "\ndna\nsync");
+        std::test::assert_eq_int(local_only.code, 0, "synced with no remote: " + local_only.stdout + local_only.stderr);
+        let late_url = scratch + "/late.git";
+        let l5 = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + late_url);
+        let refuse_flag = scratch + "/refuse-identity";
+        std::io::fs::write_file(refuse_flag, "refuse") or discard;
+        std::io::fs::write_file(late_url + "/hooks/pre-receive", "#!/bin/sh\nwhile read old new ref; do if [ \"$ref\" = refs/dna/identity ] && [ -f \"" + refuse_flag + "\" ]; then echo refused by the test >&2; exit 1; fi; done\nexit 0\n") or discard;
+        let l6 = dna::run_tool("chmod\n+x\n" + late_url + "/hooks/pre-receive");
+        let l7 = in_dir(late, "git\nremote\nadd\norigin\n" + late_url);
+        let late_genesis = dna::trim_nl(in_dir(late, "git\nrev-list\n--max-parents=0\nrefs/dna/journal").stdout);
+        let refused_sync = in_dir(late, toolchain() + "\ndna\nsync");
+        std::test::assert(refused_sync.code == 0 && std::str::contains(refused_sync.stdout + refused_sync.stderr, "could not be published to origin"), "a refused identity push is said: " + refused_sync.stdout + refused_sync.stderr);
+        std::test::assert(in_dir(late_url, "git\ncat-file\n-p\nrefs/dna/identity").code != 0 && in_dir(late_url, "git\nrev-parse\n-q\n--verify\nrefs/dna/journal").code == 0, "the journal is published, the identity not yet");
+        std::io::fs::unlink(refuse_flag) or discard;
+        let retried = in_dir(late, toolchain() + "\ndna\nsync");
+        std::test::assert_eq_int(retried.code, 0, "synced again: " + retried.stdout + retried.stderr);
+        std::test::assert_eq_str(dna::trim_nl(in_dir(late_url, "git\ncat-file\n-p\nrefs/dna/identity").stdout), late_genesis, "the next sync publishes it: " + retried.stdout + retried.stderr);
+
+        // the accountant's private history: another client's affairs
+        self.k = dna::GitJournal { repo: acct };
+        self.k.refresh();
+        let private = self.k.append(self.k.revision(), "task.born", "t90", "i90: UNRELATED_PRIVATE_FACT about another client's payroll");
+        let psync = dna_cli(acct, "sync");
+
+        // the firm's facts: a person's job, a customer receipt, an internal one
+        self.j = dna::GitJournal { repo: firm };
+        self.row("task.born", "t7", "i-t7: prepare the year-end ledger");
+        self.row("task.handed", "t7", "{\"work\": \"t7/w\", \"assignee\": \"mara\", \"by\": \"leader\", \"narrative\": \"handed: not a software change\"}");
+        self.row("task.born", "t8", "i-t8: reconcile the payroll account");
+        self.row("task.handed", "t8", "{\"work\": \"t8/w\", \"assignee\": \"mara\", \"by\": \"leader\", \"narrative\": \"handed: not a software change\"}");
+        let customer = dna::digest_of("the client's customer list");
+        self.row("receipt.classified", customer, "{\"class\": \"customer\", \"by\": \"org\", \"store\": \"knowledge\"}");
+        let notes = in_dir(scratch, "sh\n-c\nprintf '%s' \"$1\" > notes.txt\nsh\nledger notes for the accountant");
+        let filed = dna_cli(firm, "receipt\nfile\n" + scratch + "/notes.txt");
+        let internal = filed[std::str::index_of(filed, "sha256:")..(std::str::index_of(filed, "sha256:") + 71)];
+        let synced = dna_cli(firm, "sync");
+
+        // ---- no connection, and not to itself
+        std::test::assert(std::str::contains(dna_cli(firm, "handoff\nacct\ntask\nt7"), "no connection `acct`"), "nothing crosses without a connection");
+        let to_self = dna_cli(firm, "connect\n" + firm_url + "\n--name\nself\n--as\nitself\n--purpose\nnone\n--classes\ninternal");
+        std::test::assert(std::str::contains(to_self, "serves this record itself"), "a replica is not a connection: " + to_self);
+        std::test::assert(std::str::contains(dna_cli(firm, "connect\n" + acct_url + "\n--name\nacct\n--as\naccountant\n--purpose\nbooks\n--classes\nsecret"), "`secret` is not a data class"), "classes are checked");
+
+        // ---- the connection is a Board Review, and reads nothing of the other record
+        let proposed = dna_cli(firm, "connect\n" + acct_url + "\n--name\nacct\n--as\naccountant\n--purpose\nyear-end books\n--classes\ninternal,customer\n--by\nriley");
+        std::test::assert(std::str::contains(proposed, "connection acct proposed: record ") && std::str::contains(proposed, "carrying internal,customer"), "proposed: " + proposed);
+        let cache = firm + "/.hale/dna/peers/acct.git";
+        std::test::assert_eq_str(objects_with(cache, "UNRELATED_PRIVATE_FACT"), "0", "connecting copies nothing of the accountant's journal");
+        let rid = word_after(proposed, "hale dna review ");
+        std::test::assert(std::str::starts_with(rid, "c-acct-"), "its Review: " + proposed);
+        std::test::assert(std::str::contains(dna_cli(firm, "handoff\nacct\ntask\nt7\n--as\nriley"), "is proposed: Review " + rid), "not in force before the Board decides");
+        let own = dna_cli(firm, "review\n" + rid + "\napprove\n--as\nriley\n--authority\nboard\n--no-wait");
+        std::test::assert(std::str::contains(dna_cli(firm, "handoff\nacct\ntask\nt7\n--as\nriley"), "needs an approval by a board member other than riley"), "its proposer's approval does not put it in force");
+        let approved = dna_cli(firm, "review\n" + rid + "\napprove\n--as\nana\n--authority\nboard\n--no-wait");
+        let listed = dna_cli(firm, "connect");
+        std::test::assert(std::str::contains(listed, "connections: 1\n  acct → record ") && std::str::contains(listed, "in force (approved by ana)"), "in force: " + listed);
+        std::test::assert_eq_int(record_lines_with(firm, "\"kind\": \"review.settled\"\t\"entity\": \"review:" + rid + "\"\t\"author\": \"ana\""), 1, "its Review settled once, in ana's name");
+
+        // ---- a Task handed across, into the accountant's mailbox for the firm
+        let mailbox = "refs/dna/exchange/" + firm_genesis;
+        let handed = dna_cli(firm, "handoff\nacct\ntask\nt7\n--as\nriley\n--note\nclose by March");
+        std::test::assert(std::str::contains(handed, ": task t7 [internal] written into record "), "handed across: " + handed);
+        let hid = word_after(handed, "handoff ");
+        let hid7 = hid[0..(len(hid) - 1)];
+        std::test::assert(std::str::contains(dna_cli(firm, "status"), "t7 [transfer_requested]"), "the Task waits for acceptance");
+        std::test::assert_eq_int(lines_with(acct_url, mailbox, "\"kind\": \"handoff.received\"\t\"entity\": \"handoff:" + hid7 + "\"\t\"author\": \"riley\"\t\\\"origin_record\\\": \\\"" + firm_genesis + "\\\"\t\\\"purpose\\\": \\\"year-end books\\\"\t\\\"position\\\": \\\"accountant\\\"\t\\\"lineage\\\": \\\"task.born#"), 1, "in the accountant's mailbox for the firm, with origin and purpose");
+        std::test::assert_eq_int(record_lines_with(acct_url, "\"kind\": \"handoff.received\""), 0, "and not written into the accountant's journal");
+        std::test::assert(std::str::contains(dna_cli(firm, "handoff\nacct\ntask\nt7\n--as\nriley"), "is transfer_requested"), "a Task crosses once");
+
+        // ---- a customer receipt: the digest crosses, the body never
+        let receipt = dna_cli(firm, "handoff\nacct\nreceipt\n" + customer + "\n--as\nriley");
+        std::test::assert(std::str::contains(receipt, "receipt " + customer + " [customer] written into record "), "the reference crosses: " + receipt);
+        let rhid = word_after(receipt, "handoff ");
+        let rhid7 = rhid[0..(len(rhid) - 1)];
+        let notes_handed = dna_cli(firm, "handoff\nacct\nreceipt\n" + internal + "\n--as\nriley");
+        std::test::assert(std::str::contains(notes_handed, "[internal] written into record"), "an internal reference: " + notes_handed);
+        std::test::assert(in_dir(acct_url, "git\nrev-parse\n-q\n--verify\nrefs/dna/receipts/" + internal[7..71]).code != 0, "no receipt body crossed, internal or not");
+        std::test::assert(in_dir(acct_url, "git\nrev-parse\n-q\n--verify\nrefs/dna/receipts/" + customer[7..71]).code != 0, "the customer body is nowhere there");
+
+        // ---- a connection that does not carry `customer` refuses it at the edge
+        let narrow = dna_cli(firm, "connect\n" + acct_url + "\n--name\nnarrow\n--as\nauditor\n--purpose\naudit\n--classes\ninternal\n--by\nriley");
+        let narrow_ok = dna_cli(firm, "review\n" + word_after(narrow, "hale dna review ") + "\napprove\n--as\nana\n--authority\nboard\n--no-wait");
+        let before = lines_with(acct_url, mailbox, "\"kind\": \"handoff.received\"");
+        let refused = dna_cli(firm, "handoff\nnarrow\nreceipt\n" + customer + "\n--as\nriley");
+        std::test::assert(std::str::contains(refused, "`customer` does not cross connection `narrow` (it carries internal); refused at the edge"), "refused: " + refused);
+        std::test::assert_eq_int(record_lines_with(firm, "\"kind\": \"handoff.refused\""), 1, "the refusal is a row here");
+        std::test::assert_eq_int(lines_with(acct_url, mailbox, "\"kind\": \"handoff.received\""), before, "and nothing was written across");
+
+        // ---- the accountant admits only under its own connection back
+        let pulled = dna_cli(acct, "sync");
+        let unadmitted = dna_cli(acct, "handoff");
+        std::test::assert(std::str::contains(unadmitted, hid7 + " ← task t7 from record ") && std::str::contains(unadmitted, "(riley as `accountant`, for `year-end books`) [internal] i-t7: prepare the year-end ledger") && std::str::contains(unadmitted, "not admitted: no connection in force to record"), "received, not admitted: " + unadmitted);
+        std::test::assert(std::str::contains(dna_cli(acct, "handoff\naccept\n" + hid7 + "\n--as\nnoor"), "is not admitted — no connection in force"), "acceptance waits for a connection");
+        let back = dna_cli(acct, "connect\n" + firm_url + "\n--name\nfirm\n--as\nclient\n--purpose\nyear-end books\n--classes\ninternal\n--by\nnoor");
+        let back_ok = dna_cli(acct, "review\n" + word_after(back, "hale dna review ") + "\napprove\n--as\nlee\n--authority\nboard\n--no-wait");
+        let admitted = dna_cli(acct, "handoff");
+        std::test::assert(std::str::contains(admitted, "admitted under `firm`"), "admitted: " + admitted);
+        std::test::assert(std::str::contains(dna_cli(acct, "handoff\naccept\n" + rhid7 + "\n--as\nnoor"), "`customer` does not cross connection `firm`"), "its own classes decide too");
+        let accepted = dna_cli(acct, "handoff\naccept\n" + hid7 + "\n--as\nnoor\n--note\ntaken on");
+        std::test::assert(std::str::contains(accepted, "handoff " + hid7 + " accepted by noor under connection `firm`"), "accepted: " + accepted);
+        std::test::assert_eq_int(record_lines_with(acct_url, "\"kind\": \"handoff.accepted\"\t\"entity\": \"handoff:" + hid7 + "\"\t\\\"origin_record\\\": \\\"" + firm_genesis + "\\\"\t\\\"purpose\\\": \\\"year-end books\\\""), 1, "admitted into the accountant's own record, with its origin and purpose");
+
+        // ---- the firm's Task settles only on that acceptance
+        std::test::assert(std::str::contains(dna_cli(firm, "status"), "t7 [transfer_requested]"), "not before the firm reads it");
+        let read_back = dna_cli(firm, "handoff\nsync");
+        std::test::assert(std::str::contains(read_back, "handoff sync: 1 acceptance(s) admitted") && std::str::contains(read_back, "task t7 accepted by noor"), "read back: " + read_back);
+        std::test::assert(std::str::contains(dna_cli(firm, "status"), "t7 [transfer_accepted]"), "settled");
+        std::test::assert_eq_int(record_lines_with(firm, "\"kind\": \"task.transfer_accepted\"\t\"entity\": \"t7\"\t\\\"accepted_by\\\": \\\"noor\\\""), 1, "one acceptance row");
+        std::test::assert(std::str::contains(dna_cli(firm, "handoff\nsync"), "0 acceptance(s) admitted"), "admitted once");
+
+        // ---- nothing of the accountant's private history reached the firm
+        std::test::assert_eq_str(objects_with(cache, "UNRELATED_PRIVATE_FACT"), "0", "the connection's cache holds none of it");
+        std::test::assert_eq_str(objects_with(firm, "UNRELATED_PRIVATE_FACT"), "0", "nor does any object in the firm's repository");
+
+        // ---- disconnecting leaves history and admits nothing further
+        let t8 = dna_cli(firm, "handoff\nacct\ntask\nt8\n--as\nriley");
+        let hid8 = word_after(t8, "handoff ");
+        let closed = dna_cli(firm, "disconnect\nacct\n--why\nthe engagement ended\n--by\nana");
+        std::test::assert(std::str::contains(closed, "connection acct closed by ana"), "closed: " + closed);
+        std::test::assert(std::str::contains(dna_cli(firm, "handoff\nacct\ntask\nt8\n--as\nriley"), "is closed (the engagement ended)"), "nothing further crosses");
+        let pulled2 = dna_cli(acct, "sync");
+        let late = dna_cli(acct, "handoff\naccept\n" + hid8[0..(len(hid8) - 1)] + "\n--as\nnoor");
+        std::test::assert(std::str::contains(late, "accepted by noor"), "the accountant still accepts in its own record: " + late);
+        let after_close = dna_cli(firm, "handoff\nsync");
+        std::test::assert(std::str::contains(after_close, "0 acceptance(s) admitted") && std::str::contains(after_close, "acct: closed — nothing admitted from it"), "nothing admitted after closing: " + after_close);
+        std::test::assert(std::str::contains(dna_cli(firm, "status"), "t8 [transfer_requested]"), "t8 is not settled by it");
+        std::test::assert_eq_int(record_lines_with(firm, "\"kind\": \"handoff.published\""), 4, "history stays here");
+        std::test::assert_eq_int(lines_with(acct_url, mailbox, "\"kind\": \"handoff.received\""), 4, "and there");
+
+        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+    }
+}
+
+fn main() { App { }; }

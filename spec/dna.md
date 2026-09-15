@@ -173,6 +173,57 @@ repository:
   work is accounted for, never dropped. Refused for a Task that is not
   handed: one the organism is working, or has settled, is not a
   person's to close.
+- **Cross-record handoff (GH #615).** A replica of one record is inside
+  the horizon: sync carries all of it, to equally trusted readers. A
+  *handoff* crosses a horizon into a separate record, and a connection is
+  its only path; nothing selective leaves a record by sync. `hale dna
+  connect <record-url> --name <name> --as <position> --purpose <purpose>
+  --classes <internal,customer,confidential> [--by <who>]` reads the
+  other record's identity — its genesis, the root commit of its journal,
+  which every record publishes as a blob under `refs/dna/identity` when it
+  syncs (until a push of it to the remote as it is now has succeeded —
+  `dna.identitypublished` names that remote and blob — each sync asks the
+  remote and pushes it, never forced, and `sync` says when it could not)
+  — and nothing else of it; it refuses this record's own, and appends `connection.proposed` (`name`, `url`, `peer`,
+  `position`, `purpose`, `classes`, `by`, `review_id`) with a Board
+  Review `c-<name>-<n>`. The connection is in force once a `board`
+  verdict approves that Review from someone other than its proposer —
+  the host then settles the Review in the approver's name — and until
+  `hale dna disconnect <name> --why <why>` appends `connection.closed`.
+  `hale dna handoff <name> task <id> | receipt <digest> [--note …] [--as
+  <who>]` writes one `handoff.received` envelope into the other
+  record's **mailbox for this record**, `refs/dna/exchange/<this record's
+  identity>` — a chain of rows only this record writes, pushed there under
+  compare-and-swap. Neither record reads the other's journal: this clone's
+  cache for a connection (`.hale/dna/peers/<name>.git`) holds the other
+  record's identity and this record's own mailbox there, nothing else. The
+  envelope carries `handoff` (`h` and twelve hex
+  digits of the origin genesis, kind and subject, so a fact crosses
+  once), `origin_record`, `origin_url`, `origin_author`, `origin_row`
+  (the source row's digest), `lineage` (the subject's rows here, as
+  `kind#seq`), `purpose`, `position`, `via`, `kind`, `subject`, `class`,
+  `fact`, `note`. This record then appends `handoff.published` (with
+  `peer_row`, the commit it landed as) and, for a Task,
+  `task.transfer_requested`. Only a handed Task crosses. A receipt
+  crosses as its digest and class; its body never leaves this record. A
+  fact whose class the connection does not carry is refused at the edge
+  as `handoff.refused`, with nothing written across. The receiving record
+  reads its own mailboxes (`sync` fetches `refs/dna/exchange/*` from its
+  remote; a row claiming another origin than the mailbox it is in is
+  ignored) and admits what arrives under its own policy: `hale dna
+  handoff` lists a received handoff as admitted only under a connection in
+  force back to its origin record that carries its class, and `hale dna
+  handoff accept <id> [--as <who>]`, only for an admitted one, appends
+  `handoff.accepted` to its own journal (with the envelope's origin,
+  lineage, purpose and fact) and sends a `handoff.accepted` envelope into
+  the origin's mailbox for it. `hale dna handoff sync` reads, for every
+  connection in force, the envelopes the other record sent to this
+  record's mailbox: each acceptance of a handoff published through it is
+  admitted once, as
+  `handoff.accepted_by_peer` and, for a Task, `task.transfer_accepted`.
+  The Task settles only then, the rule retirement follows (GH #604 rule
+  5). A closed connection is not read, so history stays in both records
+  and nothing further is admitted.
 - **An attributed external decision (GH #616).** A decision made by
   someone who does not run Hale — a manager, a client, an accountant —
   enters as a fact reported by a position inside the horizon, never as

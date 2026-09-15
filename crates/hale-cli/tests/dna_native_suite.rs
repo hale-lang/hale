@@ -98,6 +98,7 @@ fn dna_fixture_set_is_complete() {
             "grant_layering_test.hl",
             "grant_resources_test.hl",
             "handed_task_test.hl",
+            "handoff_test.hl",
             "harness_test.hl",
             "journal_contention_test.hl",
             "journal_test.hl",
