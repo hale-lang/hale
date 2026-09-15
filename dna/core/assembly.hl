@@ -190,6 +190,10 @@ locus Dna {
         // binds the child from that moment (`grant.contracted`). No
         // child on it means no ceiling.
         ceiling: AutonomyBoundary = AutonomyBoundary { };
+        // a ceiling's contraction whose row the record refused: tried again
+        // before anything is admitted, and nothing is until it lands (the
+        // third review of #626)
+        unrecorded_contraction: String = "";
         review_policy: ReviewPolicy = HumanBeforeApply { };
         deployment: Deployment = NoDeployment { };
         membrane: Membrane = LocalHumanMembrane { };
@@ -1523,6 +1527,8 @@ locus Dna {
             b.string_field("note", "ceiling " + to_string(before) + " -> " + to_string(before / 2) + " on repeated failure; binds " + self.boundary.child + " from now");
             b.end_object();
             let x = self.journal.append(self.journal.revision(), "grant.contracted", self.ceiling.child, b.result());
+            // the last contraction's row is the whole state a restart needs
+            self.unrecorded_contraction = if x.ok { "" } else { b.result() };
         }
         // contracted whether or not the record took the row: less
         // authority is never the unsafe direction
@@ -1540,6 +1546,8 @@ locus Dna {
     @unbounded
     fn reserve(s: Spend) -> Admission {
         self.bind_ceiling();
+        let unrecorded = self.contraction_unrecorded();
+        if len(unrecorded) > 0 { return Admission { op: s.id, amount: s.amount, currency: s.currency, refused: unrecorded }; }
         let g = self.boundary.effective();
         let own = self.boundary.current_grant();
         let above = self.ceiling.current_grant();
@@ -1661,6 +1669,8 @@ locus Dna {
     // and the admission is fenced, in the record.
     fn admits(a: Admission) -> String {
         if !a.ok { return "not admitted: " + a.refused; }
+        let unrecorded = self.contraction_unrecorded();
+        if len(unrecorded) > 0 { return unrecorded; }
         self.bind_ceiling();
         let now_epoch = self.boundary.effective().authority_epoch;
         if now_epoch != a.authority_epoch {
@@ -1677,6 +1687,19 @@ locus Dna {
             return why;
         }
         return "";
+    }
+    // A contraction the record refused is appended again before any
+    // admission; "" once the record holds it, else why nothing is admitted.
+    // A restart knows only what the record holds, so an organism that
+    // cannot record its narrower grant admits nothing under either.
+    fn contraction_unrecorded() -> String {
+        if len(self.unrecorded_contraction) == 0 { return ""; }
+        let x = self.journal.append(self.journal.revision(), "grant.contracted", self.ceiling.child, self.unrecorded_contraction);
+        if x.ok {
+            self.unrecorded_contraction = "";
+            return "";
+        }
+        return "the grant's contraction could not be recorded (" + x.error + "); nothing is admitted until the record holds it";
     }
     // A ceiling's contractions are the record's too: read back at birth,
     // the last one leaves the ceiling's magnitude and epoch where it left
@@ -1707,7 +1730,14 @@ locus Dna {
             }
             i = i + 1;
         }
-        if to >= 0 && to < self.ceiling.current_grant().max_magnitude { self.ceiling.restore_contraction(to, last_epoch); }
+        // the recorded epoch and review hold whatever the authored magnitude
+        // is now; the magnitude is the stricter of the two (the third review
+        // of #626: an authored ceiling already at the contracted limit lost
+        // the epoch and went back to post-review)
+        if to >= 0 {
+            let authored = self.ceiling.current_grant().max_magnitude;
+            self.ceiling.restore_contraction(if to < authored { to } else { authored }, last_epoch);
+        }
     }
     // A revocation is the record's, not the live boundary's alone: read
     // back at birth, it leaves nothing granted and the epoch where it left
