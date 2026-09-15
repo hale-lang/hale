@@ -22590,6 +22590,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((val, field_ty))
             }
+            // GH #643: `&&` and `||` short-circuit — the right operand is
+            // lowered in a block of its own, reached only when the left
+            // does not already decide the result.
+            Expr::Binary { op, left, right, .. }
+                if matches!(op, BinOp::And | BinOp::Or) && self.current_fn.is_some() =>
+            {
+                self.lower_short_circuit(*op, left, right, scope)
+            }
             Expr::Binary { op, left, right, span: _ } => {
                 let (lv, lt) = self.lower_expr(left, scope)?;
                 let (rv, rt) = self.lower_expr(right, scope)?;
@@ -23401,6 +23409,77 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// the join point and the phi is the if-expression's value. An
     /// if without an else (e.g. `if cond { 1 }`) is rejected — there
     /// is no value to merge on the missing branch.
+    /// `a && b` / `a || b` (GH #643). Operands are evaluated left to right,
+    /// and `b` only when `a` does not already decide the result: `a` is
+    /// lowered, a conditional branch reaches `b`'s block (`&&` on true,
+    /// `||` on false) or the merge block directly, and a phi takes the
+    /// decided constant from the left's block or `b`'s value from the end
+    /// of its own. Both operands used to be lowered first and combined
+    /// with `and`/`or`, so a right-hand side effect, fault or call ran on
+    /// paths the left had ruled out. A right operand whose block ends in a
+    /// terminator (a `return` or `raise` inside it) contributes no
+    /// incoming value.
+    fn lower_short_circuit(
+        &mut self,
+        op: BinOp,
+        left: &Expr,
+        right: &Expr,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let spelled = if op == BinOp::And { "&&" } else { "||" };
+        let (lv, lt) = self.lower_expr(left, scope)?;
+        if lt != CodegenTy::Bool {
+            return Err(CodegenError::Unsupported(format!(
+                "`{spelled}` operands must be Bool; got {lt:?}"
+            )));
+        }
+        let func = self
+            .current_fn
+            .expect("current_fn set while lowering `&&` / `||`");
+        let decided_in = self.builder.get_insert_block().ok_or_else(|| {
+            CodegenError::LlvmEmit(format!("no insertion block for `{spelled}`"))
+        })?;
+        let rhs_bb = self.context.append_basic_block(func, "sc.rhs");
+        let merge_bb = self.context.append_basic_block(func, "sc.end");
+        let cond = lv.into_int_value();
+        let (on_true, on_false) = if op == BinOp::And {
+            (rhs_bb, merge_bb)
+        } else {
+            (merge_bb, rhs_bb)
+        };
+        self.builder
+            .build_conditional_branch(cond, on_true, on_false)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(rhs_bb);
+        let (rv, rt) = self.lower_expr(right, scope)?;
+        if rt != CodegenTy::Bool {
+            return Err(CodegenError::Unsupported(format!(
+                "`{spelled}` operands must be Bool; got {rt:?}"
+            )));
+        }
+        let rhs_end = self.builder.get_insert_block().unwrap_or(rhs_bb);
+        let rhs_open = rhs_end.get_terminator().is_none();
+        if rhs_open {
+            self.builder
+                .build_unconditional_branch(merge_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+
+        self.builder.position_at_end(merge_bb);
+        let bool_t = cond.get_type();
+        let phi = self
+            .builder
+            .build_phi(bool_t, "sc.phi")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let decided = bool_t.const_int(if op == BinOp::And { 0 } else { 1 }, false);
+        phi.add_incoming(&[(&decided, decided_in)]);
+        if rhs_open {
+            phi.add_incoming(&[(&rv.into_int_value(), rhs_end)]);
+        }
+        Ok((phi.as_basic_value(), CodegenTy::Bool))
+    }
+
     fn lower_if_expr(
         &mut self,
         ifs: &IfStmt,

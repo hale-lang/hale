@@ -26,6 +26,17 @@ same precedence; their associativity is given in the right column.
 
 ## Notes
 
+### `&&` and `||` short-circuit
+
+Both operands are `Bool`. They are evaluated left to right, and the
+right operand is evaluated only when the left does not already decide
+the result: `a && b` evaluates `b` only when `a` is `true`, and `a || b`
+only when `a` is `false`. A call, a division or a slice on the right
+therefore does not run when the left rules it out (`d != 0 && n / d > 1`
+never divides by zero). Chains follow precedence, `&&` binding tighter
+than `||`: `a || b && c` is `a || (b && c)`, and `b && c` is not
+evaluated when `a` is `true` (GH #643).
+
 ### Comparison and equality are non-associative
 
 `a < b < c` is a parse error. Use `a < b && b < c`. This avoids
