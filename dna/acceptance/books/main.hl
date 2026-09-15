@@ -1,0 +1,277 @@
+// dna/acceptance/books — a capture-only bookkeeping intake: the
+// application the first books slice (RFC #602, stage A) governs in CI.
+//
+// A bill arrives as a text file in `inbox/`. The intake files it as
+// evidence in the organization's record and, when it came without its
+// receipt, asks the organization for the follow-through and raises a
+// concern. It posts nothing and keeps no ledger of its own: the record is
+// the only authority, and `BOOKS_MODE=export` reconstructs a week of
+// spending and obligations from the record alone.
+//
+// `run()` holds the process up (the organism keeps it expressed) unless
+// HALE_DNA_ONESHOT is set.
+
+const INTAKE: String = "books intake 1";
+
+type Bill {
+    id: String = "";
+    supplier: String = "";
+    payer: String = "";
+    purpose: String = "";
+    date: String = "";
+    amount: String = "";
+    currency: String = "";
+    receipt: String = ""; // "attached" | "missing"
+}
+
+// The value of a `key: value` line ("" when absent).
+@unbounded
+fn field(text: String, key: String) -> String {
+    let mut rest = text + "\n";
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if std::str::starts_with(line, key + ":") { return std::str::trim(line[(len(key) + 1)..len(line)]); }
+    }
+    return "";
+}
+
+fn parse_bill(text: String) -> Bill {
+    return Bill {
+        id: field(text, "bill"), supplier: field(text, "supplier"), payer: field(text, "payer"),
+        purpose: field(text, "purpose"), date: field(text, "date"), amount: field(text, "amount"),
+        currency: field(text, "currency"), receipt: field(text, "receipt")
+    };
+}
+
+// A bill names what capture needs.
+fn readable(b: Bill) -> Bool {
+    return len(b.id) > 0 && len(b.supplier) > 0 && len(b.payer) > 0 && len(b.date) == 10 && len(b.amount) > 0 && len(b.currency) > 0;
+}
+
+fn has_suffix(s: String, suffix: String) -> Bool {
+    return len(s) >= len(suffix) && s[(len(s) - len(suffix))..len(s)] == suffix;
+}
+
+// What the organization is asked when a bill came without its receipt.
+fn follow_up(b: Bill, evidence: String) -> String {
+    return "obtain the receipt for bill " + b.id + " from " + b.supplier + ": " + b.amount + " " + b.currency + " for " + b.purpose + ", paid by " + b.payer + " on " + b.date + ", treatment pending, bill " + evidence;
+}
+
+fn hale_bin() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn not_run(e: IoError) -> std::process::ProcessOutput {
+    return std::process::ProcessOutput { code: -1, signal: 0, stdout: "", stderr: e.kind };
+}
+
+// `hale <args>`, argv newline-separated.
+fn hale(args: String) -> std::process::ProcessOutput {
+    return std::process::run(hale_bin() + "\n" + args) or not_run(err);
+}
+
+// `git <args>`'s output, "" when it failed.
+fn git(args: String) -> String {
+    let out = std::process::run("git\n" + args) or not_run(err);
+    return if out.code == 0 { out.stdout } else { "" };
+}
+
+// File one bill; ask for its follow-through when its receipt is missing.
+@unbounded
+fn capture(path: String) -> String {
+    let text = std::io::fs::read_file(path) or "";
+    let b = parse_bill(text);
+    if !readable(b) { return "books: " + path + " is not a bill this intake reads (bill, supplier, payer, date, amount, currency)"; }
+    let filed = hale("dna\nreceipt\nfile\n" + path + "\n--as\nintake");
+    let at = std::str::index_of(filed.stdout, "sha256:");
+    if filed.code != 0 || at < 0 { return "books: " + b.id + " not filed: " + filed.stdout + filed.stderr; }
+    let evidence = filed.stdout[at..(at + 71)];
+    if b.receipt == "attached" { return "books: " + b.id + " captured with its receipt, as " + evidence; }
+    let asked = hale("dna\nask\n--no-wait\n--as\nintake\n" + follow_up(b, evidence));
+    let raised = hale("dna\nconcern\nraise\norg/books/intake\nbill " + b.id + " from " + b.supplier + " arrived without its receipt");
+    return "books: " + b.id + " captured as " + evidence + "; follow-through asked: " + std::str::trim(asked.stdout + asked.stderr) + "; " + std::str::trim(raised.stdout + raised.stderr);
+}
+
+// Whether `a` sorts before `b` (lowercase names, digits, `-`, `.`).
+@unbounded
+fn name_before(a: String, b: String) -> Bool {
+    let order = "-.0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut i = 0;
+    while i < len(a) && i < len(b) {
+        let x = std::str::index_of(order, a[i..(i + 1)]);
+        let y = std::str::index_of(order, b[i..(i + 1)]);
+        if x != y { return x < y; }
+        i = i + 1;
+    }
+    return len(a) < len(b);
+}
+
+// The first bill waiting in `inbox/`, by name ("" when none).
+@unbounded
+fn next_bill() -> String {
+    let n = std::io::fs::list_dir_count("inbox") or 0;
+    let mut next = "";
+    let mut i = 0;
+    while i < n {
+        let name = std::io::fs::list_dir_at("inbox", i) or "";
+        if has_suffix(name, ".bill") && (len(next) == 0 || name_before(name, next)) { next = name; }
+        i = i + 1;
+    }
+    return next;
+}
+
+// ---- export: a week of spending and obligations, from the record ------
+
+fn day_number(d: String) -> Int {
+    return std::str::parse_int(std::str::replace(d, "-", "")) or 0;
+}
+
+fn csv_field(s: String) -> String {
+    if std::str::contains(s, ",") || std::str::contains(s, "\"") { return "\"" + std::str::replace(s, "\"", "\"\"") + "\""; }
+    return s;
+}
+
+// The body of the last row of `kind` about `entity` ("" when none).
+@unbounded
+fn last_body(journal: String, kind: String, entity: String) -> String {
+    let mut out = "";
+    let mut rest = journal;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::json::find_string_field(line, "kind") == kind && std::json::find_string_field(line, "entity") == entity { out = std::json::find_string_field(line, "body"); }
+    }
+    return out;
+}
+
+// The Task whose birth names `evidence`, and its last state.
+@unbounded
+fn task_of(journal: String, evidence: String) -> String {
+    let mut rest = journal;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::json::find_string_field(line, "kind") == "task.born" && std::str::contains(std::json::find_string_field(line, "body"), evidence) { return std::json::find_string_field(line, "entity"); }
+    }
+    return "";
+}
+
+@unbounded
+fn state_of(journal: String, task: String) -> String {
+    let mut out = "born";
+    let mut rest = journal;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let kind = std::json::find_string_field(line, "kind");
+        if std::json::find_string_field(line, "entity") == task && std::str::starts_with(kind, "task.") && kind != "task.born" && kind != "task.planned" { out = kind[5..len(kind)]; }
+    }
+    return out;
+}
+
+// `totals` (lines of `<currency> <amount>`) with `amount` added, in Decimal.
+@unbounded
+fn add_total(totals: String, currency: String, amount: String) -> String {
+    let add = std::str::parse_decimal(amount) or 0.0d;
+    let mut out = "";
+    let mut found = false;
+    let mut rest = totals;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let sp = std::str::index_of(line, " ");
+        if line[0..sp] == currency {
+            let sum = (std::str::parse_decimal(line[(sp + 1)..len(line)]) or 0.0d) + add;
+            out = out + currency + " " + sum + "\n";
+            found = true;
+        } else { out = out + line + "\n"; }
+    }
+    if !found { out = out + currency + " " + add + "\n"; }
+    return out;
+}
+
+// Every bill filed as evidence whose date falls in [from, to], with its
+// obligation as the record has it; totals by currency; the record's head.
+@unbounded
+fn export_week(from: String, to: String) -> String {
+    let head = std::str::trim(git("rev-parse\nrefs/dna/journal"));
+    let journal = git("show\nrefs/dna/journal:journal.jsonl");
+    let lo = day_number(from);
+    let hi = day_number(to);
+    let mut out = "bill,supplier,payer,purpose,date,amount,currency,treatment,evidence,task,assignee,state,completion,practice\n";
+    let mut totals = "";
+    let mut bills = 0;
+    let mut open = 0;
+    let mut rest = journal;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::json::find_string_field(line, "kind") != "receipt.filed" { continue; }
+        if !has_suffix(std::json::find_string_field(std::json::find_string_field(line, "body"), "name"), ".bill") { continue; }
+        let evidence = std::json::find_string_field(line, "entity");
+        let b = parse_bill(git("cat-file\n-p\nrefs/dna/receipts/" + evidence[7..len(evidence)]));
+        let day = day_number(b.date);
+        if day < lo || day > hi { continue; }
+        bills = bills + 1;
+        totals = add_total(totals, b.currency, b.amount);
+        let task = task_of(journal, evidence);
+        let mut assignee = "";
+        let mut state = "captured";
+        let mut completion = if b.receipt == "attached" { "receipt attached" } else { "no follow-through" };
+        let mut practice = "";
+        if len(task) > 0 {
+            let handed = last_body(journal, "task.handed", task);
+            assignee = std::json::find_string_field(handed, "assignee");
+            practice = std::json::find_string_field(handed, "acceptance");
+            state = state_of(journal, task);
+            let linked = last_body(journal, "completion.linked", task);
+            let excepted = last_body(journal, "completion.excepted", task);
+            completion = if len(linked) > 0 { "evidence " + std::json::find_string_field(linked, "evidence") } else if len(excepted) > 0 { "exception: " + std::json::find_string_field(excepted, "why") + " (authorized by " + std::json::find_string_field(excepted, "authorized_by") + ")" } else if state == "done" { "human-reported" } else { "open" };
+            if state != "done" && state != "decided" { open = open + 1; }
+        }
+        out = out + csv_field(b.id) + "," + csv_field(b.supplier) + "," + csv_field(b.payer) + "," + csv_field(b.purpose) + "," + b.date + "," + b.amount + "," + b.currency + ",pending," + evidence + "," + task + "," + assignee + "," + state + "," + csv_field(completion) + "," + practice + "\n";
+    }
+    let mut trest = totals;
+    while len(trest) > 0 {
+        let nl = std::str::index_of(trest, "\n");
+        out = out + "total " + trest[0..nl] + "\n";
+        trest = trest[(nl + 1)..len(trest)];
+    }
+    return out + "bills: " + to_string(bills) + "; open obligations: " + to_string(open) + "\nfrom the record at " + head + " (" + from + " to " + to + "); capture only, nothing posted\n";
+}
+
+main locus Intake {
+    params { captured: Int = 0; }
+    run() {
+        std::io::fs::mkdir("inbox") or discard;
+        std::io::fs::mkdir("inbox/done") or discard;
+        println(INTAKE, ": watching inbox/");
+        if std::env::var_exists("HALE_DNA_ONESHOT") { return; }
+        while true {
+            let next = next_bill();
+            if len(next) == 0 {
+                std::time::sleep(300ms);
+                continue;
+            }
+            println(capture("inbox/" + next));
+            std::io::fs::rename("inbox/" + next, "inbox/done/" + next) or discard;
+            self.captured = self.captured + 1;
+        }
+    }
+}
+
+fn main() {
+    if std::env::var_exists("BOOKS_MODE") && std::env::var("BOOKS_MODE") == "export" {
+        println(export_week(std::env::var("BOOKS_FROM"), std::env::var("BOOKS_TO")));
+        return;
+    }
+    Intake { };
+}

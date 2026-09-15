@@ -1,0 +1,8 @@
+bill: B-1001
+supplier: Northwind Rail
+payer: mara
+purpose: travel to the client
+date: 2026-09-07
+amount: 120.00
+currency: CU
+receipt: missing

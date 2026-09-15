@@ -95,6 +95,16 @@ under the contract they were handed with. A completion with neither is
 shown as human-reported: it says the job is done, not that anything was
 verified.
 
+`dna/acceptance/books` is a worked example of all of this: a capture-only
+intake that files bills as evidence and asks for the receipts that did
+not come with them. Its acceptance test (`dna/tests/books_slice_test.hl`)
+runs the first books slice against a live organism: bills arrive, the
+payer is handed each missing receipt, the organism restarts while they
+wait, a completion needs its evidence or an authorized exception, the
+repeated omissions lead to a reviewed change to the intake and a new
+version of the practice, the next bill uses both while an older case
+keeps its contract, and a week is exported from the record alone.
+
 Often the decision on such a job is not the person's to make, and is
 not made in Hale: a client approves an expense by mail, a manager
 agrees on a call. File what shows it, then report the decision as

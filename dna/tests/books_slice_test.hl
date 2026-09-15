@@ -1,0 +1,279 @@
+// RFC #602 stage A — the first books slice, end to end on synthetic
+// documents, against a live `hale dna dev` over the books intake
+// (dna/acceptance/books). The RFC's first-slice gate, step by step:
+//
+//  1. bills arrive, some without their receipts: the intake files each
+//     as evidence and captures its facts, treatment pending;
+//  2. the organization admits a Task for each missing receipt, binds the
+//     books practice's acceptance condition and hands it to the payer;
+//  3. the organism stops while the Tasks wait; a completion recorded
+//     while it is stopped is honoured when it starts again, and nothing
+//     is replanned;
+//  4. a Task closes only with its evidence or an authorized exception;
+//  5. the repeated omissions motivate a reviewed change to the intake
+//     software and one to the books practice; both are adopted, and the
+//     next bill uses both;
+//  6. an older case stays pending across the adoption and closes under
+//     the contract it was handed with;
+//  7. a week of spending and obligations is exported from the record
+//     alone. No payment is made anywhere.
+//
+// The models are scripted (dna/acceptance/books.fixture/rules.txt): the
+// gate is about the organization's loop, not a model's prose.
+
+import "../core" as dna;
+
+// The repository, as an absolute path: commands run inside the scratch project.
+fn source() -> String {
+    let given = if std::env::var_exists("HALE_DNA_SOURCE") { std::env::var("HALE_DNA_SOURCE") } else { "." };
+    return dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && pwd\nsh\n" + given).stdout);
+}
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` (newline-separated) in `dir`: no hosted models, no discovery,
+// the knowledge store in memory.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_KNOWLEDGE_DSN=memory && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+fn dna_cli(app: String, args: String) -> String {
+    let r = in_dir(app, toolchain() + "\ndna\n" + args);
+    return r.stdout + r.stderr;
+}
+
+@unbounded
+fn journal(app: String) -> String {
+    return in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout + "\n";
+}
+
+// Rows of `kind` about `entity` ("" = any) whose body contains `needle`.
+@unbounded
+fn count(app: String, kind: String, entity: String, needle: String) -> Int {
+    let mut n = 0;
+    let mut rest = journal(app);
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if std::json::find_string_field(line, "kind") != kind { continue; }
+        if len(entity) > 0 && std::json::find_string_field(line, "entity") != entity { continue; }
+        if len(needle) > 0 && !std::str::contains(std::json::find_string_field(line, "body"), needle) { continue; }
+        n = n + 1;
+    }
+    return n;
+}
+
+// The body of the last row of `kind` about `entity`.
+@unbounded
+fn body(app: String, kind: String, entity: String) -> String {
+    let mut out = "";
+    let mut rest = journal(app);
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if std::json::find_string_field(line, "kind") == kind && std::json::find_string_field(line, "entity") == entity { out = std::json::find_string_field(line, "body"); }
+    }
+    return out;
+}
+
+// Wait until at least `n` such rows exist.
+fn wait_rows(app: String, kind: String, entity: String, needle: String, n: Int, secs: Int) -> Bool {
+    let deadline = std::time::now() + secs;
+    while std::time::now() <= deadline {
+        if count(app, kind, entity, needle) >= n { return true; }
+        std::time::sleep(500ms);
+    }
+    return false;
+}
+
+fn digest_in(text: String) -> String {
+    let at = std::str::index_of(text, "sha256:");
+    return if at < 0 || len(text) < at + 71 { "" } else { text[at..(at + 71)] };
+}
+
+fn word_after(text: String, marker: String) -> String {
+    let at = std::str::index_of(text, marker);
+    if at < 0 { return ""; }
+    let rest = text[(at + len(marker))..len(text)];
+    let sp = std::str::index_of(rest, " ");
+    return if sp < 0 { dna::trim_nl(rest) } else { rest[0..sp] };
+}
+
+// `hale dna dev` in the background, bounded so a failed assertion leaves
+// nothing running for long; its pid.
+fn start_dev(app: String) -> String {
+    let started = in_dir(app, "sh\n-c\nnohup timeout 900 \"$1\" dna dev . --no-iris --observe 2 >>.hale/dev.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain());
+    return dna::trim_nl(started.stdout);
+}
+
+fn membrane_up(app: String, secs: Int) -> Bool {
+    let deadline = std::time::now() + secs;
+    while std::time::now() <= deadline {
+        if std::io::fs::file_exists(app + "/.hale/dna/hale-dna.intent.offered.sock") && std::io::fs::file_exists(app + "/.hale/dna/hale-dna.review.verdict.sock") && std::io::fs::file_exists(app + "/.hale/dna/app.pid") { return true; }
+        std::time::sleep(500ms);
+    }
+    return false;
+}
+
+// The host, then everything it started; the sockets go with them.
+fn stop_dev(app: String, pid: String) {
+    let k = dna::run_tool("kill\n" + pid);
+    std::time::sleep(500ms);
+    let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app knowledge; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; rm -f .hale/dna/*.sock; true\nsh\n" + app);
+    std::time::sleep(500ms);
+}
+
+// A bill lands in the inbox whole (written beside it, then renamed in).
+fn drop_bill(fixture: String, app: String, name: String) {
+    let r = dna::run_tool("sh\n-c\ncp \"$1\" \"$2/inbox/.$3.part\" && mv \"$2/inbox/.$3.part\" \"$2/inbox/$3\"\nsh\n" + fixture + "/bills/" + name + "\n" + app + "\n" + name);
+}
+
+main locus App {
+    run() {
+        let acceptance = source() + "/dna/acceptance";
+        std::test::assert(std::io::fs::file_exists(acceptance + "/books/main.hl"), "the books intake is at " + acceptance + "/books (HALE_DNA_SOURCE names the repository)");
+        let fixture = acceptance + "/books.fixture";
+        let scratch = "/tmp/dna-books-" + to_string(std::process::pid());
+        std::io::fs::mkdir(scratch) or discard;
+        let app = scratch + "/books";
+        let copied = dna::run_tool("cp\n-r\n" + acceptance + "/books\n" + app);
+        std::test::assert_eq_int(copied.code, 0, "copied the intake: " + copied.stderr);
+        let g1 = in_dir(app, "git\ninit\n-q\n-b\nmain");
+        let g2 = in_dir(app, "git\nconfig\nuser.name\nriley");
+        let g3 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
+        let g4 = in_dir(app, "git\nadd\n-A");
+        let g5 = in_dir(app, "git\ncommit\n-q\n-m\nthe books intake");
+        let init = in_dir(app, toolchain() + "\ndna\ninit\n.");
+        std::test::assert_eq_int(init.code, 0, "hale dna init: " + init.stdout + init.stderr);
+
+        // the organization's models are scripted: the Genome is project-owned,
+        // so the test edits it the way a maintainer would
+        let org_path = app + "/dna/org/main.hl";
+        let org = std::io::fs::read_file(org_path) or "";
+        let leader_models = "models: leader_models(),";
+        let editor = "editor: dna::SourceEditor { name: \"editor\", models: editor_models() },";
+        std::test::assert(std::str::contains(org, leader_models) && std::str::contains(org, editor) && std::str::contains(org, "optimize_every_ms: 0"), "the generated organization wires its leader, its editor and its cadence");
+        let scripted_leader = "models: dna::ModelRouter { quick: dna::FakeModel { name: \"quick\", rules_file: \".hale/dna/books-rules.txt\" }, deep: dna::FakeModel { name: \"deep\", rules_file: \".hale/dna/books-rules.txt\" } },";
+        let scripted_editor = "editor: dna::SourceEditor { name: \"editor\", models: dna::ModelRouter { quick: dna::FakeModel { name: \"quick\", answer_file: \".hale/dna/intake-v2.hl\", answer_role: \"edit\" }, deep: dna::FakeModel { name: \"deep\", answer: \"receipts_requested +\" } } },";
+        std::io::fs::write_file(org_path, std::str::replace(std::str::replace(org, leader_models, scripted_leader), editor, scripted_editor)) or discard;
+        let c1 = dna::run_tool("cp\n" + fixture + "/rules.txt\n" + app + "/.hale/dna/books-rules.txt");
+        let c2 = dna::run_tool("cp\n" + fixture + "/main.v2.hl\n" + app + "/.hale/dna/intake-v2.hl");
+        let checked = in_dir(app, toolchain() + "\ncheck\n--matrix\n.");
+        std::test::assert_eq_int(checked.code, 0, "the scripted organization checks: " + checked.stdout + checked.stderr);
+        let g6 = in_dir(app, "git\nadd\n-A");
+        let g7 = in_dir(app, "git\ncommit\n-q\n-m\nattach the DNA");
+
+        let mut dev = start_dev(app);
+        std::test::assert(membrane_up(app, 240), "the organism and the intake came up: " + (std::io::fs::read_file(app + "/.hale/dev.log") or ""));
+
+        // ---- the books practice this organization starts with, ratified by the Board
+        let v1_out = dna_cli(app, "practice\npropose\nacceptance/expense-receipt\n--text\nA bill closes with its receipt, or with an exception someone other than the payer authorizes. evidence: required\n--because\nthe books practice this organization starts with\n--as\nriley");
+        let v1 = digest_in(v1_out);
+        std::test::assert(len(v1) == 71 && std::str::contains(v1_out, "practice acceptance/expense-receipt proposed by riley"), "proposed: " + v1_out);
+        let v1_ok = dna_cli(app, "review\n" + word_after(v1_out, "hale dna review ") + "\napprove\n--as\ndana\n--authority\nboard");
+        std::test::assert(wait_rows(app, "knowledge.ratified", v1, "", 1, 30), "ratified by the Board: " + v1_ok);
+
+        // ---- 1 + 2. bills arrive; each missing receipt is a Task, bound and handed
+        drop_bill(fixture, app, "b0999.bill");
+        std::test::assert(wait_rows(app, "receipt.filed", "", "b0999.bill", 1, 60), "a bill from last month, captured with its receipt");
+        drop_bill(fixture, app, "b1001.bill");
+        std::test::assert(wait_rows(app, "task.handed", "t1", "", 1, 120), "B-1001 handed on: " + journal(app));
+        drop_bill(fixture, app, "b1002.bill");
+        std::test::assert(wait_rows(app, "receipt.filed", "", "b1002.bill", 1, 60), "B-1002 captured");
+        drop_bill(fixture, app, "b1003.bill");
+        std::test::assert(wait_rows(app, "task.handed", "t2", "", 1, 120), "B-1003 handed on");
+        drop_bill(fixture, app, "b1004.bill");
+        std::test::assert(wait_rows(app, "task.handed", "t3", "", 1, 120), "B-1004 handed on");
+        std::test::assert(wait_rows(app, "concern.raised", "org/books/intake", "", 3, 60), "three bills arrived without their receipts, and the intake said so");
+
+        let born1 = body(app, "task.born", "t1");
+        let bill1 = digest_in(born1);
+        std::test::assert(std::str::contains(born1, "obtain the receipt for bill B-1001 from Northwind Rail: 120.00 CU for travel to the client, paid by mara on 2026-09-07, treatment pending, bill sha256:") && count(app, "receipt.filed", bill1, "b1001.bill") == 1, "the bill's facts, captured, with the bill as evidence: " + born1);
+        std::test::assert_eq_int(count(app, "task.born", "", "B-1002"), 0, "a bill with its receipt asks for nothing");
+        let handed1 = body(app, "task.handed", "t1");
+        std::test::assert(std::json::find_string_field(handed1, "assignee") == "mara" && std::json::find_string_field(handed1, "obligation") == "expense-receipt" && std::json::find_string_field(handed1, "acceptance") == v1 && std::str::contains(handed1, "\"evidence_required\": true"), "handed to the payer under the books practice: " + handed1);
+
+        // ---- 3. the organism stops while the Tasks wait
+        stop_dev(app, dev);
+        let r1001 = digest_in(dna_cli(app, "receipt\nfile\n" + fixture + "/receipts/r1001.txt\n--as\nmara"));
+        let offline = dna_cli(app, "task\ndone\nt1\n--as\nmara\n--evidence\n" + r1001 + "\n--note\nthe rail receipt came by post");
+        std::test::assert(std::str::contains(offline, "task t1 done by mara: the rail receipt came by post — evidence " + r1001 + " linked"), "completed while the organism is stopped: " + offline);
+        // the Board sets the optimize cadence while it is down: a reviewed commit to the Genome
+        let org2 = std::io::fs::read_file(org_path) or "";
+        std::io::fs::write_file(org_path, std::str::replace(org2, "optimize_every_ms: 0", "optimize_every_ms: 3000")) or discard;
+        let g8 = in_dir(app, "git\ncommit\n-q\n-am\nthe Board sets the optimize cadence");
+        let claimed = dna_cli(app, "body\nclaim\n--force\n--as\nriley");
+        dev = start_dev(app);
+        std::test::assert(membrane_up(app, 240), "back up: " + (std::io::fs::read_file(app + "/.hale/dev.log") or ""));
+        std::time::sleep(3000ms);
+        let status = dna_cli(app, "status");
+        std::test::assert(std::str::contains(status, "t1 [done] i") && std::str::contains(status, "— evidence " + r1001), "the offline completion is honoured: " + status);
+        std::test::assert(std::str::contains(status, "t2 [handed]") && std::str::contains(status, "t3 [handed]"), "the others still wait on their person: " + status);
+        std::test::assert(count(app, "task.planned", "t1", "") == 1 && count(app, "task.planned", "t2", "") == 1 && count(app, "task.planned", "t3", "") == 1, "nothing was replanned");
+        std::test::assert(count(app, "task.handed", "t1", "") == 1 && count(app, "task.handed", "t2", "") == 1, "nothing was handed twice");
+
+        // ---- 4. evidence, or an authorized exception
+        let note_only = dna_cli(app, "task\ndone\nt2\n--as\nmara\n--note\npaid cash");
+        std::test::assert(std::str::contains(note_only, "closes only with its evidence"), "a note does not verify a missing receipt: " + note_only);
+        let excepted = dna_cli(app, "task\ndone\nt2\n--as\nmara\n--exception\nthe taxi driver gave no receipt\n--authorized-by\ndana");
+        std::test::assert(std::str::contains(excepted, "task t2 done by mara — exception authorized by dana: the taxi driver gave no receipt"), "an authorized exception: " + excepted);
+
+        // ---- 5. the omissions motivate a reviewed change to the intake software
+        std::test::assert(wait_rows(app, "review.requested", "review:m1", "", 1, 240), "the optimize pass proposed a change and it became a Review: " + journal(app));
+        std::test::assert(count(app, "org.reviewed", "", "concerns raised: 3") >= 1, "prompted by the concerns in the record");
+        std::test::assert(std::str::contains(body(app, "mutation.proposed", "m1"), "change the intake to request the receipt from the supplier"), "the change names what it is for: " + body(app, "mutation.proposed", "m1"));
+        let approved = dna_cli(app, "review\nm1\napprove\n--as\nriley\n--comment\nask the supplier at capture");
+        std::test::assert(std::str::contains(approved, "review m1 settled: approve by riley"), "approved: " + approved);
+        std::test::assert(wait_rows(app, "mutation.retained", "m1", "", 1, 300), "adopted: applied, restarted, observed healthy: " + journal(app));
+        std::test::assert(std::str::contains(in_dir(app, "git\nshow\nHEAD:main.hl").stdout, "books intake 2"), "the Genome is the adopted intake");
+
+        // ---- 5. and to the books practice
+        let v2_out = dna_cli(app, "practice\npropose\nacceptance/expense-receipt\n--text\nA bill closes with its receipt; the copy a supplier sends when asked at capture is the receipt. evidence: required\n--supersedes\n" + v1 + "\n--because\nthree bills arrived without receipts (concern.raised org/books/intake)\n--as\nriley");
+        let v2 = digest_in(v2_out);
+        std::test::assert(len(v2) == 71 && v2 != v1, "a new version proposed: " + v2_out);
+        let v2_ok = dna_cli(app, "review\n" + word_after(v2_out, "hale dna review ") + "\napprove\n--as\ndana\n--authority\nboard");
+        std::test::assert(wait_rows(app, "knowledge.ratified", v2, "", 1, 30) && wait_rows(app, "knowledge.retired", v1, "", 1, 30), "ratified, and the first version retired: " + v2_ok);
+        std::test::assert(std::str::contains(dna_cli(app, "practice"), "[in force] A bill closes with its receipt; the copy a supplier sends"), "the adopted version is the one in force");
+
+        // ---- 5. the next bill uses both
+        drop_bill(fixture, app, "b1005.bill");
+        std::test::assert(wait_rows(app, "task.handed", "t5", "", 1, 120), "B-1005 handed on: " + journal(app));
+        std::test::assert(std::str::contains(body(app, "task.born", "t5"), "receipt requested from Contoso Print at capture (books intake 2)"), "captured by the adopted intake: " + body(app, "task.born", "t5"));
+        std::test::assert(std::io::fs::file_exists(app + "/outbox/receipt-request-B-1005.txt"), "which asked the supplier");
+        let handed5 = body(app, "task.handed", "t5");
+        std::test::assert(std::json::find_string_field(handed5, "acceptance") == v2 && std::str::contains(handed5, "\"evidence_required\": true"), "handed under the adopted practice: " + handed5);
+
+        // ---- 6. the older case keeps its contract
+        std::test::assert(std::json::find_string_field(body(app, "task.handed", "t3"), "acceptance") == v1 && std::str::contains(dna_cli(app, "status"), "t3 [handed]"), "B-1004 still waits on mara, under the first version");
+        let r1004 = digest_in(dna_cli(app, "receipt\nfile\n" + fixture + "/receipts/r1004.txt\n--as\nmara"));
+        let closed3 = dna_cli(app, "task\ndone\nt3\n--as\nmara\n--evidence\n" + r1004);
+        std::test::assert(std::str::contains(closed3, "task t3 done by mara — evidence " + r1004 + " linked") && std::json::find_string_field(body(app, "completion.linked", "t3"), "practice") == v1, "closed under the contract it was handed with: " + closed3);
+        let r1005 = digest_in(dna_cli(app, "receipt\nfile\n" + fixture + "/receipts/r1005.txt\n--as\nmara"));
+        let closed5 = dna_cli(app, "task\ndone\nt5\n--as\nmara\n--evidence\n" + r1005);
+        std::test::assert(std::str::contains(closed5, "— evidence " + r1005 + " linked") && std::json::find_string_field(body(app, "completion.linked", "t5"), "practice") == v2, "the new case under the new version: " + closed5);
+
+        // ---- 7. a week, from the record alone
+        let export_argv = "sh\n-c\nBOOKS_MODE=export BOOKS_FROM=2026-09-07 BOOKS_TO=2026-09-13 exec \"$1\" run .\nsh\n" + toolchain();
+        let week = in_dir(app, export_argv).stdout;
+        let head = dna::trim_nl(in_dir(app, "git\nrev-parse\nrefs/dna/journal").stdout);
+        std::test::assert(std::str::starts_with(week, "bill,supplier,payer,purpose,date,amount,currency,treatment,evidence,task,assignee,state,completion,practice\n"), "an open CSV: " + week);
+        std::test::assert(!std::str::contains(week, "B-0999"), "last month's bill is outside the week");
+        std::test::assert(std::str::contains(week, "B-1001,Northwind Rail,mara,travel to the client,2026-09-07,120.00,CU,pending," + bill1 + ",t1,mara,done,evidence " + r1001 + "," + v1), "B-1001 with its evidence: " + week);
+        std::test::assert(std::str::contains(week, "B-1002,Paper Mill,mara,printer paper,2026-09-08,35.50,CU,pending,") && std::str::contains(week, ",,,captured,receipt attached,"), "B-1002 captured with its receipt, no obligation");
+        std::test::assert(std::str::contains(week, ",t2,mara,done,exception: the taxi driver gave no receipt (authorized by dana)," + v1), "B-1003 closed by an exception");
+        std::test::assert(std::str::contains(week, ",t5,mara,done,evidence " + r1005 + "," + v2), "B-1005 under the adopted practice");
+        std::test::assert(std::str::contains(week, "total CU 470") && std::str::contains(week, "bills: 5; open obligations: 0") && std::str::contains(week, "from the record at " + head), "control totals, and the record they came from: " + week);
+        std::test::assert_eq_str(in_dir(app, export_argv).stdout, week, "the same record, the same export");
+        std::test::assert_eq_int(count(app, "grant.reserved", "", ""), 0, "no money moved");
+
+        stop_dev(app, dev);
+        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+    }
+}
+
+fn main() { App { }; }

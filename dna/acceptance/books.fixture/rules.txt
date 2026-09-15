@@ -1,0 +1,4 @@
+plan|obtain the receipt for bill|kind: person\nclass: docs\ntarget: none\ncount: 1\nassignee: mara\nobligation: expense-receipt\nthe payer holds the receipt: a person's job
+plan|change the intake|kind: appendage\nclass: feature\ntarget: main.hl\ncount: 1\nassignee: none\nobligation: none\none change to the intake software
+once:optimize|concerns raised: 3|proposal: change the intake to request the receipt from the supplier when a bill arrives without one\nthree bills arrived without their receipts
+optimize||proposal: none\nthe machinery fits

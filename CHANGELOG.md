@@ -20,6 +20,18 @@ behavior.
 - `hale dna body` reads the lease; `hale dna body claim --force` releases a live lease of a body that is gone (a forced `body.claimed` row in your name; that body stops when it next asserts); `hale dna body release [--force]`.
 - `hale dna profile` prints the organism's combination — record, body, head, fleet, knowledge, trust, github, connections — detected from the pieces, never from a stored label; `status` gains `profile:` and `body:` lines. `hale dna new --profile local|remote-body [--remote <url>] [--body <user@host>]` sets the pieces.
 
+### DNA: the first books slice runs end to end (RFC #602, stage A)
+
+- `dna/acceptance/books` is a capture-only intake. It watches `inbox/`, files each bill as evidence, and for a bill without its receipt asks the organization for the follow-through and raises a concern. It posts nothing and keeps no ledger. `BOOKS_MODE=export` reconstructs a week of spending and obligations from the record alone, as open CSV with Decimal totals and the record head.
+- `dna/tests/books_slice_test.hl` runs the RFC's first-slice gate against a live `hale dna dev` on synthetic documents, with scripted models:
+  - bills are captured, and each missing receipt becomes a Task bound to the books practice and handed to the payer;
+  - the organism stops while those Tasks wait, and a completion recorded while it is down is honoured without replanning;
+  - a Task closes only with its evidence or an authorized exception;
+  - three omissions lead the optimize pass to a reviewed change to the intake, and the Board ratifies a new version of the practice;
+  - the next bill uses both, while an older case closes under the version it was handed with;
+  - the week's export totals the five bills with no obligation open, and no money moves.
+- The fixture lives in `hale-lang/hale` until the toolkit repository RFC #602 names exists; it moves as a copy.
+
 ### DNA: a person proposes a practice for the Board (GH #602)
 
 - `hale dna practice propose <name> --text <text> [--because …] [--supersedes <digest>]` gives a person a way to propose a practice, which used to be possible only from the toolchain's seeded design or a concern threshold. It is carried over the new membrane topic `dna.practice.requested`, or as a `practice.requested` row the host relays.
