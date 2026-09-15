@@ -523,6 +523,7 @@ locus Dna {
         }
         let z = self.journal.append(self.journal.revision(), "mutation." + (if r.outcome == "revise" { "revise" } else { "rejected" }), r.review_id,
             "review " + r.outcome + " by " + r.decided_by + "; genome and expression untouched");
+        if r.outcome != "revise" { self.settle_task_of(r.review_id, "failed", "review " + r.outcome + " after a restart"); }
         // the worktree was scratch; the Mutation, its candidate commit,
         // its Attempts and its evidence stay in the Journal
         let now = std::time::now();
@@ -712,6 +713,9 @@ locus Dna {
             let lease = self.gateway.take(o.mutation_id, "dna", now);
             let y = self.journal.append(self.journal.revision(), "mutation.retained", o.mutation_id, "observed healthy as " + o.model_hash);
             let z = self.gateway.remove(self.journal, o.mutation_id, lease.token, now);
+            // GH #604: after a restart the Work that would settle the
+            // Task is gone; the Task settles from its Mutation's outcome
+            self.settle_task_of(o.mutation_id, "done", "retained after a restart");
             return;
         }
         self.rollback_to_base(o.mutation_id, o.outcome, now);
@@ -818,6 +822,15 @@ locus Dna {
         b.bool_field("parsed", p.parsed);
         b.end_object();
         let j = self.journal.append(self.journal.revision(), "task.planned", req.task_id, b.result());
+        self.execute_plan(req.task_id, req.work_id, req.objective, req.target, p);
+    }
+    // The plan's execution, apart from receiving it: reached from
+    // `on_planned` with a live Work, and from `resume_work` after a
+    // restart with the plan read back from the record (GH #604 rule 2:
+    // a restart never regenerates a plan).
+    @unbounded
+    fn execute_plan(task_id: String, work_id: String, objective: String, ask_target: String, p: Plan) {
+        let req = WorkRequest { task_id: task_id, work_id: work_id, objective: objective, target: ask_target };
         if p.kind == "person" {
             // GH #596 W: a person's job. The Work is done as far as the
             // organism is concerned — it handed the Task on — and the
@@ -922,7 +935,9 @@ locus Dna {
         let mut out = "";
         while i < n {
             let e = self.journal.read(i);
-            if e.entity == task_id && std::str::contains(e.kind, "task.") && e.kind != "task.born" && e.kind != "task.planned" { out = e.kind[5..len(e.kind)]; }
+            // `task.resumed` is an event of a restart, not a state: a Task
+            // resumed and not yet settled is still pending
+            if e.entity == task_id && std::str::contains(e.kind, "task.") && e.kind != "task.born" && e.kind != "task.planned" && e.kind != "task.resumed" { out = e.kind[5..len(e.kind)]; }
             i = i + 1;
         }
         return out;
@@ -1021,11 +1036,19 @@ locus Dna {
         self.asked = self.asked + 1;
         let born = self.journal.append(self.journal.revision(), "intent.offered", i.id, i.outcome);
         if !born.ok { return "refused: journal " + born.error; }
-        let id = self.metabolism.offer(i, k);
-        let s = self.metabolism.find(id);
-        // the birth names its intent, so a reader can walk intent -> task
+        // GH #604 rule 1: the durable fact precedes the act. The id is
+        // minted, the birth is journaled (naming its intent, so a reader
+        // can walk intent -> task), and only then is the Task born; a
+        // birth the record refuses stops here, and nothing has run.
+        let id = self.metabolism.next_id();
         let r = self.journal.append(self.journal.revision(), "task.born", id, i.id + ": " + i.outcome);
-        if !r.ok { self.membrane.notify("journal", "append failed"); }
+        if !r.ok {
+            let x = self.journal.append(self.journal.revision(), "intent.refused", i.id, "the record refused the birth: " + r.error);
+            self.membrane.notify("journal", "append failed; " + i.id + " not admitted");
+            return "refused: journal " + r.error;
+        }
+        let born_id = self.metabolism.offer_as(id, i, k);
+        let s = self.metabolism.find(id);
         // settled already (in-tower performers answer synchronously);
         // routed Work settles later and `on_task_settled` journals it
         if s.id != "" {
@@ -1325,7 +1348,134 @@ locus Dna {
         self.metabolism.resume(tasks);
         if mutations > self.mutations_minted { self.mutations_minted = mutations; }
         self.budget.rehydrate(self.journal, std::time::now());
+        self.pend_born_tasks();
         self.fail_in_flight();
+        self.note_unrecovered_intents();
+        self.resume_work();
+    }
+    // GH #604 rule 1, the shape from before it: an `intent.offered` with
+    // no `task.born` naming it was admitted and lost, or never admitted —
+    // the record cannot tell which, and work may already have run. It
+    // is not re-offered; the record says so, and the asker asks again.
+    @unbounded
+    fn note_unrecovered_intents() {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "intent.offered" {
+                let mut born = false;
+                let mut noted = false;
+                let mut k = i + 1;
+                while k < n {
+                    let s = self.journal.read(k);
+                    if s.kind == "task.born" && std::str::starts_with(s.body, e.entity + ": ") { born = true; }
+                    if s.kind == "intent.unrecovered" && s.entity == e.entity { noted = true; }
+                    k = k + 1;
+                }
+                if !born && !noted {
+                    let x = self.journal.append(self.journal.revision(), "intent.unrecovered", e.entity, "offered before a restart and no Task was born; not re-admitted — ask again");
+                }
+            }
+            i = i + 1;
+        }
+    }
+    // The task a mutation was proposed for ("task <id> <class>: …").
+    fn task_of_mutation(mutation_id: String) -> String {
+        let n = self.journal.revision();
+        let mut i = 0;
+        let mut out = "";
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "mutation.proposed" && e.entity == mutation_id && std::str::starts_with(e.body, "task ") {
+                let rest = e.body[5..len(e.body)];
+                let sp = std::str::index_of(rest, " ");
+                out = if sp < 0 { rest } else { rest[0..sp] };
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+    // F.15 by the assembly, when the Work that would have settled the
+    // Task is gone (a restart between the proposal and the outcome):
+    // the Task settles in the record from its Mutation's outcome.
+    fn settle_task_of(mutation_id: String, disposition: String, detail: String) {
+        let t = self.task_of_mutation(mutation_id);
+        if len(t) == 0 || !std::str::starts_with(t, "t") { return; }
+        if self.task_state(t) != "pending" { return; }
+        let x = self.journal.append(self.journal.revision(), "task." + disposition, t, mutation_id + " " + detail);
+    }
+    // A Task whose restart fell between its `task.born` and its
+    // `task.pending` is unsettled all the same: the record says so first,
+    // so every settlement (each requires `pending`) can end it — its plan
+    // resumed, or its in-flight Mutation's outcome (the second review of
+    // #618). Bounded by the Tasks born.
+    @unbounded
+    fn pend_born_tasks() {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "task.born" && self.task_state(e.entity) == "" {
+                let x = self.journal.append(self.journal.revision(), "task.pending", e.entity, "after a restart: born, and not yet pending when the organization stopped");
+            }
+            i = i + 1;
+        }
+    }
+    // GH #604 rule 2: a Task born and not settled re-enters the tower
+    // after a restart from its last durable state. With a plan in the
+    // record it proceeds under that plan — never replanned; without one
+    // it is planned now, for the first time. A Task whose Mutation is
+    // beyond proposal is left to that Mutation's outcome (its Review is
+    // rehydrated; `settle_task_of` settles it), and a handed Task is a
+    // person's, waiting.
+    @unbounded
+    fn resume_work() {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "task.born" {
+                let id = e.entity;
+                let state = self.task_state(id);
+                if state == "pending" || state == "" {
+                    let mut proposed = false;
+                    let mut plan = "";
+                    let mut k = i + 1;
+                    while k < n {
+                        let s = self.journal.read(k);
+                        if s.kind == "mutation.proposed" && std::str::starts_with(s.body, "task " + id + " ") { proposed = true; }
+                        if s.kind == "task.planned" && s.entity == id { plan = s.body; }
+                        k = k + 1;
+                    }
+                    // a Task resumed before is resumed again: a restart that
+                    // stopped between its `task.resumed` and the dispatch left
+                    // it unfinished, and only its settlement ends it
+                    if !proposed {
+                        let colon = std::str::index_of(e.body, ": ");
+                        let objective = if colon < 0 { e.body } else { e.body[(colon + 2)..len(e.body)] };
+                        if len(plan) > 0 {
+                            let x = self.journal.append(self.journal.revision(), "task.resumed", id, "after a restart, under the plan in the record; not replanned");
+                            self.execute_plan(id, id + "/resumed", objective, "", Plan {
+                                org: self.org_id, task_id: id, work_id: id + "/resumed",
+                                kind: std::json::find_string_field(plan, "kind"),
+                                change_class: std::json::find_string_field(plan, "change_class"),
+                                target: std::json::find_string_field(plan, "target"),
+                                count: std::json::find_int_field(plan, "count"),
+                                narrative: std::json::find_string_field(plan, "narrative"),
+                                package: std::json::find_string_field(plan, "package"),
+                                by: std::json::find_string_field(plan, "by"),
+                                parsed: true
+                            });
+                        } else {
+                            let x = self.journal.append(self.journal.revision(), "task.resumed", id, "after a restart, before any plan; planned now for the first time");
+                            self.on_work_requested(WorkRequest { task_id: id, work_id: id + "/resumed", objective: objective, target: "", requires: "edit" });
+                        }
+                    }
+                }
+            }
+            i = i + 1;
+        }
     }
     // A Mutation whose last word in the record is `proposed`, `worktree`
     // or `located` was in flight — an editor mid-attempt — when the
@@ -1353,6 +1503,7 @@ locus Dna {
                 }
                 // `mutation.worktree … removed` is the worktree GONE, not opened
                 if last == "proposed" || (last == "worktree" && !removed) || last == "located" {
+                    self.settle_task_of(id, "failed", "in flight when the organization stopped");
                     let x = self.journal.append(self.journal.revision(), "mutation.failed", id, "in flight (" + last + ") when the organization stopped; nothing resumes an attempt");
                     let y = self.gateway.workspaces.remove(id);
                 }

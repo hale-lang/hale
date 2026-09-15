@@ -155,6 +155,7 @@ the same way. A project's path therefore has no length rule.
 `mutation.rejected`, `mutation.revise`, `mutation.refused`,
 `mutation.apply_retried`, `knowledge.retired`, `task.planned`,
 `grant.refused`, `grant.contracted`, `task.handed`, `org.reviewed`,
+`task.resumed`, `intent.unrecovered`,
 `optimize.refused`,
 `mutation.failed`, `effect.requested`, `effect.result`,
 `evidence.<step>`, `evidence.magnitude`, `review.requested`,
@@ -587,6 +588,24 @@ authority.
   of kind `person` settles the Work as handed rather than mutating
   anything. A `task.planned` row is not a settlement: the task's state
   is its last other `task.*` row.
+- **Work survives a restart (GH #604).** The record holds a Task's
+  birth before anything runs: the id is minted, `task.born` is
+  appended, and only then is the Task born — a birth the record
+  refuses stops there (`intent.refused`), and nothing has run. On
+  restart, a Task born and not settled re-enters the tower from its
+  last durable state (`task.resumed <task>`): under the plan in the
+  record when there is one, never replanned; planned for the first
+  time when there is none. `task.resumed` is an event of a restart,
+  never a state: a resumed Task not yet settled is still pending, it
+  settles like any other, and a restart that stopped between its
+  `task.resumed` and the dispatch leaves it to be resumed again at the
+  next one. A Task whose Mutation was in flight settles
+  `failed` with the Mutation; one whose Mutation is beyond proposal
+  waits on that Mutation's outcome, and settles from it when the Work
+  that would have settled it is gone. A handed Task is a person's and
+  waits. An `intent.offered` with no `task.born` naming it — the shape
+  from before this rule — is noted (`intent.unrecovered`) and never
+  re-offered: work may already have run.
 - **Dev relies on docker compose.** `init` writes `dna/compose.yaml`
   (the `knowledge-db` service, `pgvector/pgvector:pg16`, a named
   volume `hale-dna-<project>-knowledge`, a host port in 54xx from the

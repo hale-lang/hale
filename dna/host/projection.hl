@@ -163,7 +163,7 @@ locus Projection {
             let e = self.row(i);
             if e.entity == id {
                 if e.kind == "task.born" { t = TaskRow { id: id, outcome: e.body, state: "active", since: e.seq }; }
-                else if std::str::starts_with(e.kind, "task.") && len(t.id) > 0 { t.state = e.kind[5..len(e.kind)]; t.detail = e.body; }
+                else if std::str::starts_with(e.kind, "task.") && e.kind != "task.resumed" && len(t.id) > 0 { t.state = e.kind[5..len(e.kind)]; t.detail = e.body; }
             }
             i = i + 1;
         }
