@@ -7,6 +7,7 @@ import "../core" as dna;
 type TaskRow {
     id: String = "";
     outcome: String = "";
+    assignee: String = ""; // who a handed task is with (GH #604 rule 4)
     state: String = "active";
     detail: String = "";
     since: Int = 0;
@@ -163,6 +164,8 @@ locus Projection {
             let e = self.row(i);
             if e.entity == id {
                 if e.kind == "task.born" { t = TaskRow { id: id, outcome: e.body, state: "active", since: e.seq }; }
+                else if e.kind == "task.handed" && len(t.id) > 0 { t.state = "handed"; t.detail = e.body; t.assignee = std::json::find_string_field(e.body, "assignee"); }
+                else if e.kind == "task.reassigned" && len(t.id) > 0 { t.assignee = std::json::find_string_field(e.body, "to"); t.detail = e.body; }
                 else if std::str::starts_with(e.kind, "task.") && e.kind != "task.resumed" && len(t.id) > 0 { t.state = e.kind[5..len(e.kind)]; t.detail = e.body; }
             }
             i = i + 1;

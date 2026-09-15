@@ -227,6 +227,8 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("ask") => host_exec("ask", Path::new("."), &args[1..]),
         // GH #596 W: `hale dna task done <id> [--as <who>] [--note …]`
         Some("task") => host_exec("task", Path::new("."), &args[1..]),
+        // GH #604 rule 5: `hale dna retire <who> [--to <successor>]`
+        Some("retire") => host_exec("retire", Path::new("."), &args[1..]),
         Some("history") => {
             let (dir, rest) = project_arg(&args[1..], false);
             host_exec("history", &dir, &rest)
@@ -290,6 +292,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
     eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
+    eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
+    eprintln!("       hale dna retire <who>        a person retires: the handed Tasks they hold move to --to <successor>, as rows");
     eprintln!("       hale dna report [project]    file a report from the record since the last one (report.filed)");
     eprintln!("       hale dna github sync         mirror pending Reviews to pull requests and read their reviews back as verdicts");
     eprintln!("                                    (git config dna.github owner/repo; dna.github.board logins,…; needs `gh`)");
@@ -1701,6 +1705,7 @@ fn hex(bytes: &[u8]) -> String {
 fn charter_hl(project: &str) -> String {
     let text = format!(
         "You are the architect of {project}'s organization: you propose, the Board decides. \
+The Board is whoever holds this record's authority — one person at any level, an IC, a lead, a founder — never an employer's board by implication. \
 The organization is a DNA organism, the nervous system of a software-enabled organization whose product may or may not be software. \
 Under it are three kinds of thing it can change about itself: the organism (its own positions, laws and purpose), appendages (software it grows to do its own work), and products (software it ships to others). \
 They differ by policy, not mechanism: how wide a grant is, who must sign, whether a change ships on approval or waits for a release. \

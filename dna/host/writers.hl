@@ -62,10 +62,102 @@ fn task_done_verb(root: String, seed: String, id: String, who_flag: String, note
     if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
     if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: nothing to report done"); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    // GH #604 rule 4: completion is checked at admission — the row must
+    // be the assignee's. Reassignment is its own row, by its own verb.
+    if len(t.assignee) > 0 && t.assignee != who {
+        return fail("Task `" + id + "` is handed to " + t.assignee + ", not to " + who + "; `hale dna task reassign " + id + " --to " + who + "` first");
+    }
     let body = "by " + who + (if len(note) > 0 { ": " + note } else { "" });
     if !append_as(root, "task.done", id, body, who) { return fail("the record refused the append"); }
     let s2 = sync_record(root);
     return answer("task " + id + " done " + body + "\n");
+}
+
+// GH #604 rule 5: a handed Task moves to another person as a row that
+// names both; the Task stays handed. Reached per command.
+@unbounded
+fn task_reassign_verb(root: String, seed: String, id: String, to: String, by_flag: String) -> Answer {
+    if len(id) == 0 || len(to) == 0 { return fail("task reassign: `hale dna task reassign <id> --to <who> [--as <by>]`"); }
+    let s = sync_record(root);
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let p = open_projection(root, seed, "");
+    let t = p.task_of(id);
+    if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
+    if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: nothing to reassign"); }
+    let by = if len(by_flag) > 0 { by_flag } else { who_am_i() };
+    // GH #604 rule 5: no new work reaches a person who retired
+    let mut gone = false;
+    let mut k = 0;
+    while k < p.rows() {
+        let e = p.row(k);
+        if e.kind == "person.retired" && e.entity == to { gone = true; }
+        k = k + 1;
+    }
+    if gone { return fail("task reassign: " + to + " retired; no new work reaches them — reassign to someone who works here"); }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("from", t.assignee);
+    b.string_field("to", to);
+    b.string_field("by", by);
+    b.end_object();
+    if !append_as(root, "task.reassigned", id, b.result(), by) { return fail("the record refused the append"); }
+    let s2 = sync_record(root);
+    return answer("task " + id + " reassigned " + (if len(t.assignee) > 0 { "from " + t.assignee + " " } else { "" }) + "to " + to + " by " + by + "\n");
+}
+
+// GH #604 rule 5: a person retires. Admission of new work to them
+// stops; what they hold is transferred to a named successor, each a
+// `task.reassigned` row, and the retirement is a row in the retiring
+// or retiring-them person's name. Refused while they hold work and no
+// successor is named: pending work is accounted for, never dropped.
+@unbounded
+fn retire_verb(root: String, seed: String, who: String, to: String, by_flag: String) -> Answer {
+    if len(who) == 0 { return fail("retire: `hale dna retire <who> [--to <successor>] [--as <by>]`"); }
+    let s = sync_record(root);
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let p = open_projection(root, seed, "");
+    let by = if len(by_flag) > 0 { by_flag } else { who_am_i() };
+    let mut held = "";
+    let mut n = 0;
+    let mut i = 0;
+    while i < p.rows() {
+        let e = p.row(i);
+        if e.kind == "task.born" {
+            let t = p.task_of(e.entity);
+            if t.state == "handed" && t.assignee == who { held = held + e.entity + " "; n = n + 1; }
+        }
+        i = i + 1;
+    }
+    if n > 0 && len(to) == 0 { return fail(who + " holds " + to_string(n) + " handed task(s): " + dna::trim_nl(held) + "; name a successor: `hale dna retire " + who + " --to <who>`"); }
+    // a successor is someone who works here: not the person retiring, and
+    // not a person who retired before
+    if len(to) > 0 {
+        if to == who { return fail("retire: " + who + " cannot succeed themselves"); }
+        let mut k = 0;
+        while k < p.rows() {
+            let e = p.row(k);
+            if e.kind == "person.retired" && e.entity == to { return fail("retire: " + to + " retired; name a successor who works here"); }
+            k = k + 1;
+        }
+    }
+    let mut rest = held;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let id = if sp < 0 { rest } else { rest[0..sp] };
+        rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+        if len(id) == 0 { continue; }
+        let one = task_reassign_verb(root, seed, id, to, by);
+        if !one.ok { return one; }
+    }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("by", by);
+    b.string_field("to", to);
+    b.int_field("transferred", n);
+    b.end_object();
+    if !append_as(root, "person.retired", who, b.result(), by) { return fail("the record refused the append"); }
+    let s2 = sync_record(root);
+    return answer(who + " retired by " + by + "; " + to_string(n) + " task(s) transferred" + (if n > 0 { " to " + to } else { "" }) + "\n");
 }
 
 fn ask_verb(root: String, outcome: String, to: String, no_wait: Bool) -> Answer {

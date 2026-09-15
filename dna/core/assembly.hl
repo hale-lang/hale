@@ -815,6 +815,7 @@ locus Dna {
         b.string_field("change_class", p.change_class);
         b.string_field("class_applied", if p.kind == "organism" { "organization" } else { p.change_class });
         b.string_field("target", p.target);
+        b.string_field("assignee", p.assignee);
         b.int_field("count", p.count);
         b.string_field("narrative", p.narrative);
         b.string_field("package", p.package);
@@ -838,7 +839,24 @@ locus Dna {
             // it done (`hale dna task done <id> --as <who>`).
             let handed = "handed: not a software change — " + p.narrative;
             WorkDone <- WorkSettlement { work_id: req.work_id, disposition: "done", result: handed, attempts: 0, history: "a0:leader:handed " };
-            let x = self.journal.append(self.journal.revision(), "task.handed", req.task_id, req.work_id + " by leader: " + handed);
+            // GH #604 rule 4: the row names the assignee the plan named,
+            // so completion can be checked against them at admission.
+            let hb = std::json::Builder { };
+            hb.begin_object();
+            // GH #604 rule 5: retirement stops admission. A job planned for a
+            // person who retired goes to the successor their retirement named
+            // (unassigned when it named none), and the row says for whom it
+            // was planned.
+            let gone = self.retired(p.assignee);
+            let assignee = if gone.retired { self.admissible(p.assignee) } else { p.assignee };
+            hb.string_field("work", req.work_id);
+            hb.string_field("assignee", assignee);
+            if gone.retired { hb.string_field("retired_assignee", p.assignee); }
+            hb.string_field("by", "leader");
+            hb.string_field("narrative", handed);
+            hb.end_object();
+            let x = self.journal.append(self.journal.revision(), "task.handed", req.task_id, hb.result());
+            self.membrane.notify("task", req.task_id + " handed to " + (if len(assignee) > 0 { assignee } else { "a person (unassigned)" }));
             return;
         }
         // The governed child comes from the KIND, and the class is
@@ -926,6 +944,39 @@ locus Dna {
             let x = self.journal.append(self.journal.revision(), "task." + (if ok { "done" } else { "failed" }), req.task_id,
                 req.work_id + " by " + self.editor.identity() + ": " + out);
         }
+    }
+    // GH #604 rule 5: whether `who` retired, and to whom their work goes.
+    @unbounded
+    fn retired(who: String) -> RetiredPerson {
+        if len(who) == 0 { return RetiredPerson { }; }
+        let n = self.journal.revision();
+        let mut out = RetiredPerson { };
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "person.retired" && e.entity == who { out = RetiredPerson { retired: true, successor: std::json::find_string_field(e.body, "to") }; }
+            i = i + 1;
+        }
+        return out;
+    }
+    // Who receives work planned for `who`: `who` while they work here,
+    // else their successor's successor, and so on, to the first person
+    // not retired; "" (unassigned) when the chain ends in a retirement
+    // that named nobody, or comes back on itself (the second review of
+    // #619: a successor who also retired still received the work).
+    // Bounded by the retirements in the record.
+    @unbounded
+    fn admissible(who: String) -> String {
+        let mut at = who;
+        let mut seen = " ";
+        while len(at) > 0 {
+            let r = self.retired(at);
+            if !r.retired { return at; }
+            if std::str::contains(seen, " " + at + " ") { return ""; }
+            seen = seen + at + " ";
+            at = r.successor;
+        }
+        return "";
     }
     // The last `task.<state>` journaled for an id ("" when only born).
     @unbounded
@@ -1050,8 +1101,12 @@ locus Dna {
         let born_id = self.metabolism.offer_as(id, i, k);
         let s = self.metabolism.find(id);
         // settled already (in-tower performers answer synchronously);
-        // routed Work settles later and `on_task_settled` journals it
-        if s.id != "" {
+        // routed Work settles later and `on_task_settled` journals it.
+        // A Task the leader handed to a person is settled as far as the
+        // metabolism goes — the organism's part is over — but stays
+        // HANDED in the record until the person reports it done (GH
+        // #604 rule 4): no settlement row here.
+        if s.id != "" && self.task_state(id) != "handed" {
             let r2 = self.journal.append(self.journal.revision(), "task." + s.disposition, id, s.detail);
         }
         return id;
@@ -1465,6 +1520,7 @@ locus Dna {
                                 narrative: std::json::find_string_field(plan, "narrative"),
                                 package: std::json::find_string_field(plan, "package"),
                                 by: std::json::find_string_field(plan, "by"),
+                                assignee: std::json::find_string_field(plan, "assignee"),
                                 parsed: true
                             });
                         } else {

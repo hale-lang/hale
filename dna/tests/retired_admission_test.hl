@@ -1,0 +1,89 @@
+// GH #604 rule 5 — retirement stops admission. A person recorded as
+// retired receives no new work: a job the leader plans for them is handed
+// to the successor their retirement named, and the handed row says whom
+// it was planned for. With no successor named, it is handed unassigned.
+// Through the CLI, a handed Task is not reassigned to a retired person.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` (newline-separated) in `dir`, model discovery off.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+main locus App {
+    params {
+        one: dna::Dna = dna::Dna { planned: true, org_id: "ret" };
+        lead: dna::Leader = dna::Leader {
+            name: "leader", org: "ret", charter: "You are the architect.",
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: noor\ncall the supplier" },
+                deep: dna::FakeModel { name: "deep", answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: noor\ncall the supplier" }
+            }
+        };
+        // pointed at the project in run(); never at the working directory
+        j: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/dna-retired" };
+    }
+    fn last(kind: String, entity: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.one.journal.revision() {
+            let e = self.one.journal.read(i);
+            if e.kind == kind && e.entity == entity { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    run() {
+        // the record says who left, and to whom their work goes
+        let r1 = self.one.journal.append(self.one.journal.revision(), "person.retired", "noor", "{\"by\": \"riley\", \"to\": \"dev\", \"transferred\": 0}");
+        let r2 = self.one.journal.append(self.one.journal.revision(), "person.retired", "lee", "{\"by\": \"riley\", \"to\": \"\", \"transferred\": 0}");
+        std::test::assert(self.one.retired("noor").retired && self.one.retired("noor").successor == "dev", "noor retired, to dev");
+        std::test::assert(self.one.retired("lee").retired && len(self.one.retired("lee").successor) == 0, "lee retired, no successor");
+        std::test::assert(!self.one.retired("mara").retired, "mara works here");
+        // the successor is followed to someone who works here
+        std::test::assert_eq_str(self.one.admissible("noor"), "dev", "noor's work goes to dev while dev works here");
+        std::test::assert_eq_str(self.one.admissible("lee"), "", "lee's work is unassigned");
+        let r3 = self.one.journal.append(self.one.journal.revision(), "person.retired", "ana", "{\"by\": \"riley\", \"to\": \"bo\", \"transferred\": 0}");
+        let r4 = self.one.journal.append(self.one.journal.revision(), "person.retired", "bo", "{\"by\": \"riley\", \"to\": \"ana\", \"transferred\": 0}");
+        std::test::assert_eq_str(self.one.admissible("ana"), "", "a chain that comes back on itself is unassigned");
+
+        // a fresh job planned for noor goes to dev
+        let t = self.one.ask(dna::Intent { id: "i1", outcome: "call the supplier about the pallets", from: "riley" }, dna::Knobs { routed: true, requires: "edit" });
+        std::time::sleep(300ms);
+        let handed = self.last("task.handed", t);
+        std::test::assert(std::json::find_string_field(handed, "assignee") == "dev" && std::json::find_string_field(handed, "retired_assignee") == "noor", "handed to the successor, not the retired person: " + handed);
+        // dev retires too, to mara: the next job planned for noor goes to mara
+        let r5 = self.one.journal.append(self.one.journal.revision(), "person.retired", "dev", "{\"by\": \"riley\", \"to\": \"mara\", \"transferred\": 0}");
+        let t2 = self.one.ask(dna::Intent { id: "i2", outcome: "call the supplier about the crates", from: "riley" }, dna::Knobs { routed: true, requires: "edit" });
+        std::time::sleep(300ms);
+        let handed2 = self.last("task.handed", t2);
+        std::test::assert(std::json::find_string_field(handed2, "assignee") == "mara" && std::json::find_string_field(handed2, "retired_assignee") == "noor", "a retired successor passes the work on: " + handed2);
+
+        // ---- through the CLI: no reassignment to a retired person
+        let scratch = "/tmp/dna-retired-" + to_string(std::process::pid());
+        std::io::fs::mkdir(scratch) or discard;
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nret");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let app = scratch + "/ret";
+        self.j = dna::GitJournal { repo: app };
+        self.j.refresh();
+        let a1 = self.j.append(self.j.revision(), "task.born", "t9", "i9: file the invoice");
+        let a2 = self.j.append(self.j.revision(), "task.handed", "t9", "{\"work\": \"t9/w\", \"assignee\": \"mara\", \"by\": \"leader\"}");
+        let a3 = self.j.append(self.j.revision(), "person.retired", "noor", "{\"by\": \"riley\", \"to\": \"dev\", \"transferred\": 0}");
+        let refused = in_dir(app, toolchain() + "\ndna\ntask\nreassign\nt9\n--to\nnoor\n--as\nriley");
+        std::test::assert(refused.code != 0 && std::str::contains(refused.stdout + refused.stderr, "noor retired"), "no work to a retired person: " + refused.stdout + refused.stderr);
+        let bad_successor = in_dir(app, toolchain() + "\ndna\nretire\nkai\n--to\nnoor\n--as\nriley");
+        std::test::assert(bad_successor.code != 0 && std::str::contains(bad_successor.stdout + bad_successor.stderr, "noor retired"), "no retired successor: " + bad_successor.stdout + bad_successor.stderr);
+        let moved = in_dir(app, toolchain() + "\ndna\ntask\nreassign\nt9\n--to\ndev\n--as\nriley");
+        std::test::assert(moved.code == 0 && std::str::contains(moved.stdout, "task t9 reassigned from mara to dev by riley"), "to someone who works here: " + moved.stdout + moved.stderr);
+        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+    }
+}
+
+fn main() { App { }; }

@@ -85,13 +85,29 @@ repository:
   authority, independence, the word `approve` — and refuses any other
   verdict; a Review approved and never applied is rehydrated settled,
   so the road survives a restart.
-- **A person's job (GH #596 W).** A plan of kind `person` hands the
-  Task on: the Work is done as far as the organism is concerned and the
-  record keeps `task.handed <task>`; nothing is mutated. The person
-  reports it done with `hale dna task done <id> [--as <who>] [--note
-  …]`, a `task.done` row in their name and nothing else. Refused for a
-  Task that is not handed: one the organism is working, or has settled,
-  is not a person's to close.
+- **A person's job (GH #596 W; GH #604 rules 4 and 5).** A plan of kind
+  `person` hands the Task on: the Work is done as far as the organism
+  is concerned and the record keeps `task.handed <task>` — `work`,
+  `assignee` (the person the plan named), `by`, `narrative`; nothing
+  is mutated. The person reports it done with `hale dna task done <id>
+  [--as <who>] [--note …]`, a `task.done` row in their name and nothing
+  else. **Completion is checked at admission:** a handed Task with an
+  assignee is closed only in the assignee's name; anyone else is
+  refused and told to reassign. `hale dna task reassign <id> --to <who>`
+  appends `task.reassigned` (`from`, `to`, `by`) and the Task stays
+  handed. `hale dna retire <who> [--to <successor>]` stops new work
+  reaching a person: every handed Task they hold is transferred as its
+  own `task.reassigned` row and `person.retired <who>` records it (`by`, `to`, `transferred`). From then
+  no new work reaches them: a job the leader plans for them is handed
+  to that successor, with `retired_assignee` on the `task.handed` row —
+  followed on through each successor who retired in turn to the first
+  person still working, unassigned when the chain ends in a retirement
+  that named none or comes back on itself — and a Task is never
+  reassigned to them, nor are they named anyone's successor;
+  refused while they hold work and no successor is named — pending
+  work is accounted for, never dropped. Refused for a Task that is not
+  handed: one the organism is working, or has settled, is not a
+  person's to close.
 - **The optimize pass (GH #596 O).** On a cadence the org chart sets
   (`optimize_every_ms` on the substrate; 0 is never; the org program's
   loop ticks it with a millisecond monotonic clock), the substrate
@@ -155,7 +171,7 @@ the same way. A project's path therefore has no length rule.
 `mutation.rejected`, `mutation.revise`, `mutation.refused`,
 `mutation.apply_retried`, `knowledge.retired`, `task.planned`,
 `grant.refused`, `grant.contracted`, `task.handed`, `org.reviewed`,
-`task.resumed`, `intent.unrecovered`,
+`task.resumed`, `intent.unrecovered`, `task.reassigned`, `person.retired`,
 `optimize.refused`,
 `mutation.failed`, `effect.requested`, `effect.result`,
 `evidence.<step>`, `evidence.magnitude`, `review.requested`,
