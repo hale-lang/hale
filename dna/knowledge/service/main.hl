@@ -56,6 +56,8 @@ locus Service {
     params {
         root: String = ".";
         store: know::KnowledgeStore = know::Mem { };
+        // GH #606: the only keeper of protected bodies
+        protected: know::ProtectedBodies = know::MemProtected { };
         j: dna::GitJournal = dna::GitJournal { repo: ".", author: "knowledge" };
         receipts: dna::GitReceipts = dna::GitReceipts { repo: "." };
         applied: Int = 0;
@@ -94,6 +96,7 @@ locus Service {
         if self.opened { eprintln("hale dna knowledge: the store's connection is gone (", self.store.last_error(), "); dialling again"); }
         self.opened = false;
         self.store.scope(scope);
+        self.protected.scope(scope);
         if self.store.reopen() {
             self.opened = true;
             self.last_error = "";
@@ -116,6 +119,27 @@ locus Service {
         self.applied = self.applied + r.ratified + r.proposed + r.declined;
         self.last_error = r.error;
         return r;
+    }
+    @unbounded
+    fn has_row(kind: String, entity: String) -> Bool {
+        let mut i = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            if e.kind == kind && e.entity == entity { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // A `receipt.disclosed` row naming this reader and this purpose.
+    @unbounded
+    fn disclosed(digest: String, reader: String, purpose: String) -> Bool {
+        let mut i = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            if e.kind == "receipt.disclosed" && e.entity == digest && std::json::find_string_field(e.body, "recipient") == reader && std::json::find_string_field(e.body, "purpose") == purpose { return true; }
+            i = i + 1;
+        }
+        return false;
     }
     fn summary() -> String {
         let up = self.ensure_open();
@@ -246,6 +270,72 @@ locus Service {
             b.end_object();
             return json(b.result());
         }
+        // GH #606: protected evidence. A body is kept here and nowhere
+        // else; the record gets its digest and class. A read names a
+        // reader and a purpose, is refused unless a `receipt.disclosed`
+        // row names both, and is a row either way.
+        if std::http::is_route(ctx, "POST", "/receipt") {
+            let b = req.body;
+            let class = std::json::find_string_field(b, "class");
+            let text = std::json::find_string_field(b, "text");
+            let by = std::json::find_string_field(b, "by");
+            if !dna::protected_class(class) { return refusal(400, "class: `" + class + "` is not protected (customer | confidential); a public or internal body is an ordinary git receipt"); }
+            if len(text) == 0 { return refusal(400, "text: nothing to keep"); }
+            let digest = dna::digest_of(text);
+            if !self.protected.ready() { return refusal(503, self.protected.why_not() + "; the body of " + digest + " is not kept"); }
+            if !self.protected.put(digest, class, text, std::time::now()) { return refusal(503, "the protected store refused: " + self.protected.last_error()); }
+            if !self.has_row("receipt.classified", digest) {
+                let rb = std::json::Builder { };
+                rb.begin_object();
+                rb.string_field("class", class);
+                rb.string_field("by", by);
+                rb.string_field("store", self.protected.kind());
+                rb.end_object();
+                let x = self.j.append(self.j.revision(), "receipt.classified", digest, rb.result());
+                if !x.ok { return refusal(503, "the body of " + digest + " is kept, but the record refused its classification (" + x.error + "); file it again"); }
+            }
+            let ob = std::json::Builder { };
+            ob.begin_object();
+            ob.string_field("digest", digest);
+            ob.string_field("class", class);
+            ob.end_object();
+            return json(ob.result());
+        }
+        if std::str::starts_with(req.path, "/receipt/") && req.method == "GET" {
+            let q = std::str::index_of(req.path, "?");
+            let digest = know::url_decode(if q < 0 { req.path[9..len(req.path)] } else { req.path[9..q] });
+            let reader = know::url_decode(std::http::query_param(ctx.params, "as"));
+            let purpose = know::url_decode(std::http::query_param(ctx.params, "purpose"));
+            if len(reader) == 0 || len(purpose) == 0 { return refusal(400, "a read names a reader (`as`) and a purpose"); }
+            if !self.protected.ready() { return refusal(503, self.protected.why_not()); }
+            let p = self.protected.get(digest);
+            if !p.present {
+                let err = self.protected.last_error();
+                return refusal(if len(err) > 0 { 503 } else { 404 }, if len(err) > 0 { "the protected store cannot read " + digest + ": " + err } else { "no protected body for " + digest });
+            }
+            let moved = self.j.refresh();
+            let rb = std::json::Builder { };
+            rb.begin_object();
+            rb.string_field("by", reader);
+            rb.string_field("purpose", purpose);
+            rb.string_field("class", p.class);
+            rb.end_object();
+            if !self.disclosed(digest, reader, purpose) {
+                let x = self.j.append(self.j.revision(), "receipt.read_refused", digest, rb.result());
+                return refusal(403, "not disclosed to " + reader + " for " + purpose + ": `hale dna receipt disclose " + digest + " --to " + reader + " --purpose " + purpose + "` authorizes it");
+            }
+            // every answer is an act in the reader's name: a read the record
+            // cannot hold is not answered, and no byte of the body leaves
+            let x = self.j.append(self.j.revision(), "receipt.read", digest, rb.result());
+            if !x.ok { return refusal(503, "the read of " + digest + " could not be recorded (" + x.error + "); nothing was disclosed"); }
+            let ob = std::json::Builder { };
+            ob.begin_object();
+            ob.string_field("digest", digest);
+            ob.string_field("class", p.class);
+            ob.string_field("text", p.text);
+            ob.end_object();
+            return json(ob.result());
+        }
         if std::http::is_route(ctx, "POST", "/apply") {
             let r = self.apply();
             let b = std::json::Builder { };
@@ -281,6 +371,14 @@ main locus Knowledge {
     }
 }
 
+fn refusal(status: Int, why: String) -> std::http::Response {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("error", why);
+    b.end_object();
+    return std::http::Response { status: status, content_type: "application/json", body: b.result() };
+}
+
 fn main() {
     let root = if len(arg(1)) > 0 { arg(1) } else { "." };
     let port = std::str::parse_int(arg(2)) or 8791;
@@ -293,7 +391,7 @@ fn main() {
         eprintln("hale dna knowledge: in-memory store at :", port, " over ", root, " (nothing durable; set a postgres:// DSN for a shared graph)");
         Knowledge {
             root: root, port: port, dsn: dsn,
-            srv: std::http::Server { port: port, handler: Service { root: root, store: know::Mem { }, j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root } } }
+            srv: std::http::Server { port: port, handler: Service { root: root, store: know::Mem { }, protected: know::MemProtected { }, j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root } } }
         };
         return;
     }
@@ -302,6 +400,6 @@ fn main() {
     eprintln("hale dna knowledge: postgres at ", d.host, ":", d.port, "/", d.database, ", serving :", port, " over ", root);
     Knowledge {
         root: root, port: port, dsn: dsn,
-        srv: std::http::Server { port: port, handler: Service { root: root, store: know::Pq { conn: know::pq_conn(d) }, j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root } } }
+        srv: std::http::Server { port: port, handler: Service { root: root, store: know::Pq { conn: know::pq_conn(d) }, protected: know::PqProtected { conn: know::pq_conn(d) }, j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root } } }
     };
 }

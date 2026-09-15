@@ -112,6 +112,7 @@ fn dna_fixture_set_is_complete() {
             "performers_test.hl",
             "plan_routing_test.hl",
             "prompt_receipt_test.hl",
+            "receipt_vault_test.hl",
             "recorded_model_test.hl",
             "recursion_settlement_test.hl",
             "rehydrate_work_test.hl",

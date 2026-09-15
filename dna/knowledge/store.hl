@@ -376,19 +376,7 @@ locus Pq {
     // no identity and opens under `dna_unscoped`, where nothing is ever
     // applied (there is nothing to apply); its first row moves it to
     // its own schema.
-    fn schema() -> String {
-        if len(self.record_id) == 0 { return "dna_unscoped"; }
-        let mut out = "dna_";
-        let mut i = 0;
-        while i < len(self.record_id) && i < 56 {
-            let c = self.record_id[i..(i + 1)];
-            let lower = std::str::lower(c);
-            let ok = (lower >= "a" && lower <= "z") || (lower >= "0" && lower <= "9");
-            out = out + (if ok { lower } else { "_" });
-            i = i + 1;
-        }
-        return out;
-    }
+    fn schema() -> String { return schema_for(self.record_id); }
     fn fail(what: String, e: db::DbError) -> Bool {
         self.error = what + ": " + e.kind + " " + e.detail;
         return false;
@@ -689,4 +677,22 @@ fn parse_dsn(s: String) -> Dsn {
 // value a factory hands back into a field.
 fn pq_conn(d: Dsn) -> pq::PgConn {
     return pq::PgConn { host: d.host, port: d.port, user: d.user, password: d.password, database: d.database, sslmode: d.sslmode };
+}
+
+// The schema a record's projections live in (GH #613): `dna_<identity>`,
+// the identity lowercased with anything but a letter or digit folded to
+// `_`; `dna_unscoped` while the record has no rows. The protected store
+// (GH #606) keeps its table in the same schema.
+fn schema_for(record_id: String) -> String {
+    if len(record_id) == 0 { return "dna_unscoped"; }
+    let mut out = "dna_";
+    let mut i = 0;
+    while i < len(record_id) && i < 56 {
+        let c = record_id[i..(i + 1)];
+        let lower = std::str::lower(c);
+        let ok = (lower >= "a" && lower <= "z") || (lower >= "0" && lower <= "9");
+        out = out + (if ok { lower } else { "_" });
+        i = i + 1;
+    }
+    return out;
 }

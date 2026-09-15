@@ -869,3 +869,86 @@ fn schedule_verb(root: String, sub: String, id: String, who_flag: String) -> Ans
     if n == 0 { return answer("schedules: none declared (the org chart's `birth()` declares them: `self.core.schedule(dna::Schedule { … })`)\n"); }
     return answer("schedules: " + to_string(n) + "\n" + out);
 }
+
+// ---- protected evidence (GH #606) --------------------------------------
+// `hale dna receipt` lists what the record says of protected evidence;
+// `receipt disclose <digest> --to <who> --purpose <p>` authorizes a
+// reader for a purpose, as a row in your name; `receipt show <digest>
+// --purpose <p>` reads it through the knowledge service in your name.
+
+fn knowledge_url(root: String) -> String {
+    if std::env::var_exists("HALE_DNA_KNOWLEDGE_URL") { return std::env::var("HALE_DNA_KNOWLEDGE_URL"); }
+    let saved = std::io::fs::read_file(root + "/.hale/dna/knowledge.url") or "";
+    return dna::trim_nl(saved);
+}
+
+fn vault_failed(e: std::http::HttpError) -> std::http::ClientResponse {
+    return std::http::ClientResponse { status: 0, body: std::bytes::from_string("{\"error\": \"the knowledge service did not answer: " + e.kind + "\"}") };
+}
+
+@unbounded
+fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: String, who_flag: String) -> Answer {
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    if sub == "disclose" {
+        if len(digest) == 0 || len(to) == 0 || len(purpose) == 0 { return fail("receipt disclose: `hale dna receipt disclose <digest> --to <recipient> --purpose <purpose> [--as <who>]`"); }
+        let s = sync_record(root);
+        let p = open_projection(root, ".", "");
+        let mut known = false;
+        let mut i = 0;
+        while i < p.rows() {
+            let e = p.row(i);
+            if e.entity == digest && (e.kind == "receipt.classified" || e.kind == "receipt.withheld") { known = true; }
+            i = i + 1;
+        }
+        if !known { return fail("receipt disclose: " + digest + " is not protected evidence in the record (an internal receipt needs no disclosure)"); }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("recipient", to);
+        b.string_field("purpose", purpose);
+        b.string_field("by", who);
+        b.end_object();
+        if !append_as(root, "receipt.disclosed", digest, b.result(), who) { return fail("the record refused the append"); }
+        let s2 = sync_record(root);
+        return answer("receipt " + digest + " disclosed to " + to + " for " + purpose + " (receipt.disclosed, by " + who + ")\n");
+    }
+    if sub == "show" {
+        if len(digest) == 0 || len(purpose) == 0 { return fail("receipt show: `hale dna receipt show <digest> --purpose <purpose> [--as <who>]`"); }
+        let url = knowledge_url(root);
+        if len(url) == 0 { return fail("receipt show: no knowledge service is known here (HALE_DNA_KNOWLEDGE_URL, or `hale dna dev`); protected evidence is kept there alone"); }
+        let resp = std::http::get(url + "/receipt/" + dna::url_encode(digest) + "?as=" + dna::url_encode(who) + "&purpose=" + dna::url_encode(purpose)) or vault_failed(err);
+        let body = std::str::from_bytes(resp.body);
+        if resp.status != 200 { return fail("receipt show: " + std::json::find_string_field(body, "error")); }
+        let text = std::json::find_string_field(body, "text");
+        return answer("receipt " + digest + " (" + std::json::find_string_field(body, "class") + ", " + to_string(len(text)) + " bytes, disclosed to " + who + " for " + purpose + ")\n" + text + "\nend of receipt\n");
+    }
+    if len(sub) > 0 && sub != "list" { return fail("receipt: `hale dna receipt`, `receipt disclose <digest> --to <who> --purpose <p>`, or `receipt show <digest> --purpose <p>`"); }
+    let p = open_projection(root, ".", "");
+    let mut out = "";
+    let mut n = 0;
+    let mut i = 0;
+    while i < p.rows() {
+        let e = p.row(i);
+        if e.kind == "receipt.classified" || e.kind == "receipt.withheld" {
+            n = n + 1;
+            let mut disclosures = "";
+            let mut reads = 0;
+            let mut refusals = 0;
+            let mut k = 0;
+            while k < p.rows() {
+                let f = p.row(k);
+                if f.entity == e.entity {
+                    if f.kind == "receipt.disclosed" { disclosures = disclosures + (if len(disclosures) > 0 { "; " } else { "" }) + "disclosed to " + std::json::find_string_field(f.body, "recipient") + " for " + std::json::find_string_field(f.body, "purpose"); }
+                    if f.kind == "receipt.read" { reads = reads + 1; }
+                    if f.kind == "receipt.read_refused" { refusals = refusals + 1; }
+                }
+                k = k + 1;
+            }
+            let state = if e.kind == "receipt.withheld" { "withheld: " + std::json::find_string_field(e.body, "why") } else { "kept by the knowledge service" };
+            out = out + "  " + e.entity + " [" + std::json::find_string_field(e.body, "class") + "] " + state + (if len(disclosures) > 0 { " · " + disclosures } else { "" }) + " · read " + to_string(reads) + ", refused " + to_string(refusals) + "\n";
+        }
+        i = i + 1;
+    }
+    if n == 0 { return answer("receipts: no protected evidence in the record\n"); }
+    return answer("receipts: " + to_string(n) + " protected\n" + out);
+}

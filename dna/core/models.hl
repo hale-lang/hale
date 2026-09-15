@@ -107,7 +107,7 @@ locus FakeModel {
     }
     fn identity() -> String { return self.name; }
     fn model_name() -> String { return self.model; }
-    fn allows(data_class: String) -> Bool { return data_class != "customer"; }
+    fn allows(data_class: String) -> Bool { return !protected_class(data_class); }
     fn capacity_bytes() -> Int { return self.max_bytes; }
     fn works_in_place() -> Bool { return false; }
     // The scripted answer for a request about a file, by try then by file.
@@ -338,7 +338,7 @@ locus OpenAiChat {
     // A hosted model never sees customer data, and a backend without a
     // credential is not a permitted backend — the router refuses
     // cleanly instead of the wire failing.
-    fn allows(data_class: String) -> Bool { return data_class != "customer" && self.credential.ready(); }
+    fn allows(data_class: String) -> Bool { return !protected_class(data_class) && self.credential.ready(); }
     fn capacity_bytes() -> Int { return self.max_bytes; }
     fn works_in_place() -> Bool { return false; }
     @effects(is: { external_model })
@@ -454,7 +454,7 @@ locus AnthropicMessages {
     bus { publish ModelCalled; }
     fn identity() -> String { return self.name; }
     fn model_name() -> String { return self.model; }
-    fn allows(data_class: String) -> Bool { return data_class != "customer" && self.credential.ready(); }
+    fn allows(data_class: String) -> Bool { return !protected_class(data_class) && self.credential.ready(); }
     fn capacity_bytes() -> Int { return self.max_bytes; }
     fn works_in_place() -> Bool { return false; }
     @effects(is: { external_model })
@@ -572,7 +572,7 @@ locus LocalModel {
 locus EvidenceAwareSelection {
     params { default_class: String = "quick"; }
     fn select(req: ModelRequest, quick_ok: Bool, deep_ok: Bool, private_ok: Bool) -> String {
-        if req.data_class == "customer" {
+        if protected_class(req.data_class) {
             if private_ok { return "private"; }
             return ""; // no permitted backend: refuse, never leak
         }
@@ -811,7 +811,7 @@ locus HarnessModel {
     fn model_name() -> String { return if len(self.model) > 0 { self.command + " " + self.model } else { self.command }; }
     // A harness sends the prompt and whatever it reads to its own
     // hosted model: customer data never; and nothing without the binary.
-    fn allows(data_class: String) -> Bool { return data_class != "customer" && self.present; }
+    fn allows(data_class: String) -> Bool { return !protected_class(data_class) && self.present; }
     fn capacity_bytes() -> Int { return self.max_bytes; }
     fn works_in_place() -> Bool { return true; }
     // A boundary is in force when the confinement is a real one and is

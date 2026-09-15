@@ -32,7 +32,13 @@ e9d9359 evidence.diff bf94e503c1c002f277248b14b6afd1910bb8ce6f
 - **Receipts** are blobs under `refs/dna/receipts/<sha256>`, by the
   digest of their content: a verification step's output, a diff
   document. Events name receipts by digest; `git cat-file -p` reads
-  one.
+  one. A customer or confidential body is never one of these: the
+  knowledge service keeps it, encrypted at rest, and the record holds
+  only its digest and its class. `hale dna receipt` lists them; `hale
+  dna receipt disclose <digest> --to <who> --purpose <p>` authorizes a
+  reader; `hale dna receipt show <digest> --purpose <p>` reads one in
+  your name, and the read is a row. Nothing protected travels with
+  `sync`.
 - **Leases** are blobs under `refs/dna/lease/<key>`, compare-and-
   swapped the same way, with fencing tokens; a stale token is
   refused.

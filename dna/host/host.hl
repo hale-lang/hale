@@ -343,6 +343,8 @@ locus Host {
         self.knowledge_url = "http://127.0.0.1:" + port;
         let kw = write_text(self.dna_dir + "/knowledge.pid", to_string(self.knowledge.pid)) or false;
         let kd = write_text(self.dna_dir + "/knowledge.dsn", dsn) or false;
+        // GH #606: where the CLI reaches the keeper of protected evidence
+        let ku = write_text(self.dna_dir + "/knowledge.url", self.knowledge_url) or false;
         self.say("knowledge service (pid " + to_string(self.knowledge.pid) + ") at :" + port + " over " + (if dsn == "memory" { "an in-memory store" } else { "postgres" }));
     }
     fn remove_sockets() {

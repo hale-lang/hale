@@ -20,6 +20,13 @@ behavior.
 - `hale dna body` reads the lease; `hale dna body claim --force` releases a live lease of a body that is gone (a forced `body.claimed` row in your name; that body stops when it next asserts); `hale dna body release [--force]`.
 - `hale dna profile` prints the organism's combination — record, body, head, fleet, knowledge, trust, github, connections — detected from the pieces, never from a stored label; `status` gains `profile:` and `body:` lines. `hale dna new --profile local|remote-body [--remote <url>] [--body <user@host>]` sets the pieces.
 
+### DNA: protected evidence — customer and confidential bodies off the record, disclosed and read by row (GH #606, part 1)
+
+- A receipt has a data class. A `public` or `internal` body stays a git receipt. A `customer` or `confidential` body (`protected_class`) never becomes one: `Dna.file_evidence` hands it to the knowledge service through `ReceiptVault`, which keeps it in the record's own schema and appends `receipt.classified <digest> {class, by, store}`. With no service, the body is withheld (`receipt.withheld`) and nothing holds it. The record keeps the digest and class either way, so `sync` never carries a protected body.
+- `PqProtected` encrypts each body at rest with pgcrypto (OpenPGP, AES-256) under `HALE_DNA_RECEIPT_KEY`, read into a sealed locus and sent to the database only as a query parameter. `MemProtected` keeps bodies for the life of a `memory` service. `std::crypto` has no cipher, so the vetted implementation is the database's.
+- Reading a protected body names a reader and a purpose. The service answers only when a `receipt.disclosed` row names both, and appends `receipt.read` or `receipt.read_refused` either way. `hale dna receipt [disclose | show]` drive it; `hale dna receipt` lists what the record says.
+- Hosted models refuse `confidential` as they refuse `customer`, and `Dna.evidence_class(digest)` is the class a prompt carrying the body declares. Retention, redaction and legal holds follow in part 2.
+
 ### DNA: grants delegate money, counterparties, routes and time (GH #605)
 
 - `Grant` gains `amounts` (per-operation ceilings per currency), `window_amounts` and `window`, `counterparties`, `routes`, `expires` and an `authority_epoch`. Every field defaults to none, so an existing grant spends nothing. Containment covers them (`intersect_grants`, `grant_within`, `resource_gap`), and a child born wider is refused at birth naming the field.

@@ -102,7 +102,7 @@ fn main() {
     let fleet = arg(4);
     let plan = arg(5);
     let toolchain = std::env::var("HALE_DNA_TOOLCHAIN");
-    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --holder --token --expires --host-pid ");
+    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --holder --token --expires --host-pid ");
     let mut ans = Answer { ok: false, text: "unknown verb `" + verb + "`" };
     if (verb == "board" || verb == "review") && !membrane_up(root) { let s = sync_record(root); }
     if verb == "fleet" { let s = sync_record(root); }
@@ -169,6 +169,9 @@ fn main() {
         if sub == "provision" { ans = body_provision_verb(root, word(a, 1), flag(a, "--dsn"), flag(a, "--dir"), has_flag(a, "--dry-run"), flag(a, "--as")); }
         else if sub == "start" || sub == "stop" || sub == "logs" { ans = body_ctl_verb(root, sub, flag(a, "--body")); }
         else { ans = body_verb(root, sub, has_flag(a, "--force"), flag(a, "--as")); }
+    } else if verb == "receipt" {
+        // GH #606: protected evidence
+        ans = receipt_verb(root, word(a, 0), word(a, 1), flag(a, "--to"), flag(a, "--purpose"), flag(a, "--as"));
     } else if verb == "schedule" {
         // GH #610: the schedules, and pause/resume as rows
         ans = schedule_verb(root, word(a, 0), word(a, 1), flag(a, "--as"));

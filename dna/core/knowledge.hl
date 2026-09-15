@@ -320,3 +320,63 @@ fn parent_path(path: String) -> String {
     }
     return "";
 }
+
+// ---- protected evidence (GH #606) --------------------------------------
+// The organism's line to the one keeper of protected bodies: the
+// knowledge service. `keep` hands a customer or confidential body over
+// and answers its digest; `read` asks for one in a reader's name and for
+// a purpose, and the service refuses unless a disclosure row names both.
+
+type VaultRead {
+    present: Bool = false;
+    class: String = "";
+    text: String = "";
+    refused: String = "";
+}
+
+locus ReceiptVault {
+    params {
+        url: String = "";
+        url_env: String = "HALE_DNA_KNOWLEDGE_URL";
+        last_error: String = "";
+    }
+    birth() {
+        if len(self.url) == 0 && len(self.url_env) > 0 && std::env::var_exists(self.url_env) { self.url = std::env::var(self.url_env); }
+    }
+    fn ready() -> Bool { return len(self.url) > 0; }
+    @unbounded
+    fn call_failed(e: std::http::HttpError) -> std::http::ClientResponse {
+        self.last_error = e.kind + " " + e.detail;
+        return std::http::ClientResponse { status: 0, body: b"" };
+    }
+    @unbounded
+    fn keep(text: String, class: String, by: String) -> String {
+        if !self.ready() { self.last_error = "no knowledge service"; return ""; }
+        self.last_error = "";
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("class", class);
+        b.string_field("text", text);
+        b.string_field("by", by);
+        b.end_object();
+        let resp = std::http::post(self.url + "/receipt", std::bytes::from_string(b.result()), "application/json") or self.call_failed(err);
+        let body = std::str::from_bytes(resp.body);
+        if resp.status != 200 {
+            if len(self.last_error) == 0 { self.last_error = "http " + to_string(resp.status) + ": " + std::json::find_string_field(body, "error"); }
+            return "";
+        }
+        return std::json::find_string_field(body, "digest");
+    }
+    @unbounded
+    fn read(digest: String, reader: String, purpose: String) -> VaultRead {
+        if !self.ready() { return VaultRead { refused: "no knowledge service" }; }
+        self.last_error = "";
+        let resp = std::http::get(self.url + "/receipt/" + url_encode(digest) + "?as=" + url_encode(reader) + "&purpose=" + url_encode(purpose)) or self.call_failed(err);
+        let body = std::str::from_bytes(resp.body);
+        if resp.status != 200 {
+            let why = if resp.status == 0 { self.last_error } else { std::json::find_string_field(body, "error") };
+            return VaultRead { refused: why };
+        }
+        return VaultRead { present: true, class: std::json::find_string_field(body, "class"), text: std::json::find_string_field(body, "text") };
+    }
+}

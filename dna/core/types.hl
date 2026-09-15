@@ -49,7 +49,7 @@ type WorkRequest {
     context_digest: String = ""; // ContextPackage digest, never the bytes
     knowledge_bindings: String = ""; // the package and the ids it included ("package:<digest> <id>…"), for the evidence (GH #583 K2)
     output_contract: String = ""; // e.g. "ReviewVerdict", "Patch", "Assessment"
-    data_class: String = "internal"; // "public" | "internal" | "customer"
+    data_class: String = "internal"; // "public" | "internal" | "customer" | "confidential"
     requires: String = ""; // capability words, space-separated
     target: String = ""; // what the Work is about: a file inside the worktree, a locus, ""
     cost_ceiling: Int = 0;
@@ -209,6 +209,11 @@ fn grant_within(child: Grant, ceiling: Grant) -> Bool {
     let i = intersect_grants(child, ceiling);
     return i.classes == child.classes && i.max_magnitude == child.max_magnitude && i.review == child.review && len(resource_gap(child, ceiling)) == 0;
 }
+
+// GH #606: the classes whose bodies are protected — kept by the
+// knowledge service alone, never a git receipt, never sent to a hosted
+// model.
+fn protected_class(c: String) -> Bool { return c == "customer" || c == "confidential"; }
 
 // ---- resources (GH #605) ----------------------------------------------
 

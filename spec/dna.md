@@ -31,7 +31,34 @@ repository:
   applies unchanged.
 - **Receipts** are blobs under `refs/dna/receipts/<sha256>`, filed by
   the digest of their content: a verification step's output, a diff
-  document. Events name receipts by digest.
+  document. Events name receipts by digest. A receipt has a data class
+  (GH #606): a `public` or `internal` body is such a blob; a `customer`
+  or `confidential` body (`protected_class`) never is. The organism
+  hands it to the knowledge service (`Dna.file_evidence(text, class,
+  by)`, through `ReceiptVault`), which keeps it in the record's own
+  schema and appends `receipt.classified <digest> {class, by, store}`.
+  `PqProtected` encrypts it at rest with pgcrypto (OpenPGP, AES-256)
+  under `HALE_DNA_RECEIPT_KEY` (sixteen characters at least), read into
+  a sealed locus and sent to the database only as a query parameter, so
+  an operator must not log statement parameters; `MemProtected` keeps it
+  for the life of the process. With no service to keep it, the body is
+  withheld: `receipt.withheld <digest> {class, by, why}`, and nothing
+  holds it. The record keeps the digest and the class either way, so
+  `sync` never carries a protected body into a clone. Reading one is an
+  act in the reader's name for a purpose: the service answers `GET
+  /receipt/<digest>?as=<reader>&purpose=<purpose>` only when a
+  `receipt.disclosed <digest> {recipient, purpose, by}` row names both,
+  and appends `receipt.read` on an answer and `receipt.read_refused` on a
+  refusal. The answer is given only once its `receipt.read` row is in
+  the record: a read the record cannot hold (the journal refuses the
+  append) is refused with 503 and discloses nothing, and a body kept
+  while the record refuses its `receipt.classified` row is answered 503
+  so it is filed again. `Dna.evidence_class(digest)` is the class a request carries
+  when it puts the body in a prompt, so a hosted model refuses it. This
+  is the third trust profile #606 names: the readers of a clone hold
+  digests and classes, never protected bodies. Under local trust a
+  reader's name is attribution, as `--as` is; a verified principal is
+  #612's.
 - **Leases** are blobs under `refs/dna/lease/<key>` (`:` in a key
   becomes `/`), `holder`, `token`, `expires`, `present` on four lines,
   compare-and-swapped on the ref. Tokens are monotonic per key.
@@ -287,6 +314,8 @@ the same way. A project's path therefore has no length rule.
 `schedule.declared`, `schedule.refused`, `schedule.fired`,
 `schedule.skipped`, `schedule.paused`, `schedule.resumed`,
 `grant.reserved`, `grant.released`, `grant.fenced`, `grant.revoked`,
+`receipt.classified`, `receipt.withheld`, `receipt.disclosed`, `receipt.read`,
+`receipt.read_refused`,
 `optimize.refused`,
 `mutation.failed`, `effect.requested`, `effect.result`,
 `evidence.<step>`, `evidence.magnitude`, `review.requested`,
@@ -309,7 +338,9 @@ unknown kind must keep walking.
 chain verification), `Coordination` (leases with fencing tokens) and
 `Receipts` (content-addressed store and read) are interfaces in the
 core. The git-backed implementations are the ones an assembly wires
-for an organism; the in-memory ones exist for tests.
+for an organism; the in-memory ones exist for tests. Protected bodies
+go through `ReceiptVault` to the knowledge service's `ProtectedBodies`
+(`MemProtected`, `PqProtected`) instead (GH #606).
 
 ## The organization
 
