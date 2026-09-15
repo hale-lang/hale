@@ -110,7 +110,11 @@ repository:
   appends `task.reassigned` (`from`, `to`, `by`) and the Task stays
   handed. `hale dna retire <who> [--to <successor>]` stops new work
   reaching a person: every handed Task they hold is transferred as its
-  own `task.reassigned` row and `person.retired <who>` records it;
+  own `task.reassigned` row and `person.retired <who>` records it (`by`, `to`, `transferred`). From then
+  no new work reaches them: a job the leader plans for them is handed
+  to that successor, with `retired_assignee` on the `task.handed` row
+  (unassigned when the retirement named none), and a Task is never
+  reassigned to them;
   refused while they hold work and no successor is named — pending
   work is accounted for, never dropped. Refused for a Task that is not
   handed: one the organism is working, or has settled, is not a
@@ -127,10 +131,20 @@ repository:
   refused at declaration, never when it would first fire, with a
   `schedule.refused` row. An interval counts from the first tick and
   fires once per interval; a cron fires once in the UTC minute it
-  names (day-of-month and day-of-week both restricted: either). Firing
-  is `ask` with `Intent { id: "s:<id>/<n>", from: "schedule:<id>" }`,
-  routed as `requires` says, and a `schedule.fired <id> {task, at}`
-  row; a refusal by the membrane is `schedule.refused`. **Overlap:** a
+  names (day-of-month and day-of-week both restricted: either). A fire
+  is **claimed in the record before it is admitted**: `schedule.fired
+  <id> {intent, at}` first — a claim the record refuses admits nothing
+  — then `ask` with `Intent { id: "s:<id>@<at>/<n>", from:
+  "schedule:<id>" }`, routed as `requires` says, then
+  `schedule.admitted <id> {intent, task, at}`; a refusal by the
+  membrane is `schedule.refused`. A declaration after a restart
+  restores the last fire from the record — its time, and for a cron
+  the minute, so a cron does not fire again in the minute it fired —
+  and a claimed occurrence without its admission: the Task born under
+  its intent completes the admission (`recovered: true`), and one never
+  born is admitted at the next tick, once. The optimize pass's fire is
+  likewise a `schedule.fired {action: optimize, at}` row written before
+  the pass runs. **Overlap:** a
   schedule never fires while the last Task it fired is open (born,
   pending, handed — anything but done or failed); the skip is a
   `schedule.skipped <id> {task, state, at}` row, never silent. `hale
@@ -339,7 +353,11 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   when a third of that is gone; the host **asserts it at the top of
   every tick, before it relays, restarts or applies**, and stops
   itself (exit 3, the organization with it) when the lease is
-  someone else's or released. While the remote cannot be reached the
+  someone else's or released. It proves the lease again, renewing it,
+  **the moment before it starts a process** — the organization and
+  the expression at startup and at every restart — and once more
+  before relaying after the tick's sync: a build or a sync that
+  outlasts a takeover starts and relays nothing, and the host exits 3. While the remote cannot be reached the
   lease is kept unrenewed until it expires, then the host stops: a
   partitioned body executes nothing past its TTL. Taking the lease
   is a row (`body.claimed <holder> {token, forced, by}`), giving it
@@ -377,9 +395,14 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   to this machine, when ssh cannot reach the host, or when the host
   lacks git, curl, systemd, or (without a DSN) docker compose. It
   records `dna.body` and `dna.body.dir` here and a `body.provisioned
-  <user@host> {dir, toolchain, knowledge, by}` row. `--dry-run` prints
-  the exact script. `hale dna body start|stop|logs [--body …]` reach
-  the unit over ssh. Postgres, Docker, ssh and systemd are the
+  <user@host> {dir, toolchain, knowledge, by}` row. The default
+  directory is `$HOME/dna/<project>` on the body, expanded by the body's
+  shell (the unit's `WorkingDirectory=%h/dna/<project>` is the same
+  place). The script can carry the DSN, so its file here is created
+  empty with mode 600 before it is written, and removed once ssh has
+  read it. `--dry-run` prints the exact script. `hale dna body
+  start|stop|logs [--body …]` reach the unit over ssh; `stop` succeeds
+  when the unit is no longer active, and says so. Postgres, Docker, ssh and systemd are the
   reference setup; the definition admits other implementations.
 - **Secrets.** `hale dna secret set <NAME> [--body <user@host>]`
   reads the value from stdin — never argv (a `NAME=value` argument is
@@ -813,7 +836,11 @@ authority.
   restart, a Task born and not settled re-enters the tower from its
   last durable state (`task.resumed <task>`): under the plan in the
   record when there is one, never replanned; planned for the first
-  time when there is none. A Task whose Mutation was in flight settles
+  time when there is none. `task.resumed` is an event of a restart,
+  never a state: a resumed Task not yet settled is still pending, it
+  settles like any other, and a restart that stopped between its
+  `task.resumed` and the dispatch leaves it to be resumed again at the
+  next one. A Task whose Mutation was in flight settles
   `failed` with the Mutation; one whose Mutation is beyond proposal
   waits on that Mutation's outcome, and settles from it when the Work
   that would have settled it is gone. A handed Task is a person's and

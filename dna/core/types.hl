@@ -451,4 +451,12 @@ type Schedule {
     task: String = ""; // the last Task it fired
     fired: Int = 0;
     paused: Bool = false;
+    pending_intent: String = ""; // an occurrence claimed in the record and not yet admitted (a restart admits it once)
+}
+
+// GH #604 rule 5: whether a person retired, and the successor their
+// retirement named ("" when it named none).
+type RetiredPerson {
+    retired: Bool = false;
+    successor: String = "";
 }
