@@ -174,6 +174,10 @@ fn capture(path: String) -> String {
     if !raised_already {
         let raised = hale("dna\nconcern\nraise\norg/books/intake\n" + concern);
         raised_text = std::str::trim(raised.stdout + raised.stderr);
+        // the concern is the signal the practice learns from: a bill whose
+        // concern was not raised stays in the inbox, to be tried again (the
+        // third review of #634)
+        if raised.code != 0 { return "retry: books: " + b.id + " captured as " + evidence + ", but its concern was not raised: " + raised_text; }
     }
     return "ok: books: " + b.id + " captured as " + evidence + "; " + (if followed { "follow-through asked already" } else { "follow-through asked: " + asked_text }) + "; " + raised_text;
 }

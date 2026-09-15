@@ -181,8 +181,15 @@ main locus App {
         let bare_offline = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + scratch + "/offline.git");
         let remote_offline = in_dir(offline, "git\nremote\nadd\norigin\n" + scratch + "/offline.git");
         let deliver = "sh\n-c\nmkdir -p inbox && cp \"$1\" inbox/b1001.bill && BOOKS_MODE=once HALE_BIN=\"$2\" exec \"$2\" run .\nsh\n" + fixture + "/bills/b1001.bill\n" + toolchain();
+        // the first time, its concern cannot be raised: the bill stays, to be tried again
+        let no_concern = scratch + "/no-concern-hale";
+        std::io::fs::write_file(no_concern, "#!/bin/sh\nif [ \"$2\" = concern ] && [ \"$3\" = raise ]; then echo the concern could not be raised >&2; exit 1; fi\nexec \"" + toolchain() + "\" \"$@\"\n") or discard;
+        let nc = dna::run_tool("chmod\n+x\n" + no_concern);
+        let unraised = in_dir(offline, "sh\n-c\nmkdir -p inbox && cp \"$1\" inbox/b1001.bill && BOOKS_MODE=once HALE_BIN=\"$2\" exec \"$2\" run .\nsh\n" + fixture + "/bills/b1001.bill\n" + no_concern);
+        std::test::assert(std::str::contains(unraised.stdout, "retry: books: B-1001 captured as") && std::str::contains(unraised.stdout, "its concern was not raised") && std::io::fs::file_exists(offline + "/inbox/b1001.bill") && !std::io::fs::file_exists(offline + "/inbox/done/b1001.bill"), "a bill whose concern was not raised stays in the inbox: " + unraised.stdout + unraised.stderr);
+        std::test::assert_eq_int(count(offline, "concern.requested", "", "B-1001"), 0, "no concern yet");
         let first = in_dir(offline, deliver);
-        std::test::assert(std::str::contains(first.stdout, "ok: books: B-1001 captured as") && std::str::contains(first.stdout, "follow-through asked: intent"), "the first delivery is filed and its follow-through requested: " + first.stdout + first.stderr);
+        std::test::assert(std::str::contains(first.stdout, "ok: books: B-1001 captured as") && std::str::contains(first.stdout, "follow-through asked already"), "tried again, the filing and the follow-through are reused and the concern raised: " + first.stdout + first.stderr);
         let again = in_dir(offline, deliver);
         std::test::assert(std::str::contains(again.stdout, "ok: books: B-1001 was captured and followed up already"), "the second finds the request standing: " + again.stdout + again.stderr);
         std::test::assert_eq_int(count(offline, "intent.requested", "", "B-1001"), 1, "one follow-through requested");
