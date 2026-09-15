@@ -23,6 +23,8 @@ fn dna_fixtures_pass() {
     // in the environment (CI's service container; a developer's compose)
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_hale"));
     cmd.arg("test").arg(&dir).env("HALE_BIN", env!("CARGO_BIN_EXE_hale"));
+    // the books slice copies its application from dna/acceptance
+    cmd.env("HALE_DNA_SOURCE", repo_root());
     // Fixtures run from a directory of their own, never from inside this
     // repository: an organism's defaults are relative to where it runs
     // (a gateway's worktrees, a file store's receipts), and a fixture
@@ -90,6 +92,7 @@ fn dna_fixture_set_is_complete() {
             "body_lease_blocked_test.hl",
             "body_lease_start_test.hl",
             "body_provision_script_test.hl",
+            "books_slice_test.hl",
             "budget_test.hl",
             "deployment_test.hl",
             "editing_test.hl",

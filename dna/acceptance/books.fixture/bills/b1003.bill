@@ -1,0 +1,8 @@
+bill: B-1003
+supplier: City Taxi
+payer: mara
+purpose: taxi from the station
+date: 2026-09-09
+amount: 23.40
+currency: CU
+receipt: missing

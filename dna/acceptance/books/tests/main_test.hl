@@ -1,0 +1,22 @@
+// The intake's own tests: what `hale dna init` must leave passing, and
+// what every candidate Mutation is verified against.
+
+import ".." as app;
+
+fn main() {
+    let b = app::parse_bill("bill: B-1\nsupplier: Northwind Rail\npayer: mara\npurpose: travel\ndate: 2026-09-07\namount: 120.00\ncurrency: CU\nreceipt: missing\n");
+    std::test::assert(b.id == "B-1" && b.supplier == "Northwind Rail" && b.amount == "120.00" && b.receipt == "missing", "a bill's fields");
+    std::test::assert(app::readable(b), "a readable bill");
+    std::test::assert(!app::readable(app::parse_bill("bill: B-2\nsupplier: x\n")), "a bill without a payer, a date or an amount is not");
+    std::test::assert(std::str::starts_with(app::follow_up(b, "sha256:ab"), "obtain the receipt for bill B-1 from Northwind Rail: 120.00 CU for travel, paid by mara on 2026-09-07, treatment pending, bill sha256:ab"), "the follow-through asked");
+    std::test::assert_eq_int(app::day_number("2026-09-07"), 20260907, "a date as a comparable day");
+    std::test::assert_eq_str(app::csv_field("a, b"), "\"a, b\"", "a field with a comma is quoted");
+    std::test::assert_eq_str(app::digest_of("abc"), "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "a document's digest, as the record names evidence");
+    std::test::assert(app::journal_has("{\"kind\": \"receipt.filed\", \"entity\": \"sha256:ab\", \"body\": \"{}\"}\n", "receipt.filed", "sha256:ab"), "a filed document is found in the journal");
+    std::test::assert(!app::journal_has("{\"kind\": \"receipt.filed\", \"entity\": \"sha256:ab\", \"body\": \"{}\"}\n", "task.born", "sha256:ab"), "and only under its kind");
+    let requested = "{\"kind\": \"intent.requested\", \"entity\": \"i1\", \"body\": \"obtain the receipt for bill B-1, bill sha256:ab\"}\n";
+    std::test::assert(app::requested_standing(requested, "sha256:ab"), "a follow-through requested while no organism was here stands");
+    std::test::assert(!app::requested_standing(requested, "sha256:cd"), "only for its own bill");
+    std::test::assert(!app::requested_standing(requested + "{\"kind\": \"intent.refused\", \"entity\": \"i1\", \"body\": \"no\"}\n", "sha256:ab"), "and not once it was refused");
+    std::test::assert_eq_str(app::add_total(app::add_total("", "CU", "120.00"), "CU", "35.50"), "CU 155.5\n", "totals in Decimal, by currency");
+}
