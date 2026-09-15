@@ -108,6 +108,8 @@ fn dna_fixture_set_is_complete() {
             "org_test.hl",
             "performers_test.hl",
             "plan_routing_test.hl",
+            "principal_oidc_test.hl",
+            "principal_test.hl",
             "prompt_receipt_test.hl",
             "receipt_retention_test.hl",
             "receipt_vault_test.hl",

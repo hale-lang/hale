@@ -160,3 +160,24 @@ without a host it shows what the CLI shows. Iris stays the observer:
 attached to the organization's process it renders the org as the
 live topology it is, with the status projection as a third source
 beside the segment and the artifact.
+
+On a domain, the surface is a hosted head and asks who you are. Set
+the principal source to your identity provider and map the subjects
+you trust to member names:
+
+```text
+git config dna.principal oidc
+git config dna.oidc.issuer https://accounts.google.com
+git config dna.oidc.client 1234.apps.googleusercontent.com
+git config dna.oidc.redirect https://dna.example.com/auth/callback
+git config --add dna.oidc.member "109876543210=riley"
+git config dna.oidc.board riley
+hale dna secret set HALE_DNA_OIDC_SECRET
+```
+
+Then nothing is served without signing in, a verdict from the page is
+recorded in the name the subject maps to — with the board's authority
+if `dna.oidc.board` lists that name — and a subject you have not mapped
+gets no session at all. The head speaks plain HTTP; put TLS in front of
+it. Without `dna.principal`, the surface trusts whoever can reach it,
+as it always has.
