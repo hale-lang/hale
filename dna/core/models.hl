@@ -85,6 +85,15 @@ locus FakeModel {
         answer: String = "";
         answer_file: String = ""; // when set, `answer` is read from this file at birth
         answer_role: String = ""; // when set, the scripted answer applies to this role only
+        // Scripted answers by role and prompt (the books slice, GH #602):
+        // lines of `role|needle|answer`. The first line whose role matches
+        // (empty = any role) and whose needle is in the prompt (empty = any
+        // prompt) answers; `\n` in an answer is a newline. A line whose role
+        // is written `once:<role>` answers once and is then passed over, so
+        // a scenario can script "propose this, then nothing".
+        rules: String = "";
+        rules_file: String = ""; // when set, `rules` is read from this file at birth
+        spent: String = "\n"; // the once-lines already used, by line number
         // A directory of scripted answers by target (GH #566 F3): for a
         // request about `main.hl` on attempt `…/a2`, `<dir>/main.hl@a2`
         // if present, else `<dir>/main.hl`. Tests script a multi-file
@@ -104,6 +113,34 @@ locus FakeModel {
     bus { publish ModelCalled; }
     birth() {
         if len(self.answer_file) > 0 { self.answer = std::io::fs::read_file(self.answer_file) or ""; }
+        if len(self.rules_file) > 0 { self.rules = std::io::fs::read_file(self.rules_file) or ""; }
+    }
+    // The answer the first matching rule gives ("" when none matches).
+    @unbounded
+    fn ruled_for(req: ModelRequest) -> String {
+        if len(self.rules) == 0 { return ""; }
+        let mut rest = self.rules + "\n";
+        let mut n = 0;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            n = n + 1;
+            let a = std::str::index_of(line, "|");
+            if a < 0 { continue; }
+            let tail = line[(a + 1)..len(line)];
+            let b = std::str::index_of(tail, "|");
+            if b < 0 { continue; }
+            let once = std::str::starts_with(line, "once:");
+            let role = if once { line[5..a] } else { line[0..a] };
+            let needle = tail[0..b];
+            if len(role) > 0 && role != req.role { continue; }
+            if len(needle) > 0 && !std::str::contains(req.prompt, needle) { continue; }
+            if once && std::str::contains(self.spent, "\n" + to_string(n) + "\n") { continue; }
+            if once { self.spent = self.spent + to_string(n) + "\n"; }
+            return std::str::replace(tail[(b + 1)..len(tail)], "\\n", "\n");
+        }
+        return "";
     }
     fn identity() -> String { return self.name; }
     fn model_name() -> String { return self.model; }
@@ -143,7 +180,8 @@ locus FakeModel {
             ModelCalled <- ev;
             return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused };
         }
-        let scripted = self.scripted_for(req);
+        let found = self.scripted_for(req);
+        let scripted = if len(found) > 0 { found } else { self.ruled_for(req) };
         let r = if len(scripted) > 0 {
             ModelResult { ok: true, backend: self.name, model: self.model, output: scripted, tokens: len(scripted) / 4, cost_micros: self.price_micros }
         } else if len(self.answer) > 0 && (self.answer_role == "" || self.answer_role == req.role) {

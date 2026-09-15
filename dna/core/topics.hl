@@ -29,6 +29,18 @@ topic PressureRaised { payload: Pressure; subject: "dna.pressure.raised"; }
 type Concern { source: String = ""; what: String = ""; severity: Int = 0; }
 topic ConcernRaised { payload: Concern; subject: "dna.concern.raised"; }
 
+// A person proposes a practice for the whole organization (GH #602): a
+// named text the Board ratifies, with who proposed it and what prompted it.
+type PracticeRequest {
+    request_id: String = "";
+    name: String = "";
+    text: String = "";
+    by: String = "";
+    because: String = "";
+    supersedes: String = "";
+}
+topic PracticeRequested { payload: PracticeRequest; subject: "dna.practice.requested"; }
+
 // Review requests and verdicts cross the membrane (a human answers).
 type ReviewRequest {
     review_id: String = "";

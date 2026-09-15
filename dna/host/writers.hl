@@ -568,6 +568,89 @@ fn concern_raise(root: String, source: String, what: String, severity: Int) -> A
     return answer("concern from " + source + " requested in the record; the organization hears it there\n");
 }
 
+// ---- practices (GH #602) ---------------------------------------------
+// A person proposes a practice for the whole organization: a named text
+// the Board ratifies. Over the membrane when an organization is bound
+// here, into the record otherwise; the organization records who proposed
+// it and why, and opens the Board's Review. Nothing is in force until the
+// Board approves it. `hale dna practice` lists practices as the record has
+// them.
+@unbounded
+fn practice_verb(root: String, seed: String, sub: String, name: String, text: String, because: String, supersedes: String, who_flag: String) -> Answer {
+    let usage = "practice: `hale dna practice propose <name> --text <text> [--because <what prompted it>] [--supersedes <digest>] [--as <who>]`, or `hale dna practice` to list";
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    if sub == "propose" {
+        if len(name) == 0 || len(text) == 0 { return fail(usage); }
+        let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+        let request_id = "p" + hex(millis());
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("request_id", request_id);
+        b.string_field("name", name);
+        b.string_field("text", text);
+        b.string_field("by", who);
+        b.string_field("because", because);
+        b.string_field("supersedes", supersedes);
+        b.end_object();
+        if membrane_up(root) {
+            let before = open_projection(root, seed, "").rows();
+            let e = publish_on_membrane(root, "practice", b.result());
+            if len(e) > 0 { return fail(e); }
+            // the organization answers from its bus; give a busy one a minute
+            let deadline = std::time::now() + 60;
+            while std::time::now() <= deadline {
+                let q = open_projection(root, seed, "");
+                let r = find_after(q, before, " practice.proposed practice.refused ", request_id);
+                if r.seq >= 0 {
+                    if r.kind == "practice.refused" { return fail("practice " + name + " refused: " + r.body); }
+                    let digest = std::json::find_string_field(r.body, "digest");
+                    return answer("practice " + name + " proposed by " + who + " as " + digest + "; the Board ratifies it: `hale dna review " + dna::knowledge_review_id(digest) + " approve --authority board`\n");
+                }
+                std::time::sleep(150ms);
+            }
+            return fail("published the proposal, but the organization journaled no answer for " + request_id + " in time");
+        }
+        if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
+        if !append_as(root, "practice.requested", request_id, b.result(), who) { return fail("the record refused the append"); }
+        let s = sync_record(root);
+        if !s.ok { return fail(s.summary); }
+        return answer("practice " + name + " requested in the record by " + who + " (" + request_id + "); the organization proposes it to the Board when it hears it\n");
+    }
+    if len(sub) > 0 { return fail(usage); }
+    let s = sync_record(root);
+    let p = open_projection(root, seed, "");
+    let mut out = "";
+    let mut n = 0;
+    let mut i = 0;
+    while i < p.rows() {
+        let e = p.row(i);
+        let pname = std::json::find_string_field(e.body, "name");
+        if e.kind == "knowledge.proposed" && len(pname) > 0 {
+            let d = e.entity;
+            let review = dna::knowledge_review_id(d);
+            let state = if p.has_row("knowledge.retired", d) { "retired" } else if p.has_row("knowledge.ratified", d) { "in force" } else if p.has_row("knowledge.declined", d) { "declined" } else { "awaiting the Board (" + review + ")" };
+            let doc = receipt_read(root, if std::str::starts_with(d, "sha256:") { d[7..len(d)] } else { d });
+            let body = std::json::find_string_field(doc.text, "text");
+            let nl = std::str::index_of(body, "\n");
+            let mut by = "";
+            let mut k = 0;
+            while k < p.rows() {
+                let q = p.row(k);
+                if q.kind == "practice.proposed" && std::json::find_string_field(q.body, "digest") == d { by = " · proposed by " + std::json::find_string_field(q.body, "by") + (if len(std::json::find_string_field(q.body, "because")) > 0 { " because " + std::json::find_string_field(q.body, "because") } else { "" }); }
+                k = k + 1;
+            }
+            out = out + "  " + pname + " " + short(d) + " [" + state + "] " + (if nl < 0 { body } else { body[0..nl] }) + by + "\n";
+            n = n + 1;
+        }
+        if e.kind == "practice.requested" && find_after(p, i + 1, " practice.proposed practice.refused ", e.entity).seq < 0 {
+            out = out + "  " + pname + " [requested by " + std::json::find_string_field(e.body, "by") + ", not yet heard by the organization] " + e.entity + "\n";
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    return answer("practices: " + (if n == 0 { "none" } else { to_string(n) }) + "\n" + out);
+}
+
 // ---- sync -----------------------------------------------------------
 
 fn sync_verb(root: String) -> Answer {

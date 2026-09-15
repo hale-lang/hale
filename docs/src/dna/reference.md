@@ -44,6 +44,7 @@ hale dna receipt [disclose <digest> --to <who> --purpose <p> | show <digest> --p
                              and every read are rows in the reader's name
 hale dna receipt hold|release-hold <digest> --why <w> | redact <digest> --why <w> --policy <p>
 hale dna receipt file <path> [--class internal|customer|confidential] [--as <who>]
+hale dna practice [propose <name> --text <text> [--because <why>] [--supersedes <digest>] [--as <who>]]
 hale dna task done <id> [--as <who>] [--note …] [--evidence <digest> | --exception <why> --authorized-by <who>]
 hale dna task authorize <id> --exception <why> [--as <authorizer>]
 hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest> [--note …] [--as <reporter>]
@@ -133,6 +134,7 @@ tree, one JSON object per line: `seq`, `kind`, `entity`, `body`,
 | `receipt.disclosed` | a digest | a reader authorized: recipient, purpose, by |
 | `receipt.read` / `receipt.read_refused` | a digest | a read in the reader's name, or its refusal: by, purpose, class |
 | `receipt.filed` | a digest | an internal document filed as evidence: by, name, bytes, class, store |
+| `practice.requested` / `practice.proposed` / `practice.refused` | a request id | a person's practice proposal: requested in the record (name, text, by, because, supersedes), proposed by the organization (name, digest, review_id, by, because, supersedes), or refused (why) |
 | `exception.authorized` | `t<n>` | an exception to a Task's acceptance condition, authorized in the authorizer's own name: task, why, by, practice |
 | `completion.linked` / `completion.excepted` | `t<n>` | a person's completion under its acceptance condition: the evidence linked (task, evidence, by, practice), or an exception someone else authorized (task, why, authorized_by, by, practice) |
 | `connection.proposed` / `connection.closed` | `connection:<n>` | a connection to another record: name, url, peer (its genesis), position, purpose, classes, by, review_id; closed: by, why |

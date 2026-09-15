@@ -300,6 +300,7 @@ locus Dna {
         subscribe TaskSettled as on_task_settled;
         subscribe PressureRaised as on_pressure;
         subscribe ConcernRaised as on_concern;
+        subscribe PracticeRequested as on_practice_requested;
         publish WorkDone;
         // GH #566 F2: a Review is announced as a typed fact, so a position
         // in the org (the Leader) can decide it inside its grant
@@ -1459,6 +1460,35 @@ locus Dna {
         let digest = self.propose_knowledge(Idea { id: "concern:" + c.source, kind: "concern", text: c.what, author: c.source }, parent);
         let y = self.journal.append(self.journal.revision(), "concern.proposed", c.source, (if len(digest) > 0 { digest } else { "refused" }) + " after " + to_string(seen) + " raise(s)");
         self.membrane.notify("concern", c.source + ": `" + c.what + "` persists; proposed as knowledge for " + parent + ", the Board's to ratify");
+    }
+    // A person proposes a practice for the whole organization (GH #602).
+    // The proposal is the organization's — author `org`, an initiative the
+    // tower rule binds to `org` — and the Board ratifies it through the
+    // ordinary knowledge Review; who proposed it and what prompted it stay
+    // on the `practice.proposed` row. Nothing is in force until the Board
+    // approves it.
+    @unbounded
+    fn on_practice_requested(r: PracticeRequest) {
+        if len(r.name) == 0 || len(r.text) == 0 {
+            let x = self.journal.append(self.journal.revision(), "practice.refused", r.request_id, "a practice has a name and a text");
+            return;
+        }
+        let digest = self.propose_knowledge(Idea { id: "practice:" + r.name, kind: "practice", text: r.text, author: "org", name: r.name, supersedes: r.supersedes, provenance: "proposed by " + r.by }, "org");
+        if len(digest) == 0 {
+            let y = self.journal.append(self.journal.revision(), "practice.refused", r.request_id, "the proposal was refused as knowledge: the record says why");
+            return;
+        }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("name", r.name);
+        b.string_field("digest", digest);
+        b.string_field("review_id", knowledge_review_id(digest));
+        b.string_field("by", r.by);
+        b.string_field("because", r.because);
+        b.string_field("supersedes", r.supersedes);
+        b.end_object();
+        let z = self.journal.append(self.journal.revision(), "practice.proposed", r.request_id, b.result());
+        self.membrane.notify("practice", r.by + " proposes `" + r.name + "`: the Board's to ratify as " + knowledge_review_id(digest));
     }
     // Intent enters through the membrane and births a durable Task;
     // its birth and its settlement are Journal events (the causal

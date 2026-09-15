@@ -199,6 +199,26 @@ repository:
   projection shows a done Task's evidence or exception, and a person's
   completion with neither as human-reported, because a note never
   verifies anything.
+- **A person proposes a practice (GH #602).** `hale dna practice propose
+  <name> --text <text> [--because <what prompted it>] [--supersedes
+  <digest>] [--as <who>]` carries a `PracticeRequest` (`request_id`,
+  `name`, `text`, `by`, `because`, `supersedes`) onto the membrane topic
+  `dna.practice.requested`, or, with no organization bound here, appends
+  `practice.requested` for the host to relay. The organization proposes
+  it as knowledge of kind `practice`, author `org`, bound to `org`, with
+  the ordinary Board Review `k:<digest>`, and journals
+  `practice.proposed <request_id>` (`name`, `digest`, `review_id`, `by`,
+  `because`, `supersedes`); a request without a name or a text is
+  `practice.refused`. Nothing is in force until the Board ratifies it.
+  The text arrives byte for byte, newlines included: the host escapes an
+  argument's own backslashes and newlines in its argument list and
+  unescapes every value it reads.
+  `hale dna practice` lists every named practice with its state (in
+  force, awaiting the Board, declined, retired), its first line, who
+  proposed it and why, and requests not yet heard. The generated
+  organization binds the topic on `.hale/dna/hale-dna.practice.requested.sock`;
+  the membrane client names that route only when it publishes a
+  practice, so an organization scaffolded earlier keeps working.
 - **Cross-record handoff (GH #615).** A replica of one record is inside
   the horizon: sync carries all of it, to equally trusted readers. A
   *handoff* crosses a horizon into a separate record, and a connection is

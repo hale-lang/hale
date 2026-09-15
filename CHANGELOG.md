@@ -20,6 +20,13 @@ behavior.
 - `hale dna body` reads the lease; `hale dna body claim --force` releases a live lease of a body that is gone (a forced `body.claimed` row in your name; that body stops when it next asserts); `hale dna body release [--force]`.
 - `hale dna profile` prints the organism's combination — record, body, head, fleet, knowledge, trust, github, connections — detected from the pieces, never from a stored label; `status` gains `profile:` and `body:` lines. `hale dna new --profile local|remote-body [--remote <url>] [--body <user@host>]` sets the pieces.
 
+### DNA: a person proposes a practice for the Board (GH #602)
+
+- `hale dna practice propose <name> --text <text> [--because …] [--supersedes <digest>]` gives a person a way to propose a practice, which used to be possible only from the toolchain's seeded design or a concern threshold. It is carried over the new membrane topic `dna.practice.requested`, or as a `practice.requested` row the host relays.
+- The organization proposes it as a named `practice` for `org` with the ordinary Board Review, and journals `practice.proposed` with who proposed it and why. `hale dna practice` lists named practices with their state.
+- The generated organization binds the new socket, so the trio tape is re-recorded. The membrane client names the route only when publishing a practice, so organizations scaffolded earlier keep working.
+- `FakeModel` gains `rules`/`rules_file`: `role|needle|answer` lines, with `once:<role>` for an answer given once, so a scenario can script a plan, an optimize proposal and "nothing further" without a model.
+
 ### DNA: a completion meets its acceptance condition — evidence linked, or an authorized exception (GH #604)
 
 - When a person's job names its obligation, the organism binds the acceptance practice in force at hand-off: `task.handed` carries `acceptance` (the practice's digest) and `evidence_required`. A later change of practice leaves cases already handed under their original contract.

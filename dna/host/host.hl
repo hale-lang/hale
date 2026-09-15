@@ -353,6 +353,7 @@ locus Host {
         std::io::fs::unlink(self.dna_dir + "/" + OBSERVED_SOCK) or discard;
         std::io::fs::unlink(self.dna_dir + "/" + PRESSURE_SOCK) or discard;
         std::io::fs::unlink(self.dna_dir + "/" + CONCERN_SOCK) or discard;
+        std::io::fs::unlink(self.dna_dir + "/" + PRACTICE_SOCK) or discard;
     }
     fn wait_membrane(secs: Int) -> Bool {
         let deadline = std::time::now() + secs;
@@ -393,16 +394,16 @@ locus Host {
         let mut i = 0;
         while i < p.rows() {
             let r = p.row(i);
-            if (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested") && !keys_has(self.relayed, fact_key(p, i)) && trust == "signed" && !row_verified(self.root, r.digest) {
+            if (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") && !keys_has(self.relayed, fact_key(p, i)) && trust == "signed" && !row_verified(self.root, r.digest) {
                 // GH #604 rule 6: an unverified writer's row is refused in
                 // the record, in the host's name, and never relayed; the
                 // refusal is the answer a waiting CLI reads
-                let refused = if r.kind == "intent.requested" { "intent.refused" } else if r.kind == "concern.requested" { "concern.refused" } else { "review.refused" };
+                let refused = if r.kind == "intent.requested" { "intent.refused" } else if r.kind == "concern.requested" { "concern.refused" } else if r.kind == "practice.requested" { "practice.refused" } else { "review.refused" };
                 let ok = append_as(self.root, refused, r.entity, "unverified writer: commit " + r.digest + " carries no signature git accepts (dna.trust = signed); not relayed", "host");
                 self.relayed = keys_add(self.relayed, fact_key(p, i));
                 self.say("refused an unverified " + r.kind + " (" + r.entity + ") from the record");
-            } else if (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested") && !keys_has(self.relayed, fact_key(p, i)) && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested") {
-                let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised " } else { " review.settled review.refused " };
+            } else if (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") && !keys_has(self.relayed, fact_key(p, i)) && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") {
+                let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else { " review.settled review.refused " };
                 let answered = find_after(p, i + 1, answers, r.entity).seq >= 0;
                 if !answered {
                     let mut body = r.body;
@@ -412,7 +413,7 @@ locus Host {
                         let close = last_index_of(inner, "}");
                         if close > 0 { body = inner[0..close] + ", \"intent_id\": " + quote(r.entity) + "}"; }
                     }
-                    let e = publish_on_membrane(self.root, if r.kind == "intent.requested" { "intent" } else if r.kind == "concern.requested" { "concern" } else { "verdict" }, body);
+                    let e = publish_on_membrane(self.root, if r.kind == "intent.requested" { "intent" } else if r.kind == "concern.requested" { "concern" } else if r.kind == "practice.requested" { "practice" } else { "verdict" }, body);
                     if len(e) == 0 { self.relayed = keys_add(self.relayed, fact_key(p, i)); n = n + 1; }
                 }
             }

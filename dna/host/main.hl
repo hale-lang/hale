@@ -13,11 +13,38 @@ import "../core" as dna;
 
 fn arg(i: Int) -> String { return std::env::arg_or(i, ""); }
 
+// An argument's own backslashes and newlines are escaped in the
+// newline-separated argument list, and unescaped when a value is read back
+// (`flag`, `word`), so a multi-line value — a practice's text — arrives
+// whole, byte for byte (the review of #633).
+fn escape_arg(s: String) -> String {
+    return std::str::replace(std::str::replace(s, "\\", "\\\\"), "\n", "\\n");
+}
+
+@unbounded
+fn unescape_arg(s: String) -> String {
+    if !std::str::contains(s, "\\") { return s; }
+    let mut out = "";
+    let mut i = 0;
+    while i < len(s) {
+        let c = s[i..(i + 1)];
+        if c == "\\" && i + 1 < len(s) {
+            let d = s[(i + 1)..(i + 2)];
+            out = out + (if d == "n" { "\n" } else { d });
+            i = i + 2;
+        } else {
+            out = out + c;
+            i = i + 1;
+        }
+    }
+    return out;
+}
+
 fn rest_args(from: Int) -> String {
     let mut out = "";
     let mut i = from;
     while i < std::env::args_count() {
-        out = out + std::env::arg(i) + "\n";
+        out = out + escape_arg(std::env::arg(i)) + "\n";
         i = i + 1;
     }
     return out;
@@ -38,8 +65,8 @@ fn flag(a: Args, name: String) -> String {
     if i < 0 { return ""; }
     let rest = a.flags[(i + len(name) + 2)..len(a.flags)];
     let nl = std::str::index_of(rest, "\n");
-    if nl < 0 { return rest; }
-    return rest[0..nl];
+    if nl < 0 { return unescape_arg(rest); }
+    return unescape_arg(rest[0..nl]);
 }
 
 fn word(a: Args, n: Int) -> String {
@@ -48,7 +75,7 @@ fn word(a: Args, n: Int) -> String {
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let w = if nl < 0 { rest } else { rest[0..nl] };
-        if k == n { return w; }
+        if k == n { return unescape_arg(w); }
         k = k + 1;
         if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
     }
@@ -62,7 +89,7 @@ fn join_words(words: String) -> String {
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let w = if nl < 0 { rest } else { rest[0..nl] };
-        if len(w) > 0 { out = out + (if len(out) > 0 { " " } else { "" }) + w; }
+        if len(w) > 0 { out = out + (if len(out) > 0 { " " } else { "" }) + unescape_arg(w); }
         if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
     }
     return out;
@@ -102,7 +129,7 @@ fn main() {
     let fleet = arg(4);
     let plan = arg(5);
     let toolchain = std::env::var("HALE_DNA_TOOLCHAIN");
-    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --holder --token --expires --host-pid ");
+    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class --name --classes --by --exception --authorized-by --text --because --supersedes --holder --token --expires --host-pid ");
     let mut ans = Answer { ok: false, text: "unknown verb `" + verb + "`" };
     if (verb == "board" || verb == "review") && !membrane_up(root) { let s = sync_record(root); }
     if verb == "fleet" { let s = sync_record(root); }
@@ -172,6 +199,9 @@ fn main() {
         if sub == "provision" { ans = body_provision_verb(root, word(a, 1), flag(a, "--dsn"), flag(a, "--dir"), has_flag(a, "--dry-run"), flag(a, "--as")); }
         else if sub == "start" || sub == "stop" || sub == "logs" { ans = body_ctl_verb(root, sub, flag(a, "--body")); }
         else { ans = body_verb(root, sub, has_flag(a, "--force"), flag(a, "--as")); }
+    } else if verb == "practice" {
+        // GH #602: `hale dna practice [propose <name> --text <t> [--because …] [--supersedes <digest>]]`
+        ans = practice_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--text"), flag(a, "--because"), flag(a, "--supersedes"), flag(a, "--as"));
     } else if verb == "connect" {
         // GH #615: `hale dna connect [<record-url> --name <n> --as <position> --purpose <p> --classes <c,…>]`
         ans = connect_verb(root, seed, word(a, 0), flag(a, "--name"), flag(a, "--as"), flag(a, "--purpose"), flag(a, "--classes"), flag(a, "--by"));
