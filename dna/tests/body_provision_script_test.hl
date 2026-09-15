@@ -53,11 +53,33 @@ main locus App {
         std::test::assert_eq_int(provisioned.code, 0, "provisioned: " + provisioned.stdout + provisioned.stderr);
         std::test::assert(std::io::fs::file_exists(home + "/dna/prov/.git"), "cloned into the body's home: " + provisioned.stdout);
         std::test::assert(!std::io::fs::file_exists(home + "/$HOME") && !std::io::fs::file_exists(app + "/$HOME"), "not into a directory named `$HOME`");
-        let unit = std::io::fs::read_file(home + "/.config/systemd/user/hale-dna-prov.service") or "";
+        // the unit and the env file carry the record's identity (#635)
+        let key = "prov-" + dna::trim_nl(in_dir(app, fake, "git\nrev-list\n--max-parents=0\nrefs/dna/journal").stdout)[0..12];
+        let unit = std::io::fs::read_file(home + "/.config/systemd/user/hale-dna-" + key + ".service") or "";
         std::test::assert(std::str::contains(unit, "WorkingDirectory=%h/dna/prov\n"), "the unit runs where the clone is: " + unit);
         std::test::assert_eq_str(dna::trim_nl(std::io::fs::read_file(fake + "/stdin.mode") or ""), "600", "the script carrying the DSN reached ssh from a file only its owner reads");
-        std::test::assert(std::str::contains(std::io::fs::read_file(home + "/.config/hale-dna/prov.env") or "", "HALE_DNA_KNOWLEDGE_DSN=postgres://books:s3cret@db.invalid/books"), "the DSN landed in the body's env file");
+        std::test::assert(std::str::contains(std::io::fs::read_file(home + "/.config/hale-dna/" + key + ".env") or "", "HALE_DNA_KNOWLEDGE_DSN=postgres://books:s3cret@db.invalid/books"), "the DSN landed in the body's env file");
         std::test::assert_eq_str(dna::trim_nl(in_dir(app, fake, "sh\n-c\nls .hale/dna/provision.*.sh 2>/dev/null | wc -l").stdout), "0", "and the script file is gone here");
+
+        // a second record whose directory has the same name gets a unit and a
+        // secrets file of its own (#635)
+        // a second apart: two records made from the same template by the same
+        // author in the same second have the same genesis, and so are the
+        // same record identity — the key cannot tell them apart, nor can
+        // anything else keyed by the genesis
+        std::time::sleep(1100ms);
+        let other_dir = scratch + "/elsewhere";
+        let r1 = dna::run_tool("mkdir\n-p\n" + other_dir);
+        let made2 = in_dir(other_dir, fake, toolchain() + "\ndna\nnew\nprov");
+        std::test::assert_eq_int(made2.code, 0, "a second prov: " + made2.stdout + made2.stderr);
+        let other = other_dir + "/prov";
+        let o1 = in_dir(other, fake, "git\nremote\nadd\norigin\nhttps://example.invalid/other.git");
+        let plan = in_dir(other, fake, toolchain() + "\ndna\nbody\nprovision\nriley@srv\n--dry-run");
+        let at = std::str::index_of(plan.stdout, "NAME='");
+        let rest = if at < 0 { "" } else { plan.stdout[(at + 6)..len(plan.stdout)] };
+        let q = std::str::index_of(rest, "'");
+        let other_key = if q < 0 { "" } else { rest[0..q] };
+        std::test::assert(std::str::starts_with(other_key, "prov-") && len(other_key) == 17 && other_key != key, "the same directory name, another record, another unit and secrets file: " + other_key + " beside " + key);
 
         let stopped = in_dir(app, fake, toolchain() + "\ndna\nbody\nstop");
         std::test::assert(stopped.code == 0 && std::str::contains(stopped.stdout, "inactive"), "a stopped unit is a stop that succeeded: " + stopped.stdout + stopped.stderr);

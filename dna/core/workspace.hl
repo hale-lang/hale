@@ -374,6 +374,8 @@ locus MutationGateway {
             if st.done && st.ok { return GateResult { ok: true, value: self.workspaces.path_of(mutation_id), replayed: true }; }
             if st.unknown { return self.refuse("the outcome of " + key + " is unknown after a restart; resolve it first (`hale dna effect resolve " + key + " --outcome ok|failed`)"); }
             if st.done { return self.refuse("earlier open failed; not retried"); }
+            // another request holds the claim and has no result yet (#635)
+            return self.refuse("open in flight");
         }
         let wt = self.workspaces.open(mutation_id, base_commit);
         let r = effect_result(j, key, wt.present);
@@ -393,6 +395,7 @@ locus MutationGateway {
             if st.done && st.ok { return GateResult { ok: true, value: self.recorded(j, key), replayed: true }; }
             if st.unknown { return self.refuse("the outcome of " + key + " is unknown after a restart; resolve it first (`hale dna effect resolve " + key + " --outcome ok|failed`)"); }
             if st.done { return self.refuse("earlier commit failed; not retried"); }
+            return self.refuse("commit in flight");
         }
         let sha = self.repo.commit_all(self.workspaces.path_of(mutation_id), message);
         let r = effect_result(j, key, sha != "");

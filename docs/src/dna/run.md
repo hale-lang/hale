@@ -97,7 +97,7 @@ body provision: riley@srv
     installing hale 0.20.0
     cloned into $HOME/dna/chat
     knowledge: the DSN given
-    unit hale-dna-chat enabled and started (systemctl --user)
+    unit hale-dna-chat-3f9c2a1b7d04 enabled and started (systemctl --user)
     dna.body = riley@srv (start/stop/logs go there); the body takes the lease when its unit starts
 ```
 
@@ -116,7 +116,7 @@ Credentials go where the body runs, and never into the record:
 ```text
 $ hale dna secret set ANTHROPIC_API_KEY --body riley@srv
 value for ANTHROPIC_API_KEY on riley@srv, on one line:
-secret set: ANTHROPIC_API_KEY is in /home/riley/.config/hale-dna/chat.env on riley@srv (secret.rotated ANTHROPIC_API_KEY; the value is nowhere in the record)
+secret set: ANTHROPIC_API_KEY is in /home/riley/.config/hale-dna/chat-3f9c2a1b7d04.env on riley@srv (secret.rotated ANTHROPIC_API_KEY; the value is nowhere in the record)
 ```
 
 The value is read from stdin — never from the command line — and

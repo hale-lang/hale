@@ -85,9 +85,68 @@ fn member_of(mapping: String, subject: String) -> String {
 
 // An issuer the flow may use: https, or plain http on this machine only
 // (an issuer a test serves).
-fn issuer_allowed(issuer: String) -> Bool {
-    if std::str::starts_with(issuer, "https://") { return true; }
-    return std::str::starts_with(issuer, "http://127.0.0.1:") || std::str::starts_with(issuer, "http://localhost:");
+fn issuer_allowed(issuer: String) -> Bool { return endpoint_allowed(issuer); }
+
+// A URL's scheme, host and port, as DNA reads an identity provider's URLs
+// (#635): the authority ends at the first `/`, `?` or `#`; a URL with
+// userinfo (`user@host`), a non-numeric port or no host reads as no host.
+type UrlParts {
+    scheme: String = "";
+    host: String = "";
+    port: String = "";
+}
+
+@unbounded
+fn url_parts(url: String) -> UrlParts {
+    let sep = std::str::index_of(url, "://");
+    if sep <= 0 { return UrlParts { }; }
+    let scheme = url[0..sep];
+    let rest = url[(sep + 3)..len(url)];
+    let mut end = len(rest);
+    let mut i = 0;
+    while i < len(rest) {
+        let c = rest[i..(i + 1)];
+        if c == "/" || c == "?" || c == "#" {
+            end = i;
+            i = len(rest);
+        } else {
+            i = i + 1;
+        }
+    }
+    let authority = rest[0..end];
+    if std::str::contains(authority, "@") { return UrlParts { scheme: scheme }; }
+    let colon = std::str::index_of(authority, ":");
+    let host = if colon < 0 { authority } else { authority[0..colon] };
+    let port = if colon < 0 { "" } else { authority[(colon + 1)..len(authority)] };
+    let mut k = 0;
+    while k < len(port) {
+        let d = std::str::byte_at_unchecked(port, k);
+        if d < 48 || d > 57 { return UrlParts { scheme: scheme }; }
+        k = k + 1;
+    }
+    return UrlParts { scheme: scheme, host: host, port: port };
+}
+
+// Whether a URL may be an identity provider's: https to a host, or plain
+// http to this machine exactly (`127.0.0.1` or `localhost`), never by
+// prefix.
+fn endpoint_allowed(url: String) -> Bool {
+    let u = url_parts(url);
+    if len(u.host) == 0 { return false; }
+    if u.scheme == "https" { return true; }
+    return u.scheme == "http" && (u.host == "127.0.0.1" || u.host == "localhost");
+}
+
+// The endpoints an issuer's discovery document names, checked before the
+// head sends a browser or a code to them (#635): "" when both may be used,
+// else why. The ID token is authenticated by TLS to the token endpoint, so
+// that endpoint is https unless the issuer itself is on this machine.
+fn discovery_refusal(issuer: String, authorize: String, token: String) -> String {
+    if len(authorize) == 0 || len(token) == 0 { return "it names no authorization_endpoint or token_endpoint"; }
+    let local = url_parts(issuer).scheme == "http";
+    if !endpoint_allowed(authorize) || (!local && url_parts(authorize).scheme != "https") { return "authorization_endpoint `" + authorize + "` is not https"; }
+    if !endpoint_allowed(token) || (!local && url_parts(token).scheme != "https") { return "token_endpoint `" + token + "` is not https"; }
+    return "";
 }
 
 // The value of cookie `name` in a Cookie header ("" when absent).

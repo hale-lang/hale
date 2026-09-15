@@ -56,7 +56,7 @@ hale dna schedule [pause <id> | resume <id>]
                              the schedules the org chart declared, as the record has them;
                              pause and resume are rows in your name
 hale dna secret set <NAME> [--body <user@host>]
-                             a credential from stdin into ~/.config/hale-dna/<project>.env there or
+                             a credential from stdin into ~/.config/hale-dna/<project>-<record>.env there or
                              here; `secret rotate <NAME>`; the record gets `secret.rotated` only
 hale dna board [project]     the Board's queue: verdicts needed, escalations, proposals, reports
 hale dna report [project]    file a report from the record since the last one

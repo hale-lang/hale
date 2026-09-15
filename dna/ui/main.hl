@@ -127,6 +127,7 @@ locus Ui {
         board: String = ""; // member names acting with board authority, comma-separated
         authorize_url: String = "";
         token_url: String = "";
+        discovery_refused: String = ""; // why the discovery document's endpoints were not used
         exchange: CodeExchange = CodeExchange { };
         pending: PendingSignIns = PendingSignIns { };
         sessions: Sessions = Sessions { };
@@ -137,12 +138,18 @@ locus Ui {
         let resp = std::http::get(self.issuer + "/.well-known/openid-configuration") or token_failed(err);
         if resp.status != 200 { return false; }
         let doc = std::str::from_bytes(resp.body);
-        self.authorize_url = std::json::find_string_field(doc, "authorization_endpoint");
-        self.token_url = std::json::find_string_field(doc, "token_endpoint");
-        return len(self.authorize_url) > 0 && len(self.token_url) > 0;
+        let authorize = std::json::find_string_field(doc, "authorization_endpoint");
+        let token = std::json::find_string_field(doc, "token_endpoint");
+        // #635: a code goes only to a token endpoint whose TLS authenticates
+        // the ID token it returns
+        self.discovery_refused = dna::discovery_refusal(self.issuer, authorize, token);
+        if len(self.discovery_refused) > 0 { return false; }
+        self.authorize_url = authorize;
+        self.token_url = token;
+        return true;
     }
     fn begin_sign_in() -> std::http::Response {
-        if !self.discovered() { return page(503, "the issuer " + self.issuer + " did not answer its discovery document"); }
+        if !self.discovered() { return page(503, "the issuer " + self.issuer + (if len(self.discovery_refused) > 0 { "'s discovery document was refused: " + self.discovery_refused } else { " did not answer its discovery document" })); }
         let state = dna::hex(std::os::getrandom(16) or b"");
         let nonce = dna::hex(std::os::getrandom(16) or b"");
         // the sign-in is bound to the browser that starts it: a callback
@@ -181,7 +188,7 @@ locus Ui {
         let nonce = self.take_pending(state, binding);
         if len(nonce) == 0 { return page(400, "this sign-in was not started in this browser, was used already, or took too long; start again at /auth/login"); }
         if !self.exchange.ready() { return page(503, "no client secret: HALE_DNA_OIDC_SECRET is not set where the head runs"); }
-        if !self.discovered() { return page(503, "the issuer " + self.issuer + " did not answer its discovery document"); }
+        if !self.discovered() { return page(503, "the issuer " + self.issuer + (if len(self.discovery_refused) > 0 { "'s discovery document was refused: " + self.discovery_refused } else { " did not answer its discovery document" })); }
         let token = self.exchange.id_token(self.token_url, code, self.redirect_uri, self.client);
         if len(token) == 0 { return page(502, "the issuer did not exchange the code"); }
         let c = dna::id_token_claims(token);

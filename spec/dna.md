@@ -93,7 +93,9 @@ repository:
   request and does not dispatch again. Two writers may both append a
   request for one key; only the writer whose row is the first request
   dispatches, the other's row stays as a contended claim and it does
-  not act. A request with no result when the organism restarts is
+  not act: every gate (`worktree.open`, `commit`, `apply`, `rollback`)
+  refuses `in flight` while another request holds the claim with no
+  result yet (#635). A request with no result when the organism restarts is
   resolved by evidence where evidence exists (an `apply:<candidate>`
   whose genome is at the candidate is `ok`; a `worktree.open` with no
   worktree is `failed`) and marked `unknown` where it does not; the
@@ -425,8 +427,12 @@ repository:
   serves nothing without a session (`/api/*` answers 401, `/`
   redirects to `/auth/login`). A session comes from OpenID Connect's
   authorization-code flow against `dna.oidc.issuer` (https, or plain
-  http on this machine only): the head discovers the issuer's
-  endpoints, sends the browser to its authorize endpoint with a random
+  http to `127.0.0.1` or `localhost` exactly — the URL's host is parsed,
+  userinfo refused, never matched by prefix): the head discovers the
+  issuer's endpoints, refuses a discovery document whose
+  `authorization_endpoint` or `token_endpoint` is not https (plain http
+  only when the issuer itself is on this machine; `discovery_refusal`,
+  #635), sends the browser to its authorize endpoint with a random
   `state` and `nonce` (`std::os::getrandom`), and exchanges the
   returned code at the token endpoint itself with the client's secret
   (`dna.oidc.client`, `HALE_DNA_OIDC_SECRET` read into a sealed locus,
@@ -647,7 +653,7 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   cloned (fetched into a clone that exists), `vendor/dna` and the
   record brought up, the knowledge database from `dna/compose.yaml`
   or a DSN (which goes into the body's env file, never the record),
-  and a systemd user unit `hale-dna-<project>` supervising `hale dna
+  and a systemd user unit `hale-dna-<project>-<record>` supervising `hale dna
   dev . --no-iris` — on one server the body is the organization, the
   application and the knowledge service under one host — with
   `Restart=on-failure` so a failure flows up one more level. It stops
@@ -667,7 +673,7 @@ organization's (`[claims] no_base = true`; each adopts its own law).
 - **Secrets.** `hale dna secret set <NAME> [--body <user@host>]`
   reads the value from stdin — never argv (a `NAME=value` argument is
   refused), never the record — and writes `NAME=value` into
-  `~/.config/hale-dna/<project>.env` (mode 600; one line per name,
+  `~/.config/hale-dna/<project>-<record>.env` (mode 600; one line per name,
   the newest) on the body over ssh's stdin, or on this machine. The
   host loads that file into its children's environment. `secret
   rotate <NAME>` is the same for a name already set. The record gets
@@ -678,6 +684,15 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   {any_of}`; `status` and `board` carry "no credential for the
   model" until a start finds one and appends
   `body.credential_present`.
+- **What a body holds on a machine is bound to its record (#635).**
+  `<record>` in the unit's and the secrets file's names is the first
+  twelve hex digits of the record's identity (its journal's genesis), so
+  two records whose directories share a name on one machine never share
+  a unit or a credential. Everything else a body reads lives in its
+  clone: the `dna.*` git configuration (the OIDC member mapping among
+  it), the membrane's sockets under `.hale/dna`, and the knowledge
+  schema, whose ownership is checked against the record (GH #613); the
+  hosted head and the membrane serve the clone they run in.
 
 ## The organization evolves
 

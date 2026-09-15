@@ -608,6 +608,14 @@ fn project_name(root: String) -> String {
     return if sl < 0 { p } else { p[(sl + 1)..len(p)] };
 }
 
+// A body's name on a machine: the project and the first twelve hex digits
+// of its record's identity (the journal's genesis), so two records whose
+// directories share a name never share a secrets file or a unit (#635).
+fn body_key(root: String) -> String {
+    let id = record_identity(root);
+    return project_name(root) + (if len(id) >= 12 { "-" + id[0..12] } else { "" });
+}
+
 // `--body <user@host>` or `git config dna.body`.
 fn body_target(root: String, flag: String) -> String {
     if len(flag) > 0 { return flag; }
@@ -677,7 +685,7 @@ fn body_provision_verb(root: String, target: String, dsn: String, dir_flag: Stri
     let name = project_name(root);
     let dir = if len(dir_flag) > 0 { dir_flag } else { "$HOME/dna/" + name };
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
-    let script = provision_script(name, pin, url, dir, dsn);
+    let script = provision_script(body_key(root), pin, url, dir, dsn);
     if dry {
         return answer("body provision (dry run): nothing was written. On " + target + " this would run:\n" + indent_lines(script, "    ") + "\nthen here: git config dna.body " + target + "; a `body.provisioned` row in the record\n");
     }
@@ -705,7 +713,7 @@ fn body_ctl_verb(root: String, sub: String, body_flag: String) -> Answer {
     let target = body_target(root, body_flag);
     if len(target) == 0 { return fail("body " + sub + ": no body is known here (`hale dna body provision <user@host>` sets `dna.body`; `--body <user@host>` names one)"); }
     let name = project_name(root);
-    let unit = "hale-dna-" + name;
+    let unit = "hale-dna-" + body_key(root);
     // a stopped unit is `inactive`, and `is-active` exits non-zero for it:
     // stop succeeds when the unit is no longer active
     let cmd = if sub == "logs" { "journalctl --user -u " + unit + " -n 200 --no-pager 2>/dev/null || tail -n 200 \"$HOME\"/dna/" + name + "/.hale/dna/org.log" } else if sub == "stop" { "systemctl --user stop " + unit + " || exit 1; if systemctl --user is-active --quiet " + unit + "; then echo still active; exit 1; else echo inactive; fi" } else { "systemctl --user " + sub + " " + unit + " && systemctl --user is-active " + unit };
@@ -717,7 +725,7 @@ fn body_ctl_verb(root: String, sub: String, body_flag: String) -> Answer {
 // ---- secrets (GH #617 ask 4) ----------------------------------------
 // A credential is read from stdin (a prompt on a terminal, a pipe
 // otherwise), never from argv, and lands in `~/.config/hale-dna/
-// <project>.env` (mode 600) — on the body over ssh's stdin when one is
+// <project>-<record>.env` (mode 600) — on the body over ssh's stdin when one is
 // named, here otherwise; the host loads that file for its children.
 // The record gets `secret.rotated <NAME>` and nothing else.
 
@@ -738,7 +746,7 @@ fn secret_verb(root: String, sub: String, name: String, body_flag: String, who_f
     if sub != "set" && sub != "rotate" { return fail("secret: `hale dna secret set <NAME> [--body <user@host>]` (the value from stdin) or `hale dna secret rotate <NAME> [--body …]`"); }
     if std::str::contains(name, "=") { return fail("secret " + sub + ": the value never goes on the command line (it would sit in every shell history and process list); name the variable alone and give the value on stdin"); }
     if !env_var_name_ok(name) { return fail("secret " + sub + ": `" + name + "` is not an environment variable name (A-Z, 0-9, _)"); }
-    let project = project_name(root);
+    let project = body_key(root);
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     let target = body_target(root, body_flag);
     let p = open_projection(root, ".", "");

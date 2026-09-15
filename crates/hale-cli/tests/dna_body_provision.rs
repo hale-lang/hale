@@ -117,6 +117,9 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     assert!(!pin.is_empty());
     let (ok, plan) = hale_env(&["dna", "body", "provision", "riley@srv", "--dsn", "postgres://dna:pw@db:5432/dna", "--dry-run"], &app, &home, None);
     assert!(ok, "{plan}");
+    // a body's name on a machine carries its record's identity (#635)
+    let genesis = git(&["rev-list", "--max-parents=0", "refs/dna/journal"], &app);
+    let key = format!("prov-{}", &genesis.trim()[..12]);
     for needle in [
         "nothing was written",
         &format!("PIN='{pin}'"),
@@ -128,7 +131,7 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
         "HALE_DNA_KNOWLEDGE_DSN=$DSN",
         "hale-dna-$NAME.service",
         "WorkingDirectory=%h/dna/prov",
-        "EnvironmentFile=-%h/.config/hale-dna/prov.env",
+        &format!("EnvironmentFile=-%h/.config/hale-dna/{key}.env"),
         "ExecStart=%h/.hale/bin/hale dna dev . --no-iris",
         "Restart=on-failure",
         "systemctl --user enable --now",
@@ -160,7 +163,7 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     assert!(!ok && out.contains("was never set"), "{out}");
     let (ok, out) = hale_env(&["dna", "secret", "set", &cred], &app, &home, Some("sk-test-123\n"));
     assert!(ok && out.contains(&format!("secret set: {cred} is in ")) && out.contains("the value is nowhere in the record"), "{out}");
-    let env_file = home.join(".config/hale-dna/prov.env");
+    let env_file = home.join(format!(".config/hale-dna/{key}.env"));
     assert_eq!(std::fs::read_to_string(&env_file).unwrap(), format!("{cred}=sk-test-123\n"));
     {
         use std::os::unix::fs::PermissionsExt;
@@ -179,7 +182,7 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     let mut host = run_host(&app, &home_empty, &log);
     assert!(wait_log(&log, "membrane bound", 180, &mut host), "{}", std::fs::read_to_string(&log).unwrap_or_default());
     let l = std::fs::read_to_string(&log).unwrap();
-    assert!(l.contains(&format!("no credential for the model: none of {cred} is set here or in ~/.config/hale-dna/prov.env")), "{l}");
+    assert!(l.contains(&format!("no credential for the model: none of {cred} is set here or in ~/.config/hale-dna/{key}.env")), "{l}");
     let (ok, st) = hale_env(&["dna", "status"], &app, &home_empty, None);
     assert!(ok && st.contains(&format!("; no credential for the model (none of {cred} is set where the body runs)")), "{st}");
     let (ok, board) = hale_env(&["dna", "board"], &app, &home_empty, None);
