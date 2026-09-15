@@ -340,7 +340,9 @@ locus Service {
             if len(hold) > 0 { return refusal(409, "held: " + hold + "; redaction waits for the hold's release"); }
             let p = self.protected.get(digest);
             let already = self.has_row("receipt.redacted", digest);
-            if already && !p.present { return refusal(409, digest + " is already redacted"); }
+            let step = dna::protected_erase_step(p.present, if p.present { "" } else { self.protected.last_error() }, already);
+            if std::str::starts_with(step, "unread: ") { return refusal(503, "the protected store cannot say whether it keeps " + digest + " (" + step[8..len(step)] + "); nothing was recorded or erased — redact again once it answers"); }
+            if step == "already" { return refusal(409, digest + " is already redacted"); }
             // the decision is in the record before a byte is erased, at the
             // revision the hold was read at: a redaction the record cannot
             // hold erases nothing, and a hold that arrived in between refuses it
