@@ -123,6 +123,14 @@ main locus App {
         self.put("task.planned", "t7", PLAN);
         self.put("task.resumed", "t7", "after a restart, under the plan in the record; not replanned");
         self.put("mutation.proposed", "m7", "task t7 docs: a seventh () at 0000000000000000000000000000000000000000");
+        // t8: born and planned, stopped before its `task.pending`, its Mutation m8 then in flight
+        self.put("intent.offered", "i8", "an eighth");
+        self.put("task.born", "t8", "i8: an eighth");
+        self.put("task.planned", "t8", PLAN);
+        self.put("mutation.proposed", "m8", "task t8 docs: an eighth () at 0000000000000000000000000000000000000000");
+        // t10: born, stopped before its `task.pending` and before any plan
+        self.put("intent.offered", "i10", "a tenth");
+        self.put("task.born", "t10", "i10: a tenth");
 
         // ---- one organism is born over it
         self.one = dna::Dna {
@@ -155,10 +163,15 @@ main locus App {
         std::test::assert_eq_int(self.rows("task.planned", "t2"), 1, "and journaled");
         // i9 noted, never re-offered
         std::test::assert_eq_int(self.rows("intent.unrecovered", "i9"), 1, "i9 is noted as unrecovered");
-        std::test::assert_eq_int(self.rows("task.born", ""), 6, "no Task was born by the restart itself");
+        std::test::assert_eq_int(self.rows("task.born", ""), 8, "no Task was born by the restart itself");
         // a Task resumed before is resumed again, and a resumed Task still settles
         std::test::assert(std::str::contains(self.body_of("task.failed", "t7"), "in flight"), "t7, resumed and then in flight, settles failed: " + self.body_of("task.failed", "t7"));
         std::test::assert_eq_int(self.rows("task.resumed", "t6"), 2, "t6, stopped after its earlier resume, is resumed again");
+        // a Task born and never pending is pending after the restart, and settles
+        std::test::assert_eq_int(self.rows("task.pending", "t8"), 1, "t8, born and never pending, is pending after the restart");
+        std::test::assert(std::str::contains(self.body_of("task.failed", "t8"), "in flight"), "t8's in-flight Mutation settles it: " + self.body_of("task.failed", "t8"));
+        std::test::assert_eq_int(self.rows("task.pending", "t10"), 1, "t10, born and never pending, is pending after the restart");
+        std::test::assert(std::str::contains(self.body_of("task.resumed", "t10"), "planned now"), "and resumed: " + self.body_of("task.resumed", "t10"));
         // t3's in-flight Mutation failed and settled its Task; it did not resume
         std::test::assert_eq_int(self.rows("mutation.failed", "m1"), 1, "m1 failed in flight");
         std::test::assert(std::str::contains(self.body_of("task.failed", "t3"), "in flight"), "t3 settled failed: " + self.body_of("task.failed", "t3"));
