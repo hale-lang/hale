@@ -342,6 +342,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna concern raise <source> <what…> [--severity N]");
     eprintln!("                                    a concern from a locus path about the part above it; persistent ones become knowledge proposals");
     eprintln!("       hale dna ui [project] [--port N]");
+    eprintln!("                                    under `git config dna.principal oidc` a hosted head: sign-in through dna.oidc.issuer,");
+    eprintln!("                                    subjects mapped by dna.oidc.member, the secret in HALE_DNA_OIDC_SECRET");
     eprintln!("                                    the DNA surface in a browser, from the record alone: the Board's queue, the Reviews");
     eprintln!("                                    with their three views, the fleet, the history; verdicts, intent and pressure from forms");
     eprintln!("       hale dna review              the pending Reviews");

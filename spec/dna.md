@@ -289,6 +289,40 @@ repository:
   the core; an organization's existing `dna/org/law.hl` is
   project-owned and gains the clause by hand. The money budget is
   distinct from the model budget.
+- **The principal source (GH #612).** Who acts where a verdict, an
+  intent or a task completion enters comes from one of two sources,
+  `git config dna.principal`: `local` (the default) — the operator of
+  the clone, as `--as` and the git identity say — or `oidc` — an
+  identity provider. Under `oidc`, `hale dna ui` is a hosted head: it
+  serves nothing without a session (`/api/*` answers 401, `/`
+  redirects to `/auth/login`). A session comes from OpenID Connect's
+  authorization-code flow against `dna.oidc.issuer` (https, or plain
+  http on this machine only): the head discovers the issuer's
+  endpoints, sends the browser to its authorize endpoint with a random
+  `state` and `nonce` (`std::os::getrandom`), and exchanges the
+  returned code at the token endpoint itself with the client's secret
+  (`dna.oidc.client`, `HALE_DNA_OIDC_SECRET` read into a sealed locus,
+  `dna.oidc.redirect` as the callback). That ID token came over TLS from
+  the issuer's own endpoint, which authenticates it (OpenID Connect Core
+  §3.1.3.7, rule 6) in place of an RS256 signature the standard library
+  cannot verify; `claims_refusal` checks the issuer, the client among the
+  audience, the expiry and the nonce. The subject — never an email alone
+  — maps to a member through a reviewed mapping, `git config --add
+  dna.oidc.member "<subject>=<name>"`; an unmapped subject gets no
+  session. A sign-in's state is used once, expires in ten minutes, and is bound to
+  the browser that started it by an `HttpOnly; SameSite=Lax` `dna_signin`
+  cookie: a callback carrying the state from any other browser is refused
+  and leaves the sign-in for the browser that started it (so a callback
+  URL handed to someone else cannot sign them in); a
+  session is a random 256-bit id in an `HttpOnly; SameSite=Lax` cookie
+  (`Secure` when the callback is https) and lasts eight hours or until
+  `/auth/logout`. With a session, a verdict acts as the member (`--as`,
+  and `--authority board` when `dna.oidc.board` names them, `reviewer`
+  otherwise) and an intent is asked by them (`hale dna ask --as`), the
+  row's author too; the form's own `as` field is ignored. The head never
+  acts in its own name. It speaks plain HTTP: TLS is a reverse proxy in
+  front of it. Rows arriving by sync remain admitted under `dna.trust`
+  (GH #604 rule 6); a synced row claiming a rank is not a sign-in.
 - **The membrane over the record.** From a clone with no organism,
   `hale dna ask` appends `intent.requested` (the body: outcome, from,
   to) and a verdict appends `review.verdict` (the body: the verdict as

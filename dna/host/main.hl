@@ -141,7 +141,7 @@ fn main() {
         return;
     }
     if verb == "ask" {
-        ans = ask_verb(root, join_words(a.words), flag(a, "--to"), has_flag(a, "--no-wait"));
+        ans = ask_verb(root, join_words(a.words), flag(a, "--to"), has_flag(a, "--no-wait"), flag(a, "--as"));
     } else if verb == "verdict" {
         ans = verdict_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--as"), flag(a, "--authority"), flag(a, "--comment"), flag(a, "--digest"), has_flag(a, "--no-wait"));
     } else if verb == "raise" {

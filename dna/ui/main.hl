@@ -10,7 +10,16 @@
 // when one is bound here, into the record otherwise. Nothing here
 // reads the record itself; nothing here decides.
 //
+// Who acts is the principal source (GH #612, dna/core/principal.hl).
+// Under `local` (the default) the page's `as` field names the reviewer,
+// as `--as` does. Under `dna.principal = oidc` the page is a hosted head:
+// nothing is served without a session, a session comes from signing in
+// at the configured issuer, and a verdict or an intent acts as the member
+// the session maps to — whatever the form says.
+//
 //   ui <port> <index.html>      (HALE_BIN names the toolchain; cwd is the project)
+
+import "../core" as dna;
 
 fn hale_bin() -> String {
     if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
@@ -28,8 +37,22 @@ fn dna(args: String) -> String {
     return out.stdout + out.stderr;
 }
 
+fn git_config(key: String, all: Bool) -> String {
+    let out = std::process::run("git\nconfig\n" + (if all { "--get-all\n" } else { "" }) + key) or run_failed(err);
+    return if out.code == 0 { std::str::trim(out.stdout) } else { "" };
+}
+
 fn text(body: String) -> std::http::Response {
     return std::http::Response { status: 200, content_type: "text/plain; charset=utf-8", headers: "Cache-Control: no-store", body: body };
+}
+
+fn page(status: Int, why: String) -> std::http::Response {
+    return std::http::Response { status: status, content_type: "text/plain; charset=utf-8", headers: "Cache-Control: no-store", body: "hale dna ui: " + why + "\n" };
+}
+
+fn redirect(to: String, cookie: String) -> std::http::Response {
+    let h = "Location: " + to + (if len(cookie) > 0 { "\r\nSet-Cookie: " + cookie } else { "" });
+    return std::http::Response { status: 302, content_type: "text/plain", headers: h, body: "" };
 }
 
 // A path segment only: no separators, no flags, so a request cannot
@@ -46,17 +69,182 @@ fn clean(s: String) -> String {
     return out;
 }
 
+fn token_failed(e: std::http::HttpError) -> std::http::ClientResponse {
+    return std::http::ClientResponse { status: 0, headers: "", body: b"" };
+}
+
+type PendingSignIn {
+    state: String = "";
+    nonce: String = "";
+    at: Int = 0;
+    binding: String = ""; // the `dna_signin` cookie of the browser that started it
+}
+
+@form(vec)
+locus PendingSignIns { capacity { heap rows of PendingSignIn; } }
+
+type Session {
+    id: String = "";
+    name: String = "";
+    subject: String = "";
+    expires: Int = 0;
+}
+
+@form(vec)
+locus Sessions { capacity { heap rows of Session; } }
+
+// The client's secret, read from the environment into this sealed locus
+// and presented only to the token endpoint.
+@sealed locus CodeExchange {
+    params {
+        env_var: String = "HALE_DNA_OIDC_SECRET";
+        secret: String = "";
+    }
+    birth() {
+        if len(self.secret) == 0 && std::env::var_exists(self.env_var) { self.secret = std::env::var(self.env_var); }
+    }
+    fn ready() -> Bool { return len(self.secret) > 0; }
+    // The ID token the endpoint answers the code with, or "".
+    fn id_token(token_url: String, code: String, redirect_uri: String, client: String) -> String {
+        let body = "grant_type=authorization_code&code=" + dna::url_encode(code) + "&redirect_uri=" + dna::url_encode(redirect_uri)
+            + "&client_id=" + dna::url_encode(client) + "&client_secret=" + dna::url_encode(self.secret);
+        let resp = std::http::post(token_url, std::bytes::from_string(body), "application/x-www-form-urlencoded") or token_failed(err);
+        if resp.status != 200 { return ""; }
+        return std::json::find_string_field(std::str::from_bytes(resp.body), "id_token");
+    }
+}
+
 locus Ui {
     params {
         html: String = "";
         served: Int = 0;
+        // GH #612: the principal source and, under `oidc`, the issuer
+        principal: String = "local";
+        issuer: String = "";
+        client: String = "";
+        redirect_uri: String = "";
+        members: String = ""; // `subject=name` lines
+        board: String = ""; // member names acting with board authority, comma-separated
+        authorize_url: String = "";
+        token_url: String = "";
+        exchange: CodeExchange = CodeExchange { };
+        pending: PendingSignIns = PendingSignIns { };
+        sessions: Sessions = Sessions { };
+    }
+    // The issuer's endpoints, from its discovery document, once.
+    fn discovered() -> Bool {
+        if len(self.token_url) > 0 { return true; }
+        let resp = std::http::get(self.issuer + "/.well-known/openid-configuration") or token_failed(err);
+        if resp.status != 200 { return false; }
+        let doc = std::str::from_bytes(resp.body);
+        self.authorize_url = std::json::find_string_field(doc, "authorization_endpoint");
+        self.token_url = std::json::find_string_field(doc, "token_endpoint");
+        return len(self.authorize_url) > 0 && len(self.token_url) > 0;
+    }
+    fn begin_sign_in() -> std::http::Response {
+        if !self.discovered() { return page(503, "the issuer " + self.issuer + " did not answer its discovery document"); }
+        let state = dna::hex(std::os::getrandom(16) or b"");
+        let nonce = dna::hex(std::os::getrandom(16) or b"");
+        // the sign-in is bound to the browser that starts it: a callback
+        // carrying this state from any other browser is refused, so a
+        // callback URL handed to someone else cannot sign them in as its
+        // starter (login CSRF)
+        let binding = dna::hex(std::os::getrandom(16) or b"");
+        if len(state) < 32 || len(nonce) < 32 || len(binding) < 32 { return page(503, "no randomness for a sign-in"); }
+        self.pending.push(PendingSignIn { state: state, nonce: nonce, at: std::time::now(), binding: binding });
+        let sep = if std::str::contains(self.authorize_url, "?") { "&" } else { "?" };
+        let secure = if std::str::starts_with(self.redirect_uri, "https://") { "; Secure" } else { "" };
+        return redirect(self.authorize_url + sep + "response_type=code&client_id=" + dna::url_encode(self.client)
+                + "&redirect_uri=" + dna::url_encode(self.redirect_uri) + "&scope=openid%20email&state=" + state + "&nonce=" + nonce, "dna_signin=" + binding + "; HttpOnly; SameSite=Lax; Path=/auth" + secure);
+    }
+    // The nonce of the sign-in `state` names, consumed; "" when unknown,
+    // older than ten minutes, or not started by this browser (a mismatch
+    // leaves it for the browser that did start it).
+    @unbounded
+    fn take_pending(state: String, binding: String) -> String {
+        if len(state) == 0 || len(binding) == 0 { return ""; }
+        let now = std::time::now();
+        let mut i = 0;
+        while i < self.pending.len() {
+            let p = self.pending.get(i) or PendingSignIn { };
+            if p.state == state && p.binding != binding { return ""; }
+            if p.state == state {
+                self.pending.set(i, PendingSignIn { }) or discard;
+                return if now - p.at <= 600 { p.nonce } else { "" };
+            }
+            i = i + 1;
+        }
+        return "";
+    }
+    @unbounded
+    fn finish_sign_in(code: String, state: String, binding: String) -> std::http::Response {
+        let nonce = self.take_pending(state, binding);
+        if len(nonce) == 0 { return page(400, "this sign-in was not started in this browser, was used already, or took too long; start again at /auth/login"); }
+        if !self.exchange.ready() { return page(503, "no client secret: HALE_DNA_OIDC_SECRET is not set where the head runs"); }
+        if !self.discovered() { return page(503, "the issuer " + self.issuer + " did not answer its discovery document"); }
+        let token = self.exchange.id_token(self.token_url, code, self.redirect_uri, self.client);
+        if len(token) == 0 { return page(502, "the issuer did not exchange the code"); }
+        let c = dna::id_token_claims(token);
+        let why = dna::claims_refusal(c, self.issuer, self.client, nonce, std::time::now());
+        if len(why) > 0 { return page(403, "the issuer's answer is refused: " + why); }
+        let name = dna::member_of(self.members, c.sub);
+        if len(name) == 0 { return page(403, "not a member: subject `" + c.sub + "` of " + c.iss + " maps to no one (`git config --add dna.oidc.member \"" + c.sub + "=<name>\"`)"); }
+        let id = dna::hex(std::os::getrandom(32) or b"");
+        if len(id) < 64 { return page(503, "no randomness for a session"); }
+        self.sessions.push(Session { id: id, name: name, subject: c.sub, expires: std::time::now() + 28800 });
+        let secure = if std::str::starts_with(self.redirect_uri, "https://") { "; Secure" } else { "" };
+        return redirect("/", "dna_session=" + id + "; HttpOnly; SameSite=Lax; Path=/" + secure);
+    }
+    // The member a request's session maps to ("" when none is live).
+    @unbounded
+    fn session_name(req: std::http::Request) -> String {
+        let id = dna::cookie_value(std::http::header(req, "Cookie"), "dna_session");
+        if len(id) == 0 { return ""; }
+        let now = std::time::now();
+        let mut i = 0;
+        while i < self.sessions.len() {
+            let s = self.sessions.get(i) or Session { };
+            if s.id == id && s.expires > now { return s.name; }
+            i = i + 1;
+        }
+        return "";
+    }
+    @unbounded
+    fn end_session(req: std::http::Request) {
+        let id = dna::cookie_value(std::http::header(req, "Cookie"), "dna_session");
+        let mut i = 0;
+        while i < self.sessions.len() {
+            let s = self.sessions.get(i) or Session { };
+            if len(id) > 0 && s.id == id { self.sessions.set(i, Session { }) or discard; }
+            i = i + 1;
+        }
+    }
+    fn authority_of(name: String) -> String {
+        return if std::str::contains("," + std::str::replace(self.board, " ", "") + ",", "," + name + ",") { "board" } else { "reviewer" };
     }
     fn handle(req: std::http::Request) -> std::http::Response {
         self.served = self.served + 1;
         let ctx = std::http::build_context(req);
+        // GH #612: under `oidc`, a session or nothing
+        let mut signed_in = "";
+        if self.principal == "oidc" {
+            if std::http::is_route(ctx, "GET", "/auth/login") { return self.begin_sign_in(); }
+            if std::http::is_route(ctx, "GET", "/auth/callback") {
+                return self.finish_sign_in(std::http::query_param(ctx.params, "code"), std::http::query_param(ctx.params, "state"), dna::cookie_value(std::http::header(req, "Cookie"), "dna_signin"));
+            }
+            if std::http::is_route(ctx, "GET", "/auth/logout") {
+                self.end_session(req);
+                return redirect("/auth/login", "dna_session=; Max-Age=0; Path=/");
+            }
+            signed_in = self.session_name(req);
+            if len(signed_in) == 0 {
+                if std::http::is_route(ctx, "GET", "/") { return redirect("/auth/login", ""); }
+                return std::http::Response { status: 401, content_type: "application/json", headers: "Cache-Control: no-store", body: "{\"error\": \"no session: sign in at /auth/login\"}" };
+            }
+        }
         if std::http::is_route(ctx, "GET", "/") {
-            let page = std::io::fs::read_file(self.html) or "<h1>hale dna ui: no page at " + self.html + "</h1>";
-            return std::http::Response { status: 200, content_type: "text/html; charset=utf-8", body: page };
+            let body = std::io::fs::read_file(self.html) or "<h1>hale dna ui: no page at " + self.html + "</h1>";
+            return std::http::Response { status: 200, content_type: "text/html; charset=utf-8", body: body };
         }
         if std::http::is_route(ctx, "GET", "/api/status") {
             return std::http::Response { status: 200, content_type: "application/json", headers: "Cache-Control: no-store", body: dna("status\n--json") };
@@ -78,10 +266,12 @@ locus Ui {
             let b = req.body;
             let id = clean(std::json::find_string_field(b, "id"));
             let verdict = clean(std::json::find_string_field(b, "verdict"));
-            let who = clean(std::json::find_string_field(b, "as"));
+            // the session's member under `oidc`; the form's name under `local`
+            let who = if len(signed_in) > 0 { signed_in } else { clean(std::json::find_string_field(b, "as")) };
             let comment = std::json::find_string_field(b, "comment");
             let mut args = "review\n" + id + "\n" + verdict + "\n--no-wait";
             if len(who) > 0 { args = args + "\n--as\n" + who; }
+            if len(signed_in) > 0 { args = args + "\n--authority\n" + self.authority_of(signed_in); }
             if len(comment) > 0 { args = args + "\n--comment\n" + comment; }
             return text(dna(args));
         }
@@ -92,6 +282,7 @@ locus Ui {
             if len(outcome) == 0 { return std::http::Response { status: 400, body: "say what should happen" }; }
             let mut args = "ask\n--no-wait";
             if len(to) > 0 { args = args + "\n--to\n" + to; }
+            if len(signed_in) > 0 { args = args + "\n--as\n" + signed_in; }
             return text(dna(args + "\n" + outcome));
         }
         if std::http::is_route(ctx, "POST", "/api/pressure") {
@@ -108,6 +299,23 @@ locus Ui {
 fn main() {
     let port = std::str::parse_int(std::env::arg_or(1, "8790")) or 8790;
     let html = std::env::arg_or(2, "index.html");
+    let source = git_config("dna.principal", false);
+    if source == "oidc" {
+        let issuer = git_config("dna.oidc.issuer", false);
+        let client = git_config("dna.oidc.client", false);
+        let redirect_uri = git_config("dna.oidc.redirect", false);
+        if len(issuer) == 0 || len(client) == 0 || len(redirect_uri) == 0 {
+            eprintln("hale dna ui: dna.principal is oidc, so dna.oidc.issuer, dna.oidc.client and dna.oidc.redirect must be set");
+            std::process::exit(2);
+        }
+        if !dna::issuer_allowed(issuer) {
+            eprintln("hale dna ui: the issuer must be https (plain http only on this machine): ", issuer);
+            std::process::exit(2);
+        }
+        println("hale dna ui: http://127.0.0.1:", port, "/ — sign-in through ", issuer, " (dna.principal = oidc); put TLS in front of this server");
+        std::http::Server { port: port, handler: Ui { html: html, principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: git_config("dna.oidc.member", true), board: git_config("dna.oidc.board", false) } };
+        return;
+    }
     println("hale dna ui: http://127.0.0.1:", port, "/ (from the record; ctrl-c stops)");
     std::http::Server { port: port, handler: Ui { html: html } };
 }

@@ -187,14 +187,15 @@ fn effect_resolve_verb(root: String, seed: String, key: String, outcome: String,
     return answer("effect " + key + " " + body + "\n");
 }
 
-fn ask_verb(root: String, outcome: String, to: String, no_wait: Bool) -> Answer {
+fn ask_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: String) -> Answer {
     if len(outcome) == 0 { return fail("ask: say what should happen — `hale dna ask \"<intent>\"`"); }
     let s0 = sync_record(root);
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
     let p = open_projection(root, ".", "");
     let before = p.rows();
     let intent_id = "i" + hex(millis());
-    let who = who_am_i();
+    // GH #612: a hosted head names the principal it resolved
+    let who = if len(as_flag) > 0 { as_flag } else { who_am_i() };
     let local = membrane_up(root);
     let b = std::json::Builder { };
     b.begin_object();
@@ -210,7 +211,7 @@ fn ask_verb(root: String, outcome: String, to: String, no_wait: Bool) -> Answer 
         // no organism here: the intent goes into the record, and the host
         // beside the organism relays it (GH #566 F1)
         if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
-        if !append_as(root, "intent.requested", intent_id, b.result(), "") { return fail("the record refused the append"); }
+        if !append_as(root, "intent.requested", intent_id, b.result(), if len(as_flag) > 0 { as_flag } else { "" }) { return fail("the record refused the append"); }
         let s = sync_record(root);
         if !s.ok { return fail(s.summary); }
         if no_wait { return answer("intent " + intent_id + " requested in the record; the organism answers there (`hale dna sync`, then `status`)\n"); }
@@ -300,7 +301,7 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     } else {
         // a row in the record, in the reviewer's name; the host beside the
         // organism relays it, and the Review answers in the record
-        if !append_as(root, "review.verdict", id, b.result(), "") { return fail("the record refused the append"); }
+        if !append_as(root, "review.verdict", id, b.result(), if len(reviewer_flag) > 0 { reviewer_flag } else { "" }) { return fail("the record refused the append"); }
         let s = sync_record(root);
         if !s.ok { return fail(s.summary); }
     }

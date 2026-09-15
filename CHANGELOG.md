@@ -20,6 +20,12 @@ behavior.
 - `hale dna body` reads the lease; `hale dna body claim --force` releases a live lease of a body that is gone (a forced `body.claimed` row in your name; that body stops when it next asserts); `hale dna body release [--force]`.
 - `hale dna profile` prints the organism's combination — record, body, head, fleet, knowledge, trust, github, connections — detected from the pieces, never from a stored label; `status` gains `profile:` and `body:` lines. `hale dna new --profile local|remote-body [--remote <url>] [--body <user@host>]` sets the pieces.
 
+### DNA: the principal source — a hosted head that signs you in (GH #612)
+
+- `git config dna.principal oidc` makes `hale dna ui` a hosted head: nothing is served without a session, and a session comes from OpenID Connect's authorization-code flow against `dna.oidc.issuer`. The head exchanges the code at the issuer's token endpoint itself, over TLS, which authenticates the ID token (OpenID Connect Core §3.1.3.7, rule 6) in place of an RS256 signature the standard library cannot verify; issuer, audience, expiry and nonce are checked (`dna/core/principal.hl`).
+- The subject maps to a member through `dna.oidc.member "<subject>=<name>"`; an unmapped subject gets no session. A verdict from the page acts as that member, with the board's authority when `dna.oidc.board` names them, and an intent is asked by them — the row's author too — whatever the form says. `hale dna ask` gains `--as`, and a verdict with `--as` is authored by its reviewer.
+- `local` stays the default and behaves as before. The head speaks plain HTTP; TLS is a reverse proxy in front of it.
+
 ### DNA: retention — redaction under a policy, legal holds, sync that forgets (GH #606, part 2)
 
 - `receipt.held <digest>` stands until `receipt.hold_released` and refuses redaction meanwhile (`hale dna receipt hold | release-hold`).

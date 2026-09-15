@@ -1,0 +1,59 @@
+// GH #612 — the principal source's checks, as pure functions: an ID
+// token's claims from its payload, each refusal by name, the reviewed
+// mapping from subject to member, the issuer rule, and the cookie and
+// header readers the hosted head uses.
+
+import "../core" as dna;
+
+fn b64(s: String) -> String { return std::text::base64::url_encode(std::bytes::from_string(s)); }
+
+main locus App {
+    run() {
+        // base64url: `-` and `_` where standard base64 has `+` and `/`, no padding
+        let odd = "{\"name\": \"??>>~~\", \"n\": 1}";
+        let enc = b64(odd);
+        std::test::assert(std::str::contains(enc, "-") || std::str::contains(enc, "_"), "the sample uses the URL-safe alphabet: " + enc);
+        std::test::assert_eq_str(dna::b64url_text(enc), odd, "decoded with its padding restored");
+
+        let now = 1789351200;
+        let header = b64("{\"alg\":\"RS256\",\"kid\":\"k1\"}");
+        let payload = "{\"iss\": \"https://id.example\", \"aud\": \"dna-ui\", \"sub\": \"alice-sub\", \"email\": \"alice@example\", \"nonce\": \"n1\", \"exp\": " + to_string(now + 600) + "}";
+        let c = dna::id_token_claims(header + "." + b64(payload) + ".signature");
+        std::test::assert(c.present && c.iss == "https://id.example" && c.aud == "dna-ui" && c.sub == "alice-sub" && c.email == "alice@example" && c.nonce == "n1", "the claims from the payload: " + c.sub);
+        std::test::assert_eq_int(c.exp, now + 600, "and the expiry");
+        std::test::assert_eq_str(dna::claims_refusal(c, "https://id.example", "dna-ui", "n1", now), "", "accepted");
+        std::test::assert(std::str::starts_with(dna::claims_refusal(c, "https://other.example", "dna-ui", "n1", now), "issuer:"), "another issuer");
+        std::test::assert(std::str::starts_with(dna::claims_refusal(c, "https://id.example", "someone-else", "n1", now), "audience:"), "another client");
+        std::test::assert(std::str::starts_with(dna::claims_refusal(c, "https://id.example", "dna-ui", "n1", now + 600), "expired:"), "expired at its exp");
+        std::test::assert(std::str::starts_with(dna::claims_refusal(c, "https://id.example", "dna-ui", "n2", now), "nonce:"), "the nonce of another sign-in");
+        std::test::assert(std::str::starts_with(dna::claims_refusal(c, "https://id.example", "dna-ui", "", now), "nonce:"), "no sign-in at all");
+        let many = dna::id_token_claims(header + "." + b64("{\"iss\": \"https://id.example\", \"aud\": [\"other\", \"dna-ui\"], \"sub\": \"bob-sub\", \"nonce\": \"n3\", \"exp\": " + to_string(now + 60) + "}") + ".s");
+        std::test::assert_eq_str(dna::claims_refusal(many, "https://id.example", "dna-ui", "n3", now), "", "an audience array that includes the client");
+        std::test::assert(std::str::starts_with(dna::claims_refusal(many, "https://id.example", "dna", "n3", now), "audience:"), "a prefix of an audience is not the audience");
+        let nobody = dna::id_token_claims(header + "." + b64("{\"iss\": \"https://id.example\", \"aud\": \"dna-ui\", \"nonce\": \"n4\", \"exp\": " + to_string(now + 60) + "}") + ".s");
+        std::test::assert(std::str::starts_with(dna::claims_refusal(nobody, "https://id.example", "dna-ui", "n4", now), "subject:"), "no subject");
+        std::test::assert(!dna::id_token_claims("not-a-token").present, "not a token");
+        std::test::assert(!dna::id_token_claims("a.b").present, "two parts are not a token");
+        std::test::assert(std::str::starts_with(dna::claims_refusal(dna::IdClaims { }, "https://id.example", "dna-ui", "n1", now), "token:"), "refused as not a token");
+
+        // the reviewed mapping: subject to member
+        let mapping = "alice-sub=alice\n bob-sub = bob \n";
+        std::test::assert_eq_str(dna::member_of(mapping, "alice-sub"), "alice", "a mapped subject");
+        std::test::assert_eq_str(dna::member_of(mapping, "bob-sub"), "bob", "spacing aside");
+        std::test::assert_eq_str(dna::member_of(mapping, "eve-sub"), "", "an unmapped subject is no one");
+        std::test::assert_eq_str(dna::member_of(mapping, ""), "", "and no subject is no one");
+
+        // the issuer rule
+        std::test::assert(dna::issuer_allowed("https://accounts.google.com"), "https");
+        std::test::assert(dna::issuer_allowed("http://127.0.0.1:47811"), "plain http on this machine");
+        std::test::assert(!dna::issuer_allowed("http://id.example"), "plain http elsewhere is refused");
+
+        // cookies and client headers
+        std::test::assert_eq_str(dna::cookie_value("theme=dark; dna_session=abc123; x=y", "dna_session"), "abc123", "a cookie among others");
+        std::test::assert_eq_str(dna::cookie_value("dna_sessionx=1", "dna_session"), "", "not a cookie whose name only starts the same");
+        std::test::assert_eq_str(dna::response_header("HTTP/1.0 302 Found\r\nLocation: /cb?code=1&state=2\r\nSet-Cookie: a=b", "location"), "/cb?code=1&state=2", "a header, case aside");
+        std::test::assert_eq_str(dna::response_header("Location: /x", "Set-Cookie"), "", "an absent header");
+    }
+}
+
+fn main() { App { }; }

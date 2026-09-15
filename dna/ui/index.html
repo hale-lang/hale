@@ -86,9 +86,11 @@
 (function () {
   var $ = function (id) { return document.getElementById(id); };
   var open = null;
-  function get(path) { return fetch(path, { cache: 'no-store' }).then(function (r) { return r.text(); }); }
+  // a hosted head (GH #612) answers 401 without a session: sign in
+  function answer(r) { if (r.status === 401) { location.href = '/auth/login'; } return r.text(); }
+  function get(path) { return fetch(path, { cache: 'no-store' }).then(answer); }
   function post(path, body) {
-    return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(function (r) { return r.text(); });
+    return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(answer);
   }
   function refresh() {
     get('/api/status').then(function (t) {

@@ -1,0 +1,120 @@
+// dna/core/principal.hl — the principal source (GH #612).
+//
+// Who acts where a verdict, an intent or a task completion enters. Two
+// sources: `local` — the operator of this clone, as `--as` and the git
+// identity have always said — and `oidc` — an identity provider, whose
+// subject is the stable identity (never an email alone), mapped to a
+// member name by a reviewed mapping, `git config dna.oidc.member
+// "<subject>=<name>"`, the shape `dna.github.board` has. The hosted head
+// (`hale dna ui` under `oidc`) resolves the principal and passes it on;
+// it never acts in its own name.
+//
+// The flow is OpenID Connect's authorization code. The head exchanges the
+// code at the issuer's token endpoint itself, over TLS, so the ID token it
+// receives is authenticated by that server's identity (OpenID Connect Core
+// 1.0, §3.1.3.7, rule 6) rather than by a signature — the standard library
+// verifies ES256 but not RS256, which most issuers use. Issuer, audience,
+// expiry and nonce are checked here.
+
+type IdClaims {
+    present: Bool = false;
+    iss: String = "";
+    aud: String = ""; // as the token carries it: a string, or a JSON array
+    sub: String = "";
+    email: String = "";
+    nonce: String = "";
+    exp: Int = 0;
+}
+
+// A base64url part of a JWT (no padding, `-` and `_` for `+` and `/`) as text.
+fn b64url_text(s: String) -> String {
+    let mut t = std::str::replace(std::str::replace(s, "-", "+"), "_", "/");
+    while len(t) % 4 != 0 { t = t + "="; }
+    return std::str::from_bytes(std::text::base64::decode(t));
+}
+
+// The claims of an ID token (`header.payload.signature`), from its payload.
+fn id_token_claims(jwt: String) -> IdClaims {
+    let a = std::str::index_of(jwt, ".");
+    if a < 0 { return IdClaims { }; }
+    let rest = jwt[(a + 1)..len(jwt)];
+    let b = std::str::index_of(rest, ".");
+    if b < 0 { return IdClaims { }; }
+    let payload = std::str::trim(b64url_text(rest[0..b]));
+    if !std::str::starts_with(payload, "{") { return IdClaims { }; }
+    let aud_raw = std::str::trim(std::json::find_field_raw(payload, "aud"));
+    return IdClaims {
+        present: true,
+        iss: std::json::find_string_field(payload, "iss"),
+        aud: if std::str::starts_with(aud_raw, "[") { aud_raw } else { std::json::find_string_field(payload, "aud") },
+        sub: std::json::find_string_field(payload, "sub"),
+        email: std::json::find_string_field(payload, "email"),
+        nonce: std::json::find_string_field(payload, "nonce"),
+        exp: std::json::find_int_field(payload, "exp")
+    };
+}
+
+// Why a token's claims are refused ("" when accepted): the issuer the
+// deployment names, this client among the audience, not expired, the
+// nonce of the sign-in that asked for it, a subject.
+fn claims_refusal(c: IdClaims, issuer: String, client: String, nonce: String, now: Int) -> String {
+    if !c.present { return "token: not an ID token"; }
+    if c.iss != issuer { return "issuer: `" + c.iss + "` is not `" + issuer + "`"; }
+    let aud_ok = if std::str::starts_with(c.aud, "[") { std::str::contains(c.aud, "\"" + client + "\"") } else { c.aud == client };
+    if !aud_ok { return "audience: the token is not for client `" + client + "`"; }
+    if c.exp <= now { return "expired: the token expired at " + to_string(c.exp); }
+    if len(nonce) == 0 || c.nonce != nonce { return "nonce: the token does not answer this sign-in"; }
+    if len(c.sub) == 0 { return "subject: none"; }
+    return "";
+}
+
+// The member a subject maps to, from `subject=name` lines ("" when none).
+@unbounded
+fn member_of(mapping: String, subject: String) -> String {
+    if len(subject) == 0 { return ""; }
+    let mut rest = mapping + "\n";
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = std::str::trim(rest[0..nl]);
+        rest = rest[(nl + 1)..len(rest)];
+        let eq = std::str::index_of(line, "=");
+        if eq > 0 && std::str::trim(line[0..eq]) == subject { return std::str::trim(line[(eq + 1)..len(line)]); }
+    }
+    return "";
+}
+
+// An issuer the flow may use: https, or plain http on this machine only
+// (an issuer a test serves).
+fn issuer_allowed(issuer: String) -> Bool {
+    if std::str::starts_with(issuer, "https://") { return true; }
+    return std::str::starts_with(issuer, "http://127.0.0.1:") || std::str::starts_with(issuer, "http://localhost:");
+}
+
+// The value of cookie `name` in a Cookie header ("" when absent).
+@unbounded
+fn cookie_value(header: String, name: String) -> String {
+    let mut rest = header + ";";
+    while len(rest) > 0 {
+        let sc = std::str::index_of(rest, ";");
+        let part = std::str::trim(rest[0..sc]);
+        rest = rest[(sc + 1)..len(rest)];
+        if std::str::starts_with(part, name + "=") { return part[(len(name) + 1)..len(part)]; }
+    }
+    return "";
+}
+
+// A header of a client response by name, case-insensitively.
+// (`std::http::header` takes a Request or a Response, not a ClientResponse.)
+@unbounded
+fn response_header(headers: String, name: String) -> String {
+    let want = std::str::lower(name) + ":";
+    let mut rest = headers + "\r\n";
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\r\n");
+        if nl < 0 { break; }
+        let line = rest[0..nl];
+        rest = rest[(nl + 2)..len(rest)];
+        if std::str::starts_with(std::str::lower(line), want) { return std::str::trim(line[len(want)..len(line)]); }
+    }
+    return "";
+}
