@@ -571,7 +571,8 @@ fn practice_verb(root: String, seed: String, sub: String, name: String, text: St
             let before = open_projection(root, seed, "").rows();
             let e = publish_on_membrane(root, "practice", b.result());
             if len(e) > 0 { return fail(e); }
-            let deadline = std::time::now() + 10;
+            // the organization answers from its bus; give a busy one a minute
+            let deadline = std::time::now() + 60;
             while std::time::now() <= deadline {
                 let q = open_projection(root, seed, "");
                 let r = find_after(q, before, " practice.proposed practice.refused ", request_id);
