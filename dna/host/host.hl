@@ -219,6 +219,9 @@ locus Host {
     }
     fn stop_body(code: Int) {
         self.stop_fence();
+        // what the organization and the expression started goes with them
+        if self.org.pid > 0 { kill_tree(to_string(self.org.pid)); }
+        if self.app.pid > 0 { kill_tree(to_string(self.app.pid)); }
         stop_proc(self.org);
         if self.observer.pid > 0 { stop_proc(self.observer); }
         if self.knowledge.pid > 0 { stop_proc(self.knowledge); std::io::fs::unlink(self.dna_dir + "/knowledge.pid") or discard; }
@@ -748,6 +751,8 @@ fn fence_main(holder: String, token: Int, expires: Int, host_pid: Int) {
     let mut renewed = 0;
     while fence_mandate(dir, host_pid) {
         let now = std::time::now();
+        // every git call a renewal makes stops at this deadline
+        let d = write_text(dir + "/body.deadline", to_string(lease.expires - FENCE_MARGIN)) or false;
         if dna::run_tool("kill\n-0\n" + to_string(host_pid)).code != 0 { fence_stop(dir, host_pid, "orphaned: the host is gone"); return; }
         if now - renewed >= BODY_TTL / 3 {
             let r = body_renew(".", lease, now);
@@ -775,10 +780,9 @@ fn fence_mandate(dir: String, host_pid: Int) -> Bool {
 fn fence_stop(dir: String, host_pid: Int, why: String) {
     if !fence_mandate(dir, host_pid) { return; }
     let w = write_text(dir + "/body.fence.status", to_string(host_pid) + " " + why) or false;
-    let org = dna::trim_nl(std::io::fs::read_file(dir + "/org.pid") or "");
-    if len(org) > 0 { let k = dna::run_tool("kill\n-KILL\n" + org); }
-    let app = dna::trim_nl(std::io::fs::read_file(dir + "/app.pid") or "");
-    if len(app) > 0 { let k2 = dna::run_tool("kill\n-KILL\n" + app); }
+    // each with every process it started
+    kill_tree(dna::trim_nl(std::io::fs::read_file(dir + "/org.pid") or ""));
+    kill_tree(dna::trim_nl(std::io::fs::read_file(dir + "/app.pid") or ""));
 }
 
 fn host_main(verb: String, root: String, seed: String, fleet: String, plan: String, toolchain: String, a: Args) {
