@@ -131,10 +131,20 @@ repository:
   refused at declaration, never when it would first fire, with a
   `schedule.refused` row. An interval counts from the first tick and
   fires once per interval; a cron fires once in the UTC minute it
-  names (day-of-month and day-of-week both restricted: either). Firing
-  is `ask` with `Intent { id: "s:<id>/<n>", from: "schedule:<id>" }`,
-  routed as `requires` says, and a `schedule.fired <id> {task, at}`
-  row; a refusal by the membrane is `schedule.refused`. **Overlap:** a
+  names (day-of-month and day-of-week both restricted: either). A fire
+  is **claimed in the record before it is admitted**: `schedule.fired
+  <id> {intent, at}` first — a claim the record refuses admits nothing
+  — then `ask` with `Intent { id: "s:<id>@<at>/<n>", from:
+  "schedule:<id>" }`, routed as `requires` says, then
+  `schedule.admitted <id> {intent, task, at}`; a refusal by the
+  membrane is `schedule.refused`. A declaration after a restart
+  restores the last fire from the record — its time, and for a cron
+  the minute, so a cron does not fire again in the minute it fired —
+  and a claimed occurrence without its admission: the Task born under
+  its intent completes the admission (`recovered: true`), and one never
+  born is admitted at the next tick, once. The optimize pass's fire is
+  likewise a `schedule.fired {action: optimize, at}` row written before
+  the pass runs. **Overlap:** a
   schedule never fires while the last Task it fired is open (born,
   pending, handed — anything but done or failed); the skip is a
   `schedule.skipped <id> {task, state, at}` row, never silent. `hale

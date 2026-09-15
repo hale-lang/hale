@@ -802,6 +802,18 @@ locus Dna {
         while i < n {
             let mut s = self.schedules.get(i) or Schedule { };
             if s.paused { i = i + 1; continue; }
+            // an occurrence claimed before a restart and never born: admitted
+            // now, under the intent it was claimed with, once
+            if len(s.pending_intent) > 0 && s.action != "optimize" {
+                let pt = self.ask(Intent { id: s.pending_intent, outcome: s.ask, from: "schedule:" + s.id }, Knobs { routed: len(s.requires) > 0, requires: s.requires });
+                if std::str::starts_with(pt, "refused") {
+                    let x = self.journal.append(self.journal.revision(), "schedule.refused", s.id, pt);
+                } else {
+                    s.task = pt;
+                    let x = self.journal.append(self.journal.revision(), "schedule.admitted", s.id, "{\"intent\": \"" + s.pending_intent + "\", \"task\": \"" + pt + "\", \"at\": " + to_string(s.last_at) + "}");
+                }
+                s.pending_intent = "";
+            }
             let mut due = false;
             if s.every_ms > 0 {
                 // armed at the first tick; then once per interval
@@ -819,22 +831,35 @@ locus Dna {
             }
             if due {
                 if s.action == "optimize" {
-                    self.optimize();
-                    s.fired = s.fired + 1;
+                    // the fire is claimed in the record before the pass runs
                     let x = self.journal.append(self.journal.revision(), "schedule.fired", s.id, "{\"action\": \"optimize\", \"at\": " + to_string(wall) + "}");
+                    if x.ok {
+                        s.fired = s.fired + 1;
+                        s.last_at = wall;
+                        self.optimize();
+                    }
                 } else {
                     // overlap: never while the last Task it fired is open — the skip is a row
                     let st = if len(s.task) > 0 { self.task_state(s.task) } else { "done" };
                     if len(s.task) > 0 && st != "done" && st != "failed" {
                         let x = self.journal.append(self.journal.revision(), "schedule.skipped", s.id, "{\"task\": \"" + s.task + "\", \"state\": \"" + (if len(st) == 0 { "pending" } else { st }) + "\", \"at\": " + to_string(wall) + "}");
                     } else {
-                        s.fired = s.fired + 1;
-                        let t = self.ask(Intent { id: "s:" + s.id + "/" + to_string(s.fired), outcome: s.ask, from: "schedule:" + s.id }, Knobs { routed: len(s.requires) > 0, requires: s.requires });
-                        if std::str::starts_with(t, "refused") {
-                            let x = self.journal.append(self.journal.revision(), "schedule.refused", s.id, t);
-                        } else {
-                            s.task = t;
-                            let x = self.journal.append(self.journal.revision(), "schedule.fired", s.id, "{\"task\": \"" + t + "\", \"at\": " + to_string(wall) + "}");
+                        // the occurrence is claimed in the record before it is
+                        // admitted: a restart after the claim restores it (admitted
+                        // once, never twice), and a claim the record refuses admits
+                        // nothing
+                        let intent = "s:" + s.id + "@" + to_string(wall) + "/" + to_string(s.fired + 1);
+                        let claim = self.journal.append(self.journal.revision(), "schedule.fired", s.id, "{\"intent\": \"" + intent + "\", \"at\": " + to_string(wall) + "}");
+                        if claim.ok {
+                            s.fired = s.fired + 1;
+                            s.last_at = wall;
+                            let t = self.ask(Intent { id: intent, outcome: s.ask, from: "schedule:" + s.id }, Knobs { routed: len(s.requires) > 0, requires: s.requires });
+                            if std::str::starts_with(t, "refused") {
+                                let x = self.journal.append(self.journal.revision(), "schedule.refused", s.id, t);
+                            } else {
+                                s.task = t;
+                                let x = self.journal.append(self.journal.revision(), "schedule.admitted", s.id, "{\"intent\": \"" + intent + "\", \"task\": \"" + t + "\", \"at\": " + to_string(wall) + "}");
+                            }
                         }
                     }
                 }
@@ -872,10 +897,33 @@ locus Dna {
                 if len(t) > 0 { fresh.task = t; }
                 fresh.fired = fresh.fired + 1;
                 fresh.last_at = std::json::find_int_field(e.body, "at");
+                // the minute it fired, so a cron does not fire again in it
+                fresh.last_minute = fresh.last_at / 60;
+                // the occurrence it claimed, until its admission is in the record
+                fresh.pending_intent = std::json::find_string_field(e.body, "intent");
             }
+            if e.entity == s.id && e.kind == "schedule.admitted" {
+                fresh.task = std::json::find_string_field(e.body, "task");
+                if std::json::find_string_field(e.body, "intent") == fresh.pending_intent { fresh.pending_intent = ""; }
+            }
+            if e.entity == s.id && e.kind == "schedule.refused" { fresh.pending_intent = ""; }
             if e.entity == s.id && e.kind == "schedule.paused" { fresh.paused = true; }
             if e.entity == s.id && e.kind == "schedule.resumed" { fresh.paused = false; }
             i = i + 1;
+        }
+        // a claimed occurrence whose Task was born before the restart: that
+        // Task is its admission, completed in the record now
+        if len(fresh.pending_intent) > 0 {
+            let mut j = 0;
+            while j < n && len(fresh.pending_intent) > 0 {
+                let e = self.journal.read(j);
+                if e.kind == "task.born" && std::str::starts_with(e.body, fresh.pending_intent + ": ") {
+                    fresh.task = e.entity;
+                    let x = self.journal.append(self.journal.revision(), "schedule.admitted", s.id, "{\"intent\": \"" + fresh.pending_intent + "\", \"task\": \"" + e.entity + "\", \"at\": " + to_string(fresh.last_at) + ", \"recovered\": true}");
+                    fresh.pending_intent = "";
+                }
+                j = j + 1;
+            }
         }
         let decl = schedule_json(fresh);
         if decl != last_decl { let x = self.journal.append(self.journal.revision(), "schedule.declared", s.id, decl); }

@@ -829,6 +829,7 @@ fn schedule_verb(root: String, sub: String, id: String, who_flag: String) -> Ans
                 if e.kind == "schedule.paused" { paused = true; }
                 if e.kind == "schedule.resumed" { paused = false; }
                 if e.kind == "schedule.fired" { fired = fired + 1; let t = std::json::find_string_field(e.body, "task"); if len(t) > 0 { task = t; } }
+                if e.kind == "schedule.admitted" { let at = std::json::find_string_field(e.body, "task"); if len(at) > 0 { task = at; } }
                 if e.kind == "schedule.skipped" { skipped = skipped + 1; }
             }
             k = k + 1;
