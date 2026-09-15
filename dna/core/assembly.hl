@@ -848,7 +848,7 @@ locus Dna {
             // (unassigned when it named none), and the row says for whom it
             // was planned.
             let gone = self.retired(p.assignee);
-            let assignee = if gone.retired { gone.successor } else { p.assignee };
+            let assignee = if gone.retired { self.admissible(p.assignee) } else { p.assignee };
             hb.string_field("work", req.work_id);
             hb.string_field("assignee", assignee);
             if gone.retired { hb.string_field("retired_assignee", p.assignee); }
@@ -958,6 +958,25 @@ locus Dna {
             i = i + 1;
         }
         return out;
+    }
+    // Who receives work planned for `who`: `who` while they work here,
+    // else their successor's successor, and so on, to the first person
+    // not retired; "" (unassigned) when the chain ends in a retirement
+    // that named nobody, or comes back on itself (the second review of
+    // #619: a successor who also retired still received the work).
+    // Bounded by the retirements in the record.
+    @unbounded
+    fn admissible(who: String) -> String {
+        let mut at = who;
+        let mut seen = " ";
+        while len(at) > 0 {
+            let r = self.retired(at);
+            if !r.retired { return at; }
+            if std::str::contains(seen, " " + at + " ") { return ""; }
+            seen = seen + at + " ";
+            at = r.successor;
+        }
+        return "";
     }
     // The last `task.<state>` journaled for an id ("" when only born).
     @unbounded
@@ -1384,6 +1403,7 @@ locus Dna {
         self.metabolism.resume(tasks);
         if mutations > self.mutations_minted { self.mutations_minted = mutations; }
         self.budget.rehydrate(self.journal, std::time::now());
+        self.pend_born_tasks();
         self.reconcile_effects();
         self.fail_in_flight();
         self.note_unrecovered_intents();
@@ -1478,6 +1498,23 @@ locus Dna {
         if len(t) == 0 || !std::str::starts_with(t, "t") { return; }
         if self.task_state(t) != "pending" { return; }
         let x = self.journal.append(self.journal.revision(), "task." + disposition, t, mutation_id + " " + detail);
+    }
+    // A Task whose restart fell between its `task.born` and its
+    // `task.pending` is unsettled all the same: the record says so first,
+    // so every settlement (each requires `pending`) can end it — its plan
+    // resumed, or its in-flight Mutation's outcome (the second review of
+    // #618). Bounded by the Tasks born.
+    @unbounded
+    fn pend_born_tasks() {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "task.born" && self.task_state(e.entity) == "" {
+                let x = self.journal.append(self.journal.revision(), "task.pending", e.entity, "after a restart: born, and not yet pending when the organization stopped");
+            }
+            i = i + 1;
+        }
     }
     // GH #604 rule 2: a Task born and not settled re-enters the tower
     // after a restart from its last durable state. With a plan in the
