@@ -2,6 +2,9 @@
 // and not while its last Task is open (the skip is a row); a paused
 // schedule never fires; a malformed cron is refused at declaration;
 // cron matching is by the UTC minute; the optimize pass is a schedule.
+// A fire is claimed in the record before its ask (`schedule.fired`, then
+// the Task, then `schedule.admitted`), so a restart neither fires a cron
+// again in the minute it fired nor admits an occurrence twice.
 
 import "../core" as dna;
 
@@ -23,6 +26,10 @@ main locus App {
         // left unplanned beside `one` turned each schedule fire into a
         // worktree of whatever repository the suite ran from.
         opt: dna::Dna = dna::Dna { planned: true, org_id: "sched-bystander" };
+        // restarts, each over a record of its own
+        minutely: dna::Dna = dna::Dna { planned: true, org_id: "sched-minute" };
+        unborn: dna::Dna = dna::Dna { planned: true, org_id: "sched-unborn" };
+        born: dna::Dna = dna::Dna { planned: true, org_id: "sched-born" };
     }
     @unbounded
     fn rows(kind: String, entity: String) -> Int {
@@ -85,8 +92,11 @@ main locus App {
         std::time::sleep(300ms);
         std::test::assert_eq_int(self.rows("schedule.fired", "hourly"), 1, "fires once the interval is up");
         let fired = self.last_body("schedule.fired", "hourly");
-        let t1 = std::json::find_string_field(fired, "task");
-        std::test::assert(std::str::starts_with(t1, "t"), "and names the Task born: " + fired);
+        let intent1 = std::json::find_string_field(fired, "intent");
+        std::test::assert(std::str::starts_with(intent1, "s:hourly@"), "the occurrence is claimed under its intent: " + fired);
+        let admitted = self.last_body("schedule.admitted", "hourly");
+        let t1 = std::json::find_string_field(admitted, "task");
+        std::test::assert(std::str::starts_with(t1, "t") && std::json::find_string_field(admitted, "intent") == intent1, "and the admission names the Task born: " + admitted);
         std::test::assert_eq_int(self.rows("task.born", t1), 1, "the Task took the ordinary road");
         std::test::assert_eq_str(self.one.task_state(t1), "handed", "planned by the leader and handed, so it stays open");
         self.one.tick(1100);
@@ -101,7 +111,7 @@ main locus App {
         self.one.tick(3000);
         std::time::sleep(300ms);
         std::test::assert_eq_int(self.rows("schedule.fired", "hourly"), 2, "fires again once the last Task settled");
-        let t2 = std::json::find_string_field(self.last_body("schedule.fired", "hourly"), "task");
+        let t2 = std::json::find_string_field(self.last_body("schedule.admitted", "hourly"), "task");
         std::test::assert(t2 != t1 && len(t2) > 0, "a new Task");
         // paused: never fires; resumed: fires
         let p = self.one.journal.append(self.one.journal.revision(), "schedule.paused", "hourly", "{\"by\": \"riley\"}");
@@ -140,6 +150,46 @@ main locus App {
             i = i + 1;
         }
         std::test::assert_eq_int(f, 2, "each run is a schedule.fired row");
+
+        // ---- a restart in the minute a cron fired does not fire it again
+        let mut wall = std::time::now();
+        if wall % 60 > 50 {
+            std::time::sleep((62 - wall % 60) * 1000ms);
+            wall = std::time::now();
+        }
+        let before = self.minutely.journal.append(self.minutely.journal.revision(), "schedule.fired", "minutely", "{\"action\": \"optimize\", \"at\": " + to_string(wall) + "}");
+        std::test::assert_eq_str(self.minutely.schedule(dna::Schedule { id: "minutely", cron: "* * * * *", action: "optimize", requires: "" }), "", "a cron that matches every minute");
+        self.minutely.tick(0);
+        std::test::assert_eq_int(self.minutely.optimizations, 0, "not again in the minute it fired before the restart");
+
+        // ---- an occurrence claimed and never born is admitted once
+        let claimed = self.unborn.journal.append(self.unborn.journal.revision(), "schedule.fired", "nightly", "{\"intent\": \"s:nightly@1789351200\", \"at\": 1789351200}");
+        std::test::assert_eq_str(self.unborn.schedule(dna::Schedule { id: "nightly", every_ms: 86400000, ask: "reconcile the day", requires: "" }), "", "declared after the restart");
+        self.unborn.tick(0);
+        self.unborn.tick(10);
+        let mut births = 0;
+        i = 0;
+        while i < self.unborn.journal.revision() {
+            let e = self.unborn.journal.read(i);
+            if e.kind == "task.born" && std::str::starts_with(e.body, "s:nightly@1789351200: ") { births = births + 1; }
+            i = i + 1;
+        }
+        std::test::assert_eq_int(births, 1, "the claimed occurrence is admitted, once");
+
+        // ---- an occurrence claimed and born before the restart is not born again
+        let c2 = self.born.journal.append(self.born.journal.revision(), "schedule.fired", "nightly", "{\"intent\": \"s:nightly@1789351200\", \"at\": 1789351200}");
+        let o2 = self.born.journal.append(self.born.journal.revision(), "intent.offered", "s:nightly@1789351200", "reconcile the day");
+        let b2 = self.born.journal.append(self.born.journal.revision(), "task.born", "t77", "s:nightly@1789351200: reconcile the day");
+        std::test::assert_eq_str(self.born.schedule(dna::Schedule { id: "nightly", every_ms: 86400000, ask: "reconcile the day", requires: "" }), "", "declared after the restart");
+        self.born.tick(0);
+        let mut again = 0;
+        i = 0;
+        while i < self.born.journal.revision() {
+            let e = self.born.journal.read(i);
+            if e.kind == "task.born" { again = again + 1; }
+            i = i + 1;
+        }
+        std::test::assert_eq_int(again, 1, "its Task is the one in the record, not a second");
     }
 }
 

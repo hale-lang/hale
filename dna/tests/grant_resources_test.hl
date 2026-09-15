@@ -10,6 +10,34 @@ import "../core" as dna;
 
 fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
 
+// A journal on which another settler lands first: the first time a
+// `grant.released` is written, a competing settlement of the same
+// operation is appended before it.
+locus RacingJournal {
+    params {
+        inner: dna::MemJournal = dna::MemJournal { };
+        raced: Bool = false;
+    }
+    fn race(kind: String, entity: String, body: String) {
+        if kind != "grant.released" || self.raced { return; }
+        self.raced = true;
+        let x = self.inner.append(self.inner.revision(), "grant.released", entity, "{\"op\": \"" + std::json::find_string_field(body, "op") + "\", \"spent\": \"999\"}");
+    }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        self.race(kind, entity, body);
+        return self.inner.append(self.inner.revision(), kind, entity, body);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        self.race(kind, entity, body);
+        return self.inner.append_exact(expected, kind, entity, body);
+    }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+}
+
 fn spend(id: String, amount: String, currency: String) -> dna::Spend {
     return dna::Spend { id: id, amount: amount, currency: currency, counterparty: "acme", route: "bank" };
 }
@@ -18,6 +46,9 @@ main locus App {
     params {
         app: dna::Dna = dna::Dna { };
         billing: dna::Dna = dna::Dna { };
+        restarted: dna::Dna = dna::Dna { };
+        brief: dna::Dna = dna::Dna { };
+        racy: dna::Dna = dna::Dna { };
     }
     // What the record holds now, read fresh (each organism's journal is
     // its own view of the ref).
@@ -132,6 +163,42 @@ main locus App {
         std::test::assert(std::str::starts_with(self.app.admits(a3), "fenced: the grant changed after `a3` was admitted (epoch 0 -> 1)"), "an earlier admission is fenced: " + self.app.admits(a3));
         let after = self.app.reserve(spend("a5", "1", "USD"));
         std::test::assert(!after.ok && std::str::contains(after.refused, "currency: USD is not granted"), "nothing is granted after revocation: " + after.refused);
+
+        // a revocation survives a restart: an organism born over the same
+        // record, with the same authored grant, is still revoked
+        self.restarted = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs", max_magnitude: 8, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
+            ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 10, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
+            org_id: "app-restarted"
+        };
+        std::test::assert(std::str::starts_with(self.restarted.admits(a3), "fenced: the grant changed after `a3` was admitted (epoch 0 -> 1)"), "an admission fenced before the restart stays fenced: " + self.restarted.admits(a3));
+        let reborn = self.restarted.reserve(spend("a6", "1", "USD"));
+        std::test::assert(!reborn.ok && std::str::contains(reborn.refused, "currency: USD is not granted"), "and nothing is granted after it: " + reborn.refused);
+        std::test::assert(std::str::contains(self.last(repo, "grant.revoked"), "\"epoch\": 1"), "the revocation row carries its epoch: " + self.last(repo, "grant.revoked"));
+
+        // an admission is not carried out once its grant has expired
+        self.brief = dna::Dna { boundary: dna::AutonomyBoundary { child: "brief", grant: dna::Grant { child: "brief", amounts: "USD 50", counterparties: "acme", routes: "bank", expires: std::time::now() + 2 } }, org_id: "brief" };
+        let short = self.brief.reserve(spend("s1", "5", "USD"));
+        std::test::assert(short.ok, "reserved while the grant is in force: " + short.refused);
+        std::test::assert_eq_str(self.brief.admits(short), "", "and admitted while it is");
+        std::time::sleep(2500ms);
+        std::test::assert(std::str::starts_with(self.brief.admits(short), "expired: the grant `s1` was admitted under expired at "), "not after it expired: " + self.brief.admits(short));
+
+        // a settlement is once under contention: another settler lands first
+        self.racy = dna::Dna { journal: RacingJournal { }, boundary: dna::AutonomyBoundary { child: "racy", grant: dna::Grant { child: "racy", amounts: "USD 50", counterparties: "acme", routes: "bank" } }, org_id: "racy" };
+        let r1 = self.racy.reserve(spend("r1", "10", "USD"));
+        std::test::assert(r1.ok, "reserved: " + r1.refused);
+        let contended = self.racy.settle_spend("r1", "10");
+        std::test::assert(std::str::contains(contended, "already settled"), "the loser reads the winner's settlement: " + contended);
+        let mut released = 0;
+        let mut k = 0;
+        while k < self.racy.journal.revision() {
+            let e = self.racy.journal.read(k);
+            if e.kind == "grant.released" { released = released + 1; }
+            k = k + 1;
+        }
+        std::test::assert_eq_int(released, 1, "one settlement in the record");
 
         let rm = sh("rm\n-rf\n" + repo);
     }

@@ -372,30 +372,35 @@ locus Dna {
     fn redact_evidence(digest: String, by: String, why: String, policy: String) -> String {
         if len(by) == 0 || len(why) == 0 || len(policy) == 0 { return "a redaction names who, why and the policy"; }
         let moved = self.journal.refresh();
+        let rev = self.journal.revision();
         let hold = self.evidence_hold(digest);
         if len(hold) > 0 { return "held: " + hold + "; redaction waits for the hold's release"; }
-        if self.has_evidence_row("receipt.redacted", digest) { return digest + " is already redacted"; }
         let class = self.evidence_class(digest);
-        if protected_class(class) {
-            if self.has_evidence_row("receipt.classified", digest) {
-                // the service keeps the body: it erases it and writes the row
-                return self.vault.erase(digest, by, why, policy);
-            }
-            // withheld: nothing holds the body; the row is the organism's
-        } else {
-            let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
-            if !self.verification.receipts.erase(hexd) { return "the receipt store could not erase " + digest; }
+        let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+        let kept_here = !protected_class(class) && len(self.verification.receipts.read(hexd)) > 0;
+        let already = self.has_evidence_row("receipt.redacted", digest);
+        if already && !kept_here { return digest + " is already redacted"; }
+        if protected_class(class) && self.has_evidence_row("receipt.classified", digest) {
+            // the service keeps the body: it records the redaction, then erases
+            return self.vault.erase(digest, by, why, policy);
         }
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.string_field("by", by);
-        b.string_field("why", why);
-        b.string_field("policy", policy);
-        b.string_field("class", class);
-        b.string_field("store", if protected_class(class) { "none (withheld)" } else { self.verification.receipts.kind() });
-        b.end_object();
-        let x = self.journal.append(self.journal.revision(), "receipt.redacted", digest, b.result());
-        return if x.ok { "" } else { "the record refused the redaction: " + x.error };
+        // the decision is in the record before a byte is erased, at the
+        // revision the hold was read at: a redaction the record cannot hold
+        // erases nothing (one recorded before a failed erase is completed)
+        if !already {
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("by", by);
+            b.string_field("why", why);
+            b.string_field("policy", policy);
+            b.string_field("class", class);
+            b.string_field("store", if protected_class(class) { "none (withheld)" } else { self.verification.receipts.kind() });
+            b.end_object();
+            let x = self.journal.append_exact(rev, "receipt.redacted", digest, b.result());
+            if !x.ok { return if x.error == "stale_revision" { "the record moved while redacting " + digest + "; nothing was erased, try again" } else { "the record refused the redaction: " + x.error + "; nothing was erased" }; }
+        }
+        if kept_here && !self.verification.receipts.erase(hexd) { return "the redaction of " + digest + " is recorded, but the receipt store could not erase it; redacting again erases it"; }
+        return "";
     }
     fn hold_evidence(digest: String, by: String, why: String) -> String {
         if len(by) == 0 || len(why) == 0 { return "a hold names who and why"; }
@@ -990,6 +995,18 @@ locus Dna {
         while i < n {
             let mut s = self.schedules.get(i) or Schedule { };
             if s.paused { i = i + 1; continue; }
+            // an occurrence claimed before a restart and never born: admitted
+            // now, under the intent it was claimed with, once
+            if len(s.pending_intent) > 0 && s.action != "optimize" {
+                let pt = self.ask(Intent { id: s.pending_intent, outcome: s.ask, from: "schedule:" + s.id }, Knobs { routed: len(s.requires) > 0, requires: s.requires });
+                if std::str::starts_with(pt, "refused") {
+                    let x = self.journal.append(self.journal.revision(), "schedule.refused", s.id, pt);
+                } else {
+                    s.task = pt;
+                    let x = self.journal.append(self.journal.revision(), "schedule.admitted", s.id, "{\"intent\": \"" + s.pending_intent + "\", \"task\": \"" + pt + "\", \"at\": " + to_string(s.last_at) + "}");
+                }
+                s.pending_intent = "";
+            }
             let mut due = false;
             if s.every_ms > 0 {
                 // armed at the first tick; then once per interval
@@ -1007,22 +1024,35 @@ locus Dna {
             }
             if due {
                 if s.action == "optimize" {
-                    self.optimize();
-                    s.fired = s.fired + 1;
+                    // the fire is claimed in the record before the pass runs
                     let x = self.journal.append(self.journal.revision(), "schedule.fired", s.id, "{\"action\": \"optimize\", \"at\": " + to_string(wall) + "}");
+                    if x.ok {
+                        s.fired = s.fired + 1;
+                        s.last_at = wall;
+                        self.optimize();
+                    }
                 } else {
                     // overlap: never while the last Task it fired is open — the skip is a row
                     let st = if len(s.task) > 0 { self.task_state(s.task) } else { "done" };
                     if len(s.task) > 0 && st != "done" && st != "failed" {
                         let x = self.journal.append(self.journal.revision(), "schedule.skipped", s.id, "{\"task\": \"" + s.task + "\", \"state\": \"" + (if len(st) == 0 { "pending" } else { st }) + "\", \"at\": " + to_string(wall) + "}");
                     } else {
-                        s.fired = s.fired + 1;
-                        let t = self.ask(Intent { id: "s:" + s.id + "/" + to_string(s.fired), outcome: s.ask, from: "schedule:" + s.id }, Knobs { routed: len(s.requires) > 0, requires: s.requires });
-                        if std::str::starts_with(t, "refused") {
-                            let x = self.journal.append(self.journal.revision(), "schedule.refused", s.id, t);
-                        } else {
-                            s.task = t;
-                            let x = self.journal.append(self.journal.revision(), "schedule.fired", s.id, "{\"task\": \"" + t + "\", \"at\": " + to_string(wall) + "}");
+                        // the occurrence is claimed in the record before it is
+                        // admitted: a restart after the claim restores it (admitted
+                        // once, never twice), and a claim the record refuses admits
+                        // nothing
+                        let intent = "s:" + s.id + "@" + to_string(wall) + "/" + to_string(s.fired + 1);
+                        let claim = self.journal.append(self.journal.revision(), "schedule.fired", s.id, "{\"intent\": \"" + intent + "\", \"at\": " + to_string(wall) + "}");
+                        if claim.ok {
+                            s.fired = s.fired + 1;
+                            s.last_at = wall;
+                            let t = self.ask(Intent { id: intent, outcome: s.ask, from: "schedule:" + s.id }, Knobs { routed: len(s.requires) > 0, requires: s.requires });
+                            if std::str::starts_with(t, "refused") {
+                                let x = self.journal.append(self.journal.revision(), "schedule.refused", s.id, t);
+                            } else {
+                                s.task = t;
+                                let x = self.journal.append(self.journal.revision(), "schedule.admitted", s.id, "{\"intent\": \"" + intent + "\", \"task\": \"" + t + "\", \"at\": " + to_string(wall) + "}");
+                            }
                         }
                     }
                 }
@@ -1060,10 +1090,33 @@ locus Dna {
                 if len(t) > 0 { fresh.task = t; }
                 fresh.fired = fresh.fired + 1;
                 fresh.last_at = std::json::find_int_field(e.body, "at");
+                // the minute it fired, so a cron does not fire again in it
+                fresh.last_minute = fresh.last_at / 60;
+                // the occurrence it claimed, until its admission is in the record
+                fresh.pending_intent = std::json::find_string_field(e.body, "intent");
             }
+            if e.entity == s.id && e.kind == "schedule.admitted" {
+                fresh.task = std::json::find_string_field(e.body, "task");
+                if std::json::find_string_field(e.body, "intent") == fresh.pending_intent { fresh.pending_intent = ""; }
+            }
+            if e.entity == s.id && e.kind == "schedule.refused" { fresh.pending_intent = ""; }
             if e.entity == s.id && e.kind == "schedule.paused" { fresh.paused = true; }
             if e.entity == s.id && e.kind == "schedule.resumed" { fresh.paused = false; }
             i = i + 1;
+        }
+        // a claimed occurrence whose Task was born before the restart: that
+        // Task is its admission, completed in the record now
+        if len(fresh.pending_intent) > 0 {
+            let mut j = 0;
+            while j < n && len(fresh.pending_intent) > 0 {
+                let e = self.journal.read(j);
+                if e.kind == "task.born" && std::str::starts_with(e.body, fresh.pending_intent + ": ") {
+                    fresh.task = e.entity;
+                    let x = self.journal.append(self.journal.revision(), "schedule.admitted", s.id, "{\"intent\": \"" + fresh.pending_intent + "\", \"task\": \"" + e.entity + "\", \"at\": " + to_string(fresh.last_at) + ", \"recovered\": true}");
+                    fresh.pending_intent = "";
+                }
+                j = j + 1;
+            }
         }
         let decl = schedule_json(fresh);
         if decl != last_decl { let x = self.journal.append(self.journal.revision(), "schedule.declared", s.id, decl); }
@@ -1167,8 +1220,15 @@ locus Dna {
             // so completion can be checked against them at admission.
             let hb = std::json::Builder { };
             hb.begin_object();
+            // GH #604 rule 5: retirement stops admission. A job planned for a
+            // person who retired goes to the successor their retirement named
+            // (unassigned when it named none), and the row says for whom it
+            // was planned.
+            let gone = self.retired(p.assignee);
+            let assignee = if gone.retired { gone.successor } else { p.assignee };
             hb.string_field("work", req.work_id);
-            hb.string_field("assignee", p.assignee);
+            hb.string_field("assignee", assignee);
+            if gone.retired { hb.string_field("retired_assignee", p.assignee); }
             // GH #616: which acceptance practice a reported decision answers to
             hb.string_field("obligation", p.obligation);
             // GH #604: the acceptance condition is bound here, at hand-off —
@@ -1182,7 +1242,7 @@ locus Dna {
             hb.string_field("narrative", handed);
             hb.end_object();
             let x = self.journal.append(self.journal.revision(), "task.handed", req.task_id, hb.result());
-            self.membrane.notify("task", req.task_id + " handed to " + (if len(p.assignee) > 0 { p.assignee } else { "a person (unassigned)" }));
+            self.membrane.notify("task", req.task_id + " handed to " + (if len(assignee) > 0 { assignee } else { "a person (unassigned)" }));
             return;
         }
         // The governed child comes from the KIND, and the class is
@@ -1271,6 +1331,20 @@ locus Dna {
                 req.work_id + " by " + self.editor.identity() + ": " + out);
         }
     }
+    // GH #604 rule 5: whether `who` retired, and to whom their work goes.
+    @unbounded
+    fn retired(who: String) -> RetiredPerson {
+        if len(who) == 0 { return RetiredPerson { }; }
+        let n = self.journal.revision();
+        let mut out = RetiredPerson { };
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "person.retired" && e.entity == who { out = RetiredPerson { retired: true, successor: std::json::find_string_field(e.body, "to") }; }
+            i = i + 1;
+        }
+        return out;
+    }
     // The last `task.<state>` journaled for an id ("" when only born).
     @unbounded
     fn task_state(task_id: String) -> String {
@@ -1279,7 +1353,9 @@ locus Dna {
         let mut out = "";
         while i < n {
             let e = self.journal.read(i);
-            if e.entity == task_id && std::str::contains(e.kind, "task.") && e.kind != "task.born" && e.kind != "task.planned" { out = e.kind[5..len(e.kind)]; }
+            // `task.resumed` is an event of a restart, not a state: a Task
+            // resumed and not yet settled is still pending
+            if e.entity == task_id && std::str::contains(e.kind, "task.") && e.kind != "task.born" && e.kind != "task.planned" && e.kind != "task.resumed" { out = e.kind[5..len(e.kind)]; }
             i = i + 1;
         }
         return out;
@@ -1552,10 +1628,6 @@ locus Dna {
     @unbounded
     fn settle_spend(op: String, spent: String) -> String {
         let child = self.boundary.child;
-        let moved = self.journal.refresh();
-        let rev = self.journal.revision();
-        if !self.spend_reserved(child, op, rev) { return "no reservation `" + op + "` for " + child; }
-        if len(self.spent_of(child, op, rev)) > 0 { return "`" + op + "` is already settled"; }
         let v = std::str::parse_decimal(spent) or - 1.0d;
         if v < 0.0d { return "spent: `" + spent + "` is not a decimal"; }
         let b = std::json::Builder { };
@@ -1563,8 +1635,21 @@ locus Dna {
         b.string_field("op", op);
         b.string_field("spent", spent);
         b.end_object();
-        let x = self.journal.append(self.journal.revision(), "grant.released", child, b.result());
-        return if x.ok { "" } else { "the record refused the settlement: " + x.error };
+        let body = b.result();
+        // once, under contention too: appended only at the revision the
+        // "not yet settled" was read at, read again when the record moved
+        let mut tries = 0;
+        while tries < 20 {
+            let moved = self.journal.refresh();
+            let rev = self.journal.revision();
+            if !self.spend_reserved(child, op, rev) { return "no reservation `" + op + "` for " + child; }
+            if len(self.spent_of(child, op, rev)) > 0 { return "`" + op + "` is already settled"; }
+            let x = self.journal.append_exact(rev, "grant.released", child, body);
+            if x.ok { return ""; }
+            if x.error != "stale_revision" { return "the record refused the settlement: " + x.error; }
+            tries = tries + 1;
+        }
+        return "contention: the record moved under twenty attempts to settle `" + op + "`";
     }
     // An admission is carried out only under the grant it was made
     // under: a contraction or revocation since then advanced the epoch,
@@ -1578,15 +1663,59 @@ locus Dna {
             let x = self.journal.append(self.journal.revision(), "grant.fenced", self.boundary.child, why);
             return why;
         }
+        // time is authority too: an admission is carried out only while the
+        // grant it was made under has not expired
+        let expires = self.boundary.effective().expires;
+        if expires > 0 && std::time::now() >= expires {
+            let why = "expired: the grant `" + a.op + "` was admitted under expired at " + std::time::iso8601(std::time::time_from_unix(expires));
+            let y = self.journal.append(self.journal.revision(), "grant.fenced", self.boundary.child, why);
+            return why;
+        }
         return "";
+    }
+    // A revocation is the record's, not the live boundary's alone: read
+    // back at birth, it leaves nothing granted and the epoch where it left
+    // it, before anything is admitted. A row from before the body was
+    // structured (`by <who>; epoch <n>`) is read too.
+    @unbounded
+    fn restore_revocations() {
+        let child = self.boundary.child;
+        if len(child) == 0 { return; }
+        let n = self.journal.revision();
+        let mut revoked_at = -1;
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "grant.revoked" && e.entity == child {
+                let recorded = std::json::find_int_field(e.body, "epoch");
+                if recorded > 0 {
+                    revoked_at = recorded;
+                } else {
+                    let at = std::str::index_of(e.body, "epoch ");
+                    revoked_at = if at < 0 { 1 } else { std::str::parse_int(std::str::trim(e.body[(at + 6)..len(e.body)])) or 1 };
+                }
+            }
+            i = i + 1;
+        }
+        if revoked_at >= 0 { self.boundary.restore_revocation(revoked_at); }
     }
     // The parent revokes the child's grant: nothing is left granted,
     // and every earlier admission is fenced.
     fn revoke_grant(requested_by: String) -> Bool {
         let parent = if len(self.ceiling.child) > 0 { self.ceiling.child } else { "board" };
-        if !self.boundary.revoke(requested_by, parent) { return false; }
-        let x = self.journal.append(self.journal.revision(), "grant.revoked", self.boundary.child, "by " + requested_by + "; epoch " + to_string(self.boundary.current_grant().authority_epoch));
-        return true;
+        // the parent's alone: a refusal is the boundary's to audit
+        if requested_by == self.boundary.child || requested_by != parent { return self.boundary.revoke(requested_by, parent); }
+        // recorded before it takes effect, so a restart restores it; a
+        // revocation the record refuses did not happen
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("by", requested_by);
+        b.string_field("parent", parent);
+        b.int_field("epoch", self.boundary.current_grant().authority_epoch + 1);
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "grant.revoked", self.boundary.child, b.result());
+        if !x.ok { return false; }
+        return self.boundary.revoke(requested_by, parent);
     }
     // A staged mutation: assessed under the boundary, reviewed per
     // policy, and NEVER applied by this assembly's deployment.
@@ -1808,6 +1937,8 @@ locus Dna {
     // rehydrated here.
     @unbounded
     fn rehydrate() {
+        // a revocation in the record binds before anything is admitted
+        self.restore_revocations();
         let n = self.journal.revision();
         let mut i = 0;
         // durable ids continue where the Journal left them
@@ -1978,16 +2109,17 @@ locus Dna {
                 if state == "pending" || state == "" {
                     let mut proposed = false;
                     let mut plan = "";
-                    let mut resumed = false;
                     let mut k = i + 1;
                     while k < n {
                         let s = self.journal.read(k);
                         if s.kind == "mutation.proposed" && std::str::starts_with(s.body, "task " + id + " ") { proposed = true; }
                         if s.kind == "task.planned" && s.entity == id { plan = s.body; }
-                        if s.kind == "task.resumed" && s.entity == id { resumed = true; }
                         k = k + 1;
                     }
-                    if !proposed && !resumed {
+                    // a Task resumed before is resumed again: a restart that
+                    // stopped between its `task.resumed` and the dispatch left
+                    // it unfinished, and only its settlement ends it
+                    if !proposed {
                         let colon = std::str::index_of(e.body, ": ");
                         let objective = if colon < 0 { e.body } else { e.body[(colon + 2)..len(e.body)] };
                         if len(plan) > 0 {

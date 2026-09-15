@@ -337,6 +337,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
     eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
     eprintln!("                                    under an acceptance practice requiring evidence: --evidence <digest>, or --exception <why> --authorized-by <who>");
+    eprintln!("       hale dna task authorize <id> --exception <why>   authorize an exception, in your name (not the assignee's)");
     eprintln!("       hale dna task decide <id>    report a decision someone else made (--decided-by <party> --via <channel> --evidence <digest>, --as <reporter>)");
     eprintln!("       hale dna retire <who>        a person retires: the handed Tasks they hold move to --to <successor>, as rows");
     eprintln!("       hale dna practice propose <name> --text <text> [--because <why>] [--supersedes <digest>]");

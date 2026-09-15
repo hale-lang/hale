@@ -90,6 +90,16 @@ fn task_done_verb(root: String, seed: String, id: String, who_flag: String, note
         if !append_as(root, "completion.linked", id, lb.result(), who) { return fail("the record refused the append"); }
     }
     if len(exception) > 0 {
+        // an exception is its authorizer's act, in their own name: the
+        // assignee's naming someone is not an authorization
+        let mut authorized = "";
+        let mut k = 0;
+        while k < p.rows() {
+            let e = p.row(k);
+            if e.kind == "exception.authorized" && e.entity == id && dna::same_party(std::json::find_string_field(e.body, "by"), authorized_by) { authorized = std::json::find_string_field(e.body, "why"); }
+            k = k + 1;
+        }
+        if len(authorized) == 0 { return fail("task done: no exception for `" + id + "` authorized by " + authorized_by + " in the record; " + authorized_by + " authorizes it: `hale dna task authorize " + id + " --exception <why> --as " + authorized_by + "`"); }
         let xb = std::json::Builder { };
         xb.begin_object();
         xb.string_field("task", id);
@@ -111,6 +121,38 @@ fn task_done_verb(root: String, seed: String, id: String, who_flag: String, note
 // protected one the record classified or withheld.
 fn evidence_held(root: String, p: Projection, evidence: String) -> Bool {
     return receipt_read(root, evidence[7..len(evidence)]).present || p.has_row("receipt.classified", evidence) || p.has_row("receipt.withheld", evidence);
+}
+
+// GH #604 (the review of #632): an exception to a Task's acceptance
+// condition is authorized by its authorizer, in their own name, as a row;
+// the assignee then closes the Task citing it. Not the assignee's own, and
+// only one of the people the bound practice names when it names them.
+@unbounded
+fn task_authorize_verb(root: String, seed: String, id: String, exception: String, who_flag: String) -> Answer {
+    if len(id) == 0 || len(exception) == 0 { return fail("task authorize: `hale dna task authorize <id> --exception <why> [--as <authorizer>]`"); }
+    let s = sync_record(root);
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let p = open_projection(root, seed, "");
+    let t = p.task_of(id);
+    if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
+    if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: no exception to authorize"); }
+    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    if dna::same_party(who, t.assignee) { return fail("task authorize: " + who + " holds `" + id + "`; an exception is authorized by someone other than its assignee"); }
+    if len(t.acceptance) > 0 {
+        let doc = receipt_read(root, t.acceptance[7..len(t.acceptance)]);
+        let text = std::json::find_string_field(doc.text, "text");
+        if !dna::may_authorize(text, who) { return fail("task authorize: acceptance/" + t.obligation + " (" + t.acceptance + ") lets only " + dna::exception_authorizers(text) + " authorize an exception"); }
+    }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("task", id);
+    b.string_field("why", exception);
+    b.string_field("by", who);
+    b.string_field("practice", t.acceptance);
+    b.end_object();
+    if !append_as(root, "exception.authorized", id, b.result(), who) { return fail("the record refused the append"); }
+    let s2 = sync_record(root);
+    return answer("task " + id + ": exception authorized by " + who + ": " + exception + " (exception.authorized); " + t.assignee + " closes it with `hale dna task done " + id + " --exception \"" + exception + "\" --authorized-by " + who + "`\n");
 }
 
 // GH #616: a person reports a decision someone else made — a manager,
@@ -140,13 +182,16 @@ fn task_decide_verb(root: String, seed: String, id: String, decided_by: String, 
     let held = evidence_held(root, p, evidence);
     if !held { return fail("task decide: no receipt " + evidence + " in the record; file the mail or document first: `hale dna receipt file <path>`"); }
     let practice = if len(t.obligation) > 0 { dna::acceptance_practice(t.obligation) } else { "" };
-    let policy = if len(practice) > 0 { p.practice_in_force(practice) } else { "" };
+    // the practice bound when the Task was handed governs every way it
+    // closes; only a Task handed before practices were bound reads the one
+    // in force now
+    let policy = if t.acceptance_bound { t.acceptance } else if len(practice) > 0 { p.practice_in_force(practice) } else { "" };
     let mut accepted = false;
     let mut why = "";
     if len(t.obligation) == 0 {
         why = "the Task names no obligation class, so no acceptance practice lets a report settle it; its assignee closes it with `hale dna task done " + id + "`";
     } else if len(policy) == 0 {
-        why = "no ratified practice `" + practice + "`: a reported decision does not settle a `" + t.obligation + "` obligation; its assignee closes it with `hale dna task done " + id + "`";
+        why = (if t.acceptance_bound { "no practice `" + practice + "` was in force when the Task was handed" } else { "no ratified practice `" + practice + "`" }) + ": a reported decision does not settle a `" + t.obligation + "` obligation; its assignee closes it with `hale dna task done " + id + "`";
     } else {
         let doc = receipt_read(root, policy[7..len(policy)]);
         if dna::acceptance_allows_reports(std::json::find_string_field(doc.text, "text")) { accepted = true; }
@@ -223,6 +268,7 @@ fn receipt_file_verb(root: String, path: String, class_flag: String, who_flag: S
 
 // GH #604 rule 5: a handed Task moves to another person as a row that
 // names both; the Task stays handed. Reached per command.
+@unbounded
 fn task_reassign_verb(root: String, seed: String, id: String, to: String, by_flag: String) -> Answer {
     if len(id) == 0 || len(to) == 0 { return fail("task reassign: `hale dna task reassign <id> --to <who> [--as <by>]`"); }
     let s = sync_record(root);
@@ -232,6 +278,15 @@ fn task_reassign_verb(root: String, seed: String, id: String, to: String, by_fla
     if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
     if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: nothing to reassign"); }
     let by = if len(by_flag) > 0 { by_flag } else { who_am_i() };
+    // GH #604 rule 5: no new work reaches a person who retired
+    let mut gone = false;
+    let mut k = 0;
+    while k < p.rows() {
+        let e = p.row(k);
+        if e.kind == "person.retired" && e.entity == to { gone = true; }
+        k = k + 1;
+    }
+    if gone { return fail("task reassign: " + to + " retired; no new work reaches them — reassign to someone who works here"); }
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("from", t.assignee);

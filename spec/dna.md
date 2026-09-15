@@ -49,7 +49,11 @@ repository:
   /receipt/<digest>?as=<reader>&purpose=<purpose>` only when a
   `receipt.disclosed <digest> {recipient, purpose, by}` row names both,
   and appends `receipt.read` on an answer and `receipt.read_refused` on a
-  refusal. `Dna.evidence_class(digest)` is the class a request carries
+  refusal. The answer is given only once its `receipt.read` row is in
+  the record: a read the record cannot hold (the journal refuses the
+  append) is refused with 503 and discloses nothing, and a body kept
+  while the record refuses its `receipt.classified` row is answered 503
+  so it is filed again. `Dna.evidence_class(digest)` is the class a request carries
   when it puts the body in a prompt, so a hosted model refuses it. This
   is the third trust profile #606 names: the readers of a clone hold
   digests and classes, never protected bodies. Under local trust a
@@ -57,11 +61,15 @@ repository:
   #612's. **Retention (part 2).** `receipt.held <digest> {by, why}`
   stands until `receipt.hold_released`, and refuses redaction while it
   stands. `Dna.redact_evidence(digest, by, why, policy)` (`hale dna
-  receipt redact <digest> --why --policy`) removes the body and appends
-  `receipt.redacted <digest> {by, why, policy, class, store}`: a git
-  receipt's ref is deleted (`Receipts.erase`), a protected body is erased
-  by the knowledge service (`POST /receipt/<digest>/erase`, which writes
-  the row), a withheld one had no body. The record keeps the digest, so
+  receipt redact <digest> --why --policy`) appends `receipt.redacted
+  <digest> {by, why, policy, class, store}` and then removes the body: a
+  git receipt's ref is deleted (`Receipts.erase`), a protected body is
+  erased by the knowledge service (`POST /receipt/<digest>/erase`, which
+  writes the row), a withheld one had no body. **The redaction is in the
+  record before a byte is erased**, appended exactly at the revision the
+  hold was read at: a redaction the record refuses erases nothing, a hold
+  that arrived in between refuses it, and a redaction recorded before an
+  erase that failed is completed by redacting again. The record keeps the digest, so
   provenance survives and a reader learns the body is gone — the service
   answers a read with 410 `redacted by … under …`, and `hale dna history`
   says so under a redacted prompt. Every `sync` deletes redacted
@@ -148,7 +156,11 @@ repository:
   appends `task.reassigned` (`from`, `to`, `by`) and the Task stays
   handed. `hale dna retire <who> [--to <successor>]` stops new work
   reaching a person: every handed Task they hold is transferred as its
-  own `task.reassigned` row and `person.retired <who>` records it;
+  own `task.reassigned` row and `person.retired <who>` records it (`by`, `to`, `transferred`). From then
+  no new work reaches them: a job the leader plans for them is handed
+  to that successor, with `retired_assignee` on the `task.handed` row
+  (unassigned when the retirement named none), and a Task is never
+  reassigned to them;
   refused while they hold work and no successor is named — pending
   work is accounted for, never dropped. Refused for a Task that is not
   handed: one the organism is working, or has settled, is not a
@@ -162,9 +174,13 @@ repository:
   Task closes only with `--evidence <digest>`, a receipt the record
   holds, appended before `task.done` as `completion.linked` (`task`,
   `evidence`, `by`, `practice`), or with `--exception <why>
-  --authorized-by <who>`, someone other than the person closing it,
-  appended as `completion.excepted` (`task`, `why`, `authorized_by`,
-  `by`, `practice`). A note alone is refused, and so is an exception
+  --authorized-by <who>`, appended as `completion.excepted` (`task`,
+  `why`, `authorized_by`, `by`, `practice`) — only when `<who>` has
+  authorized it in their own name first: `hale dna task authorize <id>
+  --exception <why> [--as <who>]` appends `exception.authorized <task>
+  {task, why, by, practice}`, refused for the Task's assignee and, when
+  the bound practice names who may (`exceptions by: <names>`), for anyone
+  else; naming someone is never an authorization. A note alone is refused, and so is an exception
   without an authorizer, a self-authorized one, or both at once. Either
   may accompany any person's completion. `task.done` keeps its body; the
   projection shows a done Task's evidence or exception, and a person's
@@ -181,6 +197,9 @@ repository:
   `practice.proposed <request_id>` (`name`, `digest`, `review_id`, `by`,
   `because`, `supersedes`); a request without a name or a text is
   `practice.refused`. Nothing is in force until the Board ratifies it.
+  The text arrives byte for byte, newlines included: the host escapes an
+  argument's own backslashes and newlines in its argument list and
+  unescapes every value it reads.
   `hale dna practice` lists every named practice with its state (in
   force, awaiting the Board, declined, retired), its first line, who
   proposed it and why, and requests not yet heard. The generated
@@ -193,17 +212,22 @@ repository:
   its only path; nothing selective leaves a record by sync. `hale dna
   connect <record-url> --name <name> --as <position> --purpose <purpose>
   --classes <internal,customer,confidential> [--by <who>]` reads the
-  other record's genesis (the root commit of its journal, fetched into a
-  bare cache under `.hale/dna/peers/<name>.git`), refuses this record's
-  own, and appends `connection.proposed` (`name`, `url`, `peer`,
+  other record's identity — its genesis, the root commit of its journal,
+  which every record publishes as a blob under `refs/dna/identity` when it
+  syncs — and nothing else of it; it refuses this record's own, and appends `connection.proposed` (`name`, `url`, `peer`,
   `position`, `purpose`, `classes`, `by`, `review_id`) with a Board
   Review `c-<name>-<n>`. The connection is in force once a `board`
   verdict approves that Review from someone other than its proposer —
   the host then settles the Review in the approver's name — and until
   `hale dna disconnect <name> --why <why>` appends `connection.closed`.
   `hale dna handoff <name> task <id> | receipt <digest> [--note …] [--as
-  <who>]` writes one `handoff.received` row into the other record,
-  pushed there under compare-and-swap: `handoff` (`h` and twelve hex
+  <who>]` writes one `handoff.received` envelope into the other
+  record's **mailbox for this record**, `refs/dna/exchange/<this record's
+  identity>` — a chain of rows only this record writes, pushed there under
+  compare-and-swap. Neither record reads the other's journal: this clone's
+  cache for a connection (`.hale/dna/peers/<name>.git`) holds the other
+  record's identity and this record's own mailbox there, nothing else. The
+  envelope carries `handoff` (`h` and twelve hex
   digits of the origin genesis, kind and subject, so a fact crosses
   once), `origin_record`, `origin_url`, `origin_author`, `origin_row`
   (the source row's digest), `lineage` (the subject's rows here, as
@@ -214,12 +238,18 @@ repository:
   crosses as its digest and class; its body never leaves this record. A
   fact whose class the connection does not carry is refused at the edge
   as `handoff.refused`, with nothing written across. The receiving record
-  admits what arrives under its own policy: `hale dna handoff` lists a
-  received handoff as admitted only under a connection in force back to
-  its origin record that carries its class, and `hale dna handoff accept
-  <id> [--as <who>]` appends `handoff.accepted` only for an admitted one.
-  `hale dna handoff sync` reads every connection in force: each
-  acceptance of a handoff published through it is admitted once, as
+  reads its own mailboxes (`sync` fetches `refs/dna/exchange/*` from its
+  remote; a row claiming another origin than the mailbox it is in is
+  ignored) and admits what arrives under its own policy: `hale dna
+  handoff` lists a received handoff as admitted only under a connection in
+  force back to its origin record that carries its class, and `hale dna
+  handoff accept <id> [--as <who>]`, only for an admitted one, appends
+  `handoff.accepted` to its own journal (with the envelope's origin,
+  lineage, purpose and fact) and sends a `handoff.accepted` envelope into
+  the origin's mailbox for it. `hale dna handoff sync` reads, for every
+  connection in force, the envelopes the other record sent to this
+  record's mailbox: each acceptance of a handoff published through it is
+  admitted once, as
   `handoff.accepted_by_peer` and, for a Task, `task.transfer_accepted`.
   The Task settles only then, the rule retirement follows (GH #604 rule
   5). A closed connection is not read, so history stays in both records
@@ -244,7 +274,10 @@ repository:
   `acceptance/<obligation>`, ratified by the Board and not retired,
   whose text says `reported decisions: allowed`. The obligation is the
   class of obligation a person's job discharges; the leader's plan names
-  it (`obligation:`) and `task.handed` carries it. The policy is read at
+  it (`obligation:`) and `task.handed` carries it. The policy is the practice
+  bound when the Task was handed (`task.handed.acceptance`), so a later
+  change of practice changes no case already handed — only a Task handed
+  before practices were bound reads the one in force; it is read at
   admission and its answer kept in the row, so a later change of
   practice never rewrites what was admitted. Accepted, the Task is
   `decided`, and the projection shows the report as such: who reported,
@@ -264,10 +297,20 @@ repository:
   refused at declaration, never when it would first fire, with a
   `schedule.refused` row. An interval counts from the first tick and
   fires once per interval; a cron fires once in the UTC minute it
-  names (day-of-month and day-of-week both restricted: either). Firing
-  is `ask` with `Intent { id: "s:<id>/<n>", from: "schedule:<id>" }`,
-  routed as `requires` says, and a `schedule.fired <id> {task, at}`
-  row; a refusal by the membrane is `schedule.refused`. **Overlap:** a
+  names (day-of-month and day-of-week both restricted: either). A fire
+  is **claimed in the record before it is admitted**: `schedule.fired
+  <id> {intent, at}` first — a claim the record refuses admits nothing
+  — then `ask` with `Intent { id: "s:<id>@<at>/<n>", from:
+  "schedule:<id>" }`, routed as `requires` says, then
+  `schedule.admitted <id> {intent, task, at}`; a refusal by the
+  membrane is `schedule.refused`. A declaration after a restart
+  restores the last fire from the record — its time, and for a cron
+  the minute, so a cron does not fire again in the minute it fired —
+  and a claimed occurrence without its admission: the Task born under
+  its intent completes the admission (`recovered: true`), and one never
+  born is admitted at the next tick, once. The optimize pass's fire is
+  likewise a `schedule.fired {action: optimize, at}` row written before
+  the pass runs. **Overlap:** a
   schedule never fires while the last Task it fired is open (born,
   pending, handed — anything but done or failed); the skip is a
   `schedule.skipped <id> {task, state, at}` row, never silent. `hale
@@ -334,11 +377,18 @@ repository:
   record in between makes it stale, never re-appended at the tail — so
   two children cannot each spend the same remainder. A refusal is
   `grant.refused <child>` naming the field. `Dna.settle_spend(op,
-  spent)` appends `grant.released {op, spent}` once, and the window
-  counts what was spent from then on. A contraction advances the
+  spent)` appends `grant.released {op, spent}` once — under contention
+  too: the row is appended with `append_exact` at the revision "not yet
+  settled" was read at, and read again when the record moved — and the
+  window counts what was spent from then on. A contraction advances the
   epoch, and so does `Dna.revoke_grant(by)` (the parent's only; nothing
-  is left granted, `grant.revoked`); `Dna.admits(admission)` refuses an
-  admission made under an older epoch (`grant.fenced`). The generated
+  is left granted). A revocation is **recorded before it takes effect**,
+  `grant.revoked <child> {by, parent, epoch}` — one the record refuses
+  did not happen — and an organism born over the record restores it
+  before anything is admitted, so a restart never restores revoked
+  authority. `Dna.admits(admission)` refuses an admission made under an
+  older epoch, or whose grant has expired by the time it is carried out
+  (`grant.fenced`). The generated
   law adds `money_only_through_the_substrate: forbid reaches(positions,
   effects(money)) avoiding substrate`, with `effect money;` declared in
   the core; an organization's existing `dna/org/law.hl` is
@@ -364,7 +414,11 @@ repository:
   audience, the expiry and the nonce. The subject — never an email alone
   — maps to a member through a reviewed mapping, `git config --add
   dna.oidc.member "<subject>=<name>"`; an unmapped subject gets no
-  session. A sign-in's state is used once and expires in ten minutes; a
+  session. A sign-in's state is used once, expires in ten minutes, and is bound to
+  the browser that started it by an `HttpOnly; SameSite=Lax` `dna_signin`
+  cookie: a callback carrying the state from any other browser is refused
+  and leaves the sign-in for the browser that started it (so a callback
+  URL handed to someone else cannot sign them in); a
   session is a random 256-bit id in an `HttpOnly; SameSite=Lax` cookie
   (`Secure` when the callback is https) and lasts eight hours or until
   `/auth/logout`. With a session, a verdict acts as the member (`--as`,
@@ -510,7 +564,11 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   when a third of that is gone; the host **asserts it at the top of
   every tick, before it relays, restarts or applies**, and stops
   itself (exit 3, the organization with it) when the lease is
-  someone else's or released. While the remote cannot be reached the
+  someone else's or released. It proves the lease again, renewing it,
+  **the moment before it starts a process** — the organization and
+  the expression at startup and at every restart — and once more
+  before relaying after the tick's sync: a build or a sync that
+  outlasts a takeover starts and relays nothing, and the host exits 3. While the remote cannot be reached the
   lease is kept unrenewed until it expires, then the host stops: a
   partitioned body executes nothing past its TTL. Taking the lease
   is a row (`body.claimed <holder> {token, forced, by}`), giving it
@@ -548,9 +606,14 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   to this machine, when ssh cannot reach the host, or when the host
   lacks git, curl, systemd, or (without a DSN) docker compose. It
   records `dna.body` and `dna.body.dir` here and a `body.provisioned
-  <user@host> {dir, toolchain, knowledge, by}` row. `--dry-run` prints
-  the exact script. `hale dna body start|stop|logs [--body …]` reach
-  the unit over ssh. Postgres, Docker, ssh and systemd are the
+  <user@host> {dir, toolchain, knowledge, by}` row. The default
+  directory is `$HOME/dna/<project>` on the body, expanded by the body's
+  shell (the unit's `WorkingDirectory=%h/dna/<project>` is the same
+  place). The script can carry the DSN, so its file here is created
+  empty with mode 600 before it is written, and removed once ssh has
+  read it. `--dry-run` prints the exact script. `hale dna body
+  start|stop|logs [--body …]` reach the unit over ssh; `stop` succeeds
+  when the unit is no longer active, and says so. Postgres, Docker, ssh and systemd are the
   reference setup; the definition admits other implementations.
 - **Secrets.** `hale dna secret set <NAME> [--body <user@host>]`
   reads the value from stdin — never argv (a `NAME=value` argument is
@@ -984,7 +1047,11 @@ authority.
   restart, a Task born and not settled re-enters the tower from its
   last durable state (`task.resumed <task>`): under the plan in the
   record when there is one, never replanned; planned for the first
-  time when there is none. A Task whose Mutation was in flight settles
+  time when there is none. `task.resumed` is an event of a restart,
+  never a state: a resumed Task not yet settled is still pending, it
+  settles like any other, and a restart that stopped between its
+  `task.resumed` and the dispatch leaves it to be resumed again at the
+  next one. A Task whose Mutation was in flight settles
   `failed` with the Mutation; one whose Mutation is beyond proposal
   waits on that Mutation's outcome, and settles from it when the Work
   that would have settled it is gone. A handed Task is a person's and
