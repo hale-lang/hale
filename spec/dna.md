@@ -276,7 +276,11 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   when a third of that is gone; the host **asserts it at the top of
   every tick, before it relays, restarts or applies**, and stops
   itself (exit 3, the organization with it) when the lease is
-  someone else's or released. While the remote cannot be reached the
+  someone else's or released. It proves the lease again, renewing it,
+  **the moment before it starts a process** — the organization and
+  the expression at startup and at every restart — and once more
+  before relaying after the tick's sync: a build or a sync that
+  outlasts a takeover starts and relays nothing, and the host exits 3. While the remote cannot be reached the
   lease is kept unrenewed until it expires, then the host stops: a
   partitioned body executes nothing past its TTL. Taking the lease
   is a row (`body.claimed <holder> {token, forced, by}`), giving it
