@@ -282,9 +282,20 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   **the moment before it starts a process** — the organization and
   the expression at startup and at every restart — and once more
   before relaying after the tick's sync: a build or a sync that
-  outlasts a takeover starts and relays nothing, and the host exits 3. While the remote cannot be reached the
-  lease is kept unrenewed until it expires, then the host stops: a
-  partitioned body executes nothing past its TTL. Taking the lease
+  outlasts a takeover starts and relays nothing, and the host exits 3.
+  **The renewal and the fence do not wait on the host.** Beside the
+  host runs the body fence (the host binary's `body-fence`), which
+  renews the lease every 10s with every git call bounded to 8s and
+  writes what it proved to `.hale/dna/body.fence.status`; the host
+  reads that file instead of renewing. When the lease is someone
+  else's or released, when the fence cannot prove it within 5s of its
+  expiry, or when the host is gone, the fence kills the organization
+  and the expression (by their pid files) and says why, and the host
+  exits 3 when it next looks. A host blocked in a sync, a build or an
+  observation window therefore cannot keep its organism executing past
+  the lease; while the remote cannot be reached the lease is kept
+  unrenewed until then: a partitioned body executes nothing past its
+  TTL. Taking the lease
   is a row (`body.claimed <holder> {token, forced, by}`), giving it
   up at exit another (`body.released`). `hale dna body` reads the
   lease; `hale dna body claim --force` releases a live lease that
