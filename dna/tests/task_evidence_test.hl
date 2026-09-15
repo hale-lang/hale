@@ -148,9 +148,20 @@ main locus App {
         let authorized = dna_cli(app, "task\nauthorize\nt53\n--exception\nthe driver gave no receipt\n--as\ndana");
         std::test::assert(std::str::contains(authorized, "task t53: exception authorized by dana"), "dana authorizes it: " + authorized);
         std::test::assert_eq_int(record_lines_with(app, "\"kind\": \"exception.authorized\"\t\"entity\": \"t53\"\t\"author\": \"dana\""), 1, "in dana's name");
+        let substituted = dna_cli(app, "task\ndone\nt53\n--as\nmara\n--exception\nno evidence or substitute is needed\n--authorized-by\ndana");
+        std::test::assert(std::str::contains(substituted, "dana authorized a different exception for `t53` (\"the driver gave no receipt\")"), "an exception closes only as it was authorized: " + substituted);
         let excepted = dna_cli(app, "task\ndone\nt53\n--as\nmara\n--exception\nthe driver gave no receipt\n--authorized-by\ndana");
         std::test::assert(std::str::contains(excepted, "task t53 done by mara — exception authorized by dana: the driver gave no receipt"), "an authorized exception closes it: " + excepted);
         std::test::assert_eq_int(record_lines_with(app, "\"kind\": \"completion.excepted\"\t\"entity\": \"t53\"\t\\\"why\\\": \\\"the driver gave no receipt\\\"\t\\\"authorized_by\\\": \\\"dana\\\"\t\\\"by\\\": \\\"mara\\\""), 1, "recorded as an exception");
+        // a bound practice that cannot be read authorizes nobody: it is not a
+        // practice that names no one
+        let lost = self.practice("acceptance/courier-receipt", "A courier job closes with its receipt.\nevidence: required\nexceptions by: dana");
+        self.handed("t55", "send the contract by courier", "courier-receipt", lost, true);
+        let gone = in_dir(app, "git\nupdate-ref\n-d\nrefs/dna/receipts/" + lost[7..len(lost)]);
+        std::test::assert_eq_int(gone.code, 0, "the practice's body is gone from this clone: " + gone.stderr);
+        let unreadable = dna_cli(app, "task\nauthorize\nt55\n--exception\nthe courier lost the slip\n--as\nlee");
+        std::test::assert(std::str::contains(unreadable, "cannot be read here"), "a practice that cannot be read authorizes nobody: " + unreadable);
+        std::test::assert_eq_int(record_lines_with(app, "\"kind\": \"exception.authorized\"\t\"entity\": \"t55\""), 0, "and nothing was authorized");
         std::test::assert(std::str::contains(dna_cli(app, "status"), "t53 [done] i-t53: file the April taxi receipt — exception: the driver gave no receipt (authorized by dana)"), "and shown as one");
 
         let rm = dna::run_tool("rm\n-rf\n" + scratch);

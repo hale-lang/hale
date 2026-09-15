@@ -186,7 +186,12 @@ repository:
   --exception <why> [--as <who>]` appends `exception.authorized <task>
   {task, why, by, practice}`, refused for the Task's assignee and, when
   the bound practice names who may (`exceptions by: <names>`), for anyone
-  else; naming someone is never an authorization. A note alone is refused, and so is an exception
+  else, and refused outright when the bound practice cannot be read here
+  (absent from the clone, unreadable, redacted) — an unreadable practice
+  is not one that names no one; naming someone is never an authorization.
+  The completion carries the exception exactly as it was authorized under
+  the bound practice: a different `--exception` is refused, and needs an
+  authorization of its own. A note alone is refused, and so is an exception
   without an authorizer, a self-authorized one, or both at once. Either
   may accompany any person's completion. `task.done` keeps its body; the
   projection shows a done Task's evidence or exception, and a person's
