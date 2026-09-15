@@ -73,7 +73,9 @@ repository:
   `Dna.redact_evidence` alike, for a protected body too: both hand a
   classified receipt to the knowledge service, which erases a body still
   kept under a recorded redaction and answers `already redacted` once
-  nothing is left. The record keeps the digest, so
+  nothing is left. A store that cannot read the body (its read failed,
+  as opposed to finding none) records nothing and reports nothing
+  erased: 503, redact again once it answers (`protected_erase_step`). The record keeps the digest, so
   provenance survives and a reader learns the body is gone — the service
   answers a read with 410 `redacted by … under …`, and `hale dna history`
   says so under a redacted prompt. Every `sync` deletes redacted

@@ -149,6 +149,9 @@ locus MemProtected {
     // Read as JSON built by the server: a body is an ordinary paragraph,
     // and the driver's tab-separated rows cannot carry one.
     fn get(digest: String) -> Protected {
+        // the error is this read's, not one left by an earlier call: an
+        // absent body with no error is absent
+        self.error = "";
         if !self.ready() { self.error = self.why_not(); return Protected { }; }
         if !self.open() { return Protected { }; }
         let a = db::Args { };
