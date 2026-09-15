@@ -54,3 +54,22 @@ fn digest_well_formed(d: String) -> Bool {
 fn decision_line(reporter: String, decider: String, channel: String, evidence: String) -> String {
     return "reported by " + reporter + ", decided by " + decider + ", via " + channel + " (evidence " + evidence + ")";
 }
+
+// GH #604: whether an acceptance practice closes its obligation only with
+// the evidence itself.
+fn acceptance_requires_evidence(text: String) -> Bool {
+    return std::str::contains(std::str::lower(text), "evidence: required");
+}
+
+// Why a person's completion is refused ("" when it may close; "evidence
+// required" when its bound acceptance condition wants evidence and none
+// was given): the evidence or an authorized exception, never both, and an
+// exception authorized by someone other than the person closing the Task.
+fn completion_refusal(reporter: String, evidence_required: Bool, evidence: String, exception: String, authorized_by: String) -> String {
+    if len(evidence) > 0 && len(exception) > 0 { return "link the evidence or record an exception, not both"; }
+    if len(authorized_by) > 0 && len(exception) == 0 { return "`--authorized-by` authorizes an exception: `--exception <why>`"; }
+    if len(exception) > 0 && len(std::str::trim(authorized_by)) == 0 { return "an exception names who authorized it: `--authorized-by <who>`"; }
+    if len(exception) > 0 && same_party(reporter, authorized_by) { return "an exception is authorized by someone other than the person closing the Task"; }
+    if evidence_required && len(evidence) == 0 && len(exception) == 0 { return "evidence required"; }
+    return "";
+}

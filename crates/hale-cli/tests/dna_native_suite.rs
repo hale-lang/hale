@@ -83,6 +83,7 @@ fn dna_fixture_set_is_complete() {
     assert_eq!(
         names,
         vec![
+            "acceptance_binding_test.hl",
             "anthropic_messages_test.hl",
             "apply_test.hl",
             "assembly_test.hl",
@@ -122,6 +123,7 @@ fn dna_fixture_set_is_complete() {
             "schedule_test.hl",
             "supersession_test.hl",
             "task_decide_test.hl",
+            "task_evidence_test.hl",
             "verification_test.hl",
             "workspace_test.hl",
         ]

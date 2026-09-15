@@ -700,6 +700,32 @@ locus Dna {
         let lease = self.gateway.take(r.review_id, "dna", now);
         let w = self.gateway.remove(self.journal, r.review_id, lease.token, now);
     }
+    // GH #604: whether the Board ratified the knowledge at `digest`.
+    @unbounded
+    fn knowledge_ratified(digest: String) -> Bool {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "knowledge.ratified" && e.entity == digest { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // GH #604: the digest of the practice named `name` that is ratified
+    // and not retired ("" when none is in force).
+    @unbounded
+    fn practice_in_force(name: String) -> String {
+        let n = self.journal.revision();
+        let mut found = "";
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "name") == name && self.knowledge_ratified(e.entity) && len(self.retired_by(e.entity)) == 0 { found = e.entity; }
+            i = i + 1;
+        }
+        return found;
+    }
     // The digest that retired `digest` (`knowledge.retired <digest>`,
     // its `by`), "" while it is not retired.
     @unbounded
@@ -1144,6 +1170,13 @@ locus Dna {
             hb.string_field("assignee", p.assignee);
             // GH #616: which acceptance practice a reported decision answers to
             hb.string_field("obligation", p.obligation);
+            // GH #604: the acceptance condition is bound here, at hand-off —
+            // the practice in force for the obligation now — so a later
+            // change of practice never changes the contract of a case handed
+            let practice = if len(p.obligation) > 0 { self.practice_in_force("acceptance/" + p.obligation) } else { "" };
+            let practice_text = if len(practice) > 0 { std::json::find_string_field(self.verification.receipts.read(practice[7..len(practice)]), "text") } else { "" };
+            hb.string_field("acceptance", practice);
+            hb.bool_field("evidence_required", acceptance_requires_evidence(practice_text));
             hb.string_field("by", "leader");
             hb.string_field("narrative", handed);
             hb.end_object();

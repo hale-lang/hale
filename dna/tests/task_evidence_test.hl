@@ -1,0 +1,153 @@
+// GH #604 — a person's completion meets its acceptance condition,
+// through the CLI over a real project's record. A job handed under a
+// practice that requires evidence closes only with a receipt the record
+// holds, or with an exception someone else authorized; a note alone is
+// refused. A job with no acceptance condition closes on a note and is
+// shown as human-reported. The condition is the one bound at hand-off: a
+// case handed before the Board relaxed the practice keeps its contract,
+// while a case handed after closes under the new one.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` (newline-separated) in `dir`, model discovery off.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+fn dna_cli(app: String, args: String) -> String {
+    let r = in_dir(app, toolchain() + "\ndna\n" + args);
+    return r.stdout + r.stderr;
+}
+
+// The record's lines that carry every one of `needles` (tab-separated).
+@unbounded
+fn record_lines_with(app: String, needles: String) -> Int {
+    let text = in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout + "\n";
+    let mut n = 0;
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let mut all = len(line) > 0;
+        let mut ns = needles + "\t";
+        while len(ns) > 0 && all {
+            let t = std::str::index_of(ns, "\t");
+            let needle = ns[0..t];
+            ns = ns[(t + 1)..len(ns)];
+            if len(needle) > 0 && !std::str::contains(line, needle) { all = false; }
+        }
+        if all { n = n + 1; }
+    }
+    return n;
+}
+
+main locus App {
+    params {
+        // pointed at the project in run(); never at the working directory
+        j: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/dna-evidence" };
+        r: dna::GitReceipts = dna::GitReceipts { repo: "/nonexistent/dna-evidence" };
+    }
+    // A practice proposed and ratified, as the record keeps one.
+    fn practice(name: String, text: String) -> String {
+        let doc = dna::knowledge_document(dna::Idea { kind: "practice", text: text, author: "org", name: name }, "org");
+        let digest = "sha256:" + self.r.store(doc);
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("digest", digest);
+        b.string_field("kind", "practice");
+        b.string_field("author", "org");
+        b.string_field("target", "org");
+        b.string_field("name", name);
+        b.end_object();
+        self.j.refresh();
+        let x = self.j.append(self.j.revision(), "knowledge.proposed", digest, b.result());
+        let y = self.j.append(self.j.revision(), "knowledge.ratified", digest, "{\"decided_by\": \"riley\"}");
+        return digest;
+    }
+    // A Task handed to a person, with the acceptance condition the organism bound.
+    fn handed(id: String, outcome: String, obligation: String, acceptance: String, evidence_required: Bool) {
+        self.j.refresh();
+        let x = self.j.append(self.j.revision(), "task.born", id, "i-" + id + ": " + outcome);
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("work", id + "/w");
+        b.string_field("assignee", "mara");
+        b.string_field("obligation", obligation);
+        b.string_field("acceptance", acceptance);
+        b.bool_field("evidence_required", evidence_required);
+        b.string_field("by", "leader");
+        b.end_object();
+        let y = self.j.append(self.j.revision(), "task.handed", id, b.result());
+    }
+    run() {
+        // the pure rules
+        std::test::assert(dna::acceptance_requires_evidence("Receipts.\nEvidence: required") && !dna::acceptance_requires_evidence("evidence: optional"), "the practice line");
+        std::test::assert_eq_str(dna::completion_refusal("mara", true, "", "", ""), "evidence required", "a required condition and nothing given");
+        std::test::assert_eq_str(dna::completion_refusal("mara", false, "", "", ""), "", "no condition, a note will do");
+        std::test::assert(std::str::contains(dna::completion_refusal("mara", true, "", "lost", "Mara"), "someone other than"), "self-authorized, case aside");
+
+        let scratch = "/tmp/dna-evidence-" + to_string(std::process::pid());
+        std::io::fs::mkdir(scratch) or discard;
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nbills");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let app = scratch + "/bills";
+        let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
+        let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
+        self.j = dna::GitJournal { repo: app };
+        self.r = dna::GitReceipts { repo: app };
+
+        let strict = self.practice("acceptance/expense-receipt", "An expense closes with its receipt.\nevidence: required");
+        self.handed("t51", "file the March taxi receipt", "expense-receipt", strict, true);
+        self.handed("t52", "call the landlord", "", "", false);
+        let mail = in_dir(scratch, "sh\n-c\nprintf '%s' \"$1\" > receipt.txt\nsh\nTaxi, 14 March, 23.40");
+        let filed = dna_cli(app, "receipt\nfile\n" + scratch + "/receipt.txt\n--as\nmara");
+        let at = std::str::index_of(filed, "sha256:");
+        std::test::assert(at >= 0, "filed: " + filed);
+        let digest = filed[at..(at + 71)];
+
+        // ---- a note alone does not close it, nor does a malformed completion
+        let note_only = dna_cli(app, "task\ndone\nt51\n--as\nmara\n--note\npaid by card");
+        std::test::assert(std::str::contains(note_only, "Task `t51` closes only with its evidence, under acceptance/expense-receipt (" + strict + ")") && std::str::contains(note_only, "a note alone does not verify it"), "a note is refused: " + note_only);
+        std::test::assert(std::str::contains(dna_cli(app, "task\ndone\nt51\n--as\nmara\n--evidence\n" + digest + "\n--exception\nlost\n--authorized-by\ndana"), "not both"), "evidence or an exception");
+        std::test::assert(std::str::contains(dna_cli(app, "task\ndone\nt51\n--as\nmara\n--exception\nlost"), "names who authorized it"), "an exception is authorized");
+        std::test::assert(std::str::contains(dna_cli(app, "task\ndone\nt51\n--as\nmara\n--exception\nlost\n--authorized-by\nmara"), "someone other than the person closing"), "not by the person closing it");
+        std::test::assert(std::str::contains(dna_cli(app, "task\ndone\nt51\n--as\nmara\n--authorized-by\ndana"), "authorizes an exception"), "an authorizer without an exception");
+        std::test::assert(std::str::contains(dna_cli(app, "task\ndone\nt51\n--as\nmara\n--evidence\nsha256:0000000000000000000000000000000000000000000000000000000000000000"), "no receipt sha256:0000"), "evidence the record does not hold");
+        std::test::assert_eq_int(record_lines_with(app, "\"kind\": \"task.done\""), 0, "nothing closed");
+        std::test::assert_eq_int(record_lines_with(app, "\"kind\": \"completion."), 0, "nothing linked");
+
+        // ---- the evidence closes it
+        let linked = dna_cli(app, "task\ndone\nt51\n--as\nmara\n--evidence\n" + digest + "\n--note\nreceipt attached");
+        std::test::assert(std::str::contains(linked, "task t51 done by mara: receipt attached — evidence " + digest + " linked"), "linked: " + linked);
+        std::test::assert_eq_int(record_lines_with(app, "\"kind\": \"completion.linked\"\t\"entity\": \"t51\"\t\"author\": \"mara\"\t\\\"evidence\\\": \\\"" + digest + "\\\"\t\\\"practice\\\": \\\"" + strict + "\\\""), 1, "the evidence row, naming the practice");
+        std::test::assert(std::str::contains(dna_cli(app, "status"), "t51 [done] i-t51: file the March taxi receipt — evidence " + digest), "the projection shows the evidence");
+
+        // ---- no acceptance condition: a note closes it, labelled as what it is
+        let reported = dna_cli(app, "task\ndone\nt52\n--as\nmara\n--note\nagreed the date");
+        std::test::assert(std::str::contains(reported, "task t52 done by mara: agreed the date — human-reported, no evidence linked"), "human-reported: " + reported);
+        std::test::assert(std::str::contains(dna_cli(app, "status"), "t52 [done] i-t52: call the landlord — human-reported, no evidence linked"), "and shown so");
+
+        // ---- the condition is the one bound at hand-off
+        self.handed("t53", "file the April taxi receipt", "expense-receipt", strict, true);
+        let relaxed = self.practice("acceptance/expense-receipt", "An expense closes on the payer's word.\nevidence: optional");
+        self.j.refresh();
+        let retired = self.j.append(self.j.revision(), "knowledge.retired", strict, "{\"digest\": \"" + strict + "\", \"by\": \"" + relaxed + "\"}");
+        self.handed("t54", "file the May taxi receipt", "expense-receipt", relaxed, false);
+        std::test::assert(std::str::contains(dna_cli(app, "task\ndone\nt53\n--as\nmara\n--note\npaid"), "closes only with its evidence"), "the older case keeps its contract");
+        std::test::assert(std::str::contains(dna_cli(app, "task\ndone\nt54\n--as\nmara\n--note\npaid"), "task t54 done by mara: paid — human-reported"), "the newer case closes under the new practice");
+        let excepted = dna_cli(app, "task\ndone\nt53\n--as\nmara\n--exception\nthe driver gave no receipt\n--authorized-by\ndana");
+        std::test::assert(std::str::contains(excepted, "task t53 done by mara — exception authorized by dana: the driver gave no receipt"), "an authorized exception closes it: " + excepted);
+        std::test::assert_eq_int(record_lines_with(app, "\"kind\": \"completion.excepted\"\t\"entity\": \"t53\"\t\\\"why\\\": \\\"the driver gave no receipt\\\"\t\\\"authorized_by\\\": \\\"dana\\\"\t\\\"by\\\": \\\"mara\\\""), 1, "recorded as an exception");
+        std::test::assert(std::str::contains(dna_cli(app, "status"), "t53 [done] i-t53: file the April taxi receipt — exception: the driver gave no receipt (authorized by dana)"), "and shown as one");
+
+        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+    }
+}
+
+fn main() { App { }; }

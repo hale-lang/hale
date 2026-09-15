@@ -53,7 +53,7 @@ fn find_after(p: Projection, from: Int, kinds: String, entity: String) -> dna::E
 // part ended when it handed the Task on. Refused for a Task that is
 // not handed: a Task the organism is working, or has settled, is not
 // a person's to close.
-fn task_done_verb(root: String, seed: String, id: String, who_flag: String, note: String) -> Answer {
+fn task_done_verb(root: String, seed: String, id: String, who_flag: String, note: String, evidence_flag: String, exception: String, authorized_by: String) -> Answer {
     if len(id) == 0 { return fail("task done: which Task? `hale dna task done <id>`"); }
     let s = sync_record(root);
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
@@ -67,10 +67,50 @@ fn task_done_verb(root: String, seed: String, id: String, who_flag: String, note
     if len(t.assignee) > 0 && t.assignee != who {
         return fail("Task `" + id + "` is handed to " + t.assignee + ", not to " + who + "; `hale dna task reassign " + id + " --to " + who + "` first");
     }
+    // GH #604: the acceptance condition bound at hand-off. A note never
+    // verifies anything: the evidence is linked, or an exception someone
+    // else authorized is recorded as such, or the completion is shown as
+    // human-reported.
+    let evidence = if len(evidence_flag) > 0 { dna::evidence_digest(evidence_flag) } else { "" };
+    let refusal = dna::completion_refusal(who, t.evidence_required, evidence, exception, authorized_by);
+    if refusal == "evidence required" {
+        return fail("Task `" + id + "` closes only with its evidence, under acceptance/" + t.obligation + " (" + t.acceptance + ") as it stood when the Task was handed: link it with `--evidence <digest>` (file it first: `hale dna receipt file <path>`), or record an exception with `--exception <why> --authorized-by <who>`; a note alone does not verify it");
+    }
+    if len(refusal) > 0 { return fail("task done: " + refusal); }
+    if len(evidence) > 0 {
+        if !dna::digest_well_formed(evidence) { return fail("task done: `" + evidence_flag + "` is not a receipt digest (sha256:<64 hex digits>)"); }
+        if !evidence_held(root, p, evidence) { return fail("task done: no receipt " + evidence + " in the record; file it first: `hale dna receipt file <path>`"); }
+        let lb = std::json::Builder { };
+        lb.begin_object();
+        lb.string_field("task", id);
+        lb.string_field("evidence", evidence);
+        lb.string_field("by", who);
+        lb.string_field("practice", t.acceptance);
+        lb.end_object();
+        if !append_as(root, "completion.linked", id, lb.result(), who) { return fail("the record refused the append"); }
+    }
+    if len(exception) > 0 {
+        let xb = std::json::Builder { };
+        xb.begin_object();
+        xb.string_field("task", id);
+        xb.string_field("why", exception);
+        xb.string_field("authorized_by", authorized_by);
+        xb.string_field("by", who);
+        xb.string_field("practice", t.acceptance);
+        xb.end_object();
+        if !append_as(root, "completion.excepted", id, xb.result(), who) { return fail("the record refused the append"); }
+    }
     let body = "by " + who + (if len(note) > 0 { ": " + note } else { "" });
     if !append_as(root, "task.done", id, body, who) { return fail("the record refused the append"); }
     let s2 = sync_record(root);
-    return answer("task " + id + " done " + body + "\n");
+    let label = if len(evidence) > 0 { " — evidence " + evidence + " linked" } else if len(exception) > 0 { " — exception authorized by " + authorized_by + ": " + exception } else { " — human-reported, no evidence linked" };
+    return answer("task " + id + " done " + body + label + "\n");
+}
+
+// Evidence the record holds: a receipt under refs/dna/receipts, or a
+// protected one the record classified or withheld.
+fn evidence_held(root: String, p: Projection, evidence: String) -> Bool {
+    return receipt_read(root, evidence[7..len(evidence)]).present || p.has_row("receipt.classified", evidence) || p.has_row("receipt.withheld", evidence);
 }
 
 // GH #616: a person reports a decision someone else made — a manager,
@@ -97,7 +137,7 @@ fn task_decide_verb(root: String, seed: String, id: String, decided_by: String, 
     }
     let evidence = dna::evidence_digest(evidence_flag);
     if !dna::digest_well_formed(evidence) { return fail("task decide: `" + evidence_flag + "` is not a receipt digest (sha256:<64 hex digits>)"); }
-    let held = receipt_read(root, evidence[7..len(evidence)]).present || p.has_row("receipt.classified", evidence) || p.has_row("receipt.withheld", evidence);
+    let held = evidence_held(root, p, evidence);
     if !held { return fail("task decide: no receipt " + evidence + " in the record; file the mail or document first: `hale dna receipt file <path>`"); }
     let practice = if len(t.obligation) > 0 { dna::acceptance_practice(t.obligation) } else { "" };
     let policy = if len(practice) > 0 { p.practice_in_force(practice) } else { "" };

@@ -71,6 +71,17 @@ told to `hale dna task reassign <id> --to <them>` first. When a person
 leaves, `hale dna retire <who> --to <successor>` moves everything they
 hold, as rows, and refuses to drop any of it.
 
+When the Board has ratified an acceptance practice for a kind of job
+that says `evidence: required`, a job of that kind closes only with its
+evidence: `hale dna task done t41 --as mara --evidence sha256:…`, a
+receipt filed with `hale dna receipt file`. When the evidence cannot
+exist, someone else authorizes the exception: `--exception "the driver
+gave no receipt" --authorized-by dana`. The practice is fixed when the
+job is handed, so changing it later leaves the jobs already waiting
+under the contract they were handed with. A completion with neither is
+shown as human-reported: it says the job is done, not that anything was
+verified.
+
 Often the decision on such a job is not the person's to make, and is
 not made in Hale: a client approves an expense by mail, a manager
 agrees on a call. File what shows it, then report the decision as

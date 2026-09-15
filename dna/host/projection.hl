@@ -10,6 +10,10 @@ type TaskRow {
     assignee: String = ""; // who a handed task is with (GH #604 rule 4)
     obligation: String = ""; // the class of obligation it discharges (GH #616)
     waiting: String = ""; // why a reported decision did not settle it (GH #616)
+    acceptance: String = ""; // the acceptance practice bound at hand-off (GH #604)
+    evidence_required: Bool = false; // it closes only with evidence or an authorized exception
+    evidence: String = ""; // the evidence a completion linked
+    exception: String = ""; // an authorized exception a completion recorded
     state: String = "active";
     detail: String = "";
     since: Int = 0;
@@ -188,7 +192,10 @@ locus Projection {
             let e = self.row(i);
             if e.entity == id {
                 if e.kind == "task.born" { t = TaskRow { id: id, outcome: e.body, state: "active", since: e.seq }; }
-                else if e.kind == "task.handed" && len(t.id) > 0 { t.state = "handed"; t.detail = e.body; t.assignee = std::json::find_string_field(e.body, "assignee"); t.obligation = std::json::find_string_field(e.body, "obligation"); }
+                else if e.kind == "task.handed" && len(t.id) > 0 { t.state = "handed"; t.detail = e.body; t.assignee = std::json::find_string_field(e.body, "assignee"); t.obligation = std::json::find_string_field(e.body, "obligation"); t.acceptance = std::json::find_string_field(e.body, "acceptance"); t.evidence_required = std::str::trim(std::json::find_field_raw(e.body, "evidence_required")) == "true"; }
+                // GH #604: what a person's completion linked — the evidence, or an authorized exception
+                else if e.kind == "completion.linked" && len(t.id) > 0 { t.evidence = std::json::find_string_field(e.body, "evidence"); }
+                else if e.kind == "completion.excepted" && len(t.id) > 0 { t.exception = std::json::find_string_field(e.body, "why") + " (authorized by " + std::json::find_string_field(e.body, "authorized_by") + ")"; }
                 // GH #616: a decision someone else made, reported — decided when its practice accepted it, else still handed with the reason
                 else if e.kind == "decision.reported" && len(t.id) > 0 {
                     if std::str::trim(std::json::find_field_raw(e.body, "accepted")) == "true" {
@@ -576,7 +583,7 @@ locus Projection {
         let mut i = 0;
         while i < ntasks {
             let t = self.task_of(nth(task_ids, i));
-            let how = if t.state == "decided" { " — " + t.detail } else if t.state == "handed" && len(t.waiting) > 0 { " — waits: " + t.waiting } else { "" };
+            let how = if t.state == "decided" { " — " + t.detail } else if t.state == "handed" && len(t.waiting) > 0 { " — waits: " + t.waiting } else if t.state == "done" && len(t.evidence) > 0 { " — evidence " + t.evidence } else if t.state == "done" && len(t.exception) > 0 { " — exception: " + t.exception } else if t.state == "done" && len(t.assignee) > 0 { " — human-reported, no evidence linked" } else { "" };
             out = out + "  " + t.id + " [" + t.state + "] " + t.outcome + how + "\n";
             i = i + 1;
         }

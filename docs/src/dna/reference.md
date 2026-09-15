@@ -44,6 +44,7 @@ hale dna receipt [disclose <digest> --to <who> --purpose <p> | show <digest> --p
                              and every read are rows in the reader's name
 hale dna receipt hold|release-hold <digest> --why <w> | redact <digest> --why <w> --policy <p>
 hale dna receipt file <path> [--class internal|customer|confidential] [--as <who>]
+hale dna task done <id> [--as <who>] [--note …] [--evidence <digest> | --exception <why> --authorized-by <who>]
 hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest> [--note …] [--as <reporter>]
 hale dna connect [<record-url> --name <n> --as <position> --purpose <p> --classes <internal,customer,confidential> [--by <who>]]
 hale dna disconnect <n> --why <why> [--by <who>]
@@ -132,6 +133,7 @@ tree, one JSON object per line: `seq`, `kind`, `entity`, `body`,
 | `receipt.disclosed` | a digest | a reader authorized: recipient, purpose, by |
 | `receipt.read` / `receipt.read_refused` | a digest | a read in the reader's name, or its refusal: by, purpose, class |
 | `receipt.filed` | a digest | an internal document filed as evidence: by, name, bytes, class, store |
+| `completion.linked` / `completion.excepted` | `t<n>` | a person's completion under its acceptance condition: the evidence linked (task, evidence, by, practice), or an exception someone else authorized (task, why, authorized_by, by, practice) |
 | `connection.proposed` / `connection.closed` | `connection:<n>` | a connection to another record: name, url, peer (its genesis), position, purpose, classes, by, review_id; closed: by, why |
 | `handoff.received` | `handoff:<id>` | in the receiving record: handoff, origin_record, origin_url, origin_author, origin_row, lineage, purpose, position, via, kind, subject, class, fact, note |
 | `handoff.published` / `handoff.refused` | `handoff:<id>` | in the origin record: connection, peer, kind, subject, class, purpose, peer_row, by, note; refused: why |

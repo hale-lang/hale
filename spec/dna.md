@@ -152,7 +152,24 @@ repository:
   refused while they hold work and no successor is named — pending
   work is accounted for, never dropped. Refused for a Task that is not
   handed: one the organism is working, or has settled, is not a
-  person's to close.
+  person's to close. **A completion meets its acceptance condition.**
+  When the plan names the obligation a person's job discharges, the
+  organism binds the acceptance practice in force at hand-off:
+  `task.handed` carries `acceptance` (the digest of the practice
+  `acceptance/<obligation>` that is ratified and not retired, "" when
+  none) and `evidence_required` (its text says `evidence: required`). A
+  later change of practice never changes a case already handed. Such a
+  Task closes only with `--evidence <digest>`, a receipt the record
+  holds, appended before `task.done` as `completion.linked` (`task`,
+  `evidence`, `by`, `practice`), or with `--exception <why>
+  --authorized-by <who>`, someone other than the person closing it,
+  appended as `completion.excepted` (`task`, `why`, `authorized_by`,
+  `by`, `practice`). A note alone is refused, and so is an exception
+  without an authorizer, a self-authorized one, or both at once. Either
+  may accompany any person's completion. `task.done` keeps its body; the
+  projection shows a done Task's evidence or exception, and a person's
+  completion with neither as human-reported, because a note never
+  verifies anything.
 - **Cross-record handoff (GH #615).** A replica of one record is inside
   the horizon: sync carries all of it, to equally trusted readers. A
   *handoff* crosses a horizon into a separate record, and a connection is

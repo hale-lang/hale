@@ -20,6 +20,12 @@ behavior.
 - `hale dna body` reads the lease; `hale dna body claim --force` releases a live lease of a body that is gone (a forced `body.claimed` row in your name; that body stops when it next asserts); `hale dna body release [--force]`.
 - `hale dna profile` prints the organism's combination — record, body, head, fleet, knowledge, trust, github, connections — detected from the pieces, never from a stored label; `status` gains `profile:` and `body:` lines. `hale dna new --profile local|remote-body [--remote <url>] [--body <user@host>]` sets the pieces.
 
+### DNA: a completion meets its acceptance condition — evidence linked, or an authorized exception (GH #604)
+
+- When a person's job names its obligation, the organism binds the acceptance practice in force at hand-off: `task.handed` carries `acceptance` (the practice's digest) and `evidence_required`. A later change of practice leaves cases already handed under their original contract.
+- `hale dna task done` on such a Task needs `--evidence <digest>` (a receipt the record holds, as `completion.linked`) or `--exception <why> --authorized-by <someone else>` (as `completion.excepted`). A note alone is refused.
+- Status shows a done Task's evidence or exception. A person's completion with neither is labelled human-reported, because a note never verifies anything. `task.done` keeps its body.
+
 ### DNA: cross-record handoff — selected facts across a connection, with origin and purpose (GH #615)
 
 - `hale dna connect <record-url> --name <n> --as <position> --purpose <p> --classes <…>` proposes a connection to a separate record as a Board Review. It is in force once someone other than its proposer approves it, and `hale dna disconnect` closes it.
