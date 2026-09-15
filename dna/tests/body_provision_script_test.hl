@@ -63,6 +63,11 @@ main locus App {
 
         // a second record whose directory has the same name gets a unit and a
         // secrets file of its own (#635)
+        // a second apart: two records made from the same template by the same
+        // author in the same second have the same genesis, and so are the
+        // same record identity — the key cannot tell them apart, nor can
+        // anything else keyed by the genesis
+        std::time::sleep(1100ms);
         let other_dir = scratch + "/elsewhere";
         let r1 = dna::run_tool("mkdir\n-p\n" + other_dir);
         let made2 = in_dir(other_dir, fake, toolchain() + "\ndna\nnew\nprov");
