@@ -294,7 +294,11 @@ repository:
   audience, the expiry and the nonce. The subject — never an email alone
   — maps to a member through a reviewed mapping, `git config --add
   dna.oidc.member "<subject>=<name>"`; an unmapped subject gets no
-  session. A sign-in's state is used once and expires in ten minutes; a
+  session. A sign-in's state is used once, expires in ten minutes, and is bound to
+  the browser that started it by an `HttpOnly; SameSite=Lax` `dna_signin`
+  cookie: a callback carrying the state from any other browser is refused
+  and leaves the sign-in for the browser that started it (so a callback
+  URL handed to someone else cannot sign them in); a
   session is a random 256-bit id in an `HttpOnly; SameSite=Lax` cookie
   (`Secure` when the callback is https) and lasts eight hours or until
   `/auth/logout`. With a session, a verdict acts as the member (`--as`,
