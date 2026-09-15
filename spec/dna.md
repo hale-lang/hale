@@ -54,7 +54,22 @@ repository:
   is the third trust profile #606 names: the readers of a clone hold
   digests and classes, never protected bodies. Under local trust a
   reader's name is attribution, as `--as` is; a verified principal is
-  #612's.
+  #612's. **Retention (part 2).** `receipt.held <digest> {by, why}`
+  stands until `receipt.hold_released`, and refuses redaction while it
+  stands. `Dna.redact_evidence(digest, by, why, policy)` (`hale dna
+  receipt redact <digest> --why --policy`) removes the body and appends
+  `receipt.redacted <digest> {by, why, policy, class, store}`: a git
+  receipt's ref is deleted (`Receipts.erase`), a protected body is erased
+  by the knowledge service (`POST /receipt/<digest>/erase`, which writes
+  the row), a withheld one had no body. The record keeps the digest, so
+  provenance survives and a reader learns the body is gone — the service
+  answers a read with 410 `redacted by … under …`, and `hale dna history`
+  says so under a redacted prompt. Every `sync` deletes redacted
+  receipts' refs from the clone and the remote, so a clone that fetched
+  one drops it at its next sync; the blob stays in each object store
+  until git collects it (`git gc --prune=now`), and a copy disclosed or
+  cloned outside the record cannot be recalled. The knowledge tail
+  retires an idea whose receipt was redacted instead of stopping.
 - **Leases** are blobs under `refs/dna/lease/<key>` (`:` in a key
   becomes `/`), `holder`, `token`, `expires`, `present` on four lines,
   compare-and-swapped on the ref. Tokens are monotonic per key.
@@ -281,7 +296,7 @@ the same way. A project's path therefore has no length rule.
 `schedule.skipped`, `schedule.paused`, `schedule.resumed`,
 `grant.reserved`, `grant.released`, `grant.fenced`, `grant.revoked`,
 `receipt.classified`, `receipt.withheld`, `receipt.disclosed`, `receipt.read`,
-`receipt.read_refused`,
+`receipt.read_refused`, `receipt.held`, `receipt.hold_released`, `receipt.redacted`,
 `optimize.refused`,
 `mutation.failed`, `effect.requested`, `effect.result`,
 `evidence.<step>`, `evidence.magnitude`, `review.requested`,

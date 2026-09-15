@@ -63,6 +63,16 @@ fn apply_record(store: KnowledgeStore, j: dna::Journal, receipts: dna::Receipts)
             let digest = e.entity;
             let raw = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
             let doc = receipts.read(raw);
+            if len(doc) == 0 && redacted_in(j, digest) {
+                // GH #606: a redacted receipt is an idea with no body left —
+                // retired, never an error that stops the whole projection
+                if !store.retire(digest, i) { out.error = store.last_error(); return out; }
+                out.retired = out.retired + 1;
+                i = i + 1;
+                if !store.set_watermark(i) { out.error = store.last_error(); return out; }
+                out.watermark = i;
+                continue;
+            }
             if len(doc) == 0 {
                 out.error = "no receipt for " + digest + " (row " + to_string(i) + ")";
                 return out;
@@ -104,4 +114,16 @@ fn apply_record(store: KnowledgeStore, j: dna::Journal, receipts: dna::Receipts)
         out.watermark = i;
     }
     return out;
+}
+
+// Whether the record redacted `digest` (GH #606).
+@unbounded
+fn redacted_in(j: dna::Journal, digest: String) -> Bool {
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "receipt.redacted" && e.entity == digest { return true; }
+        i = i + 1;
+    }
+    return false;
 }

@@ -367,6 +367,22 @@ locus ReceiptVault {
         }
         return std::json::find_string_field(body, "digest");
     }
+    // Ask the service to erase a protected body; "" when it did, else why.
+    @unbounded
+    fn erase(digest: String, by: String, why: String, policy: String) -> String {
+        if !self.ready() { return "no knowledge service"; }
+        self.last_error = "";
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("by", by);
+        b.string_field("why", why);
+        b.string_field("policy", policy);
+        b.end_object();
+        let resp = std::http::post(self.url + "/receipt/" + url_encode(digest) + "/erase", std::bytes::from_string(b.result()), "application/json") or self.call_failed(err);
+        if resp.status == 200 { return ""; }
+        if resp.status == 0 { return self.last_error; }
+        return std::json::find_string_field(std::str::from_bytes(resp.body), "error");
+    }
     @unbounded
     fn read(digest: String, reader: String, purpose: String) -> VaultRead {
         if !self.ready() { return VaultRead { refused: "no knowledge service" }; }

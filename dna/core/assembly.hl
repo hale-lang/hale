@@ -361,6 +361,87 @@ locus Dna {
         }
         return digest;
     }
+    // GH #606 part 2: retention. A hold stands until released and
+    // refuses redaction. A redaction removes the body — a git receipt's
+    // ref, or the knowledge service's copy of a protected body — and the
+    // record keeps the digest with a `receipt.redacted` row naming who,
+    // why and under what policy, so provenance survives the body and a
+    // reader knows it is gone rather than missing. "" when done, else why.
+    @unbounded
+    fn redact_evidence(digest: String, by: String, why: String, policy: String) -> String {
+        if len(by) == 0 || len(why) == 0 || len(policy) == 0 { return "a redaction names who, why and the policy"; }
+        let moved = self.journal.refresh();
+        let hold = self.evidence_hold(digest);
+        if len(hold) > 0 { return "held: " + hold + "; redaction waits for the hold's release"; }
+        if self.has_evidence_row("receipt.redacted", digest) { return digest + " is already redacted"; }
+        let class = self.evidence_class(digest);
+        if protected_class(class) {
+            if self.has_evidence_row("receipt.classified", digest) {
+                // the service keeps the body: it erases it and writes the row
+                return self.vault.erase(digest, by, why, policy);
+            }
+            // withheld: nothing holds the body; the row is the organism's
+        } else {
+            let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+            if !self.verification.receipts.erase(hexd) { return "the receipt store could not erase " + digest; }
+        }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("by", by);
+        b.string_field("why", why);
+        b.string_field("policy", policy);
+        b.string_field("class", class);
+        b.string_field("store", if protected_class(class) { "none (withheld)" } else { self.verification.receipts.kind() });
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "receipt.redacted", digest, b.result());
+        return if x.ok { "" } else { "the record refused the redaction: " + x.error };
+    }
+    fn hold_evidence(digest: String, by: String, why: String) -> String {
+        if len(by) == 0 || len(why) == 0 { return "a hold names who and why"; }
+        let moved = self.journal.refresh();
+        if len(self.evidence_hold(digest)) > 0 { return digest + " is already held"; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("by", by);
+        b.string_field("why", why);
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "receipt.held", digest, b.result());
+        return if x.ok { "" } else { x.error };
+    }
+    fn release_hold(digest: String, by: String, why: String) -> String {
+        let moved = self.journal.refresh();
+        if len(self.evidence_hold(digest)) == 0 { return digest + " is not held"; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("by", by);
+        b.string_field("why", why);
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "receipt.hold_released", digest, b.result());
+        return if x.ok { "" } else { x.error };
+    }
+    // "who: why" of a hold standing on `digest` ("" when none).
+    @unbounded
+    fn evidence_hold(digest: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            if e.entity == digest && e.kind == "receipt.held" { out = std::json::find_string_field(e.body, "by") + ": " + std::json::find_string_field(e.body, "why"); }
+            if e.entity == digest && e.kind == "receipt.hold_released" { out = ""; }
+            i = i + 1;
+        }
+        return out;
+    }
+    @unbounded
+    fn has_evidence_row(kind: String, digest: String) -> Bool {
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            if e.kind == kind && e.entity == digest { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
     // The class the record gives a digest: `customer` or `confidential`
     // when it was classified or withheld, `internal` otherwise. A request
     // that puts the body in a prompt carries it, so a hosted model refuses.

@@ -38,7 +38,14 @@ e9d9359 evidence.diff bf94e503c1c002f277248b14b6afd1910bb8ce6f
   dna receipt disclose <digest> --to <who> --purpose <p>` authorizes a
   reader; `hale dna receipt show <digest> --purpose <p>` reads one in
   your name, and the read is a row. Nothing protected travels with
-  `sync`.
+  `sync`. A body can be redacted under a stated policy: `hale dna
+  receipt redact <digest> --why <why> --policy <policy>` removes it —
+  the ref of a git receipt, the service's copy of a protected one — and
+  the record keeps the digest and a row saying who, why and under what
+  policy. `receipt hold` stops redaction until `receipt release-hold`.
+  Each clone drops a redacted receipt at its next sync; the object
+  lingers until git collects it, and a copy made outside the record
+  cannot be recalled.
 - **Leases** are blobs under `refs/dna/lease/<key>`, compare-and-
   swapped the same way, with fencing tokens; a stale token is
   refused.

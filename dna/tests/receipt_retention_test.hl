@@ -1,0 +1,159 @@
+// GH #606 part 2 — retention. A hold refuses redaction until it is
+// released. A redaction removes the body and keeps the digest with a
+// row naming who, why and under what policy: a git receipt's ref goes
+// from this clone, from the remote, and from another clone at its next
+// sync; a protected body is erased by the knowledge service, which then
+// answers a read with the redaction; and the knowledge service keeps
+// projecting the record when a knowledge receipt it read is redacted.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` (newline-separated) in `dir`, model discovery off.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+fn hex_of(digest: String) -> String {
+    return if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+}
+
+main locus App {
+    params {
+        core: dna::Dna = dna::Dna { planned: true, org_id: "retention-placeholder" };
+    }
+    @unbounded
+    fn last(repo: String, kind: String, entity: String) -> String {
+        let j = dna::GitJournal { repo: repo };
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && e.entity == entity { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    run() {
+        let scratch = "/tmp/dna-retention-" + to_string(std::process::pid());
+        std::io::fs::mkdir(scratch) or discard;
+        let bare = scratch + "/origin.git";
+        let init = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nkept");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let app = scratch + "/kept";
+        let c1 = in_dir(app, "git\nconfig\nuser.name\nmara");
+        let c2 = in_dir(app, "git\nconfig\nuser.email\nmara@local");
+        let c3 = in_dir(app, "git\nadd\n-A");
+        let c4 = in_dir(app, "git\ncommit\n-q\n-m\nthe app");
+        let c5 = in_dir(app, "git\nremote\nadd\norigin\n" + bare);
+
+        self.core = dna::Dna {
+            journal: dna::GitJournal { repo: app, author: "mara" },
+            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: app }, repo: app },
+            vault: dna::ReceiptVault { url_env: "" },
+            planned: true, org_id: "retention"
+        };
+        let note = "a supplier note the retention policy covers";
+        let d = self.core.file_evidence(note, "internal", "mara");
+        let receipts = dna::GitReceipts { repo: app };
+        std::test::assert_eq_str(receipts.read(hex_of(d)), note, "an internal receipt");
+
+        // a second clone that has fetched it
+        let pushed = in_dir(app, "git\npush\n-q\norigin\nmain\nrefs/dna/*:refs/dna/*");
+        std::test::assert_eq_int(pushed.code, 0, "pushed: " + pushed.stderr);
+        let other = scratch + "/other";
+        let cloned = in_dir(scratch, "git\nclone\n-q\n" + bare + "\n" + other);
+        let o1 = in_dir(other, "git\nconfig\nuser.name\ntomasz");
+        let o2 = in_dir(other, "git\nconfig\nuser.email\ntomasz@local");
+        let synced = in_dir(other, toolchain() + "\ndna\nsync");
+        std::test::assert_eq_int(synced.code, 0, "the other clone syncs: " + synced.stdout + synced.stderr);
+        let other_receipts = dna::GitReceipts { repo: other };
+        std::test::assert_eq_str(other_receipts.read(hex_of(d)), note, "and holds the receipt");
+
+        // ---- a hold refuses redaction until it is released
+        std::test::assert_eq_str(self.core.hold_evidence(d, "counsel", "litigation hold on supplier records"), "", "counsel holds it");
+        std::test::assert(std::str::contains(self.core.hold_evidence(d, "counsel", "again"), "already held"), "a hold is once");
+        let refused = self.core.redact_evidence(d, "mara", "no longer needed", "retention:30d");
+        std::test::assert(std::str::contains(refused, "held: counsel: litigation hold on supplier records"), "redaction waits for the hold: " + refused);
+        std::test::assert_eq_str(receipts.read(hex_of(d)), note, "and nothing was removed");
+        std::test::assert_eq_str(self.core.release_hold(d, "counsel", "matter closed"), "", "counsel releases it");
+        std::test::assert(std::str::contains(self.core.release_hold(d, "counsel", "again"), "is not held"), "a release needs a hold");
+
+        // ---- redaction: the body goes, the digest and the row stay
+        std::test::assert_eq_str(self.core.redact_evidence(d, "mara", "no longer needed", "retention:30d"), "", "redacted under the policy");
+        std::test::assert_eq_str(receipts.read(hex_of(d)), "", "the ref is gone from this clone");
+        let row = self.last(app, "receipt.redacted", d);
+        std::test::assert(std::str::contains(row, "\"by\": \"mara\"") && std::str::contains(row, "\"why\": \"no longer needed\"") && std::str::contains(row, "\"policy\": \"retention:30d\"") && std::str::contains(row, "\"store\": \"git\""), "the record keeps who, why and the policy: " + row);
+        std::test::assert(std::str::contains(self.core.redact_evidence(d, "mara", "again", "retention:30d"), "already redacted"), "a redaction is once");
+
+        // ---- sync forgets it everywhere
+        let s1 = in_dir(app, toolchain() + "\ndna\nsync");
+        std::test::assert_eq_int(s1.code, 0, "this clone syncs: " + s1.stdout + s1.stderr);
+        let remote_ref = in_dir(app, "git\nls-remote\norigin\nrefs/dna/receipts/" + hex_of(d));
+        std::test::assert_eq_str(dna::trim_nl(remote_ref.stdout), "", "the remote no longer has the ref");
+        let s2 = in_dir(other, toolchain() + "\ndna\nsync");
+        std::test::assert_eq_int(s2.code, 0, "the other clone syncs again: " + s2.stdout + s2.stderr);
+        std::test::assert_eq_str(other_receipts.read(hex_of(d)), "", "and drops the ref it had fetched");
+        let listed = in_dir(other, toolchain() + "\ndna\nreceipt\nredact\n" + d + "\n--why\nx\n--policy\ny");
+        std::test::assert(listed.code != 0 && std::str::contains(listed.stdout + listed.stderr, "already redacted"), "the other clone knows it was redacted: " + listed.stdout + listed.stderr);
+
+        // ---- a protected body, through a memory service and the CLI
+        let port = 30000 + (std::process::pid() + 7) % 20000;
+        let url = "http://127.0.0.1:" + to_string(port);
+        let started = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_DSN=memory nohup \"$1\" dna knowledge . --port \"$2\" >.hale/retention-service.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + to_string(port));
+        let pid = dna::trim_nl(started.stdout);
+        let mut up = false;
+        let mut tries = 0;
+        while !up && tries < 600 {
+            let probe = std::http::get(url + "/") or std::http::ClientResponse { status: 0, body: b"" };
+            if probe.status == 200 { up = true; } else { std::time::sleep(200ms); }
+            tries = tries + 1;
+        }
+        std::test::assert(up, "the knowledge service came up at " + url);
+        std::io::fs::write_file(app + "/.hale/dna/knowledge.url", url) or discard;
+        self.core = dna::Dna {
+            journal: dna::GitJournal { repo: app, author: "mara" },
+            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: app }, repo: app },
+            vault: dna::ReceiptVault { url: url },
+            planned: true, org_id: "retention"
+        };
+        let secret = "payroll line for employee 88: 4100.00";
+        let p = self.core.file_evidence(secret, "confidential", "mara");
+        let disclosed = in_dir(app, toolchain() + "\ndna\nreceipt\ndisclose\n" + p + "\n--to\ntomasz\n--purpose\naudit\n--as\nmara");
+        std::test::assert_eq_int(disclosed.code, 0, "disclosed: " + disclosed.stderr);
+        let shown = in_dir(app, toolchain() + "\ndna\nreceipt\nshow\n" + p + "\n--purpose\naudit\n--as\ntomasz");
+        std::test::assert(shown.code == 0 && std::str::contains(shown.stdout, secret), "readable before redaction: " + shown.stdout + shown.stderr);
+        let held = in_dir(app, toolchain() + "\ndna\nreceipt\nhold\n" + p + "\n--why\naudit in progress\n--as\ncounsel");
+        std::test::assert_eq_int(held.code, 0, "held from the CLI: " + held.stderr);
+        let blocked = in_dir(app, toolchain() + "\ndna\nreceipt\nredact\n" + p + "\n--why\nleft the company\n--policy\ngdpr-erasure\n--as\nmara");
+        std::test::assert(blocked.code != 0 && std::str::contains(blocked.stdout + blocked.stderr, "held: counsel: audit in progress"), "the service refuses while held: " + blocked.stdout + blocked.stderr);
+        let released = in_dir(app, toolchain() + "\ndna\nreceipt\nrelease-hold\n" + p + "\n--why\naudit done\n--as\ncounsel");
+        std::test::assert_eq_int(released.code, 0, "released: " + released.stderr);
+        let erased = in_dir(app, toolchain() + "\ndna\nreceipt\nredact\n" + p + "\n--why\nleft the company\n--policy\ngdpr-erasure\n--as\nmara");
+        std::test::assert(erased.code == 0 && std::str::contains(erased.stdout, "erased by the knowledge service"), "redacted through the service: " + erased.stdout + erased.stderr);
+        let prow = self.last(app, "receipt.redacted", p);
+        std::test::assert(std::str::contains(prow, "\"policy\": \"gdpr-erasure\"") && std::str::contains(prow, "\"class\": \"confidential\""), "the row names the policy and the class: " + prow);
+        let gone = self.core.vault.read(p, "tomasz", "audit");
+        std::test::assert(!gone.present && std::str::contains(gone.refused, "was redacted: by mara under gdpr-erasure: left the company"), "a read learns the body is gone, not missing: " + gone.refused);
+        let listing = in_dir(app, toolchain() + "\ndna\nreceipt");
+        std::test::assert(std::str::contains(listing.stdout, "redacted by mara under gdpr-erasure"), "the list says so: " + listing.stdout);
+
+        // ---- a redacted knowledge receipt does not stop the projection
+        let proposed = self.core.propose_knowledge(dna::Idea { id: "k1", kind: "practice", text: "keep supplier notes a month", author: "org" }, "org");
+        std::test::assert(std::str::starts_with(proposed, "sha256:"), "a knowledge proposal: " + proposed);
+        std::test::assert_eq_str(self.core.redact_evidence(proposed, "mara", "superseded", "retention:30d"), "", "its receipt redacted");
+        let summary = std::http::get(url + "/") or std::http::ClientResponse { status: 0, body: b"" };
+        let sbody = std::str::from_bytes(summary.body);
+        std::test::assert(summary.status == 200 && std::str::contains(sbody, "\"error\": \"\""), "the service still projects the record: " + sbody);
+
+        let stop = dna::run_tool("kill\n" + pid);
+        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+    }
+}
+
+fn main() { App { }; }
