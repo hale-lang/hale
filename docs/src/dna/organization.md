@@ -71,6 +71,25 @@ told to `hale dna task reassign <id> --to <them>` first. When a person
 leaves, `hale dna retire <who> --to <successor>` moves everything they
 hold, as rows, and refuses to drop any of it.
 
+Often the decision on such a job is not the person's to make, and is
+not made in Hale: a client approves an expense by mail, a manager
+agrees on a call. File what shows it, then report the decision as
+theirs:
+
+```text
+hale dna receipt file approval.eml --as mara
+hale dna task decide t41 --decided-by dana@client --via mail --evidence sha256:… --as mara
+```
+
+The record says "reported by mara, decided by dana@client, via mail",
+never that mara approved it, and it refuses a report that names the
+reporter as the decider. Whether a report settles the job is the
+Board's call, made once for a kind of obligation: ratify a practice
+named `acceptance/expense-approval` whose text says `reported
+decisions: allowed`, and reports settle expense approvals. Without such
+a practice the report is kept, the Task waits for the assignee's own
+`task done`, and `hale dna board` says why.
+
 A grant sits under the organization's own, when one is written: a
 child's grant is read through the organism's *current* grant at every
 assessment, so when the organization's leash shortens on repeated

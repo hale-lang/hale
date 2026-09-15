@@ -43,6 +43,8 @@ hale dna receipt [disclose <digest> --to <who> --purpose <p> | show <digest> --p
                              protected evidence: kept by the knowledge service alone; disclosure
                              and every read are rows in the reader's name
 hale dna receipt hold|release-hold <digest> --why <w> | redact <digest> --why <w> --policy <p>
+hale dna receipt file <path> [--class internal|customer|confidential] [--as <who>]
+hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest> [--note …] [--as <reporter>]
                              a hold refuses redaction; a redaction removes the body, keeps the digest
 hale dna schedule [pause <id> | resume <id>]
                              the schedules the org chart declared, as the record has them;
@@ -125,6 +127,8 @@ tree, one JSON object per line: `seq`, `kind`, `entity`, `body`,
 | `receipt.withheld` | a digest | a protected body no service could keep: class, by, why |
 | `receipt.disclosed` | a digest | a reader authorized: recipient, purpose, by |
 | `receipt.read` / `receipt.read_refused` | a digest | a read in the reader's name, or its refusal: by, purpose, class |
+| `receipt.filed` | a digest | an internal document filed as evidence: by, name, bytes, class, store |
+| `decision.reported` | `t<n>` | a decision someone outside made, reported by the assignee: reporter, decider, channel, evidence, scope, obligation, practice, policy, accepted, why, note |
 | `receipt.held` / `receipt.hold_released` | a digest | a hold that refuses redaction, and its release: by, why |
 | `receipt.redacted` | a digest | the body removed, the digest kept: by, why, policy, class, store |
 | `grant.revoked` | a child | the parent revoked the grant, recorded before it takes effect and restored at birth: by, parent, epoch |

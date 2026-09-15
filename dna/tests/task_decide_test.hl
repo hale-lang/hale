@@ -1,0 +1,179 @@
+// GH #616 — an attributed external decision, through the CLI over a
+// real project's record. A client who does not run Hale approves an
+// expense by mail; the assignee files the mail and reports the decision
+// as the client's. Under a ratified practice that allows reports, the
+// Task is decided, and shown as a report, never as a verdict. Under a
+// practice that requires a native decision, the report is kept, the Task
+// waits, and the board says why; the assignee's own `task done` closes
+// it. With no obligation class, or once the practice is retired, a report
+// never suffices. A report naming the reporter as decider, from someone
+// not the assignee, or citing evidence the record does not hold, is
+// refused and nothing is appended.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` (newline-separated) in `dir`, model discovery off.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+fn dna_cli(app: String, args: String) -> String {
+    let r = in_dir(app, toolchain() + "\ndna\n" + args);
+    return r.stdout + r.stderr;
+}
+
+// The record's lines that carry every one of `needles` (tab-separated).
+@unbounded
+fn record_lines_with(app: String, needles: String) -> Int {
+    let text = in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout + "\n";
+    let mut n = 0;
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let mut all = len(line) > 0;
+        let mut ns = needles + "\t";
+        while len(ns) > 0 && all {
+            let t = std::str::index_of(ns, "\t");
+            let needle = ns[0..t];
+            ns = ns[(t + 1)..len(ns)];
+            if len(needle) > 0 && !std::str::contains(line, needle) { all = false; }
+        }
+        if all { n = n + 1; }
+    }
+    return n;
+}
+
+main locus App {
+    params {
+        // pointed at the project in run(); never at the working directory
+        j: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/dna-decide" };
+        r: dna::GitReceipts = dna::GitReceipts { repo: "/nonexistent/dna-decide" };
+    }
+    // A practice proposed and ratified, as the record keeps one.
+    fn practice(name: String, text: String) -> String {
+        let doc = dna::knowledge_document(dna::Idea { kind: "practice", text: text, author: "org", name: name }, "org");
+        let digest = "sha256:" + self.r.store(doc);
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("digest", digest);
+        b.string_field("review_id", dna::knowledge_review_id(digest));
+        b.string_field("kind", "practice");
+        b.string_field("author", "org");
+        b.string_field("target", "org");
+        b.string_field("name", name);
+        b.end_object();
+        self.j.refresh();
+        let x = self.j.append(self.j.revision(), "knowledge.proposed", digest, b.result());
+        let y = self.j.append(self.j.revision(), "knowledge.ratified", digest, "{\"review_id\": \"" + dna::knowledge_review_id(digest) + "\", \"decided_by\": \"riley\"}");
+        return digest;
+    }
+    // A Task the leader handed to a person, as the organism journals it.
+    fn handed(id: String, outcome: String, assignee: String, obligation: String) {
+        self.j.refresh();
+        let x = self.j.append(self.j.revision(), "task.born", id, "i-" + id + ": " + outcome);
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("work", id + "/w");
+        b.string_field("assignee", assignee);
+        b.string_field("by", "leader");
+        b.string_field("obligation", obligation);
+        b.string_field("narrative", "handed: not a software change — " + outcome);
+        b.end_object();
+        let y = self.j.append(self.j.revision(), "task.handed", id, b.result());
+    }
+    run() {
+        // the pure checks
+        std::test::assert(std::str::contains(dna::report_refusal("mara", "Mara ", "mail", "sha256:x"), "the reporter is not the decider"), "the same party, case and spacing aside");
+        std::test::assert(std::str::contains(dna::report_refusal("mara", "", "mail", "sha256:x"), "who decided?"), "a decider is named");
+        std::test::assert(dna::acceptance_allows_reports("Expenses.\nReported decisions: allowed"), "the policy line, case aside");
+        std::test::assert(!dna::acceptance_allows_reports("reported decisions: native decision required"), "a native-only policy");
+        std::test::assert(!dna::digest_well_formed("sha256:ABC"), "not a digest");
+        std::test::assert_eq_str(dna::evidence_digest(" 00ff "), "sha256:00ff", "a bare hex digest is named as the record names evidence");
+
+        let scratch = "/tmp/dna-decide-" + to_string(std::process::pid());
+        std::io::fs::mkdir(scratch) or discard;
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nbooks");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let app = scratch + "/books";
+        let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
+        let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
+        self.j = dna::GitJournal { repo: app };
+        self.r = dna::GitReceipts { repo: app };
+
+        let allow = self.practice("acceptance/expense-approval", "A client's approval of an expense may be reported by the Task's assignee, with the mail as evidence.\nreported decisions: allowed");
+        let native = self.practice("acceptance/contract-signature", "A contract is signed by the person who holds it, in their own name.\nreported decisions: native decision required");
+        self.handed("t41", "approve the March travel expense", "mara", "expense-approval");
+        self.handed("t42", "sign the supplier contract", "mara", "contract-signature");
+        self.handed("t43", "confirm the office move date", "mara", "");
+
+        // ---- the mail, filed as evidence
+        let mail = in_dir(scratch, "sh\n-c\nprintf '%s' \"$1\" > mail.txt\nsh\nFrom: dana@client\nSubject: Re: March travel\n\nApproved.");
+        let filed = dna_cli(app, "receipt\nfile\n" + scratch + "/mail.txt\n--as\nmara");
+        let at = std::str::index_of(filed, "sha256:");
+        std::test::assert(at >= 0 && std::str::contains(filed, " filed (internal, "), "the mail is filed: " + filed);
+        let digest = filed[at..(at + 71)];
+        std::test::assert(dna::digest_well_formed(digest), "a digest: " + digest);
+        std::test::assert_eq_int(record_lines_with(app, "\"kind\": \"receipt.filed\"\t\"entity\": \"" + digest + "\"\t\"author\": \"mara\""), 1, "one receipt.filed row, in mara's name");
+        std::test::assert_eq_int(in_dir(app, "git\nrev-parse\n-q\n--verify\nrefs/dna/receipts/" + digest[7..71]).code, 0, "the body under the record's receipts");
+        let empty = dna_cli(app, "receipt\nfile\n" + scratch + "/no-such-mail.txt");
+        std::test::assert(std::str::contains(empty, "nothing to file at"), "a missing file is refused: " + empty);
+
+        // ---- refusals, and nothing reaches the record
+        let decide = "task\ndecide\n";
+        let self_decided = dna_cli(app, decide + "t41\n--decided-by\nmara\n--via\nmail\n--evidence\n" + digest + "\n--as\nmara");
+        std::test::assert(std::str::contains(self_decided, "the reporter is not the decider"), "a report naming the reporter as decider: " + self_decided);
+        let stranger = dna_cli(app, decide + "t41\n--decided-by\ndana@client\n--via\nmail\n--evidence\n" + digest + "\n--as\nnoor");
+        std::test::assert(std::str::contains(stranger, "handed to mara, not to noor"), "only the assignee reports: " + stranger);
+        let unknown = dna_cli(app, decide + "t41\n--decided-by\ndana@client\n--via\nmail\n--evidence\nsha256:0000000000000000000000000000000000000000000000000000000000000000\n--as\nmara");
+        std::test::assert(std::str::contains(unknown, "no receipt sha256:0000"), "evidence the record does not hold: " + unknown);
+        let malformed = dna_cli(app, decide + "t41\n--decided-by\ndana@client\n--via\nmail\n--evidence\nmail.txt\n--as\nmara");
+        std::test::assert(std::str::contains(malformed, "is not a receipt digest"), "not a digest: " + malformed);
+        let novia = dna_cli(app, decide + "t41\n--decided-by\ndana@client\n--evidence\n" + digest + "\n--as\nmara");
+        std::test::assert(std::str::contains(novia, "through what?"), "a channel is named: " + novia);
+        std::test::assert_eq_int(record_lines_with(app, "\"kind\": \"decision.reported\""), 0, "no refused report reached the record");
+
+        // ---- a practice that allows reports: the Task is decided, as a report
+        let ok = dna_cli(app, decide + "t41\n--decided-by\ndana@client\n--via\nmail\n--evidence\n" + digest + "\n--note\napproved by reply\n--as\nmara");
+        std::test::assert(std::str::contains(ok, "task t41 decided: reported by mara, decided by dana@client, via mail (evidence " + digest + "), under acceptance/expense-approval (" + allow + ")"), "decided: " + ok);
+        std::test::assert_eq_int(record_lines_with(app, "\"kind\": \"decision.reported\"\t\"entity\": \"t41\"\t\"author\": \"mara\"\t\\\"reporter\\\": \\\"mara\\\"\t\\\"decider\\\": \\\"dana@client\\\"\t\\\"channel\\\": \\\"mail\\\"\t\\\"evidence\\\": \\\"" + digest + "\\\"\t\\\"scope\\\": \\\"t41\\\"\t\\\"policy\\\": \\\"" + allow + "\\\"\t\\\"accepted\\\": true"), 1, "one report, every field, accepted under the practice");
+        std::test::assert_eq_int(record_lines_with(app, "\"kind\": \"review.verdict\""), 0, "and no verdict");
+        let status = dna_cli(app, "status");
+        std::test::assert(std::str::contains(status, "t41 [decided] i-t41: approve the March travel expense — reported by mara, decided by dana@client, via mail"), "the projection shows the report as such: " + status);
+        let again = dna_cli(app, "task\ndone\nt41\n--as\nmara");
+        std::test::assert(std::str::contains(again, "is decided, not handed"), "a decided Task is not closed twice: " + again);
+
+        // ---- a practice that requires a native decision: the Task waits
+        let waits = dna_cli(app, decide + "t42\n--decided-by\ndana@client\n--via\nmail\n--evidence\n" + digest + "\n--as\nmara");
+        std::test::assert(std::str::contains(waits, "task t42 still handed") && std::str::contains(waits, "practice `acceptance/contract-signature` (" + native + ") requires a native decision"), "kept, not settled: " + waits);
+        std::test::assert_eq_int(record_lines_with(app, "\"kind\": \"decision.reported\"\t\"entity\": \"t42\"\t\\\"accepted\\\": false"), 1, "the report is in the record, not accepted");
+        let board = dna_cli(app, "board");
+        std::test::assert(std::str::contains(board, "tasks waiting:\n  t42 (mara) waits on a native decision: practice `acceptance/contract-signature`"), "the board says why: " + board);
+        let status2 = dna_cli(app, "status");
+        std::test::assert(std::str::contains(status2, "t42 [handed] i-t42: sign the supplier contract — waits: practice"), "handed, and why: " + status2);
+        let native_done = dna_cli(app, "task\ndone\nt42\n--as\nmara\n--note\nsigned");
+        std::test::assert(std::str::contains(native_done, "task t42 done by mara"), "the native decision closes it: " + native_done);
+        std::test::assert(!std::str::contains(dna_cli(app, "board"), "t42 (mara) waits"), "and it no longer waits");
+
+        // ---- no obligation class: a report never suffices
+        let classless = dna_cli(app, decide + "t43\n--decided-by\ndana@client\n--via\ncall\n--evidence\n" + digest + "\n--as\nmara");
+        std::test::assert(std::str::contains(classless, "task t43 still handed") && std::str::contains(classless, "names no obligation class"), "no class: " + classless);
+
+        // ---- a retired practice no longer allows reports
+        self.j.refresh();
+        let z = self.j.append(self.j.revision(), "knowledge.retired", allow, "{\"digest\": \"" + allow + "\", \"by\": \"sha256:retired-by-the-board\"}");
+        self.handed("t44", "approve the April travel expense", "mara", "expense-approval");
+        let retired = dna_cli(app, decide + "t44\n--decided-by\ndana@client\n--via\nmail\n--evidence\n" + digest + "\n--as\nmara");
+        std::test::assert(std::str::contains(retired, "task t44 still handed") && std::str::contains(retired, "no ratified practice `acceptance/expense-approval`"), "retired: " + retired);
+
+        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+    }
+}
+
+fn main() { App { }; }

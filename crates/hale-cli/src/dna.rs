@@ -317,6 +317,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    when ssh or the toolchain is unavailable. Then `body start|stop|logs [--body <user@host>]`");
     eprintln!("       hale dna receipt [disclose <digest> --to <who> --purpose <p> | show <digest> --purpose <p>]");
     eprintln!("       hale dna receipt hold|release-hold <digest> --why <w> | redact <digest> --why <w> --policy <p>");
+    eprintln!("       hale dna receipt file <path> [--class internal|customer|confidential]   file a document as evidence");
     eprintln!("                                    a hold refuses redaction until released; a redaction removes the body and keeps the digest, as a row");
     eprintln!("                                    protected evidence (customer, confidential): kept by the knowledge service alone;");
     eprintln!("                                    disclosure and every read are rows in the reader's name (--as <who>)");
@@ -328,6 +329,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    on the body or here; `secret rotate <NAME>`; the record gets `secret.rotated <NAME>` only");
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
     eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
+    eprintln!("       hale dna task decide <id>    report a decision someone else made (--decided-by <party> --via <channel> --evidence <digest>, --as <reporter>)");
     eprintln!("       hale dna retire <who>        a person retires: the handed Tasks they hold move to --to <successor>, as rows");
     eprintln!("       hale dna effect resolve <key> an effect whose outcome is unknown after a restart: --outcome ok|failed, in your name");
     eprintln!("       hale dna report [project]    file a report from the record since the last one (report.filed)");

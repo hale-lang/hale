@@ -73,6 +73,114 @@ fn task_done_verb(root: String, seed: String, id: String, who_flag: String, note
     return answer("task " + id + " done " + body + "\n");
 }
 
+// GH #616: a person reports a decision someone else made — a manager,
+// a client — naming who decided, through what, and on what evidence. One
+// `decision.reported` row in the reporter's name. Whether it settles the
+// Task is the obligation's acceptance practice, read here at admission and
+// kept in the row, so a later change of practice never rewrites what was
+// admitted. The reporter is the Task's assignee (GH #604 rule 4) and never
+// the decider.
+@unbounded
+fn task_decide_verb(root: String, seed: String, id: String, decided_by: String, via: String, evidence_flag: String, note: String, who_flag: String) -> Answer {
+    if len(id) == 0 { return fail("task decide: `hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest> [--note …] [--as <reporter>]`"); }
+    let s = sync_record(root);
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let p = open_projection(root, seed, "");
+    let t = p.task_of(id);
+    if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
+    if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: no decision to report"); }
+    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    let malformed = dna::report_refusal(who, decided_by, via, evidence_flag);
+    if len(malformed) > 0 { return fail("task decide: " + malformed); }
+    if len(t.assignee) > 0 && t.assignee != who {
+        return fail("Task `" + id + "` is handed to " + t.assignee + ", not to " + who + "; only its assignee reports a decision on it (`hale dna task reassign " + id + " --to " + who + "` first)");
+    }
+    let evidence = dna::evidence_digest(evidence_flag);
+    if !dna::digest_well_formed(evidence) { return fail("task decide: `" + evidence_flag + "` is not a receipt digest (sha256:<64 hex digits>)"); }
+    let held = receipt_read(root, evidence[7..len(evidence)]).present || p.has_row("receipt.classified", evidence) || p.has_row("receipt.withheld", evidence);
+    if !held { return fail("task decide: no receipt " + evidence + " in the record; file the mail or document first: `hale dna receipt file <path>`"); }
+    let practice = if len(t.obligation) > 0 { dna::acceptance_practice(t.obligation) } else { "" };
+    let policy = if len(practice) > 0 { p.practice_in_force(practice) } else { "" };
+    let mut accepted = false;
+    let mut why = "";
+    if len(t.obligation) == 0 {
+        why = "the Task names no obligation class, so no acceptance practice lets a report settle it; its assignee closes it with `hale dna task done " + id + "`";
+    } else if len(policy) == 0 {
+        why = "no ratified practice `" + practice + "`: a reported decision does not settle a `" + t.obligation + "` obligation; its assignee closes it with `hale dna task done " + id + "`";
+    } else {
+        let doc = receipt_read(root, policy[7..len(policy)]);
+        if dna::acceptance_allows_reports(std::json::find_string_field(doc.text, "text")) { accepted = true; }
+        else { why = "practice `" + practice + "` (" + policy + ") requires a native decision: `hale dna task done " + id + "` by " + t.assignee; }
+    }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("reporter", who);
+    b.string_field("decider", decided_by);
+    b.string_field("channel", via);
+    b.string_field("evidence", evidence);
+    b.string_field("scope", id);
+    b.string_field("obligation", t.obligation);
+    b.string_field("practice", practice);
+    b.string_field("policy", policy);
+    b.bool_field("accepted", accepted);
+    b.string_field("why", why);
+    b.string_field("note", note);
+    b.end_object();
+    if !append_as(root, "decision.reported", id, b.result(), who) { return fail("the record refused the append"); }
+    let s2 = sync_record(root);
+    let line = dna::decision_line(who, decided_by, via, evidence);
+    if accepted { return answer("task " + id + " decided: " + line + ", under " + practice + " (" + policy + ")\n"); }
+    return answer("task " + id + " still handed: the report is kept (" + line + ") and does not settle it — " + why + "\n");
+}
+
+// GH #616: file a document — a mail, a signed page — as evidence a report
+// can cite. Internal text goes under the record's receipts with a
+// `receipt.filed` row; a protected class goes to the knowledge service
+// alone (GH #606), and is refused when no service is known.
+@unbounded
+fn receipt_file_verb(root: String, path: String, class_flag: String, who_flag: String) -> Answer {
+    if len(path) == 0 { return fail("receipt file: `hale dna receipt file <path> [--class internal|customer|confidential] [--as <who>]`"); }
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let text = std::io::fs::read_file(path) or "";
+    if len(text) == 0 { return fail("receipt file: nothing to file at " + path); }
+    let class = if len(class_flag) > 0 { class_flag } else { "internal" };
+    if class != "internal" && !dna::protected_class(class) { return fail("receipt file: class `" + class + "` is not internal, customer or confidential"); }
+    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    let s = sync_record(root);
+    if dna::protected_class(class) {
+        let url = knowledge_url(root);
+        if len(url) == 0 { return fail("receipt file: a " + class + " body is kept by the knowledge service alone, and no service is known here (HALE_DNA_KNOWLEDGE_URL, or `hale dna dev`)"); }
+        let kb = std::json::Builder { };
+        kb.begin_object();
+        kb.string_field("class", class);
+        kb.string_field("text", text);
+        kb.string_field("by", who);
+        kb.end_object();
+        let resp = std::http::post(url + "/receipt", std::bytes::from_string(kb.result()), "application/json") or vault_failed(err);
+        let body = std::str::from_bytes(resp.body);
+        if resp.status != 200 { return fail("receipt file: " + std::json::find_string_field(body, "error")); }
+        let s2 = sync_record(root);
+        return answer("receipt " + dna::evidence_digest(std::json::find_string_field(body, "digest")) + " filed (" + class + ", kept by the knowledge service; receipt.classified, by " + who + ")\n");
+    }
+    let blob = git(root, "hash-object\n-w\n" + path);
+    if blob.code != 0 { return fail("receipt file: git could not store " + path + ": " + blob.stderr); }
+    let digest = dna::evidence_digest(dna::digest_of(text));
+    let u = git(root, "update-ref\nrefs/dna/receipts/" + digest[7..len(digest)] + "\n" + dna::trim_nl(blob.stdout));
+    if u.code != 0 { return fail("receipt file: " + u.stderr); }
+    let slash = last_index_of(path, "/");
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("by", who);
+    b.string_field("name", if slash < 0 { path } else { path[(slash + 1)..len(path)] });
+    b.int_field("bytes", len(text));
+    b.string_field("class", "internal");
+    b.string_field("store", "git");
+    b.end_object();
+    if !append_as(root, "receipt.filed", digest, b.result(), who) { return fail("the record refused the append"); }
+    let s3 = sync_record(root);
+    return answer("receipt " + digest + " filed (internal, " + to_string(len(text)) + " bytes, under refs/dna/receipts; receipt.filed, by " + who + ")\n");
+}
+
 // GH #604 rule 5: a handed Task moves to another person as a row that
 // names both; the Task stays handed. Reached per command.
 @unbounded

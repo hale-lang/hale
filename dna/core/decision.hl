@@ -1,0 +1,56 @@
+// dna/core/decision.hl — an attributed external decision (GH #616).
+//
+// A decision made by someone who does not run Hale — a manager, a
+// client, an accountant — is a fact about a party beyond the horizon,
+// reported by a position inside it. The row names the reporter, the
+// decider, the channel, the evidence (a receipt digest) and the scope
+// (which Task); the reporter never becomes the decider. Whether such a
+// report settles its obligation is the obligation's acceptance policy: a
+// practice named `acceptance/<obligation class>`, ratified by the Board,
+// whose text says `reported decisions: allowed`. Without one, only a
+// native decision settles it.
+
+fn same_party(a: String, b: String) -> Bool {
+    return std::str::lower(std::str::trim(a)) == std::str::lower(std::str::trim(b));
+}
+
+// Why a report is refused before it reaches the record ("" when it is
+// well-formed): every field named, and the reporter not the decider.
+fn report_refusal(reporter: String, decider: String, channel: String, evidence: String) -> String {
+    if len(std::str::trim(decider)) == 0 { return "who decided? `--decided-by <party>`"; }
+    if len(std::str::trim(channel)) == 0 { return "through what? `--via <channel>` (mail, call, meeting, document)"; }
+    if len(std::str::trim(evidence)) == 0 { return "on what evidence? `--evidence <digest>` (file it first: `hale dna receipt file <path>`)"; }
+    if same_party(reporter, decider) { return "the reporter is not the decider: " + reporter + " reports a decision someone else made; a decision of your own is `hale dna task done`"; }
+    return "";
+}
+
+// The practice an obligation class's acceptance policy goes by.
+fn acceptance_practice(obligation: String) -> String { return "acceptance/" + obligation; }
+
+// Whether a practice's text lets a reported decision settle its obligation.
+fn acceptance_allows_reports(text: String) -> Bool {
+    return std::str::contains(std::str::lower(text), "reported decisions: allowed");
+}
+
+// Evidence as the record names it: `sha256:<hex>`.
+fn evidence_digest(d: String) -> String {
+    let t = std::str::trim(d);
+    return if std::str::starts_with(t, "sha256:") { t } else { "sha256:" + t };
+}
+
+// `sha256:` and 64 lowercase hex digits.
+@unbounded
+fn digest_well_formed(d: String) -> Bool {
+    if !std::str::starts_with(d, "sha256:") || len(d) != 71 { return false; }
+    let mut i = 7;
+    while i < 71 {
+        if !std::str::contains("0123456789abcdef", d[i..(i + 1)]) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// How a reported decision reads — as a report, never as a verdict.
+fn decision_line(reporter: String, decider: String, channel: String, evidence: String) -> String {
+    return "reported by " + reporter + ", decided by " + decider + ", via " + channel + " (evidence " + evidence + ")";
+}

@@ -124,6 +124,7 @@ fn dna_fixture_set_is_complete() {
             "schedule_cli_test.hl",
             "schedule_test.hl",
             "supersession_test.hl",
+            "task_decide_test.hl",
             "verification_test.hl",
             "workspace_test.hl",
         ]

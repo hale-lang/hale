@@ -20,6 +20,12 @@ behavior.
 - `hale dna body` reads the lease; `hale dna body claim --force` releases a live lease of a body that is gone (a forced `body.claimed` row in your name; that body stops when it next asserts); `hale dna body release [--force]`.
 - `hale dna profile` prints the organism's combination — record, body, head, fleet, knowledge, trust, github, connections — detected from the pieces, never from a stored label; `status` gains `profile:` and `body:` lines. `hale dna new --profile local|remote-body [--remote <url>] [--body <user@host>]` sets the pieces.
 
+### DNA: an attributed external decision — a client's approval, reported under an acceptance policy (GH #616)
+
+- `hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest>` records a decision someone outside Hale made as a `decision.reported` row in the reporter's name, naming the decider, the channel, the evidence and the Task. Only the Task's assignee may report, the decider is never the reporter, and the evidence must be a receipt the record holds.
+- `hale dna receipt file <path> [--class …]` files the mail or document: internal text under the record's receipts with a `receipt.filed` row, protected classes through the knowledge service.
+- Whether a report settles a Task is its obligation's acceptance policy, a Board-ratified practice named `acceptance/<obligation>` saying `reported decisions: allowed`. The leader's plan names a person's job's obligation (`obligation:`) and `task.handed` carries it. Accepted, the Task is `decided` and shown as a report, never as a verdict; otherwise it stays handed and `hale dna board` lists it under *tasks waiting* with the reason.
+
 ### DNA: the principal source — a hosted head that signs you in (GH #612)
 
 - `git config dna.principal oidc` makes `hale dna ui` a hosted head: nothing is served without a session, and a session comes from OpenID Connect's authorization-code flow against `dna.oidc.issuer`. The head exchanges the code at the issuer's token endpoint itself, over TLS, which authenticates the ID token (OpenID Connect Core §3.1.3.7, rule 6) in place of an RS256 signature the standard library cannot verify; issuer, audience, expiry and nonce are checked (`dna/core/principal.hl`).

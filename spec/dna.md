@@ -173,6 +173,34 @@ repository:
   work is accounted for, never dropped. Refused for a Task that is not
   handed: one the organism is working, or has settled, is not a
   person's to close.
+- **An attributed external decision (GH #616).** A decision made by
+  someone who does not run Hale — a manager, a client, an accountant —
+  enters as a fact reported by a position inside the horizon, never as
+  that party's verdict. `hale dna task decide <id> --decided-by <party>
+  --via <channel> --evidence <digest> [--note …] [--as <reporter>]`
+  appends one `decision.reported` row on the Task in the reporter's
+  name: `reporter`, `decider`, `channel`, `evidence`, `scope` (the
+  Task), `obligation`, `practice`, `policy` (the practice's digest),
+  `accepted`, `why`, `note`. It is refused with nothing appended when
+  the Task is not handed, when the reporter is not its assignee (GH #604
+  rule 4), when the decider is the reporter, when a field is missing, or
+  when the evidence is not a receipt the record holds. `hale dna receipt
+  file <path> [--class internal|customer|confidential]` files one:
+  internal text under `refs/dna/receipts/` with a `receipt.filed` row
+  (`by`, `name`, `bytes`, `class`, `store`), a protected class through
+  the knowledge service alone. Whether a report settles the Task is the
+  obligation's **acceptance policy**: a practice named
+  `acceptance/<obligation>`, ratified by the Board and not retired,
+  whose text says `reported decisions: allowed`. The obligation is the
+  class of obligation a person's job discharges; the leader's plan names
+  it (`obligation:`) and `task.handed` carries it. The policy is read at
+  admission and its answer kept in the row, so a later change of
+  practice never rewrites what was admitted. Accepted, the Task is
+  `decided`, and the projection shows the report as such: who reported,
+  who decided, through what, on what evidence. Otherwise the Task stays
+  handed, `hale dna board` lists it under *tasks waiting* with the
+  reason, and its assignee closes it with `hale dna task done`. Without
+  an obligation class or a practice in force, a report never suffices.
 - **Schedules (GH #610).** An ask fired on an interval or a cron, in
   the organism's own name, taking the ordinary road. The org chart
   declares them in its `birth()` — `self.core.schedule(Schedule {
