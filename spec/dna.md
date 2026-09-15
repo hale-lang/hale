@@ -110,7 +110,11 @@ repository:
   appends `task.reassigned` (`from`, `to`, `by`) and the Task stays
   handed. `hale dna retire <who> [--to <successor>]` stops new work
   reaching a person: every handed Task they hold is transferred as its
-  own `task.reassigned` row and `person.retired <who>` records it;
+  own `task.reassigned` row and `person.retired <who>` records it (`by`, `to`, `transferred`). From then
+  no new work reaches them: a job the leader plans for them is handed
+  to that successor, with `retired_assignee` on the `task.handed` row
+  (unassigned when the retirement named none), and a Task is never
+  reassigned to them;
   refused while they hold work and no successor is named — pending
   work is accounted for, never dropped. Refused for a Task that is not
   handed: one the organism is working, or has settled, is not a
@@ -273,7 +277,11 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   when a third of that is gone; the host **asserts it at the top of
   every tick, before it relays, restarts or applies**, and stops
   itself (exit 3, the organization with it) when the lease is
-  someone else's or released. While the remote cannot be reached the
+  someone else's or released. It proves the lease again, renewing it,
+  **the moment before it starts a process** — the organization and
+  the expression at startup and at every restart — and once more
+  before relaying after the tick's sync: a build or a sync that
+  outlasts a takeover starts and relays nothing, and the host exits 3. While the remote cannot be reached the
   lease is kept unrenewed until it expires, then the host stops: a
   partitioned body executes nothing past its TTL. Taking the lease
   is a row (`body.claimed <holder> {token, forced, by}`), giving it
@@ -722,7 +730,11 @@ authority.
   restart, a Task born and not settled re-enters the tower from its
   last durable state (`task.resumed <task>`): under the plan in the
   record when there is one, never replanned; planned for the first
-  time when there is none. A Task whose Mutation was in flight settles
+  time when there is none. `task.resumed` is an event of a restart,
+  never a state: a resumed Task not yet settled is still pending, it
+  settles like any other, and a restart that stopped between its
+  `task.resumed` and the dispatch leaves it to be resumed again at the
+  next one. A Task whose Mutation was in flight settles
   `failed` with the Mutation; one whose Mutation is beyond proposal
   waits on that Mutation's outcome, and settles from it when the Work
   that would have settled it is gone. A handed Task is a person's and

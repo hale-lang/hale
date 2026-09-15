@@ -843,13 +843,20 @@ locus Dna {
             // so completion can be checked against them at admission.
             let hb = std::json::Builder { };
             hb.begin_object();
+            // GH #604 rule 5: retirement stops admission. A job planned for a
+            // person who retired goes to the successor their retirement named
+            // (unassigned when it named none), and the row says for whom it
+            // was planned.
+            let gone = self.retired(p.assignee);
+            let assignee = if gone.retired { gone.successor } else { p.assignee };
             hb.string_field("work", req.work_id);
-            hb.string_field("assignee", p.assignee);
+            hb.string_field("assignee", assignee);
+            if gone.retired { hb.string_field("retired_assignee", p.assignee); }
             hb.string_field("by", "leader");
             hb.string_field("narrative", handed);
             hb.end_object();
             let x = self.journal.append(self.journal.revision(), "task.handed", req.task_id, hb.result());
-            self.membrane.notify("task", req.task_id + " handed to " + (if len(p.assignee) > 0 { p.assignee } else { "a person (unassigned)" }));
+            self.membrane.notify("task", req.task_id + " handed to " + (if len(assignee) > 0 { assignee } else { "a person (unassigned)" }));
             return;
         }
         // The governed child comes from the KIND, and the class is
@@ -938,6 +945,20 @@ locus Dna {
                 req.work_id + " by " + self.editor.identity() + ": " + out);
         }
     }
+    // GH #604 rule 5: whether `who` retired, and to whom their work goes.
+    @unbounded
+    fn retired(who: String) -> RetiredPerson {
+        if len(who) == 0 { return RetiredPerson { }; }
+        let n = self.journal.revision();
+        let mut out = RetiredPerson { };
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "person.retired" && e.entity == who { out = RetiredPerson { retired: true, successor: std::json::find_string_field(e.body, "to") }; }
+            i = i + 1;
+        }
+        return out;
+    }
     // The last `task.<state>` journaled for an id ("" when only born).
     @unbounded
     fn task_state(task_id: String) -> String {
@@ -946,7 +967,9 @@ locus Dna {
         let mut out = "";
         while i < n {
             let e = self.journal.read(i);
-            if e.entity == task_id && std::str::contains(e.kind, "task.") && e.kind != "task.born" && e.kind != "task.planned" { out = e.kind[5..len(e.kind)]; }
+            // `task.resumed` is an event of a restart, not a state: a Task
+            // resumed and not yet settled is still pending
+            if e.entity == task_id && std::str::contains(e.kind, "task.") && e.kind != "task.born" && e.kind != "task.planned" && e.kind != "task.resumed" { out = e.kind[5..len(e.kind)]; }
             i = i + 1;
         }
         return out;
@@ -1475,16 +1498,17 @@ locus Dna {
                 if state == "pending" || state == "" {
                     let mut proposed = false;
                     let mut plan = "";
-                    let mut resumed = false;
                     let mut k = i + 1;
                     while k < n {
                         let s = self.journal.read(k);
                         if s.kind == "mutation.proposed" && std::str::starts_with(s.body, "task " + id + " ") { proposed = true; }
                         if s.kind == "task.planned" && s.entity == id { plan = s.body; }
-                        if s.kind == "task.resumed" && s.entity == id { resumed = true; }
                         k = k + 1;
                     }
-                    if !proposed && !resumed {
+                    // a Task resumed before is resumed again: a restart that
+                    // stopped between its `task.resumed` and the dispatch left
+                    // it unfinished, and only its settlement ends it
+                    if !proposed {
                         let colon = std::str::index_of(e.body, ": ");
                         let objective = if colon < 0 { e.body } else { e.body[(colon + 2)..len(e.body)] };
                         if len(plan) > 0 {
