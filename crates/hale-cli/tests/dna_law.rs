@@ -113,3 +113,26 @@ fn editor_holding_a_repository_is_refused_with_a_witness() {
     );
 }
 
+
+/// GH #605: money moves only through the substrate. A program that
+/// reserves the spend and calls the processor outside the positions
+/// holds.
+#[test]
+fn money_reached_outside_the_positions_holds() {
+    passes("money_gate_pass");
+}
+
+/// A position holding the processor itself is refused, naming the
+/// claim and the path to the money effect.
+#[test]
+fn a_position_reaching_money_directly_is_refused_with_a_witness() {
+    refused(
+        "money_gate_fail",
+        &[
+            "claim `money_only_through_the_substrate` violated",
+            "effects(money)",
+            "Payer::pay",
+            "Processor::charge",
+        ],
+    );
+}

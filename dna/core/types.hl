@@ -16,6 +16,7 @@ effect worktree_io; // a worktree is created or removed on disk (GH #529 D1)
 effect repo_write; // the repository's history is written (a commit, a merge)
 effect toolchain_run; // the toolchain is run as a subprocess (fmt, check, verify, test, model diff)
 effect harness_run; // an installed coding harness runs as a subprocess with its own tools (GH #583 M3)
+effect money; // money moves: a processor is called, a ledger row is written, a settlement is published (GH #605)
 
 // A bounded outcome offered downward (supersystem -> subsystem).
 type Intent {
@@ -72,6 +73,16 @@ type Grant {
     max_magnitude: Int = 0; // scalar ceiling on the SUM of the vector, never a cancel
     review: String = "pre"; // "pre" | "post" | "sampled" | "audit"
     may_expand_self: Bool = false; // always false; here so a test can prove it stays false
+    // GH #605: resources. Every field defaults to "none": a grant that
+    // names no currency lets nothing be spent, so a grant written before
+    // these existed means what it meant.
+    amounts: String = ""; // per operation, "<CUR> <max>" pairs: "USD 500.00 EUR 200"; a currency not named may not be spent
+    window_amounts: String = ""; // per window, the same shape; a currency granted but not named here has no window limit of its own
+    window: String = "day"; // "day" | "week" | "none" (one window for the record's lifetime)
+    counterparties: String = ""; // classes or named parties, space-separated; none named = none allowed
+    routes: String = ""; // provider or account routes, space-separated
+    expires: Int = 0; // unix seconds; 0 = does not expire
+    authority_epoch: Int = 0; // the authority epoch: a contraction or revocation advances it, fencing admissions made before
 }
 
 // Magnitude stays a vector (#521 "do not reduce risk to one score").
@@ -174,29 +185,204 @@ fn review_rank(r: String) -> Int {
 @unbounded
 fn intersect_grants(child: Grant, ceiling: Grant) -> Grant {
     if len(ceiling.child) == 0 { return child; }
-    let mut classes = "";
-    let mut rest = child.classes + " ";
+    return Grant {
+        child: child.child,
+        classes: words_in_both(child.classes, ceiling.classes),
+        max_magnitude: if child.max_magnitude < ceiling.max_magnitude { child.max_magnitude } else { ceiling.max_magnitude },
+        review: if review_rank(child.review) >= review_rank(ceiling.review) { child.review } else { ceiling.review },
+        may_expand_self: false,
+        // GH #605: resources contain the same way — the currencies both
+        // grant at the smaller ceilings, the parties and routes both
+        // name, the earlier expiry, and an epoch that moves when either
+        // side's does
+        amounts: amounts_in_both(child.amounts, ceiling.amounts),
+        window_amounts: window_limits(child, ceiling),
+        window: if len(ceiling.window_amounts) > 0 { ceiling.window } else { child.window },
+        counterparties: words_in_both(child.counterparties, ceiling.counterparties),
+        routes: words_in_both(child.routes, ceiling.routes),
+        expires: earlier_expiry(child.expires, ceiling.expires),
+        authority_epoch: child.authority_epoch + ceiling.authority_epoch
+    };
+}
+fn grant_within(child: Grant, ceiling: Grant) -> Bool {
+    if len(ceiling.child) == 0 { return true; }
+    let i = intersect_grants(child, ceiling);
+    return i.classes == child.classes && i.max_magnitude == child.max_magnitude && i.review == child.review && len(resource_gap(child, ceiling)) == 0;
+}
+
+// ---- resources (GH #605) ----------------------------------------------
+
+fn word_in(w: String, list: String) -> Bool {
+    if len(w) == 0 { return false; }
+    return std::str::contains(" " + list + " ", " " + w + " ");
+}
+
+// The words of `a` that `b` also has, in `a`'s order.
+fn words_in_both(a: String, b: String) -> String {
+    let mut out = "";
+    let mut rest = a + " ";
     while len(rest) > 0 {
         let sp = std::str::index_of(rest, " ");
         let w = if sp < 0 { rest } else { rest[0..sp] };
         if sp < 0 { rest = ""; } else { rest = rest[(sp + 1)..len(rest)]; }
-        if len(w) > 0 && std::str::contains(" " + ceiling.classes + " ", " " + w + " ") { classes = classes + w + " "; }
+        if len(w) > 0 && word_in(w, b) { out = out + w + " "; }
     }
-    return Grant {
-        child: child.child,
-        classes: if len(classes) > 0 { classes[0..(len(classes) - 1)] } else { "" },
-        max_magnitude: if child.max_magnitude < ceiling.max_magnitude { child.max_magnitude } else { ceiling.max_magnitude },
-        review: if review_rank(child.review) >= review_rank(ceiling.review) { child.review } else { ceiling.review },
-        may_expand_self: false
-    };
+    return if len(out) > 0 { out[0..(len(out) - 1)] } else { "" };
 }
 
-// Whether `child` is contained in `ceiling`: nothing it allows that the
-// ceiling does not.
-fn grant_within(child: Grant, ceiling: Grant) -> Bool {
-    if len(ceiling.child) == 0 { return true; }
-    let i = intersect_grants(child, ceiling);
-    return i.classes == child.classes && i.max_magnitude == child.max_magnitude && i.review == child.review;
+// The words of `a` that `b` does not have.
+fn words_not_in(a: String, b: String) -> String {
+    let mut out = "";
+    let mut rest = a + " ";
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let w = if sp < 0 { rest } else { rest[0..sp] };
+        if sp < 0 { rest = ""; } else { rest = rest[(sp + 1)..len(rest)]; }
+        if len(w) > 0 && !word_in(w, b) { out = out + w + " "; }
+    }
+    return if len(out) > 0 { out[0..(len(out) - 1)] } else { "" };
+}
+
+fn dec(s: String) -> Decimal { return std::str::parse_decimal(s) or 0.0d; }
+
+// The ceiling `pairs` names for `currency`, or "".
+fn amount_of(pairs: String, currency: String) -> String {
+    if len(currency) == 0 { return ""; }
+    let n = word_count(pairs);
+    let mut i = 0;
+    while i + 1 < n {
+        if nth_word(pairs, i) == currency { return nth_word(pairs, i + 1); }
+        i = i + 2;
+    }
+    return "";
+}
+
+// Per operation: the currencies both grant, each at the smaller ceiling.
+fn amounts_in_both(child: String, ceiling: String) -> String {
+    let mut out = "";
+    let n = word_count(child);
+    let mut i = 0;
+    while i + 1 < n {
+        let cur = nth_word(child, i);
+        let mine = nth_word(child, i + 1);
+        let above = amount_of(ceiling, cur);
+        if len(above) > 0 { out = out + cur + " " + (if dec(mine) < dec(above) { mine } else { above }) + " "; }
+        i = i + 2;
+    }
+    return if len(out) > 0 { out[0..(len(out) - 1)] } else { "" };
+}
+
+// Per window, for the currencies both grant: the smaller limit, or the
+// one limit either side names.
+fn window_limits(child: Grant, ceiling: Grant) -> String {
+    let both = amounts_in_both(child.amounts, ceiling.amounts);
+    let mut out = "";
+    let n = word_count(both);
+    let mut i = 0;
+    while i + 1 < n {
+        let cur = nth_word(both, i);
+        let x = amount_of(child.window_amounts, cur);
+        let y = amount_of(ceiling.window_amounts, cur);
+        let pick = if len(x) == 0 { y } else if len(y) == 0 { x } else if dec(x) < dec(y) { x } else { y };
+        if len(pick) > 0 { out = out + cur + " " + pick + " "; }
+        i = i + 2;
+    }
+    return if len(out) > 0 { out[0..(len(out) - 1)] } else { "" };
+}
+
+fn earlier_expiry(x: Int, y: Int) -> Int {
+    if x == 0 { return y; }
+    if y == 0 { return x; }
+    return if x < y { x } else { y };
+}
+
+// What makes the child's resources wider than the ceiling's, as the
+// record says it ("" when contained): a currency the ceiling does not
+// grant, a larger per-operation or per-window ceiling, a window the
+// ceiling does not share, a counterparty or route it does not name, a
+// later expiry.
+// Bounded by the currencies, parties and routes the child's grant names.
+@unbounded
+fn resource_gap(child: Grant, ceiling: Grant) -> String {
+    let mut out = "";
+    let mut window_named = false;
+    let n = word_count(child.amounts);
+    let mut i = 0;
+    while i + 1 < n {
+        let cur = nth_word(child.amounts, i);
+        let mine = nth_word(child.amounts, i + 1);
+        let above = amount_of(ceiling.amounts, cur);
+        if len(above) == 0 {
+            out = out + ", currency " + cur + " not granted above";
+        } else if dec(mine) > dec(above) {
+            out = out + ", " + cur + " " + mine + " per operation under " + above;
+        }
+        let above_w = amount_of(ceiling.window_amounts, cur);
+        if len(above_w) > 0 {
+            let mine_w = amount_of(child.window_amounts, cur);
+            if len(mine_w) == 0 {
+                out = out + ", " + cur + " unlimited per " + child.window + " under " + above_w + " per " + ceiling.window;
+            } else if dec(mine_w) > dec(above_w) {
+                out = out + ", " + cur + " " + mine_w + " per " + child.window + " under " + above_w;
+            }
+            if child.window != ceiling.window && !window_named {
+                out = out + ", window " + child.window + " under " + ceiling.window;
+                window_named = true;
+            }
+        }
+        i = i + 2;
+    }
+    let cp = words_not_in(child.counterparties, ceiling.counterparties);
+    if len(cp) > 0 { out = out + ", counterparties `" + cp + "` not granted above"; }
+    let rt = words_not_in(child.routes, ceiling.routes);
+    if len(rt) > 0 { out = out + ", routes `" + rt + "` not granted above"; }
+    if ceiling.expires > 0 && (child.expires == 0 || child.expires > ceiling.expires) {
+        out = out + ", expires " + (if child.expires == 0 { "never" } else { to_string(child.expires) }) + " after " + to_string(ceiling.expires);
+    }
+    return out;
+}
+
+// A spend a position asks to make. The amount is decimal text so the
+// record carries it exactly as asked.
+type Spend {
+    id: String = ""; // the operation's durable id
+    amount: String = "";
+    currency: String = "";
+    counterparty: String = "";
+    route: String = "";
+}
+
+// The substrate's answer to a spend: admitted under a grant epoch, or
+// refused with the field that failed.
+type Admission {
+    ok: Bool = false;
+    op: String = "";
+    amount: String = "";
+    currency: String = "";
+    authority_epoch: Int = 0;
+    refused: String = "";
+}
+
+// Whether a grant permits a spend, predicate by predicate: "" when it
+// does, else `<field>: <why>`.
+fn permits(g: Grant, s: Spend, now: Int) -> String {
+    if g.expires > 0 && now >= g.expires { return "expires: the grant expired at " + std::time::iso8601(std::time::time_from_unix(g.expires)); }
+    if len(s.id) == 0 { return "operation: a spend needs a durable id"; }
+    let limit = amount_of(g.amounts, s.currency);
+    if len(limit) == 0 { return "currency: " + (if len(s.currency) == 0 { "none named" } else { s.currency + " is not granted" }); }
+    let v = std::str::parse_decimal(s.amount) or - 1.0d;
+    if v <= 0.0d { return "amount: `" + s.amount + "` is not a positive decimal"; }
+    if v > dec(limit) { return "amount: " + s.amount + " " + s.currency + " exceeds the per-operation ceiling of " + limit; }
+    if !word_in(s.counterparty, g.counterparties) { return "counterparty: `" + s.counterparty + "` is not granted"; }
+    if !word_in(s.route, g.routes) { return "route: `" + s.route + "` is not granted"; }
+    return "";
+}
+
+// The start of the window `at` falls in (unix seconds; 0 for `none`).
+fn window_start_of(window: String, at: Int) -> Int {
+    if window == "week" { return at - at % 604800; }
+    if window == "day" { return at - at % 86400; }
+    return 0;
 }
 
 fn dispose(g: Grant, change_class: String, m: Magnitude, e: Evidence) -> Disposition {

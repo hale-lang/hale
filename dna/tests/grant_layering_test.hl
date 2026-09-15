@@ -19,6 +19,12 @@ main locus App {
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
             ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs refactor feature", max_magnitude: 10, review: "post" } }
         };
+        // GH #605: born wider in money, parties and routes than its ceiling
+        born_rich: dna::Dna = dna::Dna {
+            journal: dna::MemJournal { },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs", max_magnitude: 5, review: "pre", amounts: "GBP 50", counterparties: "acme", routes: "bank" } },
+            ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 5, review: "pre", amounts: "USD 500" } }
+        };
         born_wide: dna::Dna = dna::Dna {
             journal: dna::MemJournal { },
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs feature organization", max_magnitude: 8, review: "post" } },
@@ -80,6 +86,38 @@ main locus App {
         std::test::assert_eq_str(bound.classes, "docs", "and to the classes both allow");
         std::test::assert_eq_str(bound.review, "pre", "and to the stricter review");
         std::test::assert_eq_str(self.last(self.dna.journal, "grant.refused"), "", "a child born within is not refused");
+
+        // ---- GH #605: resources contain the same way, field by field
+        let pc = dna::Grant { child: "org", classes: "docs", max_magnitude: 10, review: "post", amounts: "USD 500.00 EUR 200", window_amounts: "USD 1000", window: "day", counterparties: "acme globex", routes: "bank card", expires: 2000000000 };
+        let kid = dna::Grant { child: "app", classes: "docs", max_magnitude: 8, review: "post", amounts: "USD 800 GBP 50", window_amounts: "USD 900", window: "day", counterparties: "acme initech", routes: "bank", authority_epoch: 2 };
+        let ik = dna::intersect_grants(kid, pc);
+        std::test::assert_eq_str(ik.amounts, "USD 500.00", "per operation: the currencies both grant, at the smaller ceiling");
+        std::test::assert_eq_str(ik.window_amounts, "USD 900", "per window: the smaller limit");
+        std::test::assert_eq_str(ik.counterparties, "acme", "the counterparties both name");
+        std::test::assert_eq_str(ik.routes, "bank", "the routes both name");
+        std::test::assert_eq_int(ik.expires, 2000000000, "the earlier expiry, and never is later than any");
+        std::test::assert_eq_int(ik.authority_epoch, 2, "the epochs add, so either side advancing moves it");
+        let gap = dna::resource_gap(kid, pc);
+        std::test::assert(std::str::contains(gap, "USD 800 per operation under 500.00"), "a larger per-operation ceiling: " + gap);
+        std::test::assert(std::str::contains(gap, "currency GBP not granted above"), "a currency the ceiling does not grant: " + gap);
+        std::test::assert(std::str::contains(gap, "counterparties `initech` not granted above"), "a party the ceiling does not name: " + gap);
+        std::test::assert(std::str::contains(gap, "expires never after 2000000000"), "a later expiry: " + gap);
+        std::test::assert(!dna::grant_within(kid, pc), "wider in money, parties and time: not contained");
+        let fits = dna::Grant { child: "app", classes: "docs", max_magnitude: 8, review: "post", amounts: "USD 400", window_amounts: "USD 900", window: "day", counterparties: "acme", routes: "bank card", expires: 1900000000 };
+        std::test::assert(dna::grant_within(fits, pc), "contained field by field: " + dna::resource_gap(fits, pc));
+        let unlimited = dna::Grant { child: "app", classes: "docs", max_magnitude: 8, review: "post", amounts: "USD 400", window: "day", counterparties: "acme", routes: "bank", expires: 1900000000 };
+        std::test::assert(std::str::contains(dna::resource_gap(unlimited, pc), "USD unlimited per day under 1000 per day"), "no window limit under a ceiling that has one: " + dna::resource_gap(unlimited, pc));
+        let weekly = dna::Grant { child: "app", classes: "docs", max_magnitude: 8, review: "post", amounts: "USD 400", window_amounts: "USD 900", window: "week", counterparties: "acme", routes: "bank", expires: 1900000000 };
+        std::test::assert(std::str::contains(dna::resource_gap(weekly, pc), "window week under day"), "a window the ceiling does not share: " + dna::resource_gap(weekly, pc));
+        let before = dna::Grant { child: "app", classes: "docs", max_magnitude: 8, review: "post" };
+        let open_ceiling = dna::Grant { child: "org", classes: "docs", max_magnitude: 10, review: "post", amounts: "USD 500" };
+        std::test::assert(dna::grant_within(before, open_ceiling), "a grant that names no resources is contained in a ceiling that does not expire: " + dna::resource_gap(before, open_ceiling));
+        let only_time = dna::resource_gap(before, pc);
+        std::test::assert(std::str::contains(only_time, "expires never after 2000000000") && !std::str::contains(only_time, "currency"), "under a ceiling that expires it is wider in time only, since never is later than any: " + only_time);
+        std::test::assert_eq_str(dna::intersect_grants(before, pc).amounts, "", "and still spends nothing");
+        std::test::assert_eq_int(dna::intersect_grants(before, pc).expires, 2000000000, "and is bound by the ceiling's expiry");
+        let money_refusal = self.last(self.born_rich.journal, "grant.refused");
+        std::test::assert(std::str::contains(money_refusal, "currency GBP not granted above") && std::str::contains(money_refusal, "counterparties `acme` not granted above") && std::str::contains(money_refusal, "routes `bank` not granted above"), "born wider in resources: refused at birth, naming each: " + money_refusal);
     }
 }
 fn main() { App { }; }

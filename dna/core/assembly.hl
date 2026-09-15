@@ -190,6 +190,10 @@ locus Dna {
         // binds the child from that moment (`grant.contracted`). No
         // child on it means no ceiling.
         ceiling: AutonomyBoundary = AutonomyBoundary { };
+        // a ceiling's contraction whose row the record refused: tried again
+        // before anything is admitted, and nothing is until it lands (the
+        // third review of #626)
+        unrecorded_contraction: String = "";
         review_policy: ReviewPolicy = HumanBeforeApply { };
         deployment: Deployment = NoDeployment { };
         membrane: Membrane = LocalHumanMembrane { };
@@ -262,7 +266,7 @@ locus Dna {
             let g = self.boundary.current_grant();
             let c = self.ceiling.current_grant();
             let x = self.journal.append(self.journal.revision(), "grant.refused", g.child,
-                "wider than the ceiling `" + c.child + "` at birth: classes `" + g.classes + "` under `" + c.classes + "`, magnitude " + to_string(g.max_magnitude) + " under " + to_string(c.max_magnitude) + ", review " + g.review + " under " + c.review + "; bound by the ceiling");
+                "wider than the ceiling `" + c.child + "` at birth: classes `" + g.classes + "` under `" + c.classes + "`, magnitude " + to_string(g.max_magnitude) + " under " + to_string(c.max_magnitude) + ", review " + g.review + " under " + c.review + resource_gap(g, c) + "; bound by the ceiling");
         }
         // GH #529 D6: the host restarted this expression on a Mutation's
         // request; the fact is journaled by the expression itself.
@@ -1340,14 +1344,278 @@ locus Dna {
     }
     // An outcome under the organism's ceiling: a contraction binds
     // every child at once, and the record names them.
+    // The contraction is recorded before it takes effect, with the
+    // magnitude and epoch it leaves, so a restart restores it (the second
+    // review of #626: a contraction lived only in the live boundary, and an
+    // organism born again over the same record had its authority back).
     fn ceiling_outcome(ok: Bool) {
-        let before = self.ceiling.current_grant().max_magnitude;
-        self.ceiling.note_outcome(ok);
-        let after = self.ceiling.current_grant().max_magnitude;
-        if after < before {
-            let x = self.journal.append(self.journal.revision(), "grant.contracted", self.ceiling.child,
-                "ceiling " + to_string(before) + " -> " + to_string(after) + " on repeated failure; binds " + self.boundary.child + " from now");
+        if self.ceiling.would_contract(ok) {
+            let before = self.ceiling.current_grant().max_magnitude;
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("boundary", "ceiling");
+            b.int_field("from", before);
+            b.int_field("to", before / 2);
+            b.int_field("epoch", self.ceiling.current_grant().authority_epoch + 1);
+            b.string_field("binds", self.boundary.child);
+            b.string_field("note", "ceiling " + to_string(before) + " -> " + to_string(before / 2) + " on repeated failure; binds " + self.boundary.child + " from now");
+            b.end_object();
+            let x = self.journal.append(self.journal.revision(), "grant.contracted", self.ceiling.child, b.result());
+            // the last contraction's row is the whole state a restart needs
+            self.unrecorded_contraction = if x.ok { "" } else { b.result() };
         }
+        // contracted whether or not the record took the row: less
+        // authority is never the unsafe direction
+        self.ceiling.note_outcome(ok);
+    }
+    // ---- resources (GH #605) -------------------------------------
+    // A spend is admitted against the child's grant as it binds now
+    // (through the ceiling), and the admission is a row. A window's
+    // remainder is read from the record at a revision and the row is
+    // appended only at that revision (`append_exact`): another child
+    // that reserved in between moved the record, this append is refused
+    // as stale, and the remainder is read again. The child's own window
+    // counts its reservations; the ceiling's counts every child's under
+    // it, so two children cannot each spend the same remainder.
+    @unbounded
+    fn reserve(s: Spend) -> Admission {
+        self.bind_ceiling();
+        let unrecorded = self.contraction_unrecorded();
+        if len(unrecorded) > 0 { return Admission { op: s.id, amount: s.amount, currency: s.currency, refused: unrecorded }; }
+        let g = self.boundary.effective();
+        let own = self.boundary.current_grant();
+        let above = self.ceiling.current_grant();
+        let child = self.boundary.child;
+        let parent = self.ceiling.child;
+        let now = std::time::now();
+        let why = permits(g, s, now);
+        if len(why) > 0 { return self.refuse_spend(child, s, why); }
+        let amt = dec(s.amount);
+        let own_limit = amount_of(own.window_amounts, s.currency);
+        let above_limit = if len(parent) > 0 { amount_of(above.window_amounts, s.currency) } else { "" };
+        let mut tries = 0;
+        while tries < 20 {
+            let moved = self.journal.refresh();
+            let rev = self.journal.revision();
+            if self.spend_reserved(child, s.id, rev) { return self.refuse_spend(child, s, "operation: `" + s.id + "` is already reserved"); }
+            if len(own_limit) > 0 {
+                let used = self.window_used(false, child, s.currency, own.window, window_start_of(own.window, now), rev);
+                if used + amt > dec(own_limit) { return self.refuse_spend(child, s, "window: " + s.amount + " " + s.currency + " would bring " + child + "'s " + own.window + " to " + ("" + (used + amt)) + " of " + own_limit); }
+            }
+            if len(above_limit) > 0 {
+                let used_above = self.window_used(true, parent, s.currency, above.window, window_start_of(above.window, now), rev);
+                if used_above + amt > dec(above_limit) { return self.refuse_spend(child, s, "window: " + s.amount + " " + s.currency + " would bring the ceiling `" + parent + "`'s " + above.window + " to " + ("" + (used_above + amt)) + " of " + above_limit + " (shared by its children)"); }
+            }
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("op", s.id);
+            b.string_field("amount", s.amount);
+            b.string_field("currency", s.currency);
+            b.string_field("counterparty", s.counterparty);
+            b.string_field("route", s.route);
+            b.string_field("ceiling", parent);
+            b.int_field("epoch", g.authority_epoch);
+            b.int_field("at", now);
+            b.end_object();
+            let r = self.journal.append_exact(rev, "grant.reserved", child, b.result());
+            if r.ok { return Admission { ok: true, op: s.id, amount: s.amount, currency: s.currency, authority_epoch: g.authority_epoch }; }
+            if r.error != "stale_revision" { return Admission { op: s.id, refused: "the record refused the reservation: " + r.error }; }
+            tries = tries + 1;
+        }
+        return self.refuse_spend(child, s, "contention: the record moved under twenty attempts to reserve");
+    }
+    // A refused spend is a `grant.refused` row naming the field.
+    fn refuse_spend(child: String, s: Spend, why: String) -> Admission {
+        let x = self.journal.append(self.journal.revision(), "grant.refused", child, "spend `" + s.id + "` (" + s.amount + " " + s.currency + " to " + s.counterparty + " via " + s.route + "): " + why);
+        return Admission { op: s.id, amount: s.amount, currency: s.currency, refused: why };
+    }
+    @unbounded
+    fn spend_reserved(child: String, op: String, upto: Int) -> Bool {
+        let mut i = 0;
+        while i < upto {
+            let e = self.journal.read(i);
+            if e.kind == "grant.reserved" && e.entity == child && std::json::find_string_field(e.body, "op") == op { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // What a settled operation actually spent ("" while unsettled).
+    @unbounded
+    fn spent_of(child: String, op: String, upto: Int) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < upto {
+            let e = self.journal.read(i);
+            if e.kind == "grant.released" && e.entity == child && std::json::find_string_field(e.body, "op") == op { out = std::json::find_string_field(e.body, "spent"); }
+            i = i + 1;
+        }
+        return out;
+    }
+    // A window's use: every reservation in it (one child's, or every
+    // child's under a ceiling), at what was actually spent once settled.
+    @unbounded
+    fn window_used(by_ceiling: Bool, who: String, currency: String, window: String, start: Int, upto: Int) -> Decimal {
+        let mut used = 0.0d;
+        let mut i = 0;
+        while i < upto {
+            let e = self.journal.read(i);
+            if e.kind == "grant.reserved" && std::json::find_string_field(e.body, "currency") == currency {
+                let mine = if by_ceiling { std::json::find_string_field(e.body, "ceiling") == who } else { e.entity == who };
+                if mine && window_start_of(window, std::json::find_int_field(e.body, "at")) == start {
+                    let spent = self.spent_of(e.entity, std::json::find_string_field(e.body, "op"), upto);
+                    used = used + dec(if len(spent) > 0 { spent } else { std::json::find_string_field(e.body, "amount") });
+                }
+            }
+            i = i + 1;
+        }
+        return used;
+    }
+    // A reservation settles once, at what was actually spent; the window
+    // counts that from then on, and the attempt's use is in the record.
+    @unbounded
+    fn settle_spend(op: String, spent: String) -> String {
+        let child = self.boundary.child;
+        let v = std::str::parse_decimal(spent) or - 1.0d;
+        if v < 0.0d { return "spent: `" + spent + "` is not a decimal"; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("op", op);
+        b.string_field("spent", spent);
+        b.end_object();
+        let body = b.result();
+        // once, under contention too: appended only at the revision the
+        // "not yet settled" was read at, read again when the record moved
+        let mut tries = 0;
+        while tries < 20 {
+            let moved = self.journal.refresh();
+            let rev = self.journal.revision();
+            if !self.spend_reserved(child, op, rev) { return "no reservation `" + op + "` for " + child; }
+            if len(self.spent_of(child, op, rev)) > 0 { return "`" + op + "` is already settled"; }
+            let x = self.journal.append_exact(rev, "grant.released", child, body);
+            if x.ok { return ""; }
+            if x.error != "stale_revision" { return "the record refused the settlement: " + x.error; }
+            tries = tries + 1;
+        }
+        return "contention: the record moved under twenty attempts to settle `" + op + "`";
+    }
+    // An admission is carried out only under the grant it was made
+    // under: a contraction or revocation since then advanced the epoch,
+    // and the admission is fenced, in the record.
+    fn admits(a: Admission) -> String {
+        if !a.ok { return "not admitted: " + a.refused; }
+        let unrecorded = self.contraction_unrecorded();
+        if len(unrecorded) > 0 { return unrecorded; }
+        self.bind_ceiling();
+        let now_epoch = self.boundary.effective().authority_epoch;
+        if now_epoch != a.authority_epoch {
+            let why = "fenced: the grant changed after `" + a.op + "` was admitted (epoch " + to_string(a.authority_epoch) + " -> " + to_string(now_epoch) + ")";
+            let x = self.journal.append(self.journal.revision(), "grant.fenced", self.boundary.child, why);
+            return why;
+        }
+        // time is authority too: an admission is carried out only while the
+        // grant it was made under has not expired
+        let expires = self.boundary.effective().expires;
+        if expires > 0 && std::time::now() >= expires {
+            let why = "expired: the grant `" + a.op + "` was admitted under expired at " + std::time::iso8601(std::time::time_from_unix(expires));
+            let y = self.journal.append(self.journal.revision(), "grant.fenced", self.boundary.child, why);
+            return why;
+        }
+        return "";
+    }
+    // A contraction the record refused is appended again before any
+    // admission; "" once the record holds it, else why nothing is admitted.
+    // A restart knows only what the record holds, so an organism that
+    // cannot record its narrower grant admits nothing under either.
+    fn contraction_unrecorded() -> String {
+        if len(self.unrecorded_contraction) == 0 { return ""; }
+        let x = self.journal.append(self.journal.revision(), "grant.contracted", self.ceiling.child, self.unrecorded_contraction);
+        if x.ok {
+            self.unrecorded_contraction = "";
+            return "";
+        }
+        return "the grant's contraction could not be recorded (" + x.error + "); nothing is admitted until the record holds it";
+    }
+    // A ceiling's contractions are the record's too: read back at birth,
+    // the last one leaves the ceiling's magnitude and epoch where it left
+    // them, before anything is admitted. A row from before the body was
+    // structured (`ceiling <from> -> <to> …`) is read too, each such row
+    // one epoch.
+    @unbounded
+    fn restore_contractions() {
+        let parent = self.ceiling.child;
+        if len(parent) == 0 { return; }
+        let n = self.journal.revision();
+        let mut to = -1;
+        let mut last_epoch = 0;
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "grant.contracted" && e.entity == parent {
+                if std::str::starts_with(e.body, "{") {
+                    to = std::json::find_int_field(e.body, "to");
+                    last_epoch = std::json::find_int_field(e.body, "epoch");
+                } else {
+                    let arrow = std::str::index_of(e.body, "-> ");
+                    let rest = if arrow < 0 { "" } else { e.body[(arrow + 3)..len(e.body)] };
+                    let sp = std::str::index_of(rest, " ");
+                    to = std::str::parse_int(if sp < 0 { rest } else { rest[0..sp] }) or 0;
+                    last_epoch = last_epoch + 1;
+                }
+            }
+            i = i + 1;
+        }
+        // the recorded epoch and review hold whatever the authored magnitude
+        // is now; the magnitude is the stricter of the two (the third review
+        // of #626: an authored ceiling already at the contracted limit lost
+        // the epoch and went back to post-review)
+        if to >= 0 {
+            let authored = self.ceiling.current_grant().max_magnitude;
+            self.ceiling.restore_contraction(if to < authored { to } else { authored }, last_epoch);
+        }
+    }
+    // A revocation is the record's, not the live boundary's alone: read
+    // back at birth, it leaves nothing granted and the epoch where it left
+    // it, before anything is admitted. A row from before the body was
+    // structured (`by <who>; epoch <n>`) is read too.
+    @unbounded
+    fn restore_revocations() {
+        let child = self.boundary.child;
+        if len(child) == 0 { return; }
+        let n = self.journal.revision();
+        let mut revoked_at = -1;
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "grant.revoked" && e.entity == child {
+                let recorded = std::json::find_int_field(e.body, "epoch");
+                if recorded > 0 {
+                    revoked_at = recorded;
+                } else {
+                    let at = std::str::index_of(e.body, "epoch ");
+                    revoked_at = if at < 0 { 1 } else { std::str::parse_int(std::str::trim(e.body[(at + 6)..len(e.body)])) or 1 };
+                }
+            }
+            i = i + 1;
+        }
+        if revoked_at >= 0 { self.boundary.restore_revocation(revoked_at); }
+    }
+    // The parent revokes the child's grant: nothing is left granted,
+    // and every earlier admission is fenced.
+    fn revoke_grant(requested_by: String) -> Bool {
+        let parent = if len(self.ceiling.child) > 0 { self.ceiling.child } else { "board" };
+        // the parent's alone: a refusal is the boundary's to audit
+        if requested_by == self.boundary.child || requested_by != parent { return self.boundary.revoke(requested_by, parent); }
+        // recorded before it takes effect, so a restart restores it; a
+        // revocation the record refuses did not happen
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("by", requested_by);
+        b.string_field("parent", parent);
+        b.int_field("epoch", self.boundary.current_grant().authority_epoch + 1);
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "grant.revoked", self.boundary.child, b.result());
+        if !x.ok { return false; }
+        return self.boundary.revoke(requested_by, parent);
     }
     // A staged mutation: assessed under the boundary, reviewed per
     // policy, and NEVER applied by this assembly's deployment.
@@ -1569,6 +1837,9 @@ locus Dna {
     // rehydrated here.
     @unbounded
     fn rehydrate() {
+        // a revocation in the record binds before anything is admitted
+        self.restore_contractions();
+        self.restore_revocations();
         let n = self.journal.revision();
         let mut i = 0;
         // durable ids continue where the Journal left them

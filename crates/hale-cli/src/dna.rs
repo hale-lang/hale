@@ -1620,6 +1620,10 @@ constitution Org {
     leader_never_touches_worktrees: forbid reaches(leader, effects(worktree_io)) avoiding substrate;
     // Credentials are read from their source into sealed loci and never returned.
     credentials_sealed: require sealed(all credentials);
+    // Money moves only through the substrate, which reserves a spend
+    // against the grant before it is made (GH #605): a position that
+    // reaches a money effect any other way is a build failure.
+    money_only_through_the_substrate: forbid reaches(positions, effects(money)) avoiding substrate;
 }
 "#
     .to_string()

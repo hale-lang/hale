@@ -15,6 +15,7 @@ import "../core" as dna;
 locus CountingJournal {
     params { appends: Int = 0; }
     fn refresh() -> Bool { return false; }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.append(expected, kind, entity, body); }
     fn revision() -> Int { return self.appends; }
     fn head() -> String { return "fake"; }
     fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {

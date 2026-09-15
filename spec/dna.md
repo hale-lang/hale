@@ -182,12 +182,61 @@ repository:
   magnitude, the stricter review (`intersect_grants`). Grants contract
   on their own (two failures in a row halve the ceiling), so a child
   born within a ceiling of 100 is bound by 50 the moment its parent
-  contracts, and the record says so (`grant.contracted <parent>`,
-  naming the children it now binds). A child born wider than its
+  contracts, and the record says so (`grant.contracted <parent>`
+  `{boundary, from, to, epoch, binds, note}`, appended before the
+  contraction takes effect). An organism born over the record restores
+  the last contraction of its ceiling — its epoch and `pre` review
+  whatever the authored ceiling now says, and the stricter of the
+  recorded and authored magnitudes — before anything is admitted, as it
+  restores a revocation. A contraction whose row the record refuses
+  still binds live, and is appended again before every `reserve` and
+  `admits`; until the record holds it, nothing is admitted. A child born wider than its
   ceiling is the early error: `grant.refused <child>` names what is
   wider, and the ceiling binds it from birth. Law layers by adoption:
   every position lives under the org program's main, which adopts the
   organism's law, so a department's law can only add to it.
+- **Grants delegate resources (GH #605).** A `Grant` also carries
+  `amounts` (per-operation ceilings, `"USD 500.00 EUR 200"`; a currency
+  not named may not be spent), `window_amounts` and `window` (`day`,
+  `week` or `none`), `counterparties` and `routes` (space-separated;
+  none named, none allowed), `expires` (unix seconds; 0 never) and an
+  `authority_epoch`. Every field defaults to none, so a grant written
+  before them spends nothing. They contain like the rest: the
+  currencies both grant at the smaller ceilings, the smaller window
+  limit, the parties and routes both name, the earlier expiry (never is
+  later than any, so a child that never expires under a ceiling that does
+  is wider in time), and the
+  sum of the two epochs (`intersect_grants`); `resource_gap` names what
+  is wider, and the birth refusal carries it. `permits(grant, spend,
+  now)` checks a `Spend { id, amount, currency, counterparty, route }`
+  predicate by predicate and names the field that fails (`expires`,
+  `operation`, `currency`, `amount`, `counterparty`, `route`).
+  `Dna.reserve(spend)` admits a spend against the effective grant and
+  appends `grant.reserved <child> {op, amount, currency, counterparty,
+  route, ceiling, epoch, at}`; the child's own window counts its
+  reservations and the ceiling's window counts every child's under it.
+  The remainder is read at a revision and the row is appended with
+  `Journal.append_exact` at that revision — a writer that moved the
+  record in between makes it stale, never re-appended at the tail — so
+  two children cannot each spend the same remainder. A refusal is
+  `grant.refused <child>` naming the field. `Dna.settle_spend(op,
+  spent)` appends `grant.released {op, spent}` once — under contention
+  too: the row is appended with `append_exact` at the revision "not yet
+  settled" was read at, and read again when the record moved — and the
+  window counts what was spent from then on. A contraction advances the
+  epoch, and so does `Dna.revoke_grant(by)` (the parent's only; nothing
+  is left granted). A revocation is **recorded before it takes effect**,
+  `grant.revoked <child> {by, parent, epoch}` — one the record refuses
+  did not happen — and an organism born over the record restores it
+  before anything is admitted, so a restart never restores revoked
+  authority. `Dna.admits(admission)` refuses an admission made under an
+  older epoch, or whose grant has expired by the time it is carried out
+  (`grant.fenced`). The generated
+  law adds `money_only_through_the_substrate: forbid reaches(positions,
+  effects(money)) avoiding substrate`, with `effect money;` declared in
+  the core; an organization's existing `dna/org/law.hl` is
+  project-owned and gains the clause by hand. The money budget is
+  distinct from the model budget.
 - **The membrane over the record.** From a clone with no organism,
   `hale dna ask` appends `intent.requested` (the body: outcome, from,
   to) and a verdict appends `review.verdict` (the body: the verdict as
@@ -237,6 +286,7 @@ the same way. A project's path therefore has no length rule.
 `secret.rotated`, `body.credential_missing`, `body.credential_present`,
 `schedule.declared`, `schedule.refused`, `schedule.fired`,
 `schedule.skipped`, `schedule.paused`, `schedule.resumed`,
+`grant.reserved`, `grant.released`, `grant.fenced`, `grant.revoked`,
 `optimize.refused`,
 `mutation.failed`, `effect.requested`, `effect.result`,
 `evidence.<step>`, `evidence.magnitude`, `review.requested`,
@@ -562,7 +612,12 @@ The organization's models are a catalog in source (GH #583 M1):
   request — role, the inner's name and model, the prompt and context
   digests, the data class, the grant normalized (`… @grant`: its path
   is where it ran, not what it was) and, for a backend that works in
-  place, a digest of the workspace's starting tree. `record` makes the
+  place, a digest of the workspace's starting tree. An identical
+  request made again in one run — a retried Work planned a second time —
+  is keyed by its occurrence as well (`occurrence=n` for the n-th; the
+  first keeps the plain key), so a recording that got two answers
+  replays both in order, and a miss on a later occurrence says it was
+  never recorded. `record` makes the
   tape's directory before it writes anything into it, and an entry is
   counted only once every file of it has landed: a patch or an entry
   that could not be written is a refusal (`cannot write the tape: …`),

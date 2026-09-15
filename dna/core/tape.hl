@@ -86,6 +86,10 @@ locus RecordedModel {
         last_key: String = "";
         last_miss: String = "";
         last: ModelEvidence = ModelEvidence { };
+        // the plain keys requested so far, one per line: an identical
+        // request made again is counted, and keyed by its occurrence
+        seen: String = "\n";
+        last_occurrence: Int = 0;
     }
     bus { publish ModelCalled; }
     birth() {
@@ -218,10 +222,23 @@ locus RecordedModel {
             grant: normalize_grant(req.tool_grant), tree: tree_digest(req.workspace)
         };
     }
+    // Bounded by the calls one run makes.
+    @unbounded
     fn complete(req: ModelRequest) -> ModelResult {
         self.calls = self.calls + 1;
         let f = self.fields(req);
-        let key = self.key_of(f);
+        // An identical request made again — a retried Work planned a
+        // second time — is its own entry. A live model asked the same
+        // thing twice need not answer the same, and one key for both let
+        // the second answer overwrite the first, so replay served the
+        // second answer to the first call. The first occurrence keeps the
+        // plain key, so every entry recorded before reads the same; the
+        // n-th adds `occurrence=n`.
+        let base = self.key_of(f);
+        let n = occurrences(self.seen, base);
+        self.seen = self.seen + base + "\n";
+        self.last_occurrence = n;
+        let key = if n == 0 { base } else { self.key_of(f + "occurrence=" + to_string(n) + "\n") };
         self.last_key = key;
         if self.mode == "record" { return self.record(req, key); }
         return self.replay(req, key);
@@ -280,7 +297,7 @@ locus RecordedModel {
             let mine = self.identity_of(req, key);
             self.last_miss = "tape miss " + key[0..12] + " (role " + mine.role + ", backend " + mine.backend + ", model " + mine.model
                 + ", data class " + mine.data_class + ", grant `" + mine.grant + "`" + (if len(mine.tree) > 0 { ", tree " + mine.tree } else { "" }) + "): "
-                + self.nearest(mine.prompt_digest, mine);
+                + (if self.last_occurrence > 0 { "occurrence " + to_string(self.last_occurrence) + " of an identical request was never recorded (the tape holds fewer)" } else { self.nearest(mine.prompt_digest, mine) });
             ev.refused = self.last_miss;
             self.last = ev;
             ModelCalled <- ev;
@@ -306,4 +323,18 @@ locus RecordedModel {
         ModelCalled <- ev;
         return ModelResult { ok: e.ok, backend: e.backend, model: e.model, output: e.output, tokens: e.tokens, cost_micros: e.cost_micros, refused: e.refused };
     }
+}
+
+// How many times `key` appears as a whole line of `seen`.
+fn occurrences(seen: String, key: String) -> Int {
+    let needle = "\n" + key + "\n";
+    let mut n = 0;
+    let mut rest = seen;
+    while true {
+        let at = std::str::index_of(rest, needle);
+        if at < 0 { break; }
+        n = n + 1;
+        rest = rest[(at + len(needle) - 1)..len(rest)];
+    }
+    return n;
 }
