@@ -24,6 +24,7 @@ main locus Client {
         publish dna::ExpressionObserved;
         publish dna::PressureRaised;
         publish dna::ConcernRaised;
+        publish dna::PracticeRequested;
     }
     run() {
         if self.kind == "intent" {
@@ -61,8 +62,17 @@ main locus Client {
                 what: std::json::find_string_field(self.body, "what"),
                 severity: std::json::find_int_field(self.body, "severity")
             };
+        } else if self.kind == "practice" {
+            dna::PracticeRequested <- dna::PracticeRequest {
+                request_id: std::json::find_string_field(self.body, "request_id"),
+                name: std::json::find_string_field(self.body, "name"),
+                text: std::json::find_string_field(self.body, "text"),
+                by: std::json::find_string_field(self.body, "by"),
+                because: std::json::find_string_field(self.body, "because"),
+                supersedes: std::json::find_string_field(self.body, "supersedes")
+            };
         } else {
-            println("membrane: unknown kind `", self.kind, "` (intent | verdict | observed | pressure | concern)");
+            println("membrane: unknown kind `", self.kind, "` (intent | verdict | observed | pressure | concern | practice)");
             return;
         }
         // let the connect-role fanout flush before the process ends

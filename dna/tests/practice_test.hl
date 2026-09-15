@@ -1,0 +1,97 @@
+// GH #602 — a person proposes a practice for the Board. In process: the
+// organization turns a `PracticeRequest` into a named practice proposal
+// with the Board's Review, recording who proposed it and why, and refuses
+// one with no text. Scripted model rules answer by role and prompt, once
+// when asked. Through the CLI, with no organization bound here, the
+// proposal is a `practice.requested` row the host will relay, and the list
+// says it is not yet heard.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` (newline-separated) in `dir`, model discovery off.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+fn dna_cli(app: String, args: String) -> String {
+    let r = in_dir(app, toolchain() + "\ndna\n" + args);
+    return r.stdout + r.stderr;
+}
+
+main locus App {
+    params {
+        // receipts outside the working directory: a proposal files its document
+        one: dna::Dna = dna::Dna { planned: true, org_id: "prac", verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: "/tmp/dna-practice-receipts" } } };
+        script: dna::FakeModel = dna::FakeModel {
+            name: "script",
+            rules: "plan|bill B-1|kind: person\\nassignee: mara\nonce:optimize||proposal: change the intake\noptimize||proposal: none"
+        };
+    }
+    bus { publish dna::PracticeRequested; }
+    fn last(kind: String, entity: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.one.journal.revision() {
+            let e = self.one.journal.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    run() {
+        std::io::fs::mkdir("/tmp/dna-practice-receipts") or discard;
+
+        // ---- the organization proposes it, for the Board
+        dna::PracticeRequested <- dna::PracticeRequest { request_id: "p1", name: "acceptance/expense-receipt", text: "An expense closes with its receipt.\nevidence: required", by: "riley", because: "three bills arrived without receipts" };
+        std::time::sleep(300ms);
+        let proposed = self.last("practice.proposed", "p1");
+        let digest = std::json::find_string_field(proposed, "digest");
+        std::test::assert(std::str::starts_with(digest, "sha256:") && std::json::find_string_field(proposed, "by") == "riley" && std::json::find_string_field(proposed, "because") == "three bills arrived without receipts" && std::json::find_string_field(proposed, "review_id") == dna::knowledge_review_id(digest), "proposed, with who and why: " + proposed);
+        let knowledge = self.last("knowledge.proposed", digest);
+        std::test::assert(std::str::contains(knowledge, "\"name\": \"acceptance/expense-receipt\"") && std::str::contains(knowledge, "\"kind\": \"practice\"") && std::str::contains(knowledge, "\"target\": \"org\""), "a named practice for the organization: " + knowledge);
+        let review = self.last("review.requested", "review:" + dna::knowledge_review_id(digest));
+        std::test::assert(std::str::contains(review, "\"required_authority\": \"board\""), "the Board's Review: " + review);
+        std::test::assert_eq_str(self.one.practice_in_force("acceptance/expense-receipt"), "", "not in force until the Board ratifies it");
+
+        dna::PracticeRequested <- dna::PracticeRequest { request_id: "p2", name: "acceptance/empty", text: "", by: "riley" };
+        std::time::sleep(300ms);
+        std::test::assert_eq_str(self.last("practice.refused", "p2"), "a practice has a name and a text", "no text, no proposal");
+
+        // ---- scripted answers by role and prompt, once when asked
+        let plan = self.script.complete(dna::ModelRequest { role: "plan", prompt: "Ask: capture bill B-1 from Northwind" });
+        std::test::assert_eq_str(plan.output, "kind: person\nassignee: mara", "a plan rule, with its newline");
+        let other = self.script.complete(dna::ModelRequest { role: "plan", prompt: "Ask: something else" });
+        std::test::assert(std::str::starts_with(other.output, "script:plan:"), "no rule matches: the fake's own answer: " + other.output);
+        std::test::assert_eq_str(self.script.complete(dna::ModelRequest { role: "optimize", prompt: "SIGNALS" }).output, "proposal: change the intake", "the once-rule answers once");
+        std::test::assert_eq_str(self.script.complete(dna::ModelRequest { role: "optimize", prompt: "SIGNALS" }).output, "proposal: none", "and then the next rule does");
+
+        // ---- through the CLI, with no organization here: a row for the host to relay
+        let scratch = "/tmp/dna-practice-" + to_string(std::process::pid());
+        std::io::fs::mkdir(scratch) or discard;
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nbooks");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let app = scratch + "/books";
+        let g0 = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + scratch + "/books.git");
+        let g1 = in_dir(app, "git\nconfig\nuser.name\nriley");
+        let g2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
+        let g3 = in_dir(app, "git\nremote\nadd\norigin\n" + scratch + "/books.git");
+        std::test::assert(std::str::contains(dna_cli(app, "practice\npropose\nacceptance/x"), "practice: `hale dna practice propose <name> --text"), "a proposal needs its text");
+        std::test::assert(std::str::contains(dna_cli(app, "practice\nretire\nx"), "practice: `hale dna practice propose"), "an unknown subcommand");
+        let requested = dna_cli(app, "practice\npropose\nacceptance/expense-receipt\n--text\nAn expense closes with its receipt.\n--because\nbills without receipts\n--as\nriley");
+        std::test::assert(std::str::contains(requested, "practice acceptance/expense-receipt requested in the record by riley (p"), "requested: " + requested);
+        let journal = in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout;
+        std::test::assert(std::str::contains(journal, "\"kind\": \"practice.requested\"") && std::str::contains(journal, "\\\"because\\\": \\\"bills without receipts\\\""), "the row, with why");
+        let listed = dna_cli(app, "practice");
+        std::test::assert(std::str::contains(listed, "acceptance/expense-receipt [requested by riley, not yet heard by the organization]"), "listed as not yet heard: " + listed);
+        std::test::assert(std::str::contains(listed, "design/principles ") && std::str::contains(listed, "[awaiting the Board (k:"), "the seeded design practices, awaiting the Board: " + listed);
+
+        let rm = dna::run_tool("rm\n-rf\n" + scratch + "\n/tmp/dna-practice-receipts");
+    }
+}
+
+fn main() { App { }; }

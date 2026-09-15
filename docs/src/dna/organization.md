@@ -71,6 +71,19 @@ told to `hale dna task reassign <id> --to <them>` first. When a person
 leaves, `hale dna retire <who> --to <successor>` moves everything they
 hold, as rows, and refuses to drop any of it.
 
+A practice can come from anyone, and the Board decides it. When the
+same thing keeps going wrong, write down how it should go and say what
+prompted it:
+
+```text
+hale dna practice propose acceptance/expense-receipt \
+    --text "An expense closes with its receipt.
+evidence: required" --because "three bills arrived without receipts"
+```
+
+The organization records who proposed it and why, and opens a Review
+for the Board; `hale dna practice` lists the practices with their state.
+
 When the Board has ratified an acceptance practice for a kind of job
 that says `evidence: required`, a job of that kind closes only with its
 evidence: `hale dna task done t41 --as mara --evidence sha256:…`, a

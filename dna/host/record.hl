@@ -13,6 +13,7 @@ const INTENT_SOCK: String = "hale-dna.intent.offered.sock";
 const OBSERVED_SOCK: String = "hale-dna.expression.observed.sock";
 const PRESSURE_SOCK: String = "hale-dna.pressure.raised.sock";
 const CONCERN_SOCK: String = "hale-dna.concern.raised.sock";
+const PRACTICE_SOCK: String = "hale-dna.practice.requested.sock";
 
 // `git -C <repo> <args…>`; argv newline-separated.
 fn git(repo: String, args: String) -> dna::RunResult {
@@ -362,7 +363,10 @@ fn publish_on_membrane(root: String, kind: String, body: String) -> String {
         + "dna.intent.offered = unix://" + d + INTENT_SOCK + " : connect\n"
         + "dna.expression.observed = unix://" + d + OBSERVED_SOCK + " : connect\n"
         + "dna.pressure.raised = unix://" + d + PRESSURE_SOCK + " : connect\n"
-        + "dna.concern.raised = unix://" + d + CONCERN_SOCK + " : connect\n";
+        + "dna.concern.raised = unix://" + d + CONCERN_SOCK + " : connect\n"
+    // an organization scaffolded before practices has no such socket:
+    // the route is named only for the fact that needs it
+        + (if kind == "practice" { "dna.practice.requested = unix://" + d + PRACTICE_SOCK + " : connect\n" } else { "" });
     let wrote = write_text(conf, text) or false;
     if !wrote { return "cannot write " + conf; }
     let r = dna::run_tool("sh\n-c\ncd \"$1\" && LOTUS_BUS_CONFIG=\"$2\" exec \"$3\" \"$4\" \"$5\"\nsh\n" + root + "\n" + conf + "\n" + bin + "\n" + kind + "\n" + body);

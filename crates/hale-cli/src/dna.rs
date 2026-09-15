@@ -51,6 +51,7 @@ const INTENT_SOCK_REL: &str = ".hale/dna/hale-dna.intent.offered.sock";
 const OBSERVED_SOCK_REL: &str = ".hale/dna/hale-dna.expression.observed.sock";
 const PRESSURE_SOCK_REL: &str = ".hale/dna/hale-dna.pressure.raised.sock";
 const CONCERN_SOCK_REL: &str = ".hale/dna/hale-dna.concern.raised.sock";
+const PRACTICE_SOCK_REL: &str = ".hale/dna/hale-dna.practice.requested.sock";
 
 /// GH #566 F8: the host is a Hale program (`dna/host`, embedded beside
 /// the core and built once into the toolchain cache). A verb that is
@@ -246,6 +247,8 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("receipt") => host_exec("receipt", Path::new("."), &args[1..]),
         // GH #615: connections to other records, and what crosses them
         Some("connect") => host_exec("connect", Path::new("."), &args[1..]),
+        // GH #602: a person proposes a practice for the Board
+        Some("practice") => host_exec("practice", Path::new("."), &args[1..]),
         Some("disconnect") => host_exec("disconnect", Path::new("."), &args[1..]),
         Some("handoff") => host_exec("handoff", Path::new("."), &args[1..]),
         Some("profile") => {
@@ -336,6 +339,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    under an acceptance practice requiring evidence: --evidence <digest>, or --exception <why> --authorized-by <who>");
     eprintln!("       hale dna task decide <id>    report a decision someone else made (--decided-by <party> --via <channel> --evidence <digest>, --as <reporter>)");
     eprintln!("       hale dna retire <who>        a person retires: the handed Tasks they hold move to --to <successor>, as rows");
+    eprintln!("       hale dna practice propose <name> --text <text> [--because <why>] [--supersedes <digest>]");
+    eprintln!("                                    propose a practice for the Board to ratify (a knowledge Review); `hale dna practice` lists them");
     eprintln!("       hale dna connect <record-url> --name <n> --as <position> --purpose <p> --classes <internal,customer,…>");
     eprintln!("                                    propose a connection to another record (a Board Review); `hale dna connect` lists them;");
     eprintln!("                                    `hale dna disconnect <n> --why <w>` closes one");
@@ -1579,6 +1584,7 @@ main locus Org {{
         dna::ExpressionObserved: unix("{observed}", role: listen);
         dna::PressureRaised: unix("{pressure}", role: listen);
         dna::ConcernRaised: unix("{concern}", role: listen);
+        dna::PracticeRequested: unix("{practice}", role: listen);
     }}
     run() {{
         if std::env::var_exists("HALE_DNA_ONESHOT") {{ return; }}
@@ -1597,6 +1603,7 @@ fn main() {{
         observed = OBSERVED_SOCK_REL,
         pressure = PRESSURE_SOCK_REL,
         concern = CONCERN_SOCK_REL,
+        practice = PRACTICE_SOCK_REL,
     )
 }
 
