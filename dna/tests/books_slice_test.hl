@@ -173,6 +173,23 @@ main locus App {
         std::test::assert(std::str::contains(unfiled.stdout, "retry: books: B-1001 not filed") && std::io::fs::file_exists(app + "/inbox/b1001.bill") && !std::io::fs::file_exists(app + "/inbox/done/b1001.bill"), "a bill that was not filed stays in the inbox: " + unfiled.stdout + unfiled.stderr);
         let cleared = dna::run_tool("rm\n-f\n" + app + "/inbox/b1001.bill");
 
+        // delivered twice while no organism is here (a copy with a remote and
+        // no body): the follow-through requested the first time stands in the
+        // record, and is not requested again, nor its concern
+        let offline = scratch + "/offline";
+        let copied_offline = dna::run_tool("cp\n-r\n" + app + "\n" + offline);
+        let bare_offline = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + scratch + "/offline.git");
+        let remote_offline = in_dir(offline, "git\nremote\nadd\norigin\n" + scratch + "/offline.git");
+        let deliver = "sh\n-c\nmkdir -p inbox && cp \"$1\" inbox/b1001.bill && BOOKS_MODE=once HALE_BIN=\"$2\" exec \"$2\" run .\nsh\n" + fixture + "/bills/b1001.bill\n" + toolchain();
+        let first = in_dir(offline, deliver);
+        std::test::assert(std::str::contains(first.stdout, "ok: books: B-1001 captured as") && std::str::contains(first.stdout, "follow-through asked: intent"), "the first delivery is filed and its follow-through requested: " + first.stdout + first.stderr);
+        let again = in_dir(offline, deliver);
+        std::test::assert(std::str::contains(again.stdout, "ok: books: B-1001 was captured and followed up already"), "the second finds the request standing: " + again.stdout + again.stderr);
+        std::test::assert_eq_int(count(offline, "intent.requested", "", "B-1001"), 1, "one follow-through requested");
+        std::test::assert_eq_int(count(offline, "concern.requested", "", "B-1001"), 1, "one concern requested");
+        std::test::assert_eq_int(count(offline, "receipt.filed", "", "b1001.bill"), 1, "one filing");
+        let removed_offline = dna::run_tool("rm\n-rf\n" + offline + "\n" + scratch + "/offline.git");
+
         let mut dev = start_dev(app);
         std::test::assert(membrane_up(app, 240), "the organism and the intake came up: " + (std::io::fs::read_file(app + "/.hale/dev.log") or ""));
 

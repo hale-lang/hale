@@ -110,6 +110,34 @@ fn journal_has(journal: String, kind: String, needle: String) -> Bool {
     return false;
 }
 
+// Whether a follow-through for `evidence` stands in the record as a
+// request asked while no organism was here (`intent.requested`, relayed
+// once one is) and not refused (the second review of #634: a bill
+// delivered again before the organism heard the first request queued a
+// second, independent one).
+@unbounded
+fn requested_standing(journal: String, evidence: String) -> Bool {
+    let mut asked = "\n";
+    let mut refused = "\n";
+    let mut rest = journal;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let kind = std::json::find_string_field(line, "kind");
+        if kind == "intent.requested" && std::str::contains(std::json::find_string_field(line, "body"), evidence) { asked = asked + std::json::find_string_field(line, "entity") + "\n"; }
+        if kind == "intent.refused" { refused = refused + std::json::find_string_field(line, "entity") + "\n"; }
+    }
+    let mut ids = asked[1..len(asked)];
+    while len(ids) > 0 {
+        let nl = std::str::index_of(ids, "\n");
+        let id = if nl < 0 { ids } else { ids[0..nl] };
+        ids = if nl < 0 { "" } else { ids[(nl + 1)..len(ids)] };
+        if len(id) > 0 && !std::str::contains(refused, "\n" + id + "\n") { return true; }
+    }
+    return false;
+}
+
 // File one bill and ask for its follow-through when its receipt is
 // missing. "ok: …" once all it needs is in the record, "retry: …" when a
 // step failed, "rejected: …" for a document that is not a bill. Each step
@@ -129,14 +157,28 @@ fn capture(path: String) -> String {
         evidence = filed.stdout[at..(at + 71)];
     }
     if b.receipt == "attached" { return "ok: books: " + b.id + " captured with its receipt, as " + evidence; }
-    if journal_has(journal, "intent.offered", evidence) || journal_has(journal, "task.born", evidence) { return "ok: books: " + b.id + " was captured and followed up already, as " + evidence; }
-    // adopted: a bill without its receipt, the intake asks the supplier for it at once
-    std::io::fs::mkdir("outbox") or discard;
-    std::io::fs::write_file("outbox/receipt-request-" + b.id + ".txt", "To: " + b.supplier + "\nPlease send the receipt for bill " + b.id + " (" + b.amount + " " + b.currency + ", " + b.date + ").\n") or discard;
-    let asked = hale("dna\nask\n--no-wait\n--as\nintake\n" + follow_up(b, evidence));
-    if asked.code != 0 { return "retry: books: " + b.id + " filed as " + evidence + ", but its follow-through was not asked: " + std::str::trim(asked.stdout + asked.stderr); }
-    let raised = hale("dna\nconcern\nraise\norg/books/intake\nbill " + b.id + " from " + b.supplier + " arrived without its receipt");
-    return "ok: books: " + b.id + " captured as " + evidence + "; follow-through asked: " + std::str::trim(asked.stdout + asked.stderr) + "; " + std::str::trim(raised.stdout + raised.stderr);
+    // each step is its own: a follow-through already born, offered or
+    // standing as a request is not asked again, nor a concern already
+    // requested or raised raised again
+    let concern = "bill " + b.id + " from " + b.supplier + " arrived without its receipt";
+    let followed = journal_has(journal, "intent.offered", evidence) || journal_has(journal, "task.born", evidence) || requested_standing(journal, evidence);
+    let raised_already = journal_has(journal, "concern.requested", concern) || journal_has(journal, "concern.raised", concern);
+    if followed && raised_already { return "ok: books: " + b.id + " was captured and followed up already, as " + evidence; }
+    let mut asked_text = "";
+    if !followed {
+        // adopted: a bill without its receipt, the intake asks the supplier for it at once
+        std::io::fs::mkdir("outbox") or discard;
+        std::io::fs::write_file("outbox/receipt-request-" + b.id + ".txt", "To: " + b.supplier + "\nPlease send the receipt for bill " + b.id + " (" + b.amount + " " + b.currency + ", " + b.date + ").\n") or discard;
+        let asked = hale("dna\nask\n--no-wait\n--as\nintake\n" + follow_up(b, evidence));
+        if asked.code != 0 { return "retry: books: " + b.id + " filed as " + evidence + ", but its follow-through was not asked: " + std::str::trim(asked.stdout + asked.stderr); }
+        asked_text = std::str::trim(asked.stdout + asked.stderr);
+    }
+    let mut raised_text = "its concern was raised already";
+    if !raised_already {
+        let raised = hale("dna\nconcern\nraise\norg/books/intake\n" + concern);
+        raised_text = std::str::trim(raised.stdout + raised.stderr);
+    }
+    return "ok: books: " + b.id + " captured as " + evidence + "; " + (if followed { "follow-through asked already" } else { "follow-through asked: " + asked_text }) + "; " + raised_text;
 }
 
 // Whether `a` sorts before `b` (lowercase names, digits, `-`, `.`).
