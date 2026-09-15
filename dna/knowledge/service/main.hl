@@ -306,6 +306,12 @@ locus Service {
             if !dna::protected_class(class) { return refusal(400, "class: `" + class + "` is not protected (customer | confidential); a public or internal body is an ordinary git receipt"); }
             if len(text) == 0 { return refusal(400, "text: nothing to keep"); }
             let digest = dna::digest_of(text);
+            // a body the record says was redacted is not kept again: a
+            // replay, a retry or a re-run intake would put erased bytes back
+            // behind a record that says they are gone (#636)
+            let moved = self.j.refresh();
+            let redaction = self.redaction_of(digest);
+            if len(redaction) > 0 { return refusal(409, digest + " was redacted " + redaction + "; a redacted body is not kept again"); }
             if !self.protected.ready() { return refusal(503, self.protected.why_not() + "; the body of " + digest + " is not kept"); }
             if !self.protected.put(digest, class, text, std::time::now()) { return refusal(503, "the protected store refused: " + self.protected.last_error()); }
             if !self.has_row("receipt.classified", digest) {

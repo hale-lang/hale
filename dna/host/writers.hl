@@ -261,9 +261,13 @@ fn receipt_file_verb(root: String, path: String, class_flag: String, who_flag: S
         let s2 = sync_record(root);
         return answer("receipt " + dna::evidence_digest(std::json::find_string_field(body, "digest")) + " filed (" + class + ", kept by the knowledge service; receipt.classified, by " + who + ")\n");
     }
+    let digest = dna::evidence_digest(dna::digest_of(text));
+    // a receipt the record says was redacted is not filed again: its ref
+    // would come back behind a row that says the body is gone (#636)
+    let p = open_projection(root, ".", "");
+    if p.has_row("receipt.redacted", digest) { return fail("receipt file: " + digest + " was redacted; a redacted body is not filed again"); }
     let blob = git(root, "hash-object\n-w\n" + path);
     if blob.code != 0 { return fail("receipt file: git could not store " + path + ": " + blob.stderr); }
-    let digest = dna::evidence_digest(dna::digest_of(text));
     let u = git(root, "update-ref\nrefs/dna/receipts/" + digest[7..len(digest)] + "\n" + dna::trim_nl(blob.stdout));
     if u.code != 0 { return fail("receipt file: " + u.stderr); }
     let slash = last_index_of(path, "/");

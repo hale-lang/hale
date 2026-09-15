@@ -224,6 +224,22 @@ fn append_as(repo: String, kind: String, entity: String, body: String, author: S
     return false;
 }
 
+// Append one event only if the record is still at `expected` (the head a
+// decision was read at): "" when it landed, `stale_revision` when the ref
+// moved (nothing appended; read again and decide again), else why it was
+// refused (#636: a redaction that read "no hold" must not land after a hold
+// did).
+fn append_as_at(repo: String, expected: String, kind: String, entity: String, body: String, author: String) -> String {
+    let user = git_out(repo, "config\nuser.name");
+    let who = if len(author) > 0 { author } else { if len(user) > 0 { user } else { "host" } };
+    if record_head(repo) != expected { return "stale_revision"; }
+    let text = journal_text_at(repo, expected);
+    let commit = commit_row(repo, expected, text, count_lines(text), kind, entity, body, who);
+    if len(commit) == 0 { return "the row could not be written"; }
+    if git_ok(repo, "update-ref\n" + RECORD_REF + "\n" + commit + "\n" + expected) { return ""; }
+    return if record_head(repo) != expected { "stale_revision" } else { "the ref could not be moved" };
+}
+
 type SyncResult {
     ok: Bool = true;
     summary: String = "";

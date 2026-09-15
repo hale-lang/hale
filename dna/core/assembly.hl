@@ -351,8 +351,13 @@ locus Dna {
     // is answered either way, so evidence keeps its identity.
     @unbounded
     fn file_evidence(text: String, class: String, by: String) -> String {
-        if !protected_class(class) { return "sha256:" + self.verification.receipts.store(text); }
+        // evidence the record says was redacted is not filed again, in git or
+        // in the knowledge service: its digest is answered, and no body is
+        // kept (#636)
         let digest = digest_of(text);
+        let moved = self.journal.refresh();
+        if self.has_evidence_row("receipt.redacted", digest) { return digest; }
+        if !protected_class(class) { return "sha256:" + self.verification.receipts.store(text); }
         let kept = if self.vault.ready() { self.vault.keep(text, class, by) } else { "" };
         if kept != digest {
             let why = if !self.vault.ready() { "no knowledge service to keep protected evidence (HALE_DNA_KNOWLEDGE_URL)" } else if len(kept) == 0 { self.vault.last_error } else { "the service answered another digest" };
