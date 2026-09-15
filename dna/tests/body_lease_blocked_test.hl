@@ -87,8 +87,10 @@ main locus App {
         let log = std::io::fs::read_file(a + "/a.log") or "";
         std::test::assert(died_at > 0, "the organization was stopped while its host was blocked: " + log);
         std::test::assert(!std::io::fs::file_exists(a + "/a.exit"), "the host was still blocked when its organization stopped: " + log);
-        let why = dna::trim_nl(std::io::fs::read_file(a + "/.hale/dna/body.fence.status") or "");
-        std::test::assert(std::str::starts_with(why, "expired "), "the fence says the lease could not be proved: " + why);
+        let status = dna::trim_nl(std::io::fs::read_file(a + "/.hale/dna/body.fence.status") or "");
+        let sp = std::str::index_of(status, " ");
+        let why = if sp < 0 { status } else { status[(sp + 1)..len(status)] };
+        std::test::assert(std::str::starts_with(why, "expired "), "the fence says, for its host, the lease could not be proved: " + status);
         let expires = std::str::parse_int(why[8..len(why)]) or 0;
         std::test::assert(died_at <= expires, "the organization stopped before the lease expired: died " + to_string(died_at) + ", expires " + to_string(expires) + " (blocked at " + to_string(blocked_at) + ")");
 
