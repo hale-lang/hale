@@ -1,13 +1,17 @@
-// GH #617 (the second review of #622) — a body executes nothing past its
-// lease even while its host is blocked. A host is up, its organization
-// running; then every `git fetch` it makes hangs, so its tick blocks in
-// the sync and renews nothing. The body fence beside it, which never waits
-// on the host, must kill the organization before the lease it last proved
-// expires — while the host is still blocked — and the host, released,
-// exits 3.
+// GH #617 (the second and third reviews of #622) — a body executes nothing
+// past its lease, even while its host is blocked, even when the renewal is
+// slow, and even in a tool its organization started. A host is up, its
+// organization running a worker tool through `std::process::run` (as
+// `run_tool` does: the tool gets a process group of its own). Then every
+// journal fetch the host makes hangs, so its tick blocks in the sync; and
+// the lease's own transport turns slow: each read takes seven seconds and
+// each write hangs. Every git call is bounded, but one renewal's calls
+// together would outlast the lease. The body fence must stop the
+// organization AND its worker before the lease it last proved expires,
+// while the host is still blocked — and the host, released, exits 3.
 //
 // The host binary runs directly (as `hale dna run` would exec it) with a
-// `git` first on its PATH whose fetch hangs while a flag file exists.
+// `git` first on its PATH that misbehaves while a flag file exists.
 
 import "../core" as dna;
 
@@ -30,6 +34,15 @@ fn alive(pid: String) -> Bool {
     return len(pid) > 0 && dna::run_tool("kill\n-0\n" + pid).code == 0;
 }
 
+// The last line of a file, as a number (0 when there is none).
+fn last_number(path: String) -> Int {
+    if !std::io::fs::file_exists(path) { return 0; }
+    return std::str::parse_int(dna::trim_nl(dna::run_tool("tail\n-n\n1\n" + path).stdout)) or 0;
+}
+
+// The organization: a worker tool that says it is alive every 200ms.
+const WORKER_ORG: String = "fn main() {\n    let r = std::process::run(\"sh\\n-c\\necho $$ > worker.pid; while :; do date +%s >> worker.tick; sleep 0.2; done\") or std::process::ProcessOutput { code: -1, signal: 0, stdout: \"\", stderr: \"\" };\n}\n";
+
 main locus App {
     run() {
         let scratch = "/tmp/dna-leaseblocked-" + to_string(std::process::pid());
@@ -41,6 +54,7 @@ main locus App {
         let made = in_dir(scratch, cache, toolchain() + "\ndna\nnew\nbodied\n--profile\nremote-body\n--remote\n" + bare + "\n--body\nriley@srv");
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         let a = scratch + "/bodied";
+        std::io::fs::write_file(a + "/dna/org/main.hl", WORKER_ORG) or discard;
         let g1 = in_dir(a, cache, "git\nconfig\nuser.name\norganism-host");
         let g2 = in_dir(a, cache, "git\nconfig\nuser.email\nhost@dna");
         let g3 = in_dir(a, cache, "git\nadd\n-A");
@@ -55,44 +69,54 @@ main locus App {
         std::test::assert(len(host) > 0 && len(membrane) > 0, "the host and the membrane client are built: " + built.stdout + built.stderr);
         let version = dna::trim_nl(in_dir(scratch, cache, toolchain() + "\n--version").stdout);
 
-        // a git whose fetch hangs while `block` exists
+        // a git that, while `block` exists, hangs a journal fetch, takes
+        // seven seconds over a lease read, and hangs a lease write
         let bin = scratch + "/bin";
         std::io::fs::mkdir(bin) or discard;
         let real_git = dna::trim_nl(dna::run_tool("sh\n-c\ncommand -v git").stdout);
         let block = scratch + "/block";
-        std::io::fs::write_file(bin + "/git", "#!/bin/sh\nfor a in \"$@\"; do if [ \"$a\" = fetch ]; then while [ -f \"" + block + "\" ]; do sleep 1; done; fi; done\nexec \"" + real_git + "\" \"$@\"\n") or discard;
+        let wrapper = "#!/bin/sh\nlease=no; fetch=no; push=no\nfor a in \"$@\"; do case \"$a\" in *refs/dna/lease/body*) lease=yes;; fetch) fetch=yes;; push) push=yes;; esac; done\n"
+            + "if [ -f \"" + block + "\" ]; then\n"
+            + "  if [ $fetch = yes ] && [ $lease = no ]; then while [ -f \"" + block + "\" ]; do sleep 1; done; fi\n"
+            + "  if [ $fetch = yes ] && [ $lease = yes ]; then sleep 7; fi\n"
+            + "  if [ $push = yes ] && [ $lease = yes ]; then while [ -f \"" + block + "\" ]; do sleep 1; done; fi\n"
+            + "fi\nexec \"" + real_git + "\" \"$@\"\n";
+        std::io::fs::write_file(bin + "/git", wrapper) or discard;
         let x = dna::run_tool("chmod\n+x\n" + bin + "/git");
 
-        // host A comes up and runs its organization
+        // host A comes up and runs its organization, whose worker ticks
         let started = in_dir(a, cache, "sh\n-c\nPATH=\"$1:$PATH\" HALE_BIN=\"$2\" HALE_DNA_MEMBRANE=\"$3\" HALE_DNA_TOOLCHAIN=\"$4\" HALE_DNA_GENOME=\"$5\" nohup sh -c 'timeout 300 \"$0\" run \"$1\" . \"\" \"\" --no-iris; echo $? > a.exit' \"$6\" \"$5\" >a.log 2>&1 </dev/null & echo $!\nsh\n" + bin + "\n" + toolchain() + "\n" + membrane + "\n" + version + "\n" + a + "\n" + host);
         let mut up = false;
         let mut tries = 0;
         while !up && tries < 720 {
-            if log_has(a + "/a.log", "membrane bound") { up = true; } else { std::time::sleep(250ms); }
+            if log_has(a + "/a.log", "organization (pid") && last_number(a + "/worker.tick") > 0 { up = true; } else { std::time::sleep(250ms); }
             tries = tries + 1;
         }
-        std::test::assert(up, "host A came up: " + (std::io::fs::read_file(a + "/a.log") or ""));
+        std::test::assert(up, "host A came up with its worker: " + (std::io::fs::read_file(a + "/a.log") or ""));
         let org = dna::trim_nl(std::io::fs::read_file(a + "/.hale/dna/org.pid") or "");
-        std::test::assert(alive(org), "the organization runs: " + org);
+        let worker = dna::trim_nl(std::io::fs::read_file(a + "/worker.pid") or "");
+        std::test::assert(alive(org) && alive(worker), "the organization and its worker run: " + org + " " + worker);
 
-        // every fetch now hangs: the host's tick blocks in its sync
+        // the transport turns bad: the host's tick blocks, the renewal is slow
         std::io::fs::write_file(block, "hang") or discard;
         let blocked_at = std::time::now();
+        let mut proven = 0;
         let mut died_at = -1;
         tries = 0;
-        while died_at < 0 && tries < 240 {
+        while died_at < 0 && tries < 300 {
+            let status = dna::trim_nl(std::io::fs::read_file(a + "/.hale/dna/body.fence.status") or "");
+            let at = std::str::index_of(status, " ok ");
+            if at > 0 { proven = std::str::parse_int(status[(at + 4)..len(status)]) or proven; }
             if !alive(org) { died_at = std::time::now(); } else { std::time::sleep(250ms); }
             tries = tries + 1;
         }
         let log = std::io::fs::read_file(a + "/a.log") or "";
-        std::test::assert(died_at > 0, "the organization was stopped while its host was blocked: " + log);
+        std::test::assert(died_at > 0 && proven > 0, "the organization was stopped while its host was blocked: " + log);
         std::test::assert(!std::io::fs::file_exists(a + "/a.exit"), "the host was still blocked when its organization stopped: " + log);
-        let status = dna::trim_nl(std::io::fs::read_file(a + "/.hale/dna/body.fence.status") or "");
-        let sp = std::str::index_of(status, " ");
-        let why = if sp < 0 { status } else { status[(sp + 1)..len(status)] };
-        std::test::assert(std::str::starts_with(why, "expired "), "the fence says, for its host, the lease could not be proved: " + status);
-        let expires = std::str::parse_int(why[8..len(why)]) or 0;
-        std::test::assert(died_at <= expires, "the organization stopped before the lease expired: died " + to_string(died_at) + ", expires " + to_string(expires) + " (blocked at " + to_string(blocked_at) + ")");
+        std::test::assert(died_at <= proven, "the organization stopped before the lease it last proved expired: died " + to_string(died_at) + ", expires " + to_string(proven) + " (blocked at " + to_string(blocked_at) + ")");
+        std::time::sleep(1500ms);
+        let tick = last_number(a + "/worker.tick");
+        std::test::assert(!alive(worker) && tick <= proven, "its worker tool stopped with it, before the lease expired: last tick " + to_string(tick) + ", expires " + to_string(proven) + ", worker alive " + (if alive(worker) { "yes" } else { "no" }));
 
         // released, the host finds the lease unproved and exits 3
         std::io::fs::unlink(block) or discard;
@@ -107,6 +131,7 @@ main locus App {
         std::test::assert_eq_str(dna::trim_nl(std::io::fs::read_file(a + "/a.exit") or ""), "3", "host A exited 3: " + final_log);
         std::test::assert(std::str::contains(final_log, "a body that cannot prove its lease executes nothing"), "and said why: " + final_log);
 
+        if alive(worker) { let k = dna::run_tool("kill\n-KILL\n" + worker); }
         let rm = dna::run_tool("rm\n-rf\n" + scratch);
     }
 }
