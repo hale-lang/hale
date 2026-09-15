@@ -174,9 +174,13 @@ repository:
   Task closes only with `--evidence <digest>`, a receipt the record
   holds, appended before `task.done` as `completion.linked` (`task`,
   `evidence`, `by`, `practice`), or with `--exception <why>
-  --authorized-by <who>`, someone other than the person closing it,
-  appended as `completion.excepted` (`task`, `why`, `authorized_by`,
-  `by`, `practice`). A note alone is refused, and so is an exception
+  --authorized-by <who>`, appended as `completion.excepted` (`task`,
+  `why`, `authorized_by`, `by`, `practice`) — only when `<who>` has
+  authorized it in their own name first: `hale dna task authorize <id>
+  --exception <why> [--as <who>]` appends `exception.authorized <task>
+  {task, why, by, practice}`, refused for the Task's assignee and, when
+  the bound practice names who may (`exceptions by: <names>`), for anyone
+  else; naming someone is never an authorization. A note alone is refused, and so is an exception
   without an authorizer, a self-authorized one, or both at once. Either
   may accompany any person's completion. `task.done` keeps its body; the
   projection shows a done Task's evidence or exception, and a person's
@@ -250,7 +254,10 @@ repository:
   `acceptance/<obligation>`, ratified by the Board and not retired,
   whose text says `reported decisions: allowed`. The obligation is the
   class of obligation a person's job discharges; the leader's plan names
-  it (`obligation:`) and `task.handed` carries it. The policy is read at
+  it (`obligation:`) and `task.handed` carries it. The policy is the practice
+  bound when the Task was handed (`task.handed.acceptance`), so a later
+  change of practice changes no case already handed — only a Task handed
+  before practices were bound reads the one in force; it is read at
   admission and its answer kept in the row, so a later change of
   practice never rewrites what was admitted. Accepted, the Task is
   `decided`, and the projection shows the report as such: who reported,

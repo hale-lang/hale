@@ -12,6 +12,7 @@ type TaskRow {
     waiting: String = ""; // why a reported decision did not settle it (GH #616)
     acceptance: String = ""; // the acceptance practice bound at hand-off (GH #604)
     evidence_required: Bool = false; // it closes only with evidence or an authorized exception
+    acceptance_bound: Bool = false; // the hand-off bound a practice (or bound that none was in force)
     evidence: String = ""; // the evidence a completion linked
     exception: String = ""; // an authorized exception a completion recorded
     state: String = "active";
@@ -192,7 +193,7 @@ locus Projection {
             let e = self.row(i);
             if e.entity == id {
                 if e.kind == "task.born" { t = TaskRow { id: id, outcome: e.body, state: "active", since: e.seq }; }
-                else if e.kind == "task.handed" && len(t.id) > 0 { t.state = "handed"; t.detail = e.body; t.assignee = std::json::find_string_field(e.body, "assignee"); t.obligation = std::json::find_string_field(e.body, "obligation"); t.acceptance = std::json::find_string_field(e.body, "acceptance"); t.evidence_required = std::str::trim(std::json::find_field_raw(e.body, "evidence_required")) == "true"; }
+                else if e.kind == "task.handed" && len(t.id) > 0 { t.state = "handed"; t.detail = e.body; t.assignee = std::json::find_string_field(e.body, "assignee"); t.obligation = std::json::find_string_field(e.body, "obligation"); t.acceptance = std::json::find_string_field(e.body, "acceptance"); t.acceptance_bound = std::str::contains(e.body, "\"acceptance\":"); t.evidence_required = std::str::trim(std::json::find_field_raw(e.body, "evidence_required")) == "true"; }
                 // GH #604: what a person's completion linked — the evidence, or an authorized exception
                 else if e.kind == "completion.linked" && len(t.id) > 0 { t.evidence = std::json::find_string_field(e.body, "evidence"); }
                 else if e.kind == "completion.excepted" && len(t.id) > 0 { t.exception = std::json::find_string_field(e.body, "why") + " (authorized by " + std::json::find_string_field(e.body, "authorized_by") + ")"; }
