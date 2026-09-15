@@ -213,16 +213,24 @@ locus Host {
         if self.fence.pid > 0 { stop_proc(self.fence); }
         self.fence = Proc { };
     }
+    // What the body started, gone: the organization's and the expression's
+    // trees, and every process carrying the body's mark wherever it is now.
+    // Every exit once the lease is held runs it BEFORE the fence stops (the
+    // fifth review of #622: a failed application build stopped the
+    // organization's pid and then the fence, and its tool ran on).
+    fn stop_started() {
+        if self.org.pid > 0 { kill_tree(to_string(self.org.pid)); }
+        if self.app.pid > 0 { kill_tree(to_string(self.app.pid)); }
+        kill_marked(body_mark(self.holder, self.lease.token, std::process::pid()));
+    }
     fn quit(code: Int) {
+        self.stop_started();
         self.stop_fence();
         std::process::exit(code);
     }
     fn stop_body(code: Int) {
+        self.stop_started();
         self.stop_fence();
-        kill_marked(body_mark(self.holder, self.lease.token, std::process::pid()));
-        // what the organization and the expression started goes with them
-        if self.org.pid > 0 { kill_tree(to_string(self.org.pid)); }
-        if self.app.pid > 0 { kill_tree(to_string(self.app.pid)); }
         stop_proc(self.org);
         if self.observer.pid > 0 { stop_proc(self.observer); }
         if self.knowledge.pid > 0 { stop_proc(self.knowledge); std::io::fs::unlink(self.dna_dir + "/knowledge.pid") or discard; }
@@ -716,7 +724,7 @@ locus Host {
         // the fence stopped it: the lease is not ours to keep
         if !self.body_alive() { self.stop_body(3); }
         // the organization is gone; what it started goes with it
-        kill_marked(body_mark(self.holder, self.lease.token, std::process::pid()));
+        self.stop_started();
         self.org_log = drain_log(self.org, self.org_log);
         if self.observer.pid > 0 { stop_proc(self.observer); }
         if self.knowledge.pid > 0 { stop_proc(self.knowledge); std::io::fs::unlink(self.dna_dir + "/knowledge.pid") or discard; }
