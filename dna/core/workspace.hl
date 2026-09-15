@@ -372,6 +372,7 @@ locus MutationGateway {
         if !fresh {
             let st = effect_status(j, key);
             if st.done && st.ok { return GateResult { ok: true, value: self.workspaces.path_of(mutation_id), replayed: true }; }
+            if st.unknown { return self.refuse("the outcome of " + key + " is unknown after a restart; resolve it first (`hale dna effect resolve " + key + " --outcome ok|failed`)"); }
             if st.done { return self.refuse("earlier open failed; not retried"); }
         }
         let wt = self.workspaces.open(mutation_id, base_commit);
@@ -390,6 +391,7 @@ locus MutationGateway {
         if !fresh {
             let st = effect_status(j, key);
             if st.done && st.ok { return GateResult { ok: true, value: self.recorded(j, key), replayed: true }; }
+            if st.unknown { return self.refuse("the outcome of " + key + " is unknown after a restart; resolve it first (`hale dna effect resolve " + key + " --outcome ok|failed`)"); }
             if st.done { return self.refuse("earlier commit failed; not retried"); }
         }
         let sha = self.repo.commit_all(self.workspaces.path_of(mutation_id), message);
@@ -407,6 +409,7 @@ locus MutationGateway {
         if !fresh {
             let st = effect_status(j, key);
             if st.done && st.ok { return GateResult { ok: true, value: candidate, replayed: true }; }
+            if st.unknown { return self.refuse("the outcome of " + key + " is unknown after a restart; resolve it first (`hale dna effect resolve " + key + " --outcome ok|failed`)"); }
             if st.done { return self.refuse("earlier apply failed; not retried"); }
             return self.refuse("apply in flight");
         }
@@ -426,6 +429,7 @@ locus MutationGateway {
         if !fresh {
             let st = effect_status(j, key);
             if st.done && st.ok { return GateResult { ok: true, value: base, replayed: true }; }
+            if st.unknown { return self.refuse("the outcome of " + key + " is unknown after a restart; resolve it first (`hale dna effect resolve " + key + " --outcome ok|failed`)"); }
             if st.done { return self.refuse("earlier rollback failed; not retried"); }
             return self.refuse("rollback in flight");
         }

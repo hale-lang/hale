@@ -56,6 +56,20 @@ fn record_remote(repo: String) -> String {
     return name;
 }
 
+// GH #604 rule 6: the admission boundary for record-originated rows.
+// `dna.trust` is `local` (default: every writer to the record is
+// trusted, the operator's profile) or `signed` (a relayed row is admitted
+// only when its commit carries a signature git verifies — git's own
+// keyring or allowed-signers file is the list of who may act).
+fn trust_mode(root: String) -> String {
+    let t = dna::trim_nl(git_out(root, "config\ndna.trust"));
+    return if len(t) == 0 { "local" } else { t };
+}
+
+fn row_verified(root: String, sha: String) -> Bool {
+    return git_ok(root, "verify-commit\n" + sha);
+}
+
 fn membrane_up(root: String) -> Bool {
     let d = root + "/.hale/dna/";
     return std::io::fs::file_exists(d + VERDICT_SOCK) && std::io::fs::file_exists(d + INTENT_SOCK);
@@ -145,7 +159,11 @@ fn commit_row(repo: String, head: String, text: String, seq: Int, kind: String, 
     if wt.code != 0 { return ""; }
     let tree = dna::trim_nl(wt.stdout);
     let parent = if len(head) > 0 { "-p\n" + head + "\n" } else { "" };
-    let commit = git_out(repo, identity + "commit-tree\n" + tree + "\n" + parent + "-m\n" + kind + " " + entity);
+    // GH #604 rule 6: under `dna.trust = signed` a row this clone writes
+    // is a signed commit (git's signing config decides with what), so a
+    // relay elsewhere can admit it as its author's
+    let sign = if dna::trim_nl(git_out(repo, "config\ndna.trust")) == "signed" { "-S\n" } else { "" };
+    let commit = git_out(repo, identity + "commit-tree\n" + tree + "\n" + parent + sign + "-m\n" + kind + " " + entity);
     std::io::fs::unlink(tmp) or discard;
     std::io::fs::unlink(idx) or discard;
     return commit;

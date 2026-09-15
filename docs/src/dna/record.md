@@ -64,7 +64,10 @@ clone has no record until it syncs.
 From a clone with no organization, `hale dna ask` appends
 `intent.requested` and a verdict appends `review.verdict`, each in
 the appender's git identity. The host beside the organization relays
-unanswered rows onto the membrane once, the organization answers
+unanswered rows onto the membrane once — every writer trusted by
+default (`dna.trust = local`), or only signed commits git verifies
+(`dna.trust = signed`; an unverified row is refused in the record and
+never relayed) — the organization answers
 (`intent.offered`, `task.born`, `review.settled`, `review.refused`),
 and the answers come back the same way. A row is answered when a
 later row of the answering kind names its entity. GitHub is the same

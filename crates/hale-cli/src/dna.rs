@@ -229,6 +229,8 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("task") => host_exec("task", Path::new("."), &args[1..]),
         // GH #604 rule 5: `hale dna retire <who> [--to <successor>]`
         Some("retire") => host_exec("retire", Path::new("."), &args[1..]),
+        // GH #604 rule 3: `hale dna effect resolve <key> --outcome ok|failed`
+        Some("effect") => host_exec("effect", Path::new("."), &args[1..]),
         Some("history") => {
             let (dir, rest) = project_arg(&args[1..], false);
             host_exec("history", &dir, &rest)
@@ -294,6 +296,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
     eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
     eprintln!("       hale dna retire <who>        a person retires: the handed Tasks they hold move to --to <successor>, as rows");
+    eprintln!("       hale dna effect resolve <key> an effect whose outcome is unknown after a restart: --outcome ok|failed, in your name");
     eprintln!("       hale dna report [project]    file a report from the record since the last one (report.filed)");
     eprintln!("       hale dna github sync         mirror pending Reviews to pull requests and read their reviews back as verdicts");
     eprintln!("                                    (git config dna.github owner/repo; dna.github.board logins,…; needs `gh`)");
