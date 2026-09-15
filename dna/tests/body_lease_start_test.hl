@@ -1,0 +1,97 @@
+// GH #617 (the review of #622) — the body lease fences startup, not only
+// the first tick. A host takes the lease and then builds its organization;
+// the build outlasts a takeover (here a head force-claims the lease while
+// the build runs). The host must start nothing: it proves the lease again
+// the moment before it starts a process, finds it is no longer its own,
+// and exits 3 with no organization started.
+//
+// The host binary runs directly (as `hale dna run` would exec it) so its
+// toolchain can be a wrapper whose `build` is slow.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` (newline-separated) in `dir`: discovery off, a cache of this
+// fixture's own so the host binary is found in one place.
+fn in_dir(dir: String, cache: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off XDG_CACHE_HOME=\"$1\" && shift && exec \"$@\"\nsh\n" + dir + "\n" + cache + "\n" + argv);
+}
+
+fn log_has(path: String, needle: String) -> Bool {
+    return std::str::contains(std::io::fs::read_file(path) or "", needle);
+}
+
+main locus App {
+    run() {
+        let scratch = "/tmp/dna-leasestart-" + to_string(std::process::pid());
+        std::io::fs::mkdir(scratch) or discard;
+        let cache = scratch + "/cache";
+        std::io::fs::mkdir(cache) or discard;
+        let bare = scratch + "/origin.git";
+        let b0 = in_dir(scratch, cache, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
+        let made = in_dir(scratch, cache, toolchain() + "\ndna\nnew\nbodied\n--profile\nremote-body\n--remote\n" + bare + "\n--body\nriley@srv");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let a = scratch + "/bodied";
+        let g1 = in_dir(a, cache, "git\nconfig\nuser.name\norganism-host");
+        let g2 = in_dir(a, cache, "git\nconfig\nuser.email\nhost@dna");
+        let g3 = in_dir(a, cache, "git\nadd\n-A");
+        let g4 = in_dir(a, cache, "git\ncommit\n-q\n-m\nthe app");
+        let g5 = in_dir(a, cache, "git\npush\n-q\norigin\nmain\nrefs/dna/*:refs/dna/*");
+        std::test::assert_eq_int(g5.code, 0, "pushed: " + g5.stderr);
+        // a head elsewhere, with the record
+        let head = scratch + "/head";
+        let c1 = in_dir(scratch, cache, "git\nclone\n-q\n-b\nmain\n" + bare + "\n" + head);
+        let c2 = in_dir(head, cache, "git\nconfig\nuser.name\nriley");
+        let c3 = in_dir(head, cache, "git\nconfig\nuser.email\nriley@l");
+        let c4 = in_dir(head, cache, toolchain() + "\ndna\nupgrade\n.");
+        let c5 = in_dir(head, cache, toolchain() + "\ndna\nsync");
+        std::test::assert(std::str::contains(c5.stdout, "pulled the record"), "the head has the record: " + c5.stdout + c5.stderr);
+
+        // the host and membrane binaries, built into this fixture's cache
+        let built = in_dir(a, cache, toolchain() + "\ndna\nprofile\n.");
+        let host = dna::trim_nl(in_dir(scratch, cache, "sh\n-c\nfind \"$1\" -path '*/dna/host/host' -type f | head -1\nsh\n" + cache).stdout);
+        let membrane = dna::trim_nl(in_dir(scratch, cache, "sh\n-c\nfind \"$1\" -path '*/dna/membrane/membrane' -type f | head -1\nsh\n" + cache).stdout);
+        std::test::assert(len(host) > 0 && len(membrane) > 0, "the host and the membrane client are built: " + built.stdout + built.stderr);
+        let version = dna::trim_nl(in_dir(scratch, cache, toolchain() + "\n--version").stdout);
+
+        // a toolchain whose build takes twenty seconds
+        let slow = scratch + "/slowhale";
+        std::io::fs::write_file(slow, "#!/bin/sh\nif [ \"$1\" = build ]; then sleep 20; fi\nexec \"" + toolchain() + "\" \"$@\"\n") or discard;
+        let x = dna::run_tool("chmod\n+x\n" + slow);
+
+        // host A takes the lease and builds
+        let started = in_dir(a, cache, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_MEMBRANE=\"$2\" HALE_DNA_TOOLCHAIN=\"$3\" HALE_DNA_GENOME=\"$4\" nohup sh -c 'timeout 240 \"$0\" run \"$1\" . \"\" \"\" --no-iris; echo $? > a.exit' \"$5\" \"$4\" >a.log 2>&1 </dev/null & echo $!\nsh\n" + slow + "\n" + membrane + "\n" + version + "\n" + a + "\n" + host);
+        let mut taken = false;
+        let mut tries = 0;
+        while !taken && tries < 120 {
+            if log_has(a + "/a.log", "body lease taken") { taken = true; } else { std::time::sleep(250ms); }
+            tries = tries + 1;
+        }
+        std::test::assert(taken, "host A took the lease: " + (std::io::fs::read_file(a + "/a.log") or ""));
+
+        // while A builds, the head takes the lease over
+        let claimed = in_dir(head, cache, toolchain() + "\ndna\nbody\nclaim\n--force\n--as\nriley");
+        std::test::assert(std::str::contains(claimed.stdout, "was taken by riley"), "the head took the lease: " + claimed.stdout + claimed.stderr);
+
+        // A finishes its build and starts nothing
+        let mut ended = false;
+        tries = 0;
+        while !ended && tries < 240 {
+            if std::io::fs::file_exists(a + "/a.exit") { ended = true; } else { std::time::sleep(500ms); }
+            tries = tries + 1;
+        }
+        let log = std::io::fs::read_file(a + "/a.log") or "";
+        std::test::assert(ended, "host A ended: " + log);
+        std::test::assert_eq_str(dna::trim_nl(std::io::fs::read_file(a + "/a.exit") or ""), "3", "host A exited 3: " + log);
+        std::test::assert(std::str::contains(log, "before starting the organization: the body lease is no longer mine") && !std::str::contains(log, "organization (pid"), "no organization was started under a lease that was not A's: " + log);
+        std::test::assert(!std::io::fs::file_exists(a + "/.hale/dna/org.pid"), "no organization process");
+
+        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+    }
+}
+
+fn main() { App { }; }

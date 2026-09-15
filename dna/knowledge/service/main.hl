@@ -316,6 +316,7 @@ locus Service {
                 rb.string_field("store", self.protected.kind());
                 rb.end_object();
                 let x = self.j.append(self.j.revision(), "receipt.classified", digest, rb.result());
+                if !x.ok { return refusal(503, "the body of " + digest + " is kept, but the record refused its classification (" + x.error + "); file it again"); }
             }
             let ob = std::json::Builder { };
             ob.begin_object();
@@ -377,7 +378,10 @@ locus Service {
                 let x = self.j.append(self.j.revision(), "receipt.read_refused", digest, rb.result());
                 return refusal(403, "not disclosed to " + reader + " for " + purpose + ": `hale dna receipt disclose " + digest + " --to " + reader + " --purpose " + purpose + "` authorizes it");
             }
+            // every answer is an act in the reader's name: a read the record
+            // cannot hold is not answered, and no byte of the body leaves
             let x = self.j.append(self.j.revision(), "receipt.read", digest, rb.result());
+            if !x.ok { return refusal(503, "the read of " + digest + " could not be recorded (" + x.error + "); nothing was disclosed"); }
             let ob = std::json::Builder { };
             ob.begin_object();
             ob.string_field("digest", digest);
