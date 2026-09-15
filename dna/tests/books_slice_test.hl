@@ -140,6 +140,8 @@ main locus App {
         let fixture = acceptance + "/books.fixture";
         let scratch = "/tmp/dna-books-" + to_string(std::process::pid());
         std::io::fs::mkdir(scratch) or discard;
+        // whatever this fixture starts under its scratch stops when it does (#637)
+        dna::reap_on_exit(scratch);
         let app = scratch + "/books";
         let copied = dna::run_tool("cp\n-r\n" + acceptance + "/books\n" + app);
         std::test::assert_eq_int(copied.code, 0, "copied the intake: " + copied.stderr);

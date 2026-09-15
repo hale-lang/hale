@@ -4,6 +4,8 @@
 //! writer git does not know is refused in the record and never reaches
 //! the organism. The default, `local`, is the other test's world.
 
+#[path = "support/reap.rs"]
+mod reap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -42,6 +44,7 @@ fn keygen(dir: &Path, name: &str) -> (PathBuf, String) {
 #[test]
 fn a_signed_row_is_relayed_and_an_unverified_one_is_refused() {
     let d = std::env::temp_dir().join(format!("hale_dna_trust_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let bare = d.join("origin.git");

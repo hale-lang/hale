@@ -8,6 +8,8 @@
 //! digest is refused by the Review; the maintainer's verdict on the
 //! exact candidate settles it.
 
+#[path = "support/reap.rs"]
+mod reap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -70,6 +72,7 @@ fn main() {
 #[test]
 fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
     let d = std::env::temp_dir().join(format!("hale_dna_review_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "orgrev"], &d);

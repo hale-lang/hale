@@ -2,6 +2,8 @@
 //! membrane (Track C, PR 26). The host publishes and reads; the
 //! organism decides; the Journal is the record both consult.
 
+#[path = "support/reap.rs"]
+mod reap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -14,6 +16,7 @@ fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
 #[test]
 fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     let d = std::env::temp_dir().join(format!("hale_dna_status_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "orgstat"], &d);

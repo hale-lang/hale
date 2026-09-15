@@ -5,6 +5,8 @@
 //! else. A Task the organism is working, or has settled, is not a
 //! person's to close.
 
+#[path = "support/reap.rs"]
+mod reap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -59,6 +61,7 @@ fn probe_catalog() -> String {
 #[test]
 fn a_persons_job_is_handed_and_reported_done_in_their_name() {
     let d = std::env::temp_dir().join(format!("hale_dna_task_done_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "handed"], &d);

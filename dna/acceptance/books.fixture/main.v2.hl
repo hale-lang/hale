@@ -318,6 +318,31 @@ fn drain_once() {
     }
 }
 
+// Who holds a Task now: the last reassignment's `to`, else whom it was
+// handed to (#637: the export named the first assignee after a
+// reassignment).
+@unbounded
+fn assignee_of(journal: String, task: String) -> String {
+    let moved = last_body(journal, "task.reassigned", task);
+    if len(moved) > 0 { return std::json::find_string_field(moved, "to"); }
+    return std::json::find_string_field(last_body(journal, "task.handed", task), "assignee");
+}
+
+// How a Task was completed, as the export says it: its linked evidence, an
+// authorized exception, a reported decision (#637: absent before), a
+// person's word, or open.
+@unbounded
+fn completion_of(journal: String, task: String, state: String) -> String {
+    let linked = last_body(journal, "completion.linked", task);
+    if len(linked) > 0 { return "evidence " + std::json::find_string_field(linked, "evidence"); }
+    let excepted = last_body(journal, "completion.excepted", task);
+    if len(excepted) > 0 { return "exception: " + std::json::find_string_field(excepted, "why") + " (authorized by " + std::json::find_string_field(excepted, "authorized_by") + ")"; }
+    let decided = last_body(journal, "decision.reported", task);
+    if len(decided) > 0 { return "decision by " + std::json::find_string_field(decided, "decider") + " via " + std::json::find_string_field(decided, "channel") + " (evidence " + std::json::find_string_field(decided, "evidence") + ")"; }
+    if state == "done" { return "human-reported"; }
+    return "open";
+}
+
 // Every bill filed as evidence whose date falls in [from, to], with its
 // obligation as the record has it; totals by currency; the record's head.
 @unbounded
@@ -356,12 +381,10 @@ fn export_week(from: String, to: String) -> String {
         let mut practice = "";
         if len(task) > 0 {
             let handed = last_body(journal, "task.handed", task);
-            assignee = std::json::find_string_field(handed, "assignee");
+            assignee = assignee_of(journal, task);
             practice = std::json::find_string_field(handed, "acceptance");
             state = state_of(journal, task);
-            let linked = last_body(journal, "completion.linked", task);
-            let excepted = last_body(journal, "completion.excepted", task);
-            completion = if len(linked) > 0 { "evidence " + std::json::find_string_field(linked, "evidence") } else if len(excepted) > 0 { "exception: " + std::json::find_string_field(excepted, "why") + " (authorized by " + std::json::find_string_field(excepted, "authorized_by") + ")" } else if state == "done" { "human-reported" } else { "open" };
+            completion = completion_of(journal, task, state);
             if state != "done" && state != "decided" { open = open + 1; }
         }
         out = out + csv_field(b.id) + "," + csv_field(b.supplier) + "," + csv_field(b.payer) + "," + csv_field(b.purpose) + "," + b.date + "," + b.amount + "," + b.currency + ",pending," + evidence + "," + task + "," + assignee + "," + state + "," + csv_field(completion) + "," + practice + "\n";

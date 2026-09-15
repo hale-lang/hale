@@ -125,6 +125,16 @@ locus MemProtected {
         self.opened = true;
         return true;
     }
+    // Drop the connection and open it again, schema and all. The knowledge
+    // projection's store has done this since its own connection went stale
+    // (the review's second round, finding 4); the protected store never
+    // did, so a database restart left every protected read and erase
+    // failing until the service was restarted (#637).
+    fn redial() -> Bool {
+        self.conn.close();
+        self.opened = false;
+        return self.open();
+    }
     fn put(digest: String, class: String, text: String, at: Int) -> Bool {
         if !self.ready() { self.error = self.why_not(); return false; }
         if !self.open() { return false; }
@@ -135,16 +145,32 @@ locus MemProtected {
         a.add(self.key);
         a.add(to_string(at));
         let r = self.conn.exec_params("INSERT INTO protected_receipts (digest, class, body, stored_at) VALUES ($1, $2, armor(pgp_sym_encrypt($3, $4, 'cipher-algo=aes256')), $5::bigint) ON CONFLICT (digest) DO NOTHING", a);
-        if !r.ok { self.error = "put: " + r.err.kind + " " + r.err.detail; return false; }
-        return true;
+        if r.ok { return true; }
+        // the connection may be gone (a restart, a failover, an idle
+        // timeout): dial again once and try again (#637)
+        if self.redial() {
+            let again = self.conn.exec_params("INSERT INTO protected_receipts (digest, class, body, stored_at) VALUES ($1, $2, armor(pgp_sym_encrypt($3, $4, 'cipher-algo=aes256')), $5::bigint) ON CONFLICT (digest) DO NOTHING", a);
+            if again.ok { self.error = ""; return true; }
+            self.error = "put: " + again.err.kind + " " + again.err.detail;
+            return false;
+        }
+        self.error = "put: " + r.err.kind + " " + r.err.detail + "; dialling again: " + self.error;
+        return false;
     }
     fn erase(digest: String) -> Bool {
         if !self.open() { return false; }
         let a = db::Args { };
         a.add(digest);
         let r = self.conn.exec_params("DELETE FROM protected_receipts WHERE digest = $1", a);
-        if !r.ok { self.error = "erase: " + r.err.kind + " " + r.err.detail; return false; }
-        return true;
+        if r.ok { return true; }
+        if self.redial() {
+            let again = self.conn.exec_params("DELETE FROM protected_receipts WHERE digest = $1", a);
+            if again.ok { self.error = ""; return true; }
+            self.error = "erase: " + again.err.kind + " " + again.err.detail;
+            return false;
+        }
+        self.error = "erase: " + r.err.kind + " " + r.err.detail + "; dialling again: " + self.error;
+        return false;
     }
     // Read as JSON built by the server: a body is an ordinary paragraph,
     // and the driver's tab-separated rows cannot carry one.
@@ -157,8 +183,14 @@ locus MemProtected {
         let a = db::Args { };
         a.add(digest);
         a.add(self.key);
-        let rows = self.conn.query_params("SELECT row_to_json(t) FROM (SELECT class, pgp_sym_decrypt(dearmor(body), $2) AS text, stored_at FROM protected_receipts WHERE digest = $1) t", a);
-        if !rows.ok { self.error = "get: " + rows.err.kind + " " + rows.err.detail; return Protected { }; }
+        let mut rows = self.conn.query_params("SELECT row_to_json(t) FROM (SELECT class, pgp_sym_decrypt(dearmor(body), $2) AS text, stored_at FROM protected_receipts WHERE digest = $1) t", a);
+        if !rows.ok {
+            let first = "get: " + rows.err.kind + " " + rows.err.detail;
+            if !self.redial() { self.error = first + "; dialling again: " + self.error; return Protected { }; }
+            rows = self.conn.query_params("SELECT row_to_json(t) FROM (SELECT class, pgp_sym_decrypt(dearmor(body), $2) AS text, stored_at FROM protected_receipts WHERE digest = $1) t", a);
+            if !rows.ok { self.error = "get: " + rows.err.kind + " " + rows.err.detail; return Protected { }; }
+            self.error = "";
+        }
         if rows.n == 0 { return Protected { }; }
         let nl = std::str::index_of(rows.csv, "\n");
         let row = if nl < 0 { rows.csv } else { rows.csv[0..nl] };

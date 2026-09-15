@@ -19,4 +19,13 @@ fn main() {
     std::test::assert(!app::requested_standing(requested, "sha256:cd"), "only for its own bill");
     std::test::assert(!app::requested_standing(requested + "{\"kind\": \"intent.refused\", \"entity\": \"i1\", \"body\": \"no\"}\n", "sha256:ab"), "and not once it was refused");
     std::test::assert_eq_str(app::add_total(app::add_total("", "CU", "120.00"), "CU", "35.50"), "CU 155.5\n", "totals in Decimal, by currency");
+    // who holds a Task now, and how it was completed (#637)
+    let handed = "{\"kind\": \"task.handed\", \"entity\": \"t1\", \"body\": \"{\\\"assignee\\\": \\\"mara\\\"}\"}\n";
+    let moved = "{\"kind\": \"task.reassigned\", \"entity\": \"t1\", \"body\": \"{\\\"from\\\": \\\"mara\\\", \\\"to\\\": \\\"dev\\\"}\"}\n";
+    let decided = "{\"kind\": \"decision.reported\", \"entity\": \"t1\", \"body\": \"{\\\"decider\\\": \\\"dana\\\", \\\"channel\\\": \\\"mail\\\", \\\"evidence\\\": \\\"sha256:ab\\\"}\"}\n";
+    std::test::assert_eq_str(app::assignee_of(handed, "t1"), "mara", "a handed Task's assignee");
+    std::test::assert_eq_str(app::assignee_of(handed + moved, "t1"), "dev", "after a reassignment, whom it went to");
+    std::test::assert_eq_str(app::completion_of(handed + decided, "t1", "decided"), "decision by dana via mail (evidence sha256:ab)", "a reported decision is the completion");
+    std::test::assert_eq_str(app::completion_of(handed, "t1", "done"), "human-reported", "a person's word");
+    std::test::assert_eq_str(app::completion_of(handed, "t1", "handed"), "open", "open");
 }
