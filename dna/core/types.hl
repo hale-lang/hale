@@ -266,3 +266,10 @@ type Schedule {
     fired: Int = 0;
     paused: Bool = false;
 }
+
+// GH #604 rule 5: whether a person retired, and the successor their
+// retirement named ("" when it named none).
+type RetiredPerson {
+    retired: Bool = false;
+    successor: String = "";
+}
