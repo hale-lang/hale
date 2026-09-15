@@ -1112,6 +1112,7 @@ locus Dna {
         b.string_field("class_applied", if p.kind == "organism" { "organization" } else { p.change_class });
         b.string_field("target", p.target);
         b.string_field("assignee", p.assignee);
+        b.string_field("obligation", p.obligation);
         b.int_field("count", p.count);
         b.string_field("narrative", p.narrative);
         b.string_field("package", p.package);
@@ -1141,6 +1142,8 @@ locus Dna {
             hb.begin_object();
             hb.string_field("work", req.work_id);
             hb.string_field("assignee", p.assignee);
+            // GH #616: which acceptance practice a reported decision answers to
+            hb.string_field("obligation", p.obligation);
             hb.string_field("by", "leader");
             hb.string_field("narrative", handed);
             hb.end_object();
@@ -1936,6 +1939,7 @@ locus Dna {
                                 package: std::json::find_string_field(plan, "package"),
                                 by: std::json::find_string_field(plan, "by"),
                                 assignee: std::json::find_string_field(plan, "assignee"),
+                                obligation: std::json::find_string_field(plan, "obligation"),
                                 parsed: true
                             });
                         } else {

@@ -135,7 +135,8 @@ locus Leader {
             + "class: docs | refactor | feature | application | organization | constitutional | process-policy | topology\n"
             + "target: <the file or locus this concerns, or the asker's>\n"
             + "count: <how many changes this is>\n"
-            + "assignee: <who does it, when kind is person; else none>";
+            + "assignee: <who does it, when kind is person; else none>\n"
+            + "obligation: <when kind is person, the class of obligation it discharges, as an acceptance practice names it (e.g. expense-approval); else none>";
         let r = self.models.ask(ModelRequest {
             attempt_id: req.task_id + "/plan", role: "plan", target: req.target,
             prompt: prompt, context: brief, context_bytes: len(brief) + len(prompt),
@@ -149,6 +150,7 @@ locus Leader {
         let parsed = known_kind && known_class;
         let target = plan_line(text, "target");
         let assignee = plan_line(text, "assignee");
+        let obligation = plan_line(text, "obligation");
         let count = std::str::parse_int(plan_line(text, "count")) or 1;
         TaskPlanned <- Plan {
             org: req.org, task_id: req.task_id, work_id: req.work_id,
@@ -158,7 +160,8 @@ locus Leader {
             count: if count > 0 { count } else { 1 },
             narrative: if r.ok { trim_nl(r.output) } else { "model refused: " + r.refused },
             package: self.last_package, by: self.name, parsed: parsed,
-            assignee: if std::str::lower(assignee) == "none" { "" } else { assignee }
+            assignee: if std::str::lower(assignee) == "none" { "" } else { assignee },
+            obligation: if std::str::lower(obligation) == "none" { "" } else { obligation }
         };
     }
     // What the leader knows before it thinks: its charter, the

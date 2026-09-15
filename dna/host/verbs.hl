@@ -411,6 +411,17 @@ fn board_verb(p: Projection) -> Answer {
     }
     let mut out = "board: " + to_string(mine) + " review(s) need your verdict\n" + lines;
     if leaders > 0 { out = out + "leader: " + to_string(leaders) + " review(s) inside the grant, being decided\n"; }
+    // GH #616: a handed Task a reported decision could not settle
+    let tids = p.task_ids();
+    let ntasks = list_len(tids);
+    let mut waits = "";
+    let mut k = 0;
+    while k < ntasks {
+        let t = p.task_of(nth(tids, k));
+        if t.state == "handed" && len(t.waiting) > 0 { waits = waits + "  " + t.id + " (" + t.assignee + ") waits on a native decision: " + t.waiting + "\n"; }
+        k = k + 1;
+    }
+    if len(waits) > 0 { out = out + "tasks waiting:\n" + waits; }
     let proposals = p.count("appendage.proposed");
     if proposals > 0 {
         out = out + "proposals: " + to_string(proposals) + "\n";

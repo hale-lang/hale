@@ -107,6 +107,7 @@ type Plan {
     package: String = ""; // the knowledge package the plan read ("" = none)
     by: String = "";
     assignee: String = ""; // who does it, when kind is person (GH #604 rule 4)
+    obligation: String = ""; // the class of obligation a person's job discharges (GH #616)
     parsed: Bool = false; // the model's answer named a kind and a class; else the defaults stand
 }
 topic PlanRequested { payload: PlanRequest; subject: "dna.plan.requested"; keyed_by org; }

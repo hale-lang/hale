@@ -102,7 +102,7 @@ fn main() {
     let fleet = arg(4);
     let plan = arg(5);
     let toolchain = std::env::var("HALE_DNA_TOOLCHAIN");
-    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy ");
+    let a = parse_args(rest_args(6), " --to --as --authority --comment --digest --port --observe --repo --fleet --tick --severity --note --dsn --dir --body --outcome --purpose --why --policy --decided-by --via --evidence --class ");
     let mut ans = Answer { ok: false, text: "unknown verb `" + verb + "`" };
     if (verb == "board" || verb == "review") && !membrane_up(root) { let s = sync_record(root); }
     if verb == "fleet" { let s = sync_record(root); }
@@ -149,7 +149,9 @@ fn main() {
         // GH #596 W: `hale dna task done <id> [--as <who>] [--note …]`
         if word(a, 0) == "done" { ans = task_done_verb(root, seed, word(a, 1), flag(a, "--as"), flag(a, "--note")); }
         else if word(a, 0) == "reassign" { ans = task_reassign_verb(root, seed, word(a, 1), flag(a, "--to"), flag(a, "--as")); }
-        else { ans = fail("task: `hale dna task done <id> [--as <who>] [--note <what was done>]` or `hale dna task reassign <id> --to <who> [--as <by>]`"); }
+        // GH #616: `hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest>`
+        else if word(a, 0) == "decide" { ans = task_decide_verb(root, seed, word(a, 1), flag(a, "--decided-by"), flag(a, "--via"), flag(a, "--evidence"), flag(a, "--note"), flag(a, "--as")); }
+        else { ans = fail("task: `hale dna task done <id> [--as <who>] [--note <what was done>]`, `hale dna task reassign <id> --to <who> [--as <by>]` or `hale dna task decide <id> --decided-by <party> --via <channel> --evidence <digest> [--as <reporter>]`"); }
     } else if verb == "effect" {
         // GH #604 rule 3: `hale dna effect resolve <key> --outcome ok|failed`
         if word(a, 0) == "resolve" { ans = effect_resolve_verb(root, seed, word(a, 1), flag(a, "--outcome"), flag(a, "--as"), flag(a, "--note")); }
@@ -167,7 +169,8 @@ fn main() {
         else { ans = body_verb(root, sub, has_flag(a, "--force"), flag(a, "--as")); }
     } else if verb == "receipt" {
         // GH #606: protected evidence
-        ans = receipt_verb(root, word(a, 0), word(a, 1), flag(a, "--to"), flag(a, "--purpose"), flag(a, "--as"), flag(a, "--why"), flag(a, "--policy"));
+        if word(a, 0) == "file" { ans = receipt_file_verb(root, word(a, 1), flag(a, "--class"), flag(a, "--as")); }
+        else { ans = receipt_verb(root, word(a, 0), word(a, 1), flag(a, "--to"), flag(a, "--purpose"), flag(a, "--as"), flag(a, "--why"), flag(a, "--policy")); }
     } else if verb == "schedule" {
         // GH #610: the schedules, and pause/resume as rows
         ans = schedule_verb(root, word(a, 0), word(a, 1), flag(a, "--as"));

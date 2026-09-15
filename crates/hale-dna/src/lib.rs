@@ -30,6 +30,7 @@ macro_rules! core {
 pub const FILES: &[EmbeddedFile] = core![
     "assembly",
     "budget",
+    "decision",
     "editing",
     "journal",
     "knowledge",
