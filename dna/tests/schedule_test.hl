@@ -17,7 +17,12 @@ main locus App {
                 deep: dna::FakeModel { name: "deep", answer: "kind: person\nclass: none\ntarget: none\ncount: 1\nassignee: noor\nreconcile by hand" }
             }
         };
-        opt: dna::Dna = dna::Dna { };
+        // Every organism here is planned. An unplanned one answers any
+        // routed Work on the bus by mutating the repository it runs in —
+        // its default gateway is the working directory — so a bystander
+        // left unplanned beside `one` turned each schedule fire into a
+        // worktree of whatever repository the suite ran from.
+        opt: dna::Dna = dna::Dna { planned: true, org_id: "sched-bystander" };
     }
     @unbounded
     fn rows(kind: String, entity: String) -> Int {
@@ -111,7 +116,7 @@ main locus App {
         std::test::assert_eq_int(self.rows("schedule.fired", "hourly"), 3, "resumed, it fires at the next interval");
 
         // ---- the optimize pass is a schedule
-        self.opt = dna::Dna { optimize_every_ms: 500, org_id: "sched" };
+        self.opt = dna::Dna { optimize_every_ms: 500, org_id: "sched", planned: true };
         let mut n = 0;
         let mut i = 0;
         while i < self.opt.journal.revision() {
