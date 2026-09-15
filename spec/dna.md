@@ -110,7 +110,11 @@ repository:
   appends `task.reassigned` (`from`, `to`, `by`) and the Task stays
   handed. `hale dna retire <who> [--to <successor>]` stops new work
   reaching a person: every handed Task they hold is transferred as its
-  own `task.reassigned` row and `person.retired <who>` records it;
+  own `task.reassigned` row and `person.retired <who>` records it (`by`, `to`, `transferred`). From then
+  no new work reaches them: a job the leader plans for them is handed
+  to that successor, with `retired_assignee` on the `task.handed` row
+  (unassigned when the retirement named none), and a Task is never
+  reassigned to them;
   refused while they hold work and no successor is named — pending
   work is accounted for, never dropped. Refused for a Task that is not
   handed: one the organism is working, or has settled, is not a
@@ -651,7 +655,11 @@ authority.
   restart, a Task born and not settled re-enters the tower from its
   last durable state (`task.resumed <task>`): under the plan in the
   record when there is one, never replanned; planned for the first
-  time when there is none. A Task whose Mutation was in flight settles
+  time when there is none. `task.resumed` is an event of a restart,
+  never a state: a resumed Task not yet settled is still pending, it
+  settles like any other, and a restart that stopped between its
+  `task.resumed` and the dispatch leaves it to be resumed again at the
+  next one. A Task whose Mutation was in flight settles
   `failed` with the Mutation; one whose Mutation is beyond proposal
   waits on that Mutation's outcome, and settles from it when the Work
   that would have settled it is gone. A handed Task is a person's and
