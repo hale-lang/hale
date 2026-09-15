@@ -323,6 +323,10 @@ locus Dna {
         b.string_field("validation", ev.validation);
         b.string_field("retry_of", ev.retry_of);
         b.string_field("data_class", ev.data_class);
+        // GH #611: what was sent is a receipt under the digests above,
+        // so a reviewer reads it byte-exact instead of only proving
+        // something was sent
+        b.string_field("bodies", self.file_bodies(ev));
         b.bool_field("ok", ev.ok);
         b.string_field("refused", ev.refused);
         let now = std::time::now();
@@ -330,6 +334,41 @@ locus Dna {
         b.end_object();
         let x = self.journal.append(self.journal.revision(), "model.called", ev.attempt_id, b.result());
         self.budget.account(ev.cost_micros, now);
+    }
+    // GH #611: file a call's prompt and context as receipts in the
+    // record, under the digests its row names. Only a body that hashes to its digest is
+    // filed (a caller may supply `prompt_digest` for text it did not
+    // send), and a customer-class call files nothing: its digests are
+    // the whole of what the record keeps. Receipts are content-addressed,
+    // so a brief sent a hundred times is stored once.
+    fn file_bodies(ev: ModelEvidence) -> String {
+        if len(ev.prompt) == 0 && len(ev.context) == 0 { return "none"; }
+        if ev.data_class == "customer" { return "withheld (data class customer)"; }
+        // The history reads the record's receipts (`refs/dna/receipts`),
+        // and a body belongs where the record is. An organism whose
+        // receipts are a local file store — a fixture, an embedded use
+        // with no record — keeps the digests only, and never writes a
+        // prompt into whatever directory it happens to run in.
+        if self.verification.receipts.kind() != "git" { return "none (receipts are not the record's: " + self.verification.receipts.kind() + ")"; }
+        let mut filed = 0;
+        let mut wanted = 0;
+        if len(ev.prompt) > 0 && digest_of(ev.prompt) == ev.prompt_digest {
+            wanted = wanted + 1;
+            if self.receipt_holds(ev.prompt) { filed = filed + 1; }
+        }
+        if len(ev.context) > 0 && digest_of(ev.context) == ev.context_digest {
+            wanted = wanted + 1;
+            if self.receipt_holds(ev.context) { filed = filed + 1; }
+        }
+        if wanted == 0 { return "none"; }
+        return if filed == wanted { "stored" } else { "not stored (the receipt store refused)" };
+    }
+    // A body is filed when the store gives it back. A file store whose
+    // directory is not there still names the digest it could not
+    // write, and the row must not say `stored` over nothing.
+    fn receipt_holds(text: String) -> Bool {
+        let d = self.verification.receipts.store(text);
+        return len(d) > 0 && self.verification.receipts.read(d) == text;
     }
     // The window's allowance is spent: journaled once per window, the
     // membrane told; the caller refuses or waits.

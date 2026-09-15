@@ -462,7 +462,27 @@ The organization's models are a catalog in source (GH #583 M1):
 - **The seam.** `ModelBackend` (`identity`, `model_name`, `allows`,
   `capacity_bytes`, `complete`) is what every adapter implements;
   every call publishes `ModelCalled`, which the substrate journals as
-  `model.called` with the time of the call (`at`). Routers return
+  `model.called` with the time of the call (`at`). **The prompt is a
+  receipt (GH #611):** the evidence carries the prompt and the context
+  as sent, and the substrate files each as a receipt in the record
+  (`refs/dna/receipts`) under the `prompt_digest` / `context_digest`
+  the row names — only a body that
+  hashes to its digest, and receipts are content-addressed, so an
+  identical brief is stored once — recording `bodies: stored` (or
+  `none` for a call with neither). An organism whose receipts are not
+  the record's (a file store: a fixture, an embedded use with no
+  record) files nothing and records `bodies: none (receipts are not the
+  record's: file)`. A `customer`-class call files no
+  body: `bodies: withheld (data class customer)`, and its digests are
+  all the record keeps. `hale dna history <attempt>` renders, under each
+  `model.called` row of that attempt, `prompt <digest> (<n> bytes)`, exactly
+  those bytes from the receipt, and `end of prompt` (the same for the
+  context) — never a re-composition; a withheld body says so, and a
+  body this clone lacks says `hale dna sync` fetches it. A wider
+  history (`hale dna history m1`) names the calls and leaves their
+  bodies to each attempt's own, since an editor's prompt carries whole
+  files. The row says `stored` only when the store gives the body back.
+  Routers return
   data, never a backend. Adapters: `OpenAiChat` (the OpenAI chat
   shape: OpenAI, OpenRouter, vLLM, Ollama; `adapter: openai-chat`),
   `AnthropicMessages` (the native Messages API: `system` beside

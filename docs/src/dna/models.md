@@ -218,7 +218,7 @@ otherwise; it falls through to whatever is permitted and has the
 capacity. Which backend answered is recorded, never hidden; what it
 cost is counted here and accounted by the budget.
 
-## Evidence, never the prompt
+## Evidence, and what was sent
 
 Every call publishes `ModelCalled` and the substrate journals it as
 `model.called` on the attempt id:
@@ -235,6 +235,35 @@ time, cost, validation, retry lineage, data class, the refusal
 when there was one, and when the call was made (`at`, which is what
 the budget counts by). `hale dna history m1/a0` shows one attempt's
 calls; the Leader's review calls are on the Review's id.
+
+The prompt and the context are receipts too, filed under the digests
+the row names, so the history of an attempt shows exactly what was
+sent — from the receipt, byte for byte, not rebuilt from today's
+code. The history of a whole change (`hale dna history m1`) names
+its calls and leaves the bodies to each attempt's own:
+
+```text
+$ hale dna history t1/plan
+…
+   14  model.called           t1/plan                      {"adapter": "fake", "backend": "deep", …, "bodies": "stored", …}
+       prompt sha256:5b1e… (934 bytes)
+You are the leader of this project: its architect. An ask has entered. Say what it is, by your charter, the purpose, the law and the ratified practices above; do not widen it.
+Ask: get the supplier's invoice approved
+Target named by the asker: (none)
+Answer with these lines, then one line of reasoning:
+kind: organism | appendage | product | person
+…
+assignee: <who does it, when kind is person; else none>
+       end of prompt
+       context sha256:c09a… (… bytes)
+…
+       end of context
+```
+
+A call whose data class is `customer` files neither: the row keeps
+the digests and says `bodies: withheld (data class customer)`, and
+the history says so instead of showing a body. Receipts travel with
+the record, so a prompt is readable in every clone that syncs it.
 
 ## The editor's grant
 

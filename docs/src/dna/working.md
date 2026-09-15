@@ -214,7 +214,7 @@ history of m1: 37 event(s)
 ```
 
 The whole story of one change: the ask that started it, the sandbox,
-the model calls (what was asked and what it cost, never the prompt),
+the model calls (what was asked, from its receipt, and what it cost),
 each check with its receipt, the review, the verdict, the apply, the
 restart, the outcome. If the organization itself stops mid-way —
 the laptop closes, the host is restarted — the record is what it

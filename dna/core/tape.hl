@@ -271,7 +271,7 @@ locus RecordedModel {
             endpoint: "tape://" + self.name, requested_model: self.inner.model_name(),
             params: "tape=" + key[0..12] + " mode=replay",
             prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
-            context_digest: digest_of(req.context),
+            context_digest: digest_of(req.context), prompt: req.prompt, context: req.context,
             knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
             retry_of: req.retry_of, data_class: req.data_class
         };

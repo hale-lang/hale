@@ -211,11 +211,37 @@ fn history_verb(root: String, entity: String) -> Answer {
             selected = selected + 1;
             let b = if len(e.body) > 96 { e.body[0..96] + "…" } else { e.body };
             lines = lines + std::str::pad_left(to_string(e.seq), 5, " ") + "  " + std::str::pad_right(e.kind, 22, " ") + " " + std::str::pad_right(e.entity, 28, " ") + " " + b + "\n";
+            // GH #611: an attempt's own history shows what each of its
+            // model calls sent, from the receipt, never re-composed. A
+            // wider history names the calls and leaves the bodies to the
+            // attempt's (an editor's prompt carries whole files).
+            if len(entity) > 0 && e.entity == entity && e.kind == "model.called" {
+                let bodies = std::json::find_string_field(e.body, "bodies");
+                lines = lines + body_block(root, "prompt", std::json::find_string_field(e.body, "prompt_digest"), bodies);
+                lines = lines + body_block(root, "context", std::json::find_string_field(e.body, "context_digest"), bodies);
+            }
         }
         i = i + 1;
     }
     if len(entity) > 0 { out = out + "history of " + entity + ": " + to_string(selected) + " event(s)\n"; }
     return answer(out + lines);
+}
+
+// One body of a model call, as the receipt has it: a header naming
+// the digest and the byte count, then exactly those bytes, then a
+// newline and `end of <what>`. The count is what makes the block
+// unambiguous whatever the text ends with.
+fn body_block(root: String, what: String, digest: String, bodies: String) -> String {
+    if len(digest) == 0 { return ""; }
+    let pad = "       ";
+    if std::str::starts_with(bodies, "withheld") { return pad + what + " " + digest + " " + bodies + ": no body is stored\n"; }
+    let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+    let r = receipt_read(root, hexd);
+    if !r.present {
+        let why = if len(bodies) == 0 { " (the call was recorded before prompts were receipts)" } else { " (`hale dna sync` fetches receipts)" };
+        return pad + what + " " + digest + " is not among this clone's receipts" + why + "\n";
+    }
+    return pad + what + " " + digest + " (" + to_string(len(r.text)) + " bytes)\n" + r.text + "\n" + pad + "end of " + what + "\n";
 }
 
 fn mentioned_by_any(e: dna::Event, ids: String) -> Bool {

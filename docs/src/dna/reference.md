@@ -110,7 +110,7 @@ tree, one JSON object per line: `seq`, `kind`, `entity`, `body`,
 | `pressure.remeasured` | `m<n>` | the Task, the declared fitness signals, the outcome |
 | `appendage.proposed` / `appendage.candidate` | a source | the organ proposed / the organization mutation that proposes it |
 | `report.filed` | `r<n>` | the summary since the last report |
-| `model.called` | `<work>/a<n>` or a review id | the model evidence (never the prompt) |
+| `model.called` | `<work>/a<n>` or a review id | the model evidence; the prompt and context are receipts under its digests (`bodies`), none for a customer-class call |
 
 ## `status.json`
 

@@ -20,6 +20,11 @@ behavior.
 - `hale dna body` reads the lease; `hale dna body claim --force` releases a live lease of a body that is gone (a forced `body.claimed` row in your name; that body stops when it next asserts); `hale dna body release [--force]`.
 - `hale dna profile` prints the organism's combination — record, body, head, fleet, knowledge, trust, github, connections — detected from the pieces, never from a stored label; `status` gains `profile:` and `body:` lines. `hale dna new --profile local|remote-body [--remote <url>] [--body <user@host>]` sets the pieces.
 
+### DNA: the prompt is a receipt (GH #611)
+
+- Every model call's `model.called` row named `prompt_digest` and `context_digest`, but the text was never kept: a reviewer could prove a prompt was sent and could not read it. The evidence now carries the prompt and the context as sent, and the substrate files each as a receipt in the record (`refs/dna/receipts`) under the digest the row names (content-addressed, so an identical brief is stored once); the row says `bodies: stored`. An organism whose receipts are a local file store files nothing (`bodies: none (receipts are not the record's: file)`). A `customer`-class call files no body (`bodies: withheld (data class customer)`).
+- `hale dna history <attempt>` renders, under each of that attempt's `model.called` rows, the prompt and the context from their receipts — a header with the digest and byte count, exactly those bytes, and an end line — never a re-composition. A wider history names the calls without their bodies. The Book's "evidence, never the prompt" is replaced accordingly.
+
 ### DNA: schedules — an ask on an interval or a cron, pause/resume, overlap control (GH #610)
 
 - The org chart declares schedules in its `birth()`: `self.core.schedule(dna::Schedule { id, every_ms | cron, ask, requires })`. A declaration is a `schedule.declared` row when new or changed; a malformed cron (five fields, UTC; `*`, `a`, `a-b`, `*/n`, lists; ranges checked) is refused at declaration with a `schedule.refused` row, never when it would first fire. An interval fires once per interval from the first tick; a cron once in the minute it names. Firing is an ordinary ask in the schedule's name (`schedule.fired <id> {task, at}`), planned, handed or proposed, reviewed like any other.
