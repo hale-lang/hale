@@ -5,6 +5,8 @@
 //! relaying anything, once its lease has expired; `profile` reflects a
 //! hand-edited remote without any stored label.
 
+#[path = "support/reap.rs"]
+mod reap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -69,6 +71,7 @@ fn kill_org(app: &Path) {
 #[test]
 fn a_record_admits_one_body_and_a_partitioned_body_stops() {
     let d = std::env::temp_dir().join(format!("hale_dna_body_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let bare = d.join("origin.git");

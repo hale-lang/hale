@@ -5,6 +5,8 @@
 //! its own: an intent offered through the membrane lands in the
 //! organism's Journal, not in the host.
 
+#[path = "support/reap.rs"]
+mod reap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -28,6 +30,7 @@ fn http(port: u16, req: &str) -> String {
 #[test]
 fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
     let d = std::env::temp_dir().join(format!("hale_dna_run_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "orgrun"], &d);
@@ -150,6 +153,7 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
 #[test]
 fn run_refuses_a_project_without_dna() {
     let d = std::env::temp_dir().join(format!("hale_dna_run_nodna_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     std::fs::write(d.join("hale.toml"), "[deps]\n").unwrap();

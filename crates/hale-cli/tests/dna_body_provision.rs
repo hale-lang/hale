@@ -7,6 +7,8 @@
 //! value. A host with no credential for its model says so on the board
 //! at once; one with it hands it to the organization.
 
+#[path = "support/reap.rs"]
+mod reap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -82,6 +84,7 @@ fn stop_host(app: &Path, host: &mut std::process::Child) {
 #[test]
 fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record() {
     let d = std::env::temp_dir().join(format!("hale_dna_prov_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let home_empty = d.join("home-empty");

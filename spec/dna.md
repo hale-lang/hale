@@ -40,7 +40,10 @@ repository:
   `PqProtected` encrypts it at rest with pgcrypto (OpenPGP, AES-256)
   under `HALE_DNA_RECEIPT_KEY` (sixteen characters at least), read into
   a sealed locus and sent to the database only as a query parameter, so
-  an operator must not log statement parameters; `MemProtected` keeps it
+  an operator must not log statement parameters. A query that fails
+  drops the connection, dials again and tries once more, so a database
+  restart does not leave every protected read and erase failing (#637);
+  `MemProtected` keeps it
   for the life of the process. With no service to keep it, the body is
   withheld: `receipt.withheld <digest> {class, by, why}`, and nothing
   holds it. The record keeps the digest and the class either way, so
@@ -250,7 +253,10 @@ repository:
   `kind#seq`), `purpose`, `position`, `via`, `kind`, `subject`, `class`,
   `fact`, `note`. This record then appends `handoff.published` (with
   `peer_row`, the commit it landed as) and, for a Task,
-  `task.transfer_requested`. Only a handed Task crosses. A receipt
+  `task.transfer_requested`. A handoff retried after a crash completes
+  what the first try left (#637): an envelope already in the mailbox is
+  reused, never written twice, and a published Task missing its
+  `task.transfer_requested` gets it. Only a handed Task crosses. A receipt
   crosses as its digest and class; its body never leaves this record. A
   fact whose class the connection does not carry is refused at the edge
   as `handoff.refused`, with nothing written across. The receiving record
@@ -266,7 +272,9 @@ repository:
   connection in force, the envelopes the other record sent to this
   record's mailbox: each acceptance of a handoff published through it is
   admitted once, as
-  `handoff.accepted_by_peer` and, for a Task, `task.transfer_accepted`.
+  `handoff.accepted_by_peer` and, for a Task, `task.transfer_accepted`,
+  each row checked on its own, so a crash between the two is completed at
+  the next sync rather than suppressing it (#637).
   The Task settles only then, the rule retirement follows (GH #604 rule
   5). A closed connection is not read, so history stays in both records
   and nothing further is admitted.

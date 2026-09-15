@@ -49,6 +49,8 @@ main locus App {
     run() {
         let scratch = "/tmp/dna-leaseblocked-" + to_string(std::process::pid());
         std::io::fs::mkdir(scratch) or discard;
+        // whatever this fixture starts under its scratch stops when it does (#637)
+        dna::reap_on_exit(scratch);
         let cache = scratch + "/cache";
         std::io::fs::mkdir(cache) or discard;
         let bare = scratch + "/origin.git";

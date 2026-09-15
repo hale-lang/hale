@@ -67,6 +67,8 @@ main locus App {
 
         let scratch = "/tmp/dna-vault-" + to_string(std::process::pid());
         std::io::fs::mkdir(scratch) or discard;
+        // whatever this fixture starts under its scratch stops when it does (#637)
+        dna::reap_on_exit(scratch);
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\nvaulted");
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         let app = scratch + "/vaulted";

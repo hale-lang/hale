@@ -22,6 +22,17 @@
 
 // ---- running a tool -----------------------------------------------
 
+// Once this process is gone, every process whose command line names a path
+// under `dir` is killed: whatever a fixture (or a tool) started under `dir`
+// — hosts, bodies, services, the tools they run — stops, whether it ended
+// passing, failing an assertion or killed (#637). A watcher in the
+// background, which names `dir` without the trailing `/` and so is not its
+// own target; returns at once.
+fn reap_on_exit(dir: String) {
+    let me = to_string(std::process::pid());
+    let r = run_tool("sh\n-c\n(while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; ps -eo pid=,args= | awk -v d=\"$2/\" 'index($0, d) {print $1}' | xargs -r kill -KILL 2>/dev/null) </dev/null >/dev/null 2>&1 &\nsh\n" + me + "\n" + dir);
+}
+
 type RunResult {
     code: Int = -1;
     stdout: String = "";

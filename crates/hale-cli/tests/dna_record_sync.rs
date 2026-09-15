@@ -6,6 +6,8 @@
 //! both clones append offline and `sync` reconciles them into one
 //! linear record with every event and identical heads.
 
+#[path = "support/reap.rs"]
+mod reap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -36,6 +38,7 @@ fn record(cwd: &Path) -> Vec<serde_json::Value> {
 #[test]
 fn a_person_in_another_clone_asks_and_decides_through_the_record() {
     let d = std::env::temp_dir().join(format!("hale_dna_sync_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let bare = d.join("origin.git");
@@ -160,6 +163,7 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
 #[test]
 fn the_first_sync_carries_a_record_the_remote_does_not_have() {
     let d = std::env::temp_dir().join(format!("hale_dna_sync_boot_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let bare = d.join("origin.git");
@@ -212,6 +216,7 @@ fn the_first_sync_carries_a_record_the_remote_does_not_have() {
 #[test]
 fn a_reconcile_never_rewinds_the_record_and_keeps_rows_appended_meanwhile() {
     let d = std::env::temp_dir().join(format!("hale_dna_sync_swap_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let bare = d.join("origin.git");

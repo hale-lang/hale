@@ -190,6 +190,22 @@ main locus App {
         std::test::assert_eq_int(lines_with(acct_url, mailbox, "\"kind\": \"handoff.received\"\t\"entity\": \"handoff:" + hid7 + "\"\t\"author\": \"riley\"\t\\\"origin_record\\\": \\\"" + firm_genesis + "\\\"\t\\\"purpose\\\": \\\"year-end books\\\"\t\\\"position\\\": \\\"accountant\\\"\t\\\"lineage\\\": \\\"task.born#"), 1, "in the accountant's mailbox for the firm, with origin and purpose");
         std::test::assert_eq_int(record_lines_with(acct_url, "\"kind\": \"handoff.received\""), 0, "and not written into the accountant's journal");
         std::test::assert(std::str::contains(dna_cli(firm, "handoff\nacct\ntask\nt7\n--as\nriley"), "is transfer_requested"), "a Task crosses once");
+        std::test::assert_eq_str(dna::handoff_id(firm_genesis, acct_genesis, "task", "t7"), hid7, "a handoff's id is its origin, its peer, its kind and its subject");
+
+        // ---- a crash after the envelope landed in the accountant's mailbox and
+        // before the firm's own row: handing it again writes nothing twice (#637)
+        self.row("task.born", "t9", "i-t9: send the bank statements");
+        self.row("task.handed", "t9", "{\"work\": \"t9/w\", \"assignee\": \"mara\", \"by\": \"leader\", \"narrative\": \"handed: not a software change\"}");
+        let hid9 = dna::handoff_id(firm_genesis, acct_genesis, "task", "t9");
+        std::io::fs::write_file(firm + "/.git/refs/dna/journal.lock", "held by the test") or discard;
+        let interrupted = dna_cli(firm, "handoff\nacct\ntask\nt9\n--as\nriley");
+        std::io::fs::unlink(firm + "/.git/refs/dna/journal.lock") or discard;
+        std::test::assert(std::str::contains(interrupted, "but this record refused the append"), "the envelope landed, the firm's row did not: " + interrupted);
+        std::test::assert_eq_int(lines_with(acct_url, mailbox, "\"kind\": \"handoff.received\"\t\"entity\": \"handoff:" + hid9 + "\""), 1, "one envelope in the accountant's mailbox");
+        let resumed = dna_cli(firm, "handoff\nacct\ntask\nt9\n--as\nriley");
+        std::test::assert(std::str::contains(resumed, "handoff " + hid9 + ": task t9 [internal] written into record"), "handed again, it completes: " + resumed);
+        std::test::assert_eq_int(lines_with(acct_url, mailbox, "\"kind\": \"handoff.received\"\t\"entity\": \"handoff:" + hid9 + "\""), 1, "still one envelope");
+        std::test::assert_eq_int(record_lines_with(firm, "\"kind\": \"handoff.published\"\t\"entity\": \"handoff:" + hid9 + "\""), 1, "and one row here");
 
         // ---- a customer receipt: the digest crosses, the body never
         let receipt = dna_cli(firm, "handoff\nacct\nreceipt\n" + customer + "\n--as\nriley");
@@ -224,10 +240,18 @@ main locus App {
         std::test::assert(std::str::contains(accepted, "handoff " + hid7 + " accepted by noor under connection `firm`"), "accepted: " + accepted);
         std::test::assert_eq_int(record_lines_with(acct_url, "\"kind\": \"handoff.accepted\"\t\"entity\": \"handoff:" + hid7 + "\"\t\\\"origin_record\\\": \\\"" + firm_genesis + "\\\"\t\\\"purpose\\\": \\\"year-end books\\\""), 1, "admitted into the accountant's own record, with its origin and purpose");
 
+        // t9 is accepted too; the firm read that acceptance and crashed between
+        // its `handoff.accepted_by_peer` and the Task's `task.transfer_accepted` (#637)
+        let accepted9 = dna_cli(acct, "handoff\naccept\n" + hid9 + "\n--as\nnoor");
+        std::test::assert(std::str::contains(accepted9, "accepted by noor"), "t9 accepted there: " + accepted9);
+        self.row("handoff.accepted_by_peer", "handoff:" + hid9, "{\"connection\": \"acct\", \"handoff\": \"" + hid9 + "\", \"accepted_by\": \"noor\"}");
+
         // ---- the firm's Task settles only on that acceptance
         std::test::assert(std::str::contains(dna_cli(firm, "status"), "t7 [transfer_requested]"), "not before the firm reads it");
         let read_back = dna_cli(firm, "handoff\nsync");
-        std::test::assert(std::str::contains(read_back, "handoff sync: 1 acceptance(s) admitted") && std::str::contains(read_back, "task t7 accepted by noor"), "read back: " + read_back);
+        std::test::assert(std::str::contains(read_back, "handoff sync: 2 acceptance(s) admitted") && std::str::contains(read_back, "task t7 accepted by noor") && std::str::contains(read_back, "task t9 accepted by noor"), "read back, the interrupted one completed: " + read_back);
+        std::test::assert_eq_int(record_lines_with(firm, "\"kind\": \"handoff.accepted_by_peer\"\t\"entity\": \"handoff:" + hid9 + "\""), 1, "t9's acceptance row is not written twice");
+        std::test::assert_eq_int(record_lines_with(firm, "\"kind\": \"task.transfer_accepted\"\t\"entity\": \"t9\""), 1, "and its Task settles");
         std::test::assert(std::str::contains(dna_cli(firm, "status"), "t7 [transfer_accepted]"), "settled");
         std::test::assert_eq_int(record_lines_with(firm, "\"kind\": \"task.transfer_accepted\"\t\"entity\": \"t7\"\t\\\"accepted_by\\\": \\\"noor\\\""), 1, "one acceptance row");
         std::test::assert(std::str::contains(dna_cli(firm, "handoff\nsync"), "0 acceptance(s) admitted"), "admitted once");
@@ -248,8 +272,8 @@ main locus App {
         let after_close = dna_cli(firm, "handoff\nsync");
         std::test::assert(std::str::contains(after_close, "0 acceptance(s) admitted") && std::str::contains(after_close, "acct: closed — nothing admitted from it"), "nothing admitted after closing: " + after_close);
         std::test::assert(std::str::contains(dna_cli(firm, "status"), "t8 [transfer_requested]"), "t8 is not settled by it");
-        std::test::assert_eq_int(record_lines_with(firm, "\"kind\": \"handoff.published\""), 4, "history stays here");
-        std::test::assert_eq_int(lines_with(acct_url, mailbox, "\"kind\": \"handoff.received\""), 4, "and there");
+        std::test::assert_eq_int(record_lines_with(firm, "\"kind\": \"handoff.published\""), 5, "history stays here");
+        std::test::assert_eq_int(lines_with(acct_url, mailbox, "\"kind\": \"handoff.received\""), 5, "and there");
 
         let rm = dna::run_tool("rm\n-rf\n" + scratch);
     }

@@ -9,6 +9,8 @@
 //! the Mutation and dissolves its worktree. `git log` gains exactly the
 //! candidate; the organism is still up afterwards.
 
+#[path = "support/reap.rs"]
+mod reap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -87,6 +89,7 @@ fn has(rows: &[(String, String, String)], kind: &str, entity: &str) -> bool {
 #[test]
 fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
     let d = std::env::temp_dir().join(format!("hale_dna_apply_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "orgapply"], &d);

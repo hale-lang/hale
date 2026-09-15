@@ -11,6 +11,8 @@
 //! editor's objective (`knowledge.consulted`); three concerns from one
 //! path become a proposal bound to its parent, the Board's to ratify.
 
+#[path = "support/reap.rs"]
+mod reap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -160,6 +162,8 @@ fn serve<T>(app: &Path, dsn: &str, port: u16, body_of: impl FnOnce(u16) -> T) ->
         .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .env("HALE_DNA_KNOWLEDGE_DSN", dsn)
+        // the protected store is ready only with a key (#637 exercises it)
+        .env("HALE_DNA_RECEIPT_KEY", "a receipt key for the knowledge tests")
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(&log).unwrap())
         .spawn()
@@ -258,6 +262,10 @@ fn the_service_serves_a_real_postgres() {
     assert!(empty_ctx.starts_with("HTTP/1.0 200") || empty_ctx.starts_with("HTTP/1.1 200"), "an empty record is an empty package, not a failure: {empty_ctx}\n{empty_log}");
     assert!(body(&empty_ctx).contains("\"included_n\": 0"), "{empty_ctx}");
     let kill = dsn.clone();
+    let protect = |p: u16, text: &str| {
+        let json = format!("{{\"class\": \"confidential\", \"text\": \"{text}\", \"by\": \"mara\"}}");
+        http(p, &format!("POST /receipt HTTP/1.0\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{json}", json.len()))
+    };
     let ((summary, ctx, idea, after_kill, ctx2, broken, broken_summary, healed), log) = serve(&app, &dsn, free_port(), |p| {
         // the service applies the record on every request
         let s = body(&http(p, "GET / HTTP/1.0\r\nHost: x\r\n\r\n"));
@@ -292,6 +300,18 @@ fn the_service_serves_a_real_postgres() {
         let healed = body(&http(p, "GET /context?target=org%2Fserved%2Fmain&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
         (s, c, i, k, c2, broken, broken_summary, healed)
     });
+    // #637: the protected store dials again when its connection dies. A
+    // record of its own, so the rows these bodies add move no watermark the
+    // assertions above compare.
+    let (dp, appp) = bare_app("pgprot");
+    let ((kept_before, kept_after), plog) = serve(&appp, &dsn, free_port(), |p| {
+        let before = protect(p, "payroll line before the connection dies");
+        let _ = Command::new("psql")
+            .args([&kill, "-v", "ON_ERROR_STOP=1", "-c", "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = current_database()"])
+            .output();
+        (before, protect(p, "payroll line after the connection died"))
+    });
+    let _ = std::fs::remove_dir_all(&dp);
     // GH #613 — the record is the scope. A second record on the same
     // database has its own schema: none of the first record's ideas,
     // its own watermark; and the first record is where it was after the
@@ -345,6 +365,9 @@ fn the_service_serves_a_real_postgres() {
     assert!(after_kill.contains("\"open\": true") && after_kill.contains("\"error\": \"\""), "the service re-established its connection: {after_kill}\n{log}");
     assert!(after_kill.contains(&format!("\"watermark\": {}", n("watermark"))), "and is where it was: {after_kill}");
     assert!(ctx2.contains("\"included_n\": 1") && ctx2.contains(&digest), "the package survives a lost connection: {ctx2}\n{log}");
+    // the protected store kept a body before the connection died and after it
+    assert!(kept_before.starts_with("HTTP/1.0 200") || kept_before.starts_with("HTTP/1.1 200"), "a protected body is kept: {kept_before}\n{plog}");
+    assert!(kept_after.starts_with("HTTP/1.0 200") || kept_after.starts_with("HTTP/1.1 200"), "and one after the connection died, the protected store having dialled again (#637): {kept_after}\n{plog}");
     // a query the database cannot run is a refusal, not an empty answer
     assert!(broken.starts_with("HTTP/1.0 503") || broken.starts_with("HTTP/1.1 503"), "a store that cannot answer is refused, not answered: {broken}\n{log}");
     assert!(body(&broken).contains("knowledge_ideas") || body(&broken).contains("the store cannot answer"), "and says what failed: {}", body(&broken));
@@ -370,6 +393,7 @@ fn with_database(dsn: &str, db: &str) -> String {
 #[test]
 fn init_writes_compose_and_dev_runs_the_knowledge_service_that_tails_the_record() {
     let d = std::env::temp_dir().join(format!("hale_dna_knowledge_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "knowing"], &d, &[]);

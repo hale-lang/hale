@@ -5,6 +5,8 @@
 //! same status projection `hale dna status --json` prints; CI runs
 //! the organism without a browser.
 
+#[path = "support/reap.rs"]
+mod reap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -78,6 +80,7 @@ fn copy_dir(from: &Path, to: &Path) {
 fn the_twelve_steps_run_on_the_acceptance_application() {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
     let d = std::env::temp_dir().join(format!("hale_dna_twelve_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     let app = d.join("orgtwelve");
     copy_dir(&repo.join("dna/acceptance/chat-server"), &app);

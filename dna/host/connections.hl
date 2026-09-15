@@ -126,6 +126,19 @@ fn delivered(root: String, c: Connection, kind: String, entity: String) -> Bool 
     return false;
 }
 
+// The commit in this record's mailbox in the connected record that carries
+// an envelope of `kind` about `entity` ("" when none is there): a handoff
+// retried after its envelope landed and before this record's own row did
+// reuses it instead of writing a second (#637).
+@unbounded
+fn delivered_commit(root: String, c: Connection, kind: String, entity: String) -> String {
+    if !delivered(root, c, kind, entity) { return ""; }
+    let cache = peer_cache(root, c.name);
+    let head = git_out(cache, "rev-parse\n-q\n--verify\n" + EXCHANGE_PREFIX + record_identity(root));
+    if len(head) == 0 { return ""; }
+    return git_out(cache, "log\n--format=%H\n-1\n--fixed-strings\n--grep=" + kind + " " + entity + "\n" + head);
+}
+
 // The envelope rows a mailbox in this clone holds ("" when absent).
 fn mailbox_text(root: String, ref: String) -> String {
     return journal_text_at(root, git_out(root, "rev-parse\n-q\n--verify\n" + ref));
@@ -382,7 +395,22 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
         let s3 = sync_record(root);
         return fail("handoff: " + why + "; refused at the edge (handoff.refused), nothing was written across");
     }
-    if p.has_row("handoff.published", "handoff:" + hid) { return fail("handoff: " + kind + " " + subject + " was already handed into record " + short(c.peer) + " as " + hid); }
+    if p.has_row("handoff.published", "handoff:" + hid) {
+        // published, and a crash before the Task's own row: the row now (#637)
+        if kind == "task" && !has_row(p, "task.transfer_requested", subject, "\"handoff\": \"" + hid + "\"") {
+            let rb = std::json::Builder { };
+            rb.begin_object();
+            rb.string_field("connection", name);
+            rb.string_field("peer", c.peer);
+            rb.string_field("handoff", hid);
+            rb.string_field("by", who);
+            rb.end_object();
+            if !append_as(root, "task.transfer_requested", subject, rb.result(), who) { return fail("the record refused the append"); }
+            let sr = sync_record(root);
+            return answer("handoff " + hid + ": task " + subject + " was already written into record " + short(c.peer) + "; its transfer is recorded here now\n");
+        }
+        return fail("handoff: " + kind + " " + subject + " was already handed into record " + short(c.peer) + " as " + hid);
+    }
     let remote = record_remote(root);
     let b = std::json::Builder { };
     b.begin_object();
@@ -401,7 +429,10 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
     b.string_field("fact", fact);
     b.string_field("note", note);
     b.end_object();
-    let landed = peer_append(root, c, "handoff.received", "handoff:" + hid, b.result(), who);
+    // an envelope already in the other record's mailbox (a crash after it
+    // landed and before this record's row) is not written twice (#637)
+    let existing = delivered_commit(root, c, "handoff.received", "handoff:" + hid);
+    let landed = if len(existing) > 0 { PeerWrite { commit: existing } } else { peer_append(root, c, "handoff.received", "handoff:" + hid, b.result(), who) };
     if len(landed.commit) == 0 { return fail("handoff: " + landed.why + "; nothing was recorded here"); }
     let pb = std::json::Builder { };
     pb.begin_object();
@@ -588,7 +619,6 @@ fn handoff_sync_verb(root: String, seed: String) -> Answer {
             let body = std::json::find_string_field(line, "body");
             if std::json::find_string_field(body, "origin_record") != mine { continue; }
             if !has_row(p, "handoff.published", ent, "\"connection\": \"" + name + "\"") { continue; }
-            if p.has_row("handoff.accepted_by_peer", ent) { continue; }
             let mut kind = "";
             let mut subject = "";
             let mut i = 0;
@@ -597,6 +627,11 @@ fn handoff_sync_verb(root: String, seed: String) -> Answer {
                 if e.kind == "handoff.published" && e.entity == ent { kind = std::json::find_string_field(e.body, "kind"); subject = std::json::find_string_field(e.body, "subject"); }
                 i = i + 1;
             }
+            // each row on its own, so a crash between the two is completed at
+            // the next sync instead of suppressing it (#637)
+            let peer_row = p.has_row("handoff.accepted_by_peer", ent);
+            let transfer = kind == "task" && !has_row(p, "task.transfer_accepted", subject, "\"handoff\": \"" + ent[8..len(ent)] + "\"");
+            if peer_row && !transfer { continue; }
             let by = std::json::find_string_field(body, "by");
             let b = std::json::Builder { };
             b.begin_object();
@@ -606,8 +641,12 @@ fn handoff_sync_verb(root: String, seed: String) -> Answer {
             b.string_field("accepted_by", by);
             b.string_field("note", std::json::find_string_field(body, "note"));
             b.end_object();
-            if !append_as(root, "handoff.accepted_by_peer", ent, b.result(), "") { return fail("the record refused the append"); }
-            if kind == "task" { let t = append_as(root, "task.transfer_accepted", subject, b.result(), ""); }
+            if !peer_row {
+                if !append_as(root, "handoff.accepted_by_peer", ent, b.result(), "") { return fail("the record refused the append"); }
+            }
+            if transfer {
+                if !append_as(root, "task.transfer_accepted", subject, b.result(), "") { return fail("the record refused the append"); }
+            }
             out = out + "  " + ent[8..len(ent)] + ": " + kind + " " + subject + " accepted by " + by + " in record " + short(c.peer) + "\n";
             n = n + 1;
         }

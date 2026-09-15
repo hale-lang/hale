@@ -45,6 +45,17 @@ fn dna_fixtures_pass() {
         stderr
     );
     assert!(stdout.contains(", 0 failed"), "expected a passing summary, got:\n{}", stdout);
+    // #637: every fixture's scratch is reaped when the fixture ends
+    // (`dna::reap_on_exit`); nothing a fixture started outlives the run
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    let ps = Command::new("ps").args(["-eo", "pid=,args="]).output().expect("ps");
+    let me = std::process::id().to_string();
+    let left: Vec<String> = String::from_utf8_lossy(&ps.stdout)
+        .lines()
+        .filter(|l| l.contains("/tmp/dna-") && l.split_whitespace().next() != Some(me.as_str()))
+        .map(str::to_string)
+        .collect();
+    assert!(left.is_empty(), "processes a DNA fixture started are still running:\n{}", left.join("\n"));
 }
 
 #[test]

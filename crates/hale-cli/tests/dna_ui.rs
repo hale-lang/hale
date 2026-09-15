@@ -4,6 +4,8 @@
 //! form becomes a `review.verdict` row in the record, as the CLI's
 //! would.
 
+#[path = "support/reap.rs"]
+mod reap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -56,6 +58,7 @@ fn main() {
 #[test]
 fn the_surface_serves_the_record_and_a_verdict_from_the_form_lands_in_it() {
     let d = std::env::temp_dir().join(format!("hale_dna_ui_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
