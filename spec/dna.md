@@ -179,7 +179,10 @@ repository:
   --classes <internal,customer,confidential> [--by <who>]` reads the
   other record's identity — its genesis, the root commit of its journal,
   which every record publishes as a blob under `refs/dna/identity` when it
-  syncs — and nothing else of it; it refuses this record's own, and appends `connection.proposed` (`name`, `url`, `peer`,
+  syncs (until a push of it to the remote as it is now has succeeded —
+  `dna.identitypublished` names that remote and blob — each sync asks the
+  remote and pushes it, never forced, and `sync` says when it could not)
+  — and nothing else of it; it refuses this record's own, and appends `connection.proposed` (`name`, `url`, `peer`,
   `position`, `purpose`, `classes`, `by`, `review_id`) with a Board
   Review `c-<name>-<n>`. The connection is in force once a `board`
   verdict approves that Review from someone other than its proposer —

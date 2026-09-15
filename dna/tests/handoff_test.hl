@@ -113,6 +113,33 @@ main locus App {
         std::test::assert(len(firm_genesis) == 40 && firm_genesis != acct_genesis, "two records: " + firm_genesis + " " + acct_genesis);
         std::test::assert_eq_str(dna::trim_nl(in_dir(acct_url, "git\ncat-file\n-p\nrefs/dna/identity").stdout), acct_genesis, "a record publishes its identity when it syncs");
 
+        // a record synced before it had a remote publishes its identity once
+        // it has one, and a push of it the remote refused is tried again
+        let made_late = in_dir(scratch, toolchain() + "\ndna\nnew\nlate");
+        std::test::assert_eq_int(made_late.code, 0, "hale dna new late: " + made_late.stdout + made_late.stderr);
+        let late = scratch + "/late";
+        let l1 = in_dir(late, "git\nconfig\nuser.name\nlee");
+        let l2 = in_dir(late, "git\nconfig\nuser.email\nlee@local");
+        let l3 = in_dir(late, "git\nadd\n-A");
+        let l4 = in_dir(late, "git\ncommit\n-q\n-m\nthe app");
+        let local_only = in_dir(late, toolchain() + "\ndna\nsync");
+        std::test::assert_eq_int(local_only.code, 0, "synced with no remote: " + local_only.stdout + local_only.stderr);
+        let late_url = scratch + "/late.git";
+        let l5 = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + late_url);
+        let refuse_flag = scratch + "/refuse-identity";
+        std::io::fs::write_file(refuse_flag, "refuse") or discard;
+        std::io::fs::write_file(late_url + "/hooks/pre-receive", "#!/bin/sh\nwhile read old new ref; do if [ \"$ref\" = refs/dna/identity ] && [ -f \"" + refuse_flag + "\" ]; then echo refused by the test >&2; exit 1; fi; done\nexit 0\n") or discard;
+        let l6 = dna::run_tool("chmod\n+x\n" + late_url + "/hooks/pre-receive");
+        let l7 = in_dir(late, "git\nremote\nadd\norigin\n" + late_url);
+        let late_genesis = dna::trim_nl(in_dir(late, "git\nrev-list\n--max-parents=0\nrefs/dna/journal").stdout);
+        let refused_sync = in_dir(late, toolchain() + "\ndna\nsync");
+        std::test::assert(refused_sync.code == 0 && std::str::contains(refused_sync.stdout + refused_sync.stderr, "could not be published to origin"), "a refused identity push is said: " + refused_sync.stdout + refused_sync.stderr);
+        std::test::assert(in_dir(late_url, "git\ncat-file\n-p\nrefs/dna/identity").code != 0 && in_dir(late_url, "git\nrev-parse\n-q\n--verify\nrefs/dna/journal").code == 0, "the journal is published, the identity not yet");
+        std::io::fs::unlink(refuse_flag) or discard;
+        let retried = in_dir(late, toolchain() + "\ndna\nsync");
+        std::test::assert_eq_int(retried.code, 0, "synced again: " + retried.stdout + retried.stderr);
+        std::test::assert_eq_str(dna::trim_nl(in_dir(late_url, "git\ncat-file\n-p\nrefs/dna/identity").stdout), late_genesis, "the next sync publishes it: " + retried.stdout + retried.stderr);
+
         // the accountant's private history: another client's affairs
         self.k = dna::GitJournal { repo: acct };
         self.k.refresh();
