@@ -1435,10 +1435,6 @@ locus Dna {
     @unbounded
     fn settle_spend(op: String, spent: String) -> String {
         let child = self.boundary.child;
-        let moved = self.journal.refresh();
-        let rev = self.journal.revision();
-        if !self.spend_reserved(child, op, rev) { return "no reservation `" + op + "` for " + child; }
-        if len(self.spent_of(child, op, rev)) > 0 { return "`" + op + "` is already settled"; }
         let v = std::str::parse_decimal(spent) or - 1.0d;
         if v < 0.0d { return "spent: `" + spent + "` is not a decimal"; }
         let b = std::json::Builder { };
@@ -1446,8 +1442,21 @@ locus Dna {
         b.string_field("op", op);
         b.string_field("spent", spent);
         b.end_object();
-        let x = self.journal.append(self.journal.revision(), "grant.released", child, b.result());
-        return if x.ok { "" } else { "the record refused the settlement: " + x.error };
+        let body = b.result();
+        // once, under contention too: appended only at the revision the
+        // "not yet settled" was read at, read again when the record moved
+        let mut tries = 0;
+        while tries < 20 {
+            let moved = self.journal.refresh();
+            let rev = self.journal.revision();
+            if !self.spend_reserved(child, op, rev) { return "no reservation `" + op + "` for " + child; }
+            if len(self.spent_of(child, op, rev)) > 0 { return "`" + op + "` is already settled"; }
+            let x = self.journal.append_exact(rev, "grant.released", child, body);
+            if x.ok { return ""; }
+            if x.error != "stale_revision" { return "the record refused the settlement: " + x.error; }
+            tries = tries + 1;
+        }
+        return "contention: the record moved under twenty attempts to settle `" + op + "`";
     }
     // An admission is carried out only under the grant it was made
     // under: a contraction or revocation since then advanced the epoch,
@@ -1461,15 +1470,59 @@ locus Dna {
             let x = self.journal.append(self.journal.revision(), "grant.fenced", self.boundary.child, why);
             return why;
         }
+        // time is authority too: an admission is carried out only while the
+        // grant it was made under has not expired
+        let expires = self.boundary.effective().expires;
+        if expires > 0 && std::time::now() >= expires {
+            let why = "expired: the grant `" + a.op + "` was admitted under expired at " + std::time::iso8601(std::time::time_from_unix(expires));
+            let y = self.journal.append(self.journal.revision(), "grant.fenced", self.boundary.child, why);
+            return why;
+        }
         return "";
+    }
+    // A revocation is the record's, not the live boundary's alone: read
+    // back at birth, it leaves nothing granted and the epoch where it left
+    // it, before anything is admitted. A row from before the body was
+    // structured (`by <who>; epoch <n>`) is read too.
+    @unbounded
+    fn restore_revocations() {
+        let child = self.boundary.child;
+        if len(child) == 0 { return; }
+        let n = self.journal.revision();
+        let mut revoked_at = -1;
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "grant.revoked" && e.entity == child {
+                let recorded = std::json::find_int_field(e.body, "epoch");
+                if recorded > 0 {
+                    revoked_at = recorded;
+                } else {
+                    let at = std::str::index_of(e.body, "epoch ");
+                    revoked_at = if at < 0 { 1 } else { std::str::parse_int(std::str::trim(e.body[(at + 6)..len(e.body)])) or 1 };
+                }
+            }
+            i = i + 1;
+        }
+        if revoked_at >= 0 { self.boundary.restore_revocation(revoked_at); }
     }
     // The parent revokes the child's grant: nothing is left granted,
     // and every earlier admission is fenced.
     fn revoke_grant(requested_by: String) -> Bool {
         let parent = if len(self.ceiling.child) > 0 { self.ceiling.child } else { "board" };
-        if !self.boundary.revoke(requested_by, parent) { return false; }
-        let x = self.journal.append(self.journal.revision(), "grant.revoked", self.boundary.child, "by " + requested_by + "; epoch " + to_string(self.boundary.current_grant().authority_epoch));
-        return true;
+        // the parent's alone: a refusal is the boundary's to audit
+        if requested_by == self.boundary.child || requested_by != parent { return self.boundary.revoke(requested_by, parent); }
+        // recorded before it takes effect, so a restart restores it; a
+        // revocation the record refuses did not happen
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("by", requested_by);
+        b.string_field("parent", parent);
+        b.int_field("epoch", self.boundary.current_grant().authority_epoch + 1);
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "grant.revoked", self.boundary.child, b.result());
+        if !x.ok { return false; }
+        return self.boundary.revoke(requested_by, parent);
     }
     // A staged mutation: assessed under the boundary, reviewed per
     // policy, and NEVER applied by this assembly's deployment.
@@ -1691,6 +1744,8 @@ locus Dna {
     // rehydrated here.
     @unbounded
     fn rehydrate() {
+        // a revocation in the record binds before anything is admitted
+        self.restore_revocations();
         let n = self.journal.revision();
         let mut i = 0;
         // durable ids continue where the Journal left them

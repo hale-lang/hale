@@ -211,11 +211,18 @@ repository:
   record in between makes it stale, never re-appended at the tail — so
   two children cannot each spend the same remainder. A refusal is
   `grant.refused <child>` naming the field. `Dna.settle_spend(op,
-  spent)` appends `grant.released {op, spent}` once, and the window
-  counts what was spent from then on. A contraction advances the
+  spent)` appends `grant.released {op, spent}` once — under contention
+  too: the row is appended with `append_exact` at the revision "not yet
+  settled" was read at, and read again when the record moved — and the
+  window counts what was spent from then on. A contraction advances the
   epoch, and so does `Dna.revoke_grant(by)` (the parent's only; nothing
-  is left granted, `grant.revoked`); `Dna.admits(admission)` refuses an
-  admission made under an older epoch (`grant.fenced`). The generated
+  is left granted). A revocation is **recorded before it takes effect**,
+  `grant.revoked <child> {by, parent, epoch}` — one the record refuses
+  did not happen — and an organism born over the record restores it
+  before anything is admitted, so a restart never restores revoked
+  authority. `Dna.admits(admission)` refuses an admission made under an
+  older epoch, or whose grant has expired by the time it is carried out
+  (`grant.fenced`). The generated
   law adds `money_only_through_the_substrate: forbid reaches(positions,
   effects(money)) avoiding substrate`, with `effect money;` declared in
   the core; an organization's existing `dna/org/law.hl` is
