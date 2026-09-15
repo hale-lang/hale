@@ -38,6 +38,34 @@ locus RacingJournal {
     fn verify_chain() -> Bool { return self.inner.verify_chain(); }
 }
 
+// A journal that refuses the first `refusals` appends of one kind, as a
+// record that cannot be written refuses them.
+locus RefusingJournal {
+    params {
+        inner: dna::MemJournal = dna::MemJournal { };
+        kind: String = "";
+        refusals: Int = 0;
+    }
+    fn refused(kind: String) -> Bool {
+        if kind != self.kind || self.refusals <= 0 { return false; }
+        self.refusals = self.refusals - 1;
+        return true;
+    }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if self.refused(kind) { return dna::AppendResult { error: "io" }; }
+        return self.inner.append(self.inner.revision(), kind, entity, body);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if self.refused(kind) { return dna::AppendResult { error: "io" }; }
+        return self.inner.append_exact(expected, kind, entity, body);
+    }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+}
+
 fn spend(id: String, amount: String, currency: String) -> dna::Spend {
     return dna::Spend { id: id, amount: amount, currency: currency, counterparty: "acme", route: "bank" };
 }
@@ -48,6 +76,9 @@ main locus App {
         billing: dna::Dna = dna::Dna { };
         restarted: dna::Dna = dna::Dna { };
         billing_restarted: dna::Dna = dna::Dna { };
+        billing_equal: dna::Dna = dna::Dna { };
+        billing_lower: dna::Dna = dna::Dna { };
+        refusing: dna::Dna = dna::Dna { };
         brief: dna::Dna = dna::Dna { };
         racy: dna::Dna = dna::Dna { };
     }
@@ -168,6 +199,46 @@ main locus App {
         };
         std::test::assert(std::str::starts_with(self.billing_restarted.admits(b1), "fenced: the grant changed after `b1` was admitted (epoch 0 -> 1)"), "an admission fenced by a contraction stays fenced after a restart: " + self.billing_restarted.admits(b1));
         std::test::assert_eq_int(self.billing_restarted.ceiling.current_grant().max_magnitude, 5, "and the ceiling's magnitude stays halved");
+        // …and when the authored ceiling is changed to the contracted limit,
+        // or below it: the recorded epoch and review hold, the stricter
+        // magnitude binds
+        self.billing_equal = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            boundary: dna::AutonomyBoundary { child: "billing", grant: dna::Grant { child: "billing", classes: "docs", max_magnitude: 4, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
+            ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 5, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
+            org_id: "billing-equal"
+        };
+        std::test::assert(std::str::starts_with(self.billing_equal.admits(b1), "fenced: the grant changed after `b1` was admitted (epoch 0 -> 1)") && self.billing_equal.ceiling.current_grant().review == "pre", "an authored ceiling at the contracted limit keeps the recorded epoch and review: " + self.billing_equal.admits(b1) + " " + self.billing_equal.ceiling.current_grant().review);
+        self.billing_lower = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            boundary: dna::AutonomyBoundary { child: "billing", grant: dna::Grant { child: "billing", classes: "docs", max_magnitude: 4, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
+            ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 4, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
+            org_id: "billing-lower"
+        };
+        std::test::assert(std::str::starts_with(self.billing_lower.admits(b1), "fenced: the grant changed after `b1` was admitted (epoch 0 -> 1)") && self.billing_lower.ceiling.current_grant().max_magnitude == 4 && self.billing_lower.ceiling.current_grant().review == "pre", "a stricter authored ceiling keeps them too, at its own magnitude: " + self.billing_lower.admits(b1));
+
+        // a contraction the record refuses admits nothing until it is recorded
+        self.refusing = dna::Dna {
+            journal: RefusingJournal { kind: "grant.contracted", refusals: 3 },
+            boundary: dna::AutonomyBoundary { child: "desk", grant: dna::Grant { child: "desk", classes: "docs", max_magnitude: 4, review: "post", amounts: "USD 500", window: "none", counterparties: "acme", routes: "bank" } },
+            ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 10, review: "post", amounts: "USD 500", window: "none", counterparties: "acme", routes: "bank" } },
+            org_id: "refusing"
+        };
+        let held = self.refusing.reserve(spend("r1", "10", "USD"));
+        std::test::assert(held.ok, "reserved before the contraction: " + held.refused);
+        self.refusing.ceiling_outcome(false);
+        self.refusing.ceiling_outcome(false);
+        let while_unrecorded = self.refusing.reserve(spend("r2", "10", "USD"));
+        std::test::assert(!while_unrecorded.ok && std::str::contains(while_unrecorded.refused, "the grant's contraction could not be recorded (io)"), "nothing is reserved while the contraction is not in the record: " + while_unrecorded.refused);
+        std::test::assert(std::str::contains(self.refusing.admits(held), "nothing is admitted until the record holds it"), "nor carried out: " + self.refusing.admits(held));
+        std::test::assert(std::str::starts_with(self.refusing.admits(held), "fenced: the grant changed after `r1` was admitted (epoch 0 -> 1)"), "once the record takes the contraction, the earlier admission is fenced: " + self.refusing.admits(held));
+        let mut contracted_rows = 0;
+        let mut k = 0;
+        while k < self.refusing.journal.revision() {
+            if self.refusing.journal.read(k).kind == "grant.contracted" { contracted_rows = contracted_rows + 1; }
+            k = k + 1;
+        }
+        std::test::assert_eq_int(contracted_rows, 1, "and the record holds it once");
 
         // revocation is the parent's; afterwards nothing is granted
         std::test::assert(!self.app.revoke_grant("app"), "a child cannot revoke its own grant");

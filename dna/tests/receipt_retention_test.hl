@@ -51,6 +51,13 @@ main locus App {
         return n;
     }
     run() {
+        // what an erasure does from what the store answered
+        std::test::assert_eq_str(dna::protected_erase_step(true, "", false), "", "a kept body, not yet redacted: record, then erase");
+        std::test::assert_eq_str(dna::protected_erase_step(true, "", true), "", "a kept body under a recorded redaction: erase it");
+        std::test::assert_eq_str(dna::protected_erase_step(false, "", true), "already", "no body, redaction recorded: already redacted");
+        std::test::assert_eq_str(dna::protected_erase_step(false, "", false), "", "no body, never kept: the redaction is recorded");
+        std::test::assert_eq_str(dna::protected_erase_step(false, "get: connection refused", false), "unread: get: connection refused", "a store that could not read records nothing");
+        std::test::assert_eq_str(dna::protected_erase_step(false, "get: connection refused", true), "unread: get: connection refused", "and never says already redacted");
         let scratch = "/tmp/dna-retention-" + to_string(std::process::pid());
         std::io::fs::mkdir(scratch) or discard;
         let bare = scratch + "/origin.git";

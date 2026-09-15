@@ -73,7 +73,9 @@ repository:
   `Dna.redact_evidence` alike, for a protected body too: both hand a
   classified receipt to the knowledge service, which erases a body still
   kept under a recorded redaction and answers `already redacted` once
-  nothing is left. The record keeps the digest, so
+  nothing is left. A store that cannot read the body (its read failed,
+  as opposed to finding none) records nothing and reports nothing
+  erased: 503, redact again once it answers (`protected_erase_step`). The record keeps the digest, so
   provenance survives and a reader learns the body is gone — the service
   answers a read with 410 `redacted by … under …`, and `hale dna history`
   says so under a redacted prompt. Every `sync` deletes redacted
@@ -263,8 +265,12 @@ repository:
   contracts, and the record says so (`grant.contracted <parent>`
   `{boundary, from, to, epoch, binds, note}`, appended before the
   contraction takes effect). An organism born over the record restores
-  the last contraction of its ceiling — its magnitude and its epoch —
-  before anything is admitted, as it restores a revocation. A child born wider than its
+  the last contraction of its ceiling — its epoch and `pre` review
+  whatever the authored ceiling now says, and the stricter of the
+  recorded and authored magnitudes — before anything is admitted, as it
+  restores a revocation. A contraction whose row the record refuses
+  still binds live, and is appended again before every `reserve` and
+  `admits`; until the record holds it, nothing is admitted. A child born wider than its
   ceiling is the early error: `grant.refused <child>` names what is
   wider, and the ceiling binds it from birth. Law layers by adoption:
   every position lives under the org program's main, which adopts the
@@ -488,7 +494,10 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   outlasts a takeover starts and relays nothing, and the host exits 3.
   **The renewal and the fence do not wait on the host.** Beside the
   host runs the body fence (the host binary's `body-fence`), which
-  renews the lease every 10s with every git call bounded to 8s and
+  renews the lease every 10s with every git call bounded to 8s — and
+  to the deadline it last proved (the lease's expiry less 5s,
+  `.hale/dna/body.deadline`), so the calls of one renewal together cannot
+  outlast the lease — and
   writes what it proved to `.hale/dna/body.fence.status`, each line
   prefixed with its host's pid; the host reads its own lines there
   instead of renewing. The fence's mandate is `.hale/dna/body.fence`,
@@ -496,7 +505,9 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   host (a host restarted on the same clone) stops and kills nothing. When the lease is someone
   else's or released, when the fence cannot prove it within 5s of its
   expiry, or when the host is gone, the fence kills the organization
-  and the expression (by their pid files) and says why, and the host
+  and the expression (by their pid files), each with every process it
+  started — the tree frozen, then killed, since a tool run through
+  `run_tool` has a process group of its own — and says why, and the host
   exits 3 when it next looks. A host blocked in a sync, a build or an
   observation window therefore cannot keep its organism executing past
   the lease; while the remote cannot be reached the lease is kept
