@@ -206,6 +206,25 @@ locus Host {
         return "";
     }
     // Build a seed; its binary path, or "" (the error said).
+    // The lease proved again at the moment a process starts: renewed now,
+    // and still this host's. A build longer than the lease's life, during
+    // which another body took the lease, starts nothing (the review of
+    // GH #617: the organism must never run under a lease that is not ours).
+    fn body_assert(what: String) -> Bool {
+        let now = std::time::now();
+        let r = body_renew(self.root, self.lease, now);
+        if !r.ok {
+            if now < self.lease.expires { return true; }
+            self.say("before starting " + what + ": the body lease could not be renewed and has expired; nothing is started");
+            return false;
+        }
+        if !r.present || r.holder != self.holder {
+            self.say("before starting " + what + ": the body lease is no longer mine (" + (if len(r.holder) > 0 && r.holder != self.holder { "held by " + r.holder } else { "released" }) + "); nothing is started");
+            return false;
+        }
+        self.lease = r;
+        return true;
+    }
     fn build_seed(seed_dir: String) -> String {
         let b = dna::run_tool(self.hale + "\nbuild\n" + seed_dir);
         if b.code != 0 { self.say("`hale build " + seed_dir + "` failed"); return ""; }
@@ -371,6 +390,7 @@ locus Host {
         let expression = (if rollback { "rollback " } else { "" }) + shape_of(art) + " build " + self.sha12(bin);
         stop_proc(self.org);
         self.remove_sockets();
+        if !self.body_assert("the organization again") { self.stop_body(3); }
         self.org = start(self.dna_dir, "org", self.root, self.child_envs(id, expression), bin);
         self.org_log = 0;
         let w = write_text(self.dna_dir + "/org.pid", to_string(self.org.pid)) or false;
@@ -463,6 +483,7 @@ locus Host {
         let shape = shape_of(current);
         let expression = (if rollback { "rollback " } else { "" }) + shape + " build " + self.sha12(bin);
         if self.app.pid > 0 { stop_proc(self.app); }
+        if !self.body_assert("the expression again") { self.stop_body(3); }
         self.app = start(self.dna_dir, "app", self.root, self.child_envs(id, expression), bin);
         self.app_log = 0;
         let pw = write_text(self.dna_dir + "/app.pid", to_string(self.app.pid)) or false;
@@ -549,6 +570,9 @@ locus Host {
             let g = github_sync(self.root, self.seed);
             if g.ok { print(indent_lines(dna::trim_nl(g.text), "hale dna " + self.verb + ": github: ")); } else { self.say("github: " + g.text); }
         }
+        // the sync above may have blocked past the lease's life: prove it
+        // again before relaying anything onto the membrane
+        if !self.body_alive() { self.stop_body(3); }
         let n = self.relay_record_membrane();
         if n > 0 { self.say("relayed " + to_string(n) + " fact(s) from the record onto the membrane"); let s2 = sync_record(self.root); }
         self.write_status();
@@ -598,6 +622,10 @@ locus Host {
         self.remove_sockets();
         std::io::fs::unlink(self.dna_dir + "/org.log") or discard;
         std::io::fs::unlink(self.dna_dir + "/app.log") or discard;
+        if !self.body_assert("the organization") {
+            if self.knowledge.pid > 0 { stop_proc(self.knowledge); }
+            std::process::exit(3);
+        }
         self.org = start(self.dna_dir, "org", self.root, self.child_envs("", ""), org_bin);
         if self.org.pid <= 0 { self.say("cannot start " + org_bin); std::process::exit(1); }
         let pw = write_text(self.dna_dir + "/org.pid", to_string(self.org.pid)) or false;
@@ -611,6 +639,11 @@ locus Host {
             let bin = self.build_seed(self.seed_dir());
             if len(bin) == 0 { stop_proc(self.org); std::process::exit(1); }
             self.app_bin = bin;
+            if !self.body_assert("the expression") {
+                stop_proc(self.org);
+                if self.knowledge.pid > 0 { stop_proc(self.knowledge); }
+                std::process::exit(3);
+            }
             self.app = start(self.dna_dir, "app", self.root, self.child_envs("", ""), bin);
             if self.app.pid <= 0 { self.say("cannot start " + bin); stop_proc(self.org); std::process::exit(1); }
             let aw = write_text(self.dna_dir + "/app.pid", to_string(self.app.pid)) or false;
