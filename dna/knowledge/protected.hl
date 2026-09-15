@@ -33,6 +33,8 @@ interface ProtectedBodies {
     // keeps the first.
     fn put(digest: String, class: String, text: String, at: Int) -> Bool;
     fn get(digest: String) -> Protected;
+    // Remove a body (GH #606 redaction); true when it is gone.
+    fn erase(digest: String) -> Bool;
     fn last_error() -> String;
 }
 
@@ -72,6 +74,16 @@ locus MemProtected {
         return Protected { };
     }
     fn last_error() -> String { return ""; }
+    @unbounded
+    fn erase(digest: String) -> Bool {
+        let mut i = 0;
+        while i < self.rows.len() {
+            let r = self.rows.get(i) or ProtectedRow { };
+            if r.digest == digest { self.rows.set(i, ProtectedRow { }) or discard; }
+            i = i + 1;
+        }
+        return !self.get(digest).present;
+    }
 }
 
 @sealed locus PqProtected {
@@ -126,9 +138,20 @@ locus MemProtected {
         if !r.ok { self.error = "put: " + r.err.kind + " " + r.err.detail; return false; }
         return true;
     }
+    fn erase(digest: String) -> Bool {
+        if !self.open() { return false; }
+        let a = db::Args { };
+        a.add(digest);
+        let r = self.conn.exec_params("DELETE FROM protected_receipts WHERE digest = $1", a);
+        if !r.ok { self.error = "erase: " + r.err.kind + " " + r.err.detail; return false; }
+        return true;
+    }
     // Read as JSON built by the server: a body is an ordinary paragraph,
     // and the driver's tab-separated rows cannot carry one.
     fn get(digest: String) -> Protected {
+        // the error is this read's, not one left by an earlier call: an
+        // absent body with no error is absent
+        self.error = "";
         if !self.ready() { self.error = self.why_not(); return Protected { }; }
         if !self.open() { return Protected { }; }
         let a = db::Args { };

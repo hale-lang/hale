@@ -367,6 +367,22 @@ locus ReceiptVault {
         }
         return std::json::find_string_field(body, "digest");
     }
+    // Ask the service to erase a protected body; "" when it did, else why.
+    @unbounded
+    fn erase(digest: String, by: String, why: String, policy: String) -> String {
+        if !self.ready() { return "no knowledge service"; }
+        self.last_error = "";
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("by", by);
+        b.string_field("why", why);
+        b.string_field("policy", policy);
+        b.end_object();
+        let resp = std::http::post(self.url + "/receipt/" + url_encode(digest) + "/erase", std::bytes::from_string(b.result()), "application/json") or self.call_failed(err);
+        if resp.status == 200 { return ""; }
+        if resp.status == 0 { return self.last_error; }
+        return std::json::find_string_field(std::str::from_bytes(resp.body), "error");
+    }
     @unbounded
     fn read(digest: String, reader: String, purpose: String) -> VaultRead {
         if !self.ready() { return VaultRead { refused: "no knowledge service" }; }
@@ -379,4 +395,17 @@ locus ReceiptVault {
         }
         return VaultRead { present: true, class: std::json::find_string_field(body, "class"), text: std::json::find_string_field(body, "text") };
     }
+}
+
+// What an erasure of a protected body does, from what the store answered
+// (the third review of #628): "" to record the redaction when it is not in
+// the record yet and erase the body when there is one; `unread: <why>` when
+// the store could not say whether it keeps the body — nothing is recorded,
+// nothing reported erased; `already` when the record holds the redaction
+// and the store, answering, keeps no body. A body the store could not read
+// is never a body it does not keep.
+fn protected_erase_step(present: Bool, read_error: String, already: Bool) -> String {
+    if !present && len(read_error) > 0 { return "unread: " + read_error; }
+    if already && !present { return "already"; }
+    return "";
 }

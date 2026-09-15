@@ -236,6 +236,42 @@ fn sync_failed(why: String) -> SyncResult {
 // of the remote's head, bodies and authors unchanged, then pushed.
 @unbounded
 fn sync_record(repo: String) -> SyncResult {
+    let s = sync_record_rows(repo);
+    if s.ok { let r = apply_redactions(repo); }
+    return s;
+}
+
+// GH #606: a redacted git receipt's ref goes from this clone and from
+// the remote on every sync, so a clone that fetched it drops it at its
+// next sync. The blob lingers in each object store until git collects it.
+@unbounded
+fn apply_redactions(repo: String) -> Int {
+    let text = git_out(repo, "show\n" + RECORD_REF + ":journal.jsonl") + "\n";
+    let remote = record_remote(repo);
+    let mut n = 0;
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::json::find_string_field(line, "kind") != "receipt.redacted" { continue; }
+        let digest = std::json::find_string_field(line, "entity");
+        let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+        let ref = "refs/dna/receipts/" + hexd;
+        if git_out(repo, "rev-parse\n-q\n--verify\n" + ref) != "" {
+            let d = git(repo, "update-ref\n-d\n" + ref);
+            n = n + 1;
+        }
+        if len(remote) > 0 && len(git_out(repo, "ls-remote\n" + remote + "\n" + ref)) > 0 {
+            let p = git(repo, "push\n-q\n" + remote + "\n--delete\n" + ref);
+            n = n + 1;
+        }
+    }
+    return n;
+}
+
+@unbounded
+fn sync_record_rows(repo: String) -> SyncResult {
     let remote = record_remote(repo);
     if len(remote) == 0 { return SyncResult { ok: true, summary: "no remote: the record is local" }; }
     let f = git(repo, "fetch\n-q\n" + remote + "\n+" + RECORD_REF + ":" + REMOTE_TRACK + "\n+refs/dna/receipts/*:refs/dna/receipts/*");

@@ -333,6 +333,8 @@ locus GitJournal {
 interface Receipts {
     fn store(text: String) -> String; // the sha256 hex digest the text is filed under
     fn read(digest: String) -> String; // "" when absent
+    // Remove a body (GH #606 redaction); true when it is gone.
+    fn erase(digest: String) -> Bool;
     fn kind() -> String;
 }
 
@@ -348,6 +350,10 @@ locus FileReceipts {
         return digest;
     }
     fn read(digest: String) -> String { return std::io::fs::read_file(self.dir + "/" + digest + ".txt") or ""; }
+    fn erase(digest: String) -> Bool {
+        std::io::fs::unlink(self.dir + "/" + digest + ".txt") or discard;
+        return len(self.read(digest)) == 0;
+    }
 }
 
 // As blobs in the repository, `refs/dna/receipts/<digest>`: fetched
@@ -374,6 +380,13 @@ locus GitReceipts {
         let r = run_tool("git\n-C\n" + self.repo + "\ncat-file\n-p\nrefs/dna/receipts/" + digest);
         if r.code != 0 { return ""; }
         return r.stdout;
+    }
+    // The ref goes; the blob stays in the object store until git
+    // collects it, and a clone that fetched it keeps a copy until it
+    // syncs (sync deletes the refs of redacted receipts).
+    fn erase(digest: String) -> Bool {
+        let r = run_tool("git\n-C\n" + self.repo + "\nupdate-ref\n-d\nrefs/dna/receipts/" + digest);
+        return git_out(self.repo, "rev-parse\n-q\n--verify\nrefs/dna/receipts/" + digest) == "";
     }
 }
 

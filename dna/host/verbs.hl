@@ -237,6 +237,8 @@ fn body_block(root: String, what: String, digest: String, bodies: String) -> Str
     if std::str::starts_with(bodies, "withheld") { return pad + what + " " + digest + " " + bodies + ": no body is stored\n"; }
     let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
     let r = receipt_read(root, hexd);
+    let redacted = redaction_line(root, digest);
+    if !r.present && len(redacted) > 0 { return pad + what + " " + digest + " " + redacted + "\n"; }
     if !r.present {
         let why = if len(bodies) == 0 { " (the call was recorded before prompts were receipts)" } else { " (`hale dna sync` fetches receipts)" };
         return pad + what + " " + digest + " is not among this clone's receipts" + why + "\n";
@@ -887,7 +889,7 @@ fn vault_failed(e: std::http::HttpError) -> std::http::ClientResponse {
 }
 
 @unbounded
-fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: String, who_flag: String) -> Answer {
+fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: String, who_flag: String, why: String, policy: String) -> Answer {
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     if sub == "disclose" {
@@ -912,6 +914,94 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
         let s2 = sync_record(root);
         return answer("receipt " + digest + " disclosed to " + to + " for " + purpose + " (receipt.disclosed, by " + who + ")\n");
     }
+    if sub == "hold" || sub == "release-hold" {
+        if len(digest) == 0 || len(why) == 0 { return fail("receipt " + sub + ": `hale dna receipt " + sub + " <digest> --why <why> [--as <who>]`"); }
+        let s = sync_record(root);
+        let p = open_projection(root, ".", "");
+        let mut held = false;
+        let mut i = 0;
+        while i < p.rows() {
+            let e = p.row(i);
+            if e.entity == digest && e.kind == "receipt.held" { held = true; }
+            if e.entity == digest && e.kind == "receipt.hold_released" { held = false; }
+            i = i + 1;
+        }
+        if sub == "hold" && held { return fail("receipt hold: " + digest + " is already held"); }
+        if sub == "release-hold" && !held { return fail("receipt release-hold: " + digest + " is not held"); }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("by", who);
+        b.string_field("why", why);
+        b.end_object();
+        let kind = if sub == "hold" { "receipt.held" } else { "receipt.hold_released" };
+        if !append_as(root, kind, digest, b.result(), who) { return fail("the record refused the append"); }
+        let s2 = sync_record(root);
+        return answer("receipt " + digest + " " + (if sub == "hold" { "held" } else { "released from its hold" }) + " (" + kind + ", by " + who + ")\n");
+    }
+    if sub == "redact" {
+        if len(digest) == 0 || len(why) == 0 || len(policy) == 0 { return fail("receipt redact: `hale dna receipt redact <digest> --why <why> --policy <policy> [--as <who>]`"); }
+        let s = sync_record(root);
+        let p = open_projection(root, ".", "");
+        let mut held = "";
+        let mut redacted = false;
+        let mut classified = false;
+        let mut withheld = false;
+        let mut class = "internal";
+        let mut i = 0;
+        while i < p.rows() {
+            let e = p.row(i);
+            if e.entity == digest {
+                if e.kind == "receipt.held" { held = std::json::find_string_field(e.body, "by") + ": " + std::json::find_string_field(e.body, "why"); }
+                if e.kind == "receipt.hold_released" { held = ""; }
+                if e.kind == "receipt.redacted" { redacted = true; }
+                if e.kind == "receipt.classified" { classified = true; class = std::json::find_string_field(e.body, "class"); }
+                if e.kind == "receipt.withheld" { withheld = true; class = std::json::find_string_field(e.body, "class"); }
+            }
+            i = i + 1;
+        }
+        if len(held) > 0 { return fail("receipt redact: held: " + held + "; redaction waits for the hold's release"); }
+        let local_hex = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+        // a protected body is the service's to know about: a redaction
+        // recorded before its erasure was interrupted is completed there
+        // (the second review of #628), and the service says when there is
+        // nothing left to erase
+        if redacted && !classified && (withheld || !receipt_read(root, local_hex).present) { return fail("receipt redact: " + digest + " is already redacted"); }
+        if classified {
+            let url = knowledge_url(root);
+            if len(url) == 0 { return fail("receipt redact: " + digest + " is kept by the knowledge service, and no service is known here (HALE_DNA_KNOWLEDGE_URL, or `hale dna dev`)"); }
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("by", who);
+            b.string_field("why", why);
+            b.string_field("policy", policy);
+            b.end_object();
+            let resp = std::http::post(url + "/receipt/" + dna::url_encode(digest) + "/erase", std::bytes::from_string(b.result()), "application/json") or vault_failed(err);
+            if resp.status != 200 { return fail("receipt redact: " + std::json::find_string_field(std::str::from_bytes(resp.body), "error")); }
+            let s2 = sync_record(root);
+            if redacted { return answer("receipt " + digest + ": the redaction already in the record is completed (" + class + ", erased by the knowledge service)\n"); }
+            return answer("receipt " + digest + " redacted (" + class + ", erased by the knowledge service; receipt.redacted, by " + who + " under " + policy + ")\n");
+        }
+        let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+        let had = receipt_read(root, hexd).present;
+        if !withheld && !had { return fail("receipt redact: no receipt " + digest + " in this clone or the record"); }
+        // the decision is in the record before the ref goes; a redaction the
+        // record refuses removes nothing (one recorded before a failed removal
+        // is completed here)
+        if !redacted {
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("by", who);
+            b.string_field("why", why);
+            b.string_field("policy", policy);
+            b.string_field("class", class);
+            b.string_field("store", if withheld { "none (withheld)" } else { "git" });
+            b.end_object();
+            if !append_as(root, "receipt.redacted", digest, b.result(), who) { return fail("receipt redact: the record refused the redaction of " + digest + "; nothing was erased"); }
+        }
+        if had { let d = git(root, "update-ref\n-d\nrefs/dna/receipts/" + hexd); }
+        let s2 = sync_record(root);
+        return answer("receipt " + digest + " redacted (" + (if withheld { "withheld, so no body was kept" } else { "its ref removed here and from the remote" }) + "; receipt.redacted, by " + who + " under " + policy + "). The blob stays in each object store until git collects it.\n");
+    }
     if sub == "show" {
         if len(digest) == 0 || len(purpose) == 0 { return fail("receipt show: `hale dna receipt show <digest> --purpose <purpose> [--as <who>]`"); }
         let url = knowledge_url(root);
@@ -922,7 +1012,7 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
         let text = std::json::find_string_field(body, "text");
         return answer("receipt " + digest + " (" + std::json::find_string_field(body, "class") + ", " + to_string(len(text)) + " bytes, disclosed to " + who + " for " + purpose + ")\n" + text + "\nend of receipt\n");
     }
-    if len(sub) > 0 && sub != "list" { return fail("receipt: `hale dna receipt`, `receipt disclose <digest> --to <who> --purpose <p>`, or `receipt show <digest> --purpose <p>`"); }
+    if len(sub) > 0 && sub != "list" { return fail("receipt: `hale dna receipt`, `receipt disclose <digest> --to <who> --purpose <p>`, `receipt show <digest> --purpose <p>`, `receipt hold|release-hold <digest> --why <w>`, or `receipt redact <digest> --why <w> --policy <p>`"); }
     let p = open_projection(root, ".", "");
     let mut out = "";
     let mut n = 0;
@@ -934,6 +1024,8 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
             let mut disclosures = "";
             let mut reads = 0;
             let mut refusals = 0;
+            let mut redaction = "";
+            let mut hold = "";
             let mut k = 0;
             while k < p.rows() {
                 let f = p.row(k);
@@ -941,14 +1033,36 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
                     if f.kind == "receipt.disclosed" { disclosures = disclosures + (if len(disclosures) > 0 { "; " } else { "" }) + "disclosed to " + std::json::find_string_field(f.body, "recipient") + " for " + std::json::find_string_field(f.body, "purpose"); }
                     if f.kind == "receipt.read" { reads = reads + 1; }
                     if f.kind == "receipt.read_refused" { refusals = refusals + 1; }
+                    if f.kind == "receipt.redacted" { redaction = "redacted by " + std::json::find_string_field(f.body, "by") + " under " + std::json::find_string_field(f.body, "policy"); }
+                    if f.kind == "receipt.held" { hold = "held by " + std::json::find_string_field(f.body, "by"); }
+                    if f.kind == "receipt.hold_released" { hold = ""; }
                 }
                 k = k + 1;
             }
-            let state = if e.kind == "receipt.withheld" { "withheld: " + std::json::find_string_field(e.body, "why") } else { "kept by the knowledge service" };
+            let state = if len(redaction) > 0 { redaction + (if len(hold) > 0 { " · " + hold } else { "" }) } else if len(hold) > 0 { hold } else if e.kind == "receipt.withheld" { "withheld: " + std::json::find_string_field(e.body, "why") } else { "kept by the knowledge service" };
             out = out + "  " + e.entity + " [" + std::json::find_string_field(e.body, "class") + "] " + state + (if len(disclosures) > 0 { " · " + disclosures } else { "" }) + " · read " + to_string(reads) + ", refused " + to_string(refusals) + "\n";
         }
         i = i + 1;
     }
     if n == 0 { return answer("receipts: no protected evidence in the record\n"); }
     return answer("receipts: " + to_string(n) + " protected\n" + out);
+}
+
+// "redacted by <who> under <policy>: <why>" when the record redacted
+// `digest` (GH #606), else "".
+@unbounded
+fn redaction_line(root: String, digest: String) -> String {
+    let text = git_out(root, "show\n" + RECORD_REF + ":journal.jsonl") + "\n";
+    let needle = "\"entity\": \"" + digest + "\"";
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::contains(line, needle) && std::json::find_string_field(line, "kind") == "receipt.redacted" {
+            let body = std::json::find_string_field(line, "body");
+            return "redacted by " + std::json::find_string_field(body, "by") + " under " + std::json::find_string_field(body, "policy") + ": " + std::json::find_string_field(body, "why");
+        }
+    }
+    return "";
 }

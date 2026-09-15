@@ -20,6 +20,12 @@ behavior.
 - `hale dna body` reads the lease; `hale dna body claim --force` releases a live lease of a body that is gone (a forced `body.claimed` row in your name; that body stops when it next asserts); `hale dna body release [--force]`.
 - `hale dna profile` prints the organism's combination — record, body, head, fleet, knowledge, trust, github, connections — detected from the pieces, never from a stored label; `status` gains `profile:` and `body:` lines. `hale dna new --profile local|remote-body [--remote <url>] [--body <user@host>]` sets the pieces.
 
+### DNA: retention — redaction under a policy, legal holds, sync that forgets (GH #606, part 2)
+
+- `receipt.held <digest>` stands until `receipt.hold_released` and refuses redaction meanwhile (`hale dna receipt hold | release-hold`).
+- `Dna.redact_evidence(digest, by, why, policy)` and `hale dna receipt redact` remove a body and append `receipt.redacted {by, why, policy, class, store}`: a git receipt's ref is deleted (`Receipts.erase`, new), a protected body is erased by the knowledge service (`POST /receipt/<digest>/erase`), a withheld one had none. The record keeps the digest; the service answers a read of a redacted body with 410 naming who and under what policy, and `hale dna history` says so under a redacted prompt.
+- Every sync deletes redacted receipts' refs from the clone and the remote, so other clones drop them at their next sync. The blob stays in each object store until git collects it, and a copy made outside the record cannot be recalled. The knowledge tail retires an idea whose receipt was redacted instead of stopping.
+
 ### DNA: protected evidence — customer and confidential bodies off the record, disclosed and read by row (GH #606, part 1)
 
 - A receipt has a data class. A `public` or `internal` body stays a git receipt. A `customer` or `confidential` body (`protected_class`) never becomes one: `Dna.file_evidence` hands it to the knowledge service through `ReceiptVault`, which keeps it in the record's own schema and appends `receipt.classified <digest> {class, by, store}`. With no service, the body is withheld (`receipt.withheld`) and nothing holds it. The record keeps the digest and class either way, so `sync` never carries a protected body.

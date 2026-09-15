@@ -316,6 +316,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    dna/compose.yaml or the DSN, a systemd user unit supervising the host; writes nothing");
     eprintln!("                                    when ssh or the toolchain is unavailable. Then `body start|stop|logs [--body <user@host>]`");
     eprintln!("       hale dna receipt [disclose <digest> --to <who> --purpose <p> | show <digest> --purpose <p>]");
+    eprintln!("       hale dna receipt hold|release-hold <digest> --why <w> | redact <digest> --why <w> --policy <p>");
+    eprintln!("                                    a hold refuses redaction until released; a redaction removes the body and keeps the digest, as a row");
     eprintln!("                                    protected evidence (customer, confidential): kept by the knowledge service alone;");
     eprintln!("                                    disclosure and every read are rows in the reader's name (--as <who>)");
     eprintln!("       hale dna schedule [pause <id> | resume <id>]");

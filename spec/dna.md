@@ -58,7 +58,32 @@ repository:
   is the third trust profile #606 names: the readers of a clone hold
   digests and classes, never protected bodies. Under local trust a
   reader's name is attribution, as `--as` is; a verified principal is
-  #612's.
+  #612's. **Retention (part 2).** `receipt.held <digest> {by, why}`
+  stands until `receipt.hold_released`, and refuses redaction while it
+  stands. `Dna.redact_evidence(digest, by, why, policy)` (`hale dna
+  receipt redact <digest> --why --policy`) appends `receipt.redacted
+  <digest> {by, why, policy, class, store}` and then removes the body: a
+  git receipt's ref is deleted (`Receipts.erase`), a protected body is
+  erased by the knowledge service (`POST /receipt/<digest>/erase`, which
+  writes the row), a withheld one had no body. **The redaction is in the
+  record before a byte is erased**, appended exactly at the revision the
+  hold was read at: a redaction the record refuses erases nothing, a hold
+  that arrived in between refuses it, and a redaction recorded before an
+  erase that failed is completed by redacting again — through the CLI and
+  `Dna.redact_evidence` alike, for a protected body too: both hand a
+  classified receipt to the knowledge service, which erases a body still
+  kept under a recorded redaction and answers `already redacted` once
+  nothing is left. A store that cannot read the body (its read failed,
+  as opposed to finding none) records nothing and reports nothing
+  erased: 503, redact again once it answers (`protected_erase_step`). The record keeps the digest, so
+  provenance survives and a reader learns the body is gone — the service
+  answers a read with 410 `redacted by … under …`, and `hale dna history`
+  says so under a redacted prompt. Every `sync` deletes redacted
+  receipts' refs from the clone and the remote, so a clone that fetched
+  one drops it at its next sync; the blob stays in each object store
+  until git collects it (`git gc --prune=now`), and a copy disclosed or
+  cloned outside the record cannot be recalled. The knowledge tail
+  retires an idea whose receipt was redacted instead of stopping.
 - **Leases** are blobs under `refs/dna/lease/<key>` (`:` in a key
   becomes `/`), `holder`, `token`, `expires`, `present` on four lines,
   compare-and-swapped on the ref. Tokens are monotonic per key.
@@ -315,7 +340,7 @@ the same way. A project's path therefore has no length rule.
 `schedule.skipped`, `schedule.paused`, `schedule.resumed`,
 `grant.reserved`, `grant.released`, `grant.fenced`, `grant.revoked`,
 `receipt.classified`, `receipt.withheld`, `receipt.disclosed`, `receipt.read`,
-`receipt.read_refused`,
+`receipt.read_refused`, `receipt.held`, `receipt.hold_released`, `receipt.redacted`,
 `optimize.refused`,
 `mutation.failed`, `effect.requested`, `effect.result`,
 `evidence.<step>`, `evidence.magnitude`, `review.requested`,
