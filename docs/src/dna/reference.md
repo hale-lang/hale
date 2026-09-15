@@ -132,9 +132,9 @@ tree, one JSON object per line: `seq`, `kind`, `entity`, `body`,
 | `receipt.read` / `receipt.read_refused` | a digest | a read in the reader's name, or its refusal: by, purpose, class |
 | `receipt.filed` | a digest | an internal document filed as evidence: by, name, bytes, class, store |
 | `connection.proposed` / `connection.closed` | `connection:<n>` | a connection to another record: name, url, peer (its genesis), position, purpose, classes, by, review_id; closed: by, why |
-| `handoff.received` | `handoff:<id>` | in the receiving record: handoff, origin_record, origin_url, origin_author, origin_row, lineage, purpose, position, via, kind, subject, class, fact, note |
+| `handoff.received` | `handoff:<id>` | an envelope in the receiving record's mailbox `refs/dna/exchange/<origin identity>`, never its journal: handoff, origin_record, origin_url, origin_author, origin_row, lineage, purpose, position, via, kind, subject, class, fact, note |
 | `handoff.published` / `handoff.refused` | `handoff:<id>` | in the origin record: connection, peer, kind, subject, class, purpose, peer_row, by, note; refused: why |
-| `handoff.accepted` / `handoff.accepted_by_peer` | `handoff:<id>` | an acceptance in the receiving record (by, note, connection, origin_record), and its admission in the origin (connection, peer, handoff, accepted_by, note) |
+| `handoff.accepted` / `handoff.accepted_by_peer` | `handoff:<id>` | an acceptance in the receiving record's journal (by, note, connection, and the envelope's origin, lineage, purpose and fact), sent back as an envelope into the origin's mailbox; its admission in the origin (connection, peer, handoff, accepted_by, note) |
 | `task.transfer_requested` / `task.transfer_accepted` | `t<n>` | a Task handed across a connection, and settled on the receiver's acceptance |
 | `decision.reported` | `t<n>` | a decision someone outside made, reported by the assignee: reporter, decider, channel, evidence, scope, obligation, practice, policy, accepted, why, note |
 | `receipt.held` / `receipt.hold_released` | a digest | a hold that refuses redaction, and its release: by, why |
