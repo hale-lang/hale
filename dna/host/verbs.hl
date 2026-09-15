@@ -961,7 +961,11 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
         }
         if len(held) > 0 { return fail("receipt redact: held: " + held + "; redaction waits for the hold's release"); }
         let local_hex = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
-        if redacted && (classified || withheld || !receipt_read(root, local_hex).present) { return fail("receipt redact: " + digest + " is already redacted"); }
+        // a protected body is the service's to know about: a redaction
+        // recorded before its erasure was interrupted is completed there
+        // (the second review of #628), and the service says when there is
+        // nothing left to erase
+        if redacted && !classified && (withheld || !receipt_read(root, local_hex).present) { return fail("receipt redact: " + digest + " is already redacted"); }
         if classified {
             let url = knowledge_url(root);
             if len(url) == 0 { return fail("receipt redact: " + digest + " is kept by the knowledge service, and no service is known here (HALE_DNA_KNOWLEDGE_URL, or `hale dna dev`)"); }
@@ -974,6 +978,7 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
             let resp = std::http::post(url + "/receipt/" + dna::url_encode(digest) + "/erase", std::bytes::from_string(b.result()), "application/json") or vault_failed(err);
             if resp.status != 200 { return fail("receipt redact: " + std::json::find_string_field(std::str::from_bytes(resp.body), "error")); }
             let s2 = sync_record(root);
+            if redacted { return answer("receipt " + digest + ": the redaction already in the record is completed (" + class + ", erased by the knowledge service)\n"); }
             return answer("receipt " + digest + " redacted (" + class + ", erased by the knowledge service; receipt.redacted, by " + who + " under " + policy + ")\n");
         }
         let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };

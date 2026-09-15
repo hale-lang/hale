@@ -69,7 +69,11 @@ repository:
   record before a byte is erased**, appended exactly at the revision the
   hold was read at: a redaction the record refuses erases nothing, a hold
   that arrived in between refuses it, and a redaction recorded before an
-  erase that failed is completed by redacting again. The record keeps the digest, so
+  erase that failed is completed by redacting again — through the CLI and
+  `Dna.redact_evidence` alike, for a protected body too: both hand a
+  classified receipt to the knowledge service, which erases a body still
+  kept under a recorded redaction and answers `already redacted` once
+  nothing is left. The record keeps the digest, so
   provenance survives and a reader learns the body is gone — the service
   answers a read with 410 `redacted by … under …`, and `hale dna history`
   says so under a redacted prompt. Every `sync` deletes redacted

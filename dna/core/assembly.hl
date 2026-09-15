@@ -378,11 +378,14 @@ locus Dna {
         let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
         let kept_here = !protected_class(class) && len(self.verification.receipts.read(hexd)) > 0;
         let already = self.has_evidence_row("receipt.redacted", digest);
-        if already && !kept_here { return digest + " is already redacted"; }
         if protected_class(class) && self.has_evidence_row("receipt.classified", digest) {
-            // the service keeps the body: it records the redaction, then erases
+            // the service keeps the body: it records the redaction, then
+            // erases — and completes one recorded before an interrupted
+            // erasure, or answers that it is already redacted (the second
+            // review of #628)
             return self.vault.erase(digest, by, why, policy);
         }
+        if already && !kept_here { return digest + " is already redacted"; }
         // the decision is in the record before a byte is erased, at the
         // revision the hold was read at: a redaction the record cannot hold
         // erases nothing (one recorded before a failed erase is completed)
