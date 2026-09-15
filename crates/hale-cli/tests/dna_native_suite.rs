@@ -103,6 +103,7 @@ fn dna_fixture_set_is_complete() {
             "recorded_model_test.hl",
             "recursion_settlement_test.hl",
             "rehydrate_work_test.hl",
+            "retired_admission_test.hl",
             "review_authority_test.hl",
             "supersession_test.hl",
             "verification_test.hl",
