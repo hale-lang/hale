@@ -169,7 +169,11 @@ locus Host {
     // or past what the fence last proved: the body stops.
     fn body_alive() -> Bool {
         let now = std::time::now();
-        let st = dna::trim_nl(std::io::fs::read_file(self.dna_dir + "/body.fence.status") or "");
+        // only this host's fence speaks for it: a line from the fence of a
+        // host that ran here before (killed, its fence not yet gone) is not news
+        let raw = dna::trim_nl(std::io::fs::read_file(self.dna_dir + "/body.fence.status") or "");
+        let mine = to_string(std::process::pid()) + " ";
+        let st = if std::str::starts_with(raw, mine) { raw[len(mine)..len(raw)] } else { "" };
         if std::str::starts_with(st, "ok ") {
             self.lease.expires = std::str::parse_int(st[3..len(st)]) or self.lease.expires;
         } else if std::str::starts_with(st, "lost") {
@@ -195,7 +199,9 @@ locus Host {
     // nothing past its TTL even while its host is blocked.
     fn start_fence() {
         std::io::fs::unlink(self.dna_dir + "/body.fence.status") or discard;
-        let m = write_text(self.dna_dir + "/body.fence", self.holder) or false;
+        // the mandate names this host: a fence left by a host that ran here
+        // before stops at once, and kills nothing, when it reads another
+        let m = write_text(self.dna_dir + "/body.fence", to_string(std::process::pid()) + "\n" + self.holder) or false;
         let exe = dna::run_tool("readlink\n-f\n/proc/" + to_string(std::process::pid()) + "/exe");
         let bin = if exe.code == 0 && len(dna::trim_nl(exe.stdout)) > 0 { dna::trim_nl(exe.stdout) } else { std::env::arg(0) };
         self.fence = start(self.dna_dir, "fence", self.root, "HALE_DNA_GIT_TIMEOUT=8",
@@ -732,33 +738,44 @@ fn count_words(s: String) -> Int {
 }
 
 // `body-fence` (the second review of #622): the renewer beside a body.
-// The host's `body.fence` file is its mandate; it ends when that file is
-// gone. Bounded by the life of the body it fences.
+// The host's `body.fence` file, naming that host's pid, is its mandate; it
+// ends when that file is gone or names another host (a host restarted on
+// the same clone). Every status line it writes starts with its host's pid.
+// Bounded by the life of the body it fences.
 @unbounded
 fn fence_main(holder: String, token: Int, expires: Int, host_pid: Int) {
     let dir = ".hale/dna";
     let mut lease = BodyLease { present: true, holder: holder, token: token, expires: expires };
     let mut renewed = 0;
-    while std::io::fs::file_exists(dir + "/body.fence") {
+    while fence_mandate(dir, host_pid) {
         let now = std::time::now();
-        if dna::run_tool("kill\n-0\n" + to_string(host_pid)).code != 0 { fence_stop(dir, "orphaned: the host is gone"); return; }
+        if dna::run_tool("kill\n-0\n" + to_string(host_pid)).code != 0 { fence_stop(dir, host_pid, "orphaned: the host is gone"); return; }
         if now - renewed >= BODY_TTL / 3 {
             let r = body_renew(".", lease, now);
             if r.ok {
-                if !r.present || r.holder != holder { fence_stop(dir, "lost " + r.holder); return; }
+                if !r.present || r.holder != holder { fence_stop(dir, host_pid, "lost " + r.holder); return; }
                 lease = r;
                 renewed = now;
-                let w = write_text(dir + "/body.fence.status", "ok " + to_string(lease.expires)) or false;
+                let w = write_text(dir + "/body.fence.status", to_string(host_pid) + " ok " + to_string(lease.expires)) or false;
             }
         }
-        if std::time::now() >= lease.expires - FENCE_MARGIN { fence_stop(dir, "expired " + to_string(lease.expires)); return; }
+        if std::time::now() >= lease.expires - FENCE_MARGIN { fence_stop(dir, host_pid, "expired " + to_string(lease.expires)); return; }
         std::time::sleep(1s);
     }
 }
 
-// Say why, then kill what executes under the lease.
-fn fence_stop(dir: String, why: String) {
-    let w = write_text(dir + "/body.fence.status", why) or false;
+// Whether the mandate at `dir` is still the one `host_pid` wrote.
+fn fence_mandate(dir: String, host_pid: Int) -> Bool {
+    let m = std::io::fs::read_file(dir + "/body.fence") or "";
+    let nl = std::str::index_of(m, "\n");
+    return len(m) > 0 && (if nl < 0 { m } else { m[0..nl] }) == to_string(host_pid);
+}
+
+// Say why, then kill what executes under the lease — unless the mandate
+// has passed to another host in the meantime, whose processes these are.
+fn fence_stop(dir: String, host_pid: Int, why: String) {
+    if !fence_mandate(dir, host_pid) { return; }
+    let w = write_text(dir + "/body.fence.status", to_string(host_pid) + " " + why) or false;
     let org = dna::trim_nl(std::io::fs::read_file(dir + "/org.pid") or "");
     if len(org) > 0 { let k = dna::run_tool("kill\n-KILL\n" + org); }
     let app = dna::trim_nl(std::io::fs::read_file(dir + "/app.pid") or "");
