@@ -69,7 +69,12 @@ repository:
   record before a byte is erased**, appended exactly at the revision the
   hold was read at: a redaction the record refuses erases nothing, a hold
   that arrived in between refuses it, and a redaction recorded before an
-  erase that failed is completed by redacting again — through the CLI and
+  erase that failed is completed by redacting again. A body the record
+  says was redacted is not filed again — `Dna.file_evidence` answers its
+  digest and keeps nothing, `hale dna receipt file` refuses it, and the
+  knowledge service's `POST /receipt` refuses it 409 — and `hale dna receipt redact` appends a git receipt's
+  redaction only at the head it read the hold at, refusing "the record
+  moved" otherwise, as the core and the service do (#636) — through the CLI and
   `Dna.redact_evidence` alike, for a protected body too: both hand a
   classified receipt to the knowledge service, which erases a body still
   kept under a recorded redaction and answers `already redacted` once

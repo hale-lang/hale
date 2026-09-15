@@ -960,6 +960,8 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
     if sub == "redact" {
         if len(digest) == 0 || len(why) == 0 || len(policy) == 0 { return fail("receipt redact: `hale dna receipt redact <digest> --why <why> --policy <policy> [--as <who>]`"); }
         let s = sync_record(root);
+        // the head the hold is read at: the redaction lands only there (#636)
+        let read_at = record_head(root);
         let p = open_projection(root, ".", "");
         let mut held = "";
         let mut redacted = false;
@@ -1015,7 +1017,9 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
             b.string_field("class", class);
             b.string_field("store", if withheld { "none (withheld)" } else { "git" });
             b.end_object();
-            if !append_as(root, "receipt.redacted", digest, b.result(), who) { return fail("receipt redact: the record refused the redaction of " + digest + "; nothing was erased"); }
+            let landed = append_as_at(root, read_at, "receipt.redacted", digest, b.result(), who);
+            if landed == "stale_revision" { return fail("receipt redact: the record moved while redacting " + digest + " (a hold may have arrived); nothing was erased — redact again"); }
+            if len(landed) > 0 { return fail("receipt redact: the record refused the redaction of " + digest + " (" + landed + "); nothing was erased"); }
         }
         if had { let d = git(root, "update-ref\n-d\nrefs/dna/receipts/" + hexd); }
         let s2 = sync_record(root);

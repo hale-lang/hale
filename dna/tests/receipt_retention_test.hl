@@ -109,6 +109,13 @@ main locus App {
         let row = self.last(app, "receipt.redacted", d);
         std::test::assert(std::str::contains(row, "\"by\": \"mara\"") && std::str::contains(row, "\"why\": \"no longer needed\"") && std::str::contains(row, "\"policy\": \"retention:30d\"") && std::str::contains(row, "\"store\": \"git\""), "the record keeps who, why and the policy: " + row);
         std::test::assert(std::str::contains(self.core.redact_evidence(d, "mara", "again", "retention:30d"), "already redacted"), "a redaction is once");
+        // filed again, a redacted receipt keeps no body (#636)
+        std::test::assert_eq_str(self.core.file_evidence(note, "internal", "mara"), d, "the same document files as the same digest");
+        std::test::assert_eq_str(receipts.read(hex_of(d)), "", "and its ref does not come back");
+        std::io::fs::write_file(scratch + "/note.txt", note) or discard;
+        let refiled = in_dir(app, toolchain() + "\ndna\nreceipt\nfile\n" + scratch + "/note.txt\n--as\nmara");
+        std::test::assert(refiled.code != 0 && std::str::contains(refiled.stdout + refiled.stderr, "was redacted; a redacted body is not filed again"), "nor through the CLI: " + refiled.stdout + refiled.stderr);
+        std::test::assert_eq_str(receipts.read(hex_of(d)), "", "whose ref stays gone");
 
         // ---- a redaction the record cannot hold erases nothing
         let second = "a second supplier note under the same policy";
@@ -121,6 +128,26 @@ main locus App {
         std::test::assert(cli_unrecorded.code != 0 && std::str::contains(cli_unrecorded.stdout + cli_unrecorded.stderr, "nothing was erased"), "and so does the CLI: " + cli_unrecorded.stdout + cli_unrecorded.stderr);
         std::test::assert_eq_str(receipts.read(hex_of(d2)), second, "the body is intact");
         std::test::assert_eq_str(self.last(app, "receipt.redacted", d2), "", "and no redaction is in the record");
+
+        // ---- a hold that arrives while the CLI redacts wins (#636): a git on
+        // the CLI's PATH places a hold the moment the redaction reads the body
+        let third = "a third supplier note, about to be held";
+        let d3 = self.core.file_evidence(third, "internal", "mara");
+        let bin = scratch + "/bin";
+        std::io::fs::mkdir(bin) or discard;
+        let real_git = dna::trim_nl(dna::run_tool("sh\n-c\ncommand -v git").stdout);
+        let flag = scratch + "/hold-now";
+        std::io::fs::write_file(flag, "once") or discard;
+        std::io::fs::write_file(bin + "/git", "#!/bin/sh\ncase \"$*\" in *cat-file*refs/dna/receipts/" + hex_of(d3) + "*) if [ -f \"" + flag + "\" ]; then rm -f \"" + flag + "\"; (cd \"" + app + "\" && \"" + toolchain() + "\" dna receipt hold " + d3 + " --why \"a hold that arrived mid-redaction\" --as counsel) >/dev/null 2>&1; fi ;; esac\nexec \"" + real_git + "\" \"$@\"\n") or discard;
+        let gx = dna::run_tool("chmod\n+x\n" + bin + "/git");
+        let raced = in_dir(app, "sh\n-c\nPATH=\"$1:$PATH\" exec \"$2\" dna receipt redact \"$3\" --why \"no longer needed\" --policy retention:30d --as mara\nsh\n" + bin + "\n" + toolchain() + "\n" + d3);
+        std::test::assert(!std::io::fs::file_exists(flag), "the hold was placed during the redaction");
+        std::test::assert(std::str::contains(self.last(app, "receipt.held", d3), "a hold that arrived mid-redaction"), "the hold is in the record");
+        std::test::assert(raced.code != 0 && std::str::contains(raced.stdout + raced.stderr, "the record moved while redacting"), "the redaction that read no hold does not land: " + raced.stdout + raced.stderr);
+        std::test::assert_eq_str(self.last(app, "receipt.redacted", d3), "", "no redaction is in the record");
+        std::test::assert_eq_str(receipts.read(hex_of(d3)), third, "and the held body is intact");
+        let after_hold = in_dir(app, toolchain() + "\ndna\nreceipt\nredact\n" + d3 + "\n--why\nno longer needed\n--policy\nretention:30d\n--as\nmara");
+        std::test::assert(after_hold.code != 0 && std::str::contains(after_hold.stdout + after_hold.stderr, "held: counsel: a hold that arrived mid-redaction"), "redacting again meets the hold: " + after_hold.stdout + after_hold.stderr);
 
         // ---- sync forgets it everywhere
         let s1 = in_dir(app, toolchain() + "\ndna\nsync");
@@ -171,6 +198,13 @@ main locus App {
         std::test::assert(std::str::contains(prow, "\"policy\": \"gdpr-erasure\"") && std::str::contains(prow, "\"class\": \"confidential\""), "the row names the policy and the class: " + prow);
         let gone = self.core.vault.read(p, "tomasz", "audit");
         std::test::assert(!gone.present && std::str::contains(gone.refused, "was redacted: by mara under gdpr-erasure: left the company"), "a read learns the body is gone, not missing: " + gone.refused);
+        // filed again, a redacted protected body is not kept (#636)
+        std::test::assert_eq_str(self.core.file_evidence(secret, "confidential", "mara"), p, "the same body files as the same digest");
+        std::test::assert_eq_int(self.rows_of(app, "receipt.withheld", p), 0, "without a withheld row");
+        let replayed = std::http::post(url + "/receipt", std::bytes::from_string("{\"class\": \"confidential\", \"text\": \"" + secret + "\", \"by\": \"mara\"}"), "application/json") or std::http::ClientResponse { status: 0, body: b"" };
+        std::test::assert(replayed.status == 409 && std::str::contains(std::str::from_bytes(replayed.body), "a redacted body is not kept again"), "the service refuses a replay of it: " + to_string(replayed.status) + " " + std::str::from_bytes(replayed.body));
+        let nothing_kept = in_dir(app, toolchain() + "\ndna\nreceipt\nredact\n" + p + "\n--why\nleft the company\n--policy\ngdpr-erasure\n--as\nmara");
+        std::test::assert(nothing_kept.code != 0 && std::str::contains(nothing_kept.stdout + nothing_kept.stderr, "already redacted"), "and the store holds nothing to erase: " + nothing_kept.stdout + nothing_kept.stderr);
         let listing = in_dir(app, toolchain() + "\ndna\nreceipt");
         std::test::assert(std::str::contains(listing.stdout, "redacted by mara under gdpr-erasure"), "the list says so: " + listing.stdout);
         // the service records the redaction before it erases: refused, the body stays
