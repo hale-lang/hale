@@ -107,6 +107,7 @@ macro_rules! at {
 pub const KNOWLEDGE_FILES: &[EmbeddedFile] = at![
     "dna/knowledge/embed.hl",
     "dna/knowledge/store.hl",
+    "dna/knowledge/protected.hl",
     "dna/knowledge/tail.hl",
     "dna/knowledge/service/main.hl",
     "dna/pond/db/args.hl",

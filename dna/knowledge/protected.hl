@@ -1,0 +1,149 @@
+// dna/knowledge/protected.hl — protected evidence (GH #606).
+//
+// A customer or confidential body never enters the record: not a git
+// receipt, so `sync` cannot carry it to a clone. The knowledge service
+// is its only keeper, in the record's own schema (GH #613), and every
+// read of it is an act the record names. `PqProtected` keeps each body
+// encrypted at rest with pgcrypto's OpenPGP symmetric cipher (AES-256)
+// under a key read from the environment into this sealed locus; the
+// key reaches the database session as a query parameter and nowhere
+// else, so an operator must not log statements with their parameters.
+// `MemProtected` keeps bodies for the life of the process only — no
+// disk, so nothing is at rest — for a service run with `memory`.
+
+import "../core" as dna;
+import "../pond/db" as db;
+import "../pond/pq" as pq;
+
+type Protected {
+    present: Bool = false;
+    class: String = "";
+    text: String = "";
+    stored_at: Int = 0;
+}
+
+interface ProtectedBodies {
+    fn kind() -> String;
+    // Whether bodies can be kept at all (a key is present); `why_not`
+    // says what is missing when not.
+    fn ready() -> Bool;
+    fn why_not() -> String;
+    fn scope(record: String);
+    // Keep one body under its digest; a second put of the same digest
+    // keeps the first.
+    fn put(digest: String, class: String, text: String, at: Int) -> Bool;
+    fn get(digest: String) -> Protected;
+    fn last_error() -> String;
+}
+
+type ProtectedRow {
+    digest: String = "";
+    class: String = "";
+    text: String = "";
+    stored_at: Int = 0;
+}
+
+@form(vec)
+locus ProtectedRows { capacity { heap rows of ProtectedRow; } }
+
+locus MemProtected {
+    params {
+        rows: ProtectedRows = ProtectedRows { };
+        record_id: String = "";
+    }
+    fn kind() -> String { return "memory (for the life of the process; nothing at rest)"; }
+    fn ready() -> Bool { return true; }
+    fn why_not() -> String { return ""; }
+    fn scope(record: String) { self.record_id = record; }
+    @unbounded
+    fn put(digest: String, class: String, text: String, at: Int) -> Bool {
+        if self.get(digest).present { return true; }
+        self.rows.push(ProtectedRow { digest: digest, class: class, text: text, stored_at: at });
+        return true;
+    }
+    @unbounded
+    fn get(digest: String) -> Protected {
+        let mut i = 0;
+        while i < self.rows.len() {
+            let r = self.rows.get(i) or ProtectedRow { };
+            if r.digest == digest { return Protected { present: true, class: r.class, text: r.text, stored_at: r.stored_at }; }
+            i = i + 1;
+        }
+        return Protected { };
+    }
+    fn last_error() -> String { return ""; }
+}
+
+@sealed locus PqProtected {
+    params {
+        conn: pq::PgConn = pq::PgConn { sslmode: "prefer" };
+        env_var: String = "HALE_DNA_RECEIPT_KEY";
+        key: String = "";
+        record_id: String = "";
+        opened: Bool = false;
+        error: String = "";
+    }
+    birth() {
+        if len(self.key) == 0 && len(self.env_var) > 0 && std::env::var_exists(self.env_var) { self.key = std::env::var(self.env_var); }
+    }
+    fn kind() -> String { return "postgres (pgcrypto, AES-256)"; }
+    // A short key is no key: sixteen characters at least.
+    fn ready() -> Bool { return len(self.key) >= 16; }
+    fn why_not() -> String {
+        if self.ready() { return ""; }
+        return "no receipt key: " + self.env_var + " is not set, or is shorter than sixteen characters (`hale dna secret set " + self.env_var + "` puts one where the service runs)";
+    }
+    fn scope(record: String) {
+        if record == self.record_id { return; }
+        self.record_id = record;
+        self.opened = false;
+    }
+    fn last_error() -> String { return self.error; }
+    fn open() -> Bool {
+        if self.opened { return true; }
+        let st = self.conn.open();
+        if !st.ok { self.error = "open: " + st.err.kind + " " + st.err.detail; return false; }
+        let ext = self.conn.exec("CREATE EXTENSION IF NOT EXISTS pgcrypto");
+        if !ext.ok { self.error = "pgcrypto (CREATE EXTENSION pgcrypto): " + ext.err.kind + " " + ext.err.detail; return false; }
+        let sch = schema_for(self.record_id);
+        let ns = self.conn.exec("CREATE SCHEMA IF NOT EXISTS " + sch + "; SET search_path TO " + sch + ", public");
+        if !ns.ok { self.error = "scope (schema " + sch + "): " + ns.err.kind + " " + ns.err.detail; return false; }
+        let t = self.conn.exec("CREATE TABLE IF NOT EXISTS protected_receipts (digest text PRIMARY KEY, class text NOT NULL, body text NOT NULL, stored_at bigint NOT NULL)");
+        if !t.ok { self.error = "migrate: " + t.err.kind + " " + t.err.detail; return false; }
+        self.opened = true;
+        return true;
+    }
+    fn put(digest: String, class: String, text: String, at: Int) -> Bool {
+        if !self.ready() { self.error = self.why_not(); return false; }
+        if !self.open() { return false; }
+        let a = db::Args { };
+        a.add(digest);
+        a.add(class);
+        a.add(text);
+        a.add(self.key);
+        a.add(to_string(at));
+        let r = self.conn.exec_params("INSERT INTO protected_receipts (digest, class, body, stored_at) VALUES ($1, $2, armor(pgp_sym_encrypt($3, $4, 'cipher-algo=aes256')), $5::bigint) ON CONFLICT (digest) DO NOTHING", a);
+        if !r.ok { self.error = "put: " + r.err.kind + " " + r.err.detail; return false; }
+        return true;
+    }
+    // Read as JSON built by the server: a body is an ordinary paragraph,
+    // and the driver's tab-separated rows cannot carry one.
+    fn get(digest: String) -> Protected {
+        if !self.ready() { self.error = self.why_not(); return Protected { }; }
+        if !self.open() { return Protected { }; }
+        let a = db::Args { };
+        a.add(digest);
+        a.add(self.key);
+        let rows = self.conn.query_params("SELECT row_to_json(t) FROM (SELECT class, pgp_sym_decrypt(dearmor(body), $2) AS text, stored_at FROM protected_receipts WHERE digest = $1) t", a);
+        if !rows.ok { self.error = "get: " + rows.err.kind + " " + rows.err.detail; return Protected { }; }
+        if rows.n == 0 { return Protected { }; }
+        let nl = std::str::index_of(rows.csv, "\n");
+        let row = if nl < 0 { rows.csv } else { rows.csv[0..nl] };
+        return Protected {
+            present: true,
+            class: std::json::find_string_field(row, "class"),
+            text: std::json::find_string_field(row, "text"),
+            stored_at: std::json::find_int_field(row, "stored_at")
+        };
+    }
+}

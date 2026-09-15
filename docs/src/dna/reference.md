@@ -36,6 +36,9 @@ hale dna body provision <user@host> [--dsn <url>] [--dir <path>] [--dry-run]
                              compose or the DSN, a systemd user unit; writes nothing it cannot finish
 hale dna body start|stop|logs [--body <user@host>]
                              the body's unit, over ssh
+hale dna receipt [disclose <digest> --to <who> --purpose <p> | show <digest> --purpose <p>]
+                             protected evidence: kept by the knowledge service alone; disclosure
+                             and every read are rows in the reader's name
 hale dna schedule [pause <id> | resume <id>]
                              the schedules the org chart declared, as the record has them;
                              pause and resume are rows in your name
@@ -114,6 +117,10 @@ tree, one JSON object per line: `seq`, `kind`, `entity`, `body`,
 | `grant.released` | a child | a reservation settled at what was actually spent |
 | `grant.fenced` | a child | an admission refused because the grant's epoch moved since |
 | `grant.revoked` | a child | the parent revoked the grant; the new epoch |
+| `receipt.classified` | a digest | a protected body the knowledge service keeps: class, by, store |
+| `receipt.withheld` | a digest | a protected body no service could keep: class, by, why |
+| `receipt.disclosed` | a digest | a reader authorized: recipient, purpose, by |
+| `receipt.read` / `receipt.read_refused` | a digest | a read in the reader's name, or its refusal: by, purpose, class |
 | `model.called` | `<work>/a<n>` or a review id | the model evidence; the prompt and context are receipts under its digests (`bodies`), none for a customer-class call |
 
 ## `status.json`

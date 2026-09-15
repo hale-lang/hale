@@ -1,0 +1,177 @@
+// GH #606 — protected evidence. A customer or confidential body never
+// becomes a git receipt, so no clone can hold it: without a knowledge
+// service it is withheld (the record keeps the digest and the class),
+// and a hosted model refuses a request carrying that class. With the
+// service, the body is kept there alone; reading it is refused until a
+// disclosure names the reader and the purpose, and every read and
+// refusal is a row. Over Postgres the body is encrypted at rest and a
+// wrong key reads nothing.
+
+import "../core" as dna;
+import "../knowledge" as know;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` (newline-separated) in `dir`, model discovery off.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+fn hex_of(digest: String) -> String {
+    return if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+}
+
+// How many of the repository's git objects contain `needle`.
+fn objects_with(repo: String, needle: String) -> String {
+    let r = in_dir(repo, "sh\n-c\ngit cat-file --batch-all-objects --batch | grep -c -F \"$1\" || true\nsh\n" + needle);
+    return dna::trim_nl(r.stdout);
+}
+
+main locus App {
+    params {
+        bare: dna::Dna = dna::Dna { };
+        served: dna::Dna = dna::Dna { };
+        hosted: dna::FakeModel = dna::FakeModel { name: "hosted" };
+    }
+    @unbounded
+    fn rows(repo: String, kind: String, entity: String) -> Int {
+        let j = dna::GitJournal { repo: repo };
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn last(repo: String, kind: String) -> String {
+        let j = dna::GitJournal { repo: repo };
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    run() {
+        std::test::assert(dna::protected_class("customer") && dna::protected_class("confidential"), "customer and confidential are protected");
+        std::test::assert(!dna::protected_class("internal") && !dna::protected_class("public"), "internal and public are not");
+        std::test::assert(!self.hosted.allows("confidential"), "a hosted model refuses confidential data as it refuses customer data");
+
+        let scratch = "/tmp/dna-vault-" + to_string(std::process::pid());
+        std::io::fs::mkdir(scratch) or discard;
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nvaulted");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let app = scratch + "/vaulted";
+        let u1 = in_dir(app, "git\nconfig\nuser.name\nmara");
+        let u2 = in_dir(app, "git\nconfig\nuser.email\nmara@local");
+        let ledger = "the March ledger for account 4411: 1200.00 owed since 2026-03-02";
+
+        // ---- no service: withheld, the digest and class kept, no ref
+        self.bare = dna::Dna {
+            journal: dna::GitJournal { repo: app },
+            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: app }, repo: app },
+            vault: dna::ReceiptVault { url_env: "" },
+            org_id: "bare"
+        };
+        let d0 = self.bare.file_evidence(ledger, "customer", "mara");
+        std::test::assert_eq_str(d0, dna::digest_of(ledger), "the digest is the body's");
+        std::test::assert_eq_int(self.rows(app, "receipt.withheld", d0), 1, "the record says the body was not kept");
+        std::test::assert(std::str::contains(self.last(app, "receipt.withheld"), "\"class\": \"customer\""), "and its class: " + self.last(app, "receipt.withheld"));
+        let git_receipts = dna::GitReceipts { repo: app };
+        std::test::assert_eq_str(git_receipts.read(hex_of(d0)), "", "no git receipt holds it");
+        std::test::assert_eq_str(self.bare.evidence_class(d0), "customer", "the class is readable from the record");
+        let refused = self.hosted.complete(dna::ModelRequest { attempt_id: "vault/a0", role: "review", prompt: "summarise the evidence", context: "(protected)", data_class: self.bare.evidence_class(d0) });
+        std::test::assert(!refused.ok && std::str::contains(refused.refused, "data class customer"), "a hosted model refuses a request carrying the evidence's class: " + refused.refused);
+        let internal = self.bare.file_evidence("a note anyone in the record may read", "internal", "mara");
+        std::test::assert(len(git_receipts.read(hex_of(internal))) > 0, "an internal body is an ordinary git receipt");
+
+        // ---- the service keeps it, and only there
+        let port = 30000 + std::process::pid() % 20000;
+        let url = "http://127.0.0.1:" + to_string(port);
+        let started = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_DSN=memory nohup \"$1\" dna knowledge . --port \"$2\" >.hale/vault-service.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + to_string(port));
+        let pid = dna::trim_nl(started.stdout);
+        let mut up = false;
+        let mut tries = 0;
+        while !up && tries < 600 {
+            let probe = std::http::get(url + "/") or std::http::ClientResponse { status: 0, body: b"" };
+            if probe.status == 200 { up = true; } else { std::time::sleep(200ms); }
+            tries = tries + 1;
+        }
+        std::test::assert(up, "the knowledge service came up at " + url);
+        // what `hale dna dev` writes when it starts the service, so the CLI can reach it
+        std::io::fs::write_file(app + "/.hale/dna/knowledge.url", url) or discard;
+        self.served = dna::Dna {
+            journal: dna::GitJournal { repo: app },
+            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: app }, repo: app },
+            vault: dna::ReceiptVault { url: url },
+            org_id: "served"
+        };
+        let secret = "invoice INV-7 to globex: 980.00, bank account ending 3321";
+        let d1 = self.served.file_evidence(secret, "confidential", "mara");
+        std::test::assert_eq_str(d1, dna::digest_of(secret), "the service answers the body's digest");
+        std::test::assert_eq_int(self.rows(app, "receipt.classified", d1), 1, "the record keeps the digest and the class");
+        std::test::assert(std::str::contains(self.last(app, "receipt.classified"), "\"class\": \"confidential\"") && std::str::contains(self.last(app, "receipt.classified"), "\"by\": \"mara\""), self.last(app, "receipt.classified"));
+        std::test::assert_eq_int(self.rows(app, "receipt.withheld", d1), 0, "kept, so not withheld");
+        std::test::assert_eq_str(git_receipts.read(hex_of(d1)), "", "no git receipt holds the body");
+        std::test::assert_eq_str(objects_with(app, "bank account ending 3321"), "0", "no git object anywhere in the repository contains it");
+        std::test::assert_eq_str(objects_with(app, "account 4411"), "0", "nor the withheld one");
+
+        // reading is refused until a disclosure names the reader and the purpose
+        let r0 = self.served.vault.read(d1, "tomasz", "audit");
+        std::test::assert(!r0.present && std::str::contains(r0.refused, "not disclosed to tomasz for audit"), "refused before any disclosure: " + r0.refused);
+        std::test::assert_eq_int(self.rows(app, "receipt.read_refused", d1), 1, "the refusal is a row");
+        let cli_refused = in_dir(app, toolchain() + "\ndna\nreceipt\nshow\n" + d1 + "\n--purpose\naudit\n--as\ntomasz");
+        std::test::assert(cli_refused.code != 0 && std::str::contains(cli_refused.stdout + cli_refused.stderr, "not disclosed to tomasz for audit"), "the CLI says so: " + cli_refused.stdout + cli_refused.stderr);
+        let disclosed = in_dir(app, toolchain() + "\ndna\nreceipt\ndisclose\n" + d1 + "\n--to\ntomasz\n--purpose\naudit\n--as\nmara");
+        std::test::assert_eq_int(disclosed.code, 0, "mara discloses it to tomasz for audit: " + disclosed.stdout + disclosed.stderr);
+        std::test::assert(std::str::contains(self.last(app, "receipt.disclosed"), "\"recipient\": \"tomasz\"") && std::str::contains(self.last(app, "receipt.disclosed"), "\"purpose\": \"audit\""), self.last(app, "receipt.disclosed"));
+        let shown = in_dir(app, toolchain() + "\ndna\nreceipt\nshow\n" + d1 + "\n--purpose\naudit\n--as\ntomasz");
+        std::test::assert_eq_int(shown.code, 0, "tomasz reads it for audit: " + shown.stderr);
+        std::test::assert(std::str::contains(shown.stdout, "(confidential, " + to_string(len(secret)) + " bytes, disclosed to tomasz for audit)\n" + secret + "\nend of receipt\n"), "byte for byte: " + shown.stdout);
+        std::test::assert_eq_int(self.rows(app, "receipt.read", d1), 1, "the read is a row");
+        std::test::assert(std::str::contains(self.last(app, "receipt.read"), "\"by\": \"tomasz\"") && std::str::contains(self.last(app, "receipt.read"), "\"purpose\": \"audit\""), "in the reader's name, for the purpose: " + self.last(app, "receipt.read"));
+        let other = self.served.vault.read(d1, "tomasz", "marketing");
+        std::test::assert(!other.present && std::str::contains(other.refused, "not disclosed to tomasz for marketing"), "a disclosure is for its purpose only: " + other.refused);
+        let listing = in_dir(app, toolchain() + "\ndna\nreceipt");
+        std::test::assert(std::str::contains(listing.stdout, d1) && std::str::contains(listing.stdout, "confidential") && std::str::contains(listing.stdout, "disclosed to tomasz for audit") && std::str::contains(listing.stdout, "withheld"), "the list: " + listing.stdout);
+        std::test::assert_eq_str(objects_with(app, "bank account ending 3321"), "0", "after every read, still no git object holds it");
+        let stop = dna::run_tool("kill\n" + pid);
+
+        // ---- over Postgres: encrypted at rest, and a wrong key reads nothing
+        if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") && std::str::starts_with(std::env::var("HALE_DNA_KNOWLEDGE_DSN"), "postgres") {
+            let dsn = know::parse_dsn(std::env::var("HALE_DNA_KNOWLEDGE_DSN"));
+            let record = "vault" + to_string(std::process::pid());
+            let store = know::PqProtected { conn: know::pq_conn(dsn), key: "a receipt key of forty characters, test", env_var: "" };
+            store.scope(record);
+            std::test::assert(store.put(d1, "confidential", secret, 1789351200), "kept over Postgres: " + store.last_error());
+            let back = store.get(d1);
+            std::test::assert(back.present && back.text == secret && back.class == "confidential", "and read back with the key: " + store.last_error());
+            let raw = know::Pq { conn: know::pq_conn(dsn) };
+            let st = raw.conn.open();
+            std::test::assert(st.ok, "a plain connection: " + st.err.detail);
+            let at_rest = raw.conn.query_one("SELECT body FROM " + know::schema_for(record) + ".protected_receipts WHERE digest = '" + d1 + "'");
+            std::test::assert(at_rest.ok && std::str::contains(at_rest.data, "BEGIN PGP MESSAGE") && !std::str::contains(at_rest.data, "3321"), "at rest it is an OpenPGP message, not the body: " + at_rest.data);
+            let wrong = know::PqProtected { conn: know::pq_conn(dsn), key: "a different key, also long enough", env_var: "" };
+            wrong.scope(record);
+            let nothing = wrong.get(d1);
+            std::test::assert(!nothing.present && std::str::contains(wrong.last_error(), "Wrong key"), "a wrong key reads nothing: " + wrong.last_error());
+            let short = know::PqProtected { conn: know::pq_conn(dsn), key: "short", env_var: "" };
+            std::test::assert(!short.ready() && !short.put(d1, "confidential", secret, 1) && std::str::contains(short.last_error(), "no receipt key"), "a short key is no key");
+            let cleanup = raw.conn.exec("DROP SCHEMA " + know::schema_for(record) + " CASCADE");
+            std::test::assert(cleanup.ok, "this run's schema dropped: " + cleanup.err.detail);
+        } else {
+            eprintln("receipt_vault_test: no postgres HALE_DNA_KNOWLEDGE_DSN; encryption at rest was not exercised here");
+        }
+        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+    }
+}
+
+fn main() { App { }; }
