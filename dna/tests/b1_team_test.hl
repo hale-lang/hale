@@ -421,7 +421,8 @@ main locus App {
         std::test::assert_eq_int(hers.status, 200, "head A takes the verdict: " + hers.body);
         let settled = self.wait_in_record(app, service, "\"kind\": \"review.settled\", \"entity\": \"" + rid + "\"", 240);
         std::test::assert_eq_str(row_body(settled), "approve by alice", "settled in alice's name, though her form said bob: " + settled);
-        let ratified = row_with(record(app), "\"kind\": \"knowledge.ratified\"");
+        // the ratification is its own row, a moment after the settlement
+        let ratified = self.wait_in_record(app, service, "\"kind\": \"knowledge.ratified\"", 240);
         std::test::assert(std::str::contains(row_body(ratified), "\"decided_by\": \"alice\"") && std::str::contains(row_body(ratified), "\"review_id\": \"" + rid + "\""), "and the practice is the organization's, by the Board: " + ratified);
         std::test::assert(!std::str::contains(ledger(service), "review.settled"), "a decision about what the organization is stays in the record, not the ledger");
 
