@@ -89,6 +89,45 @@ commits than rows. Someone rewrote the branch. `git reflog
 refs/dna/journal` finds the old head; `hale dna sync` from a clone
 that has it restores the rest.
 
+**`THE LEDGER IS UNREACHABLE (…)`** on `status`'s `memory:` line.
+The store behind the knowledge service is not answering. What you
+read here — `status`, the board, `history` — is the last projection
+this body built, and **nothing is admitted until the service
+answers**; every operational write is refused with the store named.
+The organism does not stop the instant the store goes: the fence
+keeps the lease it last proved and stops the body at the margin
+before that lease expires, so a short outage costs nothing.
+Requests made from a clone are not lost either — each is kept under
+`.hale/dna/queue/` and sent by `hale dna queue submit` when the
+service is back. Start the service (`hale dna dev`, or the body's
+unit) or point `HALE_DNA_KNOWLEDGE_URL` at the right one.
+
+**`ledger.adopting` in the history with no `ledger.adopted`.** An
+adoption was interrupted — the service went away between the intent
+and the checkpoint. Nothing is broken and nothing is lost. Run `hale
+dna ledger adopt` again: it resumes the copy, and because every row
+is keyed by its commit nothing is copied twice. Or run `hale dna
+ledger abandon --why <why>`, which empties what was copied and
+leaves the organism on the record alone. Either way the record keeps
+every operational row it ever held.
+
+**`… is a row of the ledger: this organism's operations have lived
+there since <checkpoint>`**. A verb tried to write an operational
+row from a clone that knows no service. After the cutover those rows
+are never written into git — that is what the checkpoint is for — so
+nothing was written. Set `HALE_DNA_KNOWLEDGE_URL` to the organism's
+service, or work under `hale dna dev`, and run the verb again.
+
+**`the record diverged, and local event <commit> (… by <author>) was
+signed with <key>, not this clone's`** from `sync`. Under `dna.trust
+= signed`, a reconcile that would rebuild a row this clone did not
+sign refuses as a whole, before any ref moves: rebuilding it would
+re-sign someone else's row as yours. Nothing was discarded — every
+local row and commit stays where it is, and the remote is untouched.
+Two ways out, both in the message: that row's writer syncs first (a
+writer rebuilds its own rows), or you fast-forward once the remote
+holds it.
+
 **Two organizations on one record.** One `hale dna run` per
 repository. Two hosts syncing one remote will both relay and both
 answer.
@@ -96,8 +135,11 @@ answer.
 **Where things are.** `refs/dna/journal` (the record),
 `refs/dna/receipts/<sha256>` (receipts), `refs/dna/lease/*`,
 `refs/dna/revisions/<rev>` (what nodes fetch); `.hale/dna/` (sockets,
-sandboxes, scratch, `status.json`); `.hale/node/<name>/` on a node
-(pid files, artifacts).
+sandboxes, scratch, `status.json`, and `queue/` — the requests
+captured here while the service was away); `.hale/node/<name>/` on a
+node (pid files, artifacts). Once the organism has adopted the
+ledger, the day's work is not under any of these: it is in the store
+behind the knowledge service, and `hale dna ledger` says which.
 
 **Starting over.** Delete the refs and the record is gone; `git log`
 keeps every change it applied:

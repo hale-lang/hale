@@ -95,65 +95,96 @@ One commit per event on `refs/dna/journal`; `journal.jsonl` in the
 tree, one JSON object per line: `seq`, `kind`, `entity`, `body`,
 `author`.
 
-| kind | entity | body |
-|---|---|---|
-| `application.attached` | the seed | the entrypoint, the artifact's digests, the toolchain |
-| `structure.observed` | `locus:X`, `topic:X`, `claim:X`, … | the compiler's model of it, `provenance: observed` |
-| `responsibility.proposed` | `locus:X` | an inferred one-line responsibility, `ratified: false` |
-| `law.deferred` | a clause | why `init` could not certify it |
-| `intent.requested` | the intent id | an ask from a clone with no organization: outcome, from, to |
-| `intent.offered` / `intent.refused` | the intent id | the outcome asked for / the refusal |
-| `candidate.dropped` | the mutation | `by`, `why`: the candidate's pointer is no longer kept (applied at every clone's sync) |
-| `ledger.adopting` / `ledger.adopted` / `ledger.abandoned` | `ledger` | the move of the day's work into the store: `ledger` (the service), `routing`, `checkpoint` (the record head the copy was taken at), `rows`, `by` |
-| `task.born` | `t<n>` | `<intent>: <outcome>` |
-| `task.pending` / `task.done` / `task.failed` | `t<n>` | the Workflow detail, or the Work and performer that settled it |
-| `mutation.proposed` | `m<n>` | `task t<n> <class>: <objective> (<target>) at <base>` |
-| `mutation.worktree` | `m<n>` | `opened <path> at <base> …` / `removed` |
-| `mutation.located` | `m<n>` | the files and the grant they were found under |
-| `mutation.candidate` | `m<n>` | the candidate commit |
-| `mutation.review` / `.stage` / `.escalate` / `.release` / `.deny` | `m<n>` | the boundary's disposition |
-| `mutation.topology` | `m<n>` | the diff names a plan or the manifest: re-classed for the Board |
-| `mutation.applied` | `m<n>` | the candidate commit |
-| `mutation.retained` / `.rolled_back` / `.rejected` / `.revise` / `.refused` / `.failed` | `m<n>` | why |
-| `effect.requested` / `effect.result` | an idempotency key | the gateway's record: `worktree.open:<id>`, `commit:<id>:<step>`, `apply:<candidate>`, `rollback:<id>:<base>` |
-| `evidence.base` / `.fmt` / `.check` / `.verify` / `.test` / `.fleet` / `.replay` / `.rollback` / `.diff` | the candidate commit | `{step, ok, code, output_digest, bytes}`; the receipt is `refs/dna/receipts/<output_digest>` |
-| `evidence.magnitude` | the candidate commit | the vector |
-| `review.requested` | `review:<id>` | question, authority, candidate, base, shape, disposition, evidence, magnitude, diff digests, fitness signals |
-| `review.verdict` | `<id>` | a verdict appended from a clone or from GitHub, in the reviewer's name |
-| `review.settled` / `review.refused` | `<id>` | `<verdict> by <reviewer>` / the reason |
-| `review.reasoned` | `<id>` | the deciding verdict's comment: a person's note, or the Leader's reasoning in full |
-| `expression.restart_requested` | `m<n>` | `apply <candidate> seed <s> fitness …` or `rollback <base> seed <s> after …` |
-| `expression.restarted` | `m<n>` | the shape and build the new expression reports |
-| `expression.deployed` | `m<n>` | what a deployment gateway expressed, and its judgement |
-| `expression.observed` / `expression.crashed` | `m<n>` | the window's outcome; `crashed` names the instance and node on a fleet |
-| `fleet.deploy` | `m<n>` or a short revision | plan, revision, seed, the instances touched, reason |
-| `instance.up` / `instance.exited` | the instance id | node, revision, model hash, build, pid / node, revision, code — authored `node/<name>` |
-| `github.pr` / `github.commented` | `m<n>` | the pull request opened / the settlement commented |
-| `pressure.raised` | a source | `<what> x<n>` |
-| `pressure.remeasured` | `m<n>` | the Task, the declared fitness signals, the outcome |
-| `appendage.proposed` / `appendage.candidate` | a source | the organ proposed / the organization mutation that proposes it |
-| `report.filed` | `r<n>` | the summary since the last report |
-| `grant.reserved` | a child | a spend admitted: op, amount, currency, counterparty, route, ceiling, epoch, at |
-| `grant.released` | a child | a reservation settled at what was actually spent |
-| `grant.fenced` | a child | an admission refused because the grant's epoch moved since |
-| `receipt.classified` | a digest | a protected body the knowledge service keeps: class, by, store |
-| `receipt.withheld` | a digest | a protected body no service could keep: class, by, why |
-| `receipt.disclosed` | a digest | a reader authorized: recipient, purpose, by |
-| `receipt.read` / `receipt.read_refused` | a digest | a read in the reader's name, or its refusal: by, purpose, class |
-| `receipt.filed` | a digest | an internal document filed as evidence: by, name, bytes, class, store |
-| `practice.requested` / `practice.proposed` / `practice.refused` | a request id | a person's practice proposal: requested in the record (name, text, by, because, supersedes), proposed by the organization (name, digest, review_id, by, because, supersedes), or refused (why) |
-| `exception.authorized` | `t<n>` | an exception to a Task's acceptance condition, authorized in the authorizer's own name: task, why, by, practice |
-| `completion.linked` / `completion.excepted` | `t<n>` | a person's completion under its acceptance condition: the evidence linked (task, evidence, by, practice), or an exception someone else authorized (task, why, authorized_by, by, practice) |
-| `connection.proposed` / `connection.closed` | `connection:<n>` | a connection to another record: name, url, peer (its genesis), position, purpose, classes, by, review_id; closed: by, why |
-| `handoff.received` | `handoff:<id>` | an envelope in the receiving record's mailbox `refs/dna/exchange/<origin identity>`, never its journal: handoff, origin_record, origin_url, origin_author, origin_row, lineage, purpose, position, via, kind, subject, class, fact, note |
-| `handoff.published` / `handoff.refused` | `handoff:<id>` | in the origin record: connection, peer, kind, subject, class, purpose, peer_row, by, note; refused: why |
-| `handoff.accepted` / `handoff.accepted_by_peer` | `handoff:<id>` | an acceptance in the receiving record's journal (by, note, connection, and the envelope's origin, lineage, purpose and fact), sent back as an envelope into the origin's mailbox; its admission in the origin (connection, peer, handoff, accepted_by, note) |
-| `task.transfer_requested` / `task.transfer_accepted` | `t<n>` | a Task handed across a connection, and settled on the receiver's acceptance |
-| `decision.reported` | `t<n>` | a decision someone outside made, reported by the assignee: reporter, decider, channel, evidence, scope, obligation, practice, policy, accepted, why, note |
-| `receipt.held` / `receipt.hold_released` | a digest | a hold that refuses redaction, and its release: by, why |
-| `receipt.redacted` | a digest | the body removed, the digest kept: by, why, policy, class, store |
-| `grant.revoked` | a child | the parent revoked the grant, recorded before it takes effect and restored at birth: by, parent, epoch |
-| `model.called` | `<work>/a<n>` or a review id | the model evidence; the prompt and context are receipts under its digests (`bodies`), none for a customer-class call |
+The **memory** column is where the row lives once the organism has
+adopted the ledger (`hale dna ledger adopt`, routing 1): `record` is
+git, `ledger` is the store behind the knowledge service. Before
+adoption every kind is the record's, and the two are read as one
+sequence either way — see [The record](./record.md).
+
+| kind | memory | entity | body |
+|---|---|---|---|
+| `application.attached` | record | the seed | the entrypoint, the artifact's digests, the toolchain |
+| `structure.observed` | record | `locus:X`, `topic:X`, `claim:X`, … | the compiler's model of it, `provenance: observed` |
+| `responsibility.proposed` | record | `locus:X` | an inferred one-line responsibility, `ratified: false` |
+| `law.deferred` | record | a clause | why `init` could not certify it |
+| `intent.requested` | ledger | the intent id | an ask from a clone with no organization: outcome, from, to |
+| `intent.offered` / `intent.refused` | ledger | the intent id | the outcome asked for / the refusal |
+| `intent.unrecovered` | ledger | the intent id | offered before a restart with no Task born; never re-offered, because work may already have run |
+| `candidate.dropped` | record | the mutation | `by`, `why`: the candidate's pointer is no longer kept (applied at every clone's sync) |
+| `ledger.adopting` / `ledger.adopted` / `ledger.abandoned` | record | `ledger` | the move of the day's work into the store: `ledger` (the service), `routing`, `checkpoint` (the record head the copy was taken at), `rows`, `by` |
+| `task.born` | ledger | `t<n>` | `<intent>: <outcome>` |
+| `task.planned` | ledger | `t<n>` | the plan the Task is worked under |
+| `task.handed` | ledger | `t<n>` | handed to a person: `work`, `assignee`, `by`, `narrative`, `obligation`, `acceptance`, `evidence_required` |
+| `task.reassigned` | ledger | `t<n>` | the assignment moved: `to`, and who moved it |
+| `task.resumed` | ledger | `t<n>` | re-entered after a restart, under the plan already recorded — never replanned |
+| `task.pending` / `task.done` / `task.failed` | ledger | `t<n>` | the Workflow detail, or the Work and performer that settled it |
+| `mutation.proposed` | record | `m<n>` | `task t<n> <class>: <objective> (<target>) at <base>` |
+| `mutation.worktree` | record | `m<n>` | `opened <path> at <base> …` / `removed` |
+| `mutation.located` | record | `m<n>` | the files and the grant they were found under |
+| `mutation.candidate` | record | `m<n>` | the candidate commit |
+| `mutation.review` / `.stage` / `.escalate` / `.release` / `.deny` | record | `m<n>` | the boundary's disposition |
+| `mutation.topology` | record | `m<n>` | the diff names a plan or the manifest: re-classed for the Board |
+| `mutation.applied` | record | `m<n>` | the candidate commit |
+| `mutation.apply_retried` | record | `m<n>` | the apply ran again on a review that was already settled |
+| `mutation.retained` / `.rolled_back` / `.rejected` / `.revise` / `.refused` / `.failed` | record | `m<n>` | why |
+| `effect.requested` / `effect.result` | ledger | an idempotency key | the gateway's record: `worktree.open:<id>`, `commit:<id>:<step>`, `apply:<candidate>`, `rollback:<id>:<base>` |
+| `evidence.base` / `.fmt` / `.check` / `.verify` / `.test` / `.fleet` / `.replay` / `.rollback` / `.diff` | record | the candidate commit | `{step, ok, code, output_digest, bytes}`; the receipt is `refs/dna/receipts/<output_digest>` |
+| `evidence.magnitude` | record | the candidate commit | the vector |
+| `review.requested` | record | `review:<id>` | question, authority, candidate, base, shape, disposition, evidence, magnitude, diff digests, fitness signals |
+| `review.verdict` | record | `<id>` | a verdict appended from a clone or from GitHub, in the reviewer's name |
+| `review.settled` / `review.refused` | record | `<id>` | `<verdict> by <reviewer>` / the reason |
+| `review.reasoned` | record | `<id>` | the deciding verdict's comment: a person's note, or the Leader's reasoning in full |
+| `org.reviewed` | record | the organization | the organization's own pass over itself, and what it answered |
+| `optimize.refused` | ledger | the organization | that pass did not run: the budget for the window is spent |
+| `expression.restart_requested` | record | `m<n>` | `apply <candidate> seed <s> fitness …` or `rollback <base> seed <s> after …` |
+| `expression.restarted` | record | `m<n>` | the shape and build the new expression reports |
+| `expression.deployed` | record | `m<n>` | what a deployment gateway expressed, and its judgement |
+| `expression.observed` / `expression.crashed` | record | `m<n>` | the window's outcome; `crashed` names the instance and node on a fleet |
+| `fleet.deploy` | record | `m<n>` or a short revision | plan, revision, seed, the instances touched, reason |
+| `instance.up` / `instance.exited` | ledger | the instance id | node, revision, model hash, build, pid / node, revision, code — authored `node/<name>` |
+| `github.pr` / `github.commented` | record | `m<n>` | the pull request opened / the settlement commented |
+| `pressure.raised` | ledger | a source | `<what> x<n>` |
+| `pressure.remeasured` | ledger | `m<n>` | the Task, the declared fitness signals, the outcome |
+| `appendage.proposed` / `appendage.candidate` | record | a source | the organ proposed / the organization mutation that proposes it |
+| `report.filed` | ledger | `r<n>` | the summary since the last report |
+| `grant.contracted` | record | a child | authority narrowed, and what it leaves: `to`, `epoch` |
+| `grant.refused` | record | a child | a grant born wider than its ceiling — and, today, a spend the window would not admit; the routing table keeps `grant.reservation_refused` in the ledger for the money refusal, and nothing writes it yet |
+| `grant.reserved` | ledger | a child | a spend admitted: op, amount, currency, counterparty, route, ceiling, epoch, at |
+| `grant.released` | ledger | a child | a reservation settled at what was actually spent |
+| `grant.fenced` | ledger | a child | an admission refused because the grant's epoch moved since |
+| `receipt.classified` | ledger | a digest | a protected body the knowledge service keeps: class, by, store |
+| `receipt.withheld` | ledger | a digest | a protected body no service could keep: class, by, why |
+| `receipt.disclosed` | ledger | a digest | a reader authorized: recipient, purpose, by |
+| `receipt.read` / `receipt.read_refused` | ledger | a digest | a read in the reader's name, or its refusal: by, purpose, class |
+| `receipt.filed` | ledger | a digest | an internal document filed as evidence: by, name, bytes, class, store |
+| `knowledge.proposed` / `knowledge.ratified` / `knowledge.declined` / `knowledge.refused` | record | the practice's digest | a practice through its review: class, target, and the verdict that settled it |
+| `knowledge.retired` | record | the practice's digest | superseded by a later version, when that one is ratified |
+| `knowledge.consulted` | ledger | `m<n>` or the work | what this piece of work looked up, and the digests it read |
+| `person.retired` | record | `<who>` | someone left: by, the successor their handed Tasks went to |
+| `practice.requested` / `practice.proposed` / `practice.refused` | record | a request id | a person's practice proposal: requested in the record (name, text, by, because, supersedes), proposed by the organization (name, digest, review_id, by, because, supersedes), or refused (why) |
+| `exception.authorized` | ledger | `t<n>` | an exception to a Task's acceptance condition, authorized in the authorizer's own name: task, why, by, practice |
+| `completion.linked` / `completion.excepted` | ledger | `t<n>` | a person's completion under its acceptance condition: the evidence linked (task, evidence, by, practice), or an exception someone else authorized (task, why, authorized_by, by, practice) |
+| `connection.proposed` / `connection.closed` | record | `connection:<n>` | a connection to another record: name, url, peer (its genesis), position, purpose, classes, by, review_id; closed: by, why |
+| `handoff.received` | ledger | `handoff:<id>` | an envelope in the receiving record's mailbox `refs/dna/exchange/<origin identity>`, never its journal: handoff, origin_record, origin_url, origin_author, origin_row, lineage, purpose, position, via, kind, subject, class, fact, note |
+| `handoff.published` / `handoff.refused` | ledger | `handoff:<id>` | in the origin record: connection, peer, kind, subject, class, purpose, peer_row, by, note; refused: why |
+| `handoff.accepted` / `handoff.accepted_by_peer` | ledger | `handoff:<id>` | an acceptance in the receiving record's journal (by, note, connection, and the envelope's origin, lineage, purpose and fact), sent back as an envelope into the origin's mailbox; its admission in the origin (connection, peer, handoff, accepted_by, note) |
+| `task.transfer_requested` / `task.transfer_accepted` | ledger | `t<n>` | a Task handed across a connection, and settled on the receiver's acceptance |
+| `decision.reported` | ledger | `t<n>` | a decision someone outside made, reported by the assignee: reporter, decider, channel, evidence, scope, obligation, practice, policy, accepted, why, note |
+| `receipt.held` / `receipt.hold_released` | ledger | a digest | a hold that refuses redaction, and its release: by, why |
+| `receipt.redacted` | ledger | a digest | the body removed, the digest kept: by, why, policy, class, store |
+| `grant.revoked` | record | a child | the parent revoked the grant, recorded before it takes effect and restored at birth: by, parent, epoch |
+| `concern.requested` / `concern.raised` | ledger | a source | a concern raised from a locus path about the part above it: what, severity, by |
+| `concern.refused` | ledger | a source | one the organization would not admit, and why |
+| `concern.proposed` | record | a source | three raises became a proposal: the practice's digest, or `refused`, after `<n>` raise(s) |
+| `body.claimed` / `body.released` | ledger | the holder | who is running this record, by the lease's token: token, forced, from, by |
+| `body.provisioned` | record | `<user>@<host>` | a machine made able to run it: dir, toolchain, knowledge (`compose` or `dsn`), by |
+| `body.credential_missing` / `body.credential_present` | ledger | `model` | whether the model's key is set where the body runs: any_of, holder |
+| `secret.rotated` | record | the variable's name | a credential set or rotated: where (`local` or the body), by — never the value |
+| `schedule.declared` / `schedule.refused` | ledger | the schedule id | a schedule the org chart declares, or why it would not be admitted (a bad cron, a grant it exceeds) |
+| `schedule.fired` / `schedule.skipped` | ledger | the schedule id | the Task it made (`task`), or why it did not fire — the last one is still open |
+| `schedule.paused` / `schedule.resumed` | ledger | the schedule id | paused and resumed by hand, in your name |
+| `budget.exhausted` | ledger | `budget` | the window's model allowance is spent: what was spent, of what, and when the window turns |
+| `model.called` | ledger | `<work>/a<n>` or a review id | the model evidence; the prompt and context are receipts under its digests (`bodies`), none for a customer-class call |
 
 ## `status.json`
 

@@ -177,8 +177,9 @@ operational row is written through the service: the organism's own
 journal routes it there, and a head that knows no service is refused
 with the checkpoint named — never silently written into git. The
 record keeps every row it ever held; `hale dna history` reads both
-memories as one. Adoption is closed until every operational write path
-goes through the service (stage 3 of GH #646).
+memories as one. Every operational write path now goes through the
+service, so adoption is open and needs no gate; a new organism still
+starts on routing 0 and adopts by that explicit step.
 
 Once adopted, the leases move too: the mutation leases the gateway
 takes and the body lease `hale dna run` holds are rows of the store,
