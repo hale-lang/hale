@@ -101,6 +101,22 @@ main locus App {
             std::test::assert(again.ok, "pq: an ordinary append retries at the tail");
             self.pgl = know::PqLeaseStore { conn: know::pq_conn(dsn), record_id: record };
             lease_contract(self.pgl, "pq leases");
+            // the database drops a store's connection (a restart, a failover,
+            // an idle timeout): the next statement dials again once and the
+            // write lands — on the ledger and on the leases, each cut from
+            // the other connection by its own backend pid, nothing else's
+            let pid = self.pg.conn.query_one("SELECT pg_backend_pid()");
+            std::test::assert(pid.ok, "pq: the ledger's backend pid: " + pid.err.detail);
+            let cut = other.conn.exec("SELECT pg_terminate_backend(" + dna::trim_nl(pid.data) + ")");
+            std::test::assert(cut.ok, "pq: the ledger's connection is cut: " + cut.err.detail);
+            let after = self.pg.append(self.pg.revision(), "task.planned", "t3", "after the cut");
+            std::test::assert(after.ok, "pq: the ledger dials again and the append lands: " + self.pg.last_error());
+            std::test::assert(other.refresh() && other.read(other.revision() - 1).body == "after the cut", "pq: the other connection sees the row that landed after the cut");
+            let lpid = self.pgl.conn.query_one("SELECT pg_backend_pid()");
+            let lcut = other.conn.exec("SELECT pg_terminate_backend(" + dna::trim_nl(lpid.data) + ")");
+            std::test::assert(lpid.ok && lcut.ok, "pq: the lease store's connection is cut");
+            std::test::assert(self.pgl.put("lease/redial", "holder", 1, 100, true, 0), "pq: the lease store dials again and the put lands: " + self.pgl.last_error());
+            std::test::assert_eq_str(self.pgl.current("lease/redial").holder, "holder", "pq: and reads it back");
             let drop = self.pg.conn.exec("DROP SCHEMA " + self.pg.schema() + " CASCADE");
             std::test::assert(drop.ok, "this run's schema dropped: " + drop.err.detail);
         } else {
