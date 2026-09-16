@@ -672,8 +672,12 @@ repository:
   writer") and never relayed. Under `signed`, rows this clone writes
   are signed commits. Signing is one mechanism for this edge, not the
   boundary itself: a hosted head is admitted through a reviewed mapping
-  of principals to authority and acts as the user, never as itself. and the organism's answers (`intent.offered`,
-  `task.born`, `review.settled`, `review.refused`) return the same way.
+  of principals to authority and acts as the user, never as itself.
+  The organism's answers (`intent.offered`, `task.born`,
+  `review.settled`, `review.refused`) return the same way. The body
+  writes `intent.offered`, so the asker is not its author: the row's
+  body names who asked — `<outcome> (from alice)`, a schedule, an
+  optimizer — and a head's ask carries the person the head identified.
   A row is answered when a later row of the answering kind names its
   entity. `hale dna ask --no-wait` appends and returns.
 

@@ -22,17 +22,13 @@
 //   8. identity is not borrowed: bob's session naming alice acts as bob,
 //      and a forged cookie is refused.
 //
-// A GAP, precisely (step 4): an ask that enters through a head sharing a
-// clone with a LIVE body goes over the membrane, and the asker's name is
-// dropped there — `IntentOffer.from` reaches `Assembly.on_intent`
-// (dna/core/assembly.hl) and is never journaled; the ledger's
-// `intent.offered` row carries the outcome alone, authored `ledger`. The
-// same ask from a clone with no body of its own writes `intent.requested`
-// through the service in the person's own name (step 8 asserts exactly
-// that). So the record can say which of two people ASKED only when their
-// head is not co-located with the body. Step 4 asserts what does hold —
-// the ask is admitted, and the whole chain lands in the ledger and not in
-// the record — and stops short of the attribution.
+// Step 4 also proves the ask is attributed on the co-located path: an ask
+// entering through a head that shares a clone with a LIVE body goes over
+// the membrane, where the body writes the `intent.offered` row itself —
+// so the asker is not the row's author but is named in its body,
+// `… (from alice)`. The same ask from a clone with no body of its own
+// writes `intent.requested` through the service in the person's own name
+// (step 8). Either way the record says which of two people asked.
 
 import "../core" as dna;
 import "../knowledge" as know;
@@ -377,6 +373,7 @@ main locus App {
         std::test::assert_eq_int(asked.status, 200, "alice's ask is taken: " + asked.body);
         let offered = wait_row(service, "chase the late invoice", 240);
         std::test::assert(std::str::contains(offered, "\"kind\": \"intent.offered\""), "the ask is a row of the ledger: " + ledger(service));
+        std::test::assert(std::str::contains(offered, "chase the late invoice (from alice)"), "and it names who asked, the person head A identified, not the form's `as`: " + offered);
         std::test::assert(!std::str::contains(record(app), "chase the late invoice"), "and not of the record: the day's work is the ledger's");
         // the plan: a person's job, bob's, and the hand-off that follows it
         let handed = wait_row(service, "\"kind\": \"task.handed\"", 240);

@@ -12,6 +12,10 @@ behavior.
 
 - `Dna.reserve` refusing a spend now appends `grant.reservation_refused <child>` — the Ledger's, as the routing table always said — instead of `grant.refused`, which stays the authority refusal a grant born wider than its ceiling gets, in the record. Found while writing stage 6's tables: the kind was routed and tested but never written.
 
+### DNA: an intent names who asked (GH #646, B1)
+
+- `intent.offered` now carries the asker in its body — `<outcome> (from alice)`; a schedule's or an optimizer's ask names them the same way. Found by the B1 fixture: an ask entering through a head that shares a clone with a live body goes over the membrane, where the person's name reached the assembly and stopped, so the ledger could not say which of two people asked.
+
 ### DNA: handoffs service to service, behind a transport-independent Exchange (GH #646 stage 5, #662)
 
 - `Exchange` in the core is one record's mailbox in another: `peer_identity`, `deliver` (idempotent by the envelope's kind and entity), `delivered`, `received`. A connection whose url is a service exchanges service to service — the peer's service publishes `/identity`, takes envelopes at `POST /exchange/<sender>` once each, refuses one claiming another origin, serves `/exchange` — and one whose url is a record's remote exchanges as mailbox refs, as before. Durable delivery: a handoff published whose envelope the peer does not hold is delivered again, once, by `hale dna handoff sync` from the envelope kept with its row; a delivery that cannot reach the peer records nothing and says so. Settlement stays on the receiver's acceptance alone. `hale dna connect` names the exchange.

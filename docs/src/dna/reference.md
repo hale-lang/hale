@@ -108,7 +108,7 @@ sequence either way — see [The record](./record.md).
 | `responsibility.proposed` | record | `locus:X` | an inferred one-line responsibility, `ratified: false` |
 | `law.deferred` | record | a clause | why `init` could not certify it |
 | `intent.requested` | ledger | the intent id | an ask from a clone with no organization: outcome, from, to |
-| `intent.offered` / `intent.refused` | ledger | the intent id | the outcome asked for / the refusal |
+| `intent.offered` / `intent.refused` | ledger | the intent id | the outcome asked for, and who asked (`… (from alice)`, a schedule, an optimizer) / the refusal |
 | `intent.unrecovered` | ledger | the intent id | offered before a restart with no Task born; never re-offered, because work may already have run |
 | `candidate.dropped` | record | the mutation | `by`, `why`: the candidate's pointer is no longer kept (applied at every clone's sync) |
 | `ledger.adopting` / `ledger.adopted` / `ledger.abandoned` | record | `ledger` | the move of the day's work into the store: `ledger` (the service), `routing`, `checkpoint` (the record head the copy was taken at), `rows`, `by` |
