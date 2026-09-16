@@ -71,6 +71,10 @@ fn admits_here(root: String, to: String) -> Bool {
     let o = dna::Ownership { path: root + "/" + OWNERS_FILE, me: owner_here(root), me_env: "" };
     return o.admits(to);
 }
+fn owner_of_person_here(root: String, who: String) -> String {
+    let o = dna::Ownership { path: root + "/" + OWNERS_FILE, me: owner_here(root), me_env: "" };
+    return o.owner_of_person(who);
+}
 fn ownership_note(root: String, to: String) -> String {
     let o = dna::Ownership { path: root + "/" + OWNERS_FILE, me: owner_here(root), me_env: "" };
     return o.why_not(to);

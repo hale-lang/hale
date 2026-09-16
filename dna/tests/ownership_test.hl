@@ -9,7 +9,9 @@
 // Ids and effect claims carry their owner (GH #666): acme's body mints
 // `acme:t1`, claims `acme:apply:<candidate>`, restores its count from
 // its own births alone, and mints again when the store says an id is
-// already claimed.
+// already claimed. A job for another owner's member is a transfer
+// inside the one ledger (GH #667): offered, accepted by that owner's
+// member, and only then handed by their controller.
 
 import "../core" as dna;
 
@@ -73,6 +75,17 @@ main locus App {
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
             deployment: dna::NoDeployment { },
             ownership: dna::Ownership { text: "org = acme\nacme: alice\n", me: "acme", me_env: "" }
+        };
+        // north's body, over the same map
+        north: dna::Dna = dna::Dna {
+            work: dna::WorkSystem {
+                human: dna::HumanWorkGateway { operator: "bob", answer: "done" },
+                selection: dna::HumanFirstSelection { }
+            },
+            review_policy: dna::PostReviewRefactors { },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
+            deployment: dna::NoDeployment { },
+            ownership: dna::Ownership { text: "org = acme\norg/collections = north\nacme: alice\nnorth: bob\n", me: "north", me_env: "" }
         };
         // a Review over a change to the map, approved by both owners
         both: dna::Review = dna::Review { review_id: "m1", subject_digest: "d1", required_authority: "board", author: "editor", approvers: "acme=alice,carol north=bob" };
@@ -141,6 +154,21 @@ main locus App {
         self.acme.journal.append(self.acme.journal.revision(), "task.born", "acme:t5", "i: ours, from before");
         self.acme.rehydrate();
         std::test::assert_eq_str(self.acme.metabolism.next_id(), "acme:t6", "after a restart the next id follows acme's own highest, not north's");
+        // ---- a job for north's member is offered, not handed
+        self.acme.execute_plan("acme:t7", "", "chase the agency", "", dna::Plan { kind: "person", assignee: "bob", narrative: "bob calls them", by: "leader" });
+        let offered = self.last(self.acme.journal, "task.transfer_requested");
+        std::test::assert(std::str::contains(offered, "\"owner\": \"acme\"") && std::str::contains(offered, "\"to\": \"north\"") && std::str::contains(offered, "\"assignee\": \"bob\""), "the job is offered to north for bob: " + offered);
+        std::test::assert(!std::str::contains(self.last(self.acme.journal, "task.handed"), "acme:t7"), "…and not handed by acme");
+        self.acme.execute_plan("acme:t8", "", "close the books", "", dna::Plan { kind: "person", assignee: "alice", narrative: "alice closes them", by: "leader" });
+        std::test::assert(std::str::contains(self.last(self.acme.journal, "task.handed"), "\"assignee\": \"alice\""), "a job for acme's own member is handed as ever");
+        // north's controller hands it only once one of its members accepted
+        self.north.journal.append(self.north.journal.revision(), "task.transfer_requested", "acme:t7", offered);
+        std::test::assert_eq_int(self.north.admit_transfers(), 0, "nothing to hand before an acceptance");
+        self.north.journal.append(self.north.journal.revision(), "task.transfer_accepted", "acme:t7", "{\"owner\": \"north\", \"from\": \"acme\", \"by\": \"bob\", \"assignee\": \"bob\", \"note\": \"\"}");
+        std::test::assert_eq_int(self.north.admit_transfers(), 1, "accepted: handed once");
+        let handed = self.last(self.north.journal, "task.handed");
+        std::test::assert(std::str::contains(handed, "\"assignee\": \"bob\"") && std::str::contains(handed, "\"by\": \"north\"") && std::str::contains(handed, "\"transferred_from\": \"acme\"") && std::str::contains(handed, "\"accepted_by\": \"bob\""), "north hands it to bob in its own name, saying where it came from: " + handed);
+        std::test::assert_eq_int(self.north.admit_transfers(), 0, "…and not again");
         // ---- approval by every affected owner
         self.both.on_verdict(dna::Verdict { review_id: "m1", subject_digest: "d1", verdict: "approve", reviewer: "eve", authority: "board" });
         std::test::assert(!self.both.settled && self.both.refused == 1 && std::str::contains(self.both.last_refusal, "member of no owner"), "a reviewer of no affected owner is refused: " + self.both.last_refusal);

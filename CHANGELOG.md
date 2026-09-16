@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: transfers between owners inside one ledger, settled on the other owner's acceptance (GH #667, stage B2)
+
+- A plan that hands a job to another owner's member appends `task.transfer_requested` (owner, to, assignee, the acceptance fields) in place of `task.handed`; the Task waits. `hale dna task accept <id> [--as <who>]` by a member of the owner named appends `task.transfer_accepted`, which the service admits only in such a member's name; that owner's controller then hands the Task in its own name (`task.handed` with `transferred_from` and `accepted_by`), so completion is admitted in the assignee's name as before. Handoffs between records are unchanged.
+
 ### DNA: ids and effect claims carry their owner; the store decides a first claim (GH #666, stage B2)
 
 - Over a shared record a controller mints in its own namespace (`acme:t3`, `acme:m2`) and claims an apply as `acme:apply:<candidate>`; it restores its counters from its own births alone. The store answers a `task.born` under an id already born with `claimed` (409, from the memory ledger and Postgres alike) and the assembly mints the next id instead of refusing the intent. With one owner nothing is prefixed. `hale dna history` reads an owner-prefixed id.
