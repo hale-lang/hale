@@ -306,7 +306,7 @@ fn id_number(id: String, family: String) -> Int {
     let c = std::str::index_of(id, ":");
     let bare = if c < 0 { id } else { id[(c + 1)..len(id)] };
     if len(bare) <= len(family) || bare[0..len(family)] != family { return -1; }
-    return std::str::parse_int(bare[len(family)..len(bare)]) or -1;
+    return std::str::parse_int(bare[len(family)..len(bare)]) or - 1;
 }
 // Whether an id is minted in `owner`'s namespace ("" for the one owner's).
 fn owned_by(owner: String, id: String) -> Bool { return id_owner(id) == owner; }
