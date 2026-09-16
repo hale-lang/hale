@@ -843,6 +843,7 @@ locus GitJournal {
         author: String = "dna"; // the identity on the organism's own events
         record: GitRecord = GitRecord { };
         rows: EventRows = EventRows { };
+        authors: Authors = Authors { }; // one per row, as the line names it
         text: String = ""; // journal.jsonl as of `head_sha`
         head_sha: String = "";
         root_sha: String = ""; // the first commit: the record's identity (GH #613)
@@ -864,6 +865,7 @@ locus GitJournal {
     @effects(is: { journal_io })
     fn load() {
         while self.rows.len() > 0 { let gone = self.rows.pop() or Event { }; }
+        while self.authors.len() > 0 { let gone = self.authors.pop() or ""; }
         self.loaded = 0;
         self.head_sha = self.record.head(self.chain());
         if self.head_sha == "" { self.text = ""; self.root_sha = ""; return; }
@@ -888,6 +890,7 @@ locus GitJournal {
                     prev: prev,
                     digest: sha
                 });
+                self.authors.push(std::json::find_string_field(line, "author"));
                 self.loaded = self.loaded + 1;
                 prev = sha;
             }
@@ -915,6 +918,8 @@ locus GitJournal {
         return self.head_sha;
     }
     fn read(i: Int) -> Event { return self.rows.get(i) or Event { }; }
+    // Who a row names as its author (the line's `author`).
+    fn author_of(i: Int) -> String { return self.authors.get(i) or ""; }
     // The chain is the record's: it still ends where we loaded it, and
     // its row count is ours.
     fn verify_chain() -> Bool {
@@ -926,6 +931,7 @@ locus GitJournal {
     fn landed(a: Appended, kind: String, entity: String, body: String, line: String) -> AppendResult {
         let seq = self.rows.len();
         self.rows.push(Event { seq: seq, kind: kind, entity: entity, body: body, prev: self.head(), digest: a.id });
+        self.authors.push(self.author);
         self.text = self.text + line;
         self.head_sha = a.id;
         return AppendResult { ok: true, revision: seq + 1 };

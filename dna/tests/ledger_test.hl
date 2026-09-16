@@ -1,0 +1,85 @@
+// dna/tests/ledger_test.hl — the Ledger's contract (GH #646 stage 1,
+// #650), in memory always and in Postgres when HALE_DNA_KNOWLEDGE_DSN
+// names one (CI's service container; dev's compose).
+//
+// A Ledger is a Journal: compare-and-append at the tail, an exact append
+// refused when the tail moved, a sha256 chain that verifies. A claim
+// kind is unique by (kind, entity): the second `task.born` for one id is
+// refused by the store, not by a scan. Adoption copies a record's rows
+// keyed by their commit, so the same row offered twice lands once; the
+// cutover names the checkpoint; abandon empties it.
+
+import "../core" as dna;
+import "../knowledge" as know;
+
+fn ledger_contract(l: know::Ledger, label: String) {
+    std::test::assert(l.open(), label + ": opens: " + l.last_error());
+    std::test::assert_eq_int(l.revision(), 0, label + ": empty");
+    std::test::assert_eq_str(l.head(), "genesis", label + ": no head");
+    let a = l.append(0, "task.born", "t1", "reduce checkout failures");
+    std::test::assert(a.ok && a.revision == 1, label + ": the first append lands");
+    let stale = l.append_exact(0, "task.planned", "t1", "");
+    std::test::assert(!stale.ok && stale.error == "stale_revision", label + ": an exact append at a revision the tail left is stale");
+    let b = l.append_exact(1, "task.planned", "t1", "");
+    std::test::assert(b.ok && b.revision == 2, label + ": an exact append at the tail lands");
+    let dup = l.append(2, "task.born", "t1", "again");
+    std::test::assert(!dup.ok, label + ": a second claim for one task is refused");
+    std::test::assert_eq_str(l.last_error(), "claimed", label + ": and named as claimed: " + l.last_error());
+    std::test::assert_eq_int(l.revision(), 2, label + ": nothing landed for it");
+    let c = l.append(2, "task.done", "t1", "");
+    std::test::assert(c.ok, label + ": a later kind of the same task lands");
+    std::test::assert(l.verify_chain(), label + ": the chain verifies");
+    let e = l.read(1);
+    std::test::assert(e.kind == "task.planned" && e.seq == 1 && e.prev == l.read(0).digest, label + ": rows read back in order, chained");
+    std::test::assert_eq_str(l.author_of(0), "ledger", label + ": the organism's rows are the ledger's");
+    // adoption: rows keyed by their commit
+    std::test::assert(!l.checkpoint().adopted, label + ": not adopted yet");
+    std::test::assert(l.adopt_row("intent.offered", "i1", "{}", "riley", 7, "c0ffee01"), label + ": a record row is adopted");
+    std::test::assert(l.adopt_row("intent.offered", "i1", "{}", "riley", 7, "c0ffee01"), label + ": offered again, it is already there");
+    std::test::assert_eq_int(l.revision(), 4, label + ": once");
+    std::test::assert_eq_str(l.author_of(3), "riley", label + ": with its record author");
+    std::test::assert(l.cutover("deadbeef", 1, 1), label + ": the cutover is recorded");
+    let cut = l.checkpoint();
+    std::test::assert(cut.adopted && cut.checkpoint == "deadbeef" && cut.copied == 1 && cut.routing == 1, label + ": and read back");
+    std::test::assert(l.abandon(), label + ": abandoned");
+    std::test::assert_eq_int(l.revision(), 0, label + ": empty again");
+    std::test::assert(!l.checkpoint().adopted, label + ": no cutover");
+}
+
+main locus App {
+    params { pg: know::PqLedger = know::PqLedger { }; }
+    run() {
+        let mem = know::MemLedger { };
+        ledger_contract(mem, "memory");
+        if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") && std::env::var("HALE_DNA_KNOWLEDGE_DSN") != "memory" {
+            let dsn = know::parse_dsn(std::env::var("HALE_DNA_KNOWLEDGE_DSN"));
+            std::test::assert(dsn.ok, "the DSN parses: " + dsn.why);
+            let record = "ledgerfixture" + to_string(std::process::pid());
+            self.pg = know::PqLedger { conn: know::pq_conn(dsn), record_id: record };
+            ledger_contract(self.pg, "pq");
+            // a second connection sees the same ledger, and the store keeps
+            // the claim across connections
+            let one = self.pg.append(0, "task.born", "t2", "");
+            std::test::assert(one.ok, "pq: a row for the other connection to see");
+            let other = know::PqLedger { conn: know::pq_conn(dsn), record_id: record };
+            std::test::assert(other.open(), "pq: a second connection opens: " + other.last_error());
+            std::test::assert_eq_int(other.revision(), 1, "pq: it reads the row");
+            let claim = other.append(1, "task.born", "t2", "");
+            std::test::assert(!claim.ok && other.last_error() == "claimed", "pq: the claim holds across connections");
+            // a writer that read at a revision the other moved is stale, once
+            let moved = other.append(1, "task.planned", "t2", "");
+            std::test::assert(moved.ok, "pq: the other connection appends");
+            let exact = self.pg.append_exact(1, "grant.reserved", "op1", "10");
+            std::test::assert(!exact.ok && exact.error == "stale_revision", "pq: an exact append after another writer moved the tail is stale");
+            std::test::assert_eq_int(self.pg.revision(), 2, "pq: and this side now sees what moved it");
+            let again = self.pg.append(2, "grant.reserved", "op1", "10");
+            std::test::assert(again.ok, "pq: an ordinary append retries at the tail");
+            let drop = self.pg.conn.exec("DROP SCHEMA " + self.pg.schema() + " CASCADE");
+            std::test::assert(drop.ok, "this run's schema dropped: " + drop.err.detail);
+        } else {
+            eprintln("ledger_test: no HALE_DNA_KNOWLEDGE_DSN; the Postgres half was not exercised here");
+        }
+    }
+}
+
+fn main() { App { }; }

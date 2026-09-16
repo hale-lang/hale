@@ -1,0 +1,312 @@
+// dna/core/routing.hl — three memories, one routing table (GH #646 stage
+// 1, #650). Every row kind belongs to exactly one memory. Version 0 is
+// every kind in the record (git); version 1 is the split: what changes
+// the organism stays in the record, what the organism did today goes to
+// the Ledger. An organism's version is a fact in its record
+// (`ledger.adopted`), never a build's opinion. There is no dual-write:
+// a kind has one home, and a writer that cannot reach it fails.
+//
+// `RoutedJournal` is the `Journal` an assembly and the host stand on: two
+// journals underneath — the record's and the Ledger's — read as one
+// merged sequence, appended to by kind. `ServiceLedger` is the Ledger as
+// the organism and the host reach it: over HTTP, through the knowledge
+// service, which is the one DNA program that holds the database (the
+// core links no driver; a head never holds database credentials).
+
+const ROUTING_VERSION: Int = 1;
+
+// Where a kind lives under routing version 1.
+fn memory_of(kind: String) -> String {
+    let dot = std::str::index_of(kind, ".");
+    let family = if dot < 0 { kind } else { kind[0..dot] };
+    // the whole family is operational
+    if family == "intent" || family == "task" || family == "decision" || family == "completion" || family == "exception" || family == "schedule" || family == "receipt" || family == "handoff" || family == "pressure" || family == "instance" || family == "effect" || family == "report" { return "ledger"; }
+    // families split by kind
+    if kind == "concern.requested" || kind == "concern.raised" || kind == "concern.refused" { return "ledger"; }
+    if kind == "grant.reserved" || kind == "grant.released" || kind == "grant.fenced" || kind == "grant.reservation_refused" { return "ledger"; }
+    if kind == "body.claimed" || kind == "body.released" || kind == "body.credential_missing" || kind == "body.credential_present" { return "ledger"; }
+    if kind == "model.called" || kind == "knowledge.consulted" || kind == "optimize.refused" || kind == "budget.exhausted" { return "ledger"; }
+    // everything else — mutations, reviews, knowledge, practices, grants
+    // as authority, connections, provisioning, secrets, expression, the
+    // fleet's deploys, people, the structure observed at init, and the
+    // adoption rows themselves — is the record's
+    return "record";
+}
+
+// Where a kind lives under a routing version.
+fn route(routing: Int, kind: String) -> String {
+    if routing <= 0 { return "record"; }
+    return memory_of(kind);
+}
+
+// The routing an organism's record says it is on: the last
+// `ledger.adopted` row sets it, a later `ledger.abandoned` returns it
+// to 0. Rows are read from a journal of the record's rows.
+@unbounded
+fn routing_of(record: Journal) -> Int {
+    let mut routing = 0;
+    let mut i = 0;
+    let n = record.revision();
+    while i < n {
+        let e = record.read(i);
+        if e.kind == "ledger.adopted" { routing = std::json::find_int_field(e.body, "routing"); }
+        if e.kind == "ledger.abandoned" { routing = 0; }
+        i = i + 1;
+    }
+    return routing;
+}
+
+// The checkpoint an adopted record names: the record's head at
+// adoption ("" when not adopted).
+@unbounded
+fn checkpoint_of(record: Journal) -> String {
+    let mut at = "";
+    let mut i = 0;
+    let n = record.revision();
+    while i < n {
+        let e = record.read(i);
+        if e.kind == "ledger.adopted" { at = std::json::find_string_field(e.body, "checkpoint"); }
+        if e.kind == "ledger.abandoned" { at = ""; }
+        i = i + 1;
+    }
+    return at;
+}
+
+// ---- the routed journal ------------------------------------------------
+
+// One entry of the merged order: which memory, and the row's index there.
+type Placed {
+    ledger: Bool = false;
+    index: Int = 0;
+}
+
+@form(vec)
+locus PlacedRows {
+    capacity { heap rows of Placed; }
+}
+
+// Two journals read as one. The merged order is arrival: at birth every
+// record row then every Ledger row, then each row as it is appended or
+// seen at a refresh. A row's `seq` as read here is its merged position,
+// so a writer that appends and looks for its row by `revision - 1`
+// finds it whichever memory holds it. Rows name each other by id, never
+// by seq (GH #603), so no reader depends on the interleaving.
+locus RoutedJournal {
+    params {
+        record: Journal = MemJournal { };
+        ledger: Journal = MemJournal { };
+        routing: Int = 0; // learned from the record at birth and on refresh
+        order: PlacedRows = PlacedRows { };
+        seen_record: Int = 0;
+        seen_ledger: Int = 0;
+        last_error: String = "";
+    }
+    birth() {
+        self.routing = routing_of(self.record);
+        self.take_new();
+    }
+    // Append every row a memory has that the order does not. Under
+    // routing 1 a record row of a Ledger kind is not read: the rows from
+    // before the checkpoint were copied to the Ledger at adoption and are
+    // read there, and one written into the record after it was refused
+    // admission (#646 decision 3) — the Ledger is the authority for those
+    // kinds, and the record's copies stay as history git keeps.
+    @unbounded
+    fn take_new() {
+        while self.seen_record < self.record.revision() {
+            let e = self.record.read(self.seen_record);
+            if route(self.routing, e.kind) != "ledger" { self.order.push(Placed { ledger: false, index: self.seen_record }); }
+            self.seen_record = self.seen_record + 1;
+        }
+        // on routing 0 the ledger is not a memory of this organism: it is
+        // neither read nor asked (a service ledger's refresh is a round
+        // trip, and an organism on the record alone makes none)
+        if self.routing <= 0 { return; }
+        while self.seen_ledger < self.ledger.revision() {
+            self.order.push(Placed { ledger: true, index: self.seen_ledger });
+            self.seen_ledger = self.seen_ledger + 1;
+        }
+    }
+    fn revision() -> Int { return self.order.len(); }
+    fn head() -> String {
+        if self.order.len() == 0 { return "genesis"; }
+        return self.read(self.order.len() - 1).digest;
+    }
+    fn refresh() -> Bool {
+        let a = self.record.refresh();
+        let b = if self.routing > 0 { self.ledger.refresh() } else { false };
+        let before = self.order.len();
+        let seen = self.seen_record;
+        // new record rows may carry an adoption (or its abandonment): the
+        // order is rebuilt under the routing they name
+        if self.seen_record < self.record.revision() {
+            let now = routing_of(self.record);
+            if now != self.routing {
+                self.routing = now;
+                while self.order.len() > 0 { let gone = self.order.pop() or Placed { }; }
+                self.seen_record = 0;
+                self.seen_ledger = 0;
+            }
+        }
+        self.take_new();
+        return self.order.len() != before || a || b || self.seen_record != seen;
+    }
+    fn read(i: Int) -> Event {
+        let p = self.order.get(i) or Placed { };
+        let e = if p.ledger { self.ledger.read(p.index) } else { self.record.read(p.index) };
+        return Event { seq: i, kind: e.kind, entity: e.entity, body: e.body, prev: e.prev, digest: e.digest };
+    }
+    fn verify_chain() -> Bool { return self.record.verify_chain() && (self.routing <= 0 || self.ledger.verify_chain()); }
+    fn to_ledger(kind: String) -> Bool { return route(self.routing, kind) == "ledger"; }
+    // Compare-and-append against the merged revision, then the memory's
+    // own tail: the memory retries a lost race at its tail as it always
+    // did, and the row's merged position is where it lands here. (Each
+    // memory is called on its own typed field: the law's claim walk
+    // follows a typed receiver, never one a method handed back.)
+    fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        let rev = self.order.len();
+        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        let r = if self.to_ledger(kind) { self.ledger.append(self.ledger.revision(), kind, entity, body) } else { self.record.append(self.record.revision(), kind, entity, body) };
+        if !r.ok { self.last_error = r.error; return AppendResult { error: r.error, expected: expected, actual: self.order.len() }; }
+        self.take_new();
+        return AppendResult { ok: true, revision: self.order.len() };
+    }
+    // Exact: neither memory may have moved since the caller read the
+    // merged revision, and the memory's own swap is one attempt.
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        let moved = self.refresh();
+        let rev = self.order.len();
+        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        let r = if self.to_ledger(kind) { self.ledger.append_exact(self.ledger.revision(), kind, entity, body) } else { self.record.append_exact(self.record.revision(), kind, entity, body) };
+        if !r.ok {
+            self.take_new();
+            return AppendResult { error: r.error, expected: expected, actual: self.order.len() };
+        }
+        self.take_new();
+        return AppendResult { ok: true, revision: self.order.len() };
+    }
+}
+
+// ---- the Ledger over the knowledge service ---------------------------------
+
+// The Ledger as a `Journal`, reached over HTTP: the service holds the
+// store and its schema for this record; this side keeps the rows it has
+// read and asks for what it lacks. With no url, nothing is readable and
+// every append fails as `io` — an organism on routing 1 does not start
+// without its store (#646 decision 3), and the host says so.
+locus ServiceLedger {
+    params {
+        url: String = "";
+        url_env: String = "";
+        rows: EventRows = EventRows { };
+        last_error: String = "";
+        calls: Int = 0;
+        loaded: Bool = false;
+    }
+    birth() {
+        if len(self.url) == 0 && len(self.url_env) > 0 && std::env::var_exists(self.url_env) { self.url = std::env::var(self.url_env); }
+    }
+    fn ready() -> Bool { return len(self.url) > 0; }
+    // Rows are read on first use, not at birth: an organism on routing 0
+    // holds a ledger client and never asks it anything.
+    fn ensure_loaded() {
+        if self.loaded || !self.ready() { return; }
+        self.loaded = true;
+        self.load();
+    }
+    fn failed(e: std::http::HttpError) -> std::http::ClientResponse {
+        self.last_error = e.kind + " " + e.detail;
+        return std::http::ClientResponse { status: 0, body: b"" };
+    }
+    // Rows from `from` on, as the service prints them (one JSON object
+    // per line), appended to what is held.
+    @unbounded
+    fn take(text: String) {
+        let mut rest = text;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if len(trim_nl(line)) == 0 { continue; }
+            let seq = std::json::find_int_field(line, "seq");
+            if seq != self.rows.len() { continue; }
+            self.rows.push(Event {
+                seq: seq,
+                kind: std::json::find_string_field(line, "kind"),
+                entity: std::json::find_string_field(line, "entity"),
+                body: std::json::find_string_field(line, "body"),
+                prev: std::json::find_string_field(line, "prev"),
+                digest: std::json::find_string_field(line, "digest")
+            });
+        }
+    }
+    fn load() {
+        if !self.ready() { return; }
+        self.calls = self.calls + 1;
+        let resp = std::http::get(self.url + "/ledger/rows?from=" + to_string(self.rows.len())) or self.failed(err);
+        if resp.status != 200 { if resp.status > 0 { self.last_error = "http " + to_string(resp.status); } return; }
+        self.take(std::str::from_bytes(resp.body));
+    }
+    fn revision() -> Int { self.ensure_loaded(); return self.rows.len(); }
+    fn head() -> String {
+        self.ensure_loaded();
+        if self.rows.len() == 0 { return "genesis"; }
+        let e = self.rows.get(self.rows.len() - 1) or Event { };
+        return e.digest;
+    }
+    // Ask the service for its revision; read what is missing.
+    fn refresh() -> Bool {
+        if !self.ready() { return false; }
+        self.ensure_loaded();
+        self.calls = self.calls + 1;
+        let resp = std::http::get(self.url + "/ledger/head") or self.failed(err);
+        if resp.status != 200 { return false; }
+        let n = std::json::find_int_field(std::str::from_bytes(resp.body), "revision");
+        if n == self.rows.len() { return false; }
+        self.load();
+        return true;
+    }
+    fn read(i: Int) -> Event { self.ensure_loaded(); return self.rows.get(i) or Event { }; }
+    fn verify_chain() -> Bool { self.ensure_loaded(); return chain_ok(self.rows); }
+    fn post(expected: Int, exact: Bool, kind: String, entity: String, body: String) -> AppendResult {
+        if !self.ready() { self.last_error = "no ledger service (HALE_DNA_KNOWLEDGE_URL unset)"; return AppendResult { error: "io", expected: expected, actual: self.rows.len() }; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.int_field("expected", expected);
+        b.bool_field("exact", exact);
+        b.string_field("kind", kind);
+        b.string_field("entity", entity);
+        b.string_field("body", body);
+        b.end_object();
+        self.calls = self.calls + 1;
+        let resp = std::http::post(self.url + "/ledger/append", std::bytes::from_string(b.result()), "application/json") or self.failed(err);
+        let text = std::str::from_bytes(resp.body);
+        if resp.status == 0 { return AppendResult { error: "io", expected: expected, actual: self.rows.len() }; }
+        if resp.status != 200 {
+            let error = std::json::find_string_field(text, "error");
+            if error == "stale_revision" {
+                self.load();
+                return AppendResult { error: "stale_revision", expected: expected, actual: self.rows.len() };
+            }
+            self.last_error = if len(error) > 0 { error } else { "http " + to_string(resp.status) };
+            return AppendResult { error: "io", expected: expected, actual: self.rows.len() };
+        }
+        // the row as the service holds it; anything it appended before
+        // it that this side lacks comes with it
+        self.take(std::json::find_string_field(text, "rows"));
+        return AppendResult { ok: true, revision: self.rows.len() };
+    }
+    // The service retries a lost race at its tail (as GitJournal does);
+    // this side sends the tail it knows and takes what landed.
+    fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        let rev = self.rows.len();
+        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        return self.post(expected, false, kind, entity, body);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        let moved = self.refresh();
+        let rev = self.rows.len();
+        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        return self.post(expected, true, kind, entity, body);
+    }
+}

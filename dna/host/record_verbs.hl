@@ -294,3 +294,96 @@ fn design_upgrade_verb(root: String, path: String, toolchain: String) -> Answer 
     }
     return answer("proposed=" + to_string(proposed) + " superseding=" + to_string(superseding) + " waiting=" + to_string(waiting) + "\n");
 }
+
+// ---- hale dna ledger --------------------------------------------------------
+//
+// The organism's operational memory moves to the Ledger by an explicit,
+// one-way adoption (GH #646 stage 1, #650): four idempotent steps, a
+// crash anywhere rerun rather than repaired. `ledger.adopting` in the
+// record first (the intent is in git before anything is copied); the
+// service copies every operational row keyed by its commit and records
+// the cutover; `ledger.adopted` names the checkpoint. From that commit
+// on, operational kinds are written through the service, never into
+// the record. Until every operational write path exists (stage 3, #652)
+// adoption is closed: it opens for fixtures with HALE_DNA_ADOPT_UNGATED.
+
+fn ledger_status(root: String) -> String {
+    let routing = routing_here(root);
+    let url = knowledge_url(root);
+    let mut out = "routing:    " + to_string(routing) + (if routing == 0 { " (every row in the record)" } else { " (the day's work in the ledger, adopted at " + short(checkpoint_here(root)) + ")" }) + "\n";
+    out = out + "service:    " + (if len(url) == 0 { "none known here (HALE_DNA_KNOWLEDGE_URL, or `hale dna dev`)" } else { url }) + "\n";
+    if len(url) > 0 {
+        let l = dna::ServiceLedger { url: url };
+        let resp = std::http::get(url + "/ledger/head") or l.failed(err);
+        if resp.status == 200 {
+            let h = std::str::from_bytes(resp.body);
+            out = out + "ledger:     " + to_string(std::json::find_int_field(h, "revision")) + " row(s)" + (if std::json::find_bool_field(h, "adopted") { ", cutover at " + short(std::json::find_string_field(h, "checkpoint")) } else { ", not adopted" }) + "\n";
+        } else {
+            out = out + "ledger:     the service did not answer (" + (if resp.status == 0 { l.last_error } else { "http " + to_string(resp.status) }) + ")\n";
+        }
+    }
+    return out;
+}
+
+@unbounded
+fn ledger_verb(root: String, seed: String, sub: String, why: String, who_flag: String) -> Answer {
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    if len(sub) == 0 || sub == "status" { return answer(ledger_status(root)); }
+    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    let url = knowledge_url(root);
+    if sub == "adopt" {
+        if routing_here(root) > 0 { return fail("ledger adopt: this record is already on routing " + to_string(routing_here(root)) + " (adopted at " + short(checkpoint_here(root)) + ")"); }
+        if !std::env::var_exists("HALE_DNA_ADOPT_UNGATED") { return fail("ledger adopt: adoption opens once every operational write path goes through the service (stage 3, #652); until then an organism stays on the record"); }
+        if len(url) == 0 { return fail("ledger adopt: no ledger service is known here (HALE_DNA_KNOWLEDGE_URL, or run under `hale dna dev`); nothing was changed"); }
+        let l = body_lease_read(root);
+        if !l.ok { return fail("ledger adopt: the body lease cannot be read (the remote cannot be reached); nothing was changed"); }
+        if body_live(l, std::time::now()) { return fail("ledger adopt: a body is live on " + l.holder + "; stop it first (`hale dna body`), then adopt; nothing was changed"); }
+        let s = sync_record(root);
+        if !s.ok { return fail("ledger adopt: " + s.summary + "; nothing was changed"); }
+        // 1. the intent, in the record
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("ledger", url);
+        b.int_field("routing", dna::ROUTING_VERSION);
+        b.string_field("by", who);
+        b.end_object();
+        if !append_as(root, "ledger.adopting", "ledger", b.result(), who) { return fail("ledger adopt: the record refused `ledger.adopting`; nothing was copied"); }
+        // 2 + 3. the copy and the cutover, by the service
+        let sl = dna::ServiceLedger { url: url };
+        let resp = std::http::post(url + "/ledger/adopt", std::bytes::from_string("{}"), "application/json") or sl.failed(err);
+        let text = std::str::from_bytes(resp.body);
+        if resp.status != 200 { return fail("ledger adopt: the service did not adopt (" + (if resp.status == 0 { sl.last_error } else { std::json::find_string_field(text, "error") }) + "); `ledger.adopting` stands in the record — run `hale dna ledger adopt` again, or `hale dna ledger abandon --why …`"); }
+        let copied = std::json::find_int_field(text, "copied");
+        let checkpoint = std::json::find_string_field(text, "checkpoint");
+        // 4. the checkpoint, in the record
+        let c = std::json::Builder { };
+        c.begin_object();
+        c.string_field("ledger", url);
+        c.int_field("routing", dna::ROUTING_VERSION);
+        c.string_field("checkpoint", checkpoint);
+        c.int_field("rows", copied);
+        c.string_field("by", who);
+        c.end_object();
+        if !append_as(root, "ledger.adopted", "ledger", c.result(), who) { return fail("ledger adopt: the rows are copied, but the record refused `ledger.adopted`; run `hale dna ledger adopt` again (the copy is idempotent)"); }
+        let s2 = sync_record(root);
+        return answer("ledger adopted at " + short(checkpoint) + ": " + to_string(copied) + " operational row(s) copied to " + url + " (routing " + to_string(dna::ROUTING_VERSION) + "); from here on the day's work is written through the service, and the record keeps what changes the organism\n");
+    }
+    if sub == "abandon" {
+        if len(why) == 0 { return fail("ledger abandon: `hale dna ledger abandon --why <why> [--as <who>]`"); }
+        if len(url) == 0 { return fail("ledger abandon: no ledger service is known here; nothing was changed"); }
+        let l = body_lease_read(root);
+        if body_live(l, std::time::now()) { return fail("ledger abandon: a body is live on " + l.holder + "; stop it first; nothing was changed"); }
+        let sl = dna::ServiceLedger { url: url };
+        let resp = std::http::post(url + "/ledger/abandon", std::bytes::from_string("{}"), "application/json") or sl.failed(err);
+        if resp.status != 200 { return fail("ledger abandon: the service did not abandon (" + (if resp.status == 0 { sl.last_error } else { std::json::find_string_field(std::str::from_bytes(resp.body), "error") }) + ")"); }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("by", who);
+        b.string_field("why", why);
+        b.end_object();
+        if !append_as(root, "ledger.abandoned", "ledger", b.result(), who) { return fail("ledger abandon: the ledger is emptied, but the record refused `ledger.abandoned`; run it again"); }
+        let s2 = sync_record(root);
+        return answer("ledger abandoned by " + who + ": " + why + "; the record is the only memory again (routing 0), and its operational rows were never removed\n");
+    }
+    return fail("ledger: `hale dna ledger [status]`, `hale dna ledger adopt [--as <who>]`, `hale dna ledger abandon --why <why> [--as <who>]`");
+}

@@ -66,6 +66,9 @@ locus EventRows {
     capacity { heap rows of Event; }
 }
 
+@form(vec)
+locus Authors { capacity { heap rows of String; } }
+
 // ---- in-memory journal --------------------------------------------
 
 locus MemJournal {

@@ -92,6 +92,43 @@ fn journal_text_at(repo: String, commit: String) -> String {
     return rec(repo).text_at(commit);
 }
 
+// GH #646 stage 1: the routing version this record is on, from its own
+// rows (`ledger.adopted` / `ledger.abandoned`), and the checkpoint.
+// (a locus handed to an interface parameter is bound to a local first:
+// passed inline as a temporary it reaches the callee unborn)
+fn routing_here(root: String) -> Int {
+    let j = dna::GitJournal { repo: root, author: "host" };
+    return dna::routing_of(j);
+}
+
+fn checkpoint_here(root: String) -> String {
+    let j = dna::GitJournal { repo: root, author: "host" };
+    return dna::checkpoint_of(j);
+}
+
+// The `memory:` line of status: which memories the organism has.
+fn routing_line(root: String) -> String {
+    let r = routing_here(root);
+    if r == 0 { return "the record alone (routing 0); `hale dna ledger adopt` moves the day's work to the ledger"; }
+    return "record + ledger (routing " + to_string(r) + ", adopted at " + short(checkpoint_here(root)) + "; operations are written through the service)";
+}
+
+// An operational row of an adopted organism goes to the Ledger through
+// the service, never into the record: forwarded when a service is known
+// here, refused with the checkpoint named otherwise (the compatibility
+// path #646 decision 3 asked for — never silently accepted into git).
+fn ledger_append(root: String, kind: String, entity: String, body: String) -> Bool {
+    let url = knowledge_url(root);
+    if len(url) == 0 {
+        eprintln("hale dna: `", kind, "` is a row of the ledger: this organism's operations have lived there since ", short(checkpoint_here(root)), " (ledger.adopted), and no service is known here to write it through (HALE_DNA_KNOWLEDGE_URL, or `hale dna dev`); nothing was written");
+        return false;
+    }
+    let l = dna::ServiceLedger { url: url };
+    let r = l.append(l.revision(), kind, entity, body);
+    if !r.ok { eprintln("hale dna: the ledger at ", url, " refused `", kind, "`: ", l.last_error); }
+    return r.ok;
+}
+
 // Whether rows this clone writes are signed (GH #604 rule 6: under
 // `dna.trust = signed` a row this clone writes is a signed commit, so a
 // relay elsewhere can admit it as its author's).
@@ -107,6 +144,7 @@ fn signing(root: String) -> Bool { return trust_mode(root) == "signed"; }
 // row (GH #603).
 @unbounded
 fn append_as(repo: String, kind: String, entity: String, body: String, author: String) -> Bool {
+    if dna::route(routing_here(repo), kind) == "ledger" { return ledger_append(repo, kind, entity, body); }
     let r = rec(repo);
     let sign = signing(repo);
     let mut tries = 0;
@@ -127,6 +165,7 @@ fn append_as(repo: String, kind: String, entity: String, body: String, author: S
 // it was refused (#636: a redaction that read "no hold" must not land
 // after a hold did).
 fn append_as_at(repo: String, expected: String, kind: String, entity: String, body: String, author: String) -> String {
+    if dna::route(routing_here(repo), kind) == "ledger" { return if ledger_append(repo, kind, entity, body) { "" } else { "the ledger refused the row" }; }
     let r = rec(repo);
     if r.head(JOURNAL) != expected { return "stale_revision"; }
     let a = r.append(JOURNAL, expected, dna::Row { kind: kind, entity: entity, body: body, author: author }, signing(repo), "");

@@ -147,3 +147,35 @@ under `worktrees/<id>/`, the toolchain's inputs and outputs under
 running (`baseline.topology`, `current.topology`,
 `previous.topology`). Delete it and nothing the record holds is
 lost.
+
+## The ledger
+
+The record is one of three memories. The Structure is the codebase;
+the record is how the organism changed and was allowed to; the
+**ledger** is what it did today — intents, tasks, decisions, bills,
+money reserved and settled, schedules fired, concerns, effect claims,
+liveness — in the store behind the knowledge service, in the
+organism's own schema. Every row kind has exactly one home
+(`dna::memory_of`), and the organism's routing version is a fact of
+its record, never a build's opinion.
+
+A new organism starts on routing 0: every row in the record, as
+before. Moving the day's work to the ledger is an explicit, one-way
+step:
+
+```sh
+hale dna ledger                # routing, service, cutover
+hale dna ledger adopt          # with no body live, under `hale dna dev` or HALE_DNA_KNOWLEDGE_URL
+hale dna ledger abandon --why "back to one memory"
+```
+
+Adoption writes `ledger.adopting` to the record first, has the service
+copy every operational row of the record into the ledger keyed by its
+commit (rerun after any interruption; nothing is copied twice), then
+writes `ledger.adopted` naming the checkpoint. From that commit on, an
+operational row is written through the service: the organism's own
+journal routes it there, and a head that knows no service is refused
+with the checkpoint named — never silently written into git. The
+record keeps every row it ever held; `hale dna history` reads both
+memories as one. Adoption is closed until every operational write path
+goes through the service (stage 3 of GH #646).

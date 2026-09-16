@@ -1,0 +1,116 @@
+// dna/tests/routing_test.hl — three memories, one routing table (GH #646
+// stage 1, #650).
+//
+// Every kind has one home. A routed journal reads two journals as one
+// merged sequence and appends by kind; on routing 0 everything is the
+// record's, on routing 1 the day's work is the Ledger's. A writer that
+// appends and looks for its row by `revision - 1` finds it whichever
+// memory holds it (the effect claim); an exact append is stale when
+// either memory moved; the routing is learned from the record's own
+// `ledger.adopted` row and unlearned by `ledger.abandoned`.
+
+import "../core" as dna;
+
+main locus App {
+    params {
+        record: dna::MemJournal = dna::MemJournal { };
+        ledger: dna::MemJournal = dna::MemJournal { };
+        j: dna::RoutedJournal = dna::RoutedJournal { };
+    }
+    run() {
+        // ---- the table
+        std::test::assert_eq_str(dna::memory_of("task.born"), "ledger", "a task is the day's work");
+        std::test::assert_eq_str(dna::memory_of("effect.requested"), "ledger", "an effect claim is a concurrency primitive of the day");
+        std::test::assert_eq_str(dna::memory_of("receipt.filed"), "ledger", "business evidence");
+        std::test::assert_eq_str(dna::memory_of("grant.reserved"), "ledger", "money reserved");
+        std::test::assert_eq_str(dna::memory_of("grant.refused"), "record", "a grant born too wide is authority");
+        std::test::assert_eq_str(dna::memory_of("grant.reservation_refused"), "ledger", "a spend refused is money");
+        std::test::assert_eq_str(dna::memory_of("grant.contracted"), "record", "authority contracted");
+        std::test::assert_eq_str(dna::memory_of("mutation.applied"), "record", "how the organism changed");
+        std::test::assert_eq_str(dna::memory_of("review.verdict"), "record", "who allowed it");
+        std::test::assert_eq_str(dna::memory_of("knowledge.ratified"), "record", "what it knows");
+        std::test::assert_eq_str(dna::memory_of("knowledge.consulted"), "ledger", "what it looked up today");
+        std::test::assert_eq_str(dna::memory_of("person.retired"), "record", "a roster change");
+        std::test::assert_eq_str(dna::memory_of("task.reassigned"), "ledger", "an assignment");
+        std::test::assert_eq_str(dna::memory_of("body.claimed"), "ledger", "liveness");
+        std::test::assert_eq_str(dna::memory_of("body.provisioned"), "record", "the body's provisioning");
+        std::test::assert_eq_str(dna::memory_of("ledger.adopted"), "record", "the adoption itself is evolutionary");
+        std::test::assert_eq_str(dna::memory_of("something.new"), "record", "an unknown kind stays in the record");
+        std::test::assert_eq_str(dna::route(0, "task.born"), "record", "routing 0: everything is the record's");
+        std::test::assert_eq_str(dna::route(1, "task.born"), "ledger", "routing 1: the table");
+
+        // ---- routing 0: the ledger is never written
+        let j0 = dna::RoutedJournal { record: self.record, ledger: self.ledger };
+        std::test::assert_eq_int(j0.routing, 0, "a record with no adoption row is on routing 0");
+        let a = j0.append(0, "task.born", "t1", "");
+        std::test::assert(a.ok && j0.revision() == 1, "an append lands");
+        std::test::assert_eq_int(self.record.revision(), 1, "in the record");
+        std::test::assert_eq_int(self.ledger.revision(), 0, "not the ledger");
+
+        // ---- adoption: the record says so, and the routed journal learns it
+        let ad = self.record.append(1, "ledger.adopted", "ledger", "{\"routing\": 1, \"checkpoint\": \"abc\"}");
+        std::test::assert(ad.ok, "adopted");
+        std::test::assert_eq_int(dna::routing_of(self.record), 1, "the record's routing is 1");
+        std::test::assert_eq_str(dna::checkpoint_of(self.record), "abc", "and its checkpoint is named");
+        // adoption copies the record's operational rows into the ledger
+        // (the service does this for a real organism): the record's copy
+        // is history git keeps and is no longer read
+        let copy = self.ledger.append(0, "task.born", "t1", "");
+        std::test::assert(copy.ok, "the operational row is copied to the ledger");
+        std::test::assert(j0.refresh(), "the routed journal sees the new rows");
+        std::test::assert_eq_int(j0.routing, 1, "and is on routing 1 now");
+        std::test::assert_eq_int(j0.revision(), 2, "two rows merged: the adoption row from the record, the task from the ledger");
+        std::test::assert_eq_str(j0.read(0).kind, "ledger.adopted", "the record's operational copy is not read twice");
+        std::test::assert_eq_str(j0.read(1).kind, "task.born", "the ledger's is");
+
+        // ---- routing 1: by kind, one merged sequence
+        let b = j0.append(2, "task.planned", "t1", "");
+        std::test::assert(b.ok && b.revision == 3, "an operational row lands");
+        std::test::assert_eq_int(self.ledger.revision(), 2, "in the ledger");
+        std::test::assert_eq_int(self.record.revision(), 2, "not the record");
+        let c = j0.append(3, "review.requested", "review:r1", "");
+        std::test::assert(c.ok && self.record.revision() == 3, "an evolutionary row lands in the record");
+        std::test::assert_eq_int(j0.revision(), 4, "four rows merged");
+        let e2 = j0.read(2);
+        std::test::assert(e2.kind == "task.planned" && e2.seq == 2, "a row's seq as read is its merged position: " + e2.kind + " " + to_string(e2.seq));
+        std::test::assert_eq_str(j0.read(3).kind, "review.requested", "in arrival order");
+        std::test::assert(j0.verify_chain(), "both chains verify");
+
+        // ---- the effect claim finds its own row whichever memory holds it
+        std::test::assert(dna::effect_request(j0, "apply:c1", "first"), "the first request dispatches");
+        std::test::assert(!dna::effect_request(j0, "apply:c1", "again"), "a retry does not");
+        std::test::assert(dna::effect_result(j0, "apply:c1", true), "the result lands once");
+        std::test::assert(dna::effect_status(j0, "apply:c1").ok, "and reads back");
+        std::test::assert_eq_int(self.ledger.revision(), 4, "the claim and its result are in the ledger");
+
+        // ---- exact: stale when either memory moved since the read
+        let rev = j0.revision();
+        let side = self.record.append(self.record.revision(), "review.settled", "review:r1", "approve");
+        std::test::assert(side.ok, "another writer moved the record");
+        let x = j0.append_exact(rev, "grant.reserved", "op1", "10");
+        std::test::assert(!x.ok && x.error == "stale_revision", "an exact append at the old merged revision is stale");
+        let x2 = j0.append_exact(j0.revision(), "grant.reserved", "op1", "10");
+        std::test::assert(x2.ok, "and lands at the current one");
+        std::test::assert_eq_str(self.ledger.read(self.ledger.revision() - 1).kind, "grant.reserved", "in the ledger");
+        let mut i = 0;
+        let mut kinds = "";
+        while i < j0.revision() { kinds = kinds + j0.read(i).kind + " "; i = i + 1; }
+        std::test::assert_eq_str(kinds, "ledger.adopted task.born task.planned review.requested effect.requested effect.result review.settled grant.reserved ", "the merged order is arrival, the record's copies unread: " + kinds);
+
+        // ---- abandoned: back to the record
+        let ab = self.record.append(self.record.revision(), "ledger.abandoned", "ledger", "{\"why\": \"test\"}");
+        std::test::assert(ab.ok && j0.refresh() && j0.routing == 0, "abandoned: routing 0 again");
+        std::test::assert_eq_str(j0.read(0).kind, "task.born", "the record's own rows are read again");
+        let d = j0.append(j0.revision(), "task.done", "t1", "");
+        std::test::assert(d.ok && self.record.revision() == 6, "an operational row goes to the record again");
+
+        // ---- a ledger with no service: reads nothing, refuses appends as io
+        let none = dna::ServiceLedger { };
+        std::test::assert(!none.ready() && none.revision() == 0, "no url: nothing to read");
+        let n = none.append(0, "task.born", "t9", "");
+        std::test::assert(!n.ok && n.error == "io", "no url: an append is io, never silently kept");
+        std::test::assert(std::str::contains(none.last_error, "no ledger service"), "and says why: " + none.last_error);
+    }
+}
+
+fn main() { App { }; }
