@@ -24,6 +24,7 @@ fn memory_of(kind: String) -> String {
     // families split by kind
     if kind == "concern.requested" || kind == "concern.raised" || kind == "concern.refused" { return "ledger"; }
     if kind == "grant.reserved" || kind == "grant.released" || kind == "grant.fenced" || kind == "grant.reservation_refused" { return "ledger"; }
+    if kind == "spend.reserved" || kind == "spend.settled" || kind == "spend.compensated" { return "ledger"; }
     if kind == "body.claimed" || kind == "body.released" || kind == "body.credential_missing" || kind == "body.credential_present" { return "ledger"; }
     if kind == "model.called" || kind == "knowledge.consulted" || kind == "optimize.refused" || kind == "budget.exhausted" { return "ledger"; }
     // everything else — mutations, reviews, knowledge, practices, grants

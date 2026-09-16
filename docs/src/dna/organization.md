@@ -194,7 +194,11 @@ for one name; a birth the store says is already claimed is minted again.
 A job planned for another owner's member is offered, not handed: the
 Task waits as `transfer_requested` until one of that owner's members
 runs `hale dna task accept <id>`, and their controller hands it on
-from there. Only the receiving owner settles a transfer.
+from there. Only the receiving owner settles a transfer. Money is each
+owner's own: a grant names who pays (`funder: "acme/ops"`), every
+allocation is reserved once by the store, every attempt's spend is
+retained, and a purchase two owners fund is two reservations that may
+not both land — undoing one is a compensation someone authorizes.
 
 ## Who decides what
 
