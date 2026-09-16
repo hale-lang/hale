@@ -1,0 +1,251 @@
+// GH #612 — the hosted head over a fake identity provider. `hale dna ui`
+// under `dna.principal = oidc` serves nothing without a session; a
+// session comes from the authorization-code flow against the issuer; a
+// verdict and an intent posted with it act as the member the subject maps
+// to, whatever the form says; without a session they are refused and
+// nothing reaches the record; an unmapped subject gets no session; a
+// sign-in is used once; a sign-out ends the session.
+
+import "../core" as dna;
+import "../knowledge" as know;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+fn b64(s: String) -> String { return std::text::base64::url_encode(std::bytes::from_string(s)); }
+
+type Http {
+    status: Int = 0;
+    headers: String = "";
+    body: String = "";
+}
+
+// One request through curl, headers included, redirects not followed.
+fn curl(method: String, url: String, cookie: String, body: String) -> Http {
+    let mut argv = "curl\n-s\n-i\n-X\n" + method;
+    if len(cookie) > 0 { argv = argv + "\n-H\nCookie: " + cookie; }
+    if len(body) > 0 { argv = argv + "\n-H\nContent-Type: application/json\n--data\n" + body; }
+    let r = dna::run_tool(argv + "\n" + url);
+    let raw = r.stdout;
+    let split = std::str::index_of(raw, "\r\n\r\n");
+    let head = if split < 0 { raw } else { raw[0..split] };
+    let rest = if split < 0 { "" } else { raw[(split + 4)..len(raw)] };
+    let sp = std::str::index_of(head, " ");
+    let status = if sp < 0 || len(head) < sp + 4 { 0 } else { std::str::parse_int(head[(sp + 1)..(sp + 4)]) or 0 };
+    return Http { status: status, headers: head, body: rest };
+}
+
+@unbounded
+fn form_field(body: String, name: String) -> String {
+    let mut rest = body + "&";
+    while len(rest) > 0 {
+        let amp = std::str::index_of(rest, "&");
+        let part = rest[0..amp];
+        rest = rest[(amp + 1)..len(rest)];
+        if std::str::starts_with(part, name + "=") { return know::url_decode(part[(len(name) + 1)..len(part)]); }
+    }
+    return "";
+}
+
+type IssuedCode {
+    code: String = "";
+    nonce: String = "";
+    sub: String = "";
+}
+
+@form(vec)
+locus IssuedCodes { capacity { heap rows of IssuedCode; } }
+
+// A fake identity provider: a discovery document; an authorize endpoint
+// that signs the user in at once (as `login_hint` names, alice by default)
+// and sends the browser back with a code; a token endpoint that answers
+// the code, given the client's secret, with an ID token carrying the
+// sign-in's nonce.
+locus FakeIssuer {
+    params {
+        base: String = "http://127.0.0.1:47811";
+        codes: IssuedCodes = IssuedCodes { };
+        exchanges: Int = 0;
+        refused_secrets: Int = 0;
+    }
+    @unbounded
+    fn handle(req: std::http::Request) -> std::http::Response {
+        let ctx = std::http::build_context(req);
+        if std::http::is_route(ctx, "GET", "/.well-known/openid-configuration") {
+            return std::http::Response { status: 200, content_type: "application/json", body: "{\"issuer\": \"" + self.base + "\", \"authorization_endpoint\": \"" + self.base + "/authorize\", \"token_endpoint\": \"" + self.base + "/token\"}" };
+        }
+        if std::http::is_route(ctx, "GET", "/authorize") {
+            let back = know::url_decode(std::http::query_param(ctx.params, "redirect_uri"));
+            let hint = std::http::query_param(ctx.params, "login_hint");
+            let code = "code-" + to_string(self.codes.len() + 1);
+            self.codes.push(IssuedCode { code: code, nonce: std::http::query_param(ctx.params, "nonce"), sub: if len(hint) > 0 { hint } else { "alice-sub" } });
+            return std::http::Response { status: 302, content_type: "text/plain", headers: "Location: " + back + "?code=" + code + "&state=" + std::http::query_param(ctx.params, "state"), body: "" };
+        }
+        if std::http::is_route(ctx, "POST", "/token") {
+            if form_field(req.body, "client_secret") != "fake-secret" {
+                self.refused_secrets = self.refused_secrets + 1;
+                return std::http::Response { status: 401, content_type: "application/json", body: "{\"error\": \"invalid_client\"}" };
+            }
+            let code = form_field(req.body, "code");
+            let mut i = 0;
+            while i < self.codes.len() {
+                let g = self.codes.get(i) or IssuedCode { };
+                if g.code == code && len(code) > 0 {
+                    self.codes.set(i, IssuedCode { }) or discard;
+                    self.exchanges = self.exchanges + 1;
+                    let payload = "{\"iss\": \"" + self.base + "\", \"aud\": \"dna-ui\", \"sub\": \"" + g.sub + "\", \"nonce\": \"" + g.nonce + "\", \"exp\": " + to_string(std::time::now() + 600) + "}";
+                    let token = b64("{\"alg\":\"RS256\"}") + "." + b64(payload) + ".unverified";
+                    return std::http::Response { status: 200, content_type: "application/json", body: "{\"id_token\": \"" + token + "\", \"token_type\": \"Bearer\"}" };
+                }
+                i = i + 1;
+            }
+            return std::http::Response { status: 400, content_type: "application/json", body: "{\"error\": \"invalid_grant\"}" };
+        }
+        return std::http::Response { status: 404, body: "not found" };
+    }
+}
+
+// The line of a JSON-per-line text that carries `needle` ("" when none).
+@unbounded
+fn row_with(text: String, needle: String) -> String {
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::contains(line, needle) { return line; }
+    }
+    return "";
+}
+
+main locus App {
+    params {
+        srv: std::http::Server = std::http::Server { port: 47813, handler: FakeIssuer { base: "http://127.0.0.1:47813" } };
+    }
+    placement { srv: cooperative(pool = io); }
+    // A member signs in at the issuer as `subject` and gets a session cookie.
+    fn session(ui: String, subject: String) -> String {
+        let login = curl("GET", ui + "/auth/login", "", "");
+        let authorize = dna::response_header(login.headers, "Location") + "&login_hint=" + subject;
+        let signin_line = dna::response_header(login.headers, "Set-Cookie");
+        let signin = signin_line[0..std::str::index_of(signin_line, ";")];
+        let back = dna::response_header(curl("GET", authorize, "", "").headers, "Location");
+        let landed = curl("GET", back, signin, "");
+        let cookie_line = dna::response_header(landed.headers, "Set-Cookie");
+        if landed.status != 302 || !std::str::starts_with(cookie_line, "dna_session=") { return ""; }
+        return cookie_line[0..std::str::index_of(cookie_line, ";")];
+    }
+    run() {
+        let scratch = "/tmp/dna-two-heads-" + to_string(std::process::pid());
+        std::io::fs::mkdir(scratch) or discard;
+        dna::reap_on_exit(scratch);
+        let bare = scratch + "/origin.git";
+        let b0 = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nshared");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let app = scratch + "/shared";
+        let port = 30000 + (std::process::pid() + 17) % 20000;
+        let kport = 30000 + (std::process::pid() + 23) % 20000;
+        let ui = "http://127.0.0.1:" + to_string(port);
+        let service = "http://127.0.0.1:" + to_string(kport);
+        let g1 = in_dir(app, "git\nconfig\nuser.name\nhead-operator");
+        let g2 = in_dir(app, "git\nconfig\nuser.email\nhead@local");
+        let g3 = in_dir(app, "git\nadd\n-A");
+        let g4 = in_dir(app, "git\ncommit\n-q\n-m\nthe app");
+        let g5 = in_dir(app, "git\nremote\nadd\norigin\n" + bare);
+        let g6 = in_dir(app, "git\npush\n-q\norigin\nmain\nrefs/dna/*:refs/dna/*");
+        // two independently identified people: two subjects at the issuer, two members
+        let c1 = in_dir(app, "git\nconfig\ndna.principal\noidc");
+        let c2 = in_dir(app, "git\nconfig\ndna.oidc.issuer\nhttp://127.0.0.1:47813");
+        let c3 = in_dir(app, "git\nconfig\ndna.oidc.client\ndna-ui");
+        let c4 = in_dir(app, "git\nconfig\ndna.oidc.redirect\n" + ui + "/auth/callback");
+        let c5 = in_dir(app, "git\nconfig\n--add\ndna.oidc.member\nalice-sub=alice");
+        let c5b = in_dir(app, "git\nconfig\n--add\ndna.oidc.member\nbob-sub=bob");
+        let c6 = in_dir(app, "git\nconfig\ndna.oidc.board\nalice");
+        std::test::assert_eq_int(c6.code, 0, "configured: " + c6.stderr);
+
+        // the one logical admission controller: the service, and the record adopted into its ledger
+        let ksrv = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_DSN=memory nohup timeout 300 \"$1\" dna knowledge . --port \"$2\" >.hale/knowledge.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + to_string(kport));
+        let kpid = dna::trim_nl(ksrv.stdout);
+        let mut kup = false;
+        let mut ktries = 0;
+        while !kup && ktries < 600 {
+            if curl("GET", service + "/ledger/head", "", "").status == 200 { kup = true; } else { std::time::sleep(200ms); }
+            ktries = ktries + 1;
+        }
+        std::test::assert(kup, "the service came up at " + service);
+        let adopted = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_URL=\"$1\" exec \"$2\" dna ledger adopt --as head-operator\nsh\n" + service + "\n" + toolchain());
+        std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "ledger adopted at"), "adopted: " + adopted.stdout + adopted.stderr);
+
+        // the hosted head, told where the service is
+        let started = in_dir(app, "sh\n-c\nHALE_DNA_OIDC_SECRET=fake-secret HALE_DNA_KNOWLEDGE_URL=\"$3\" nohup timeout 300 \"$1\" dna ui . --port \"$2\" >.hale/ui.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + to_string(port) + "\n" + service);
+        let pid = dna::trim_nl(started.stdout);
+        let mut up = false;
+        let mut tries = 0;
+        while !up && tries < 600 {
+            if curl("GET", ui + "/api/board", "", "").status != 0 { up = true; } else { std::time::sleep(200ms); }
+            tries = tries + 1;
+        }
+        std::test::assert(up, "the hosted head came up at " + ui);
+
+        // ---- two people, two sessions, one record, one controller
+        let alice = self.session(ui, "alice-sub");
+        let bob = self.session(ui, "bob-sub");
+        std::test::assert(len(alice) > 60 && len(bob) > 60 && alice != bob, "two sessions, one each");
+        let a1 = curl("POST", ui + "/api/ask", alice, "{\"outcome\":\"chase the late invoice\",\"to\":\"\",\"as\":\"bob\"}");
+        std::test::assert_eq_int(a1.status, 200, "alice's ask is taken: " + a1.body);
+        let b1 = curl("POST", ui + "/api/ask", bob, "{\"outcome\":\"reconcile the payroll account\",\"to\":\"\",\"as\":\"alice\"}");
+        std::test::assert_eq_int(b1.status, 200, "bob's ask is taken: " + b1.body);
+        let ledger = curl("GET", service + "/ledger/rows?from=0", "", "").body;
+        std::test::assert(std::str::contains(ledger, "chase the late invoice") && std::str::contains(ledger, "reconcile the payroll account"), "both asks are rows of the ledger: " + ledger);
+        // each in the name the session proves, whatever the form said
+        let arow = row_with(ledger, "chase the late invoice");
+        let brow = row_with(ledger, "reconcile the payroll account");
+        std::test::assert(std::str::contains(arow, "\"author\": \"alice\"") && !std::str::contains(arow, "\"author\": \"bob\""), "alice's ask, in alice's name whatever the form said: " + arow);
+        std::test::assert(std::str::contains(brow, "\"author\": \"bob\"") && !std::str::contains(brow, "\"author\": \"alice\""), "bob's ask, in bob's name whatever the form said: " + brow);
+        let record = in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout;
+        std::test::assert(!std::str::contains(record, "chase the late invoice"), "the asks did not go into the record: the day's work is the ledger's");
+        // a session is not a shared secret: bob's cookie on alice's form field is bob
+        let b2 = curl("POST", ui + "/api/ask", bob, "{\"outcome\":\"file the returns\",\"to\":\"\",\"as\":\"alice\"}");
+        std::test::assert_eq_int(b2.status, 200, "taken");
+        let ledger2 = curl("GET", service + "/ledger/rows?from=0", "", "").body;
+        std::test::assert(std::str::contains(row_with(ledger2, "file the returns"), "\"author\": \"bob\""), "in bob's name: " + ledger2);
+
+        // ---- the service away: a request is queued on the head; back, it is
+        // re-checked against the record as it is then
+        let kstop = dna::run_tool("kill\n" + kpid);
+        std::time::sleep(500ms);
+        let queued = curl("POST", ui + "/api/ask", bob, "{\"outcome\":\"close the quarter\",\"to\":\"\"}");
+        std::test::assert_eq_int(queued.status, 200, "captured while the service is away: " + queued.body);
+        let listed = in_dir(app, toolchain() + "\ndna\nqueue");
+        std::test::assert(std::str::contains(listed.stdout, "1 request(s) waiting") && std::str::contains(listed.stdout, "as bob"), "queued on the head, in bob's name: " + listed.stdout + listed.stderr);
+        // bob retires meanwhile — a fact of the record
+        let retired = in_dir(app, toolchain() + "\ndna\nretire\nbob\n--to\nalice\n--as\nalice");
+        std::test::assert(retired.code == 0, "bob retired: " + retired.stdout + retired.stderr);
+        let ksrv2 = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_DSN=memory nohup timeout 300 \"$1\" dna knowledge . --port \"$2\" >.hale/knowledge2.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + to_string(kport));
+        let kpid2 = dna::trim_nl(ksrv2.stdout);
+        kup = false;
+        ktries = 0;
+        while !kup && ktries < 600 {
+            if curl("GET", service + "/ledger/head", "", "").status == 200 { kup = true; } else { std::time::sleep(200ms); }
+            ktries = ktries + 1;
+        }
+        std::test::assert(kup, "the service is back");
+        let sent = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_URL=\"$1\" exec \"$2\" dna queue submit\nsh\n" + service + "\n" + toolchain());
+        std::test::assert(std::str::contains(sent.stdout, "REFUSED") && std::str::contains(sent.stdout, "bob retired from this organism"), "the queued request is checked against the record as it is now, not as it was: " + sent.stdout + sent.stderr);
+        let ledger3 = curl("GET", service + "/ledger/rows?from=0", "", "").body;
+        std::test::assert(!std::str::contains(ledger3, "close the quarter"), "and nothing landed for it");
+
+        let stop = dna::run_tool("kill\n" + pid);
+        let stop2 = dna::run_tool("kill\n" + kpid2);
+        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+    }
+}
+
+fn main() { App { }; }
