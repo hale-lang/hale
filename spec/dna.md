@@ -572,7 +572,8 @@ repository:
   still binds live, and is appended again before every `reserve` and
   `admits`; until the record holds it, nothing is admitted. A child born wider than its
   ceiling is the early error: `grant.refused <child>` names what is
-  wider, and the ceiling binds it from birth. Law layers by adoption:
+  wider, and the ceiling binds it from birth; that row is authority,
+  the record's, and is not the row a refused spend writes. Law layers by adoption:
   every position lives under the org program's main, which adopts the
   organism's law, so a department's law can only add to it.
 - **Grants delegate resources (GH #605).** A `Grant` also carries
@@ -599,7 +600,8 @@ repository:
   `Journal.append_exact` at that revision — a writer that moved the
   record in between makes it stale, never re-appended at the tail — so
   two children cannot each spend the same remainder. A refusal is
-  `grant.refused <child>` naming the field. `Dna.settle_spend(op,
+  `grant.reservation_refused <child>` naming the field — money, the
+  Ledger's, never `grant.refused`. `Dna.settle_spend(op,
   spent)` appends `grant.released {op, spent}` once — under contention
   too: the row is appended with `append_exact` at the revision "not yet
   settled" was read at, and read again when the record moved — and the
@@ -734,7 +736,8 @@ record's.
 | `knowledge.consulted` | ledger | what a piece of work looked up today |
 | `grant.contracted` | record | authority narrowed, and what it leaves |
 | `grant.revoked` | record | the parent took the authority back |
-| `grant.refused` | record | a grant born wider than its ceiling — and, today, a spend the window would not admit; the routing table keeps `grant.reservation_refused` in the ledger for the money refusal, and nothing writes it yet |
+| `grant.refused` | record | a grant born wider than its ceiling: authority |
+| `grant.reservation_refused` | ledger | a spend the window would not admit, naming the field: money |
 | `grant.reserved` / `grant.released` | ledger | a spend admitted against the window, and the reservation settled at what was spent |
 | `grant.fenced` | ledger | an admission refused because the grant's epoch moved since |
 | `budget.exhausted` | ledger | the window's model allowance is spent |

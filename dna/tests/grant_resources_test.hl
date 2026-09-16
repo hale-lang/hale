@@ -154,7 +154,8 @@ main locus App {
         std::test::assert(b1.ok, "billing reserves 400, having read app's reservation: " + b1.refused);
         let a2 = self.app.reserve(spend("a2", "300", "USD"));
         std::test::assert(!a2.ok && std::str::contains(a2.refused, "would bring the ceiling `org`'s none to 1100 of 1000 (shared by its children)"), "the remainder is shared, not each child's: " + a2.refused);
-        std::test::assert(std::str::contains(self.last(repo, "grant.refused"), "spend `a2` (300 USD to acme via bank): window:"), "the refusal is in the record, naming the field: " + self.last(repo, "grant.refused"));
+        std::test::assert(std::str::contains(self.last(repo, "grant.reservation_refused"), "spend `a2` (300 USD to acme via bank): window:"), "the refusal is a money row naming the field: " + self.last(repo, "grant.reservation_refused"));
+        std::test::assert_eq_int(self.rows(repo, "grant.refused", ""), 0, "a refused spend is not an authority refusal");
         std::test::assert_eq_int(self.rows(repo, "grant.reserved", ""), 2, "two reservations in the record");
         let reserved = self.last(repo, "grant.reserved");
         std::test::assert(std::str::contains(reserved, "\"op\": \"b1\"") && std::str::contains(reserved, "\"ceiling\": \"org\"") && std::str::contains(reserved, "\"epoch\": 0"), "a reservation names its op, ceiling and authority_epoch: " + reserved);
