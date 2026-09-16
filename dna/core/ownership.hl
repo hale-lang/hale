@@ -67,10 +67,10 @@ fn position_name(p: String) -> String {
 
 locus Ownership {
     params {
-        path: String = "";      // the map's file under the genome ("" = one owner, nothing to read)
-        text: String = "";      // the map given as text (fixtures; wins over the file)
+        path: String = ""; // the map's file under the genome ("" = one owner, nothing to read)
+        text: String = ""; // the map given as text (fixtures; wins over the file)
         me_env: String = "HALE_DNA_OWNER";
-        me: String = "";        // the owner this body is ("" = unnamed)
+        me: String = ""; // the owner this body is ("" = unnamed)
         source: SourceReader = SourceReader { }; // the genome at a revision, for a candidate's map
         loaded: Bool = false;
         positions: OwnedRows = OwnedRows { };
