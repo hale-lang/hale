@@ -118,6 +118,10 @@ locus RoutedJournal {
             if route(self.routing, e.kind) != "ledger" { self.order.push(Placed { ledger: false, index: self.seen_record }); }
             self.seen_record = self.seen_record + 1;
         }
+        // on routing 0 the ledger is not a memory of this organism: it is
+        // neither read nor asked (a service ledger's refresh is a round
+        // trip, and an organism on the record alone makes none)
+        if self.routing <= 0 { return; }
         while self.seen_ledger < self.ledger.revision() {
             self.order.push(Placed { ledger: true, index: self.seen_ledger });
             self.seen_ledger = self.seen_ledger + 1;
@@ -130,7 +134,7 @@ locus RoutedJournal {
     }
     fn refresh() -> Bool {
         let a = self.record.refresh();
-        let b = self.ledger.refresh();
+        let b = if self.routing > 0 { self.ledger.refresh() } else { false };
         let before = self.order.len();
         let seen = self.seen_record;
         // new record rows may carry an adoption (or its abandonment): the
@@ -152,7 +156,7 @@ locus RoutedJournal {
         let e = if p.ledger { self.ledger.read(p.index) } else { self.record.read(p.index) };
         return Event { seq: i, kind: e.kind, entity: e.entity, body: e.body, prev: e.prev, digest: e.digest };
     }
-    fn verify_chain() -> Bool { return self.record.verify_chain() && self.ledger.verify_chain(); }
+    fn verify_chain() -> Bool { return self.record.verify_chain() && (self.routing <= 0 || self.ledger.verify_chain()); }
     fn to_ledger(kind: String) -> Bool { return route(self.routing, kind) == "ledger"; }
     // Compare-and-append against the merged revision, then the memory's
     // own tail: the memory retries a lost race at its tail as it always
@@ -197,12 +201,19 @@ locus ServiceLedger {
         rows: EventRows = EventRows { };
         last_error: String = "";
         calls: Int = 0;
+        loaded: Bool = false;
     }
     birth() {
         if len(self.url) == 0 && len(self.url_env) > 0 && std::env::var_exists(self.url_env) { self.url = std::env::var(self.url_env); }
-        self.load();
     }
     fn ready() -> Bool { return len(self.url) > 0; }
+    // Rows are read on first use, not at birth: an organism on routing 0
+    // holds a ledger client and never asks it anything.
+    fn ensure_loaded() {
+        if self.loaded || !self.ready() { return; }
+        self.loaded = true;
+        self.load();
+    }
     fn failed(e: std::http::HttpError) -> std::http::ClientResponse {
         self.last_error = e.kind + " " + e.detail;
         return std::http::ClientResponse { status: 0, body: b"" };
@@ -236,8 +247,9 @@ locus ServiceLedger {
         if resp.status != 200 { if resp.status > 0 { self.last_error = "http " + to_string(resp.status); } return; }
         self.take(std::str::from_bytes(resp.body));
     }
-    fn revision() -> Int { return self.rows.len(); }
+    fn revision() -> Int { self.ensure_loaded(); return self.rows.len(); }
     fn head() -> String {
+        self.ensure_loaded();
         if self.rows.len() == 0 { return "genesis"; }
         let e = self.rows.get(self.rows.len() - 1) or Event { };
         return e.digest;
@@ -245,6 +257,7 @@ locus ServiceLedger {
     // Ask the service for its revision; read what is missing.
     fn refresh() -> Bool {
         if !self.ready() { return false; }
+        self.ensure_loaded();
         self.calls = self.calls + 1;
         let resp = std::http::get(self.url + "/ledger/head") or self.failed(err);
         if resp.status != 200 { return false; }
@@ -253,8 +266,8 @@ locus ServiceLedger {
         self.load();
         return true;
     }
-    fn read(i: Int) -> Event { return self.rows.get(i) or Event { }; }
-    fn verify_chain() -> Bool { return chain_ok(self.rows); }
+    fn read(i: Int) -> Event { self.ensure_loaded(); return self.rows.get(i) or Event { }; }
+    fn verify_chain() -> Bool { self.ensure_loaded(); return chain_ok(self.rows); }
     fn post(expected: Int, exact: Bool, kind: String, entity: String, body: String) -> AppendResult {
         if !self.ready() { self.last_error = "no ledger service (HALE_DNA_KNOWLEDGE_URL unset)"; return AppendResult { error: "io", expected: expected, actual: self.rows.len() }; }
         let b = std::json::Builder { };
