@@ -1,0 +1,112 @@
+// dna/core/exchange.hl — one record's mailbox in another, behind a
+// transport-independent contract (GH #646 stage 5, #662).
+//
+// A handoff crosses between records as an envelope: a row of the
+// sender's, written into the receiver's mailbox for the sender, never
+// into the receiver's journal (the receiver admits it by its own
+// connection, in its own name). The contract is the one #646 set:
+// - a stable identity — the envelope's `entity` is `handoff:<id>` and
+//   `id` is the handoff's (origin, peer, kind, subject), so a delivery
+//   repeated after an interruption is one envelope;
+// - durable delivery — `delivered` says whether the peer already holds
+//   the envelope, and a sender whose envelope is not acknowledged
+//   delivers again until it is;
+// - an explicit disclosure scope — the connection's classes, checked
+//   before anything is delivered and again before anything is admitted;
+// - settlement only on the receiver's acceptance — the origin's task
+//   settles when the receiver's `handoff.accepted` envelope reaches it
+//   through the same exchange, never when a delivery call returned.
+// `GitExchange` (mailboxes as refs in a private peer cache) and
+// `ServiceExchange` (the peer's service) live in the host; `MemExchange`
+// is the fixtures'.
+
+type Envelope {
+    kind: String = ""; // "handoff.received" | "handoff.accepted"
+    entity: String = ""; // "handoff:<id>"
+    body: String = "";
+    author: String = "";
+}
+
+type Delivered {
+    ok: Bool = false;
+    ref: String = ""; // where the envelope sits at the peer (a commit, a row)
+    why: String = "";
+    unreachable: Bool = false; // the peer could not be reached at all: deliver again later
+}
+
+interface Exchange {
+    fn kind() -> String;
+    // The identity the record at `peer_url` publishes ("" when none).
+    fn peer_identity(name: String, peer_url: String) -> String;
+    // This record's envelope into the peer's mailbox for it. Idempotent
+    // by (kind, entity): an envelope already there is not written twice.
+    fn deliver(name: String, peer_url: String, mine: String, e: Envelope) -> Delivered;
+    // Where an envelope of (kind, entity) already sits at the peer ("" when nowhere).
+    fn delivered(name: String, peer_url: String, mine: String, kind: String, entity: String) -> String;
+    // Every mailbox of this record, as lines `sender\tkind\tentity\tbody\tauthor`
+    // — what every peer has put here, the sender's identity first.
+    fn received() -> String;
+}
+
+fn envelope_line(sender: String, e: Envelope) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("sender", sender);
+    b.string_field("kind", e.kind);
+    b.string_field("entity", e.entity);
+    b.string_field("body", e.body);
+    b.string_field("author", e.author);
+    b.end_object();
+    return b.result();
+}
+
+type MemEnvelope { key: String = ""; sender: String = ""; e: Envelope = Envelope { }; }
+
+@form(vec)
+locus MemEnvelopes { capacity { heap rows of MemEnvelope; } }
+
+// The exchange in memory: one process, every record's mailbox in one
+// place, keyed by peer url — a fixture stands two records up and hands
+// between them.
+locus MemExchange {
+    params { identity: String = "mem"; boxes: MemEnvelopes = MemEnvelopes { }; peers: String = "\n"; }
+    fn kind() -> String { return "memory"; }
+    // a peer url is `mem://<identity>`
+    fn peer_identity(name: String, peer_url: String) -> String {
+        if std::str::starts_with(peer_url, "mem://") { return peer_url[6..len(peer_url)]; }
+        return "";
+    }
+    @unbounded
+    fn find(at: String, from: String, kind: String, entity: String) -> Int {
+        let mut i = 0;
+        while i < self.boxes.len() {
+            let m = self.boxes.get(i) or MemEnvelope { };
+            if m.key == at + "|" + from && m.e.kind == kind && m.e.entity == entity { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+    fn deliver(name: String, peer_url: String, mine: String, e: Envelope) -> Delivered {
+        let at = self.peer_identity(name, peer_url);
+        if len(at) == 0 { return Delivered { why: "no record at " + peer_url, unreachable: true }; }
+        let have = self.find(at, mine, e.kind, e.entity);
+        if have >= 0 { return Delivered { ok: true, ref: "mem" + to_string(have) }; }
+        self.boxes.push(MemEnvelope { key: at + "|" + mine, sender: mine, e: e });
+        return Delivered { ok: true, ref: "mem" + to_string(self.boxes.len() - 1) };
+    }
+    fn delivered(name: String, peer_url: String, mine: String, kind: String, entity: String) -> String {
+        let have = self.find(self.peer_identity(name, peer_url), mine, kind, entity);
+        return if have < 0 { "" } else { "mem" + to_string(have) };
+    }
+    @unbounded
+    fn received() -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.boxes.len() {
+            let m = self.boxes.get(i) or MemEnvelope { };
+            if std::str::starts_with(m.key, self.identity + "|") { out = out + envelope_line(m.sender, m.e) + "\n"; }
+            i = i + 1;
+        }
+        return out;
+    }
+}

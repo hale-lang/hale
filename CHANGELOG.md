@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: handoffs service to service, behind a transport-independent Exchange (GH #646 stage 5, #662)
+
+- `Exchange` in the core is one record's mailbox in another: `peer_identity`, `deliver` (idempotent by the envelope's kind and entity), `delivered`, `received`. A connection whose url is a service exchanges service to service — the peer's service publishes `/identity`, takes envelopes at `POST /exchange/<sender>` once each, refuses one claiming another origin, serves `/exchange` — and one whose url is a record's remote exchanges as mailbox refs, as before. Durable delivery: a handoff published whose envelope the peer does not hold is delivered again, once, by `hale dna handoff sync` from the envelope kept with its row; a delivery that cannot reach the peer records nothing and says so. Settlement stays on the receiver's acceptance alone. `hale dna connect` names the exchange.
+
 ### DNA: evidence and the export across two memories; recovery scans run on both routings (GH #646 stage 4, #653)
 
 - Receipts are placed by what they evidence: `evidence.*` and `review.reasoned` (of a mutation) stay in the record; `receipt.*` (a bill filed, classified, disclosed, read, held, redacted) are the ledger's, the bodies where they always were. Sync applies redactions and candidate drops over both memories read as one, so a redaction after adoption removes a body filed before it. The books export reads the ledger through the service (`/ledger/rows`, a supported query) beside the record's rows, never SQL of its own. The recovery scans a restart runs — a task settling on its mutation's outcome, a birth before anything runs, an unknown effect gated — are exercised over the two memories as well as one (`recovery_two_memories_test.hl`), and the continuity gate (`dna_ledger.rs`) carries a pre-split record through adoption and a post-adoption redaction.

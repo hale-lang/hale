@@ -58,6 +58,31 @@ interface Ledger {
     fn mark(request_id: String, revision: Int) -> Bool;
     // The row at `i` is in a person's name (the service admitted it as them).
     fn name_author(i: Int, author: String) -> Bool;
+    // ---- mailboxes (GH #646 stage 5, #662): what a connected record put
+    // here, keyed by its identity and the envelope's (kind, entity); once.
+    fn mailbox_put(sender: String, kind: String, entity: String, body: String, author: String) -> Bool;
+    fn mailbox_has(sender: String, kind: String, entity: String) -> Bool;
+    // Every envelope here, one JSON object per line (sender, kind, entity, body, author).
+    fn mailboxes() -> String;
+}
+
+fn mailbox_line(sender: String, kind: String, entity: String, body: String, author: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("sender", sender);
+    b.string_field("kind", kind);
+    b.string_field("entity", entity);
+    b.string_field("body", body);
+    b.string_field("author", author);
+    b.end_object();
+    return b.result();
+}
+
+type MemMail { key: String = ""; line: String = ""; }
+
+@form(hashmap)
+locus MemMails {
+    capacity { pool rows of MemMail indexed_by key; }
 }
 
 // The row as it is served: the event plus its author.
@@ -89,6 +114,8 @@ locus MemLedger {
         cut: Cutover = Cutover { };
         commits: String = "\n"; // adopted commits, newline-fenced
         requests: SeenRequests = SeenRequests { };
+        mails: MemMails = MemMails { };
+        mail_order: String = "";
         error: String = "";
     }
     fn kind() -> String { return "memory"; }
@@ -144,6 +171,32 @@ locus MemLedger {
         self.authors.set(i, author) or discard;
         return true;
     }
+    fn mailbox_put(sender: String, kind: String, entity: String, body: String, author: String) -> Bool {
+        let key = sender + "|" + kind + "|" + entity;
+        let have = self.mails.get(key) or MemMail { };
+        if len(have.key) > 0 { return true; }
+        self.mails.set(MemMail { key: key, line: mailbox_line(sender, kind, entity, body, author) });
+        self.mail_order = self.mail_order + key + "\n";
+        return true;
+    }
+    fn mailbox_has(sender: String, kind: String, entity: String) -> Bool {
+        let have = self.mails.get(sender + "|" + kind + "|" + entity) or MemMail { };
+        return len(have.key) > 0;
+    }
+    @unbounded
+    fn mailboxes() -> String {
+        let mut out = "";
+        let mut rest = self.mail_order;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let key = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if len(key) == 0 { continue; }
+            let m = self.mails.get(key) or MemMail { };
+            out = out + m.line + "\n";
+        }
+        return out;
+    }
     fn seen(request_id: String) -> Int {
         let r = self.requests.get(request_id) or SeenRequest { revision: -2 };
         return r.revision;
@@ -197,7 +250,8 @@ locus PqLedger {
             + "CREATE UNIQUE INDEX IF NOT EXISTS ledger_rows_commit ON ledger_rows (record_commit) WHERE record_commit IS NOT NULL;"
             + "CREATE UNIQUE INDEX IF NOT EXISTS ledger_rows_claim ON ledger_rows (kind, entity) WHERE kind IN ('effect.requested', 'grant.reserved', 'task.born');"
             + "CREATE TABLE IF NOT EXISTS ledger_meta (key text PRIMARY KEY, value text NOT NULL);"
-            + "CREATE TABLE IF NOT EXISTS ledger_requests (request_id text PRIMARY KEY, revision bigint NOT NULL, at timestamptz NOT NULL DEFAULT now());";
+            + "CREATE TABLE IF NOT EXISTS ledger_requests (request_id text PRIMARY KEY, revision bigint NOT NULL, at timestamptz NOT NULL DEFAULT now());"
+            + "CREATE TABLE IF NOT EXISTS ledger_mailboxes (n bigserial PRIMARY KEY, sender text NOT NULL, kind text NOT NULL, entity text NOT NULL, body text NOT NULL, author text NOT NULL, at timestamptz NOT NULL DEFAULT now(), UNIQUE (sender, kind, entity));";
         let r = self.conn.exec(ddl);
         if !r.ok { return self.fail("migrate", r.err); }
         self.opened = true;
@@ -346,6 +400,31 @@ locus PqLedger {
         if !r.ok { return self.fail("author", r.err); }
         if i >= 0 && i < self.authors.len() { self.authors.set(i, author) or discard; }
         return true;
+    }
+    fn mailbox_put(sender: String, kind: String, entity: String, body: String, author: String) -> Bool {
+        let a = db::Args { };
+        a.add(sender);
+        a.add(kind);
+        a.add(entity);
+        a.add(body);
+        a.add(author);
+        let r = self.conn.exec_params("INSERT INTO ledger_mailboxes (sender, kind, entity, body, author) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (sender, kind, entity) DO NOTHING", a);
+        if !r.ok { return self.fail("mailbox", r.err); }
+        return true;
+    }
+    fn mailbox_has(sender: String, kind: String, entity: String) -> Bool {
+        let a = db::Args { };
+        a.add(sender);
+        a.add(kind);
+        a.add(entity);
+        let rows = self.conn.query_params("SELECT n FROM ledger_mailboxes WHERE sender = $1 AND kind = $2 AND entity = $3", a);
+        return rows.ok && rows.n > 0;
+    }
+    @unbounded
+    fn mailboxes() -> String {
+        let rows = self.conn.query_all("SELECT row_to_json(t) FROM (SELECT sender, kind, entity, body, author FROM ledger_mailboxes ORDER BY n) t");
+        if !rows.ok { self.error = "mailboxes: " + rows.err.kind + " " + rows.err.detail; return ""; }
+        return rows.csv;
     }
     fn seen(request_id: String) -> Int {
         let a = db::Args { };

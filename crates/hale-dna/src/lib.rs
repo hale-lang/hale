@@ -32,6 +32,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "budget",
     "decision",
     "editing",
+    "exchange",
     "forge",
     "handoff",
     "infrastructure",

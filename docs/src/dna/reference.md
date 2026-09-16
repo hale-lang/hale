@@ -198,6 +198,7 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `record.hl` | `Record` — the record's own API — with `GitRecord` (the one file that spells `git` for the record) and `MemRecord`; `GitJournal`, `GitReceipts`, `GitLeases` over it |
 | `routing.hl` | the three memories: `memory_of` (the routing table), `RoutedJournal` (the record and the ledger read as one), `ServiceLedger` (the ledger over the knowledge service), `ServiceLeases` (leases in the store, swapped by token; `GitLeases` moves to it with the routing) |
 | `infrastructure.hl` | `Infrastructure` (a body's database, supervisor, credentials) and `Transport` (how a head reaches a body), with their memory implementations; the host's `infra.hl` is the reference one — compose, a systemd user unit, the env file, over ssh or this machine's shell |
+| `exchange.hl` | `Exchange` (one record's mailbox in another: deliver once, delivered?, received) and `MemExchange`; the host's `connections.hl` exchanges through the peer's service or as mailbox refs, by the connection's url |
 | `forge.hl` | `Forge` (a code-review host), `MemForge`, `NoForge`; the host's `forge_github.hl` is `GitHubForge` over `gh` and the `FileForge` fixtures use |
 | `process.hl` | `Task`, `Workflow`, `Step`, `Work`, `Attempt`, `Metabolism` |
 | `work_system.hl` | `WorkSystem`, routing perspectives, the performers |
