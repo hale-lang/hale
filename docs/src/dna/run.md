@@ -66,7 +66,10 @@ the host: when the lease is someone else's, or it cannot prove the
 lease within five seconds of its expiry, or the host is gone, it
 kills the organization and the expression, with every tool they
 started (even one whose organization already crashed: everything the
-body starts carries its mark in `HALE_DNA_BODY`), and writes why to
+body starts carries its mark in `HALE_DNA_BODY`, and the fence finds
+it by that mark through `/proc` on Linux or `ps -E` on macOS — on a
+machine offering neither it says so at startup and reaches only what
+hangs off a living organization), and writes why to
 `.hale/dna/body.fence.status`. The host reads that file at the top of
 every tick, before it relays anything onto the membrane or restarts
 anything, and again the moment before it starts a process, and exits

@@ -103,6 +103,7 @@ fn dna_fixture_set_is_complete() {
             "body_lease_blocked_test.hl",
             "body_lease_start_test.hl",
             "body_provision_script_test.hl",
+            "body_scan_test.hl",
             "books_slice_test.hl",
             "budget_test.hl",
             "deployment_test.hl",

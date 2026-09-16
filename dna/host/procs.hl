@@ -107,34 +107,6 @@ fn kill_tree(pid: String) {
     let k = dna::run_tool("kill\n-KILL\n" + first + "\n" + all);
 }
 
-// The mark a body puts in the environment of everything it starts
-// (`HALE_DNA_BODY`): its lease's holder and token and its host's pid, `#`
-// after each so no mark is a prefix of another.
-fn body_mark(holder: String, token: Int, host_pid: Int) -> String {
-    return holder + "#" + to_string(token) + "#" + to_string(host_pid) + "#";
-}
-
-// Every process whose environment carries `HALE_DNA_BODY=<mark>`,
-// newline-separated. A tool keeps the environment its organism gave it
-// after the organism is gone and the tool is reparented, where a walk
-// from the organism's pid no longer reaches it (the fourth review of
-// #622). Read from Linux's /proc; elsewhere nothing is found, and
-// `kill_tree` is what remains.
-fn marked(mark: String) -> String {
-    let r = dna::run_tool("sh\n-c\nfor e in /proc/[0-9]*/environ; do if grep -a -q -F \"$1\" \"$e\" 2>/dev/null; then p=${e#/proc/}; echo ${p%/environ}; fi; done\nsh\nHALE_DNA_BODY=" + mark);
-    return dna::trim_nl(r.stdout);
-}
-
-// Everything carrying a body's mark, at once: frozen, read again, killed.
-fn kill_marked(mark: String) {
-    if len(mark) == 0 { return; }
-    let first = marked(mark);
-    if len(first) == 0 { return; }
-    let s = dna::run_tool("kill\n-STOP\n" + first);
-    let again = marked(mark);
-    let k = dna::run_tool("kill\n-KILL\n" + first + (if len(again) > 0 { "\n" + again } else { "" }));
-}
-
 // TERM, a grace period, then KILL.
 fn stop_proc(p: Proc) {
     if p.pid <= 0 { return; }

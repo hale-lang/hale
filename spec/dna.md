@@ -630,11 +630,20 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   the body's mark (`HALE_DNA_BODY=<holder>#<token>#<host pid>#`, set in
   the environment of everything the host starts and inherited by every
   tool they start, so a tool whose organism already died and which was
-  reparented is found too; Linux's `/proc`) — and says why (the
+  reparented is found too) — and says why (the
   host does the same, before it stops the fence, on every exit it takes
   once it holds the lease: a failed build, a refused start, its
   organization's exit), and the host
-  exits 3 when it next looks. A host blocked in a sync, a build or an
+  exits 3 when it next looks. **Reaching a reparented tool asks the
+  machine for another process's environment, and what a machine will
+  give differs (#638).** `body_scan` says which it has: `proc` —
+  Linux's `/proc/<pid>/environ`; `ps` — `ps -E`, on macOS and the BSDs,
+  proved at the time of asking on a process of the call's own, since
+  the answer is what the kernel discloses and not whether the flag
+  parses; or none, where the fence stops the organization, the
+  expression and what still hangs off them, a tool orphaned by an
+  organization that died is not among them, and the host says so at
+  startup. A host blocked in a sync, a build or an
   observation window therefore cannot keep its organism executing past
   the lease; while the remote cannot be reached the lease is kept
   unrenewed until then: a partitioned body executes nothing past its

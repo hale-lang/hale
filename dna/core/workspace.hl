@@ -33,6 +33,68 @@ fn reap_on_exit(dir: String) {
     let r = run_tool("sh\n-c\n(while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; ps -eo pid=,args= | awk -v d=\"$2/\" 'index($0, d) {print $1}' | xargs -r kill -KILL 2>/dev/null) </dev/null >/dev/null 2>&1 &\nsh\n" + me + "\n" + dir);
 }
 
+// ---- a body's processes, wherever they were reparented -------------
+
+// The mark a body puts in the environment of everything it starts
+// (`HALE_DNA_BODY`): its lease's holder and token and its host's pid, `#`
+// after each so no mark is a prefix of another.
+fn body_mark(holder: String, token: Int, host_pid: Int) -> String {
+    return holder + "#" + to_string(token) + "#" + to_string(host_pid) + "#";
+}
+
+// How this machine reads another process's environment (#638). A tool
+// keeps the environment its organism gave it after that organism is gone
+// and the tool is reparented, where a walk from the organism's pid no
+// longer reaches it — but only if this machine will show it:
+//
+//   `proc`  Linux: /proc/<pid>/environ.
+//   `ps`    macOS and the BSDs: `ps -E`, proved here on a process of this
+//           call's own, since the answer depends on what the kernel will
+//           disclose, not on the flag parsing.
+//   ""      neither: a body finds only what still hangs off a living
+//           parent (`kill_tree`), and the host says so at startup.
+fn body_scan() -> String {
+    if std::io::fs::file_exists("/proc/self/environ") { return "proc"; }
+    let probe = run_tool("env\nHALE_DNA_SCAN_PROBE=yes\nsh\n-c\nps -E -ww -o pid=,command= -p $$ 2>/dev/null | grep -c HALE_DNA_SCAN_PROBE=yes");
+    if probe.code == 0 && trim_nl(probe.stdout) != "0" { return "ps"; }
+    return "";
+}
+
+// Every process whose environment carries `HALE_DNA_BODY=<mark>`,
+// newline-separated ("" when none, or when this machine has no scan).
+@unbounded
+fn marked(mark: String) -> String {
+    if len(mark) == 0 { return ""; }
+    let needle = "HALE_DNA_BODY=" + mark;
+    let scan = body_scan();
+    if scan == "proc" {
+        // the needle is this call's argument, never its environment, so
+        // the shell reading /proc does not match itself
+        let r = run_tool("sh\n-c\nfor e in /proc/[0-9]*/environ; do if grep -a -q -F \"$1\" \"$e\" 2>/dev/null; then p=${e#/proc/}; echo ${p%/environ}; fi; done\nsh\n" + needle);
+        return trim_nl(r.stdout);
+    }
+    if scan == "ps" {
+        // `ps -E` prints a process's environment after its command, so a
+        // needle in this call's own argv would match the line for its own
+        // `awk`. It goes in the environment instead, and the shell running
+        // the scan (`$$`) and its two children — the `ps` and the `awk` —
+        // are the lines to leave out.
+        let r = run_tool("env\nHALE_DNA_SCAN_NEEDLE=" + needle + "\nsh\n-c\nps -E -ww -o pid=,ppid=,command= 2>/dev/null | awk -v me=$$ '$1 != me && $2 != me && index($0, ENVIRON[\"HALE_DNA_SCAN_NEEDLE\"]) { print $1 }'");
+        return trim_nl(r.stdout);
+    }
+    return "";
+}
+
+// Everything carrying a body's mark, at once: frozen, read again, killed.
+fn kill_marked(mark: String) {
+    if len(mark) == 0 { return; }
+    let first = marked(mark);
+    if len(first) == 0 { return; }
+    let s = run_tool("kill\n-STOP\n" + first);
+    let again = marked(mark);
+    let k = run_tool("kill\n-KILL\n" + first + (if len(again) > 0 { "\n" + again } else { "" }));
+}
+
 type RunResult {
     code: Int = -1;
     stdout: String = "";
