@@ -148,7 +148,8 @@ sequence either way — see [The record](./record.md).
 | `appendage.proposed` / `appendage.candidate` | record | a source | the organ proposed / the organization mutation that proposes it |
 | `report.filed` | ledger | `r<n>` | the summary since the last report |
 | `grant.contracted` | record | a child | authority narrowed, and what it leaves: `to`, `epoch` |
-| `grant.refused` | record | a child | a grant born wider than its ceiling — and, today, a spend the window would not admit; the routing table keeps `grant.reservation_refused` in the ledger for the money refusal, and nothing writes it yet |
+| `grant.refused` | record | a child | a grant born wider than its ceiling: authority |
+| `grant.reservation_refused` | ledger | a child | a spend the window would not admit, naming the field: money |
 | `grant.reserved` | ledger | a child | a spend admitted: op, amount, currency, counterparty, route, ceiling, epoch, at |
 | `grant.released` | ledger | a child | a reservation settled at what was actually spent |
 | `grant.fenced` | ledger | a child | an admission refused because the grant's epoch moved since |

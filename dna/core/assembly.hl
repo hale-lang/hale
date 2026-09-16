@@ -1625,9 +1625,10 @@ locus Dna {
         }
         return self.refuse_spend(child, s, "contention: the record moved under twenty attempts to reserve");
     }
-    // A refused spend is a `grant.refused` row naming the field.
+    // A refused spend is a `grant.reservation_refused` row naming the field: money, the ledger's.
+    // Authority — a grant born wider than its ceiling — is `grant.refused`, the record's.
     fn refuse_spend(child: String, s: Spend, why: String) -> Admission {
-        let x = self.journal.append(self.journal.revision(), "grant.refused", child, "spend `" + s.id + "` (" + s.amount + " " + s.currency + " to " + s.counterparty + " via " + s.route + "): " + why);
+        let x = self.journal.append(self.journal.revision(), "grant.reservation_refused", child, "spend `" + s.id + "` (" + s.amount + " " + s.currency + " to " + s.counterparty + " via " + s.route + "): " + why);
         return Admission { op: s.id, amount: s.amount, currency: s.currency, refused: why };
     }
     @unbounded
