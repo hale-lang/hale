@@ -162,6 +162,30 @@ rendered as `why:` by `hale dna review <id>`). The Board can answer first, or ov
 settled Review is settled — but it widens or narrows the grant in a
 reviewed commit, and the record shows who did.
 
+## Whose positions they are
+
+One organization, one owner: every position is its own, and the file
+`dna/org/owners` the scaffold writes beside `main.hl` stays empty. When
+a record is shared between firms (stage B2), the map names an owner per
+position and each owner's members:
+
+```
+org = acme
+org/collections = north
+acme: alice, carol
+north: bob
+```
+
+A position not named takes its nearest named ancestor's owner. Each
+body says which owner it is (`git config dna.owner acme`) or `hale dna
+run` refuses to start it, and it admits intents only for positions its
+owner holds. `hale dna ask --to org/collections` from acme's clone does
+not go to acme's body: it goes into the record, where north's controller
+relays it, and `hale dna status` in acme's clone shows it as
+`[unadmitted]` with north's name until then. Changing the map is a
+mutation of the organization that every affected owner approves, each
+through one of its members; one rejection settles it.
+
 ## Who decides what
 
 | change class | examples | decided by |

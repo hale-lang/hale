@@ -577,6 +577,21 @@ locus Projection {
         let bd = self.build_digest();
         out = out + "expression: attached " + std::json::find_string_field(attached.body, "main") + " (shape " + std::json::find_string_field(attached.body, "shape_hash") + ") · current shape " + (if len(cur_shape) > 0 { cur_shape } else { "not cut" }) + " · build " + (if len(bd) > 0 { short(bd) } else { "not built" }) + "\n";
         out = out + "intents:    " + to_string(self.count("intent.offered")) + " offered, " + to_string(self.count("intent.refused")) + " refused\n";
+        // GH #664: over a shared record, an intent for a position no
+        // controller here owns waits in the record, visibly
+        if shared_here(self.root) {
+            let mut k = 0;
+            while k < self.rows() {
+                let e = self.row(k);
+                if e.kind == "intent.requested" && find_after(self, k + 1, " intent.offered intent.refused ", e.entity).seq < 0 {
+                    let to = std::json::find_string_field(e.body, "to");
+                    if !admits_here(self.root, to) {
+                        out = out + "  " + e.entity + " [unadmitted] " + std::json::find_string_field(e.body, "outcome") + " — " + ownership_note(self.root, to) + "\n";
+                    }
+                }
+                k = k + 1;
+            }
+        }
         let task_ids = self.task_ids();
         let ntasks = list_len(task_ids);
         out = out + "tasks:      " + (if ntasks == 0 { "none" } else { to_string(ntasks) }) + "\n";

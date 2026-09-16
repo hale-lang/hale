@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: the owners map, and admission reading it (GH #664, stage B2)
+
+- `dna/org/owners` in the genome names an owner per position and each owner's members; `Ownership` in the org program reads it (`ownership: dna::Ownership { path: "dna/org/owners" }`, scaffolded by `hale dna new` and added by `upgrade`). Empty, the organization is the one owner and nothing changes. Over a shared record a body says which owner it is (`git config dna.owner`, `HALE_DNA_OWNER`) or `run`/`dev` refuse to start it; it admits an intent only for a position its owner holds (`Intent.to`), refusing one offered to it for another's by name. `hale dna ask --to` takes an intent for another owner's position to the record instead of the membrane, the host relays only its owner's, and `status` lists the rest as `[unadmitted]` with the owner. A candidate that changes the map is approved by every owner it affects, each through one of its members (`approvers` on the Review), and one rejection settles it.
+
 ### DNA: two residuals of the three memories (GH #646)
 
 - `hale dna receipt redact` on an organism that has adopted the ledger appended its `receipt.redacted` row through the ordinary submit, so the #636 rule — the redaction lands only at the revision the hold was read at — held for the record and not for the ledger. The host now reads the ledger's revision with the hold and submits the row exactly there (`exact` on `POST /ledger/append`), refusing "the record moved" when it did; such a row is never queued.

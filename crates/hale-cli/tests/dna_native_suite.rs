@@ -128,6 +128,8 @@ fn dna_fixture_set_is_complete() {
             "openai_chat_test.hl",
             "optimize_test.hl",
             "org_test.hl",
+            "owners_test.hl",
+            "ownership_test.hl",
             "performers_test.hl",
             "plan_routing_test.hl",
             "practice_test.hl",

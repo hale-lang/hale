@@ -1,0 +1,284 @@
+// dna/core/ownership.hl — who admits which position (GH #664, stage B2).
+//
+// A shared record's org chart has one owner per position: the firm whose
+// controller admits intents for it, reserves against its own allowances
+// and answers for its work. The map is a file of the genome, so changing
+// it is a mutation of the organization — reviewed, and by every owner it
+// affects. An empty map is one owner, the organization itself, and every
+// position is its own: nothing about a single-owner organism changes.
+// This body learns which owner it is from HALE_DNA_OWNER (the host reads
+// `dna.owner`); a body over a shared record that names no owner admits
+// nothing.
+//
+// The file, one entry per line, `#` for a comment:
+//   org = acme               a position and its owner
+//   org/collections = north  a position under another owner
+//   acme: alice, carol       an owner's members — whose verdicts count as its
+//   north: bob
+// A position not named takes its nearest named ancestor's owner; with no
+// ancestor named it is unowned, and no controller admits it.
+
+type Owned { position: String = ""; owner: String = ""; }
+@form(vec)
+locus OwnedRows { capacity { heap rows of Owned; } }
+type Membership { owner: String = ""; members: String = ""; } // members space-separated
+@form(vec)
+locus MembershipRows { capacity { heap rows of Membership; } }
+
+// Blanks off both ends.
+@unbounded
+fn strip_blanks(s: String) -> String {
+    let mut a = 0;
+    let mut b = len(s);
+    while a < b && (s[a..(a + 1)] == " " || s[a..(a + 1)] == "\t" || s[a..(a + 1)] == "\r") { a = a + 1; }
+    while b > a && (s[(b - 1)..b] == " " || s[(b - 1)..b] == "\t" || s[(b - 1)..b] == "\r") { b = b - 1; }
+    return s[a..b];
+}
+// `list` with `word` added once, space-separated.
+fn word_add(list: String, word: String) -> String {
+    if len(word) == 0 || word_in(word, list) { return list; }
+    return if len(list) == 0 { word } else { list + " " + word };
+}
+// Commas and runs of blanks made into single spaces: "alice, carol" -> "alice carol".
+@unbounded
+fn words_of(s: String) -> String {
+    let mut out = "";
+    let mut tok = "";
+    let mut k = 0;
+    while k <= len(s) {
+        let ch = if k < len(s) { s[k..(k + 1)] } else { " " };
+        if ch == "," || ch == " " || ch == "\t" {
+            out = word_add(out, tok);
+            tok = "";
+        } else {
+            tok = tok + ch;
+        }
+        k = k + 1;
+    }
+    return out;
+}
+// A position as the map spells it: "" is the organization, `org`.
+@unbounded
+fn position_name(p: String) -> String {
+    let mut s = strip_blanks(p);
+    while len(s) > 1 && s[(len(s) - 1)..len(s)] == "/" { s = s[0..(len(s) - 1)]; }
+    return if len(s) == 0 { "org" } else { s };
+}
+
+locus Ownership {
+    params {
+        path: String = ""; // the map's file under the genome ("" = one owner, nothing to read)
+        text: String = ""; // the map given as text (fixtures; wins over the file)
+        me_env: String = "HALE_DNA_OWNER";
+        me: String = ""; // the owner this body is ("" = unnamed)
+        source: SourceReader = SourceReader { }; // the genome at a revision, for a candidate's map
+        loaded: Bool = false;
+        positions: OwnedRows = OwnedRows { };
+        memberships: MembershipRows = MembershipRows { };
+    }
+    birth() {
+        if len(self.me) == 0 && len(self.me_env) > 0 && std::env::var_exists(self.me_env) { self.me = std::env::var(self.me_env); }
+    }
+    @unbounded
+    fn load() {
+        if self.loaded { return; }
+        self.loaded = true;
+        let mut t = self.text;
+        if len(t) == 0 && len(self.path) > 0 { t = std::io::fs::read_file(self.path) or ""; }
+        let mut rest = t + "\n";
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = strip_blanks(if nl < 0 { rest } else { rest[0..nl] });
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if len(line) > 0 && line[0..1] != "#" {
+                let eq = std::str::index_of(line, "=");
+                let colon = std::str::index_of(line, ":");
+                if eq >= 0 && (colon < 0 || eq < colon) {
+                    self.positions.push(Owned { position: position_name(line[0..eq]), owner: strip_blanks(line[(eq + 1)..len(line)]) });
+                } else if colon >= 0 {
+                    self.memberships.push(Membership { owner: strip_blanks(line[0..colon]), members: words_of(line[(colon + 1)..len(line)]) });
+                }
+            }
+        }
+    }
+    // Whether the record is shared: the map names any position.
+    fn shared() -> Bool { self.load(); return self.positions.len() > 0; }
+    // The owner of a position: named, or its nearest named ancestor's; ""
+    // when no ancestor is named (unowned).
+    @unbounded
+    fn owner_of(position: String) -> String {
+        self.load();
+        let mut p = position_name(position);
+        while len(p) > 0 {
+            let mut i = 0;
+            while i < self.positions.len() {
+                let o = self.positions.get(i) or Owned { };
+                if o.position == p { return o.owner; }
+                i = i + 1;
+            }
+            let slash = last_slash(p);
+            if slash < 0 { return ""; }
+            p = p[0..slash];
+        }
+        return "";
+    }
+    // The positions an owner holds by name, in the map's order.
+    @unbounded
+    fn holdings(owner: String) -> String {
+        self.load();
+        let mut out = "";
+        let mut i = 0;
+        while i < self.positions.len() {
+            let o = self.positions.get(i) or Owned { };
+            if o.owner == owner { out = word_add(out, o.position); }
+            i = i + 1;
+        }
+        return out;
+    }
+    @unbounded
+    fn members_of(owner: String) -> String {
+        self.load();
+        let mut i = 0;
+        while i < self.memberships.len() {
+            let m = self.memberships.get(i) or Membership { };
+            if m.owner == owner { return m.members; }
+            i = i + 1;
+        }
+        return "";
+    }
+    @unbounded
+    fn owner_of_person(person: String) -> String {
+        self.load();
+        let mut i = 0;
+        while i < self.memberships.len() {
+            let m = self.memberships.get(i) or Membership { };
+            if word_in(person, m.members) { return m.owner; }
+            i = i + 1;
+        }
+        return "";
+    }
+    // Every owner the map names, positions first then memberships, once each.
+    @unbounded
+    fn owners() -> String {
+        self.load();
+        let mut out = "";
+        let mut i = 0;
+        while i < self.positions.len() {
+            let o = self.positions.get(i) or Owned { };
+            out = word_add(out, o.owner);
+            i = i + 1;
+        }
+        i = 0;
+        while i < self.memberships.len() {
+            let m = self.memberships.get(i) or Membership { };
+            out = word_add(out, m.owner);
+            i = i + 1;
+        }
+        return out;
+    }
+    // Whether this body admits an intent for the position: always, for an
+    // organism with one owner; over a shared record, only for positions
+    // this owner holds.
+    fn admits(position: String) -> Bool {
+        if !self.shared() { return true; }
+        return len(self.me) > 0 && self.owner_of(position) == self.me;
+    }
+    // Why not, for the refusal and the status line.
+    fn why_not(position: String) -> String {
+        let p = position_name(position);
+        let owner = self.owner_of(p);
+        if len(owner) == 0 { return "`" + p + "` has no owner in " + (if len(self.path) > 0 { self.path } else { "the owners map" }) + "; no controller admits it"; }
+        if len(self.me) == 0 { return "`" + p + "` is owned by " + owner + ", and this body names no owner (HALE_DNA_OWNER)"; }
+        return "`" + p + "` is owned by " + owner + ", not " + self.me;
+    }
+    // The owners a candidate's map affects and who may approve for each,
+    // as `<owner>=<member>,<member> …`; "" when the candidate leaves the
+    // map as it is (or there is no map). A member list comes from the
+    // candidate's map, or the current one for an owner the candidate drops.
+    @unbounded
+    fn approvers_for(candidate: String) -> String {
+        if len(self.path) == 0 { return ""; }
+        let before = self.source.read(self.path);
+        let after = self.source.read_at(candidate, self.path);
+        if before == after { return ""; }
+        let affected = owners_affected(before, after);
+        if len(affected) == 0 { return ""; }
+        let was = Ownership { text: before, me_env: "" };
+        let will = Ownership { text: after, me_env: "" };
+        let mut out = "";
+        let mut i = 0;
+        while len(nth_word(affected, i)) > 0 {
+            let w = nth_word(affected, i);
+            let mut members = will.members_of(w);
+            if len(members) == 0 { members = was.members_of(w); }
+            out = word_add(out, w + "=" + commas(members));
+            i = i + 1;
+        }
+        return out;
+    }
+    fn describe() -> String {
+        self.load();
+        if !self.shared() { return "one owner"; }
+        return "owners " + self.owners() + (if len(self.me) > 0 { " (this body: " + self.me + ")" } else { " (this body names none)" });
+    }
+}
+
+// Space-separated words as a comma list: "alice carol" -> "alice,carol".
+@unbounded
+fn commas(words: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while len(nth_word(words, i)) > 0 {
+        out = out + (if i > 0 { "," } else { "" }) + nth_word(words, i);
+        i = i + 1;
+    }
+    return out;
+}
+
+// The owners whose holdings or membership differ between two maps: every
+// one of them approves the change (GH #664). Space-separated.
+@unbounded
+fn owners_affected(before: String, after: String) -> String {
+    let was = Ownership { text: before, me_env: "" };
+    let will = Ownership { text: after, me_env: "" };
+    let mut all = was.owners();
+    let mut i = 0;
+    while len(nth_word(will.owners(), i)) > 0 {
+        all = word_add(all, nth_word(will.owners(), i));
+        i = i + 1;
+    }
+    let mut out = "";
+    i = 0;
+    while len(nth_word(all, i)) > 0 {
+        let w = nth_word(all, i);
+        if was.holdings(w) != will.holdings(w) || was.members_of(w) != will.members_of(w) { out = word_add(out, w); }
+        i = i + 1;
+    }
+    return out;
+}
+
+// The owner a person belongs to among `approvers` ("acme=alice,carol north=bob"), "" when none.
+@unbounded
+fn approver_owner(approvers: String, person: String) -> String {
+    let mut i = 0;
+    while len(nth_word(approvers, i)) > 0 {
+        let entry = nth_word(approvers, i);
+        let eq = std::str::index_of(entry, "=");
+        if eq > 0 && word_in(person, words_of(entry[(eq + 1)..len(entry)])) { return entry[0..eq]; }
+        i = i + 1;
+    }
+    return "";
+}
+// The owners named by `approvers`, space-separated.
+@unbounded
+fn approver_owners(approvers: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while len(nth_word(approvers, i)) > 0 {
+        let entry = nth_word(approvers, i);
+        let eq = std::str::index_of(entry, "=");
+        out = word_add(out, if eq > 0 { entry[0..eq] } else { entry });
+        i = i + 1;
+    }
+    return out;
+}

@@ -604,6 +604,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     created(&mut out, &org_dir.join("purpose.hl"), &purpose_hl(&purpose_text))?;
     created(&mut out, &org_dir.join("charter.hl"), &charter_hl(&app.project))?;
     created(&mut out, &org_dir.join("law.hl"), &org_law_hl())?;
+    created(&mut out, &org_dir.join("owners"), owners_text())?;
     // GH #583 M1: the catalog, from what this machine has
     let found = discover();
     if created(&mut out, &org_dir.join("models.hl"), &models_hl(&found))? {
@@ -713,7 +714,19 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         fs::write(&charter, charter_hl(&project)).map_err(|e| format!("write {}: {e}", charter.display()))?;
         out.push(format!("created {}", charter.display()));
     }
+    // GH #664: an organization from before the owners map gets one, empty
+    let owners = org_dir.join("owners");
+    if org_dir.join("main.hl").is_file() && !owners.is_file() {
+        fs::write(&owners, owners_text()).map_err(|e| format!("write {}: {e}", owners.display()))?;
+        out.push(format!("created {}", owners.display()));
+    }
     let main_text = fs::read_to_string(org_dir.join("main.hl")).unwrap_or_default();
+    if main_text.contains("main locus Org") && !main_text.contains("ownership: dna::Ownership") {
+        out.push(format!(
+            "note    {}/main.hl names no owners map; a shared record needs one (GH #664): `ownership: dna::Ownership {{ path: \"dna/org/owners\" }}`",
+            ORG_SEED
+        ));
+    }
     if main_text.contains("journal: dna::GitJournal {") {
         out.push(format!(
             "note    {}/main.hl wires the record alone as its journal; the day's work can move to the ledger (GH #646) once it reads both: `journal: dna::RoutedJournal {{ record: dna::GitJournal {{ repo: \".\" }}, ledger: dna::ServiceLedger {{ url_env: \"HALE_DNA_KNOWLEDGE_URL\" }} }}`",
@@ -1413,6 +1426,11 @@ main locus Org {{
             }},
             // The organization's spend: one policy (models.hl), one owner.
             budget: dna::Budget {{ policy: org_budget() }},
+            // Owners (GH #664): who admits which position. The map is the
+            // genome's file dna/org/owners — empty while this organization
+            // is the only owner; once the record is shared, every position
+            // names its owner and this body says which it is (dna.owner).
+            ownership: dna::Ownership {{ path: "dna/org/owners" }},
             // The knowledge service, when the host runs one (`hale dna dev`):
             // what the organization ratified for a target is folded into the
             // objective the editor gets; the editor itself never reaches it.
@@ -1724,6 +1742,21 @@ fn hex(bytes: &[u8]) -> String {
 /// `dna/org/charter.hl`: what the leader reads before it thinks. A
 /// function returning text, like `purpose`, so a change to the brief
 /// is a mutation of the org program the Board reviews.
+/// `dna/org/owners`: who admits which position (GH #664). Empty is one
+/// owner, the organization itself.
+fn owners_text() -> &'static str {
+    "# dna/org/owners — who admits which position (GH #664).\n\
+# Empty: this organization is the only owner, and every position is its own.\n\
+# A shared record names every position's owner and each owner's members:\n\
+#   org = acme\n\
+#   org/collections = north\n\
+#   acme: alice, carol\n\
+#   north: bob\n\
+# A position not named takes its nearest named ancestor's owner. The body\n\
+# says which owner it is: `git config dna.owner <owner>`. Changing this\n\
+# file is a change to the organization, approved by every owner it affects.\n"
+}
+
 fn charter_hl(project: &str) -> String {
     let text = format!(
         "You are the architect of {project}'s organization: you propose, the Board decides. \
