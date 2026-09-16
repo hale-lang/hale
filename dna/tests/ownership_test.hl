@@ -38,7 +38,7 @@ locus ClaimedOnce {
 main locus App {
     params {
         map: dna::Ownership = dna::Ownership {
-            text: "# who admits what\norg = acme\norg/collections = north\nacme: alice, carol\nnorth: bob\n",
+            text: "# who admits what\norg = acme\norg/collections = north\nacme: alice, carol\nnorth: bob\nhost = acme\n",
             me: "acme", me_env: ""
         };
         alone: dna::Ownership = dna::Ownership { me_env: "" };
@@ -112,6 +112,8 @@ main locus App {
         std::test::assert_eq_str(self.map.members_of("acme"), "alice carol", "members, commas or blanks");
         std::test::assert_eq_str(self.map.owner_of_person("bob"), "north", "a person's owner");
         std::test::assert_eq_str(self.map.owners(), "acme north", "every owner once");
+        std::test::assert_eq_str(self.map.host(), "acme", "GH #669: who hosts the ledger service is in the map, and is no position");
+        std::test::assert_eq_str(self.map.owner_of("host"), "", "…and `host` names no position: nothing under it is owned");
         std::test::assert(self.map.admits("org/books") && !self.map.admits("org/collections") && !self.map.admits("app/x"), "acme admits its own positions only");
         std::test::assert(self.alone.admits("org/anything"), "with one owner everything is its own");
         std::test::assert_eq_str(self.map.why_not("org/collections"), "`org/collections` is owned by north, not acme", "the refusal names the owner");
@@ -122,6 +124,7 @@ main locus App {
         std::test::assert_eq_str(dna::owners_affected(before, "org = acme\norg/collections = acme\nacme: alice\nnorth: bob\n"), "acme north", "moving a position affects both owners");
         std::test::assert_eq_str(dna::owners_affected(before, "org = acme\norg/collections = north\nacme: alice, dan\nnorth: bob\n"), "acme", "a new member affects that owner alone");
         std::test::assert_eq_str(dna::owners_affected(before, "org = acme\norg/collections = north\norg/mail = west\nacme: alice\nnorth: bob\nwest: eve\n"), "west", "a new owner affects itself");
+        std::test::assert_eq_str(dna::owners_affected(before, before + "host = north\n"), "acme north", "GH #669: naming (or moving) the host is every owner's decision");
         std::test::assert_eq_str(dna::approver_owner("acme=alice,carol north=bob", "carol"), "acme", "an approver's owner");
         std::test::assert_eq_str(dna::approver_owner("acme=alice,carol north=bob", "eve"), "", "…or none");
         // ---- ids and claims carry their owner
