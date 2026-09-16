@@ -79,7 +79,10 @@ fn marked(mark: String) -> String {
         // `awk`. It goes in the environment instead, and the shell running
         // the scan (`$$`) and its two children — the `ps` and the `awk` —
         // are the lines to leave out.
-        let r = run_tool("env\nHALE_DNA_SCAN_NEEDLE=" + needle + "\nsh\n-c\nps -E -ww -o pid=,ppid=,command= 2>/dev/null | awk -v me=$$ '$1 != me && $2 != me && index($0, ENVIRON[\"HALE_DNA_SCAN_NEEDLE\"]) { print $1 }'");
+        // `-A`: every process, not the ones sharing this call's terminal,
+        // which is how a BSD `ps` given no selection reads — and an orphan
+        // shares no terminal with anything (macOS, first run of this scan)
+        let r = run_tool("env\nHALE_DNA_SCAN_NEEDLE=" + needle + "\nsh\n-c\nps -A -E -ww -o pid=,ppid=,command= 2>/dev/null | awk -v me=$$ '$1 != me && $2 != me && index($0, ENVIRON[\"HALE_DNA_SCAN_NEEDLE\"]) { print $1 }'");
         return trim_nl(r.stdout);
     }
     return "";
