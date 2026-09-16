@@ -239,8 +239,10 @@ repository:
   says was redacted is not filed again — `Dna.file_evidence` answers its
   digest and keeps nothing, `hale dna receipt file` refuses it, and the
   knowledge service's `POST /receipt` refuses it 409 — and `hale dna receipt redact` appends a git receipt's
-  redaction only at the head it read the hold at, refusing "the record
-  moved" otherwise, as the core and the service do (#636) — through the CLI and
+  redaction only at the head it read the hold at — and, once the
+  organism has adopted the ledger, only at the ledger revision it read
+  the hold at (`exact` on `POST /ledger/append`, never queued) —
+  refusing "the record moved" otherwise, as the core and the service do (#636) — through the CLI and
   `Dna.redact_evidence` alike, for a protected body too: both hand a
   classified receipt to the knowledge service, which erases a body still
   kept under a recorded redaction and answers `already redacted` once

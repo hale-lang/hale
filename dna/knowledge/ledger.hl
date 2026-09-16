@@ -224,6 +224,7 @@ locus PqLedger {
         error: String = "";
         rows: dna::EventRows = dna::EventRows { };
         authors: dna::Authors = dna::Authors { };
+        dialling: Bool = false;
     }
     fn kind() -> String { return "postgres"; }
     fn scope(record: String) {
@@ -258,6 +259,48 @@ locus PqLedger {
         self.load();
         return true;
     }
+    // Drop the connection and open it again, schema and all: a database
+    // restart, a failover or an idle timeout leaves the connection dead
+    // and every statement failing until then. The protected store learnt
+    // this under #637; the ledger and the leases are newer and had not.
+    fn redial() -> Bool {
+        if self.dialling { return false; }
+        self.dialling = true;
+        self.conn.close();
+        self.opened = false;
+        let ok = self.open();
+        self.dialling = false;
+        return ok;
+    }
+    // A statement, and once more over a fresh connection when the first
+    // attempt fails. The retry sees the store as it is, so a statement
+    // that landed before the connection died reports what it finds (a
+    // stale tail, a claim taken) rather than landing twice.
+    fn run_q(sql: String, a: db::Args) -> db::Rows {
+        let r = self.conn.query_params(sql, a);
+        if r.ok || !self.redial() { return r; }
+        return self.conn.query_params(sql, a);
+    }
+    fn run_x(sql: String, a: db::Args) -> db::ExecResult {
+        let r = self.conn.exec_params(sql, a);
+        if r.ok || !self.redial() { return r; }
+        return self.conn.exec_params(sql, a);
+    }
+    fn run_one(sql: String) -> db::Row {
+        let r = self.conn.query_one(sql);
+        if r.ok || !self.redial() { return r; }
+        return self.conn.query_one(sql);
+    }
+    fn run_all(sql: String) -> db::Rows {
+        let r = self.conn.query_all(sql);
+        if r.ok || !self.redial() { return r; }
+        return self.conn.query_all(sql);
+    }
+    fn run_sql(sql: String) -> db::ExecResult {
+        let r = self.conn.exec(sql);
+        if r.ok || !self.redial() { return r; }
+        return self.conn.exec(sql);
+    }
     // Every row from the one after the last held, in order, as JSON per
     // line (the driver's rows are tab-separated with no escaping; a body
     // is free text).
@@ -265,7 +308,7 @@ locus PqLedger {
     fn load() {
         let a = db::Args { };
         a.add(to_string(self.rows.len()));
-        let rows = self.conn.query_params("SELECT row_to_json(t) FROM (SELECT seq, kind, entity, body, author, prev, digest FROM ledger_rows WHERE seq >= $1::bigint ORDER BY seq) t", a);
+        let rows = self.run_q("SELECT row_to_json(t) FROM (SELECT seq, kind, entity, body, author, prev, digest FROM ledger_rows WHERE seq >= $1::bigint ORDER BY seq) t", a);
         if !rows.ok { self.error = "load: " + rows.err.kind + " " + rows.err.detail; return; }
         let mut rest = rows.csv;
         while len(rest) > 0 {
@@ -294,7 +337,7 @@ locus PqLedger {
     }
     fn refresh() -> Bool {
         if !self.opened { return false; }
-        let n = self.conn.query_one("SELECT count(*) FROM ledger_rows");
+        let n = self.run_one("SELECT count(*) FROM ledger_rows");
         if !n.ok { self.error = "refresh: " + n.err.kind + " " + n.err.detail; return false; }
         if (std::str::parse_int(dna::trim_nl(n.data)) or 0) == self.rows.len() { return false; }
         self.load();
@@ -318,7 +361,7 @@ locus PqLedger {
         a.add(digest);
         a.add(if record_seq < 0 { "" } else { to_string(record_seq) });
         a.add(commit);
-        let r = self.conn.query_params("INSERT INTO ledger_rows (seq, kind, entity, body, author, prev, digest, record_seq, record_commit) SELECT $1::bigint, $2, $3, $4, $5, $6, $7, NULLIF($8, '')::bigint, NULLIF($9, '') WHERE (SELECT coalesce(max(seq) + 1, 0) FROM ledger_rows) = $1::bigint RETURNING seq", a);
+        let r = self.run_q("INSERT INTO ledger_rows (seq, kind, entity, body, author, prev, digest, record_seq, record_commit) SELECT $1::bigint, $2, $3, $4, $5, $6, $7, NULLIF($8, '')::bigint, NULLIF($9, '') WHERE (SELECT coalesce(max(seq) + 1, 0) FROM ledger_rows) = $1::bigint RETURNING seq", a);
         if !r.ok {
             if std::str::contains(r.err.detail, "ledger_rows_claim") { self.error = "claimed"; return "claimed"; }
             if std::str::contains(r.err.detail, "ledger_rows_commit") { return "duplicate"; }
@@ -373,14 +416,14 @@ locus PqLedger {
         let a = db::Args { };
         a.add(key);
         a.add(value);
-        let r = self.conn.exec_params("INSERT INTO ledger_meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", a);
+        let r = self.run_x("INSERT INTO ledger_meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", a);
         if !r.ok { return self.fail("meta " + key, r.err); }
         return true;
     }
     fn meta(key: String) -> String {
         let a = db::Args { };
         a.add(key);
-        let rows = self.conn.query_params("SELECT value FROM ledger_meta WHERE key = $1", a);
+        let rows = self.run_q("SELECT value FROM ledger_meta WHERE key = $1", a);
         if !rows.ok || rows.n == 0 { return ""; }
         return dna::trim_nl(first_line(rows.csv));
     }
@@ -396,7 +439,7 @@ locus PqLedger {
         let a = db::Args { };
         a.add(to_string(i));
         a.add(author);
-        let r = self.conn.exec_params("UPDATE ledger_rows SET author = $2 WHERE seq = $1::bigint", a);
+        let r = self.run_x("UPDATE ledger_rows SET author = $2 WHERE seq = $1::bigint", a);
         if !r.ok { return self.fail("author", r.err); }
         if i >= 0 && i < self.authors.len() { self.authors.set(i, author) or discard; }
         return true;
@@ -408,7 +451,7 @@ locus PqLedger {
         a.add(entity);
         a.add(body);
         a.add(author);
-        let r = self.conn.exec_params("INSERT INTO ledger_mailboxes (sender, kind, entity, body, author) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (sender, kind, entity) DO NOTHING", a);
+        let r = self.run_x("INSERT INTO ledger_mailboxes (sender, kind, entity, body, author) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (sender, kind, entity) DO NOTHING", a);
         if !r.ok { return self.fail("mailbox", r.err); }
         return true;
     }
@@ -417,19 +460,19 @@ locus PqLedger {
         a.add(sender);
         a.add(kind);
         a.add(entity);
-        let rows = self.conn.query_params("SELECT n FROM ledger_mailboxes WHERE sender = $1 AND kind = $2 AND entity = $3", a);
+        let rows = self.run_q("SELECT n FROM ledger_mailboxes WHERE sender = $1 AND kind = $2 AND entity = $3", a);
         return rows.ok && rows.n > 0;
     }
     @unbounded
     fn mailboxes() -> String {
-        let rows = self.conn.query_all("SELECT row_to_json(t) FROM (SELECT sender, kind, entity, body, author FROM ledger_mailboxes ORDER BY n) t");
+        let rows = self.run_all("SELECT row_to_json(t) FROM (SELECT sender, kind, entity, body, author FROM ledger_mailboxes ORDER BY n) t");
         if !rows.ok { self.error = "mailboxes: " + rows.err.kind + " " + rows.err.detail; return ""; }
         return rows.csv;
     }
     fn seen(request_id: String) -> Int {
         let a = db::Args { };
         a.add(request_id);
-        let rows = self.conn.query_params("SELECT revision FROM ledger_requests WHERE request_id = $1", a);
+        let rows = self.run_q("SELECT revision FROM ledger_requests WHERE request_id = $1", a);
         if !rows.ok || rows.n == 0 { return -2; }
         return std::str::parse_int(dna::trim_nl(first_line(rows.csv))) or - 2;
     }
@@ -437,12 +480,12 @@ locus PqLedger {
         let a = db::Args { };
         a.add(request_id);
         a.add(to_string(revision));
-        let r = self.conn.exec_params("INSERT INTO ledger_requests (request_id, revision) VALUES ($1, $2::bigint) ON CONFLICT (request_id) DO NOTHING", a);
+        let r = self.run_x("INSERT INTO ledger_requests (request_id, revision) VALUES ($1, $2::bigint) ON CONFLICT (request_id) DO NOTHING", a);
         if !r.ok { return self.fail("mark", r.err); }
         return true;
     }
     fn abandon() -> Bool {
-        let r = self.conn.exec("DELETE FROM ledger_rows; DELETE FROM ledger_meta; DELETE FROM ledger_requests");
+        let r = self.run_sql("DELETE FROM ledger_rows; DELETE FROM ledger_meta; DELETE FROM ledger_requests");
         if !r.ok { return self.fail("abandon", r.err); }
         while self.rows.len() > 0 { let gone = self.rows.pop() or dna::Event { }; }
         while self.authors.len() > 0 { let gone = self.authors.pop() or ""; }
@@ -519,6 +562,7 @@ locus PqLeaseStore {
         record_id: String = "";
         opened: Bool = false;
         error: String = "";
+        dialling: Bool = false;
     }
     fn kind() -> String { return "postgres"; }
     fn scope(record: String) {
@@ -543,10 +587,25 @@ locus PqLeaseStore {
         self.opened = true;
         return true;
     }
+    // As the ledger's: dial again once when a statement fails.
+    fn redial() -> Bool {
+        if self.dialling { return false; }
+        self.dialling = true;
+        self.conn.close();
+        self.opened = false;
+        let ok = self.open();
+        self.dialling = false;
+        return ok;
+    }
+    fn run_q(sql: String, a: db::Args) -> db::Rows {
+        let r = self.conn.query_params(sql, a);
+        if r.ok || !self.redial() { return r; }
+        return self.conn.query_params(sql, a);
+    }
     fn current(key: String) -> StoredLease {
         let a = db::Args { };
         a.add(key);
-        let rows = self.conn.query_params("SELECT row_to_json(t) FROM (SELECT key, holder, token, expires, present FROM ledger_leases WHERE key = $1) t", a);
+        let rows = self.run_q("SELECT row_to_json(t) FROM (SELECT key, holder, token, expires, present FROM ledger_leases WHERE key = $1) t", a);
         if !rows.ok { self.error = "current: " + rows.err.kind + " " + rows.err.detail; return StoredLease { key: key }; }
         if rows.n == 0 { return StoredLease { key: key }; }
         let row = dna::trim_nl(first_line(rows.csv));
@@ -562,10 +621,10 @@ locus PqLeaseStore {
         a.add(to_string(expires));
         a.add(if present { "true" } else { "false" });
         a.add(to_string(expected));
-        let r = self.conn.query_params("INSERT INTO ledger_leases (key, holder, token, expires, present) SELECT $1, $2, $3::bigint, $4::bigint, $5::boolean WHERE $6::bigint = 0 AND NOT EXISTS (SELECT 1 FROM ledger_leases WHERE key = $1) ON CONFLICT (key) DO NOTHING RETURNING key", a);
+        let r = self.run_q("INSERT INTO ledger_leases (key, holder, token, expires, present) SELECT $1, $2, $3::bigint, $4::bigint, $5::boolean WHERE $6::bigint = 0 AND NOT EXISTS (SELECT 1 FROM ledger_leases WHERE key = $1) ON CONFLICT (key) DO NOTHING RETURNING key", a);
         if !r.ok { self.error = "put: " + r.err.kind + " " + r.err.detail; return false; }
         if r.n > 0 { return true; }
-        let u = self.conn.query_params("UPDATE ledger_leases SET holder = $2, token = $3::bigint, expires = $4::bigint, present = $5::boolean, at = now() WHERE key = $1 AND token = $6::bigint RETURNING key", a);
+        let u = self.run_q("UPDATE ledger_leases SET holder = $2, token = $3::bigint, expires = $4::bigint, present = $5::boolean, at = now() WHERE key = $1 AND token = $6::bigint RETURNING key", a);
         if !u.ok { self.error = "put: " + u.err.kind + " " + u.err.detail; return false; }
         return u.n > 0;
     }

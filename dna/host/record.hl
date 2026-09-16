@@ -160,6 +160,32 @@ fn ledger_submit(root: String, kind: String, entity: String, body: String, autho
     return false;
 }
 
+// The ledger's revision as the service holds it now, or -1 when no
+// service is known here: the point a decision over ledger rows is read at.
+fn ledger_revision(root: String) -> Int {
+    let url = knowledge_url(root);
+    if len(url) == 0 { return -1; }
+    let l = dna::ServiceLedger { url: url };
+    return l.revision();
+}
+
+// A row of the ledger only if the ledger is still at `expected` (the
+// revision a decision was read at): "" when it landed, `stale_revision`
+// when the ledger moved (nothing written; read again and decide again),
+// else why it was not written. Never queued: a decision read at one
+// revision cannot wait for the service and land at another.
+fn ledger_submit_at(root: String, expected: Int, kind: String, entity: String, body: String, author: String) -> String {
+    let url = knowledge_url(root);
+    if len(url) == 0 { return "no service is known here to write `" + kind + "` through (HALE_DNA_KNOWLEDGE_URL, or `hale dna dev`)"; }
+    if expected < 0 { return "the ledger's revision was not read"; }
+    let l = dna::ServiceLedger { url: url };
+    let r = l.submit(expected, true, kind, entity, body, author, request_id(root));
+    if r.ok { return ""; }
+    if r.error == "stale_revision" { return "stale_revision"; }
+    if l.unreachable { return "the ledger at " + url + " is unreachable; nothing was written"; }
+    return "the ledger at " + url + " refused `" + kind + "`: " + l.last_error;
+}
+
 fn enqueue(root: String, kind: String, entity: String, body: String, author: String) -> Bool {
     return enqueue_as(root, request_id(root), kind, entity, body, author);
 }
@@ -292,13 +318,15 @@ fn append_as(repo: String, kind: String, entity: String, body: String, author: S
     return false;
 }
 
-// Append one event only if the record is still at `expected` (the head a
-// decision was read at): "" when it landed, `stale_revision` when the
-// chain moved (nothing appended; read again and decide again), else why
-// it was refused (#636: a redaction that read "no hold" must not land
-// after a hold did).
-fn append_as_at(repo: String, expected: String, kind: String, entity: String, body: String, author: String) -> String {
-    if dna::route(routing_here(repo), kind) == "ledger" { return if ledger_submit(repo, kind, entity, body, author) { "" } else { "the ledger refused the row" }; }
+// Append one event only if the memory it belongs to is still where a
+// decision was read: at `expected` (the record head) for a row of the
+// record, at `ledger_expected` (the ledger's revision) for a row of the
+// ledger. "" when it landed, `stale_revision` when that memory moved
+// (nothing appended; read again and decide again), else why it was
+// refused (#636: a redaction that read "no hold" must not land after a
+// hold did — on either memory).
+fn append_as_at(repo: String, expected: String, ledger_expected: Int, kind: String, entity: String, body: String, author: String) -> String {
+    if dna::route(routing_here(repo), kind) == "ledger" { return ledger_submit_at(repo, ledger_expected, kind, entity, body, author); }
     let r = rec(repo);
     if r.head(JOURNAL) != expected { return "stale_revision"; }
     let a = r.append(JOURNAL, expected, dna::Row { kind: kind, entity: entity, body: body, author: author }, signing(repo), "");

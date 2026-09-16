@@ -8,6 +8,11 @@ behavior.
 
 ## Unreleased
 
+### DNA: two residuals of the three memories (GH #646)
+
+- `hale dna receipt redact` on an organism that has adopted the ledger appended its `receipt.redacted` row through the ordinary submit, so the #636 rule — the redaction lands only at the revision the hold was read at — held for the record and not for the ledger. The host now reads the ledger's revision with the hold and submits the row exactly there (`exact` on `POST /ledger/append`), refusing "the record moved" when it did; such a row is never queued.
+- `PqLedger` and `PqLeaseStore` dial the database again once when a statement fails and retry it, as the protected store has since #637; a database restart no longer leaves the knowledge service refusing every ledger write until it is restarted.
+
 ### DNA: a refused spend is a money row (GH #646)
 
 - `Dna.reserve` refusing a spend now appends `grant.reservation_refused <child>` — the Ledger's, as the routing table always said — instead of `grant.refused`, which stays the authority refusal a grant born wider than its ceiling gets, in the record. Found while writing stage 6's tables: the kind was routed and tested but never written.
