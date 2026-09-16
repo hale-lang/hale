@@ -889,8 +889,28 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   under `.hale/dna`. Under `run` alone a restart request is logged,
   not answered: expressing an application deployed elsewhere is a
   deployment gateway's job.
-- **One body per record: the body lease.** A record admits one body
-  at a time (bounded attachment; the initial controller model). The
+- **One body per owner: the body lease, and its epoch (GH #665).**
+  A record admits one body per owner at a time — one body when the
+  organization is the one owner (bounded attachment; the initial
+  controller model). Over a shared record (the owners map above) the
+  lease is a row of the store per owner, `owner/<owner>`, taken
+  through the service like the single body's `body` row, so two
+  firms' controllers run side by side over one record and a firm's
+  second host waits on its own firm's lease alone; a shared record
+  runs no body until its ledger is adopted. The lease's token is an
+  epoch: it rises when the lease is taken (a takeover, a forced
+  claim, an expiry) and holds through renewals, and the host hands
+  the body it starts its lease and epoch (`HALE_DNA_LEASE`,
+  `HALE_DNA_LEASE_TOKEN`), which the body's `ServiceLedger` carries
+  on every `POST /ledger/append` (`lease`, `token`). The service
+  refuses (403, `fenced: …`) a write under a lease that is not held,
+  is held at another epoch, or has expired: a controller that
+  survived a partition writes nothing after its replacement took over,
+  whatever it still believes. A head's or a host's write names no
+  lease and is admitted as before. Failover is within an owner; no
+  owner's positions pass to another on a timeout. The rest of this
+  entry describes the lease as one body's; it holds per owner. A record
+  admits one body of each. The
   host takes `refs/dna/lease/body` before it builds or runs anything
   — at the record's remote when it has one, so two hosts on two
   clones fence each other through the remote itself (the lease blob

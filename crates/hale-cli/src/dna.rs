@@ -222,10 +222,18 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         Some("run") => {
             let (dir, rest) = project_arg(&args[1..], true);
+            if let Err(e) = vendor_if_absent(&dir) {
+                eprintln!("hale dna run: {e}");
+                return ExitCode::from(2);
+            }
             host_exec("run", &dir, &rest)
         }
         Some("dev") => {
             let (dir, rest) = project_arg(&args[1..], true);
+            if let Err(e) = vendor_if_absent(&dir) {
+                eprintln!("hale dna dev: {e}");
+                return ExitCode::from(2);
+            }
             host_exec("dev", &dir, &rest)
         }
         // the plan path a fleet name resolves to in this checkout's manifest
@@ -430,6 +438,17 @@ pub const TOOLCHAIN: &str = env!("CARGO_PKG_VERSION");
 
 /// Write `vendor/dna/<file>.hl` for every core file; returns
 /// (written, unchanged).
+/// A clone of a project carries no `vendor/dna` (it is gitignored and
+/// toolchain-managed): a body started in a fresh clone — a second
+/// owner's over a shared record (GH #665) — gets the core materialized
+/// first, as `new` and `upgrade` do. Present, it is left as it is.
+fn vendor_if_absent(root: &Path) -> Result<(), String> {
+    if root.join("dna/org/main.hl").is_file() && !root.join("vendor/dna").is_dir() {
+        materialize_vendor(root)?;
+    }
+    Ok(())
+}
+
 fn materialize_vendor(root: &Path) -> Result<(usize, usize), String> {
     let dir = root.join("vendor/dna");
     fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;

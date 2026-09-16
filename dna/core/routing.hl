@@ -203,9 +203,21 @@ locus ServiceLedger {
         calls: Int = 0;
         loaded: Bool = false;
         unreachable: Bool = false;
+        // GH #665: the lease this writer holds (`body`, `owner/<owner>`) and
+        // its epoch, carried on every append; the host sets both for the
+        // body it starts, and the service refuses a write under a lease
+        // the writer no longer holds. Empty for a head's or a host's writes.
+        lease: String = "";
+        token: Int = 0;
+        lease_env: String = "HALE_DNA_LEASE";
+        token_env: String = "HALE_DNA_LEASE_TOKEN";
     }
     birth() {
         if len(self.url) == 0 && len(self.url_env) > 0 && std::env::var_exists(self.url_env) { self.url = std::env::var(self.url_env); }
+        if len(self.lease) == 0 && len(self.lease_env) > 0 && std::env::var_exists(self.lease_env) {
+            self.lease = std::env::var(self.lease_env);
+            if len(self.token_env) > 0 && std::env::var_exists(self.token_env) { self.token = std::str::parse_int(std::env::var(self.token_env)) or 0; }
+        }
     }
     fn ready() -> Bool { return len(self.url) > 0; }
     // Rows are read on first use, not at birth: an organism on routing 0
@@ -290,6 +302,10 @@ locus ServiceLedger {
         b.string_field("body", body);
         b.string_field("as", author);
         b.string_field("request_id", request_id);
+        if len(self.lease) > 0 {
+            b.string_field("lease", self.lease);
+            b.int_field("token", self.token);
+        }
         b.end_object();
         self.calls = self.calls + 1;
         let resp = std::http::post(self.url + "/ledger/append", std::bytes::from_string(b.result()), "application/json") or self.failed(err);
