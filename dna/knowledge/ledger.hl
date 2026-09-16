@@ -317,3 +317,124 @@ locus PqLedger {
         return true;
     }
 }
+
+// ---- leases in the store (GH #646 stage 2, #651) ------------------------------
+//
+// A lease is swapped by its token: `put` lands only when the stored
+// token is the one expected (0 for an absent lease). Mutation leases
+// and the body lease stand on `current` and `put`; the fence renews a
+// row, and a stale token — a host that lost its lease to another — is
+// refused by the store.
+
+interface LeaseStore {
+    fn kind() -> String;
+    fn scope(record: String);
+    fn open() -> Bool;
+    fn last_error() -> String;
+    // `known` false when no lease was ever put under the key.
+    fn current(key: String) -> StoredLease;
+    fn put(key: String, holder: String, token: Int, expires: Int, present: Bool, expected: Int) -> Bool;
+}
+
+type StoredLease {
+    known: Bool = false;
+    key: String = "";
+    holder: String = "";
+    token: Int = 0;
+    expires: Int = 0;
+    present: Bool = false;
+}
+
+fn stored_lease_json(l: StoredLease) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.bool_field("known", l.known);
+    b.string_field("key", l.key);
+    b.string_field("holder", l.holder);
+    b.int_field("token", l.token);
+    b.int_field("expires", l.expires);
+    b.bool_field("present", l.present);
+    b.end_object();
+    return b.result();
+}
+
+@form(hashmap)
+locus StoredLeases {
+    capacity { pool rows of StoredLease indexed_by key; }
+}
+
+locus MemLeaseStore {
+    params { rows: StoredLeases = StoredLeases { }; record_id: String = ""; }
+    fn kind() -> String { return "memory"; }
+    fn scope(record: String) { self.record_id = record; }
+    fn open() -> Bool { return true; }
+    fn last_error() -> String { return ""; }
+    fn current(key: String) -> StoredLease {
+        let l = self.rows.get(key) or StoredLease { key: key };
+        return l;
+    }
+    fn put(key: String, holder: String, token: Int, expires: Int, present: Bool, expected: Int) -> Bool {
+        let cur = self.rows.get(key) or StoredLease { key: key };
+        if cur.token != expected { return false; }
+        self.rows.set(StoredLease { known: true, key: key, holder: holder, token: token, expires: expires, present: present });
+        return true;
+    }
+}
+
+locus PqLeaseStore {
+    params {
+        conn: pq::PgConn = pq::PgConn { sslmode: "prefer" };
+        record_id: String = "";
+        opened: Bool = false;
+        error: String = "";
+    }
+    fn kind() -> String { return "postgres"; }
+    fn scope(record: String) {
+        if record == self.record_id { return; }
+        self.record_id = record;
+        self.opened = false;
+    }
+    fn last_error() -> String { return self.error; }
+    fn fail(what: String, e: db::DbError) -> Bool {
+        self.error = what + ": " + e.kind + " " + e.detail;
+        return false;
+    }
+    fn open() -> Bool {
+        if self.opened { return true; }
+        let st = self.conn.open();
+        if !st.ok { return self.fail("open", st.err); }
+        let sch = schema_for(self.record_id);
+        let ns = self.conn.exec("CREATE SCHEMA IF NOT EXISTS " + sch + "; SET search_path TO " + sch + ", public");
+        if !ns.ok { return self.fail("scope (schema " + sch + ")", ns.err); }
+        let r = self.conn.exec("CREATE TABLE IF NOT EXISTS ledger_leases (key text PRIMARY KEY, holder text NOT NULL, token bigint NOT NULL, expires bigint NOT NULL, present boolean NOT NULL, at timestamptz NOT NULL DEFAULT now())");
+        if !r.ok { return self.fail("migrate", r.err); }
+        self.opened = true;
+        return true;
+    }
+    fn current(key: String) -> StoredLease {
+        let a = db::Args { };
+        a.add(key);
+        let rows = self.conn.query_params("SELECT row_to_json(t) FROM (SELECT key, holder, token, expires, present FROM ledger_leases WHERE key = $1) t", a);
+        if !rows.ok { self.error = "current: " + rows.err.kind + " " + rows.err.detail; return StoredLease { key: key }; }
+        if rows.n == 0 { return StoredLease { key: key }; }
+        let row = dna::trim_nl(first_line(rows.csv));
+        return StoredLease { known: true, key: key, holder: std::json::find_string_field(row, "holder"), token: std::json::find_int_field(row, "token"), expires: std::json::find_int_field(row, "expires"), present: std::json::find_bool_field(row, "present") };
+    }
+    // One statement: insert when nothing is there and 0 was expected,
+    // else update where the stored token is the one expected.
+    fn put(key: String, holder: String, token: Int, expires: Int, present: Bool, expected: Int) -> Bool {
+        let a = db::Args { };
+        a.add(key);
+        a.add(holder);
+        a.add(to_string(token));
+        a.add(to_string(expires));
+        a.add(if present { "true" } else { "false" });
+        a.add(to_string(expected));
+        let r = self.conn.query_params("INSERT INTO ledger_leases (key, holder, token, expires, present) SELECT $1, $2, $3::bigint, $4::bigint, $5::boolean WHERE $6::bigint = 0 AND NOT EXISTS (SELECT 1 FROM ledger_leases WHERE key = $1) ON CONFLICT (key) DO NOTHING RETURNING key", a);
+        if !r.ok { self.error = "put: " + r.err.kind + " " + r.err.detail; return false; }
+        if r.n > 0 { return true; }
+        let u = self.conn.query_params("UPDATE ledger_leases SET holder = $2, token = $3::bigint, expires = $4::bigint, present = $5::boolean, at = now() WHERE key = $1 AND token = $6::bigint RETURNING key", a);
+        if !u.ok { self.error = "put: " + u.err.kind + " " + u.err.detail; return false; }
+        return u.n > 0;
+    }
+}

@@ -63,6 +63,8 @@ locus Service {
         // GH #646 stage 1: the Ledger, the organism's operational memory,
         // served over /ledger/* to the organism and the heads
         ledger: know::Ledger = know::MemLedger { };
+        // GH #646 stage 2: leases in the store, swapped by token
+        leases: know::LeaseStore = know::MemLeaseStore { };
         applied: Int = 0;
         last_error: String = "";
         ticks: Int = 0;
@@ -105,6 +107,11 @@ locus Service {
             // the ledger lives in the same database, beside the store
             if !self.ledger.open() {
                 self.last_error = "the ledger is not open: " + self.ledger.last_error();
+                return false;
+            }
+            self.leases.scope(scope);
+            if !self.leases.open() {
+                self.last_error = "the leases are not open: " + self.leases.last_error();
                 return false;
             }
             self.opened = true;
@@ -249,7 +256,7 @@ locus Service {
     // Every request applies the record first: the reader sees the
     // record as it is now, and the one Service the server holds is the
     // one that tails — no second instance to keep in step.
-    // ---- the Ledger (GH #646 stage 1, #650)
+    // ---- the Ledger (GH #646 stage 1, #650) and its leases (stage 2, #651)
     fn handle_ledger(req: std::http::Request, ctx: std::http::Context) -> std::http::Response {
         if std::http::is_route(ctx, "GET", "/ledger/head") {
             let moved = self.ledger.refresh();
@@ -263,6 +270,22 @@ locus Service {
             b.int_field("routing", c.routing);
             b.end_object();
             return json(b.result());
+        }
+        if std::http::is_route(ctx, "GET", "/ledger/lease") {
+            let key = know::url_decode(std::http::query_param(ctx.params, "key"));
+            if len(key) == 0 { return refusal(400, "a lease has a key"); }
+            return json(know::stored_lease_json(self.leases.current(key)));
+        }
+        if std::http::is_route(ctx, "POST", "/ledger/lease") {
+            let body = req.body;
+            let key = std::json::find_string_field(body, "key");
+            if len(key) == 0 { return refusal(400, "a lease has a key"); }
+            let ok = self.leases.put(key, std::json::find_string_field(body, "holder"), std::json::find_int_field(body, "token"), std::json::find_int_field(body, "expires"), std::json::find_bool_field(body, "present"), std::json::find_int_field(body, "expected"));
+            if !ok {
+                if len(self.leases.last_error()) > 0 { return unavailable("the lease could not be put: " + self.leases.last_error()); }
+                return refusal(409, "the lease moved: its token is not the one expected");
+            }
+            return json(know::stored_lease_json(self.leases.current(key)));
         }
         if std::http::is_route(ctx, "GET", "/ledger/rows") {
             let moved = self.ledger.refresh();
@@ -324,9 +347,9 @@ locus Service {
     fn handle(req: std::http::Request) -> std::http::Response {
         self.ticks = self.ticks + 1;
         let ctx = std::http::build_context(req);
-        // the ledger is answered from the store alone: applying the
-        // record's knowledge first (below) is a read of the whole record,
-        // and an organism asks for its ledger every tick
+        // the ledger and the leases are answered from the store alone:
+        // applying the record's knowledge first (below) is a read of the
+        // whole record, and an organism asks for its ledger every tick
         if std::str::starts_with(req.path, "/ledger/") {
             let moved = self.j.refresh();
             if !self.ensure_open() { return unavailable(self.last_error); }
@@ -560,7 +583,7 @@ fn main() {
         eprintln("hale dna knowledge: in-memory store at :", port, " over ", root, " (nothing durable; set a postgres:// DSN for a shared graph)");
         Knowledge {
             root: root, port: port, dsn: dsn,
-            srv: std::http::Server { port: port, handler: Service { root: root, store: know::Mem { }, protected: know::MemProtected { }, ledger: know::MemLedger { }, j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root } } }
+            srv: std::http::Server { port: port, handler: Service { root: root, store: know::Mem { }, protected: know::MemProtected { }, ledger: know::MemLedger { }, leases: know::MemLeaseStore { }, j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root } } }
         };
         return;
     }
@@ -569,6 +592,6 @@ fn main() {
     eprintln("hale dna knowledge: postgres at ", d.host, ":", d.port, "/", d.database, ", serving :", port, " over ", root);
     Knowledge {
         root: root, port: port, dsn: dsn,
-        srv: std::http::Server { port: port, handler: Service { root: root, store: know::Pq { conn: know::pq_conn(d) }, protected: know::PqProtected { conn: know::pq_conn(d) }, ledger: know::PqLedger { conn: know::pq_conn(d) }, j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root } } }
+        srv: std::http::Server { port: port, handler: Service { root: root, store: know::Pq { conn: know::pq_conn(d) }, protected: know::PqProtected { conn: know::pq_conn(d) }, ledger: know::PqLedger { conn: know::pq_conn(d) }, leases: know::PqLeaseStore { conn: know::pq_conn(d) }, j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root } } }
     };
 }

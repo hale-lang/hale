@@ -179,3 +179,12 @@ with the checkpoint named — never silently written into git. The
 record keeps every row it ever held; `hale dna history` reads both
 memories as one. Adoption is closed until every operational write path
 goes through the service (stage 3 of GH #646).
+
+Once adopted, the leases move too: the mutation leases the gateway
+takes and the body lease `hale dna run` holds are rows of the store,
+swapped by their token through the service, and the fence renews a
+row rather than a ref. A host that lost its lease presents a stale
+token and the store refuses it. If the store becomes unreachable, the
+fence keeps the lease it last proved until just before it expires and
+then stops the organism; `hale dna status` says the ledger is
+unreachable and that nothing is admitted until it answers.

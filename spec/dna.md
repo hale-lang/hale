@@ -67,6 +67,29 @@ an adopted record refuses to start without a service to reach (#646
 decision 3: a body without its store admits nothing); `dev` brings its
 own up.
 
+**Coordination in the store (stage 2, #651).** On routing 1 every lease
+is a row of the store swapped by its token: the service serves
+`GET /ledger/lease?key=` and `POST /ledger/lease` (`key`, `holder`,
+`token`, `expires`, `present`, `expected`), and a put lands only when
+the stored token is the one expected (0 for an absent lease); the
+store answers 409 otherwise. `ServiceLeases` in the core is
+`Coordination` over those two calls, and `GitLeases` — the record's
+coordination — takes a mutation lease from the record's cells on
+routing 0 and from the store on routing 1, reading the routing from
+the record whenever its head moved: an adopted organism's leases move
+with it, and nothing in its wiring changes. The body lease moves the same way: `hale dna run` takes
+`lease/body` as a row, the fence renews the row every third of its
+life with every call bounded, a stale token — a host that lost the
+lease to another — is refused by the store, `hale dna body` reads it
+there, and `refs/dna/lease/*` is not written on routing 1. Effect
+claims are unique rows of the Ledger (`(kind, entity)`), so the
+contended-claim row the git rule needed does not arise. A store lost
+after activation is the case the git lease already handles: the
+renewal fails, the fence keeps the lease it last proved until the
+margin before its expiry and then stops the organism, and `status`
+says THE LEDGER IS UNREACHABLE and that nothing is admitted until it
+answers.
+
 ## The record
 
 The Journal is a git branch, `refs/dna/journal`, in the governed
