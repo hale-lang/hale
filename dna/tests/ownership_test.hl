@@ -6,8 +6,32 @@
 // refuses the rest by name; with no map every intent is its own to
 // admit. A change to the map is approved by every owner it affects,
 // each through one of its members, and one rejection settles it.
+// Ids and effect claims carry their owner (GH #666): acme's body mints
+// `acme:t1`, claims `acme:apply:<candidate>`, restores its count from
+// its own births alone, and mints again when the store says an id is
+// already claimed.
 
 import "../core" as dna;
+
+// A journal that answers the first `task.born` under `acme:t1` as a
+// claim already taken — what the store says when another writer's row
+// got there first — and holds everything else.
+locus ClaimedOnce {
+    params { inner: dna::MemJournal = dna::MemJournal { }; refused: Int = 0; }
+    fn refresh() -> Bool { return false; }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if kind == "task.born" && entity == "acme:t1" && self.refused == 0 {
+            self.refused = 1;
+            return dna::AppendResult { error: "claimed", expected: expected, actual: self.inner.revision() };
+        }
+        return self.inner.append(expected, kind, entity, body);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.append(expected, kind, entity, body); }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+}
 
 main locus App {
     params {
@@ -37,6 +61,18 @@ main locus App {
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
             deployment: dna::NoDeployment { },
             ownership: dna::Ownership { text: "org = acme\norg/collections = north\n", me_env: "" }
+        };
+        // acme's body over a store that has `acme:t1` claimed already
+        contended: dna::Dna = dna::Dna {
+            journal: ClaimedOnce { },
+            work: dna::WorkSystem {
+                human: dna::HumanWorkGateway { operator: "alice", answer: "done" },
+                selection: dna::HumanFirstSelection { }
+            },
+            review_policy: dna::PostReviewRefactors { },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
+            deployment: dna::NoDeployment { },
+            ownership: dna::Ownership { text: "org = acme\nacme: alice\n", me: "acme", me_env: "" }
         };
         // a Review over a change to the map, approved by both owners
         both: dna::Review = dna::Review { review_id: "m1", subject_digest: "d1", required_authority: "board", author: "editor", approvers: "acme=alice,carol north=bob" };
@@ -75,14 +111,36 @@ main locus App {
         std::test::assert_eq_str(dna::owners_affected(before, "org = acme\norg/collections = north\norg/mail = west\nacme: alice\nnorth: bob\nwest: eve\n"), "west", "a new owner affects itself");
         std::test::assert_eq_str(dna::approver_owner("acme=alice,carol north=bob", "carol"), "acme", "an approver's owner");
         std::test::assert_eq_str(dna::approver_owner("acme=alice,carol north=bob", "eve"), "", "…or none");
+        // ---- ids and claims carry their owner
+        std::test::assert_eq_str(dna::own_prefix("acme"), "acme:", "a prefix");
+        std::test::assert_eq_str(dna::own_prefix(""), "", "none for the one owner");
+        std::test::assert_eq_int(dna::id_number("acme:t3", "t"), 3, "the number of a namespaced id");
+        std::test::assert_eq_int(dna::id_number("t7", "t"), 7, "…and of a bare one");
+        std::test::assert_eq_int(dna::id_number("acme:m2", "t"), -1, "another family is not");
+        std::test::assert_eq_str(dna::id_owner("acme:t3"), "acme", "the owner of an id");
+        std::test::assert(dna::owned_by("acme", "acme:t3") && !dna::owned_by("acme", "north:t3") && dna::owned_by("", "t3"), "ownership of an id");
+        std::test::assert_eq_str(dna::effect_key("acme", "apply", "c0ffee"), "acme:apply:c0ffee", "a claim's key");
+        std::test::assert_eq_str(dna::effect_key("", "apply", "c0ffee"), "apply:c0ffee", "…unprefixed for the one owner");
+        std::test::assert(dna::effect_family("acme:apply:c0ffee") == "apply" && dna::effect_family("apply:c0ffee") == "apply" && dna::effect_family("rollback:acme:m2:base1") == "rollback", "a key's family, prefixed or not");
+        std::test::assert(dna::effect_subject("acme:apply:c0ffee") == "c0ffee" && dna::effect_subject("apply:c0ffee") == "c0ffee" && dna::effect_subject("rollback:acme:m2:base1") == "acme:m2:base1", "…and its subject");
         // ---- admission
         let mine = self.acme.ask(dna::Intent { id: "i1", outcome: "chase the late invoice", from: "alice", to: "org/books" }, dna::Knobs { routed: true });
-        std::test::assert_eq_str(mine, "t1", "an intent for acme's position is admitted by acme's body: " + mine);
+        std::test::assert_eq_str(mine, "acme:t1", "an intent for acme's position is admitted by acme's body, under acme's id: " + mine);
         let theirs = self.acme.ask(dna::Intent { id: "i2", outcome: "call the collections agency", from: "alice", to: "org/collections" }, dna::Knobs { routed: true });
         std::test::assert_eq_str(theirs, "refused: not this organization's to admit — `org/collections` is owned by north, not acme", "an intent for north's position is refused by name");
         std::test::assert(std::str::contains(self.last(self.acme.journal, "intent.refused"), "owned by north"), "the refusal is a row: " + self.last(self.acme.journal, "intent.refused"));
         let unnamed = self.nobody.ask(dna::Intent { id: "i3", outcome: "anything", from: "alice", to: "" }, dna::Knobs { routed: true });
         std::test::assert(std::str::contains(unnamed, "this body names no owner"), "a body that names no owner admits nothing over a shared record: " + unnamed);
+        // ---- a taken claim: the loser mints the next id
+        let again = self.contended.ask(dna::Intent { id: "i9", outcome: "file the return", from: "alice", to: "" }, dna::Knobs { routed: true });
+        std::test::assert_eq_str(again, "acme:t2", "the first id was claimed elsewhere; the birth lands under the next: " + again);
+        std::test::assert_eq_str(self.last(self.contended.journal, "intent.refused"), "", "…and nothing was refused");
+        std::test::assert(std::str::contains(self.last(self.contended.journal, "task.born"), "file the return"), "the birth is a row under the re-minted id");
+        // ---- the count restores from this owner's births alone
+        self.acme.journal.append(self.acme.journal.revision(), "task.born", "north:t9", "i: theirs");
+        self.acme.journal.append(self.acme.journal.revision(), "task.born", "acme:t5", "i: ours, from before");
+        self.acme.rehydrate();
+        std::test::assert_eq_str(self.acme.metabolism.next_id(), "acme:t6", "after a restart the next id follows acme's own highest, not north's");
         // ---- approval by every affected owner
         self.both.on_verdict(dna::Verdict { review_id: "m1", subject_digest: "d1", verdict: "approve", reviewer: "eve", authority: "board" });
         std::test::assert(!self.both.settled && self.both.refused == 1 && std::str::contains(self.both.last_refusal, "member of no owner"), "a reviewer of no affected owner is refused: " + self.both.last_refusal);

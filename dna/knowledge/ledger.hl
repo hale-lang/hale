@@ -137,7 +137,7 @@ locus MemLedger {
         return false;
     }
     fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
-        if self.claimed(kind, entity) { self.error = "claimed"; return dna::AppendResult { error: "io", expected: expected, actual: self.j.revision() }; }
+        if self.claimed(kind, entity) { self.error = "claimed"; return dna::AppendResult { error: "claimed", expected: expected, actual: self.j.revision() }; }
         let r = self.j.append(expected, kind, entity, body);
         if r.ok { self.authors.push("ledger"); }
         return r;
@@ -384,7 +384,7 @@ locus PqLedger {
         while attempt < 200 {
             let out = self.insert(self.rows.len(), kind, entity, body, "ledger", -1, "");
             if len(out) == 0 { return dna::AppendResult { ok: true, revision: self.rows.len() }; }
-            if out != "stale" { return dna::AppendResult { error: "io", expected: expected, actual: self.rows.len() }; }
+            if out != "stale" { return dna::AppendResult { error: if out == "claimed" { "claimed" } else { "io" }, expected: expected, actual: self.rows.len() }; }
             self.load();
             attempt = attempt + 1;
         }
@@ -398,7 +398,7 @@ locus PqLedger {
         let out = self.insert(rev, kind, entity, body, "ledger", -1, "");
         if len(out) == 0 { return dna::AppendResult { ok: true, revision: self.rows.len() }; }
         if out == "stale" { self.load(); return dna::AppendResult { error: "stale_revision", expected: expected, actual: self.rows.len() }; }
-        return dna::AppendResult { error: "io", expected: expected, actual: self.rows.len() };
+        return dna::AppendResult { error: if out == "claimed" { "claimed" } else { "io" }, expected: expected, actual: self.rows.len() };
     }
     @unbounded
     fn adopt_row(kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> Bool {

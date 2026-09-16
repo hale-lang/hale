@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: ids and effect claims carry their owner; the store decides a first claim (GH #666, stage B2)
+
+- Over a shared record a controller mints in its own namespace (`acme:t3`, `acme:m2`) and claims an apply as `acme:apply:<candidate>`; it restores its counters from its own births alone. The store answers a `task.born` under an id already born with `claimed` (409, from the memory ledger and Postgres alike) and the assembly mints the next id instead of refusing the intent. With one owner nothing is prefixed. `hale dna history` reads an owner-prefixed id.
+
 ### DNA: a lease per owner, and an epoch on every write the body makes (GH #665, stage B2)
 
 - Over a shared record the body lease is a row of the store per owner (`owner/<owner>`), so two owners' controllers run side by side over one record; a shared record runs no body until its ledger is adopted. The lease's token is an epoch, held through renewals and raised by a takeover; the host hands the body its lease and epoch (`HALE_DNA_LEASE`, `HALE_DNA_LEASE_TOKEN`), `ServiceLedger` carries them on every append, and the service refuses `fenced: …` (403) a write under a lease not held, held at another epoch, or expired. A head's or a host's write names no lease and is admitted as before.

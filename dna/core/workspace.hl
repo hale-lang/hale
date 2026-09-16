@@ -432,6 +432,7 @@ locus MutationGateway {
         repo: Repository = LocalGit { };
         lease_ttl: Int = 600;
         refusals: Int = 0;
+        namespace: String = ""; // GH #666: the owner whose claims these are ("" = the one owner)
     }
     fn lease_key(mutation_id: String) -> String { return "mutation:" + mutation_id; }
     fn head() -> String { return self.repo.head(self.workspaces.repo()); }
@@ -493,7 +494,7 @@ locus MutationGateway {
     // candidate itself: a crashed and retried apply cannot commit twice.
     fn apply(j: Journal, mutation_id: String, candidate: String, token: Int, now: Int) -> GateResult {
         if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) { return self.refuse("stale or missing lease"); }
-        let key = "apply:" + candidate;
+        let key = effect_key(self.namespace, "apply", candidate);
         let fresh = effect_request(j, key, mutation_id);
         if !fresh {
             let st = effect_status(j, key);

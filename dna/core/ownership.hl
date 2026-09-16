@@ -282,3 +282,53 @@ fn approver_owners(approvers: String) -> String {
     }
     return out;
 }
+
+// ---- GH #666: ids and effect keys carry their owner ------------------
+//
+// Over a shared record each controller mints in its own namespace —
+// `acme:t3`, `acme:m2` — and claims its effects under it, `acme:apply:
+// <candidate>`, so two controllers never contend for one id and the
+// ledger's unique constraint on a claim kind decides a first claim
+// without any coordination between them. With one owner nothing is
+// prefixed: `t3`, `m2`, `apply:<candidate>`, as before.
+
+fn own_prefix(owner: String) -> String {
+    return if len(owner) == 0 { "" } else { owner + ":" };
+}
+// The owner an id names ("acme" of `acme:t3`), "" when none.
+fn id_owner(id: String) -> String {
+    let c = std::str::index_of(id, ":");
+    return if c <= 0 { "" } else { id[0..c] };
+}
+// The number of an id of `family` ("t", "m"), with or without an owner: 3 of
+// `t3` and of `acme:t3`; -1 when the id is not of that family.
+fn id_number(id: String, family: String) -> Int {
+    let c = std::str::index_of(id, ":");
+    let bare = if c < 0 { id } else { id[(c + 1)..len(id)] };
+    if len(bare) <= len(family) || bare[0..len(family)] != family { return -1; }
+    return std::str::parse_int(bare[len(family)..len(bare)]) or -1;
+}
+// Whether an id is minted in `owner`'s namespace ("" for the one owner's).
+fn owned_by(owner: String, id: String) -> Bool { return id_owner(id) == owner; }
+// An effect claim's key: `<owner>:<family>:<subject>`, unprefixed for one owner.
+fn effect_key(owner: String, family: String, subject: String) -> String {
+    return own_prefix(owner) + family + ":" + subject;
+}
+const EFFECT_FAMILIES: String = "apply rollback commit worktree.open";
+// The family of a claim's key ("apply" of `apply:<c>` and of `acme:apply:<c>`).
+fn effect_family(key: String) -> String {
+    let c = std::str::index_of(key, ":");
+    if c < 0 { return key; }
+    let first = key[0..c];
+    if word_in(first, EFFECT_FAMILIES) { return first; }
+    let rest = key[(c + 1)..len(key)];
+    let d = std::str::index_of(rest, ":");
+    return if d < 0 { rest } else { rest[0..d] };
+}
+// What the claim is about: the text after `<family>:`.
+fn effect_subject(key: String) -> String {
+    let fam = effect_family(key);
+    let at = std::str::index_of(key, fam + ":");
+    if at < 0 { return ""; }
+    return key[(at + len(fam) + 1)..len(key)];
+}

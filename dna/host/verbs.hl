@@ -155,6 +155,9 @@ fn body_verb(root: String, sub: String, force: Bool, who_flag: String) -> Answer
 // ---- history --------------------------------------------------------
 
 fn looks_like_id(t: String) -> Bool {
+    // GH #666: an owner's prefix, `acme:t3`
+    let colon = std::str::index_of(t, ":");
+    if colon > 0 && colon < len(t) - 1 { return looks_like_id(t[(colon + 1)..len(t)]); }
     if len(t) < 2 || len(t) > 20 { return false; }
     let c = t[0..1];
     if !(c == "i" || c == "t" || c == "w" || c == "a" || c == "r") { return false; }

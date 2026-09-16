@@ -188,6 +188,9 @@ through one of its members; one rejection settles it. Each owner's body
 holds its own lease in the store (a shared record runs no body until
 its ledger is adopted), and a write the body makes after its lease was
 taken over is refused by the service, whatever the body still believes.
+Each owner mints its own ids (`acme:t3`, `acme:m2`) and claims its own
+effects (`acme:apply:<candidate>`), so nothing two owners do contends
+for one name; a birth the store says is already claimed is minted again.
 
 ## Who decides what
 

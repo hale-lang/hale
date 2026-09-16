@@ -822,7 +822,8 @@ locus Dna {
         // …unless this very apply is already in the record: a retried
         // apply replays what happened, and the head it left behind is
         // the candidate, not the base.
-        let already = effect_status(self.journal, "apply:" + reviewed);
+        self.bind_owner();
+        let already = effect_status(self.journal, effect_key(self.ownership.me, "apply", reviewed));
         let base = std::json::find_string_field(req, "base_commit");
         let now_head = self.gateway.head();
         if len(base) > 0 && now_head != base && !(already.done && already.ok) {
@@ -1507,6 +1508,7 @@ locus Dna {
             let x = self.journal.append(self.journal.revision(), "intent.refused", i.id, gate);
             return gate;
         }
+        self.bind_owner();
         // GH #664: over a shared record, only the owner of the position the
         // intent is for admits it; an offer that reached the wrong body is
         // refused by name, so the asker takes it to the record instead
@@ -1532,8 +1534,16 @@ locus Dna {
         // minted, the birth is journaled (naming its intent, so a reader
         // can walk intent -> task), and only then is the Task born; a
         // birth the record refuses stops here, and nothing has run.
-        let id = self.metabolism.next_id();
-        let r = self.journal.append(self.journal.revision(), "task.born", id, i.id + ": " + i.outcome);
+        // GH #666: the birth is the claim on the id, and the store's unique
+        // constraint decides a first claim; a loser mints the next id
+        let mut id = self.metabolism.next_id();
+        let mut r = self.journal.append(self.journal.revision(), "task.born", id, i.id + ": " + i.outcome);
+        let mut remints = 0;
+        while !r.ok && r.error == "claimed" && remints < 5 {
+            remints = remints + 1;
+            id = self.metabolism.next_id();
+            r = self.journal.append(self.journal.revision(), "task.born", id, i.id + ": " + i.outcome);
+        }
         if !r.ok {
             let x = self.journal.append(self.journal.revision(), "intent.refused", i.id, "the record refused the birth: " + r.error);
             self.membrane.notify("journal", "append failed; " + i.id + " not admitted");
@@ -1638,6 +1648,12 @@ locus Dna {
             tries = tries + 1;
         }
         return self.refuse_spend(child, s, "contention: the record moved under twenty attempts to reserve");
+    }
+    // GH #666: the owner this body mints and claims for, handed to the
+    // metabolism and the gateway once the ownership map is read.
+    fn bind_owner() {
+        self.metabolism.namespace = self.ownership.me;
+        self.gateway.namespace = self.ownership.me;
     }
     // A refused spend is a `grant.reservation_refused` row naming the field: money, the ledger's.
     // Authority — a grant born wider than its ceiling — is `grant.refused`, the record's.
@@ -1876,8 +1892,9 @@ locus Dna {
     }
     @unbounded
     fn mutate(task_id: String, change_class: String, objective: String, target: String, now: Int) -> String {
+        self.bind_owner();
         self.mutations_minted = self.mutations_minted + 1;
-        let id = "m" + to_string(self.mutations_minted);
+        let id = own_prefix(self.ownership.me) + "m" + to_string(self.mutations_minted);
         self.last_mutation = id;
         let seed = self.seed_for(change_class);
         let base = self.gateway.head();
@@ -2062,13 +2079,15 @@ locus Dna {
         self.restore_revocations();
         let n = self.journal.revision();
         let mut i = 0;
-        // durable ids continue where the Journal left them
+        // durable ids continue where the Journal left them — this owner's
+        // own (GH #666: a shared ledger holds every owner's births)
+        self.bind_owner();
         let mut tasks = 0;
         let mut mutations = 0;
         while i < n {
             let e = self.journal.read(i);
-            if e.kind == "task.born" { tasks = tasks + 1; }
-            if e.kind == "mutation.proposed" { mutations = mutations + 1; }
+            if e.kind == "task.born" && owned_by(self.ownership.me, e.entity) && id_number(e.entity, "t") > tasks { tasks = id_number(e.entity, "t"); }
+            if e.kind == "mutation.proposed" && owned_by(self.ownership.me, e.entity) && id_number(e.entity, "m") > mutations { mutations = id_number(e.entity, "m"); }
             // a mutation's Review, or a knowledge proposal's (GH #583 K1)
             if e.kind == "review.requested" && (std::str::contains(e.body, "\"mutation_id\"") || std::str::contains(e.body, "\"knowledge_digest\"")) {
                 let id = if std::str::contains(e.body, "\"mutation_id\"") { std::json::find_string_field(e.body, "mutation_id") } else { e.entity[7..len(e.entity)] };
@@ -2140,12 +2159,12 @@ locus Dna {
                 let st = effect_status(self.journal, key);
                 if !st.done {
                     let mut verdict = "unknown (reconciled after a restart: no evidence either way)";
-                    if std::str::starts_with(key, "apply:") {
-                        let cand = key[6..len(key)];
+                    if effect_family(key) == "apply" {
+                        let cand = effect_subject(key);
                         let head = self.gateway.head();
                         verdict = if head == cand { "ok (reconciled after a restart: the genome is at the candidate)" } else { "unknown (reconciled after a restart: the genome is at " + head + ", not the candidate)" };
-                    } else if std::str::starts_with(key, "rollback:") {
-                        let after = key[9..len(key)];
+                    } else if effect_family(key) == "rollback" {
+                        let after = effect_subject(key);
                         let c = std::str::index_of(after, ":");
                         let base = if c < 0 { after } else { after[(c + 1)..len(after)] };
                         let head = self.gateway.head();
@@ -2209,7 +2228,7 @@ locus Dna {
     // the Task settles in the record from its Mutation's outcome.
     fn settle_task_of(mutation_id: String, disposition: String, detail: String) {
         let t = self.task_of_mutation(mutation_id);
-        if len(t) == 0 || !std::str::starts_with(t, "t") { return; }
+        if len(t) == 0 || id_number(t, "t") < 0 { return; }
         if self.task_state(t) != "pending" { return; }
         let x = self.journal.append(self.journal.revision(), "task." + disposition, t, mutation_id + " " + detail);
     }

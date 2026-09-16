@@ -871,7 +871,15 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   members: the Review carries `approvers` (`acme=alice,carol
   north=bob`), a verdict from a member of no affected owner is
   refused, one rejection settles, and approval settles only once every
-  affected owner has approved.
+  affected owner has approved. Ids and effect claims carry their owner
+  (GH #666): a controller mints in its own namespace — `acme:t3`,
+  `acme:m2` — and claims an apply as `acme:apply:<candidate>`, so two
+  controllers never contend for one id, each restores its count from
+  its own births alone, and the ledger's unique constraint on a claim
+  kind decides a first claim with no coordination between them: a
+  `task.born` the store answers `claimed` (409) is minted again under
+  the next id, and nothing is refused. With one owner nothing is
+  prefixed.
 - **The foundational law** (`dna/org/law.hl`, generated, extendable,
   never weakened): nothing applies except through the substrate
   (`forbid reaches(positions, effects(genome_apply)) avoiding
