@@ -1,0 +1,95 @@
+// dna/core/forge.hl — a code-review host behind an interface (GH #648;
+// the boundary declared with #646 stage 0, #649).
+//
+// The GitHub membrane mirrors every pending mutation Review as a pull
+// request and every review on it as a verdict. This is the vocabulary of
+// a code-review host and nothing of GitHub's: `gh` is one implementation
+// (the host's `github_sync`, until #648 moves it behind this), a bare
+// remote with no forge is the honest other, and both are declared here
+// with the memory forge fixtures use.
+
+// A review opened at the forge for a candidate.
+type ReviewRef {
+    present: Bool = false;
+    ref: String = ""; // the forge's name for it (a pull request number, a url)
+    why: String = "";
+}
+
+// One verdict a forge reports: who, the outcome, when, and the forge's
+// own key for it so it is admitted once.
+type ForgeVerdict {
+    who: String = "";
+    outcome: String = ""; // "approve" | "revise" | "reject" | "comment"
+    when: String = "";
+    key: String = "";
+}
+
+interface Forge {
+    fn kind() -> String;
+    // Whether the record's remote has a forge, and what it is called.
+    fn present() -> Bool;
+    fn name() -> String;
+    fn open_review(candidate: String, title: String, body: String) -> ReviewRef;
+    // Every verdict on a review, one per line as `who\toutcome\twhen\tkey`.
+    fn verdicts(review: String) -> String;
+    fn comment(review: String, text: String) -> Bool;
+    fn close_review(review: String, why: String) -> Bool;
+}
+
+type MemReview { ref: String = ""; candidate: String = ""; title: String = ""; body: String = ""; verdicts: String = ""; closed: String = ""; comments: Int = 0; }
+
+@form(hashmap)
+locus MemReviews {
+    capacity { pool rows of MemReview indexed_by ref; }
+}
+
+// A forge in memory: reviews are rows, verdicts are what the fixture
+// posts with `decide`.
+locus MemForge {
+    params { reviews: MemReviews = MemReviews { }; next: Int = 1; }
+    fn kind() -> String { return "memory"; }
+    fn present() -> Bool { return true; }
+    fn name() -> String { return "memory forge"; }
+    fn open_review(candidate: String, title: String, body: String) -> ReviewRef {
+        let ref = "#" + to_string(self.next);
+        self.next = self.next + 1;
+        self.reviews.set(MemReview { ref: ref, candidate: candidate, title: title, body: body });
+        return ReviewRef { present: true, ref: ref };
+    }
+    // A fixture's reviewer decides.
+    fn decide(review: String, who: String, outcome: String, when: String) -> Bool {
+        let r = self.reviews.get(review) or MemReview { };
+        if len(r.ref) == 0 { return false; }
+        let key = who + ":" + r.candidate + ":" + outcome;
+        self.reviews.set(MemReview { ref: r.ref, candidate: r.candidate, title: r.title, body: r.body, verdicts: r.verdicts + who + "\t" + outcome + "\t" + when + "\t" + key + "\n", closed: r.closed, comments: r.comments });
+        return true;
+    }
+    fn verdicts(review: String) -> String {
+        let r = self.reviews.get(review) or MemReview { };
+        return r.verdicts;
+    }
+    fn comment(review: String, text: String) -> Bool {
+        let r = self.reviews.get(review) or MemReview { };
+        if len(r.ref) == 0 { return false; }
+        self.reviews.set(MemReview { ref: r.ref, candidate: r.candidate, title: r.title, body: r.body, verdicts: r.verdicts, closed: r.closed, comments: r.comments + 1 });
+        return true;
+    }
+    fn close_review(review: String, why: String) -> Bool {
+        let r = self.reviews.get(review) or MemReview { };
+        if len(r.ref) == 0 { return false; }
+        self.reviews.set(MemReview { ref: r.ref, candidate: r.candidate, title: r.title, body: r.body, verdicts: r.verdicts, closed: why, comments: r.comments });
+        return true;
+    }
+}
+
+// No forge: the honest behaviour of a bare remote. Opens nothing, reads
+// verdicts from nowhere, and says so.
+locus NoForge {
+    fn kind() -> String { return "none"; }
+    fn present() -> Bool { return false; }
+    fn name() -> String { return "none (a bare remote)"; }
+    fn open_review(candidate: String, title: String, body: String) -> ReviewRef { return ReviewRef { why: "no forge" }; }
+    fn verdicts(review: String) -> String { return ""; }
+    fn comment(review: String, text: String) -> Bool { return false; }
+    fn close_review(review: String, why: String) -> Bool { return false; }
+}

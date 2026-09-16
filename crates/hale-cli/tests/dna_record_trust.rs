@@ -139,3 +139,137 @@ fn a_signed_row_is_relayed_and_an_unverified_one_is_refused() {
     assert_eq!(refused["author"], "host", "refused in the host's name");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// One row on the clone's record by plumbing alone — the shape `GitRecord`
+/// writes, signed with `key` (or unsigned when none) — so a test can hold
+/// a local-only row without any verb's sync pushing it first.
+fn plumb_row(clone: &Path, key: Option<&Path>, kind: &str, entity: &str, body: &str, author: &str) -> String {
+    let head = git(&["rev-parse", "refs/dna/journal"], clone);
+    let text = git(&["show", "refs/dna/journal:journal.jsonl"], clone);
+    let seq = text.lines().filter(|l| !l.trim().is_empty()).count();
+    let line = serde_json::json!({"seq": seq, "kind": kind, "entity": entity, "body": body, "author": author}).to_string();
+    let tmp = clone.join(".hale/dna/plumb.jsonl");
+    std::fs::create_dir_all(tmp.parent().unwrap()).unwrap();
+    std::fs::write(&tmp, format!("{text}\n{line}\n")).unwrap();
+    let blob = git(&["hash-object", "-w", &tmp.to_string_lossy()], clone);
+    let idx = clone.join(".hale/dna/plumb.index");
+    let with_index = |args: &[&str]| {
+        let out = Command::new("git").args(args).current_dir(clone).env("GIT_INDEX_FILE", &idx).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    with_index(&["read-tree", &head]);
+    with_index(&["update-index", "--add", "--cacheinfo", &format!("100644,{blob},journal.jsonl")]);
+    let tree = with_index(&["write-tree"]);
+    let mut args: Vec<String> = vec![];
+    if let Some(k) = key {
+        args.extend(["-c".into(), format!("user.signingkey={}", k.to_string_lossy())]);
+    }
+    args.extend(["commit-tree".into(), tree, "-p".into(), head.clone()]);
+    if key.is_some() {
+        args.push("-S".into());
+    }
+    args.extend(["-m".into(), format!("{kind} {entity}")]);
+    let argv: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let commit = git(&argv, clone);
+    git(&["update-ref", "refs/dna/journal", &commit, &head], clone);
+    commit
+}
+
+/// #639, narrowed option 3: a reconcile under `signed` trust rebuilds
+/// only the rows this clone signed. A local-only row signed with another
+/// key refuses the whole sync before any ref moves, naming the row and
+/// the key; the clone's rows and the remote are untouched, and the way
+/// that keeps the work is said. Once the clone signs with that key again
+/// the reconcile lands, re-signed and naming the original commit. A row
+/// never signed is rebuilt unsigned: a reconcile upgrades no provenance.
+#[test]
+fn a_reconcile_refuses_to_resign_a_row_signed_elsewhere_and_keeps_every_local_row() {
+    let d = std::env::temp_dir().join(format!("hale_dna_resign_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.clone());
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let bare = d.join("origin.git");
+    git(&["init", "-q", "--bare", "-b", "main", &bare.to_string_lossy()], &d);
+    let (ok, out) = hale_in(&["dna", "new", "resigned"], &d);
+    assert!(ok, "{out}");
+    let a: PathBuf = d.join("resigned");
+    git(&["config", "user.name", "organism-host"], &a);
+    git(&["config", "user.email", "host@dna"], &a);
+    git(&["add", "-A"], &a);
+    git(&["commit", "-q", "-m", "the app"], &a);
+    git(&["remote", "add", "origin", &bare.to_string_lossy()], &a);
+    git(&["push", "-q", "origin", "main", "refs/dna/*:refs/dna/*"], &a);
+    let (riley_key, riley_pub) = keygen(&d, "riley_key");
+    let (host_key, host_pub) = keygen(&d, "host_key");
+    let allowed = d.join("allowed_signers");
+    std::fs::write(&allowed, format!("riley@l namespaces=\"git\" {riley_pub}\nhost@dna namespaces=\"git\" {host_pub}\n")).unwrap();
+    let sign_as = |c: &Path, key: &Path| {
+        git(&["config", "dna.trust", "signed"], c);
+        git(&["config", "gpg.format", "ssh"], c);
+        git(&["config", "user.signingkey", &key.to_string_lossy()], c);
+        git(&["config", "gpg.ssh.allowedSignersFile", &allowed.to_string_lossy()], c);
+    };
+    sign_as(&a, &host_key);
+    // riley's clone, signing as riley
+    let b = d.join("riley");
+    git(&["clone", "-q", &bare.to_string_lossy(), &b.to_string_lossy()], &d);
+    git(&["config", "user.name", "riley"], &b);
+    git(&["config", "user.email", "riley@l"], &b);
+    sign_as(&b, &riley_key);
+    let (ok, out) = hale_in(&["dna", "sync"], &b);
+    assert!(ok && out.contains("pulled the record"), "{out}");
+    let count = |c: &Path| git(&["rev-list", "--count", "refs/dna/journal"], c);
+    let head = |c: &Path| git(&["rev-parse", "refs/dna/journal"], c);
+    let remote_head = || git(&["rev-parse", "refs/dna/journal"], &bare);
+
+    // a row signed by riley, local to riley's clone (every verb syncs
+    // after it appends, so the row is written by plumbing, as a verb would)
+    let rileys_row = plumb_row(&b, Some(&riley_key), "intent.requested", "i-changelog", "{\"outcome\": \"write the changelog\"}", "riley");
+    assert_eq!(head(&b), rileys_row);
+    assert!(git(&["cat-file", "-p", &rileys_row], &b).contains("gpgsig"), "riley's row is a signed commit");
+    // the organism's clone appends and pushes: the remote is ahead of riley's base
+    let (ok, out) = hale_in(&["dna", "ask", "--no-wait", "tidy", "the", "readme"], &a);
+    assert!(ok, "{out}");
+    let remote_before = remote_head();
+    assert_ne!(remote_before, rileys_row);
+
+    // the clone now signs as the host (a rotated key, a shared clone): its
+    // reconcile would re-sign riley's row as the host's — refused whole
+    sign_as(&b, &host_key);
+    let before = (head(&b), count(&b));
+    let (ok, out) = hale_in(&["dna", "sync"], &b);
+    assert!(!ok, "a reconcile that would re-sign another key's row is refused:\n{out}");
+    assert!(out.contains(&rileys_row) && out.contains("was signed with key SHA256:") && out.contains("not this clone's"), "names the row and its key:\n{out}");
+    assert!(out.contains("the record was not changed") && out.contains("every local row is kept"), "says what it kept:\n{out}");
+    assert!(out.contains("sync first") && !out.to_lowercase().contains("discard"), "says how to keep the work, never to discard it:\n{out}");
+    assert_eq!((head(&b), count(&b)), before, "riley's clone is exactly as it was");
+    assert_eq!(remote_head(), remote_before, "and the remote too");
+
+    // signing as riley again, the reconcile lands: riley's row re-signed by
+    // riley, naming the commit it was rebuilt from
+    sign_as(&b, &riley_key);
+    let (ok, out) = hale_in(&["dna", "sync"], &b);
+    assert!(ok && out.contains("re-appended 1 local event(s)"), "{out}");
+    let rebuilt = head(&b);
+    assert_ne!(rebuilt, rileys_row);
+    let message = git(&["log", "-1", "--format=%B", "refs/dna/journal"], &b);
+    assert!(message.contains(&format!("Rebuilt-From: {rileys_row}")), "the rebuilt row names its original:\n{message}");
+    let verified = Command::new("git").args(["verify-commit", &rebuilt]).current_dir(&b).output().unwrap();
+    assert!(verified.status.success(), "the rebuilt row verifies as riley's: {}", String::from_utf8_lossy(&verified.stderr));
+    assert_eq!(remote_head(), rebuilt, "and was pushed");
+    let rows = record(&b);
+    assert!(rows.iter().any(|r| r["kind"] == "intent.requested" && r["body"].as_str().unwrap_or("").contains("write the changelog") && r["author"] == "riley"), "riley's row, riley's author");
+
+    // a row never signed is rebuilt unsigned
+    let unsigned_row = plumb_row(&b, None, "intent.requested", "i-floor", "{\"outcome\": \"sweep the floor\"}", "riley");
+    assert!(!git(&["cat-file", "-p", &unsigned_row], &b).contains("gpgsig"), "unsigned");
+    let (ok, out) = hale_in(&["dna", "ask", "--no-wait", "water", "the", "plants"], &a);
+    assert!(ok, "{out}");
+    let (ok, out) = hale_in(&["dna", "sync"], &b);
+    assert!(ok && out.contains("re-appended 1 local event(s)"), "an unsigned row reconciles: {out}");
+    let rebuilt_unsigned = head(&b);
+    assert!(!git(&["cat-file", "-p", &rebuilt_unsigned], &b).contains("gpgsig"), "and stays unsigned: a reconcile upgrades no provenance");
+    assert!(git(&["log", "-1", "--format=%B", "refs/dna/journal"], &b).contains(&format!("Rebuilt-From: {unsigned_row}")));
+    let _ = std::fs::remove_dir_all(&d);
+}

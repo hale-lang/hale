@@ -266,10 +266,8 @@ fn receipt_file_verb(root: String, path: String, class_flag: String, who_flag: S
     // would come back behind a row that says the body is gone (#636)
     let p = open_projection(root, ".", "");
     if p.has_row("receipt.redacted", digest) { return fail("receipt file: " + digest + " was redacted; a redacted body is not filed again"); }
-    let blob = git(root, "hash-object\n-w\n" + path);
-    if blob.code != 0 { return fail("receipt file: git could not store " + path + ": " + blob.stderr); }
-    let u = git(root, "update-ref\nrefs/dna/receipts/" + digest[7..len(digest)] + "\n" + dna::trim_nl(blob.stdout));
-    if u.code != 0 { return fail("receipt file: " + u.stderr); }
+    let r = rec(root);
+    if len(r.keep(text)) == 0 { return fail("receipt file: the record could not keep " + path + ": " + r.why()); }
     let slash = last_index_of(path, "/");
     let b = std::json::Builder { };
     b.begin_object();
@@ -741,15 +739,17 @@ fn touched_json(touched: String) -> String {
 // fetches from (`refs/dna/revisions/<rev>`), then one `fleet.deploy` row.
 @unbounded
 fn fleet_deploy(root: String, fleet: String, plan_rel: String, rev_in: String, seed: String, entity: String, reason: String) -> Deploy {
-    let rev = git_out(root, "rev-parse\n--verify\n" + rev_in + "^{commit}");
+    let rev = genome_commit(root, rev_in);
     if len(rev) == 0 { return Deploy { error: "no such revision: " + rev_in }; }
-    let plan = git_out(root, "show\n" + rev + ":" + plan_rel);
+    let plan = genome_show(root, rev, plan_rel);
     if len(plan) == 0 { return Deploy { error: "no plan " + plan_rel + " at " + short(rev) }; }
     let touched = touched_by(root, plan_rel, plan, seed);
     let remote = record_remote(root);
     if len(remote) > 0 {
-        let e = git_err(root, "push\n-q\n-f\n" + remote + "\n" + rev + ":refs/dna/revisions/" + rev);
-        if len(e) > 0 { return Deploy { error: e }; }
+        let r = rec(root);
+        if !r.point("revisions/" + rev, rev) { return Deploy { error: "the revision could not be pointed at: " + r.why() }; }
+        let t = r.share(remote, "revisions/" + rev, "force");
+        if !t.ok { return Deploy { error: if len(t.why) == 0 { "push failed" } else { t.why } }; }
     }
     let b = std::json::Builder { };
     b.begin_object();
@@ -793,7 +793,7 @@ fn deploy_verb(root: String, fleet: String, plan_rel: String, what: String, roll
         entity = what;
         reason = "rollback " + what + " by operator";
     } else {
-        let full = git_out(root, "rev-parse\n--verify\n" + what + "^{commit}");
+        let full = genome_commit(root, what);
         if len(full) == 0 { return fail("no such revision: " + what); }
         rev = full;
         entity = short(full);
@@ -810,7 +810,7 @@ fn gh(args: String) -> dna::RunResult {
 }
 
 fn github_repo(root: String) -> String {
-    return git_out(root, "config\ndna.github");
+    return rec(root).setting("github");
 }
 
 // The pull request opened for a Review, "" when none.
@@ -843,10 +843,10 @@ fn has_row(p: Projection, kind: String, entity: String, needle: String) -> Bool 
 fn github_sync(root: String, seed: String) -> Answer {
     let repo = github_repo(root);
     if len(repo) == 0 { return fail("no `dna.github` in git config"); }
-    let board = "," + std::str::replace(git_out(root, "config\ndna.github.board"), " ", "") + ",";
+    let board = "," + std::str::replace(rec(root).setting("github.board"), " ", "") + ",";
     let remote_named = record_remote(root);
     let remote = if len(remote_named) == 0 { "origin" } else { remote_named };
-    let branch_named = git_out(root, "symbolic-ref\n--short\nHEAD");
+    let branch_named = genome_branch(root);
     let branch = if len(branch_named) == 0 { "main" } else { branch_named };
     let mut out = "";
     let p = open_projection(root, seed, "");
@@ -858,7 +858,7 @@ fn github_sync(root: String, seed: String) -> Answer {
         let r = p.review_of(nth(ids, i));
         if r.state == "pending" && r.is_mutation && len(pr_of(p, r.id)) == 0 {
             let head = "dna/" + r.id;
-            let e = git_err(root, "push\n-q\n-f\n" + remote + "\n" + r.candidate_commit + ":refs/heads/" + head);
+            let e = genome_push_branch(root, remote, r.candidate_commit, head, true);
             if len(e) > 0 { return fail(e); }
             let body = render_review(p, r.id, false);
             let c = gh("pr\ncreate\n--repo\n" + repo + "\n--base\n" + branch + "\n--head\n" + head + "\n--title\n" + r.question + "\n--body\n" + body.text);
@@ -927,7 +927,7 @@ fn github_sync(root: String, seed: String) -> Answer {
         let pr = pr_of(p, r.id);
         if r.state == "settled" && r.is_mutation && len(pr) > 0 && !has_row(p, "github.commented", r.id, "") {
             let number = to_string(std::json::find_int_field(pr, "number"));
-            if std::str::starts_with(r.settled, "approve") { let pushed = git(root, "push\n-q\n" + remote + "\n" + branch + ":" + branch); }
+            if std::str::starts_with(r.settled, "approve") { let pushed = genome_push_branch(root, remote, branch, branch, false); }
             let c = gh("pr\ncomment\n" + number + "\n--repo\n" + repo + "\n--body\ndna: review " + r.id + " settled: " + r.settled);
             if c.code != 0 { return fail("gh pr comment: " + dna::trim_nl(c.stderr)); }
             if !append_as(root, "github.commented", r.id, "#" + number + ": " + r.settled, "") { return fail("the record refused the append"); }

@@ -193,6 +193,18 @@ fn main() {
         ans = retire_verb(root, seed, word(a, 0), flag(a, "--to"), flag(a, "--as"));
     } else if verb == "sync" {
         ans = sync_verb(root);
+    } else if verb == "candidates" {
+        // #649: the candidates the record keeps, whatever the review decided
+        ans = candidates_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--why"), flag(a, "--as"));
+    } else if verb == "record-head" {
+        ans = record_head_verb(root);
+    } else if verb == "record-seed" {
+        // `hale dna init` seeds the record through the host: its rows, one
+        // JSON object per line in a file
+        ans = record_seed_verb(root, word(a, 0));
+    } else if verb == "design-upgrade" {
+        // `hale dna init` / `upgrade`: the toolchain's design as proposals
+        ans = design_upgrade_verb(root, word(a, 0), toolchain);
     } else if verb == "body" {
         // GH #617: the body lease from the CLI; the body on a server
         let sub = word(a, 0);

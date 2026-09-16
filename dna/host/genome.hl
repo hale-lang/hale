@@ -1,0 +1,59 @@
+// dna/host/genome.hl — the genome's git as the host touches it (GH #646
+// stage 0, #649). The record has its own API (`dna::Record`); what is
+// left here is the Structure: a revision of the governed repository
+// resolved, shown, checked out, reset, pushed as a branch, diffed. This
+// is the one file in the host that spells `git` for the genome, as
+// `workspace.hl`, `verification.hl` and `org.hl` are in the core.
+
+import "../core" as dna;
+
+fn genome(root: String, args: String) -> dna::RunResult {
+    return dna::run_tool("git\n-C\n" + root + "\n" + args);
+}
+
+// The commit `rev` names in the genome ("" when it names none).
+fn genome_commit(root: String, rev: String) -> String {
+    let r = genome(root, "rev-parse\n--verify\n" + rev + "^{commit}");
+    if r.code != 0 { return ""; }
+    return dna::trim_nl(r.stdout);
+}
+
+// A file of the genome at a revision ("" when absent).
+fn genome_show(root: String, rev: String, path: String) -> String {
+    let r = genome(root, "show\n" + rev + ":" + path);
+    if r.code != 0 { return ""; }
+    return dna::trim_nl(r.stdout);
+}
+
+// The branch the genome is on ("" when detached).
+fn genome_branch(root: String) -> String {
+    let r = genome(root, "symbolic-ref\n--short\nHEAD");
+    if r.code != 0 { return ""; }
+    return dna::trim_nl(r.stdout);
+}
+
+// Push `src` to the remote's branch `branch`; the error text, "" when it landed.
+fn genome_push_branch(root: String, remote: String, src: String, branch: String, force: Bool) -> String {
+    let r = genome(root, "push\n-q\n" + (if force { "-f\n" } else { "" }) + remote + "\n" + src + ":refs/heads/" + branch);
+    if r.code == 0 { return ""; }
+    let e = dna::trim_nl(r.stderr);
+    return if len(e) == 0 { "push failed" } else { e };
+}
+
+// Check the genome out at a revision, detached; the error text, "" when done.
+fn genome_checkout(root: String, rev: String) -> String {
+    let r = genome(root, "checkout\n-q\n--detach\n" + rev);
+    if r.code == 0 { return ""; }
+    let e = dna::trim_nl(r.stderr);
+    return if len(e) == 0 { "checkout failed" } else { e };
+}
+
+// Reset the genome to `base`, keeping local changes that do not conflict.
+fn genome_reset(root: String, base: String) -> Bool {
+    return genome(root, "reset\n-q\n--keep\n" + base).code == 0;
+}
+
+// The diff between two revisions, with a stat, as git prints it.
+fn genome_diff(root: String, base: String, candidate: String) -> dna::RunResult {
+    return genome(root, "diff\n--stat\n-p\n" + base + "\n" + candidate);
+}

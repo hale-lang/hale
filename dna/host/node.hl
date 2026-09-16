@@ -68,9 +68,9 @@ locus Node {
         let rev = std::json::find_string_field(deploy.body, "revision");
         if len(rev) == 0 { self.say("fleet.deploy #" + to_string(deploy.seq) + ": a deploy with no revision"); return true; }
         let remote = record_remote(self.root);
-        if len(remote) > 0 { let f = git(self.root, "fetch\n-q\n" + remote + "\n+refs/dna/revisions/*:refs/dna/revisions/*"); }
-        if len(git_out(self.root, "rev-parse\n--verify\n" + rev + "^{commit}")) == 0 { self.say("fleet.deploy #" + to_string(deploy.seq) + ": revision " + short(rev) + " is not here yet (retrying next tick)"); return false; }
-        let co = git_err(self.root, "checkout\n-q\n--detach\n" + rev);
+        if len(remote) > 0 { let f = rec(self.root).receive(remote, "revisions"); }
+        if len(genome_commit(self.root, rev)) == 0 { self.say("fleet.deploy #" + to_string(deploy.seq) + ": revision " + short(rev) + " is not here yet (retrying next tick)"); return false; }
+        let co = genome_checkout(self.root, rev);
         if len(co) > 0 { self.say("fleet.deploy #" + to_string(deploy.seq) + ": " + co + " (retrying next tick)"); return false; }
         let plan_name = std::json::find_string_field(deploy.body, "plan");
         let plan_rel = plan_rel_of(self.root, plan_name);
@@ -235,7 +235,7 @@ fn node_main(name: String, root: String, fleet: String, tick_ms: Int) {
         eprintln("usage: hale node <name> [--repo <clone>] [--fleet <name>] [--tick <ms>]");
         std::process::exit(2);
     }
-    if !git_ok(root, "rev-parse\n--git-dir") {
+    if !rec(root).is_repository() {
         eprintln("hale node ", name, ": ", root, " is not a git clone of the governed repository");
         std::process::exit(2);
     }

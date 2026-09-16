@@ -89,7 +89,7 @@ fn profile_verb(root: String) -> Answer {
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
     let now = std::time::now();
     let remote = record_remote(root);
-    let url = if len(remote) > 0 { git_out(root, "remote\nget-url\n" + remote) } else { "" };
+    let url = if len(remote) > 0 { rec(root).remote_url(remote) } else { "" };
     let mut out = "profile:     " + profile_name(root) + "\n";
     out = out + "record:      " + (if len(remote) == 0 { "this clone only (no remote; `git remote add origin …` shares it)" } else { "shared over " + remote + " (" + url + ")" }) + "\n";
     out = out + "body:        " + body_line(root, now) + "\n";
@@ -356,7 +356,7 @@ fn render_review(p: Projection, id: String, iris: Bool) -> Answer {
     out = out + "  mutation " + r.mutation_id + " (" + r.change_class + ") by " + r.author + " · disposition under the grant: " + r.disposition + " · shape " + r.candidate_shape + "\n";
     if len(r.magnitude_raw) > 0 { out = out + "  magnitude: " + magnitude_facets(r.magnitude_raw) + "\n"; }
     out = out + "\nsource diff (git " + short(r.base_commit) + " .. " + short(r.candidate_commit) + "):\n";
-    let d = git(p.root, "diff\n--stat\n-p\n" + r.base_commit + "\n" + r.candidate_commit);
+    let d = genome_diff(p.root, r.base_commit, r.candidate_commit);
     if d.code == 0 { out = out + indent_lines(dna::trim_nl(d.stdout), "  "); } else { out = out + "  (git diff failed: " + dna::trim_nl(d.stderr) + ")\n"; }
     out = out + "\nsemantic diff (hale model diff, baseline .. candidate):\n";
     let sem = receipt_read(p.root, r.diff_text);
@@ -619,7 +619,7 @@ fn body_key(root: String) -> String {
 // `--body <user@host>` or `git config dna.body`.
 fn body_target(root: String, flag: String) -> String {
     if len(flag) > 0 { return flag; }
-    return git_out(root, "config\ndna.body");
+    return rec(root).setting("body");
 }
 
 fn sq(s: String) -> String { return "'" + std::str::replace(s, "'", "'\\''") + "'"; }
@@ -678,7 +678,7 @@ fn body_provision_verb(root: String, target: String, dsn: String, dir_flag: Stri
     if len(target) == 0 { return fail("body provision: `hale dna body provision <user@host> [--dsn <postgres://…>] [--dir <path on the body>] [--dry-run]`"); }
     let remote = record_remote(root);
     if len(remote) == 0 { return fail("body provision: this record has no remote; the body clones the record from one (`git remote add origin <url>`, `hale dna sync`) — nothing was written"); }
-    let url = git_out(root, "remote\nget-url\n" + remote);
+    let url = rec(root).remote_url(remote);
     if !(std::str::contains(url, "://") || (std::str::contains(url, "@") && std::str::contains(url, ":"))) { return fail("body provision: the record's remote is local to this machine (" + url + "); the body must reach it — `git remote set-url " + remote + " <ssh or https url>` first. Nothing was written"); }
     let pin = lock_toolchain(root);
     if len(pin) == 0 { return fail("body provision: hale.lock pins no toolchain (`hale dna upgrade` writes it); the body installs exactly what the lock pins — nothing was written"); }
@@ -701,8 +701,8 @@ fn body_provision_verb(root: String, target: String, dsn: String, dir_flag: Stri
     let r = ssh_script(target, script, root + "/.hale/dna/provision." + to_string(std::process::pid()) + ".sh");
     if r.code != 0 { return fail("body provision on " + target + " stopped (" + to_string(r.code) + "):\n" + indent_lines(r.stdout + r.stderr, "    ")); }
     // 3. remembered here, and in the record — the target and the pin, never a credential
-    let c1 = git(root, "config\ndna.body\n" + target);
-    let c2 = git(root, "config\ndna.body.dir\n" + dir);
+    let c1 = rec(root).set_setting("body", target);
+    let c2 = rec(root).set_setting("body.dir", dir);
     let row = append_as(root, "body.provisioned", target, "{\"dir\": " + quote(dir) + ", \"toolchain\": " + quote(pin) + ", \"knowledge\": " + quote(if len(dsn) > 0 { "dsn" } else { "compose" }) + ", \"by\": " + quote(who) + "}", who);
     let s = sync_record(root);
     return answer("body provision: " + target + "\n" + indent_lines(dna::trim_nl(r.stdout), "    ") + "\n    dna.body = " + target + " (start/stop/logs go there); the body takes the lease when its unit starts\n");
@@ -1021,7 +1021,7 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
             if landed == "stale_revision" { return fail("receipt redact: the record moved while redacting " + digest + " (a hold may have arrived); nothing was erased — redact again"); }
             if len(landed) > 0 { return fail("receipt redact: the record refused the redaction of " + digest + " (" + landed + "); nothing was erased"); }
         }
-        if had { let d = git(root, "update-ref\n-d\nrefs/dna/receipts/" + hexd); }
+        if had { let d = rec(root).forget(hexd); }
         let s2 = sync_record(root);
         return answer("receipt " + digest + " redacted (" + (if withheld { "withheld, so no body was kept" } else { "its ref removed here and from the remote" }) + "; receipt.redacted, by " + who + " under " + policy + "). The blob stays in each object store until git collects it.\n");
     }
@@ -1075,7 +1075,8 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
 // `digest` (GH #606), else "".
 @unbounded
 fn redaction_line(root: String, digest: String) -> String {
-    let text = git_out(root, "show\n" + RECORD_REF + ":journal.jsonl") + "\n";
+    let r = rec(root);
+    let text = r.text_at(r.head(JOURNAL));
     let needle = "\"entity\": \"" + digest + "\"";
     let mut rest = text;
     while len(rest) > 0 {

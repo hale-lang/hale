@@ -342,9 +342,7 @@ locus Projection {
     }
     fn review_count() -> Int { return list_len(self.review_ids()); }
     fn chain_ok() -> Bool {
-        let c = git_out(self.root, "rev-list\n--count\n" + RECORD_REF);
-        if len(c) == 0 { return self.rows() == 0; }
-        return (std::str::parse_int(c) or - 1) == self.rows();
+        return rec(self.root).count(JOURNAL) == self.rows();
     }
     fn organism_line() -> String {
         if membrane_up(self.root) { return "running (membrane bound)"; }

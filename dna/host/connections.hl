@@ -50,7 +50,7 @@ type PeerWrite {
 // url against the directory it runs in, which is the peer cache).
 fn absolute_url(root: String, url: String) -> String {
     if std::str::starts_with(url, "/") || std::str::contains(url, "://") || std::str::contains(url, "@") { return url; }
-    return git_out(root, "rev-parse\n--show-toplevel") + "/" + url;
+    return rec(root).root() + "/" + url;
 }
 
 // A bare repository of this clone's own for one connection, checked to be
@@ -62,10 +62,7 @@ fn peer_cache(root: String, name: String) -> String {
     std::io::fs::mkdir(root + "/.hale/dna") or discard;
     std::io::fs::mkdir(root + "/" + PEERS_DIR) or discard;
     let cache = root + "/" + PEERS_DIR + "/" + name + ".git";
-    if git_out(cache, "rev-parse\n--is-bare-repository") != "true" {
-        let i = dna::run_tool("git\ninit\n-q\n--bare\n" + cache);
-        if i.code != 0 || git_out(cache, "rev-parse\n--is-bare-repository") != "true" { return ""; }
-    }
+    if !rec(root).private_store(cache) { return ""; }
     return cache;
 }
 
@@ -73,17 +70,19 @@ fn peer_cache(root: String, name: String) -> String {
 fn peer_identity(root: String, name: String, url: String) -> String {
     let cache = peer_cache(root, name);
     if len(cache) == 0 { return ""; }
-    if !git_ok(cache, "fetch\n-q\n" + url + "\n+" + IDENTITY_REF + ":refs/dna/peer/identity") { return ""; }
-    return git_out(cache, "cat-file\n-p\nrefs/dna/peer/identity");
+    let pc = rec(cache);
+    if !pc.receive(url, "peer/identity").ok { return ""; }
+    return dna::trim_nl(pc.cell("peer/identity").text);
 }
 
 // This record's mailbox in the connected record, fetched fresh into the
 // cache: the envelopes this record sent there, and nothing else.
 fn outbound_mailbox(cache: String, c: Connection, mine: String) -> String {
-    let ref = EXCHANGE_PREFIX + mine;
-    let dropped = git(cache, "update-ref\n-d\n" + ref);
-    let fetched = git(cache, "fetch\n-q\n" + c.url + "\n+" + ref + ":" + ref);
-    return git_out(cache, "rev-parse\n-q\n--verify\n" + ref);
+    let chain = "exchange/" + mine;
+    let pc = rec(cache);
+    let dropped = pc.drop_chain(chain);
+    let fetched = pc.receive(c.url, chain);
+    return pc.head(chain);
 }
 
 // One envelope into the connected record's mailbox for this record,
@@ -92,19 +91,19 @@ fn outbound_mailbox(cache: String, c: Connection, mine: String) -> String {
 fn peer_append(root: String, c: Connection, kind: String, entity: String, body: String, author: String) -> PeerWrite {
     let mine = record_identity(root);
     if len(mine) == 0 { return PeerWrite { why: "this record has no identity yet (no journal)" }; }
-    let ref = EXCHANGE_PREFIX + mine;
+    let chain = "exchange/" + mine;
     let mut tries = 0;
     while tries < 5 {
         tries = tries + 1;
         let cache = peer_cache(root, c.name);
         if len(cache) == 0 { return PeerWrite { why: "no cache for connection " + c.name }; }
         if peer_identity(root, c.name, c.url) != c.peer { return PeerWrite { why: c.url + " no longer serves record " + short(c.peer) }; }
+        let pc = rec(cache);
         let before = outbound_mailbox(cache, c, mine);
-        let text = journal_text_at(cache, before);
-        let commit = commit_row(cache, before, text, count_lines(text), kind, entity, body, author);
+        let commit = pc.build(before, dna::Row { kind: kind, entity: entity, body: body, author: author }, false, "");
         if len(commit) == 0 { return PeerWrite { why: "the envelope could not be written" }; }
-        if !git_ok(cache, "update-ref\n" + ref + "\n" + commit) { continue; }
-        if git_ok(cache, "push\n-q\n" + c.url + "\n--force-with-lease=" + ref + ":" + before + "\n" + ref + ":" + ref) { return PeerWrite { commit: commit }; }
+        if !pc.move_chain(chain, commit, "*") { continue; }
+        if pc.share(c.url, chain, if len(before) == 0 { "new" } else { before }).ok { return PeerWrite { commit: commit }; }
     }
     return PeerWrite { why: "the other record's mailbox kept moving; nothing was written" };
 }
@@ -116,7 +115,7 @@ fn delivered(root: String, c: Connection, kind: String, entity: String) -> Bool 
     let cache = peer_cache(root, c.name);
     if len(cache) == 0 { return false; }
     let head = outbound_mailbox(cache, c, record_identity(root));
-    let mut rest = journal_text_at(cache, head);
+    let mut rest = rec(cache).text_at(head);
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let line = if nl < 0 { rest } else { rest[0..nl] };
@@ -134,20 +133,47 @@ fn delivered(root: String, c: Connection, kind: String, entity: String) -> Bool 
 fn delivered_commit(root: String, c: Connection, kind: String, entity: String) -> String {
     if !delivered(root, c, kind, entity) { return ""; }
     let cache = peer_cache(root, c.name);
-    let head = git_out(cache, "rev-parse\n-q\n--verify\n" + EXCHANGE_PREFIX + record_identity(root));
+    let pc = rec(cache);
+    let chain = "exchange/" + record_identity(root);
+    let head = pc.head(chain);
     if len(head) == 0 { return ""; }
-    return git_out(cache, "log\n--format=%H\n-1\n--fixed-strings\n--grep=" + kind + " " + entity + "\n" + head);
+    // the k-th row of the mailbox is its k-th id (oldest first)
+    let ids = pc.ids(chain);
+    let mut rest = pc.text_at(head);
+    let mut k = 0;
+    let mut found = -1;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(dna::trim_nl(line)) == 0 { continue; }
+        if std::json::find_string_field(line, "kind") == kind && std::json::find_string_field(line, "entity") == entity { found = k; }
+        k = k + 1;
+    }
+    if found < 0 { return ""; }
+    return dna::line_at(ids, found);
 }
 
 // The envelope rows a mailbox in this clone holds ("" when absent).
 fn mailbox_text(root: String, ref: String) -> String {
-    return journal_text_at(root, git_out(root, "rev-parse\n-q\n--verify\n" + ref));
+    let chain = if std::str::starts_with(ref, "refs/dna/") { ref[9..len(ref)] } else { ref };
+    let r = rec(root);
+    return r.text_at(r.head(chain));
 }
 
 // This clone's inbound mailboxes (its sync fetches them from its remote),
 // newline-separated ref names.
+@unbounded
 fn mailboxes(root: String) -> String {
-    return git_out(root, "for-each-ref\n--format=%(refname)\n" + EXCHANGE_PREFIX) + "\n";
+    let mut out = "";
+    let mut rest = rec(root).pointers("exchange");
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let name = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(name) > 0 { out = out + "refs/dna/" + name + "\n"; }
+    }
+    return out + "\n";
 }
 
 // A connection as the record has it: its latest proposal, an approval by
@@ -416,7 +442,7 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
     b.begin_object();
     b.string_field("handoff", hid);
     b.string_field("origin_record", mine);
-    b.string_field("origin_url", if len(remote) > 0 { git_out(root, "remote\nget-url\n" + remote) } else { "" });
+    b.string_field("origin_url", if len(remote) > 0 { rec(root).remote_url(remote) } else { "" });
     b.string_field("origin_author", who);
     b.string_field("origin_row", source);
     b.string_field("lineage", lineage);

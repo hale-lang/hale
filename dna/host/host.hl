@@ -605,7 +605,7 @@ locus Host {
         self.say(id + ": the organization exited (" + to_string(crashed) + ") inside the window; rolling back");
         let base = base_of(open_projection(self.root, self.seed, self.toolchain), id);
         let c = append_as(self.root, "expression.crashed", id, "organization exited " + to_string(crashed) + " in the observation window", "");
-        if git_ok(self.root, "reset\n-q\n--keep\n" + base) {
+        if genome_reset(self.root, base) {
             let r = append_as(self.root, "mutation.rolled_back", id, base + " by host after the organization crashed", "");
         }
         if !self.restart_org(id, true) {

@@ -1,0 +1,296 @@
+// dna/host/record_verbs.hl — the record's operator surface that #649
+// added, and the seeding `hale dna init` / `upgrade` do through the host
+// rather than with record code of their own (the driver in
+// `crates/hale-cli/src/dna.rs` kept a third copy of the row-commit
+// sequence, with the three-try bound GH #603 removed elsewhere).
+
+import "../core" as dna;
+
+// ---- hale dna candidates --------------------------------------------
+//
+// A candidate is a commit in the Mutation's worktree; the gateway points
+// `candidates/<mutation>` at it when it is made, sync shares the pointers
+// with the record, and a refused change stays readable as a diff after
+// its worktree is gone. `drop` is a row (`candidate.dropped`), applied at
+// every clone's sync the way a redaction is.
+
+fn review_for_mutation(p: Projection, mutation_id: String) -> ReviewRow {
+    let ids = p.review_ids();
+    let n = list_len(ids);
+    let mut i = 0;
+    while i < n {
+        let r = p.review_of(nth(ids, i));
+        if r.is_mutation && r.mutation_id == mutation_id { return r; }
+        i = i + 1;
+    }
+    return ReviewRow { };
+}
+
+@unbounded
+fn candidates_verb(root: String, seed: String, sub: String, id_in: String, why: String, who_flag: String) -> Answer {
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let r = rec(root);
+    if len(sub) == 0 {
+        let p = open_projection(root, seed, "");
+        let mut out = "";
+        let mut n = 0;
+        let mut rest = r.pointers("candidates");
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let name = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if len(name) == 0 { continue; }
+            let mid = name[11..len(name)];
+            let rv = review_for_mutation(p, mid);
+            let state = if len(rv.id) == 0 { "no Review names it" } else { "review " + rv.id + " " + rv.state + (if rv.state == "pending" { "" } else { ": " + rv.settled }) };
+            out = out + "  " + mid + "  " + short(r.pointer(name)) + "  " + state + "\n";
+            n = n + 1;
+        }
+        return answer("candidates: " + (if n == 0 { "none kept" } else { to_string(n) }) + "\n" + out + (if n > 0 { "`hale dna candidates <mutation>` shows one as a diff; `hale dna candidates drop <mutation> --why <why>` stops keeping it\n" } else { "" }));
+    }
+    if sub == "drop" {
+        if len(id_in) == 0 || len(why) == 0 { return fail("candidates drop: `hale dna candidates drop <mutation> --why <why> [--as <who>]`"); }
+        if len(r.pointer("candidates/" + id_in)) == 0 { return fail("candidates drop: no candidate is kept for " + id_in); }
+        let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("by", who);
+        b.string_field("why", why);
+        b.end_object();
+        if !append_as(root, "candidate.dropped", id_in, b.result(), who) { return fail("the record refused the append"); }
+        let dropped = apply_drops(root);
+        let s = sync_record(root);
+        return answer("candidate " + id_in + " dropped by " + who + ": " + why + " (candidate.dropped; no longer kept here or at the remote; every clone drops it at its next sync)\n");
+    }
+    // show one: the diff from the review's base
+    let mid = sub;
+    let commit = r.pointer("candidates/" + mid);
+    if len(commit) == 0 { return fail("candidates: no candidate is kept for " + mid + " (`hale dna candidates` lists them)"); }
+    let p = open_projection(root, seed, "");
+    let rv = review_for_mutation(p, mid);
+    let base = if len(rv.base_commit) > 0 { rv.base_commit } else { commit + "~1" };
+    let mut out = "candidate " + mid + " at " + short(commit) + (if len(rv.id) > 0 { " (review " + rv.id + " " + rv.state + ")" } else { "" }) + "\n";
+    out = out + "diff (" + short(base) + " .. " + short(commit) + "):\n";
+    let d = genome_diff(root, base, commit);
+    if d.code == 0 { out = out + indent_lines(dna::trim_nl(d.stdout), "  ") + "\n"; } else { out = out + "  (the diff could not be read: " + dna::trim_nl(d.stderr) + ")\n"; }
+    return answer(out);
+}
+
+// ---- the driver's seeding, through the record ------------------------
+
+// The record's head, or `none`: the driver asks before it seeds.
+fn record_head_verb(root: String) -> Answer {
+    let h = record_head(root);
+    return answer((if len(h) == 0 { "none" } else { h }) + "\n");
+}
+
+// Append every row of a file (one JSON object per line: kind, entity,
+// body) in order, in the identity of whoever runs this. The count.
+@unbounded
+fn record_seed_verb(root: String, path: String) -> Answer {
+    if len(path) == 0 { return fail("record-seed: a file of rows"); }
+    let text = std::io::fs::read_file(path) or "";
+    let mut n = 0;
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(dna::trim_nl(line)) == 0 { continue; }
+        let kind = std::json::find_string_field(line, "kind");
+        if len(kind) == 0 { return fail("record-seed: row " + to_string(n + 1) + " has no kind"); }
+        if !append_as(root, kind, std::json::find_string_field(line, "entity"), std::json::find_string_field(line, "body"), "") { return fail("record-seed: the record refused row " + to_string(n + 1) + " (" + kind + ")"); }
+        n = n + 1;
+    }
+    return answer(to_string(n) + "\n");
+}
+
+// ---- the toolchain's design, as proposals (GH #596 C) --------------------
+//
+// At `init` every practice of the design is proposed, one Board Review
+// each. At `upgrade` each practice whose current text is not the latest
+// proposed under its name is proposed again — superseding the ACTIVE
+// digest under that name when there is one, plainly when nothing is
+// active (a pending or rejected proposal is not a predecessor: retiring
+// it would retire nothing). Unchanged practices propose nothing. One
+// replacement at a time under a name: while the latest proposal awaits
+// the Board, a changed text waits too — two pending replacements would
+// both name the same predecessor, and the assembly refuses to ratify the
+// second once the first has retired it. A refused one is proposed again,
+// against what is active now.
+
+// What the record holds under one practice name.
+type DesignState {
+    name: String = "";
+    latest_text: String = "";
+    latest: String = ""; // the latest proposal's digest
+    active: String = ""; // ratified and not retired, "" when none
+    pending: Bool = false; // the latest proposal awaits the Board
+    refused: Bool = false; // the latest proposal was refused at ratification
+}
+
+@form(hashmap)
+locus DesignStates {
+    capacity { pool rows of DesignState indexed_by name; }
+}
+
+// digest -> practice name, from the receipts the proposals point at
+type DigestName { digest: String = ""; name: String = ""; }
+
+@form(hashmap)
+locus DigestNames {
+    capacity { pool rows of DigestName indexed_by digest; }
+}
+
+fn in_list(list: String, item: String) -> Bool { return std::str::contains(list, "\n" + item + "\n"); }
+
+// The record's design states, by name, from the rows and the receipts.
+@unbounded
+fn design_in_record(root: String, states: DesignStates) {
+    let r = rec(root);
+    let text = r.text_at(r.head(JOURNAL));
+    let names = DigestNames { };
+    let mut ratified = "\n"; // in order
+    let mut retired = "\n";
+    let mut decided = "\n";
+    let mut refused = "\n";
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(dna::trim_nl(line)) == 0 { continue; }
+        let kind = std::json::find_string_field(line, "kind");
+        let entity = std::json::find_string_field(line, "entity");
+        if kind == "knowledge.proposed" {
+            let digest = std::json::find_string_field(std::json::find_string_field(line, "body"), "digest");
+            if len(digest) == 0 { continue; }
+            // the receipt is canonical: its name and its text
+            let raw = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+            let doc = r.body(raw);
+            if !doc.present { continue; }
+            let name = std::json::find_string_field(doc.text, "name");
+            if len(name) == 0 { continue; }
+            names.set(DigestName { digest: digest, name: name });
+            let cur = states.get(name) or DesignState { name: name };
+            states.set(DesignState { name: name, latest_text: std::json::find_string_field(doc.text, "text"), latest: digest, active: cur.active });
+        } else if kind == "knowledge.ratified" {
+            decided = decided + entity + "\n";
+            ratified = ratified + entity + "\n";
+        } else if kind == "knowledge.declined" {
+            decided = decided + entity + "\n";
+        } else if kind == "knowledge.refused" {
+            decided = decided + entity + "\n";
+            refused = refused + entity + "\n";
+        } else if kind == "knowledge.retired" {
+            retired = retired + entity + "\n";
+        }
+    }
+    // the active digest under a name: the last ratified one not retired
+    let mut rr = ratified[1..len(ratified)];
+    while len(rr) > 0 {
+        let nl = std::str::index_of(rr, "\n");
+        let digest = if nl < 0 { rr } else { rr[0..nl] };
+        rr = if nl < 0 { "" } else { rr[(nl + 1)..len(rr)] };
+        if len(digest) == 0 || in_list(retired, digest) { continue; }
+        let dn = names.get(digest) or DigestName { };
+        if len(dn.name) == 0 { continue; }
+        let cur = states.get(dn.name) or DesignState { };
+        if len(cur.name) == 0 { continue; }
+        states.set(DesignState { name: cur.name, latest_text: cur.latest_text, latest: cur.latest, active: digest });
+    }
+    // pending / refused: about the latest proposal under each name; the
+    // names are walked through the digests they were proposed under
+    let mut rest2 = text;
+    while len(rest2) > 0 {
+        let nl = std::str::index_of(rest2, "\n");
+        let line = if nl < 0 { rest2 } else { rest2[0..nl] };
+        rest2 = if nl < 0 { "" } else { rest2[(nl + 1)..len(rest2)] };
+        if std::json::find_string_field(line, "kind") != "knowledge.proposed" { continue; }
+        let digest = std::json::find_string_field(std::json::find_string_field(line, "body"), "digest");
+        let dn = names.get(digest) or DigestName { };
+        if len(dn.name) == 0 { continue; }
+        let cur = states.get(dn.name) or DesignState { };
+        if cur.latest != digest { continue; }
+        states.set(DesignState { name: cur.name, latest_text: cur.latest_text, latest: cur.latest, active: cur.active, pending: !in_list(decided, digest), refused: in_list(refused, digest) });
+    }
+}
+
+// The practice's document, byte for byte as the toolchain has always
+// filed it (compact, keys in order): its digest is the Review's name.
+fn design_document(name: String, text: String, toolchain: String, supersedes: String) -> String {
+    let q = std::json::Builder { };
+    return "{\"author\":\"org\",\"kind\":\"practice\",\"name\":" + q.quote(name) + ",\"provenance\":\"design\"," + (if len(supersedes) > 0 { "\"supersedes\":" + q.quote(supersedes) + "," } else { "" }) + "\"target\":\"org\",\"text\":" + q.quote(text) + ",\"toolchain\":" + q.quote(toolchain) + "}";
+}
+
+// Propose one practice: its receipt, a `knowledge.proposed` row and a
+// Review of its own, grouped `design` for the listing. The review id,
+// "" when the record refused.
+fn propose_design(root: String, name: String, text: String, toolchain: String, supersedes: String) -> String {
+    let raw = rec(root).keep(design_document(name, text, toolchain, supersedes));
+    if len(raw) == 0 { return ""; }
+    let digest = "sha256:" + raw;
+    let review_id = "k:" + raw[0..12];
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("digest", digest);
+    b.string_field("review_id", review_id);
+    b.string_field("kind", "practice");
+    b.string_field("author", "org");
+    b.string_field("target", "org");
+    b.string_field("class", "initiative");
+    b.string_field("provenance", "design");
+    b.string_field("name", name);
+    b.string_field("supersedes", supersedes);
+    b.end_object();
+    if !append_as(root, "knowledge.proposed", digest, b.result(), "") { return ""; }
+    let first = if len(text) > 72 { text[0..72] + "…" } else { text };
+    let question = "ratify the design practice `" + name + "`" + (if len(supersedes) > 0 { " (replacing an earlier version)" } else { "" }) + ": " + first;
+    let q = std::json::Builder { };
+    q.begin_object();
+    q.string_field("question", question);
+    q.string_field("subject_digest", digest);
+    q.string_field("required_authority", "board");
+    q.string_field("author", "org");
+    q.string_field("knowledge_digest", digest);
+    q.string_field("kind", "practice");
+    q.string_field("target", "org");
+    q.string_field("class", "initiative");
+    q.string_field("group", "design");
+    q.string_field("name", name);
+    q.end_object();
+    if !append_as(root, "review.requested", "review:" + review_id, q.result(), "") { return ""; }
+    return review_id;
+}
+
+// `design-upgrade <practices>`: the practices as the toolchain states
+// them, one JSON object per line (`name`, `text`). Prints
+// `proposed=<n> superseding=<m> waiting=<w>`.
+@unbounded
+fn design_upgrade_verb(root: String, path: String, toolchain: String) -> Answer {
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let practices = std::io::fs::read_file(path) or "";
+    if len(practices) == 0 { return fail("design-upgrade: no practices at " + path); }
+    let states = DesignStates { };
+    design_in_record(root, states);
+    let mut proposed = 0;
+    let mut superseding = 0;
+    let mut waiting = 0;
+    let mut rest = practices;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(dna::trim_nl(line)) == 0 { continue; }
+        let name = std::json::find_string_field(line, "name");
+        let text = std::json::find_string_field(line, "text");
+        let st = states.get(name) or DesignState { };
+        if len(st.name) > 0 && st.latest_text == text && !st.refused { continue; }
+        if len(st.name) > 0 && st.pending { waiting = waiting + 1; continue; }
+        let old = st.active;
+        if len(propose_design(root, name, text, toolchain, old)) == 0 { return fail("design-upgrade: the record refused the proposal of " + name); }
+        proposed = proposed + 1;
+        if len(old) > 0 { superseding = superseding + 1; }
+    }
+    return answer("proposed=" + to_string(proposed) + " superseding=" + to_string(superseding) + " waiting=" + to_string(waiting) + "\n");
+}

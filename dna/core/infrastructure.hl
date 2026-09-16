@@ -1,0 +1,150 @@
+// dna/core/infrastructure.hl — what a body runs on, and how a head
+// reaches it (GH #647; the boundary declared with #646 stage 0, #649).
+//
+// Every external dependency of the DNA sits behind an interface in the
+// core with a vocabulary of its own, one implementation over the real
+// thing and one in memory; only the implementation spells the tool.
+// These two are declared here and implemented in memory; the host still
+// drives docker compose, systemd and ssh through its own shell strings
+// until #647 moves them behind these, in order after stage 3.
+
+// Where a body's knowledge database is, once it is up.
+type Database {
+    present: Bool = false;
+    dsn: String = "";
+    why: String = "";
+}
+
+// What a supervisor reports about a unit.
+type UnitStatus {
+    known: Bool = false;
+    active: Bool = false;
+    detail: String = "";
+}
+
+// A named credential as a body holds it: the name and whether it is
+// present; never the value.
+type Credential {
+    name: String = "";
+    present: Bool = false;
+}
+
+// What a body runs on: its database (compose today), its supervisor
+// (systemd today), its credentials (the env file today). The three
+// compose independently: choosing a database never chooses a
+// deployment platform.
+interface Infrastructure {
+    fn kind() -> String;
+    // The knowledge database, brought up when it is not: a DSN.
+    fn knowledge_database(project: String) -> Database;
+    // The supervisor: a unit installed from its text, started, stopped,
+    // asked, read.
+    fn install_unit(name: String, unit: String) -> Bool;
+    fn start(name: String) -> Bool;
+    fn stop(name: String) -> Bool;
+    fn status(name: String) -> UnitStatus;
+    fn logs(name: String, lines: Int) -> String;
+    // Credentials: put by name; whether one is present; never read back.
+    fn put_credential(name: String, value: String) -> Bool;
+    fn credential(name: String) -> Credential;
+}
+
+// What a probe of a body's machine found, one fact per line (`git=yes`).
+type Facts {
+    reachable: Bool = false;
+    facts: String = "";
+    why: String = "";
+}
+
+// How a head reaches a body: ssh today.
+interface Transport {
+    fn kind() -> String;
+    fn probe(target: String) -> Facts;
+    // A script run in the body's shell with `stdin` on its input.
+    fn execute(target: String, script: String, stdin: String) -> RunResult;
+}
+
+type MemUnit { name: String = ""; unit: String = ""; active: Bool = false; }
+
+@form(hashmap)
+locus MemUnits {
+    capacity { pool rows of MemUnit indexed_by name; }
+}
+
+type MemCredential { name: String = ""; value: String = ""; }
+
+@form(hashmap)
+locus MemCredentials {
+    capacity { pool rows of MemCredential indexed_by name; }
+}
+
+// A body in memory: the database is whatever DSN the fixture set; units
+// and credentials are rows for the life of the process.
+locus MemInfrastructure {
+    params {
+        dsn: String = "memory";
+        units: MemUnits = MemUnits { };
+        credentials: MemCredentials = MemCredentials { };
+        started: Int = 0;
+        stopped: Int = 0;
+    }
+    fn kind() -> String { return "memory"; }
+    fn knowledge_database(project: String) -> Database { return Database { present: true, dsn: self.dsn }; }
+    fn install_unit(name: String, unit: String) -> Bool {
+        self.units.set(MemUnit { name: name, unit: unit });
+        return true;
+    }
+    fn start(name: String) -> Bool {
+        let u = self.units.get(name) or MemUnit { };
+        if len(u.name) == 0 { return false; }
+        self.units.set(MemUnit { name: name, unit: u.unit, active: true });
+        self.started = self.started + 1;
+        return true;
+    }
+    fn stop(name: String) -> Bool {
+        let u = self.units.get(name) or MemUnit { };
+        if len(u.name) == 0 { return false; }
+        self.units.set(MemUnit { name: name, unit: u.unit, active: false });
+        self.stopped = self.stopped + 1;
+        return true;
+    }
+    fn status(name: String) -> UnitStatus {
+        let u = self.units.get(name) or MemUnit { };
+        return UnitStatus { known: len(u.name) > 0, active: u.active, detail: if u.active { "active" } else { "inactive" } };
+    }
+    fn logs(name: String, lines: Int) -> String { return ""; }
+    fn put_credential(name: String, value: String) -> Bool {
+        self.credentials.set(MemCredential { name: name, value: value });
+        return true;
+    }
+    fn credential(name: String) -> Credential {
+        let c = self.credentials.get(name) or MemCredential { };
+        return Credential { name: name, present: len(c.name) > 0 };
+    }
+}
+
+// A transport in memory: every target is reachable with the facts the
+// fixture set, and a script "runs" by being kept — what the fixture
+// asserts on is the script's text, never a tool on PATH.
+locus MemTransport {
+    params {
+        facts: String = "git=yes\nsystemd=yes\ncompose=yes\ncurl=yes\nLinux x86_64\n";
+        reachable: Bool = true;
+        last_target: String = "";
+        last_script: String = "";
+        last_stdin: String = "";
+        runs: Int = 0;
+    }
+    fn kind() -> String { return "memory"; }
+    fn probe(target: String) -> Facts {
+        if !self.reachable { return Facts { why: "unreachable" }; }
+        return Facts { reachable: true, facts: self.facts };
+    }
+    fn execute(target: String, script: String, stdin: String) -> RunResult {
+        self.last_target = target;
+        self.last_script = script;
+        self.last_stdin = stdin;
+        self.runs = self.runs + 1;
+        return RunResult { code: 0, stdout: "", stderr: "" };
+    }
+}
