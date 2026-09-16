@@ -191,6 +191,10 @@ taken over is refused by the service, whatever the body still believes.
 Each owner mints its own ids (`acme:t3`, `acme:m2`) and claims its own
 effects (`acme:apply:<candidate>`), so nothing two owners do contends
 for one name; a birth the store says is already claimed is minted again.
+A job planned for another owner's member is offered, not handed: the
+Task waits as `transfer_requested` until one of that owner's members
+runs `hale dna task accept <id>`, and their controller hands it on
+from there. Only the receiving owner settles a transfer.
 
 ## Who decides what
 

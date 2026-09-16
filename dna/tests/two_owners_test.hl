@@ -5,7 +5,10 @@
 // north's beside clone B, both writing through the one service. A
 // forced claim of acme's lease from a third clone of acme's raises its
 // epoch: the body that held it stops itself, its epoch writes nothing
-// any more, and north's body is untouched.
+// any more, and north's body is untouched. In between, a job acme's
+// body plans for north's member is a transfer inside the ledger (GH
+// #667): offered, refused to acme's member, accepted by north's, handed
+// by north's body, and closed by the assignee.
 
 import "../core" as dna;
 
@@ -48,6 +51,9 @@ fn row_with(text: String, needle: String) -> String {
     }
     return "";
 }
+
+// A row's body, as a ledger row carries it (a JSON string field).
+fn row_body(row: String) -> String { return std::json::find_string_field(row, "body"); }
 
 fn ledger(service: String) -> String {
     return curl("GET", service + "/ledger/rows?from=0", "").body;
@@ -190,6 +196,21 @@ main locus App {
         std::test::assert_eq_int(asked.code, 0, "alice asks acme's body: " + asked.stdout + asked.stderr);
         let offered = wait_row(service, "\"kind\": \"intent.offered\"", 240);
         std::test::assert(std::str::contains(offered, "chase the late invoice (from alice)"), "the body's write landed under its lease: " + ledger(service));
+        // ---- the plan names bob, north's member: a transfer, not a hand-off
+        let transfer = wait_row(service, "\"kind\": \"task.transfer_requested\"", 240);
+        std::test::assert(std::json::find_string_field(row_body(transfer), "to") == "north" && std::json::find_string_field(row_body(transfer), "assignee") == "bob" && std::json::find_string_field(row_body(transfer), "owner") == "acme", "acme's body offers the job to north for bob: " + transfer);
+        let tid = std::json::find_string_field(transfer, "entity");
+        std::test::assert(std::str::starts_with(tid, "acme:t"), "the task is acme's, in acme's namespace: " + tid);
+        std::test::assert_eq_str(row_with(ledger(service), "\"kind\": \"task.handed\""), "", "and nothing is handed yet");
+        let not_theirs = through(app, service, toolchain() + "\ndna\ntask\naccept\n" + tid + "\n--as\nalice");
+        std::test::assert(not_theirs.code != 0 && std::str::contains(not_theirs.stdout + not_theirs.stderr, "only north's accepts"), "acme's member cannot accept for north: " + not_theirs.stdout + not_theirs.stderr);
+        let accepted = through(other, service, toolchain() + "\ndna\ntask\naccept\n" + tid + "\n--as\nbob\n--note\nwe take it");
+        std::test::assert(accepted.code == 0 && std::str::contains(accepted.stdout, "accepted for north by bob"), "north's member accepts: " + accepted.stdout + accepted.stderr);
+        let handed = wait_row(service, "\"kind\": \"task.handed\"", 240);
+        std::test::assert(std::json::find_string_field(row_body(handed), "transferred_from") == "acme" && std::json::find_string_field(row_body(handed), "assignee") == "bob" && std::json::find_string_field(row_body(handed), "by") == "north" && std::json::find_string_field(row_body(handed), "accepted_by") == "bob", "north's body hands it to bob in its own name: " + handed);
+        let done = through(other, service, toolchain() + "\ndna\ntask\ndone\n" + tid + "\n--as\nbob\n--note\npaid");
+        std::test::assert(done.code == 0 && std::str::contains(done.stdout, "done by bob"), "bob closes it from north's clone: " + done.stdout + done.stderr);
+        std::test::assert(std::str::contains(wait_row(service, "\"kind\": \"task.done\"", 60), "\"author\": \"bob\""), "in bob's name, in the one ledger");
         // ---- a forced claim of acme's lease from a third clone of acme's:
         // the epoch rises, the old body stops, north's does not
         let third = scratch + "/acme-2";

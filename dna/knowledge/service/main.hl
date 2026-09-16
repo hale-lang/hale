@@ -201,6 +201,21 @@ locus Service {
             if e.kind == "person.retired" && e.entity == author { return author + " retired from this organism (person.retired at row " + to_string(e.seq) + "); nothing is admitted in their name"; }
             i = i + 1;
         }
+        // GH #667: a transfer to an owner is accepted by that owner's member
+        if kind == "task.transfer_accepted" {
+            let mut to = "";
+            let mut k = 0;
+            while k < self.ledger.revision() {
+                let e = self.ledger.read(k);
+                if e.entity == entity && e.kind == "task.transfer_requested" { to = std::json::find_string_field(e.body, "to"); }
+                if e.entity == entity && e.kind == "task.transfer_accepted" { to = ""; }
+                k = k + 1;
+            }
+            if len(to) == 0 { return "task " + entity + " is not offered to an owner of this record; nothing to accept"; }
+            let owners = dna::Ownership { path: "dna/org/owners", me_env: "" };
+            let theirs = owners.owner_of_person(author);
+            if theirs != to { return "task " + entity + " is offered to " + to + "; " + author + " is " + (if len(theirs) > 0 { theirs + "'s" } else { "no owner's" }) + " member, and only " + to + "'s accepts"; }
+        }
         if kind == "task.done" || kind == "task.failed" || kind == "completion.linked" || kind == "completion.excepted" {
             let mut assignee = "";
             let mut k = 0;

@@ -879,7 +879,16 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   kind decides a first claim with no coordination between them: a
   `task.born` the store answers `claimed` (409) is minted again under
   the next id, and nothing is refused. With one owner nothing is
-  prefixed.
+  prefixed. Work that crosses owners is a transfer inside the one
+  ledger (GH #667), #615's rule applied between owners: a plan that
+  hands a job to another owner's member appends `task.transfer_requested
+  <task> {owner, to, assignee, …}` in place of `task.handed`, and the
+  Task waits; a member of that owner accepts it (`hale dna task accept
+  <id> --as <who>`, `task.transfer_accepted`, admitted by the service
+  only in a member of `to`'s name) and their controller then appends
+  `task.handed` in its own name, naming `transferred_from` and who
+  accepted, so completion is admitted in the assignee's name as
+  always. Nothing settles on the request alone.
 - **The foundational law** (`dna/org/law.hl`, generated, extendable,
   never weakened): nothing applies except through the substrate
   (`forbid reaches(positions, effects(genome_apply)) avoiding

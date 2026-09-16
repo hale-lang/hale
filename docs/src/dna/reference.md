@@ -169,7 +169,7 @@ sequence either way — see [The record](./record.md).
 | `handoff.received` | ledger | `handoff:<id>` | an envelope in the receiving record's mailbox `refs/dna/exchange/<origin identity>`, never its journal: handoff, origin_record, origin_url, origin_author, origin_row, lineage, purpose, position, via, kind, subject, class, fact, note |
 | `handoff.published` / `handoff.refused` | ledger | `handoff:<id>` | in the origin record: connection, peer, kind, subject, class, purpose, peer_row, by, note; refused: why |
 | `handoff.accepted` / `handoff.accepted_by_peer` | ledger | `handoff:<id>` | an acceptance in the receiving record's journal (by, note, connection, and the envelope's origin, lineage, purpose and fact), sent back as an envelope into the origin's mailbox; its admission in the origin (connection, peer, handoff, accepted_by, note) |
-| `task.transfer_requested` / `task.transfer_accepted` | ledger | `t<n>` | a Task handed across a connection, and settled on the receiver's acceptance |
+| `task.transfer_requested` / `task.transfer_accepted` | ledger | `t<n>` | a Task handed across a connection (`handoff`, `peer`), or offered to another owner of a shared record (`owner`, `to`, `assignee`); settled only on the receiver's acceptance |
 | `decision.reported` | ledger | `t<n>` | a decision someone outside made, reported by the assignee: reporter, decider, channel, evidence, scope, obligation, practice, policy, accepted, why, note |
 | `receipt.held` / `receipt.hold_released` | ledger | a digest | a hold that refuses redaction, and its release: by, why |
 | `receipt.redacted` | ledger | a digest | the body removed, the digest kept: by, why, policy, class, store |

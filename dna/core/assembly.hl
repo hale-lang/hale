@@ -999,13 +999,16 @@ locus Dna {
             }
             if have != self.optimize_every_ms { let why = self.schedule(Schedule { id: "optimize", every_ms: self.optimize_every_ms, action: "optimize", requires: "" }); }
         }
-        let n = self.schedules.len();
-        if n == 0 { return; }
         // pause/resume rows appended from a clone reach the record the
         // organism holds; read what arrived (a git journal is re-read
         // from its ref at most every 5s of wall time)
         let wall = std::time::now();
         if wall - self.last_refresh >= 5 { self.last_refresh = wall; let moved = self.journal.refresh(); }
+        // GH #667: a transfer another owner's member accepted for this
+        // owner becomes this owner's handed Task
+        if self.ownership.shared() { self.admit_transfers(); }
+        let n = self.schedules.len();
+        if n == 0 { return; }
         self.read_schedule_controls();
         let mut i = 0;
         while i < n {
@@ -1256,9 +1259,23 @@ locus Dna {
             hb.bool_field("evidence_required", acceptance_requires_evidence(practice_text));
             hb.string_field("by", "leader");
             hb.string_field("narrative", handed);
+            // GH #667: a job for another owner's member is a transfer inside
+            // the one ledger, settled only on that owner's acceptance; the
+            // Task waits as `transfer_requested`, and their controller hands
+            // it once a member of theirs accepts
+            let theirs = if self.ownership.shared() && len(assignee) > 0 { self.ownership.owner_of_person(assignee) } else { "" };
+            let transfer = len(theirs) > 0 && theirs != self.ownership.me;
+            if transfer {
+                hb.string_field("owner", self.ownership.me);
+                hb.string_field("to", theirs);
+            }
             hb.end_object();
-            let x = self.journal.append(self.journal.revision(), "task.handed", req.task_id, hb.result());
-            self.membrane.notify("task", req.task_id + " handed to " + (if len(assignee) > 0 { assignee } else { "a person (unassigned)" }));
+            let x = self.journal.append(self.journal.revision(), if transfer { "task.transfer_requested" } else { "task.handed" }, req.task_id, hb.result());
+            if transfer {
+                self.membrane.notify("task", req.task_id + " offered to " + theirs + " for " + assignee + "; theirs once they accept");
+            } else {
+                self.membrane.notify("task", req.task_id + " handed to " + (if len(assignee) > 0 { assignee } else { "a person (unassigned)" }));
+            }
             return;
         }
         // The governed child comes from the KIND, and the class is
@@ -1648,6 +1665,56 @@ locus Dna {
             tries = tries + 1;
         }
         return self.refuse_spend(child, s, "contention: the record moved under twenty attempts to reserve");
+    }
+    // GH #667: every `task.transfer_requested` naming this owner that a
+    // member of this owner accepted (`task.transfer_accepted`) and this
+    // controller has not yet handed is handed now, to the assignee the
+    // request named, in this owner's name — the same `task.handed` row a
+    // job of its own gets, so completion is admitted in the assignee's
+    // name as always. Bounded by the transfers in the ledger; idempotent.
+    @unbounded
+    fn admit_transfers() -> Int {
+        self.bind_owner();
+        let me = self.ownership.me;
+        if len(me) == 0 { return 0; }
+        let n = self.journal.revision();
+        let mut handed_n = 0;
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "task.transfer_requested" && std::json::find_string_field(e.body, "to") == me {
+                let mut accepted = "";
+                let mut handed = false;
+                let mut k = i + 1;
+                while k < n {
+                    let s = self.journal.read(k);
+                    if s.entity == e.entity && s.kind == "task.transfer_accepted" { accepted = s.body; handed = false; }
+                    if s.entity == e.entity && s.kind == "task.handed" && len(accepted) > 0 { handed = true; }
+                    k = k + 1;
+                }
+                if len(accepted) > 0 && !handed {
+                    let hb = std::json::Builder { };
+                    hb.begin_object();
+                    hb.string_field("work", "");
+                    hb.string_field("assignee", std::json::find_string_field(e.body, "assignee"));
+                    hb.string_field("obligation", std::json::find_string_field(e.body, "obligation"));
+                    hb.string_field("acceptance", std::json::find_string_field(e.body, "acceptance"));
+                    hb.bool_field("evidence_required", std::str::trim(std::json::find_field_raw(e.body, "evidence_required")) == "true");
+                    hb.string_field("by", me);
+                    hb.string_field("transferred_from", std::json::find_string_field(e.body, "owner"));
+                    hb.string_field("accepted_by", std::json::find_string_field(accepted, "by"));
+                    hb.string_field("narrative", "transferred from " + std::json::find_string_field(e.body, "owner") + ", accepted by " + std::json::find_string_field(accepted, "by") + ": " + std::json::find_string_field(e.body, "narrative"));
+                    hb.end_object();
+                    let x = self.journal.append(self.journal.revision(), "task.handed", e.entity, hb.result());
+                    if x.ok {
+                        handed_n = handed_n + 1;
+                        self.membrane.notify("task", e.entity + " transferred from " + std::json::find_string_field(e.body, "owner") + " and handed to " + std::json::find_string_field(e.body, "assignee"));
+                    }
+                }
+            }
+            i = i + 1;
+        }
+        return handed_n;
     }
     // GH #666: the owner this body mints and claims for, handed to the
     // metabolism and the gateway once the ownership map is read.
