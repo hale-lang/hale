@@ -31,6 +31,7 @@ hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authorit
                              [--comment <c>] [--digest <sha>] [--no-wait]
 hale dna history [<entity>]  walk the record by causal links (offline)
 hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*)
+hale dna queue [submit]      the requests kept here while the service could not be reached; send them
 hale dna ledger [status | adopt | abandon --why <w>]
                              the operational memory: where the day's work lives, and the one-way move of it into the store
 hale dna candidates [<mutation> | drop <mutation> --why <w>]

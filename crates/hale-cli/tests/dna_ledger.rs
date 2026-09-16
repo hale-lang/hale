@@ -74,7 +74,7 @@ fn an_organism_adopts_the_ledger_and_its_operations_leave_the_record() {
     let (ok, status) = hale(&["dna", "status"], &app, &[]);
     assert!(ok && status.contains("memory:     the record alone (routing 0)"), "{status}");
     let (ok, closed) = hale(&["dna", "ledger", "adopt"], &app, &[]);
-    assert!(!ok && closed.contains("adoption opens once every operational write path goes through the service"), "{closed}");
+    assert!(!ok && closed.contains("no ledger service is known here"), "adoption needs a service to adopt into: {closed}");
     // an operational row before adoption lands in the record (a receipt
     // filed from a clone needs no organism beside it)
     std::fs::write(app.join("first.txt"), "the first invoice").unwrap();
@@ -375,6 +375,105 @@ fn a_pre_split_organism_carries_its_history_and_unfinished_work_through_adoption
             assert_eq!(unplaced(&sb[key]), unplaced(&sa[key]), "status `{key}` reads the same before and after:\nbefore {status_before}\nafter {status_after}");
         }
     }
+    let _ = service.kill();
+    let _ = service.wait();
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Stage 3 (#652): a head that cannot reach the service keeps its
+/// requests, and the service admits each on submission against the
+/// record as it is then — a retired person's request is refused, a
+/// request submitted twice lands once, a completion in the wrong name
+/// is refused — and nothing on the head is ever authoritative.
+#[test]
+fn a_head_queues_while_the_service_is_unreachable_and_the_service_revalidates_on_submission() {
+    let d = std::env::temp_dir().join(format!("hale_dna_queue_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.clone());
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let (ok, out) = hale(&["dna", "new", "queued"], &d, &[]);
+    assert!(ok, "{out}");
+    let app: PathBuf = d.join("queued");
+    Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "add", "-A"]).current_dir(&app).output().unwrap();
+    Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@l", "commit", "-q", "-m", "genome"]).current_dir(&app).output().unwrap();
+    // a task handed to sam, before adoption, so the completion rule has something to check
+    plumb(&app, "task.born", "t-1", "{\"objective\": \"chase the invoice\"}", "dna");
+    plumb(&app, "task.handed", "t-1", "{\"work\": \"chase the invoice\", \"assignee\": \"sam\", \"by\": \"dna\"}", "dna");
+    let kport = free_port();
+    let url = format!("http://127.0.0.1:{kport}");
+    let start = |d: &Path, app: &Path| -> std::process::Child {
+        Command::new(env!("CARGO_BIN_EXE_hale"))
+            .args(["dna", "knowledge", ".", "--port", &kport.to_string()])
+            .current_dir(app)
+            .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+            .env("HALE_DNA_DISCOVER", "off")
+            .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
+            .env("HALE_DNA_KNOWLEDGE_DSN", "memory")
+            .stdout(Stdio::null())
+            .stderr(std::fs::File::create(d.join("service.stderr")).unwrap())
+            .spawn()
+            .expect("hale dna knowledge")
+    };
+    let wait_up = || {
+        let dl = Instant::now() + Duration::from_secs(120);
+        while Instant::now() < dl {
+            if body(&http(kport, "GET /ledger/head HTTP/1.0\r\nHost: x\r\n\r\n")).contains("\"revision\"") {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        false
+    };
+    let mut service = start(&d, &app);
+    assert!(wait_up(), "the service did not come up");
+    let env: &[(&str, &str)] = &[("HALE_DNA_KNOWLEDGE_URL", &url)];
+    // adoption is open now: no gate to lift
+    let (ok, adopted) = hale(&["dna", "ledger", "adopt", "--as", "riley"], &app, env);
+    assert!(ok, "{adopted}");
+    // a completion in the wrong name is refused by the service, not written
+    std::fs::write(app.join("proof.txt"), "the invoice was paid").unwrap();
+    let (ok, wrong) = hale(&["dna", "task", "done", "t-1", "--as", "riley", "--note", "paid"], &app, env);
+    assert!(!ok && wrong.contains("handed to sam, not to riley"), "{wrong}");
+    // the service goes away; requests are queued, shown as queued, nothing written
+    let _ = service.kill();
+    let _ = service.wait();
+    let (ok, q1) = hale(&["dna", "receipt", "file", "proof.txt", "--as", "sam"], &app, env);
+    assert!(ok && q1.contains("queued locally"), "{q1}");
+    std::fs::write(app.join("more.txt"), "another bill").unwrap();
+    let (ok, q2) = hale(&["dna", "receipt", "file", "more.txt", "--as", "riley"], &app, env);
+    assert!(ok && q2.contains("queued locally"), "{q2}");
+    let (ok, listed) = hale(&["dna", "queue"], &app, env);
+    assert!(ok && listed.contains("2 request(s) waiting") && listed.contains("as sam") && listed.contains("as riley"), "{listed}");
+    let (ok, stuck) = hale(&["dna", "queue", "submit"], &app, env);
+    assert!(ok && stuck.contains("unreachable") && stuck.contains("stay queued"), "{stuck}");
+    // meanwhile sam retires; the record has it before the service is back
+    plumb(&app, "person.retired", "sam", "{\"by\": \"riley\", \"to\": \"riley\", \"transferred\": 0}", "riley");
+    let mut service = start(&d, &app);
+    assert!(wait_up(), "the service did not come back");
+    let (ok, sent) = hale(&["dna", "queue", "submit"], &app, env);
+    assert!(ok && sent.contains("REFUSED") && sent.contains("sam retired from this organism") && sent.contains("admitted (row"), "{sent}");
+    let rows = body(&http(kport, "GET /ledger/rows?from=0 HTTP/1.0\r\nHost: x\r\n\r\n"));
+    assert!(rows.contains("more.txt") && !rows.contains("proof.txt"), "riley's row landed, sam's did not:\n{rows}");
+    assert!(rows.contains("\"author\": \"riley\""), "in riley's name:\n{rows}");
+    let refused_kept = std::fs::read_dir(app.join(".hale/dna/queue")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".refused")).count();
+    assert_eq!(refused_kept, 1, "the refused request is kept for the person");
+    let (ok, empty) = hale(&["dna", "queue"], &app, env);
+    assert!(ok && empty.contains("nothing queued"), "{empty}");
+    // the same request offered again (the queue file restored) lands once
+    let kept: Vec<_> = std::fs::read_dir(app.join(".hale/dna/queue")).unwrap().flatten().collect();
+    let refused = kept.iter().find(|e| e.file_name().to_string_lossy().ends_with(".refused")).unwrap().path();
+    let text = std::fs::read_to_string(&refused).unwrap();
+    let first = text.lines().next().unwrap().to_string();
+    let again = app.join(".hale/dna/queue/9999-again.json");
+    std::fs::write(&again, first.replace("\"as\": \"sam\"", "\"as\": \"riley\"")).unwrap();
+    let (ok, dup) = hale(&["dna", "queue", "submit"], &app, env);
+    assert!(ok && dup.contains("REFUSED") && dup.contains("refused when it was first submitted"), "a request id the service refused stays refused, whoever resubmits it: {dup}");
+    let before = body(&http(kport, "GET /ledger/head HTTP/1.0\r\nHost: x\r\n\r\n"));
+    std::fs::write(app.join("third.txt"), "a third bill").unwrap();
+    let (ok, out) = hale(&["dna", "receipt", "file", "third.txt", "--as", "riley"], &app, env);
+    assert!(ok, "{out}");
+    let after = body(&http(kport, "GET /ledger/head HTTP/1.0\r\nHost: x\r\n\r\n"));
+    assert_ne!(before, after, "a live request lands directly");
     let _ = service.kill();
     let _ = service.wait();
     let _ = std::fs::remove_dir_all(&d);

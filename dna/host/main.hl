@@ -199,6 +199,8 @@ fn main() {
     } else if verb == "ledger" {
         // GH #646 stage 1: the operational memory, adopted by an explicit step
         ans = ledger_verb(root, seed, word(a, 0), flag(a, "--why"), flag(a, "--as"));
+    } else if verb == "queue" {
+        ans = queue_verb(root, word(a, 0));
     } else if verb == "record-head" {
         ans = record_head_verb(root);
     } else if verb == "record-seed" {

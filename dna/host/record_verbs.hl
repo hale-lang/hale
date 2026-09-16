@@ -333,7 +333,6 @@ fn ledger_verb(root: String, seed: String, sub: String, why: String, who_flag: S
     let url = knowledge_url(root);
     if sub == "adopt" {
         if routing_here(root) > 0 { return fail("ledger adopt: this record is already on routing " + to_string(routing_here(root)) + " (adopted at " + short(checkpoint_here(root)) + ")"); }
-        if !std::env::var_exists("HALE_DNA_ADOPT_UNGATED") { return fail("ledger adopt: adoption opens once every operational write path goes through the service (stage 3, #652); until then an organism stays on the record"); }
         if len(url) == 0 { return fail("ledger adopt: no ledger service is known here (HALE_DNA_KNOWLEDGE_URL, or run under `hale dna dev`); nothing was changed"); }
         let l = body_lease_read(root);
         if !l.ok { return fail("ledger adopt: the body lease cannot be read (the remote cannot be reached); nothing was changed"); }
@@ -386,4 +385,32 @@ fn ledger_verb(root: String, seed: String, sub: String, why: String, who_flag: S
         return answer("ledger abandoned by " + who + ": " + why + "; the record is the only memory again (routing 0), and its operational rows were never removed\n");
     }
     return fail("ledger: `hale dna ledger [status]`, `hale dna ledger adopt [--as <who>]`, `hale dna ledger abandon --why <why> [--as <who>]`");
+}
+
+// ---- hale dna queue --------------------------------------------------------
+//
+// A head that cannot reach its organism's service keeps its requests
+// (GH #646 stage 3, #652): nothing on the head is authoritative, a
+// queued completion is a request to complete, a queued spend has
+// reserved nothing. `hale dna queue` lists; `submit` sends in capture
+// order, and the service revalidates each against the record as it is
+// then. Every verb that reaches the service drains the queue first.
+
+@unbounded
+fn queue_verb(root: String, sub: String) -> Answer {
+    if sub == "submit" { return answer(submit_queue(root)); }
+    if len(sub) > 0 { return fail("queue: `hale dna queue` lists what is queued here; `hale dna queue submit` sends it"); }
+    let names = queued(root);
+    if len(names) == 0 { return answer("queue: nothing queued here\n"); }
+    let mut out = "";
+    let mut rest = names;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let name = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(name) == 0 { continue; }
+        let q = std::io::fs::read_file(root + "/" + QUEUE_DIR + "/" + name) or "";
+        out = out + "  " + std::json::find_string_field(q, "request_id") + "  " + std::json::find_string_field(q, "kind") + " " + std::json::find_string_field(q, "entity") + "  as " + std::json::find_string_field(q, "as") + "  captured " + ago(std::time::now() - std::json::find_int_field(q, "captured_at")) + "\n";
+    }
+    return answer("queue: " + to_string(count_lines(names)) + " request(s) waiting for the service (`hale dna queue submit`)\n" + out);
 }

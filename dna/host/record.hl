@@ -121,15 +121,145 @@ fn routing_line(root: String) -> String {
 // here, refused with the checkpoint named otherwise (the compatibility
 // path #646 decision 3 asked for — never silently accepted into git).
 fn ledger_append(root: String, kind: String, entity: String, body: String) -> Bool {
+    return ledger_submit(root, kind, entity, body, "");
+}
+
+const QUEUE_DIR: String = ".hale/dna/queue";
+
+// A request's durable identity, minted when it is captured.
+fn request_id(root: String) -> String {
+    let d = dna::digest_of(root + "\n" + to_string(std::time::now()) + "\n" + to_string(std::process::pid()) + "\n" + to_string(millis()));
+    return if std::str::starts_with(d, "sha256:") { d[7..31] } else { d[0..24] };
+}
+
+// A row in a person's name, through the service (GH #646 stage 3,
+// #652). Written when the service admits it; QUEUED under
+// `.hale/dna/queue/` when the service cannot be reached at all, to be
+// submitted on the next contact (every submission drains the queue
+// first, in capture order) and revalidated then; refused, with why,
+// when the service refuses it. A head with no service known writes
+// nothing and says so.
+@unbounded
+fn ledger_submit(root: String, kind: String, entity: String, body: String, author: String) -> Bool {
     let url = knowledge_url(root);
     if len(url) == 0 {
         eprintln("hale dna: `", kind, "` is a row of the ledger: this organism's operations have lived there since ", short(checkpoint_here(root)), " (ledger.adopted), and no service is known here to write it through (HALE_DNA_KNOWLEDGE_URL, or `hale dna dev`); nothing was written");
         return false;
     }
+    let drained = submit_queue(root);
+    if len(drained) > 0 && !std::str::starts_with(drained, "queue: nothing") && std::str::contains(drained, "unreachable") {
+        // the service is down: this request joins the queue behind the others
+        return enqueue(root, kind, entity, body, author);
+    }
     let l = dna::ServiceLedger { url: url };
-    let r = l.append(l.revision(), kind, entity, body);
-    if !r.ok { eprintln("hale dna: the ledger at ", url, " refused `", kind, "`: ", l.last_error); }
-    return r.ok;
+    let id = request_id(root);
+    let r = l.submit(l.revision(), false, kind, entity, body, author, id);
+    if r.ok { return true; }
+    if l.unreachable { return enqueue_as(root, id, kind, entity, body, author); }
+    eprintln("hale dna: the ledger at ", url, " refused `", kind, " ", entity, "`: ", l.last_error);
+    return false;
+}
+
+fn enqueue(root: String, kind: String, entity: String, body: String, author: String) -> Bool {
+    return enqueue_as(root, request_id(root), kind, entity, body, author);
+}
+
+fn enqueue_as(root: String, id: String, kind: String, entity: String, body: String, author: String) -> Bool {
+    std::io::fs::mkdir(root + "/.hale") or discard;
+    std::io::fs::mkdir(root + "/.hale/dna") or discard;
+    std::io::fs::mkdir(root + "/" + QUEUE_DIR) or discard;
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("request_id", id);
+    b.string_field("kind", kind);
+    b.string_field("entity", entity);
+    b.string_field("body", body);
+    b.string_field("as", author);
+    b.int_field("captured_at", std::time::now());
+    b.end_object();
+    let path = root + "/" + QUEUE_DIR + "/" + to_string(std::time::now()) + "-" + to_string(millis() % 1000) + "-" + id + ".json";
+    let w = write_text(path, b.result()) or false;
+    if !w { eprintln("hale dna: the service cannot be reached and the request could not be queued at ", path); return false; }
+    eprintln("hale dna: the service cannot be reached; `", kind, " ", entity, "` is queued locally as ", id, " (", QUEUE_DIR, "; `hale dna queue` lists it, `hale dna queue submit` sends it — admitted only once the service checks it)");
+    return true;
+}
+
+// The queued requests, oldest first, one path per line.
+@unbounded
+fn queued(root: String) -> String {
+    let dir = root + "/" + QUEUE_DIR;
+    let n = std::io::fs::list_dir_count(dir) or 0;
+    let mut names = "";
+    let mut i = 0;
+    while i < n {
+        let name = std::io::fs::list_dir_at(dir, i) or "";
+        if std::str::ends_with(name, ".json") { names = names + name + "\n"; }
+        i = i + 1;
+    }
+    return sorted_lines(names);
+}
+
+// Submit every queued request in capture order; stop at the first the
+// service cannot be reached for. A refused request is kept beside the
+// queue as `<name>.refused` with the reason, for the person; an
+// admitted one is removed. The report, one line per request.
+@unbounded
+fn submit_queue(root: String) -> String {
+    let names = queued(root);
+    if len(names) == 0 { return "queue: nothing queued\n"; }
+    let url = knowledge_url(root);
+    if len(url) == 0 { return "queue: " + to_string(count_lines(names)) + " request(s) queued and no service known here (HALE_DNA_KNOWLEDGE_URL)\n"; }
+    let l = dna::ServiceLedger { url: url };
+    let mut out = "";
+    let mut rest = names;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let name = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(name) == 0 { continue; }
+        let path = root + "/" + QUEUE_DIR + "/" + name;
+        let q = std::io::fs::read_file(path) or "";
+        let id = std::json::find_string_field(q, "request_id");
+        let kind = std::json::find_string_field(q, "kind");
+        let entity = std::json::find_string_field(q, "entity");
+        let r = l.submit(l.revision(), false, kind, entity, std::json::find_string_field(q, "body"), std::json::find_string_field(q, "as"), id);
+        if r.ok {
+            std::io::fs::unlink(path) or discard;
+            out = out + "queue: " + id + " " + kind + " " + entity + ": admitted (row " + to_string(r.revision - 1) + ")\n";
+            continue;
+        }
+        if l.unreachable { return out + "queue: " + id + " " + kind + " " + entity + ": the service is unreachable (" + l.last_error + "); it and " + to_string(count_lines(rest)) + " behind it stay queued\n"; }
+        std::io::fs::unlink(path) or discard;
+        let w = write_text(path + ".refused", q + "\n" + l.last_error + "\n") or false;
+        out = out + "queue: " + id + " " + kind + " " + entity + ": REFUSED — " + l.last_error + " (kept as " + name + ".refused)\n";
+    }
+    return out;
+}
+
+// Lines sorted, ascending (insertion sort: a queue is short).
+@unbounded
+fn sorted_lines(text: String) -> String {
+    let mut lines = "";
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(line) == 0 { continue; }
+        // insert before the first line greater than it
+        let mut before = "";
+        let mut after = lines;
+        let mut placed = false;
+        while len(after) > 0 && !placed {
+            let anl = std::str::index_of(after, "\n");
+            let cur = if anl < 0 { after } else { after[0..anl] };
+            if cur > line { placed = true; break; }
+            before = before + cur + "\n";
+            after = if anl < 0 { "" } else { after[(anl + 1)..len(after)] };
+        }
+        lines = before + line + "\n" + after;
+    }
+    return lines;
 }
 
 // Whether rows this clone writes are signed (GH #604 rule 6: under
@@ -147,7 +277,7 @@ fn signing(root: String) -> Bool { return trust_mode(root) == "signed"; }
 // row (GH #603).
 @unbounded
 fn append_as(repo: String, kind: String, entity: String, body: String, author: String) -> Bool {
-    if dna::route(routing_here(repo), kind) == "ledger" { return ledger_append(repo, kind, entity, body); }
+    if dna::route(routing_here(repo), kind) == "ledger" { return ledger_submit(repo, kind, entity, body, author); }
     let r = rec(repo);
     let sign = signing(repo);
     let mut tries = 0;
@@ -168,7 +298,7 @@ fn append_as(repo: String, kind: String, entity: String, body: String, author: S
 // it was refused (#636: a redaction that read "no hold" must not land
 // after a hold did).
 fn append_as_at(repo: String, expected: String, kind: String, entity: String, body: String, author: String) -> String {
-    if dna::route(routing_here(repo), kind) == "ledger" { return if ledger_append(repo, kind, entity, body) { "" } else { "the ledger refused the row" }; }
+    if dna::route(routing_here(repo), kind) == "ledger" { return if ledger_submit(repo, kind, entity, body, author) { "" } else { "the ledger refused the row" }; }
     let r = rec(repo);
     if r.head(JOURNAL) != expected { return "stale_revision"; }
     let a = r.append(JOURNAL, expected, dna::Row { kind: kind, entity: entity, body: body, author: author }, signing(repo), "");

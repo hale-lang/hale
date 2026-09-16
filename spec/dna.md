@@ -67,6 +67,28 @@ an adopted record refuses to start without a service to reach (#646
 decision 3: a body without its store admits nothing); `dev` brings its
 own up.
 
+**Heads write through the service (stage 3, #652).** On routing 1 an
+operational row a verb writes from a clone goes to the service in the
+person's name (`as`), and the service admits it against the record as
+it is then: a retired person's request (`person.retired`, effective
+from the head the service has) is refused, a completion for a task
+handed to someone else is refused, and every request carries an id
+minted when it was captured — a request the service has seen is
+answered as it was answered then and writes nothing, so a request
+submitted twice lands once and one it refused stays refused. A head
+that cannot reach the service at all **queues** the request under
+`.hale/dna/queue/` (the verb says "queued locally"); `hale dna queue`
+lists what waits, `hale dna queue submit` sends it in capture order
+and every verb that reaches the service drains the queue first; a
+refused request is kept beside the queue as `<name>.refused` with the
+reason. Nothing on a head is authoritative: a queued completion is a
+request to complete, a queued spend has reserved nothing, and no head
+executes work offline (#646 decision 2). A head with no service known
+at all writes nothing and says so. With every operational write path
+through the service, **adoption is open**: `hale dna ledger adopt`
+needs no gate. A new organism still starts on routing 0 and adopts by
+that explicit step.
+
 **Coordination in the store (stage 2, #651).** On routing 1 every lease
 is a row of the store swapped by its token: the service serves
 `GET /ledger/lease?key=` and `POST /ledger/lease` (`key`, `holder`,
