@@ -207,6 +207,13 @@ locus Host {
         self.fence = start(self.dna_dir, "fence", self.root, "HALE_DNA_GIT_TIMEOUT=8",
             bin + "\nbody-fence\n.\n.\n-\n-\n--holder\n" + self.holder + "\n--token\n" + to_string(self.lease.token) + "\n--expires\n" + to_string(self.lease.expires) + "\n--host-pid\n" + to_string(std::process::pid()));
         if self.fence.pid <= 0 { self.say("the body fence did not start; a body that cannot fence its organism runs nothing"); std::process::exit(3); }
+        // #638: what the fence can reach on this machine. Without a way to
+        // read another process's environment it finds only what still hangs
+        // off a living organization, so a tool orphaned by one that died
+        // can outlive the lease.
+        if len(dna::body_scan()) == 0 {
+            self.say("this machine has no way to read another process's environment (no /proc, no `ps -E`), so the body fence stops the organization, the expression and what still hangs off them — a tool orphaned by an organization that died is not among them (GH #638)");
+        }
     }
     fn stop_fence() {
         std::io::fs::unlink(self.dna_dir + "/body.fence") or discard;
@@ -221,7 +228,7 @@ locus Host {
     fn stop_started() {
         if self.org.pid > 0 { kill_tree(to_string(self.org.pid)); }
         if self.app.pid > 0 { kill_tree(to_string(self.app.pid)); }
-        kill_marked(body_mark(self.holder, self.lease.token, std::process::pid()));
+        dna::kill_marked(dna::body_mark(self.holder, self.lease.token, std::process::pid()));
     }
     fn quit(code: Int) {
         self.stop_started();
@@ -297,7 +304,7 @@ locus Host {
         if len(file) > 0 { e = e + "\n" + file; }
         // the fourth review of #622: the body's mark, inherited by every tool
         // a child starts, so the fence finds them even once that child is gone
-        if len(self.holder) > 0 { e = e + "\nHALE_DNA_BODY=" + body_mark(self.holder, self.lease.token, std::process::pid()); }
+        if len(self.holder) > 0 { e = e + "\nHALE_DNA_BODY=" + dna::body_mark(self.holder, self.lease.token, std::process::pid()); }
         if len(restart_for) > 0 { e = e + "\nHALE_DNA_RESTART_FOR=" + restart_for + "\nHALE_DNA_EXPRESSION=" + expression; }
         // GH #583 K2: the organization's line to the knowledge service —
         // the one this host started, or the one the operator named
@@ -763,7 +770,7 @@ fn count_words(s: String) -> Int {
 fn fence_main(holder: String, token: Int, expires: Int, host_pid: Int) {
     let dir = ".hale/dna";
     let mut lease = BodyLease { present: true, holder: holder, token: token, expires: expires };
-    let mark = body_mark(holder, token, host_pid);
+    let mark = dna::body_mark(holder, token, host_pid);
     let mut renewed = 0;
     while fence_mandate(dir, host_pid) {
         let now = std::time::now();
@@ -800,7 +807,7 @@ fn fence_stop(dir: String, host_pid: Int, mark: String, why: String) {
     // body's mark, anywhere else (a tool whose organism already died)
     kill_tree(dna::trim_nl(std::io::fs::read_file(dir + "/org.pid") or ""));
     kill_tree(dna::trim_nl(std::io::fs::read_file(dir + "/app.pid") or ""));
-    kill_marked(mark);
+    dna::kill_marked(mark);
 }
 
 fn host_main(verb: String, root: String, seed: String, fleet: String, plan: String, toolchain: String, a: Args) {

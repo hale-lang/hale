@@ -1,0 +1,93 @@
+// GH #638 — a body finds what it started wherever that ended up. The
+// body fence stops a tool whose organization has already died, which a
+// walk down from the organization's pid cannot reach: the tool was
+// reparented the moment its parent went. What the fence has instead is
+// the mark every process a body starts carries in its environment, and
+// this fixture is the mechanism that reads it, on whatever machine the
+// fixture runs on — Linux's /proc, `ps -E` on macOS and the BSDs, or
+// neither, where the fence says so and reaches less.
+//
+// The full lease story is body_lease_blocked_test; this is the one piece
+// of it that is not the same on every platform.
+
+import "../core" as dna;
+
+fn alive(pid: String) -> Bool {
+    return len(pid) > 0 && dna::run_tool("kill\n-0\n" + pid).code == 0;
+}
+
+// A process carrying `mark`, orphaned before it is looked for: the shell
+// that starts it exits at once, so the tool is a child of init by the
+// time anything asks. It is a copy of the shell under `dir`, so the tool
+// is a binary of this body's own, where an organization, an expression or
+// a knowledge service is — not one of the machine's, which a system may
+// hold more closely than a program a body brought with it. Its pid, once
+// it has written one.
+fn orphan_with(mark: String, dir: String) -> String {
+    let pidfile = dir + "/orphan.pid";
+    let tool = dir + "/tool";
+    let sh = dna::trim_nl(dna::run_tool("sh\n-c\ncommand -v sh").stdout);
+    let copied = dna::run_tool("cp\n" + sh + "\n" + tool);
+    let x = dna::run_tool("chmod\n+x\n" + tool);
+    // its streams are its own: a backgrounded child holding the pipe this
+    // call reads would keep the call waiting for it
+    let started = dna::run_tool("sh\n-c\nenv HALE_DNA_BODY=\"$1\" \"$2\" -c 'echo $$ > \"$1\"; while :; do sleep 1; done' tool \"$3\" </dev/null >/dev/null 2>&1 &\nsh\n" + mark + "\n" + tool + "\n" + pidfile);
+    let mut tries = 0;
+    while tries < 200 {
+        let pid = dna::trim_nl(std::io::fs::read_file(pidfile) or "");
+        if len(pid) > 0 { return pid; }
+        std::time::sleep(50ms);
+        tries = tries + 1;
+    }
+    return "";
+}
+
+main locus App {
+    run() {
+        let scratch = "/tmp/dna-bodyscan-" + to_string(std::process::pid());
+        std::io::fs::mkdir(scratch) or discard;
+        dna::reap_on_exit(scratch);
+
+        // the mark is one body's: another body's does not match it, and no
+        // mark is a prefix of another
+        let mine = dna::body_mark("riley@srv:/srv/books", 7, 4242);
+        std::test::assert_eq_str(mine, "riley@srv:/srv/books#7#4242#", "holder, token and host pid");
+        std::test::assert(mine != dna::body_mark("riley@srv:/srv/books", 7, 42), "a host pid that starts the same is another body");
+        std::test::assert(mine != dna::body_mark("riley@srv:/srv/books", 71, 4242), "so is a token that starts the same");
+
+        let scan = dna::body_scan();
+        std::test::assert(scan == "proc" || scan == "ps" || scan == "", "a scan is /proc, ps -E, or nothing: " + scan);
+
+        // a tool of this body's, already orphaned
+        let mark = dna::body_mark("fixture@here", 1, std::process::pid());
+        let orphan = orphan_with(mark, scratch);
+        std::test::assert(alive(orphan), "the tool runs: " + orphan);
+        std::test::assert(dna::trim_nl(dna::run_tool("ps\n-o\nppid=\n-p\n" + orphan).stdout) != to_string(std::process::pid()), "and is nobody's child here");
+
+        if len(scan) == 0 {
+            // no scan: the fence reaches what hangs off a living parent and
+            // says as much at startup; nothing here claims otherwise
+            std::test::assert_eq_str(dna::marked(mark), "", "a machine with no scan finds nothing");
+            let k = dna::run_tool("kill\n-KILL\n" + orphan);
+        } else {
+            let found = dna::marked(mark);
+            std::test::assert(std::str::contains("\n" + found + "\n", "\n" + orphan + "\n"), "the orphaned tool is found by its mark (" + scan + "): found [" + found + "], wanted " + orphan);
+            // and only it: this fixture, and the shells it ran, carry no mark
+            std::test::assert_eq_str(dna::marked(dna::body_mark("nobody@nowhere", 1, 1)), "", "another body's mark finds nothing");
+            std::test::assert_eq_str(dna::marked(""), "", "no mark finds nothing");
+
+            dna::kill_marked(mark);
+            let mut tries = 0;
+            while alive(orphan) && tries < 100 {
+                std::time::sleep(50ms);
+                tries = tries + 1;
+            }
+            std::test::assert(!alive(orphan), "and is stopped by it");
+            std::test::assert_eq_str(dna::marked(mark), "", "nothing of that body is left");
+        }
+
+        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+    }
+}
+
+fn main() { App { }; }

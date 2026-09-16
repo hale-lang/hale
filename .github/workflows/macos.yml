@@ -231,3 +231,18 @@ jobs:
           done
           /tmp/hlci/vendored/hale || true
           file /tmp/hlci/vendored/hale
+
+      - name: (f) GH #638 — a body finds the tools it started, wherever they ended up
+        run: |
+          set -eux
+          # The body fence stops what a body started; a tool whose
+          # organization already died was reparented, so the fence finds
+          # it by the mark every process a body starts carries in its
+          # environment. Linux reads /proc; here it is `ps -E`, and what
+          # the kernel will disclose is the question — so report it, then
+          # run the fixture that asserts the mechanism end to end.
+          env HALE_DNA_SCAN_PROBE=yes sh -c \
+            'ps -E -ww -o pid=,command= -p $$ | grep -q HALE_DNA_SCAN_PROBE=yes' \
+            && echo "ps -E shows a process its own environment on this runner" \
+            || echo "ps -E does NOT show environments here: the fence reaches only a living organization's tree"
+          cargo run -q -p hale-cli --bin hale -- test dna/tests/body_scan_test.hl
