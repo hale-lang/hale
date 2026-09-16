@@ -8,7 +8,9 @@
 // any more, and north's body is untouched. In between, a job acme's
 // body plans for north's member is a transfer inside the ledger (GH
 // #667): offered, refused to acme's member, accepted by north's, handed
-// by north's body, and closed by the assignee.
+// by north's body, and closed by the assignee. The service knows each
+// owner's key (GH #669): a write in a person's name comes from a head of
+// their owner, and north's head cannot act in alice's name.
 
 import "../core" as dna;
 
@@ -136,10 +138,12 @@ main locus App {
         }
         return false;
     }
-    fn configure(dir: String, who: String, owner: String) {
+    fn configure(dir: String, who: String, owner: String, key: String) {
         let c0 = in_dir(dir, "git\nconfig\nuser.name\n" + who);
         let c1 = in_dir(dir, "git\nconfig\nuser.email\n" + who + "@l");
         let c2 = in_dir(dir, "git\nconfig\ndna.owner\n" + owner);
+        // GH #669: this owner's key to the shared record's service
+        let c3 = in_dir(dir, "git\nconfig\ndna.owner.key\n" + key);
     }
     run() {
         let scratch = "/tmp/dna-two-owners-" + to_string(std::process::pid());
@@ -152,9 +156,9 @@ main locus App {
         let app = scratch + "/shared";
         let kport = 30000 + (std::process::pid() + 59) % 17000;
         let service = "http://127.0.0.1:" + to_string(kport);
-        self.configure(app, "alice", "acme");
+        self.configure(app, "alice", "acme", "ka");
         std::io::fs::write_file(app + "/dna/org/models.hl", CATALOG) or discard;
-        std::io::fs::write_file(app + "/dna/org/owners", "org = acme\norg/collections = north\nacme: alice\nnorth: bob\n") or discard;
+        std::io::fs::write_file(app + "/dna/org/owners", "org = acme\norg/collections = north\nacme: alice\nnorth: bob\nhost = acme\n") or discard;
         let checked = in_dir(app, toolchain() + "\ncheck\n--matrix\n.");
         std::test::assert_eq_int(checked.code, 0, "the shared organization checks: " + checked.stdout + checked.stderr);
         let a1 = in_dir(app, "git\nadd\n-A");
@@ -163,7 +167,7 @@ main locus App {
         let a4 = in_dir(app, "git\npush\n-q\norigin\nmain\nrefs/dna/*:refs/dna/*");
         std::test::assert_eq_int(a4.code, 0, "pushed: " + a4.stderr);
         // ---- one service, the ledger adopted into it
-        let ksrv = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_DSN=memory nohup timeout 900 \"$1\" dna knowledge . --port \"$2\" >.hale/knowledge.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + to_string(kport));
+        let ksrv = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_DSN=memory HALE_DNA_OWNER_KEYS=\"acme=ka north=kb\" nohup timeout 900 \"$1\" dna knowledge . --port \"$2\" >.hale/knowledge.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + to_string(kport));
         let kpid = dna::trim_nl(ksrv.stdout);
         let mut kup = false;
         let mut tries = 0;
@@ -180,7 +184,7 @@ main locus App {
         let other = scratch + "/north";
         let cl = in_dir(scratch, "git\nclone\n-q\n" + bare + "\n" + other);
         std::test::assert_eq_int(cl.code, 0, "north clones the record: " + cl.stderr);
-        self.configure(other, "bob", "north");
+        self.configure(other, "bob", "north", "kb");
         let synced = through(other, service, toolchain() + "\ndna\nsync");
         std::test::assert_eq_int(synced.code, 0, "north's clone has the record: " + synced.stdout + synced.stderr);
         let pid_b = self.start_body(other, service);
@@ -215,7 +219,7 @@ main locus App {
         // the epoch rises, the old body stops, north's does not
         let third = scratch + "/acme-2";
         let cl2 = in_dir(scratch, "git\nclone\n-q\n" + bare + "\n" + third);
-        self.configure(third, "carol", "acme");
+        self.configure(third, "carol", "acme", "ka");
         let s2 = through(third, service, toolchain() + "\ndna\nsync");
         let claimed = through(third, service, toolchain() + "\ndna\nbody\nclaim\n--force\n--as\ncarol");
         std::test::assert(claimed.code == 0 && std::str::contains(claimed.stdout, "was taken by carol"), "acme's lease is taken from its body: " + claimed.stdout + claimed.stderr);
@@ -226,6 +230,9 @@ main locus App {
         // the stopped body's epoch writes nothing any more
         let stale = curl("POST", service + "/ledger/append", "{\"expected\": 0, \"exact\": false, \"kind\": \"task.born\", \"entity\": \"t-stale\", \"body\": \"late\", \"as\": \"\", \"request_id\": \"stale-1\", \"lease\": \"owner/acme\", \"token\": " + to_string(epoch_a) + "}");
         std::test::assert(stale.status == 403 && std::str::contains(stale.body, "fenced"), "a write at the old epoch is fenced: " + to_string(stale.status) + " " + stale.body);
+        // ---- GH #669: north's head cannot act in acme's member's name, whatever it claims
+        let borrowed = through(other, service, toolchain() + "\ndna\nask\n--no-wait\n--to\norg/books\n--as\nalice\nsomething in alice's name");
+        std::test::assert(borrowed.code != 0 && std::str::contains(borrowed.stdout + borrowed.stderr, "north's head cannot act in their name"), "the service knows whose head this is: " + borrowed.stdout + borrowed.stderr);
         // ---- north's body still writes
         let asked_b = through(other, service, toolchain() + "\ndna\nask\n--no-wait\n--to\norg/collections\n--as\nbob\ncall the agency");
         std::test::assert_eq_int(asked_b.code, 0, "bob asks north's body: " + asked_b.stdout + asked_b.stderr);

@@ -6,6 +6,9 @@
 // request is remembered as refused. A write naming no lease (a head's,
 // a host's) is admitted as before. A second birth under an id already
 // born is refused `claimed` (GH #666): the store decides a first claim.
+// Over a shared record whose service knows each owner's key (GH #669),
+// a write in a person's name comes from a head of that person's owner,
+// naming the owner and holding its key, or it is refused.
 
 import "../core" as dna;
 
@@ -37,6 +40,14 @@ fn lease(key: String, holder: String, token: Int, expires: Int, expected: Int) -
     return "{\"key\": \"" + key + "\", \"holder\": \"" + holder + "\", \"token\": " + to_string(token) + ", \"expires\": " + to_string(expires) + ", \"present\": true, \"expected\": " + to_string(expected) + "}";
 }
 
+// GH #669: a write in a person's name from a head naming its owner and key.
+fn append_as(entity: String, request: String, who: String, head_owner: String, head_key: String) -> String {
+    let mut s = "{\"expected\": 0, \"exact\": false, \"kind\": \"intent.requested\", \"entity\": \"" + entity + "\", \"body\": \"{}\", \"as\": \"" + who + "\", \"request_id\": \"" + request + "\"";
+    if len(head_owner) > 0 { s = s + ", \"head_owner\": \"" + head_owner + "\""; }
+    if len(head_key) > 0 { s = s + ", \"head_key\": \"" + head_key + "\""; }
+    return s + "}";
+}
+
 fn append(entity: String, request: String, lease_key: String, token: Int) -> String {
     let mut s = "{\"expected\": 0, \"exact\": false, \"kind\": \"task.born\", \"entity\": \"" + entity + "\", \"body\": \"i: born\", \"as\": \"\", \"request_id\": \"" + request + "\"";
     if len(lease_key) > 0 { s = s + ", \"lease\": \"" + lease_key + "\", \"token\": " + to_string(token); }
@@ -56,7 +67,9 @@ main locus App {
         let app = scratch + "/epoch";
         let kport = 30000 + (std::process::pid() + 53) % 17000;
         let service = "http://127.0.0.1:" + to_string(kport);
-        let ksrv = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_DSN=memory nohup timeout 600 \"$1\" dna knowledge . --port \"$2\" >.hale/knowledge.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + to_string(kport));
+        // a shared record whose service knows each owner's key (GH #669)
+        std::io::fs::write_file(app + "/dna/org/owners", "org = acme\norg/collections = north\nacme: alice\nnorth: bob\nhost = acme\n") or discard;
+        let ksrv = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_DSN=memory HALE_DNA_OWNER_KEYS=\"acme=ka north=kb\" nohup timeout 600 \"$1\" dna knowledge . --port \"$2\" >.hale/knowledge.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + to_string(kport));
         let kpid = dna::trim_nl(ksrv.stdout);
         let mut kup = false;
         let mut tries = 0;
@@ -97,8 +110,17 @@ main locus App {
         // a head's write names no lease and is admitted as before
         let head = curl("POST", service + "/ledger/append", append("t7", "r7", "", 0));
         std::test::assert_eq_int(head.status, 200, "a write naming no lease is admitted: " + head.body);
+        // GH #669: a write in a person's name comes from a head of their owner
+        let anon = curl("POST", service + "/ledger/append", append_as("i1", "h1", "alice", "", ""));
+        std::test::assert(anon.status == 403 && std::str::contains(anon.body, "names its owner and holds that owner's key"), "a head naming no owner cannot act in a person's name: " + anon.body);
+        let wrong = curl("POST", service + "/ledger/append", append_as("i2", "h2", "alice", "acme", "nope"));
+        std::test::assert(wrong.status == 403 && std::str::contains(wrong.body, "not one of acme's"), "…nor with the wrong key: " + wrong.body);
+        let borrowed = curl("POST", service + "/ledger/append", append_as("i3", "h3", "alice", "north", "kb"));
+        std::test::assert(borrowed.status == 403 && std::str::contains(borrowed.body, "north's head cannot act in their name"), "…nor another owner's head in alice's name: " + borrowed.body);
+        let theirs = curl("POST", service + "/ledger/append", append_as("i4", "h4", "alice", "acme", "ka"));
+        std::test::assert_eq_int(theirs.status, 200, "acme's head in alice's name lands: " + theirs.body);
         let rows = curl("GET", service + "/ledger/rows?from=0", "").body;
-        std::test::assert(std::str::contains(rows, "\"entity\": \"t1\"") && std::str::contains(rows, "\"entity\": \"t5\"") && std::str::contains(rows, "\"entity\": \"t7\"") && !std::str::contains(rows, "\"entity\": \"t2\"") && !std::str::contains(rows, "\"entity\": \"t4\"") && !std::str::contains(rows, "\"entity\": \"t6\""), "exactly the admitted writes are rows: " + rows);
+        std::test::assert(std::str::contains(rows, "\"entity\": \"t1\"") && std::str::contains(rows, "\"entity\": \"t5\"") && std::str::contains(rows, "\"entity\": \"t7\"") && std::str::contains(rows, "\"entity\": \"i4\"") && !std::str::contains(rows, "\"entity\": \"i3\"") && !std::str::contains(rows, "\"entity\": \"t2\"") && !std::str::contains(rows, "\"entity\": \"t4\"") && !std::str::contains(rows, "\"entity\": \"t6\""), "exactly the admitted writes are rows: " + rows);
         let k = dna::run_tool("kill\n" + kpid);
     }
 }

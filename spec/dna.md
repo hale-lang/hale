@@ -904,7 +904,20 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   only in a member of `to`'s name) and their controller then appends
   `task.handed` in its own name, naming `transferred_from` and who
   accepted, so completion is admitted in the assignee's name as
-  always. Nothing settles on the request alone.
+  always. Nothing settles on the request alone. **Who hosts the shared
+  record's service** (GH #669) is every owner's trust decision, named
+  in the map — `host = acme`, an owner or a third party; changing it
+  affects every owner, so every owner approves — and the host gives
+  each owner a key to the service out of band (`HALE_DNA_OWNER_KEYS`,
+  `<owner>=<key> …`, on the service). Each owner's heads reach the
+  service with their own identities: a head names its owner and holds
+  its key (`git config dna.owner`, `dna.owner.key`; carried as
+  `head_owner`, `head_key` on `POST /ledger/append`), the service
+  admits a write in a person's name only from a head of the owner that
+  person is a member of (403 otherwise: no key, the wrong one, or a
+  member of another owner), and who the person is remains the head's
+  to establish — its issuer under `dna.principal = oidc`. A service
+  given no keys serves a single-owner record as before.
 - **The foundational law** (`dna/org/law.hl`, generated, extendable,
   never weakened): nothing applies except through the substrate
   (`forbid reaches(positions, effects(genome_apply)) avoiding

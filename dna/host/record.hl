@@ -55,6 +55,10 @@ fn trust_mode(root: String) -> String {
 fn owner_here(root: String) -> String {
     return rec(root).setting("owner");
 }
+// GH #669: this owner's key to the shared record's service (`git config dna.owner.key`).
+fn owner_key_here(root: String) -> String {
+    return rec(root).setting("owner.key");
+}
 const OWNERS_FILE: String = "dna/org/owners";
 // Whether the genome's owners map names any position (the record is shared).
 fn shared_here(root: String) -> Bool {
@@ -180,7 +184,7 @@ fn ledger_submit(root: String, kind: String, entity: String, body: String, autho
         // the service is down: this request joins the queue behind the others
         return enqueue(root, kind, entity, body, author);
     }
-    let l = dna::ServiceLedger { url: url };
+    let l = dna::ServiceLedger { url: url, head_owner: owner_here(root), head_key: owner_key_here(root) };
     let id = request_id(root);
     let r = l.submit(l.revision(), false, kind, entity, body, author, id);
     if r.ok { return true; }
@@ -207,7 +211,7 @@ fn ledger_submit_at(root: String, expected: Int, kind: String, entity: String, b
     let url = knowledge_url(root);
     if len(url) == 0 { return "no service is known here to write `" + kind + "` through (HALE_DNA_KNOWLEDGE_URL, or `hale dna dev`)"; }
     if expected < 0 { return "the ledger's revision was not read"; }
-    let l = dna::ServiceLedger { url: url };
+    let l = dna::ServiceLedger { url: url, head_owner: owner_here(root), head_key: owner_key_here(root) };
     let r = l.submit(expected, true, kind, entity, body, author, request_id(root));
     if r.ok { return ""; }
     if r.error == "stale_revision" { return "stale_revision"; }

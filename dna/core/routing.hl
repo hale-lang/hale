@@ -212,6 +212,12 @@ locus ServiceLedger {
         token: Int = 0;
         lease_env: String = "HALE_DNA_LEASE";
         token_env: String = "HALE_DNA_LEASE_TOKEN";
+        // GH #669: the owner whose head this writer is, and that owner's key
+        // to the service; set by the host from `dna.owner` / `dna.owner.key`.
+        // The service checks a write in a person's name comes from a head of
+        // the owner the person belongs to.
+        head_owner: String = "";
+        head_key: String = "";
     }
     birth() {
         if len(self.url) == 0 && len(self.url_env) > 0 && std::env::var_exists(self.url_env) { self.url = std::env::var(self.url_env); }
@@ -306,6 +312,10 @@ locus ServiceLedger {
         if len(self.lease) > 0 {
             b.string_field("lease", self.lease);
             b.int_field("token", self.token);
+        }
+        if len(self.head_key) > 0 {
+            b.string_field("head_owner", self.head_owner);
+            b.string_field("head_key", self.head_key);
         }
         b.end_object();
         self.calls = self.calls + 1;

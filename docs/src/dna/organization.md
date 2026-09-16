@@ -198,7 +198,12 @@ from there. Only the receiving owner settles a transfer. Money is each
 owner's own: a grant names who pays (`funder: "acme/ops"`), every
 allocation is reserved once by the store, every attempt's spend is
 retained, and a purchase two owners fund is two reservations that may
-not both land — undoing one is a compensation someone authorizes.
+not both land — undoing one is a compensation someone authorizes. One
+owner (or a third party) hosts the shared record's service, named in
+the map (`host = acme`) and changed only with every owner's approval;
+it hands each owner a key (`HALE_DNA_OWNER_KEYS` on the service, `git
+config dna.owner.key` on each head), and a write in a person's name is
+admitted only from a head of that person's owner.
 
 ## Who decides what
 

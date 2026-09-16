@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: who hosts the shared record's service, and how each owner's heads are identified to it (GH #669, stage B2)
+
+- The owners map names the host (`host = acme`); changing it affects every owner. The host gives each owner a key (`HALE_DNA_OWNER_KEYS="<owner>=<key> …"` on the service); a head names its owner and key (`git config dna.owner`, `dna.owner.key`, carried on every append), and the service admits a write in a person's name only from a head of the owner that person belongs to. A service given no keys serves as before.
+
 ### DNA: funding — an allowance names its funder, each allocation is reserved once, every attempt retained (GH #668, stage B2)
 
 - A `Grant` names who pays (`funder: "<owner>/<account>"`), inherited from the ceiling; a child naming another funder than its ceiling's is born wider. `Dna.reserve` appends `spend.reserved <op>` — the allocation is the entity, a claim kind the ledger's unique constraint reserves once (`grant.reserved` keyed by the child could be reserved only once per child in Postgres; rows from before are still read). `settle_spend` appends `spend.settled <op>` per attempt and the window counts their sum; a competing settlement is read, never doubled. `compensate_spend(op, amount, by)` appends `spend.compensated`, authorized by name, never an implied rollback. A purchase two owners fund is two reservations that may not both land, visibly.

@@ -15,6 +15,7 @@
 //   org/collections = north  a position under another owner
 //   acme: alice, carol       an owner's members — whose verdicts count as its
 //   north: bob
+//   host = acme              who runs the shared record's ledger service (GH #669)
 // A position not named takes its nearest named ancestor's owner; with no
 // ancestor named it is unowned, and no controller admits it.
 
@@ -75,6 +76,7 @@ locus Ownership {
         loaded: Bool = false;
         positions: OwnedRows = OwnedRows { };
         memberships: MembershipRows = MembershipRows { };
+        hosting: String = ""; // GH #669: the owner (or third party) that runs the ledger service
     }
     birth() {
         if len(self.me) == 0 && len(self.me_env) > 0 && std::env::var_exists(self.me_env) { self.me = std::env::var(self.me_env); }
@@ -93,7 +95,9 @@ locus Ownership {
             if len(line) > 0 && line[0..1] != "#" {
                 let eq = std::str::index_of(line, "=");
                 let colon = std::str::index_of(line, ":");
-                if eq >= 0 && (colon < 0 || eq < colon) {
+                if eq >= 0 && (colon < 0 || eq < colon) && strip_blanks(line[0..eq]) == "host" {
+                    self.hosting = strip_blanks(line[(eq + 1)..len(line)]);
+                } else if eq >= 0 && (colon < 0 || eq < colon) {
                     self.positions.push(Owned { position: position_name(line[0..eq]), owner: strip_blanks(line[(eq + 1)..len(line)]) });
                 } else if colon >= 0 {
                     self.memberships.push(Membership { owner: strip_blanks(line[0..colon]), members: words_of(line[(colon + 1)..len(line)]) });
@@ -103,6 +107,8 @@ locus Ownership {
     }
     // Whether the record is shared: the map names any position.
     fn shared() -> Bool { self.load(); return self.positions.len() > 0; }
+    // GH #669: who runs the shared record's ledger service, "" when unnamed.
+    fn host() -> String { self.load(); return self.hosting; }
     // The owner of a position: named, or its nearest named ancestor's; ""
     // when no ancestor is named (unowned).
     @unbounded
@@ -247,6 +253,8 @@ fn owners_affected(before: String, after: String) -> String {
         all = word_add(all, nth_word(will.owners(), i));
         i = i + 1;
     }
+    // GH #669: who hosts the service is every owner's trust decision
+    if was.host() != will.host() { return all; }
     let mut out = "";
     i = 0;
     while len(nth_word(all, i)) > 0 {
