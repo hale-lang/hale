@@ -83,6 +83,9 @@ type Grant {
     counterparties: String = ""; // classes or named parties, space-separated; none named = none allowed
     routes: String = ""; // provider or account routes, space-separated
     expires: Int = 0; // unix seconds; 0 = does not expire
+    // GH #668: who pays — `<owner>/<account>` or `<account>`; "" = the
+    // organization's own. A child names its ceiling's funder or none.
+    funder: String = "";
     authority_epoch: Int = 0; // the authority epoch: a contraction or revocation advances it, fencing admissions made before
 }
 
@@ -202,8 +205,19 @@ fn intersect_grants(child: Grant, ceiling: Grant) -> Grant {
         counterparties: words_in_both(child.counterparties, ceiling.counterparties),
         routes: words_in_both(child.routes, ceiling.routes),
         expires: earlier_expiry(child.expires, ceiling.expires),
-        authority_epoch: child.authority_epoch + ceiling.authority_epoch
+        authority_epoch: child.authority_epoch + ceiling.authority_epoch,
+        funder: if len(child.funder) > 0 { child.funder } else { ceiling.funder }
     };
+}
+// GH #668: the owner and the account of a funder, `acme/ops` -> acme, ops;
+// a bare `ops` is an account of the organization's own.
+fn funder_owner(f: String) -> String {
+    let c = std::str::index_of(f, "/");
+    return if c < 0 { "" } else { f[0..c] };
+}
+fn funder_account(f: String) -> String {
+    let c = std::str::index_of(f, "/");
+    return if c < 0 { f } else { f[(c + 1)..len(f)] };
 }
 fn grant_within(child: Grant, ceiling: Grant) -> Bool {
     if len(ceiling.child) == 0 { return true; }
@@ -312,6 +326,10 @@ fn earlier_expiry(x: Int, y: Int) -> Int {
 fn resource_gap(child: Grant, ceiling: Grant) -> String {
     let mut out = "";
     let mut window_named = false;
+    // GH #668: money comes from the ceiling's funder or none other
+    if len(ceiling.funder) > 0 && len(child.funder) > 0 && child.funder != ceiling.funder {
+        out = out + ", funder " + child.funder + " not granted above (the ceiling pays from " + ceiling.funder + ")";
+    }
     let n = word_count(child.amounts);
     let mut i = 0;
     while i + 1 < n {

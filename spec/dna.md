@@ -595,19 +595,35 @@ repository:
   predicate by predicate and names the field that fails (`expires`,
   `operation`, `currency`, `amount`, `counterparty`, `route`).
   `Dna.reserve(spend)` admits a spend against the effective grant and
-  appends `grant.reserved <child> {op, amount, currency, counterparty,
-  route, ceiling, epoch, at}`; the child's own window counts its
-  reservations and the ceiling's window counts every child's under it.
+  appends `spend.reserved <op> {child, amount, currency, counterparty,
+  route, ceiling, epoch, at, funder, account}` (GH #668: the allocation
+  is the row's entity, a claim kind the Ledger's unique constraint
+  reserves once, and the row names who pays — a grant's `funder`,
+  `<owner>/<account>`, inherited from the ceiling when the child names
+  none; a child naming another funder than its ceiling's is born wider,
+  `funder … not granted above`); a reservation from before this,
+  `grant.reserved <child> {op, …}`, is read the same way. The child's
+  own window counts its reservations and the ceiling's window counts
+  every child's under it.
   The remainder is read at a revision and the row is appended with
   `Journal.append_exact` at that revision — a writer that moved the
   record in between makes it stale, never re-appended at the tail — so
   two children cannot each spend the same remainder. A refusal is
   `grant.reservation_refused <child>` naming the field — money, the
-  Ledger's, never `grant.refused`. `Dna.settle_spend(op,
-  spent)` appends `grant.released {op, spent}` once — under contention
-  too: the row is appended with `append_exact` at the revision "not yet
-  settled" was read at, and read again when the record moved — and the
-  window counts what was spent from then on. A contraction advances the
+  Ledger's, never `grant.refused`. `Dna.settle_spend(op, spent)`
+  appends `spend.settled <op> {child, attempt, spent}`, one per
+  attempt: every attempt's actual consumption is retained and the
+  window counts their sum from then on (a second settlement is attempt
+  2, not a refusal). Under contention a settlement is once: the row is
+  appended with `append_exact` at the revision the last settlement was
+  read at, and one another writer landed in between is read as the
+  answer, never doubled. Money that came back is a compensation someone
+  authorized, `Dna.compensate_spend(op, amount, by)` appending
+  `spend.compensated <op> {child, attempt, amount, by}` — never an
+  implied rollback. A purchase two children (or two owners of a shared
+  record) fund is two reservations, each its own: one may settle and
+  the other not, and the partial success is visible as such; no
+  atomicity across them is assumed. A contraction advances the
   epoch, and so does `Dna.revoke_grant(by)` (the parent's only; nothing
   is left granted). A revocation is **recorded before it takes effect**,
   `grant.revoked <child> {by, parent, epoch}` — one the record refuses

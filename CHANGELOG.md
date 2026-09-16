@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: funding — an allowance names its funder, each allocation is reserved once, every attempt retained (GH #668, stage B2)
+
+- A `Grant` names who pays (`funder: "<owner>/<account>"`), inherited from the ceiling; a child naming another funder than its ceiling's is born wider. `Dna.reserve` appends `spend.reserved <op>` — the allocation is the entity, a claim kind the ledger's unique constraint reserves once (`grant.reserved` keyed by the child could be reserved only once per child in Postgres; rows from before are still read). `settle_spend` appends `spend.settled <op>` per attempt and the window counts their sum; a competing settlement is read, never doubled. `compensate_spend(op, amount, by)` appends `spend.compensated`, authorized by name, never an implied rollback. A purchase two owners fund is two reservations that may not both land, visibly.
+
 ### DNA: transfers between owners inside one ledger, settled on the other owner's acceptance (GH #667, stage B2)
 
 - A plan that hands a job to another owner's member appends `task.transfer_requested` (owner, to, assignee, the acceptance fields) in place of `task.handed`; the Task waits. `hale dna task accept <id> [--as <who>]` by a member of the owner named appends `task.transfer_accepted`, which the service admits only in such a member's name; that owner's controller then hands the Task in its own name (`task.handed` with `transferred_from` and `accepted_by`), so completion is admitted in the assignee's name as before. Handoffs between records are unchanged.

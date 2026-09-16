@@ -7,7 +7,7 @@
 // Rows are appended under compare-and-swap on the tail — one insert
 // conditioned on the row count — so a reservation read at a revision
 // cannot land after a writer that changed it (GH #605 without a ref).
-// Claim kinds (`effect.requested`, `grant.reserved`, `task.born`) carry
+// Claim kinds (`effect.requested`, `spend.reserved`, `task.born`) carry
 // a unique constraint on (kind, entity): the exclusive claim is the
 // database's, not a scan's. Every row keeps its sha256 chain as the
 // memory journal does, so a reader verifies the Ledger the same way.
@@ -101,7 +101,7 @@ fn row_json(e: dna::Event, author: String) -> String {
 }
 
 fn claim_kind(kind: String) -> Bool {
-    return kind == "effect.requested" || kind == "grant.reserved" || kind == "task.born";
+    return kind == "effect.requested" || kind == "spend.reserved" || kind == "task.born";
 }
 
 // ---- in memory ------------------------------------------------------------
@@ -249,7 +249,8 @@ locus PqLedger {
         if !ns.ok { return self.fail("scope (schema " + sch + ")", ns.err); }
         let ddl = "CREATE TABLE IF NOT EXISTS ledger_rows (seq bigint PRIMARY KEY, kind text NOT NULL, entity text NOT NULL, body text NOT NULL, author text NOT NULL, prev text NOT NULL, digest text NOT NULL, at timestamptz NOT NULL DEFAULT now(), record_seq bigint, record_commit text);"
             + "CREATE UNIQUE INDEX IF NOT EXISTS ledger_rows_commit ON ledger_rows (record_commit) WHERE record_commit IS NOT NULL;"
-            + "CREATE UNIQUE INDEX IF NOT EXISTS ledger_rows_claim ON ledger_rows (kind, entity) WHERE kind IN ('effect.requested', 'grant.reserved', 'task.born');"
+            + "DROP INDEX IF EXISTS ledger_rows_claim;"
+            + "CREATE UNIQUE INDEX IF NOT EXISTS ledger_rows_claims ON ledger_rows (kind, entity) WHERE kind IN ('effect.requested', 'spend.reserved', 'task.born');"
             + "CREATE TABLE IF NOT EXISTS ledger_meta (key text PRIMARY KEY, value text NOT NULL);"
             + "CREATE TABLE IF NOT EXISTS ledger_requests (request_id text PRIMARY KEY, revision bigint NOT NULL, at timestamptz NOT NULL DEFAULT now());"
             + "CREATE TABLE IF NOT EXISTS ledger_mailboxes (n bigserial PRIMARY KEY, sender text NOT NULL, kind text NOT NULL, entity text NOT NULL, body text NOT NULL, author text NOT NULL, at timestamptz NOT NULL DEFAULT now(), UNIQUE (sender, kind, entity));";
@@ -363,7 +364,7 @@ locus PqLedger {
         a.add(commit);
         let r = self.run_q("INSERT INTO ledger_rows (seq, kind, entity, body, author, prev, digest, record_seq, record_commit) SELECT $1::bigint, $2, $3, $4, $5, $6, $7, NULLIF($8, '')::bigint, NULLIF($9, '') WHERE (SELECT coalesce(max(seq) + 1, 0) FROM ledger_rows) = $1::bigint RETURNING seq", a);
         if !r.ok {
-            if std::str::contains(r.err.detail, "ledger_rows_claim") { self.error = "claimed"; return "claimed"; }
+            if std::str::contains(r.err.detail, "ledger_rows_claim") { self.error = "claimed"; return "claimed"; } // ledger_rows_claims
             if std::str::contains(r.err.detail, "ledger_rows_commit") { return "duplicate"; }
             self.error = "append: " + r.err.kind + " " + r.err.detail;
             return "io";

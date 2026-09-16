@@ -11,7 +11,7 @@ import "../core" as dna;
 fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
 
 // A journal on which another settler lands first: the first time a
-// `grant.released` is written, a competing settlement of the same
+// `spend.settled` is written, a competing settlement of the same
 // operation is appended before it.
 locus RacingJournal {
     params {
@@ -19,9 +19,9 @@ locus RacingJournal {
         raced: Bool = false;
     }
     fn race(kind: String, entity: String, body: String) {
-        if kind != "grant.released" || self.raced { return; }
+        if kind != "spend.settled" || self.raced { return; }
         self.raced = true;
-        let x = self.inner.append(self.inner.revision(), "grant.released", entity, "{\"op\": \"" + std::json::find_string_field(body, "op") + "\", \"spent\": \"999\"}");
+        let x = self.inner.append(self.inner.revision(), "spend.settled", entity, "{\"child\": \"" + std::json::find_string_field(body, "child") + "\", \"attempt\": 1, \"spent\": \"999\"}");
     }
     fn refresh() -> Bool { return self.inner.refresh(); }
     fn revision() -> Int { return self.inner.revision(); }
@@ -81,6 +81,8 @@ main locus App {
         refusing: dna::Dna = dna::Dna { };
         brief: dna::Dna = dna::Dna { };
         racy: dna::Dna = dna::Dna { };
+        funded: dna::Dna = dna::Dna { org_id: "funded-placeholder" };
+        misfunded: dna::Dna = dna::Dna { org_id: "misfunded-placeholder" };
     }
     // What the record holds now, read fresh (each organism's journal is
     // its own view of the ref).
@@ -104,6 +106,18 @@ main locus App {
         while i < j.revision() {
             let e = j.read(i);
             if e.kind == kind { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    @unbounded
+    fn last_of(repo: String, kind: String, entity: String) -> String {
+        let j = dna::GitJournal { repo: repo };
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && e.entity == entity { out = e.body; }
             i = i + 1;
         }
         return out;
@@ -156,9 +170,11 @@ main locus App {
         std::test::assert(!a2.ok && std::str::contains(a2.refused, "would bring the ceiling `org`'s none to 1100 of 1000 (shared by its children)"), "the remainder is shared, not each child's: " + a2.refused);
         std::test::assert(std::str::contains(self.last(repo, "grant.reservation_refused"), "spend `a2` (300 USD to acme via bank): window:"), "the refusal is a money row naming the field: " + self.last(repo, "grant.reservation_refused"));
         std::test::assert_eq_int(self.rows(repo, "grant.refused", ""), 0, "a refused spend is not an authority refusal");
-        std::test::assert_eq_int(self.rows(repo, "grant.reserved", ""), 2, "two reservations in the record");
-        let reserved = self.last(repo, "grant.reserved");
-        std::test::assert(std::str::contains(reserved, "\"op\": \"b1\"") && std::str::contains(reserved, "\"ceiling\": \"org\"") && std::str::contains(reserved, "\"epoch\": 0"), "a reservation names its op, ceiling and authority_epoch: " + reserved);
+        std::test::assert_eq_int(self.rows(repo, "spend.reserved", ""), 2, "two reservations in the record");
+        let reserved = self.last(repo, "spend.reserved");
+        std::test::assert(std::str::contains(reserved, "\"op\": \"b1\"") && std::str::contains(reserved, "\"child\": \"billing\"") && std::str::contains(reserved, "\"ceiling\": \"org\"") && std::str::contains(reserved, "\"epoch\": 0"), "a reservation names its op, child, ceiling and authority_epoch: " + reserved);
+        std::test::assert_eq_str(self.last(repo, "spend.reserved"), self.last_of(repo, "spend.reserved", "b1"), "GH #668: the allocation is the row's entity, reserved once by the store's claim");
+        std::test::assert(std::str::contains(reserved, "\"funder\": \"\"") && std::str::contains(reserved, "\"account\": \"\""), "an organization funding itself names no funder: " + reserved);
 
         // the atomic step: an exact append at a revision the record has
         // moved past is refused, never re-appended at the new tail
@@ -168,19 +184,54 @@ main locus App {
         std::test::assert(noise.ok, "app moved the record");
         let stale = self.billing.journal.append_exact(rev, "grant.reserved", "billing", "{\"op\": \"stale\"}");
         std::test::assert(!stale.ok && stale.error == "stale_revision", "a stale exact append is refused: " + stale.error);
-        std::test::assert(!std::str::contains(self.last(repo, "grant.reserved"), "\"op\": \"stale\""), "and nothing was appended at the tail");
+        std::test::assert(!std::str::contains(self.last(repo, "spend.reserved"), "\"op\": \"stale\"") && !std::str::contains(self.last(repo, "grant.reserved"), "\"op\": \"stale\""), "and nothing was appended at the tail");
         let plain = self.billing.journal.append(self.billing.journal.revision(), "task.born", "t10", "an ordinary append still lands");
         std::test::assert(plain.ok, "an ordinary append after the refresh lands: " + plain.error);
 
         // settlement: what was actually spent replaces the reservation
         std::test::assert_eq_str(self.app.settle_spend("a1", "150.00"), "", "app settles a1 at what it spent");
-        std::test::assert(std::str::contains(self.app.settle_spend("a1", "1"), "already settled"), "a settlement is once");
+        // GH #668: every attempt is retained — a second settlement is attempt 2, and the window counts both
+        std::test::assert_eq_str(self.app.settle_spend("a1", "1"), "", "a second attempt is retained, not refused");
+        std::test::assert(std::str::contains(self.last(repo, "spend.settled"), "\"attempt\": 2") && std::str::contains(self.last(repo, "spend.settled"), "\"spent\": \"1\""), "attempt 2, at what it spent: " + self.last(repo, "spend.settled"));
+        std::test::assert(dna::dec(self.app.spent_of("app", "a1", self.app.journal.revision())) == 151.0d, "a1 consumed both attempts: " + self.app.spent_of("app", "a1", self.app.journal.revision()));
         std::test::assert(std::str::contains(self.app.settle_spend("zz", "1"), "no reservation `zz`"), "a settlement needs its reservation");
+        // money that came back is a compensation someone authorized, never an implied rollback
+        std::test::assert(std::str::contains(self.app.compensate_spend("a1", "50", ""), "names who authorized"), "a compensation is authorized by name");
+        std::test::assert_eq_str(self.app.compensate_spend("a1", "50", "alice"), "", "alice authorizes 50 back on a1");
+        std::test::assert(std::str::contains(self.last(repo, "spend.compensated"), "\"by\": \"alice\"") && std::str::contains(self.last(repo, "spend.compensated"), "\"amount\": \"50\""), "in the record: " + self.last(repo, "spend.compensated"));
+        std::test::assert(dna::dec(self.app.spent_of("app", "a1", self.app.journal.revision())) == 101.0d, "and the window counts it from then on: " + self.app.spent_of("app", "a1", self.app.journal.revision()));
+        std::test::assert(std::str::contains(self.app.compensate_spend("b9", "1", "alice"), "no reservation"), "nothing is compensated that was never reserved");
         let a3 = self.app.reserve(spend("a3", "300", "USD"));
-        std::test::assert(a3.ok, "150 spent + 400 held + 300 = 850 fits the shared 1000: " + a3.refused);
+        std::test::assert(a3.ok, "101 consumed + 400 held + 300 = 801 fits the shared 1000: " + a3.refused);
+        // a purchase two children fund is two reservations, each its own;
+        // one settles, the other does not: the partial success is visible
+        let half_a = self.app.reserve(spend("po-7-app", "40", "USD"));
+        let half_b = self.billing.reserve(spend("po-7-billing", "40", "USD"));
+        std::test::assert(half_a.ok && half_b.ok, "each side reserves its half: " + half_a.refused + half_b.refused);
+        std::test::assert_eq_str(self.app.settle_spend("po-7-app", "40"), "", "app's half settles");
+        std::test::assert(len(self.app.spent_of("app", "po-7-app", self.app.journal.revision())) > 0 && len(self.billing.spent_of("billing", "po-7-billing", self.billing.journal.revision())) == 0, "one half consumed, the other still only reserved: nothing pretends the purchase is whole");
         let dup = self.app.reserve(spend("a3", "1", "USD"));
         std::test::assert(!dup.ok && std::str::contains(dup.refused, "operation: `a3` is already reserved"), "an operation is reserved once: " + dup.refused);
 
+        // GH #668: who pays is on the grant, and a child pays from its ceiling's funder or none other
+        self.funded = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            boundary: dna::AutonomyBoundary { child: "funded", grant: dna::Grant { child: "funded", classes: "docs", max_magnitude: 8, review: "post", amounts: "USD 500", counterparties: "acme", routes: "bank" } },
+            ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 10, review: "post", amounts: "USD 500", counterparties: "acme", routes: "bank", funder: "acme/ops" } },
+            org_id: "funded"
+        };
+        let paid = self.funded.reserve(spend("f1", "10", "USD"));
+        std::test::assert(paid.ok, "reserved under the ceiling's funder: " + paid.refused);
+        let frow = self.last_of(repo, "spend.reserved", "f1");
+        std::test::assert(std::str::contains(frow, "\"funder\": \"acme\"") && std::str::contains(frow, "\"account\": \"ops\""), "the reservation names who pays, inherited from the ceiling: " + frow);
+        self.misfunded = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            boundary: dna::AutonomyBoundary { child: "misfunded", grant: dna::Grant { child: "misfunded", classes: "docs", max_magnitude: 8, review: "post", amounts: "USD 500", counterparties: "acme", routes: "bank", funder: "north/x" } },
+            ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 10, review: "post", amounts: "USD 500", counterparties: "acme", routes: "bank", funder: "acme/ops" } },
+            org_id: "misfunded"
+        };
+        let unpaid = self.misfunded.reserve(spend("m1", "10", "USD"));
+        std::test::assert(std::str::contains(self.last_of(repo, "grant.refused", "misfunded"), "funder north/x not granted above"), "a child paying from another funder than its ceiling's is born wider: " + self.last_of(repo, "grant.refused", "misfunded"));
         // fencing: a contraction advances the epoch
         std::test::assert_eq_str(self.billing.admits(b1), "", "an admission is carried out under the grant it was made under");
         self.billing.ceiling_outcome(false);
@@ -277,12 +328,12 @@ main locus App {
         let r1 = self.racy.reserve(spend("r1", "10", "USD"));
         std::test::assert(r1.ok, "reserved: " + r1.refused);
         let contended = self.racy.settle_spend("r1", "10");
-        std::test::assert(std::str::contains(contended, "already settled"), "the loser reads the winner's settlement: " + contended);
+        std::test::assert(std::str::contains(contended, "already settled"), "the loser reads the winner's settlement, and does not double it: " + contended);
         let mut released = 0;
         let mut k = 0;
         while k < self.racy.journal.revision() {
             let e = self.racy.journal.read(k);
-            if e.kind == "grant.released" { released = released + 1; }
+            if e.kind == "spend.settled" { released = released + 1; }
             k = k + 1;
         }
         std::test::assert_eq_int(released, 1, "one settlement in the record");

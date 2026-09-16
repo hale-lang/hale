@@ -1658,9 +1658,15 @@ locus Dna {
             b.string_field("ceiling", parent);
             b.int_field("epoch", g.authority_epoch);
             b.int_field("at", now);
+            // GH #668: the allocation is the row's entity, so the store's
+            // unique constraint reserves it once, and the row names who pays
+            b.string_field("child", child);
+            b.string_field("funder", funder_owner(g.funder));
+            b.string_field("account", funder_account(g.funder));
             b.end_object();
-            let r = self.journal.append_exact(rev, "grant.reserved", child, b.result());
+            let r = self.journal.append_exact(rev, "spend.reserved", s.id, b.result());
             if r.ok { return Admission { ok: true, op: s.id, amount: s.amount, currency: s.currency, authority_epoch: g.authority_epoch }; }
+            if r.error == "claimed" { return self.refuse_spend(child, s, "operation: `" + s.id + "` is already reserved (the store holds the claim)"); }
             if r.error != "stale_revision" { return Admission { op: s.id, refused: "the record refused the reservation: " + r.error }; }
             tries = tries + 1;
         }
@@ -1733,22 +1739,53 @@ locus Dna {
         let mut i = 0;
         while i < upto {
             let e = self.journal.read(i);
+            if e.kind == "spend.reserved" && e.entity == op && std::json::find_string_field(e.body, "child") == child { return true; }
+            // a reservation from before GH #668: keyed by the child, the op in its body
             if e.kind == "grant.reserved" && e.entity == child && std::json::find_string_field(e.body, "op") == op { return true; }
             i = i + 1;
         }
         return false;
     }
-    // What a settled operation actually spent ("" while unsettled).
+    // What an operation actually consumed: every settled attempt's spend
+    // less every compensation, as a decimal string; "" while unsettled
+    // (GH #668: every attempt is retained, nothing is rolled back by
+    // implication).
     @unbounded
     fn spent_of(child: String, op: String, upto: Int) -> String {
-        let mut out = "";
+        let mut total = 0.0d;
+        let mut settled = false;
         let mut i = 0;
         while i < upto {
             let e = self.journal.read(i);
-            if e.kind == "grant.released" && e.entity == child && std::json::find_string_field(e.body, "op") == op { out = std::json::find_string_field(e.body, "spent"); }
+            if e.kind == "spend.settled" && e.entity == op { settled = true; total = total + dec(std::json::find_string_field(e.body, "spent")); }
+            if e.kind == "spend.compensated" && e.entity == op { total = total - dec(std::json::find_string_field(e.body, "amount")); }
+            if e.kind == "grant.released" && e.entity == child && std::json::find_string_field(e.body, "op") == op { settled = true; total = dec(std::json::find_string_field(e.body, "spent")); }
             i = i + 1;
         }
-        return out;
+        return if settled { "" + total } else { "" };
+    }
+    // How many settled attempts an operation has, and the sequence of the last.
+    @unbounded
+    fn attempts_of(op: String, upto: Int) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < upto {
+            let e = self.journal.read(i);
+            if e.kind == "spend.settled" && e.entity == op { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn last_settled_seq(op: String, upto: Int) -> Int {
+        let mut at = -1;
+        let mut i = 0;
+        while i < upto {
+            let e = self.journal.read(i);
+            if e.kind == "spend.settled" && e.entity == op { at = i; }
+            i = i + 1;
+        }
+        return at;
     }
     // A window's use: every reservation in it (one child's, or every
     // child's under a ceiling), at what was actually spent once settled.
@@ -1758,10 +1795,14 @@ locus Dna {
         let mut i = 0;
         while i < upto {
             let e = self.journal.read(i);
-            if e.kind == "grant.reserved" && std::json::find_string_field(e.body, "currency") == currency {
-                let mine = if by_ceiling { std::json::find_string_field(e.body, "ceiling") == who } else { e.entity == who };
+            let reserved_now = e.kind == "spend.reserved";
+            let reserved_then = e.kind == "grant.reserved";
+            if (reserved_now || reserved_then) && std::json::find_string_field(e.body, "currency") == currency {
+                let child = if reserved_now { std::json::find_string_field(e.body, "child") } else { e.entity };
+                let op = if reserved_now { e.entity } else { std::json::find_string_field(e.body, "op") };
+                let mine = if by_ceiling { std::json::find_string_field(e.body, "ceiling") == who } else { child == who };
                 if mine && window_start_of(window, std::json::find_int_field(e.body, "at")) == start {
-                    let spent = self.spent_of(e.entity, std::json::find_string_field(e.body, "op"), upto);
+                    let spent = self.spent_of(child, op, upto);
                     used = used + dec(if len(spent) > 0 { spent } else { std::json::find_string_field(e.body, "amount") });
                 }
             }
@@ -1769,33 +1810,60 @@ locus Dna {
         }
         return used;
     }
-    // A reservation settles once, at what was actually spent; the window
-    // counts that from then on, and the attempt's use is in the record.
+    // A reservation settles at what an attempt actually spent, and every
+    // attempt is retained (GH #668): a second settlement is attempt 2,
+    // and the window counts the sum. Under contention a settlement is
+    // once: appended only at the revision "not yet settled by another"
+    // was read at, and a settlement another writer landed in between is
+    // read as the answer, never doubled.
     @unbounded
     fn settle_spend(op: String, spent: String) -> String {
         let child = self.boundary.child;
         let v = std::str::parse_decimal(spent) or - 1.0d;
         if v < 0.0d { return "spent: `" + spent + "` is not a decimal"; }
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.string_field("op", op);
-        b.string_field("spent", spent);
-        b.end_object();
-        let body = b.result();
-        // once, under contention too: appended only at the revision the
-        // "not yet settled" was read at, read again when the record moved
         let mut tries = 0;
+        let mut read_at = -1;
         while tries < 20 {
             let moved = self.journal.refresh();
             let rev = self.journal.revision();
             if !self.spend_reserved(child, op, rev) { return "no reservation `" + op + "` for " + child; }
-            if len(self.spent_of(child, op, rev)) > 0 { return "`" + op + "` is already settled"; }
-            let x = self.journal.append_exact(rev, "grant.released", child, body);
+            let last = self.last_settled_seq(op, rev);
+            if read_at >= 0 && last >= read_at { return "`" + op + "` is already settled (attempt " + to_string(self.attempts_of(op, rev)) + " landed while this one was being written)"; }
+            read_at = rev;
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("child", child);
+            b.int_field("attempt", self.attempts_of(op, rev) + 1);
+            b.string_field("spent", spent);
+            b.end_object();
+            let x = self.journal.append_exact(rev, "spend.settled", op, b.result());
             if x.ok { return ""; }
             if x.error != "stale_revision" { return "the record refused the settlement: " + x.error; }
             tries = tries + 1;
         }
         return "contention: the record moved under twenty attempts to settle `" + op + "`";
+    }
+    // GH #668: money that came back is a compensation someone authorized,
+    // never an implied rollback: `spend.compensated <op> {child, attempt,
+    // amount, by}`, and the window counts it from then on.
+    fn compensate_spend(op: String, amount: String, by: String) -> String {
+        let child = self.boundary.child;
+        let v = std::str::parse_decimal(amount) or - 1.0d;
+        if v < 0.0d { return "amount: `" + amount + "` is not a decimal"; }
+        if len(by) == 0 { return "a compensation names who authorized it"; }
+        let moved = self.journal.refresh();
+        let rev = self.journal.revision();
+        if !self.spend_reserved(child, op, rev) { return "no reservation `" + op + "` for " + child; }
+        if len(self.spent_of(child, op, rev)) == 0 { return "`" + op + "` has settled nothing to compensate"; }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("child", child);
+        b.int_field("attempt", self.attempts_of(op, rev));
+        b.string_field("amount", amount);
+        b.string_field("by", by);
+        b.end_object();
+        let x = self.journal.append(rev, "spend.compensated", op, b.result());
+        return if x.ok { "" } else { "the record refused the compensation: " + x.error };
     }
     // An admission is carried out only under the grant it was made
     // under: a contraction or revocation since then advanced the epoch,

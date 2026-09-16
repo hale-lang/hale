@@ -25,6 +25,7 @@ main locus App {
         std::test::assert_eq_str(dna::memory_of("grant.reserved"), "ledger", "money reserved");
         std::test::assert_eq_str(dna::memory_of("grant.refused"), "record", "a grant born too wide is authority");
         std::test::assert_eq_str(dna::memory_of("grant.reservation_refused"), "ledger", "a spend refused is money");
+        std::test::assert(dna::memory_of("spend.reserved") == "ledger" && dna::memory_of("spend.settled") == "ledger" && dna::memory_of("spend.compensated") == "ledger", "GH #668: allocations, attempts and compensations are money");
         std::test::assert_eq_str(dna::memory_of("grant.contracted"), "record", "authority contracted");
         std::test::assert_eq_str(dna::memory_of("mutation.applied"), "record", "how the organism changed");
         std::test::assert_eq_str(dna::memory_of("review.verdict"), "record", "who allowed it");

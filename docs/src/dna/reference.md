@@ -150,8 +150,10 @@ sequence either way — see [The record](./record.md).
 | `grant.contracted` | record | a child | authority narrowed, and what it leaves: `to`, `epoch` |
 | `grant.refused` | record | a child | a grant born wider than its ceiling: authority |
 | `grant.reservation_refused` | ledger | a child | a spend the window would not admit, naming the field: money |
-| `grant.reserved` | ledger | a child | a spend admitted: op, amount, currency, counterparty, route, ceiling, epoch, at |
-| `grant.released` | ledger | a child | a reservation settled at what was actually spent |
+| `spend.reserved` | ledger | the allocation (op) | a spend admitted: child, amount, currency, counterparty, route, ceiling, epoch, at, funder, account — reserved once by the store's claim (GH #668) |
+| `spend.settled` | ledger | the allocation | one attempt's actual consumption: child, attempt, spent; every attempt is retained |
+| `spend.compensated` | ledger | the allocation | money that came back, authorized by name: child, attempt, amount, by |
+| `grant.reserved` / `grant.released` | ledger | a child | a reservation and its settlement from before GH #668 (`op` in the body); read as above |
 | `grant.fenced` | ledger | a child | an admission refused because the grant's epoch moved since |
 | `receipt.classified` | ledger | a digest | a protected body the knowledge service keeps: class, by, store |
 | `receipt.withheld` | ledger | a digest | a protected body no service could keep: class, by, why |
