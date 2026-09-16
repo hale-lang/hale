@@ -46,11 +46,36 @@ fn ledger_contract(l: know::Ledger, label: String) {
     std::test::assert(!l.checkpoint().adopted, label + ": no cutover");
 }
 
+// A lease store swaps by token: a put lands only against the token the
+// store holds (0 for none); the body lease and the mutation leases stand
+// on that alone (GH #646 stage 2).
+fn lease_contract(ls: know::LeaseStore, label: String) {
+    std::test::assert(ls.open(), label + ": opens: " + ls.last_error());
+    let none = ls.current("body");
+    std::test::assert(!none.known && none.token == 0, label + ": an absent lease is unknown, token 0");
+    std::test::assert(!ls.put("body", "a", 1, 100, true, 5), label + ": a put against a token the store lacks is refused");
+    std::test::assert(ls.put("body", "a", 1, 100, true, 0), label + ": a put against 0 lands on an absent lease");
+    let l1 = ls.current("body");
+    std::test::assert(l1.known && l1.holder == "a" && l1.token == 1 && l1.expires == 100 && l1.present, label + ": read back");
+    std::test::assert(!ls.put("body", "b", 2, 200, true, 0), label + ": a second put against 0 is refused once the lease exists");
+    std::test::assert(!ls.put("body", "b", 2, 200, true, 7), label + ": a put against a stale token is refused");
+    std::test::assert(ls.put("body", "a", 1, 130, true, 1), label + ": a renewal at the token lands");
+    std::test::assert_eq_int(ls.current("body").expires, 130, label + ": renewed");
+    std::test::assert(ls.put("body", "b", 2, 230, true, 1), label + ": a takeover at the token lands with the next token");
+    std::test::assert(!ls.put("body", "a", 1, 160, true, 1), label + ": the old holder's renewal is refused: the token moved");
+    std::test::assert(ls.put("body", "b", 2, 0, false, 2), label + ": a release keeps the token");
+    let l2 = ls.current("body");
+    std::test::assert(l2.known && !l2.present && l2.token == 2, label + ": released, token kept");
+    std::test::assert(!ls.current("mutation:m1").known, label + ": another key is its own");
+}
+
 main locus App {
-    params { pg: know::PqLedger = know::PqLedger { }; }
+    params { pg: know::PqLedger = know::PqLedger { }; pgl: know::PqLeaseStore = know::PqLeaseStore { }; }
     run() {
         let mem = know::MemLedger { };
         ledger_contract(mem, "memory");
+        let ml = know::MemLeaseStore { };
+        lease_contract(ml, "memory leases");
         if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") && std::env::var("HALE_DNA_KNOWLEDGE_DSN") != "memory" {
             let dsn = know::parse_dsn(std::env::var("HALE_DNA_KNOWLEDGE_DSN"));
             std::test::assert(dsn.ok, "the DSN parses: " + dsn.why);
@@ -74,6 +99,8 @@ main locus App {
             std::test::assert_eq_int(self.pg.revision(), 2, "pq: and this side now sees what moved it");
             let again = self.pg.append(2, "grant.reserved", "op1", "10");
             std::test::assert(again.ok, "pq: an ordinary append retries at the tail");
+            self.pgl = know::PqLeaseStore { conn: know::pq_conn(dsn), record_id: record };
+            lease_contract(self.pgl, "pq leases");
             let drop = self.pg.conn.exec("DROP SCHEMA " + self.pg.schema() + " CASCADE");
             std::test::assert(drop.ok, "this run's schema dropped: " + drop.err.detail);
         } else {

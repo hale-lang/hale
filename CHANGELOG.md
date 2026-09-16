@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: coordination in the store — leases swapped by token, the body lease as a row (GH #646 stage 2, #651)
+
+- On routing 1 every lease is a row of the store: the knowledge service serves `GET /ledger/lease?key=` and `POST /ledger/lease`, and a put lands only against the token the store holds (0 for none); `PqLeaseStore` and `MemLeaseStore` implement it. `ServiceLeases` in the core is `Coordination` over those two calls, and `GitLeases` — the record's coordination — takes a mutation lease from the record's cells on routing 0 and from the store on routing 1, so an adopted organism's leases move with it and nothing in its wiring changes. The body lease moves the same way: the host takes it as a row, the fence renews the row, a stale token is refused by the store, `hale dna body` reads it there, and `refs/dna/lease/*` is not written on routing 1. A store lost after activation is handled as the git lease already was: the renewal fails, the fence stops the organism at the margin, and `status` says the ledger is unreachable and nothing is admitted.
+
 ### DNA: the ledger — the day's work moves out of the record, by an explicit adoption (GH #646 stage 1, #650)
 
 - An organism has three memories, and every row kind has exactly one home: the Structure (the codebase), the record (git: how the organism changed and was allowed to) and the **ledger** (the store: what it did today — intents, tasks, decisions, bills, money, schedules fired, concerns, effect claims, liveness). The table is `dna::memory_of`; routing is versioned and is a fact of the record (`ledger.adopted` / `ledger.abandoned`), never a build's opinion. There is no dual-write.

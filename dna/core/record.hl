@@ -1006,12 +1006,32 @@ locus GitReceipts {
     fn erase(digest: String) -> Bool { return self.record.forget(digest); }
 }
 
-// `Coordination` as cells of the record, `lease/<key>`
-// ("holder\ntoken\nexpires\npresent"), compare-and-swapped: two organisms
-// or hosts on one repository fence each other through the record itself.
+// `Coordination` where the record says it lives (GH #646): as cells of
+// the record, `lease/<key>` ("holder\ntoken\nexpires\npresent"),
+// compare-and-swapped, so two organisms or hosts on one repository
+// fence each other through the record itself — and, once the record
+// says routing 1 (stage 2, #651), as rows of the store swapped by token
+// through the service, with no git transport in the path. An adopted
+// organism's leases move with it; nothing in its wiring changes.
 locus GitLeases {
-    params { repo: String = "."; record: GitRecord = GitRecord { }; races: Int = 0; }
+    params {
+        repo: String = ".";
+        record: GitRecord = GitRecord { };
+        service: ServiceLeases = ServiceLeases { url_env: "HALE_DNA_KNOWLEDGE_URL" };
+        head_seen: String = "";
+        routing: Int = 0;
+        races: Int = 0;
+    }
     birth() { self.record.repo = self.repo; }
+    // The routing is read from the record whenever its head moved.
+    fn in_store() -> Bool {
+        let head = self.record.head("journal");
+        if head != self.head_seen {
+            self.head_seen = head;
+            self.routing = routing_of_text(self.record.text_at(head));
+        }
+        return self.routing > 0;
+    }
     fn key_of(key: String) -> String { return "lease/" + ref_safe(key); }
     fn parse(key: String, text: String) -> Lease {
         if len(text) == 0 { return Lease { key: key }; }
@@ -1039,6 +1059,7 @@ locus GitLeases {
         return true;
     }
     fn acquire(key: String, holder: String, now: Int, ttl: Int) -> Lease {
+        if self.in_store() { return self.service.acquire(key, holder, now, ttl); }
         let cur = self.read(key);
         if cur.present && cur.expires > now && cur.holder != holder {
             return Lease { key: key, holder: cur.holder, token: 0, expires: cur.expires, present: false };
@@ -1051,15 +1072,20 @@ locus GitLeases {
         return l;
     }
     fn complete(key: String, token: Int, now: Int) -> Bool {
+        if self.in_store() { return self.service.complete(key, token, now); }
         let cur = self.read(key);
         if !cur.present { return false; }
         if cur.token != token { return false; }
         return self.write(key, Lease { key: key, holder: cur.holder, token: cur.token, expires: 0, present: false });
     }
     fn holder_of(key: String) -> String {
+        if self.in_store() { return self.service.holder_of(key); }
         let cur = self.read(key);
         if cur.present { return cur.holder; }
         return "";
     }
-    fn current(key: String) -> Lease { return self.read(key); }
+    fn current(key: String) -> Lease {
+        if self.in_store() { return self.service.current(key); }
+        return self.read(key);
+    }
 }

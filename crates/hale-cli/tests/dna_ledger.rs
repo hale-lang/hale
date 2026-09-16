@@ -162,6 +162,59 @@ fn an_organism_adopts_the_ledger_and_its_operations_leave_the_record() {
     let (ok, norun) = hale(&["dna", "run", ".", "--no-iris"], &app, &[("HALE_DNA_KNOWLEDGE_URL", "")]);
     assert!(!ok && norun.contains("no ledger service is known here"), "{norun}");
 
+    // stage 2: the body lease is a row of the store. No body has run: the
+    // store knows no lease; a body takes it there, the fence renews it
+    // there, and a head reads it there
+    let (ok, nobody) = hale(&["dna", "body"], &app, service_env);
+    assert!(ok && nobody.contains("none (no body has run this record"), "{nobody}");
+    let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["dna", "run", ".", "--no-iris"])
+        .current_dir(&app)
+        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
+        .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
+        .env("HALE_DNA_KNOWLEDGE_URL", &url)
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(d.join("run.stderr")).unwrap())
+        .spawn()
+        .expect("hale dna run");
+    let dl = Instant::now() + Duration::from_secs(120);
+    let mut lease = String::new();
+    while Instant::now() < dl {
+        lease = body(&http(kport, "GET /ledger/lease?key=body HTTP/1.0\r\nHost: x\r\n\r\n"));
+        if lease.contains("\"present\": true") {
+            break;
+        }
+        if let Ok(Some(st)) = host.try_wait() {
+            panic!("hale dna run exited early: {st}\n{}", std::fs::read_to_string(d.join("run.stderr")).unwrap_or_default());
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    assert!(lease.contains("\"present\": true") && lease.contains("\"token\": 1"), "the body took its lease in the store:\n{lease}\n{}", std::fs::read_to_string(d.join("run.stderr")).unwrap_or_default());
+    let (ok, live) = hale(&["dna", "body"], &app, service_env);
+    assert!(ok && live.contains("live on "), "a head reads the lease from the store: {live}");
+    let git_lease = Command::new("git").args(["rev-parse", "-q", "--verify", "refs/dna/lease/body"]).current_dir(&app).output().unwrap();
+    assert!(!git_lease.status.success(), "no git lease ref was written on routing 1");
+    // the second body is refused by the store's lease
+    let (ok, second) = hale(&["dna", "run", ".", "--no-iris"], &app, service_env);
+    assert!(!ok && second.contains("lease"), "a second body is refused: {second}");
+    let stop_host = |host: &mut std::process::Child| {
+        for f in ["org.pid", "app.pid"] {
+            if let Ok(pid) = std::fs::read_to_string(app.join(".hale/dna").join(f)) {
+                let _ = Command::new("kill").args(["-9", pid.trim()]).status();
+            }
+        }
+        let _ = host.kill();
+        let _ = host.wait();
+    };
+    stop_host(&mut host);
+    std::thread::sleep(Duration::from_millis(500));
+    // the body is gone; its lease stands until forced, in the store
+    let (ok, forced) = hale(&["dna", "body", "claim", "--force", "--as", "riley"], &app, service_env);
+    assert!(ok && (forced.contains("body.claimed") || forced.contains("released")), "{forced}");
+    let after_force = body(&http(kport, "GET /ledger/lease?key=body HTTP/1.0\r\nHost: x\r\n\r\n"));
+    assert!(after_force.contains("\"present\": false"), "the forced claim released the lease in the store:\n{after_force}");
+
     // abandon: back to the record alone; the record's rows were never removed
     let (ok, ab) = hale(&["dna", "ledger", "abandon", "--why", "the fixture is done", "--as", "riley"], &app, service_env);
     assert!(ok && ab.contains("ledger abandoned by riley"), "{ab}");

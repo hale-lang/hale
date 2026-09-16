@@ -195,7 +195,7 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `org.hl` | `Leader`, `SourceReader` |
 | `journal.hl` | `Journal`, `MemJournal`, `Receipts` (`FileReceipts`), `Coordination` (`MemLeases`), the effect idempotency helpers |
 | `record.hl` | `Record` — the record's own API — with `GitRecord` (the one file that spells `git` for the record) and `MemRecord`; `GitJournal`, `GitReceipts`, `GitLeases` over it |
-| `routing.hl` | the three memories: `memory_of` (the routing table), `RoutedJournal` (the record and the ledger read as one), `ServiceLedger` (the ledger over the knowledge service) |
+| `routing.hl` | the three memories: `memory_of` (the routing table), `RoutedJournal` (the record and the ledger read as one), `ServiceLedger` (the ledger over the knowledge service), `ServiceLeases` (leases in the store, swapped by token; `GitLeases` moves to it with the routing) |
 | `infrastructure.hl` | `Infrastructure` (a body's database, supervisor, credentials) and `Transport` (how a head reaches a body), declared with their memory implementations |
 | `forge.hl` | `Forge` (a code-review host), `MemForge`, `NoForge` |
 | `process.hl` | `Task`, `Workflow`, `Step`, `Work`, `Attempt`, `Metabolism` |

@@ -110,7 +110,10 @@ fn checkpoint_here(root: String) -> String {
 fn routing_line(root: String) -> String {
     let r = routing_here(root);
     if r == 0 { return "the record alone (routing 0); `hale dna ledger adopt` moves the day's work to the ledger"; }
-    return "record + ledger (routing " + to_string(r) + ", adopted at " + short(checkpoint_here(root)) + "; operations are written through the service)";
+    let sl = store_leases(root);
+    let probe = sl.current("body");
+    let reach = if sl.reachable { "" } else { "; THE LEDGER IS UNREACHABLE (" + sl.last_error + "): what is read here is the last projection, and nothing is admitted until it answers" };
+    return "record + ledger (routing " + to_string(r) + ", adopted at " + short(checkpoint_here(root)) + "; operations and leases live in the store behind the service" + reach + ")";
 }
 
 // An operational row of an adopted organism goes to the Ledger through
@@ -512,10 +515,28 @@ fn lease_text(l: BodyLease) -> String {
     return l.holder + "\n" + to_string(l.token) + "\n" + to_string(l.expires) + "\n" + (if l.present { "1" } else { "0" });
 }
 
-// The lease as the record's authority has it: the remote's cell when
-// there is a remote (received now), the clone's otherwise. `ok` false
-// when the remote could not be reached.
+// GH #646 stage 2: on routing 1 the body lease is a row of the store,
+// swapped by its token through the service; `sha` carries the token.
+fn body_in_store(repo: String) -> Bool { return routing_here(repo) > 0; }
+
+fn store_leases(repo: String) -> dna::ServiceLeases {
+    return dna::ServiceLeases { url: knowledge_url(repo) };
+}
+
+fn body_lease_from_store(repo: String) -> BodyLease {
+    let sl = store_leases(repo);
+    let l = sl.current("body");
+    if !sl.reachable { return BodyLease { ok: false }; }
+    if len(l.holder) == 0 && l.token == 0 { return BodyLease { }; }
+    return BodyLease { present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: to_string(l.token) };
+}
+
+// The lease as the record's authority has it: the store's row on
+// routing 1; the remote's cell when there is a remote (received now),
+// the clone's otherwise. `ok` false when the authority could not be
+// reached.
 fn body_lease_read(repo: String) -> BodyLease {
+    if body_in_store(repo) { return body_lease_from_store(repo); }
     let r = rec(repo);
     let remote = record_remote(repo);
     let mut key = BODY_LEASE;
@@ -539,6 +560,11 @@ fn body_lease_read(repo: String) -> BodyLease {
 // own cell mirrors what was written. False when someone else moved it
 // first.
 fn body_lease_write(repo: String, l: BodyLease, expected: String) -> Bool {
+    if body_in_store(repo) {
+        let sl = store_leases(repo);
+        let expected_token = if len(expected) == 0 { 0 } else { std::str::parse_int(expected) or 0 };
+        return sl.put("body", dna::Lease { key: "body", holder: l.holder, token: l.token, expires: l.expires, present: l.present }, expected_token);
+    }
     let r = rec(repo);
     let remote = record_remote(repo);
     if len(remote) > 0 {
