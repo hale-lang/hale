@@ -317,6 +317,7 @@ locus ServiceLedger {
                 self.load();
                 return AppendResult { error: "stale_revision", expected: expected, actual: self.rows.len() };
             }
+            if error == "claimed" { self.last_error = "claimed"; return AppendResult { error: "claimed", expected: expected, actual: self.rows.len() }; }
             self.last_error = if len(error) > 0 { error } else { "http " + to_string(resp.status) };
             if resp.status == 403 { return AppendResult { error: "refused", expected: expected, actual: self.rows.len() }; }
             return AppendResult { error: "io", expected: expected, actual: self.rows.len() };

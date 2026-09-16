@@ -406,6 +406,9 @@ locus Service {
             let r = if exact { self.ledger.append_exact(expected, kind, entity, text) } else { self.ledger.append(self.ledger.revision(), kind, entity, text) };
             if !r.ok {
                 if r.error == "stale_revision" { return refusal(409, "stale_revision"); }
+                // GH #666: a claim kind's entity is taken — the first claim
+                // holds; the writer mints another
+                if r.error == "claimed" { return refusal(409, "claimed"); }
                 return unavailable("the ledger refused the append: " + self.ledger.last_error());
             }
             if len(author) > 0 { let named = self.ledger.name_author(r.revision - 1, author); }

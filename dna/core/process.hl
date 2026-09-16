@@ -426,6 +426,7 @@ locus Metabolism {
         log: SettledRows = SettledRows { };
         minted: Int = 0;
         last_id: String = "";
+        namespace: String = ""; // GH #666: the owner ids are minted for ("" = the one owner)
         // The Workflow definition in force for the NEXT Task. Evolving
         // it (GH #529 D7 extension 1) changes future adoption only: a
         // Task binds the revision at birth and finishes under it.
@@ -469,7 +470,7 @@ locus Metabolism {
     // record can hold the birth before the act (GH #604 rule 1).
     fn next_id() -> String {
         self.minted = self.minted + 1;
-        return "t" + to_string(self.minted);
+        return own_prefix(self.namespace) + "t" + to_string(self.minted);
     }
     // Intent enters here; accepting it births a durable Task. Reached
     // per intent from the membrane handler: one Task per offer, owned

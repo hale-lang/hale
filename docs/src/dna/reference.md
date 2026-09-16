@@ -112,7 +112,7 @@ sequence either way — see [The record](./record.md).
 | `intent.unrecovered` | ledger | the intent id | offered before a restart with no Task born; never re-offered, because work may already have run |
 | `candidate.dropped` | record | the mutation | `by`, `why`: the candidate's pointer is no longer kept (applied at every clone's sync) |
 | `ledger.adopting` / `ledger.adopted` / `ledger.abandoned` | record | `ledger` | the move of the day's work into the store: `ledger` (the service), `routing`, `checkpoint` (the record head the copy was taken at), `rows`, `by` |
-| `task.born` | ledger | `t<n>` | `<intent>: <outcome>` |
+| `task.born` | ledger | `t<n>` (`<owner>:t<n>` over a shared record) | `<intent>: <outcome>` |
 | `task.planned` | ledger | `t<n>` | the plan the Task is worked under |
 | `task.handed` | ledger | `t<n>` | handed to a person: `work`, `assignee`, `by`, `narrative`, `obligation`, `acceptance`, `evidence_required` |
 | `task.reassigned` | ledger | `t<n>` | the assignment moved: `to`, and who moved it |

@@ -4,7 +4,8 @@
 // only while that lease is held at the epoch named. Not held, another
 // epoch (a takeover), expired — each is refused `fenced`, and the
 // request is remembered as refused. A write naming no lease (a head's,
-// a host's) is admitted as before.
+// a host's) is admitted as before. A second birth under an id already
+// born is refused `claimed` (GH #666): the store decides a first claim.
 
 import "../core" as dna;
 
@@ -90,6 +91,9 @@ main locus App {
         std::test::assert_eq_int(l3.status, 200, "the lease lapses: " + l3.body);
         let late = curl("POST", service + "/ledger/append", append("t6", "r6", "owner/acme", 3));
         std::test::assert(late.status == 403 && std::str::contains(late.body, "expired at"), "a write under an expired lease is fenced: " + late.body);
+        // GH #666: a claim kind's entity is taken once; the store says `claimed`
+        let taken = curl("POST", service + "/ledger/append", append("t1", "r8", "", 0));
+        std::test::assert(taken.status == 409 && std::str::contains(taken.body, "claimed"), "a second birth under a claimed id is refused as claimed: " + to_string(taken.status) + " " + taken.body);
         // a head's write names no lease and is admitted as before
         let head = curl("POST", service + "/ledger/append", append("t7", "r7", "", 0));
         std::test::assert_eq_int(head.status, 200, "a write naming no lease is admitted: " + head.body);
