@@ -60,6 +60,9 @@ locus Service {
         protected: know::ProtectedBodies = know::MemProtected { };
         j: dna::GitJournal = dna::GitJournal { repo: ".", author: "knowledge" };
         receipts: dna::GitReceipts = dna::GitReceipts { repo: "." };
+        // GH #646 stage 1: the Ledger, the organism's operational memory,
+        // served over /ledger/* to the organism and the heads
+        ledger: know::Ledger = know::MemLedger { };
         applied: Int = 0;
         last_error: String = "";
         ticks: Int = 0;
@@ -97,7 +100,13 @@ locus Service {
         self.opened = false;
         self.store.scope(scope);
         self.protected.scope(scope);
+        self.ledger.scope(scope);
         if self.store.reopen() {
+            // the ledger lives in the same database, beside the store
+            if !self.ledger.open() {
+                self.last_error = "the ledger is not open: " + self.ledger.last_error();
+                return false;
+            }
             self.opened = true;
             self.last_error = "";
             return true;
@@ -164,6 +173,17 @@ locus Service {
             i = i + 1;
         }
         return "";
+    }
+    // The Ledger's rows from `from` on, one JSON object per line.
+    @unbounded
+    fn ledger_rows_from(from: Int) -> String {
+        let mut out = "";
+        let mut i = if from < 0 { 0 } else { from };
+        while i < self.ledger.revision() {
+            out = out + know::row_json(self.ledger.read(i), self.ledger.author_of(i)) + "\n";
+            i = i + 1;
+        }
+        return out;
     }
     fn summary() -> String {
         let up = self.ensure_open();
@@ -245,6 +265,75 @@ locus Service {
         // Both are refusals: what this service has to say about the
         // record is unknown until it can read and project it.
         if len(fresh.error) > 0 { return unavailable("the record is not applied: " + fresh.error); }
+        // ---- the Ledger (GH #646 stage 1, #650)
+        if std::http::is_route(ctx, "GET", "/ledger/head") {
+            let moved = self.ledger.refresh();
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.int_field("revision", self.ledger.revision());
+            b.string_field("head", self.ledger.head());
+            let c = self.ledger.checkpoint();
+            b.bool_field("adopted", c.adopted);
+            b.string_field("checkpoint", c.checkpoint);
+            b.int_field("routing", c.routing);
+            b.end_object();
+            return json(b.result());
+        }
+        if std::http::is_route(ctx, "GET", "/ledger/rows") {
+            let moved = self.ledger.refresh();
+            let f = std::http::query_param(ctx.params, "from");
+            let from = if len(f) > 0 { std::str::parse_int(f) or 0 } else { 0 };
+            return std::http::Response { status: 200, content_type: "application/x-ndjson", headers: "Cache-Control: no-store", body: self.ledger_rows_from(from) };
+        }
+        if std::http::is_route(ctx, "POST", "/ledger/append") {
+            let body = req.body;
+            let kind = std::json::find_string_field(body, "kind");
+            if len(kind) == 0 { return refusal(400, "an append names a kind"); }
+            if dna::memory_of(kind) != "ledger" { return refusal(400, "`" + kind + "` is a row of the record, not the ledger: it is appended to the record and synced"); }
+            let expected = std::json::find_int_field(body, "expected");
+            let exact = std::json::find_bool_field(body, "exact");
+            let entity = std::json::find_string_field(body, "entity");
+            let text = std::json::find_string_field(body, "body");
+            let moved = self.ledger.refresh();
+            let r = if exact { self.ledger.append_exact(expected, kind, entity, text) } else { self.ledger.append(self.ledger.revision(), kind, entity, text) };
+            if !r.ok {
+                if r.error == "stale_revision" { return refusal(409, "stale_revision"); }
+                return unavailable("the ledger refused the append: " + self.ledger.last_error());
+            }
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.int_field("revision", r.revision);
+            b.string_field("rows", self.ledger_rows_from(expected));
+            b.end_object();
+            return json(b.result());
+        }
+        if std::http::is_route(ctx, "POST", "/ledger/adopt") {
+            // every operational row of the record, in order, keyed by its
+            // commit: rerun after any interruption, nothing copied twice
+            let head = self.j.head();
+            let mut copied = 0;
+            let mut i = 0;
+            while i < self.j.revision() {
+                let e = self.j.read(i);
+                if dna::memory_of(e.kind) == "ledger" {
+                    if !self.ledger.adopt_row(e.kind, e.entity, e.body, self.j.author_of(i), e.seq, e.digest) { return unavailable("the ledger could not take row " + to_string(e.seq) + ": " + self.ledger.last_error()); }
+                    copied = copied + 1;
+                }
+                i = i + 1;
+            }
+            if !self.ledger.cutover(head, copied, dna::ROUTING_VERSION) { return unavailable("the ledger could not record the cutover: " + self.ledger.last_error()); }
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.string_field("checkpoint", head);
+            b.int_field("copied", copied);
+            b.int_field("routing", dna::ROUTING_VERSION);
+            b.end_object();
+            return json(b.result());
+        }
+        if std::http::is_route(ctx, "POST", "/ledger/abandon") {
+            if !self.ledger.abandon() { return unavailable("the ledger could not be abandoned: " + self.ledger.last_error()); }
+            return json("{\"abandoned\": true}");
+        }
         if std::http::is_route(ctx, "GET", "/context") {
             let target = std::str::replace(std::http::query_param(ctx.params, "target"), "%2F", "/");
             let b = std::http::query_param(ctx.params, "budget");
@@ -460,7 +549,7 @@ fn main() {
         eprintln("hale dna knowledge: in-memory store at :", port, " over ", root, " (nothing durable; set a postgres:// DSN for a shared graph)");
         Knowledge {
             root: root, port: port, dsn: dsn,
-            srv: std::http::Server { port: port, handler: Service { root: root, store: know::Mem { }, protected: know::MemProtected { }, j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root } } }
+            srv: std::http::Server { port: port, handler: Service { root: root, store: know::Mem { }, protected: know::MemProtected { }, ledger: know::MemLedger { }, j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root } } }
         };
         return;
     }
@@ -469,6 +558,6 @@ fn main() {
     eprintln("hale dna knowledge: postgres at ", d.host, ":", d.port, "/", d.database, ", serving :", port, " over ", root);
     Knowledge {
         root: root, port: port, dsn: dsn,
-        srv: std::http::Server { port: port, handler: Service { root: root, store: know::Pq { conn: know::pq_conn(d) }, protected: know::PqProtected { conn: know::pq_conn(d) }, j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root } } }
+        srv: std::http::Server { port: port, handler: Service { root: root, store: know::Pq { conn: know::pq_conn(d) }, protected: know::PqProtected { conn: know::pq_conn(d) }, ledger: know::PqLedger { conn: know::pq_conn(d) }, j: dna::GitJournal { repo: root, author: "knowledge" }, receipts: dna::GitReceipts { repo: root } } }
     };
 }

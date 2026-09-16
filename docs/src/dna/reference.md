@@ -31,6 +31,8 @@ hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authorit
                              [--comment <c>] [--digest <sha>] [--no-wait]
 hale dna history [<entity>]  walk the record by causal links (offline)
 hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*)
+hale dna ledger [status | adopt | abandon --why <w>]
+                             the operational memory: where the day's work lives, and the one-way move of it into the store
 hale dna candidates [<mutation> | drop <mutation> --why <w>]
                              the candidates the record keeps; one as a diff; stop keeping one
 hale dna profile [project]   the organism's combination, detected from its pieces
@@ -101,6 +103,7 @@ tree, one JSON object per line: `seq`, `kind`, `entity`, `body`,
 | `intent.requested` | the intent id | an ask from a clone with no organization: outcome, from, to |
 | `intent.offered` / `intent.refused` | the intent id | the outcome asked for / the refusal |
 | `candidate.dropped` | the mutation | `by`, `why`: the candidate's pointer is no longer kept (applied at every clone's sync) |
+| `ledger.adopting` / `ledger.adopted` / `ledger.abandoned` | `ledger` | the move of the day's work into the store: `ledger` (the service), `routing`, `checkpoint` (the record head the copy was taken at), `rows`, `by` |
 | `task.born` | `t<n>` | `<intent>: <outcome>` |
 | `task.pending` / `task.done` / `task.failed` | `t<n>` | the Workflow detail, or the Work and performer that settled it |
 | `mutation.proposed` | `m<n>` | `task t<n> <class>: <objective> (<target>) at <base>` |
@@ -192,6 +195,7 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `org.hl` | `Leader`, `SourceReader` |
 | `journal.hl` | `Journal`, `MemJournal`, `Receipts` (`FileReceipts`), `Coordination` (`MemLeases`), the effect idempotency helpers |
 | `record.hl` | `Record` — the record's own API — with `GitRecord` (the one file that spells `git` for the record) and `MemRecord`; `GitJournal`, `GitReceipts`, `GitLeases` over it |
+| `routing.hl` | the three memories: `memory_of` (the routing table), `RoutedJournal` (the record and the ledger read as one), `ServiceLedger` (the ledger over the knowledge service) |
 | `infrastructure.hl` | `Infrastructure` (a body's database, supervisor, credentials) and `Transport` (how a head reaches a body), declared with their memory implementations |
 | `forge.hl` | `Forge` (a code-review host), `MemForge`, `NoForge` |
 | `process.hl` | `Task`, `Workflow`, `Step`, `Work`, `Attempt`, `Metabolism` |

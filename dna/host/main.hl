@@ -196,6 +196,9 @@ fn main() {
     } else if verb == "candidates" {
         // #649: the candidates the record keeps, whatever the review decided
         ans = candidates_verb(root, seed, word(a, 0), word(a, 1), flag(a, "--why"), flag(a, "--as"));
+    } else if verb == "ledger" {
+        // GH #646 stage 1: the operational memory, adopted by an explicit step
+        ans = ledger_verb(root, seed, word(a, 0), flag(a, "--why"), flag(a, "--as"));
     } else if verb == "record-head" {
         ans = record_head_verb(root);
     } else if verb == "record-seed" {

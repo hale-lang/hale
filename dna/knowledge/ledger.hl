@@ -1,0 +1,319 @@
+// dna/knowledge/ledger.hl — the Ledger: the organism's operational memory
+// in the store (GH #646 stage 1, #650). `PqLedger` is the record-scoped
+// table in Postgres, `MemLedger` the same contract for the life of a
+// process. The knowledge service serves either over HTTP (`/ledger/*`),
+// and the core's `ServiceLedger` is what an organism and a head hold.
+//
+// Rows are appended under compare-and-swap on the tail — one insert
+// conditioned on the row count — so a reservation read at a revision
+// cannot land after a writer that changed it (GH #605 without a ref).
+// Claim kinds (`effect.requested`, `grant.reserved`, `task.born`) carry
+// a unique constraint on (kind, entity): the exclusive claim is the
+// database's, not a scan's. Every row keeps its sha256 chain as the
+// memory journal does, so a reader verifies the Ledger the same way.
+//
+// Adoption (`hale dna ledger adopt`) copies the record's operational rows
+// here keyed by their commit, so a copy interrupted anywhere is rerun,
+// never repaired; the cutover row names the record head it was taken at.
+
+import "../core" as dna;
+import "../pond/db" as db;
+import "../pond/pq" as pq;
+
+// What the Ledger says about its adoption.
+type Cutover {
+    adopted: Bool = false;
+    checkpoint: String = ""; // the record head the operational rows were copied at
+    copied: Int = 0;
+    routing: Int = 0;
+}
+
+// The Ledger as the service holds it: a `Journal`, scoped to a record,
+// opened before use, with the adoption steps.
+interface Ledger {
+    fn kind() -> String;
+    fn scope(record: String);
+    fn open() -> Bool;
+    fn last_error() -> String;
+    // ---- Journal
+    fn revision() -> Int;
+    fn head() -> String;
+    fn refresh() -> Bool;
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult;
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult;
+    fn read(i: Int) -> dna::Event;
+    fn verify_chain() -> Bool;
+    fn author_of(i: Int) -> String;
+    // ---- adoption
+    // One record row copied in, keyed by its commit: true when it is
+    // here (already or now).
+    fn adopt_row(kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> Bool;
+    fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool;
+    fn checkpoint() -> Cutover;
+    fn abandon() -> Bool;
+}
+
+// The row as it is served: the event plus its author.
+fn row_json(e: dna::Event, author: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.int_field("seq", e.seq);
+    b.string_field("kind", e.kind);
+    b.string_field("entity", e.entity);
+    b.string_field("body", e.body);
+    b.string_field("author", author);
+    b.string_field("prev", e.prev);
+    b.string_field("digest", e.digest);
+    b.end_object();
+    return b.result();
+}
+
+fn claim_kind(kind: String) -> Bool {
+    return kind == "effect.requested" || kind == "grant.reserved" || kind == "task.born";
+}
+
+// ---- in memory ------------------------------------------------------------
+
+locus MemLedger {
+    params {
+        j: dna::MemJournal = dna::MemJournal { };
+        authors: dna::Authors = dna::Authors { };
+        record_id: String = "";
+        cut: Cutover = Cutover { };
+        commits: String = "\n"; // adopted commits, newline-fenced
+        error: String = "";
+    }
+    fn kind() -> String { return "memory"; }
+    fn scope(record: String) { self.record_id = record; }
+    fn open() -> Bool { return true; }
+    fn last_error() -> String { return self.error; }
+    fn revision() -> Int { return self.j.revision(); }
+    fn head() -> String { return self.j.head(); }
+    fn refresh() -> Bool { return false; }
+    @unbounded
+    fn claimed(kind: String, entity: String) -> Bool {
+        if !claim_kind(kind) { return false; }
+        let mut i = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            if e.kind == kind && e.entity == entity { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if self.claimed(kind, entity) { self.error = "claimed"; return dna::AppendResult { error: "io", expected: expected, actual: self.j.revision() }; }
+        let r = self.j.append(expected, kind, entity, body);
+        if r.ok { self.authors.push("ledger"); }
+        return r;
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.append(expected, kind, entity, body); }
+    fn read(i: Int) -> dna::Event { return self.j.read(i); }
+    fn verify_chain() -> Bool { return self.j.verify_chain(); }
+    fn author_of(i: Int) -> String { return self.authors.get(i) or ""; }
+    fn adopt_row(kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> Bool {
+        if std::str::contains(self.commits, "\n" + commit + "\n") { return true; }
+        let r = self.j.append(self.j.revision(), kind, entity, body);
+        if !r.ok { return false; }
+        self.authors.push(author);
+        self.commits = self.commits + commit + "\n";
+        return true;
+    }
+    fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool {
+        self.cut = Cutover { adopted: true, checkpoint: checkpoint, copied: copied, routing: routing };
+        return true;
+    }
+    fn checkpoint() -> Cutover { return self.cut; }
+    fn abandon() -> Bool {
+        self.j = dna::MemJournal { };
+        while self.authors.len() > 0 { let gone = self.authors.pop() or ""; }
+        self.commits = "\n";
+        self.cut = Cutover { };
+        return true;
+    }
+}
+
+// ---- Postgres ---------------------------------------------------------------
+
+locus PqLedger {
+    params {
+        conn: pq::PgConn = pq::PgConn { sslmode: "prefer" };
+        record_id: String = "";
+        opened: Bool = false;
+        error: String = "";
+        rows: dna::EventRows = dna::EventRows { };
+        authors: dna::Authors = dna::Authors { };
+    }
+    fn kind() -> String { return "postgres"; }
+    fn scope(record: String) {
+        if record == self.record_id { return; }
+        self.record_id = record;
+        self.opened = false;
+    }
+    fn schema() -> String { return schema_for(self.record_id); }
+    fn fail(what: String, e: db::DbError) -> Bool {
+        self.error = what + ": " + e.kind + " " + e.detail;
+        return false;
+    }
+    fn last_error() -> String { return self.error; }
+    // One schema per record, the same the knowledge store uses; the
+    // Ledger's tables beside it. Claim kinds are unique by (kind, entity).
+    fn open() -> Bool {
+        if self.opened { return true; }
+        let st = self.conn.open();
+        if !st.ok { return self.fail("open", st.err); }
+        let sch = self.schema();
+        let ns = self.conn.exec("CREATE SCHEMA IF NOT EXISTS " + sch + "; SET search_path TO " + sch + ", public");
+        if !ns.ok { return self.fail("scope (schema " + sch + ")", ns.err); }
+        let ddl = "CREATE TABLE IF NOT EXISTS ledger_rows (seq bigint PRIMARY KEY, kind text NOT NULL, entity text NOT NULL, body text NOT NULL, author text NOT NULL, prev text NOT NULL, digest text NOT NULL, at timestamptz NOT NULL DEFAULT now(), record_seq bigint, record_commit text);"
+            + "CREATE UNIQUE INDEX IF NOT EXISTS ledger_rows_commit ON ledger_rows (record_commit) WHERE record_commit IS NOT NULL;"
+            + "CREATE UNIQUE INDEX IF NOT EXISTS ledger_rows_claim ON ledger_rows (kind, entity) WHERE kind IN ('effect.requested', 'grant.reserved', 'task.born');"
+            + "CREATE TABLE IF NOT EXISTS ledger_meta (key text PRIMARY KEY, value text NOT NULL);";
+        let r = self.conn.exec(ddl);
+        if !r.ok { return self.fail("migrate", r.err); }
+        self.opened = true;
+        self.load();
+        return true;
+    }
+    // Every row from the one after the last held, in order, as JSON per
+    // line (the driver's rows are tab-separated with no escaping; a body
+    // is free text).
+    @unbounded
+    fn load() {
+        let a = db::Args { };
+        a.add(to_string(self.rows.len()));
+        let rows = self.conn.query_params("SELECT row_to_json(t) FROM (SELECT seq, kind, entity, body, author, prev, digest FROM ledger_rows WHERE seq >= $1::bigint ORDER BY seq) t", a);
+        if !rows.ok { self.error = "load: " + rows.err.kind + " " + rows.err.detail; return; }
+        let mut rest = rows.csv;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if len(dna::trim_nl(line)) == 0 { continue; }
+            let seq = std::json::find_int_field(line, "seq");
+            if seq != self.rows.len() { continue; }
+            self.rows.push(dna::Event {
+                seq: seq,
+                kind: std::json::find_string_field(line, "kind"),
+                entity: std::json::find_string_field(line, "entity"),
+                body: std::json::find_string_field(line, "body"),
+                prev: std::json::find_string_field(line, "prev"),
+                digest: std::json::find_string_field(line, "digest")
+            });
+            self.authors.push(std::json::find_string_field(line, "author"));
+        }
+    }
+    fn revision() -> Int { return self.rows.len(); }
+    fn head() -> String {
+        if self.rows.len() == 0 { return "genesis"; }
+        let e = self.rows.get(self.rows.len() - 1) or dna::Event { };
+        return e.digest;
+    }
+    fn refresh() -> Bool {
+        if !self.opened { return false; }
+        let n = self.conn.query_one("SELECT count(*) FROM ledger_rows");
+        if !n.ok { self.error = "refresh: " + n.err.kind + " " + n.err.detail; return false; }
+        if (std::str::parse_int(dna::trim_nl(n.data)) or 0) == self.rows.len() { return false; }
+        self.load();
+        return true;
+    }
+    fn read(i: Int) -> dna::Event { return self.rows.get(i) or dna::Event { }; }
+    fn author_of(i: Int) -> String { return self.authors.get(i) or ""; }
+    fn verify_chain() -> Bool { return dna::chain_ok(self.rows); }
+    // One insert conditioned on the tail: zero rows means another writer
+    // got there first (or a claim is taken: a unique violation).
+    fn insert(seq: Int, kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> String {
+        let prev = self.head();
+        let digest = dna::event_digest(prev, kind, entity, body);
+        let a = db::Args { };
+        a.add(to_string(seq));
+        a.add(kind);
+        a.add(entity);
+        a.add(body);
+        a.add(author);
+        a.add(prev);
+        a.add(digest);
+        a.add(if record_seq < 0 { "" } else { to_string(record_seq) });
+        a.add(commit);
+        let r = self.conn.query_params("INSERT INTO ledger_rows (seq, kind, entity, body, author, prev, digest, record_seq, record_commit) SELECT $1::bigint, $2, $3, $4, $5, $6, $7, NULLIF($8, '')::bigint, NULLIF($9, '') WHERE (SELECT coalesce(max(seq) + 1, 0) FROM ledger_rows) = $1::bigint RETURNING seq", a);
+        if !r.ok {
+            if std::str::contains(r.err.detail, "ledger_rows_claim") { self.error = "claimed"; return "claimed"; }
+            if std::str::contains(r.err.detail, "ledger_rows_commit") { return "duplicate"; }
+            self.error = "append: " + r.err.kind + " " + r.err.detail;
+            return "io";
+        }
+        if r.n == 0 { return "stale"; }
+        self.rows.push(dna::Event { seq: seq, kind: kind, entity: entity, body: body, prev: prev, digest: digest });
+        self.authors.push(author);
+        return "";
+    }
+    // Compare-and-append: the in-process check against `expected`, then
+    // the store's; a lost race reloads and re-appends at the new tail,
+    // as the record does (GH #603).
+    @unbounded
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        let rev = self.rows.len();
+        if expected != rev { return dna::AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        let mut attempt = 0;
+        while attempt < 200 {
+            let out = self.insert(self.rows.len(), kind, entity, body, "ledger", -1, "");
+            if len(out) == 0 { return dna::AppendResult { ok: true, revision: self.rows.len() }; }
+            if out != "stale" { return dna::AppendResult { error: "io", expected: expected, actual: self.rows.len() }; }
+            self.load();
+            attempt = attempt + 1;
+        }
+        self.error = "append lost the tail two hundred times";
+        return dna::AppendResult { error: "io", expected: expected, actual: self.rows.len() };
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        let moved = self.refresh();
+        let rev = self.rows.len();
+        if expected != rev { return dna::AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        let out = self.insert(rev, kind, entity, body, "ledger", -1, "");
+        if len(out) == 0 { return dna::AppendResult { ok: true, revision: self.rows.len() }; }
+        if out == "stale" { self.load(); return dna::AppendResult { error: "stale_revision", expected: expected, actual: self.rows.len() }; }
+        return dna::AppendResult { error: "io", expected: expected, actual: self.rows.len() };
+    }
+    @unbounded
+    fn adopt_row(kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> Bool {
+        let mut attempt = 0;
+        while attempt < 200 {
+            let out = self.insert(self.rows.len(), kind, entity, body, author, record_seq, commit);
+            if len(out) == 0 || out == "duplicate" { return true; }
+            if out != "stale" { return false; }
+            self.load();
+            attempt = attempt + 1;
+        }
+        return false;
+    }
+    fn put_meta(key: String, value: String) -> Bool {
+        let a = db::Args { };
+        a.add(key);
+        a.add(value);
+        let r = self.conn.exec_params("INSERT INTO ledger_meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", a);
+        if !r.ok { return self.fail("meta " + key, r.err); }
+        return true;
+    }
+    fn meta(key: String) -> String {
+        let a = db::Args { };
+        a.add(key);
+        let rows = self.conn.query_params("SELECT value FROM ledger_meta WHERE key = $1", a);
+        if !rows.ok || rows.n == 0 { return ""; }
+        return dna::trim_nl(first_line(rows.csv));
+    }
+    fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool {
+        return self.put_meta("checkpoint", checkpoint) && self.put_meta("copied", to_string(copied)) && self.put_meta("routing", to_string(routing)) && self.put_meta("record", self.record_id);
+    }
+    fn checkpoint() -> Cutover {
+        let at = self.meta("checkpoint");
+        if len(at) == 0 { return Cutover { }; }
+        return Cutover { adopted: true, checkpoint: at, copied: std::str::parse_int(self.meta("copied")) or 0, routing: std::str::parse_int(self.meta("routing")) or 0 };
+    }
+    fn abandon() -> Bool {
+        let r = self.conn.exec("DELETE FROM ledger_rows; DELETE FROM ledger_meta");
+        if !r.ok { return self.fail("abandon", r.err); }
+        while self.rows.len() > 0 { let gone = self.rows.pop() or dna::Event { }; }
+        while self.authors.len() > 0 { let gone = self.authors.pop() or ""; }
+        return true;
+    }
+}

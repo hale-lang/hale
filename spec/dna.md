@@ -6,6 +6,67 @@ changes. It ships as a library inside the toolchain (`vendor/dna`, the
 This file specifies what the library and the commands promise; the
 design is GH #521 and its successor #566; `docs/src/dna/` is the guide.
 
+## Three memories
+
+An organism has three memories, and every row kind belongs to exactly
+one (GH #646).
+
+| Memory | Holds | Lives in | Written by |
+|---|---|---|---|
+| **Structure** | what the organism *is*: positions, routes, schedules and grants as authored, the law, the app, the models catalog | the codebase | the editor, under review |
+| **Record** | how the organism *changed* and was allowed to: mutations and their reviews, practices proposed and ratified, authority contracted or revoked, connections, provisioning, people, the adoption of the ledger | git, `refs/dna/*`, one signed commit per row, cloned and synced | the Board, the organism's pipeline, a head from its clone |
+| **Ledger** | what the organism *did today*: intents, tasks, assignments, decisions, bills and receipts, money reserved and settled, schedules fired, concerns, handoffs, effect claims, liveness | the store, in the organism's own schema behind the knowledge service | every head, the body, the app (read) |
+
+The routing table is `memory_of` in the core (`routing.hl`): the
+`intent`, `task`, `decision`, `completion`, `exception`, `schedule`,
+`receipt`, `handoff`, `pressure`, `instance`, `effect` and `report`
+families are the Ledger's, as are `concern.requested` / `.raised` /
+`.refused`, `grant.reserved` / `.released` / `.fenced` /
+`.reservation_refused` (money; `grant.refused` — a grant born wider
+than its ceiling — is authority and the record's), `body.claimed` /
+`.released` / `.credential_*`, `model.called`, `knowledge.consulted`,
+`optimize.refused` and `budget.exhausted`. Every other kind, and any
+kind a build does not know, is the record's. **Routing is versioned and
+is a fact of the record**: version 0 is every kind in the record;
+version 1 is the table; an organism is on the version its last
+`ledger.adopted` row names, and on 0 again after `ledger.abandoned`.
+There is no dual-write: a kind has one home, and a writer that cannot
+reach it fails rather than writing elsewhere.
+
+`RoutedJournal` is the `Journal` an organism and the host stand on:
+the record's journal and the Ledger's read as one merged sequence (a
+row's `seq` as read is its merged position; rows name each other by
+id), appended to by kind under the record's routing. `ServiceLedger`
+is the Ledger as an organism or a head reaches it: over HTTP through
+the knowledge service (`/ledger/head`, `/ledger/rows?from=`,
+`/ledger/append`), which holds the store and its schema — the core
+links no database driver and a head never holds database credentials.
+`PqLedger` (Postgres, the record's `dna_<identity>` schema, one insert
+conditioned on the tail, claim kinds unique by `(kind, entity)`) and
+`MemLedger` implement it in the knowledge library.
+
+**Adoption** is explicit, per organism and one-way: `hale dna ledger
+adopt` with no body live and the record synced appends
+`ledger.adopting {ledger, routing, by}` to the record, has the service
+copy every operational row of the record into the Ledger keyed by its
+commit (so a copy interrupted anywhere is rerun, never repaired) and
+record the cutover, then appends `ledger.adopted {ledger, routing,
+checkpoint, rows, by}`: the checkpoint is the record head the copy was
+taken at, and from that commit on operational kinds are written through
+the service and never into the record. Historical operational rows
+stay in git, read-only; readers of history (`history`, the projections,
+the export) read both memories as one. `hale dna ledger abandon --why`
+empties the Ledger and appends `ledger.abandoned`, and the organism is
+on routing 0 again with nothing lost. **Until every operational write
+path goes through the service (stage 3, #652) adoption is closed**; it
+opens for fixtures under `HALE_DNA_ADOPT_UNGATED`. After cutover an
+operational row reaching the host's append is forwarded to the service
+when one is known here, and refused with the checkpoint named
+otherwise — never silently accepted into the record. `hale dna run` on
+an adopted record refuses to start without a service to reach (#646
+decision 3: a body without its store admits nothing); `dev` brings its
+own up.
+
 ## The record
 
 The Journal is a git branch, `refs/dna/journal`, in the governed
@@ -554,7 +615,7 @@ the same way. A project's path therefore has no length rule.
 `knowledge.ratified`, `knowledge.declined`, `knowledge.refused`, `knowledge.consulted`,
 `concern.requested`, `concern.raised`, `concern.proposed`, `github.pr`, `github.commented`,
 `mutation.topology`, `fleet.deploy`, `instance.up`, `instance.exited`,
-`candidate.dropped`,
+`candidate.dropped`, `ledger.adopting`, `ledger.adopted`, `ledger.abandoned`,
 `review.reasoned` (the deciding verdict's comment — a person's note or
 the Leader's reasoning — right after `review.settled`; `hale dna
 review <id>` renders it as `why:`). Their bodies are documented in the guide's reference

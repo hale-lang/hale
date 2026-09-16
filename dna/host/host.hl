@@ -811,6 +811,13 @@ fn fence_stop(dir: String, host_pid: Int, mark: String, why: String) {
 }
 
 fn host_main(verb: String, root: String, seed: String, fleet: String, plan: String, toolchain: String, a: Args) {
+    // GH #646 decision 3: an adopted organism starts active work only
+    // when its store is reachable — `dev` brings the service up itself;
+    // `run` needs to be told where it is
+    if verb == "run" && routing_here(root) > 0 && len(knowledge_url(root)) == 0 {
+        eprintln("hale dna run: this record's operations live in the ledger (adopted at ", short(checkpoint_here(root)), "), and no ledger service is known here (HALE_DNA_KNOWLEDGE_URL); a body without its store admits nothing — set the url, or run under `hale dna dev`");
+        std::process::exit(2);
+    }
     let port_flag = flag(a, "--port");
     let observe_flag = flag(a, "--observe");
     Host {

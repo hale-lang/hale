@@ -121,7 +121,8 @@ locus Projection {
         root: String = ".";
         seed: String = "."; // the application's seed, relative to the root
         toolchain: String = "";
-        j: dna::GitJournal = dna::GitJournal { };
+        // GH #646 stage 1: the record and the Ledger read as one
+        j: dna::RoutedJournal = dna::RoutedJournal { };
     }
     fn rows() -> Int { return self.j.revision(); }
     fn row(i: Int) -> dna::Event { return self.j.read(i); }
@@ -342,7 +343,7 @@ locus Projection {
     }
     fn review_count() -> Int { return list_len(self.review_ids()); }
     fn chain_ok() -> Bool {
-        return rec(self.root).count(JOURNAL) == self.rows();
+        return rec(self.root).count(JOURNAL) == self.j.record.revision();
     }
     fn organism_line() -> String {
         if membrane_up(self.root) { return "running (membrane bound)"; }

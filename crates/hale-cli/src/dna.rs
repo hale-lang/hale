@@ -281,6 +281,8 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         // #649: the candidates the record keeps, whatever the review decided
         Some("candidates") => host_exec("candidates", Path::new("."), &args[1..]),
+        // #650: the operational memory, adopted by an explicit step
+        Some("ledger") => host_exec("ledger", Path::new("."), &args[1..]),
         Some("board") => {
             let (dir, rest) = project_arg(&args[1..], true);
             host_exec("board", &dir, &rest)
@@ -335,6 +337,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    offer intent over the membrane; prints the Task born or the refusal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
     eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");
+    eprintln!("       hale dna ledger [status | adopt | abandon --why <w>]");
+    eprintln!("                                    the operational memory: where the day's work lives, and the one-way move of it into the store");
     eprintln!("       hale dna candidates [<mutation> | drop <mutation> --why <w>]");
     eprintln!("                                    the candidates the record keeps, whatever the review decided; one as a diff; stop keeping one");
     eprintln!("       hale dna new <name> [--profile local|remote-body --remote <url> [--body <user@host>]]");
@@ -707,6 +711,12 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         out.push(format!("created {}", charter.display()));
     }
     let main_text = fs::read_to_string(org_dir.join("main.hl")).unwrap_or_default();
+    if main_text.contains("journal: dna::GitJournal {") {
+        out.push(format!(
+            "note    {}/main.hl wires the record alone as its journal; the day's work can move to the ledger (GH #646) once it reads both: `journal: dna::RoutedJournal {{ record: dna::GitJournal {{ repo: \".\" }}, ledger: dna::ServiceLedger {{ url_env: \"HALE_DNA_KNOWLEDGE_URL\" }} }}`",
+            ORG_SEED
+        ));
+    }
     if main_text.contains("dna::Leader {") && !main_text.contains("charter: charter()") {
         out.push(format!(
             "note    {}/main.hl builds its Leader without a brief; give it `charter: charter(), purpose: purpose(), knowledge: dna::KnowledgeClient {{ url_env: \"HALE_DNA_KNOWLEDGE_URL\" }}` so it reads the charter, the purpose, the law and the ratified design before it decides",
@@ -1381,10 +1391,15 @@ import "vendor/dna" as dna;
 main locus Org {{
     params {{
         core: dna::Dna = dna::Dna {{
-            // The record: one commit per event on refs/dna/journal, receipts
-            // and leases as refs beside it. Every clone that fetches
-            // refs/dna/* has the whole history of what this organization did.
-            journal: dna::GitJournal {{ repo: "." }},
+            // Two memories read as one (GH #646): the record — one commit per
+            // event on refs/dna/journal, what changes this organization,
+            // synced to every clone — and the ledger, the day's work, in the
+            // store behind the knowledge service once `hale dna ledger adopt`
+            // has moved it there. Until then every row is the record's.
+            journal: dna::RoutedJournal {{
+                record: dna::GitJournal {{ repo: "." }},
+                ledger: dna::ServiceLedger {{ url_env: "HALE_DNA_KNOWLEDGE_URL" }}
+            }},
             // Models: every position's router comes from the catalog in
             // models.hl (a backend is a constructor function there; a
             // hosted one presents its credential from a sealed locus and
