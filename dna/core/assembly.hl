@@ -210,6 +210,9 @@ locus Dna {
         // GH #583 K2: the owner's line to the knowledge service; the
         // package it answers is folded into the objective the editor gets
         knowledge_client: KnowledgeClient = KnowledgeClient { };
+        // GH #664: who admits which position. One owner unless the genome's
+        // owners map says otherwise; then only this owner's positions.
+        ownership: Ownership = Ownership { };
         // GH #606: where a protected body goes — the knowledge service, and
         // nowhere else
         vault: ReceiptVault = ReceiptVault { };
@@ -1312,7 +1315,7 @@ locus Dna {
         // Intent through the membrane asks the organism to change: the
         // Task's Work is routed back to the assembly as source-editing
         // Work (GH #529 D7 steps 4-6).
-        self.last_task = self.ask(Intent { id: o.intent_id, outcome: o.outcome, from: from }, Knobs { routed: true, requires: "edit" });
+        self.last_task = self.ask(Intent { id: o.intent_id, outcome: o.outcome, from: from, to: o.to }, Knobs { routed: true, requires: "edit" });
     }
     // Source-editing Work (GH #529 D7 steps 5-6): the editor's Attempt
     // inside a worktree, under its grant, then the whole pipeline to
@@ -1503,6 +1506,14 @@ locus Dna {
         if gate != "accepted" {
             let x = self.journal.append(self.journal.revision(), "intent.refused", i.id, gate);
             return gate;
+        }
+        // GH #664: over a shared record, only the owner of the position the
+        // intent is for admits it; an offer that reached the wrong body is
+        // refused by name, so the asker takes it to the record instead
+        if !self.ownership.admits(i.to) {
+            let why = "refused: not this organization's to admit — " + self.ownership.why_not(i.to);
+            let x = self.journal.append(self.journal.revision(), "intent.refused", i.id, why);
+            return why;
         }
         // GH #583 M1: no model-backed work is routed on an exhausted budget
         let now = std::time::now();
@@ -1997,9 +2008,12 @@ locus Dna {
             if applied != "applied" { return "failed: " + applied; }
         }
         let question = (if post { "post-review: applied " } else { "apply " }) + m.id + " (" + m.change_class + "): " + m.rationale + "?";
+        // GH #664: a candidate that changes the owners map is approved by
+        // every owner it affects, each through one of its members
+        let approvers = self.ownership.approvers_for(m.candidate_commit);
         Review {
             review_id: m.id, question: question, subject_digest: m.candidate_commit,
-            required_authority: authority, author: author
+            required_authority: authority, author: author, approvers: approvers
         };
         let b = std::json::Builder { };
         b.begin_object();
@@ -2007,6 +2021,7 @@ locus Dna {
         b.string_field("subject_digest", m.candidate_commit);
         b.string_field("required_authority", authority);
         b.string_field("author", author);
+        if len(approvers) > 0 { b.string_field("approvers", approvers); }
         b.string_field("mutation_id", m.id);
         b.string_field("task_id", m.task_id);
         b.string_field("change_class", m.change_class);
@@ -2071,7 +2086,8 @@ locus Dna {
                         question: std::json::find_string_field(e.body, "question"),
                         subject_digest: std::json::find_string_field(e.body, "subject_digest"),
                         required_authority: std::json::find_string_field(e.body, "required_authority"),
-                        author: std::json::find_string_field(e.body, "author")
+                        author: std::json::find_string_field(e.body, "author"),
+                        approvers: std::json::find_string_field(e.body, "approvers")
                     };
                     self.rehydrated = self.rehydrated + 1;
                 } else if std::str::starts_with(settlement, "approve by ") && std::str::contains(e.body, "\"mutation_id\"") {

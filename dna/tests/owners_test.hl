@@ -1,0 +1,100 @@
+// dna/tests/owners_test.hl — the owners map through the host (GH #664, B2).
+//
+// A new organization is born with an empty map (one owner) and a main.hl
+// that reads it. Once the map names owners, a body says which it is or
+// does not run; a name the map lacks does not run either. An ask for a
+// position another owner holds never goes over the membrane, even with
+// a body here: it goes into the record for that owner's controller, and
+// `status` here shows it waiting, by owner, while the owner's own clone
+// shows nothing waiting.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+main locus App {
+    params {
+        core: dna::Dna = dna::Dna { planned: true, org_id: "owners-placeholder" };
+    }
+    @unbounded
+    fn last(repo: String, kind: String) -> String {
+        let j = dna::GitJournal { repo: repo };
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    run() {
+        let scratch = "/tmp/dna-owners-" + to_string(std::process::pid());
+        std::io::fs::mkdir(scratch) or discard;
+        dna::reap_on_exit(scratch);
+        let bare = scratch + "/origin.git";
+        let b0 = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nteam");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let app = scratch + "/team";
+        // ---- born with an empty map, and a program that reads it
+        let owners = std::io::fs::read_file(app + "/dna/org/owners") or "";
+        std::test::assert(std::str::starts_with(owners, "# dna/org/owners") && std::str::contains(owners, "git config dna.owner"), "a new organization has the owners file, empty but for its own instructions: " + owners);
+        std::test::assert(std::str::contains(made.stdout, "dna/org/owners"), "and `new` says so: " + made.stdout);
+        let main = std::io::fs::read_file(app + "/dna/org/main.hl") or "";
+        std::test::assert(std::str::contains(main, "ownership: dna::Ownership { path: \"dna/org/owners\" }"), "main.hl reads the map");
+        let c0 = in_dir(app, "git\nconfig\nuser.name\nalice");
+        let c1 = in_dir(app, "git\nconfig\nuser.email\nalice@l");
+        let a0 = in_dir(app, "git\nadd\n-A");
+        let a1 = in_dir(app, "git\ncommit\n-q\n-m\nthe team");
+        let r0 = in_dir(app, "git\nremote\nadd\norigin\n" + bare);
+        let p0 = in_dir(app, "git\npush\n-q\norigin\nmain\nrefs/dna/*:refs/dna/*");
+        std::test::assert_eq_int(p0.code, 0, "pushed: " + p0.stderr);
+        // ---- the record is shared: two owners, a position each
+        std::io::fs::write_file(app + "/dna/org/owners", "org = acme\norg/collections = north\nacme: alice\nnorth: bob\n") or discard;
+        let a2 = in_dir(app, "git\nadd\n-A");
+        let a3 = in_dir(app, "git\ncommit\n-q\n-m\nowners");
+        let p1 = in_dir(app, "git\npush\n-q\norigin\nmain");
+        // ---- a body over a shared record says which owner it is
+        let unnamed = in_dir(app, toolchain() + "\ndna\nrun\n.\n--no-iris");
+        std::test::assert(unnamed.code != 0 && std::str::contains(unnamed.stderr, "say which this body is") && std::str::contains(unnamed.stderr, "acme north"), "a body naming no owner does not run: " + unnamed.stderr);
+        let c2 = in_dir(app, "git\nconfig\ndna.owner\nwest");
+        let unknown = in_dir(app, toolchain() + "\ndna\nrun\n.\n--no-iris");
+        std::test::assert(unknown.code != 0 && std::str::contains(unknown.stderr, "does not name"), "a body naming an owner the map lacks does not run: " + unknown.stderr);
+        let c3 = in_dir(app, "git\nconfig\ndna.owner\nacme");
+        // ---- with a body here (its sockets stand in for it), an ask for
+        // north's position takes the record path, not the membrane
+        std::io::fs::mkdir(app + "/.hale") or discard;
+        std::io::fs::mkdir(app + "/.hale/dna") or discard;
+        std::io::fs::write_file(app + "/.hale/dna/hale-dna.intent.offered.sock", "") or discard;
+        std::io::fs::write_file(app + "/.hale/dna/hale-dna.review.verdict.sock", "") or discard;
+        let asked = in_dir(app, toolchain() + "\ndna\nask\n--no-wait\n--to\norg/collections\n--as\nalice\ncall the agency about the late invoice");
+        std::test::assert_eq_int(asked.code, 0, "the ask is taken: " + asked.stdout + asked.stderr);
+        std::test::assert(std::str::contains(asked.stdout, "requested in the record for its owner's controller") && std::str::contains(asked.stdout, "owned by north, not acme"), "…into the record, naming whose it is: " + asked.stdout);
+        let row = self.last(app, "intent.requested");
+        std::test::assert(std::str::contains(row, "\"to\": \"org/collections\"") && std::str::contains(row, "\"from\": \"alice\""), "the row names the position and the asker: " + row);
+        // ---- visible as unadmitted here; nothing waiting for north
+        let st = in_dir(app, toolchain() + "\ndna\nstatus");
+        std::test::assert(std::str::contains(st.stdout, "[unadmitted] call the agency about the late invoice — `org/collections` is owned by north, not acme"), "status shows it waiting for its owner: " + st.stdout);
+        let other = scratch + "/north";
+        let cl = in_dir(scratch, "git\nclone\n-q\n" + bare + "\n" + other);
+        let f0 = in_dir(other, "git\nfetch\n-q\norigin\nrefs/dna/*:refs/dna/*");
+        let c4 = in_dir(other, "git\nconfig\ndna.owner\nnorth");
+        let st2 = in_dir(other, toolchain() + "\ndna\nstatus");
+        std::test::assert_eq_int(st2.code, 0, "status in north's clone: " + st2.stderr);
+        std::test::assert(!std::str::contains(st2.stdout, "[unadmitted]"), "north's own clone has nothing waiting on another owner: " + st2.stdout);
+        // ---- an ask for acme's own position from north's clone goes to the record too
+        let c5 = in_dir(other, "git\nconfig\nuser.name\nbob");
+        let c6 = in_dir(other, "git\nconfig\nuser.email\nbob@n");
+        let asked2 = in_dir(other, toolchain() + "\ndna\nask\n--no-wait\n--to\norg/books\n--as\nbob\nclose the books");
+        std::test::assert(asked2.code == 0 && std::str::contains(asked2.stdout, "owned by acme, not north"), "from north's clone, acme's position is acme's to admit: " + asked2.stdout + asked2.stderr);
+    }
+}
+fn main() { App { }; }

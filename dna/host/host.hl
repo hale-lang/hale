@@ -310,6 +310,9 @@ locus Host {
         // the one this host started, or the one the operator named
         let url = if len(self.knowledge_url) > 0 { self.knowledge_url } else if std::env::var_exists("HALE_DNA_KNOWLEDGE_URL") { std::env::var("HALE_DNA_KNOWLEDGE_URL") } else { "" };
         if len(url) > 0 { e = e + "\nHALE_DNA_KNOWLEDGE_URL=" + url; }
+        // GH #664: which owner this body is, over a shared record
+        let me = owner_here(self.root);
+        if len(me) > 0 { e = e + "\nHALE_DNA_OWNER=" + me; }
         return e;
     }
     // ---- the knowledge graph's environment (GH #583 K1) ----------------
@@ -407,7 +410,10 @@ locus Host {
             } else if (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") && !keys_has(self.relayed, fact_key(p, i)) && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") {
                 let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else { " review.settled review.refused " };
                 let answered = find_after(p, i + 1, answers, r.entity).seq >= 0;
-                if !answered {
+                // GH #664: an intent for a position another owner holds is
+                // theirs to admit; it stays in the record, unanswered here
+                let ours = r.kind != "intent.requested" || admits_here(self.root, std::json::find_string_field(r.body, "to"));
+                if !answered && ours {
                     let mut body = r.body;
                     if r.kind == "intent.requested" {
                         // the row's entity is the intent id
@@ -812,6 +818,19 @@ fn host_main(verb: String, root: String, seed: String, fleet: String, plan: Stri
     if verb == "run" && routing_here(root) > 0 && len(knowledge_url(root)) == 0 {
         eprintln("hale dna run: this record's operations live in the ledger (adopted at ", short(checkpoint_here(root)), "), and no ledger service is known here (HALE_DNA_KNOWLEDGE_URL); a body without its store admits nothing — set the url, or run under `hale dna dev`");
         std::process::exit(2);
+    }
+    // GH #664: a body over a shared record says which owner it is, and it
+    // must be one the map names — a body that names none admits nothing
+    if (verb == "run" || verb == "dev") && shared_here(root) {
+        let me = owner_here(root);
+        if len(me) == 0 {
+            eprintln("hale dna ", verb, ": this record's positions have owners (", OWNERS_FILE, ": ", owners_here(root), "); say which this body is — `git config dna.owner <owner>` — or it admits nothing");
+            std::process::exit(2);
+        }
+        if !dna::word_in(me, owners_here(root)) {
+            eprintln("hale dna ", verb, ": dna.owner is `", me, "`, which ", OWNERS_FILE, " does not name (owners: ", owners_here(root), ")");
+            std::process::exit(2);
+        }
     }
     let port_flag = flag(a, "--port");
     let observe_flag = flag(a, "--observe");

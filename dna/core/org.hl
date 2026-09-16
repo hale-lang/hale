@@ -23,6 +23,12 @@ locus SourceReader {
         let r = run_tool("git\n-C\n" + self.repo + "\nshow\nHEAD:" + path);
         return if r.code == 0 { r.stdout } else { "" };
     }
+    // A file as the genome holds it at a revision (a candidate commit).
+    fn read_at(rev: String, path: String) -> String {
+        self.reads = self.reads + 1;
+        let r = run_tool("git\n-C\n" + self.repo + "\nshow\n" + rev + ":" + path);
+        return if r.code == 0 { r.stdout } else { "" };
+    }
     fn diff(base: String, candidate: String) -> String {
         self.reads = self.reads + 1;
         let r = run_tool("git\n-C\n" + self.repo + "\ndiff\n" + base + "\n" + candidate);

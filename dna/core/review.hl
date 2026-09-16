@@ -54,6 +54,10 @@ locus Review {
         subject_digest: String = ""; // the candidate, pinned
         required_authority: String = ""; // e.g. "maintainer", "operator"
         author: String = ""; // the Attempt/performer that authored the candidate
+        // GH #664: owners that must each approve, `<owner>=<member>,<member> …`;
+        // "" means one admitted verdict decides
+        approvers: String = "";
+        approved_owners: String = ""; // owners whose approval is in, space-separated
         blocking: Bool = true;
         verdicts: VerdictRows = VerdictRows { };
         settled: Bool = false;
@@ -147,6 +151,36 @@ locus Review {
             self.refused = self.refused + 1;
             return false;
         }
+        if len(self.approvers) > 0 {
+            // GH #664: the change touches who owns what; each affected owner
+            // approves through one of its members, and one rejection settles
+            let owner = approver_owner(self.approvers, v.reviewer);
+            if len(owner) == 0 {
+                self.last_refusal = "reviewer " + v.reviewer + " is a member of no owner this change affects (" + approver_owners(self.approvers) + ")";
+                self.refused = self.refused + 1;
+                return false;
+            }
+            self.verdicts.push(v);
+            if v.verdict == "abstain" { return true; }
+            if v.verdict != "approve" {
+                self.settled = true;
+                self.outcome = v.verdict;
+                self.decided_by = v.reviewer;
+                self.comment = v.comment;
+                return true;
+            }
+            self.approved_owners = word_add(self.approved_owners, owner);
+            let mut i = 0;
+            while len(nth_word(approver_owners(self.approvers), i)) > 0 {
+                if !word_in(nth_word(approver_owners(self.approvers), i), self.approved_owners) { return true; }
+                i = i + 1;
+            }
+            self.settled = true;
+            self.outcome = "approve";
+            self.decided_by = v.reviewer;
+            self.comment = v.comment + " (every affected owner approved: " + self.approved_owners + ")";
+            return true;
+        }
         self.verdicts.push(v);
         if v.verdict == "abstain" { return true; }
         self.settled = true;
@@ -156,6 +190,18 @@ locus Review {
         return true;
     }
     fn verdict_count() -> Int { return self.verdicts.len(); }
+    // GH #664: the owners still to approve, "" when none or not an owners change.
+    @unbounded
+    fn awaiting_owners() -> String {
+        let mut out = "";
+        let mut i = 0;
+        while len(nth_word(approver_owners(self.approvers), i)) > 0 {
+            let w = nth_word(approver_owners(self.approvers), i);
+            if !word_in(w, self.approved_owners) { out = word_add(out, w); }
+            i = i + 1;
+        }
+        return out;
+    }
 }
 
 // ---- AutonomyBoundary ---------------------------------------------

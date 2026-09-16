@@ -40,6 +40,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "knowledge",
     "models",
     "org",
+    "ownership",
     "performers",
     "principal",
     "process",

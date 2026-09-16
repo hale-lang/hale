@@ -847,6 +847,31 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   `constitutional`, `process-policy` or `topology`, requires the
   Board; a change outside the grant (disposition `escalate`) requires
   the Board; everything else inside the grant requires the Leader.
+- **Owners (stage B2, GH #664).** A shared record's org chart has
+  one owner per position: the firm whose controller admits intents
+  for it. The map is the genome's file `dna/org/owners` (`org =
+  acme`, `org/collections = north`; `acme: alice, carol` names an
+  owner's members), read by `Ownership` in the org program; a
+  position not named takes its nearest named ancestor's owner, and
+  one under no named ancestor is unowned — admitted by no one. An
+  empty map is one owner, the organization itself, and nothing about
+  a single-owner organism changes. A body over a shared record says
+  which owner it is (`git config dna.owner`, carried as
+  `HALE_DNA_OWNER`) or the host refuses to run it; it admits an intent
+  (`Intent.to`, the position it is for; "" is `org`) only for a
+  position its owner holds, refusing one offered to it for another's
+  by name (`intent.refused`: "not this organization's to admit"). A
+  head never offers such an intent to the body beside it: `hale dna
+  ask --to` writes it to the record for the owner's controller, the
+  host relays only `intent.requested` rows for positions its owner
+  holds, and `status` lists the rest as `[unadmitted]` with the owner.
+  Changing the map is a change to the organization approved by every
+  owner it affects — an owner whose holdings or members differ between
+  the current map and the candidate's — each through one of its
+  members: the Review carries `approvers` (`acme=alice,carol
+  north=bob`), a verdict from a member of no affected owner is
+  refused, one rejection settles, and approval settles only once every
+  affected owner has approved.
 - **The foundational law** (`dna/org/law.hl`, generated, extendable,
   never weakened): nothing applies except through the substrate
   (`forbid reaches(positions, effects(genome_apply)) avoiding

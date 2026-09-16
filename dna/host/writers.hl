@@ -405,7 +405,11 @@ fn ask_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: S
     let intent_id = "i" + hex(millis());
     // GH #612: a hosted head names the principal it resolved
     let who = if len(as_flag) > 0 { as_flag } else { who_am_i() };
-    let local = membrane_up(root);
+    // GH #664: a body here admits the intent only for a position its owner
+    // holds; for another owner's the intent goes into the record, where
+    // their controller relays it
+    let ours = admits_here(root, to);
+    let local = membrane_up(root) && ours;
     let b = std::json::Builder { };
     b.begin_object();
     if local { b.string_field("intent_id", intent_id); }
@@ -419,11 +423,11 @@ fn ask_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: S
     } else {
         // no organism here: the intent goes into the record, and the host
         // beside the organism relays it (GH #566 F1)
-        if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
+        if len(record_remote(root)) == 0 { return fail(if ours { no_organism(root) } else { "ask: " + ownership_note(root, to) + "; their controller reads the record at its remote, and this clone has none" }); }
         if !append_as(root, "intent.requested", intent_id, b.result(), if len(as_flag) > 0 { as_flag } else { "" }) { return fail("the record refused the append"); }
         let s = sync_record(root);
         if !s.ok { return fail(s.summary); }
-        if no_wait { return answer("intent " + intent_id + " requested in the record; the organism answers there (`hale dna sync`, then `status`)\n"); }
+        if no_wait { return answer("intent " + intent_id + " requested in the record" + (if ours { "; the organism answers there" } else { " for its owner's controller (" + ownership_note(root, to) + "); it answers there" }) + " (`hale dna sync`, then `status`)\n"); }
     }
     // the organism's answer, from the record
     let deadline = std::time::now() + (if local { 10 } else { 60 });

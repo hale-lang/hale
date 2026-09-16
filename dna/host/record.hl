@@ -51,6 +51,31 @@ fn trust_mode(root: String) -> String {
     return if len(t) == 0 { "local" } else { t };
 }
 
+// GH #664: the owner this clone's body is (`git config dna.owner`), "" when unnamed.
+fn owner_here(root: String) -> String {
+    return rec(root).setting("owner");
+}
+const OWNERS_FILE: String = "dna/org/owners";
+// Whether the genome's owners map names any position (the record is shared).
+fn shared_here(root: String) -> Bool {
+    let o = dna::Ownership { path: root + "/" + OWNERS_FILE, me: owner_here(root), me_env: "" };
+    return o.shared();
+}
+fn owners_here(root: String) -> String {
+    let o = dna::Ownership { path: root + "/" + OWNERS_FILE, me: owner_here(root), me_env: "" };
+    return o.owners();
+}
+// Whether a body here admits an intent for `to` — always with one owner,
+// only for this owner's positions over a shared record.
+fn admits_here(root: String, to: String) -> Bool {
+    let o = dna::Ownership { path: root + "/" + OWNERS_FILE, me: owner_here(root), me_env: "" };
+    return o.admits(to);
+}
+fn ownership_note(root: String, to: String) -> String {
+    let o = dna::Ownership { path: root + "/" + OWNERS_FILE, me: owner_here(root), me_env: "" };
+    return o.why_not(to);
+}
+
 fn row_verified(root: String, sha: String) -> Bool {
     return rec(root).signer(sha).verified;
 }

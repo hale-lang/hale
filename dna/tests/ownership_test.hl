@@ -1,0 +1,99 @@
+// dna/tests/ownership_test.hl — who admits which position (GH #664, B2).
+//
+// The owners map: a position's owner is the one named or its nearest
+// named ancestor's, and none when no ancestor is named. A body over a
+// shared record admits only intents for its owner's positions and
+// refuses the rest by name; with no map every intent is its own to
+// admit. A change to the map is approved by every owner it affects,
+// each through one of its members, and one rejection settles it.
+
+import "../core" as dna;
+
+main locus App {
+    params {
+        map: dna::Ownership = dna::Ownership {
+            text: "# who admits what\norg = acme\norg/collections = north\nacme: alice, carol\nnorth: bob\n",
+            me: "acme", me_env: ""
+        };
+        alone: dna::Ownership = dna::Ownership { me_env: "" };
+        // a body of acme's over the shared map
+        acme: dna::Dna = dna::Dna {
+            work: dna::WorkSystem {
+                human: dna::HumanWorkGateway { operator: "alice", answer: "done" },
+                selection: dna::HumanFirstSelection { }
+            },
+            review_policy: dna::PostReviewRefactors { },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
+            deployment: dna::NoDeployment { },
+            ownership: dna::Ownership { text: "org = acme\norg/collections = north\nacme: alice\nnorth: bob\n", me: "acme", me_env: "" }
+        };
+        // a body that names no owner over the same map
+        nobody: dna::Dna = dna::Dna {
+            work: dna::WorkSystem {
+                human: dna::HumanWorkGateway { operator: "alice", answer: "done" },
+                selection: dna::HumanFirstSelection { }
+            },
+            review_policy: dna::PostReviewRefactors { },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
+            deployment: dna::NoDeployment { },
+            ownership: dna::Ownership { text: "org = acme\norg/collections = north\n", me_env: "" }
+        };
+        // a Review over a change to the map, approved by both owners
+        both: dna::Review = dna::Review { review_id: "m1", subject_digest: "d1", required_authority: "board", author: "editor", approvers: "acme=alice,carol north=bob" };
+        veto: dna::Review = dna::Review { review_id: "m2", subject_digest: "d2", required_authority: "board", author: "editor", approvers: "acme=alice north=bob" };
+    }
+    fn last(j: dna::Journal, kind: String) -> String {
+        let mut i = j.revision() - 1;
+        while i >= 0 {
+            let e = j.read(i);
+            if e.kind == kind { return e.body; }
+            i = i - 1;
+        }
+        return "";
+    }
+    run() {
+        // ---- the map
+        std::test::assert(self.map.shared(), "a map that names a position is a shared record");
+        std::test::assert(!self.alone.shared(), "no map: one owner");
+        std::test::assert_eq_str(self.map.owner_of(""), "acme", "the organization itself is `org`");
+        std::test::assert_eq_str(self.map.owner_of("org/collections"), "north", "a named position");
+        std::test::assert_eq_str(self.map.owner_of("org/collections/late"), "north", "an unnamed position takes its nearest named ancestor's owner");
+        std::test::assert_eq_str(self.map.owner_of("org/books"), "acme", "…up to the organization");
+        std::test::assert_eq_str(self.map.owner_of("app/x"), "", "a position under no named ancestor is unowned");
+        std::test::assert_eq_str(self.map.members_of("acme"), "alice carol", "members, commas or blanks");
+        std::test::assert_eq_str(self.map.owner_of_person("bob"), "north", "a person's owner");
+        std::test::assert_eq_str(self.map.owners(), "acme north", "every owner once");
+        std::test::assert(self.map.admits("org/books") && !self.map.admits("org/collections") && !self.map.admits("app/x"), "acme admits its own positions only");
+        std::test::assert(self.alone.admits("org/anything"), "with one owner everything is its own");
+        std::test::assert_eq_str(self.map.why_not("org/collections"), "`org/collections` is owned by north, not acme", "the refusal names the owner");
+        std::test::assert(std::str::contains(self.map.why_not("app/x"), "has no owner"), "…or that there is none: " + self.map.why_not("app/x"));
+        // ---- what a change affects
+        let before = "org = acme\norg/collections = north\nacme: alice\nnorth: bob\n";
+        std::test::assert_eq_str(dna::owners_affected(before, before), "", "the same map affects nobody");
+        std::test::assert_eq_str(dna::owners_affected(before, "org = acme\norg/collections = acme\nacme: alice\nnorth: bob\n"), "acme north", "moving a position affects both owners");
+        std::test::assert_eq_str(dna::owners_affected(before, "org = acme\norg/collections = north\nacme: alice, dan\nnorth: bob\n"), "acme", "a new member affects that owner alone");
+        std::test::assert_eq_str(dna::owners_affected(before, "org = acme\norg/collections = north\norg/mail = west\nacme: alice\nnorth: bob\nwest: eve\n"), "west", "a new owner affects itself");
+        std::test::assert_eq_str(dna::approver_owner("acme=alice,carol north=bob", "carol"), "acme", "an approver's owner");
+        std::test::assert_eq_str(dna::approver_owner("acme=alice,carol north=bob", "eve"), "", "…or none");
+        // ---- admission
+        let mine = self.acme.ask(dna::Intent { id: "i1", outcome: "chase the late invoice", from: "alice", to: "org/books" }, dna::Knobs { routed: true });
+        std::test::assert_eq_str(mine, "t1", "an intent for acme's position is admitted by acme's body: " + mine);
+        let theirs = self.acme.ask(dna::Intent { id: "i2", outcome: "call the collections agency", from: "alice", to: "org/collections" }, dna::Knobs { routed: true });
+        std::test::assert_eq_str(theirs, "refused: not this organization's to admit — `org/collections` is owned by north, not acme", "an intent for north's position is refused by name");
+        std::test::assert(std::str::contains(self.last(self.acme.journal, "intent.refused"), "owned by north"), "the refusal is a row: " + self.last(self.acme.journal, "intent.refused"));
+        let unnamed = self.nobody.ask(dna::Intent { id: "i3", outcome: "anything", from: "alice", to: "" }, dna::Knobs { routed: true });
+        std::test::assert(std::str::contains(unnamed, "this body names no owner"), "a body that names no owner admits nothing over a shared record: " + unnamed);
+        // ---- approval by every affected owner
+        self.both.on_verdict(dna::Verdict { review_id: "m1", subject_digest: "d1", verdict: "approve", reviewer: "eve", authority: "board" });
+        std::test::assert(!self.both.settled && self.both.refused == 1 && std::str::contains(self.both.last_refusal, "member of no owner"), "a reviewer of no affected owner is refused: " + self.both.last_refusal);
+        self.both.on_verdict(dna::Verdict { review_id: "m1", subject_digest: "d1", verdict: "approve", reviewer: "carol", authority: "board" });
+        std::test::assert(!self.both.settled, "one owner's approval does not settle");
+        std::test::assert_eq_str(self.both.awaiting_owners(), "north", "the other is still to approve");
+        self.both.on_verdict(dna::Verdict { review_id: "m1", subject_digest: "d1", verdict: "approve", reviewer: "bob", authority: "board" });
+        std::test::assert(self.both.settled && self.both.outcome == "approve" && std::str::contains(self.both.comment, "every affected owner approved: acme north"), "both approve: settled, saying so: " + self.both.comment);
+        self.veto.on_verdict(dna::Verdict { review_id: "m2", subject_digest: "d2", verdict: "approve", reviewer: "alice", authority: "board" });
+        self.veto.on_verdict(dna::Verdict { review_id: "m2", subject_digest: "d2", verdict: "reject", reviewer: "bob", authority: "board", comment: "not ours to give away" });
+        std::test::assert(self.veto.settled && self.veto.outcome == "reject" && self.veto.decided_by == "bob", "one owner's rejection settles");
+    }
+}
+fn main() { App { }; }
