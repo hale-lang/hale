@@ -100,6 +100,7 @@ fn dna_fixture_set_is_complete() {
             "anthropic_messages_test.hl",
             "apply_test.hl",
             "assembly_test.hl",
+            "b1_team_test.hl",
             "body_lease_blocked_test.hl",
             "body_lease_start_test.hl",
             "body_provision_script_test.hl",

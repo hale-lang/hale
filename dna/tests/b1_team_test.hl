@@ -1,0 +1,453 @@
+// GH #646 B1 — two people, two heads, one record, one admission
+// controller, on a ground-up organism. An organization is scaffolded,
+// pushed to a bare remote and adopted into a ledger service; a body runs
+// beside the founder's clone; a second person clones the same record and
+// runs a head of their own. From there the two are told apart by nothing
+// but the session the issuer gave them:
+//
+//   1. one organism, two members under one issuer (alice on the board,
+//      bob not), its models scripted so it runs without an API key;
+//   2. one admission controller: the ledger service the record was
+//      adopted into, which both heads and both clones write through;
+//   3. two hosted heads on two clones, a session each;
+//   4. alice asks through her head; the organism plans the ask as a
+//      person's job and hands it to bob — in the ledger, not the record;
+//   5. alice cannot close bob's job and bob can, from his own clone;
+//   6. both clones read one record: the same task, the same state, the
+//      same history;
+//   7. bob proposes a practice from his clone and approves it from his
+//      head: refused, for want of the board's authority. Alice approves
+//      it from hers and it is ratified, in her name, though her form
+//      said `bob`;
+//   8. identity is not borrowed: bob's session naming alice acts as bob,
+//      and a forged cookie is refused.
+//
+// A GAP, precisely (step 4): an ask that enters through a head sharing a
+// clone with a LIVE body goes over the membrane, and the asker's name is
+// dropped there — `IntentOffer.from` reaches `Assembly.on_intent`
+// (dna/core/assembly.hl) and is never journaled; the ledger's
+// `intent.offered` row carries the outcome alone, authored `ledger`. The
+// same ask from a clone with no body of its own writes `intent.requested`
+// through the service in the person's own name (step 8 asserts exactly
+// that). So the record can say which of two people ASKED only when their
+// head is not co-located with the body. Step 4 asserts what does hold —
+// the ask is admitted, and the whole chain lands in the ledger and not in
+// the record — and stops short of the attribution.
+
+import "../core" as dna;
+import "../knowledge" as know;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` (newline-separated) in `dir`: no hosted models, no discovery.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+// The same, with the one admission controller named: every verb that
+// writes the day's work goes through this service, from either clone.
+fn through(dir: String, service: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_KNOWLEDGE_URL=\"$1\" && shift && exec \"$@\"\nsh\n" + dir + "\n" + service + "\n" + argv);
+}
+
+fn b64(s: String) -> String { return std::text::base64::url_encode(std::bytes::from_string(s)); }
+
+type Http {
+    status: Int = 0;
+    headers: String = "";
+    body: String = "";
+}
+
+// One request through curl, headers included, redirects not followed.
+fn curl(method: String, url: String, cookie: String, body: String) -> Http {
+    let mut argv = "curl\n-s\n-i\n-X\n" + method;
+    if len(cookie) > 0 { argv = argv + "\n-H\nCookie: " + cookie; }
+    if len(body) > 0 { argv = argv + "\n-H\nContent-Type: application/json\n--data\n" + body; }
+    let r = dna::run_tool(argv + "\n" + url);
+    let raw = r.stdout;
+    let split = std::str::index_of(raw, "\r\n\r\n");
+    let head = if split < 0 { raw } else { raw[0..split] };
+    let rest = if split < 0 { "" } else { raw[(split + 4)..len(raw)] };
+    let sp = std::str::index_of(head, " ");
+    let status = if sp < 0 || len(head) < sp + 4 { 0 } else { std::str::parse_int(head[(sp + 1)..(sp + 4)]) or 0 };
+    return Http { status: status, headers: head, body: rest };
+}
+
+@unbounded
+fn form_field(body: String, name: String) -> String {
+    let mut rest = body + "&";
+    while len(rest) > 0 {
+        let amp = std::str::index_of(rest, "&");
+        let part = rest[0..amp];
+        rest = rest[(amp + 1)..len(rest)];
+        if std::str::starts_with(part, name + "=") { return know::url_decode(part[(len(name) + 1)..len(part)]); }
+    }
+    return "";
+}
+
+type IssuedCode {
+    code: String = "";
+    nonce: String = "";
+    sub: String = "";
+}
+
+@form(vec)
+locus IssuedCodes { capacity { heap rows of IssuedCode; } }
+
+// A fake identity provider (two_heads_test's, on a port of its own): a
+// discovery document; an authorize endpoint that signs the user in at
+// once (as `login_hint` names, alice by default) and sends the browser
+// back with a code; a token endpoint that answers the code, given the
+// client's secret, with an ID token carrying the sign-in's nonce.
+locus FakeIssuer {
+    params {
+        base: String = "http://127.0.0.1:47815";
+        codes: IssuedCodes = IssuedCodes { };
+        exchanges: Int = 0;
+        refused_secrets: Int = 0;
+    }
+    @unbounded
+    fn handle(req: std::http::Request) -> std::http::Response {
+        let ctx = std::http::build_context(req);
+        if std::http::is_route(ctx, "GET", "/.well-known/openid-configuration") {
+            return std::http::Response { status: 200, content_type: "application/json", body: "{\"issuer\": \"" + self.base + "\", \"authorization_endpoint\": \"" + self.base + "/authorize\", \"token_endpoint\": \"" + self.base + "/token\"}" };
+        }
+        if std::http::is_route(ctx, "GET", "/authorize") {
+            let back = know::url_decode(std::http::query_param(ctx.params, "redirect_uri"));
+            let hint = std::http::query_param(ctx.params, "login_hint");
+            let code = "code-" + to_string(self.codes.len() + 1);
+            self.codes.push(IssuedCode { code: code, nonce: std::http::query_param(ctx.params, "nonce"), sub: if len(hint) > 0 { hint } else { "alice-sub" } });
+            return std::http::Response { status: 302, content_type: "text/plain", headers: "Location: " + back + "?code=" + code + "&state=" + std::http::query_param(ctx.params, "state"), body: "" };
+        }
+        if std::http::is_route(ctx, "POST", "/token") {
+            if form_field(req.body, "client_secret") != "fake-secret" {
+                self.refused_secrets = self.refused_secrets + 1;
+                return std::http::Response { status: 401, content_type: "application/json", body: "{\"error\": \"invalid_client\"}" };
+            }
+            let code = form_field(req.body, "code");
+            let mut i = 0;
+            while i < self.codes.len() {
+                let g = self.codes.get(i) or IssuedCode { };
+                if g.code == code && len(code) > 0 {
+                    self.codes.set(i, IssuedCode { }) or discard;
+                    self.exchanges = self.exchanges + 1;
+                    let payload = "{\"iss\": \"" + self.base + "\", \"aud\": \"dna-ui\", \"sub\": \"" + g.sub + "\", \"nonce\": \"" + g.nonce + "\", \"exp\": " + to_string(std::time::now() + 600) + "}";
+                    let token = b64("{\"alg\":\"RS256\"}") + "." + b64(payload) + ".unverified";
+                    return std::http::Response { status: 200, content_type: "application/json", body: "{\"id_token\": \"" + token + "\", \"token_type\": \"Bearer\"}" };
+                }
+                i = i + 1;
+            }
+            return std::http::Response { status: 400, content_type: "application/json", body: "{\"error\": \"invalid_grant\"}" };
+        }
+        return std::http::Response { status: 404, body: "not found" };
+    }
+}
+
+// The line of a text that carries `needle` ("" when none).
+@unbounded
+fn row_with(text: String, needle: String) -> String {
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::contains(line, needle) { return line; }
+    }
+    return "";
+}
+
+// The ledger, as the one admission controller serves it.
+fn ledger(service: String) -> String {
+    return curl("GET", service + "/ledger/rows?from=0", "", "").body;
+}
+
+// Wait, bounded, for a ledger row carrying `needle`; the row, or "".
+@unbounded
+fn wait_row(service: String, needle: String, tries: Int) -> String {
+    let mut n = 0;
+    while n < tries {
+        let row = row_with(ledger(service), needle);
+        if len(row) > 0 { return row; }
+        std::time::sleep(500ms);
+        n = n + 1;
+    }
+    return "";
+}
+
+// A row's body, as a ledger row carries it (a JSON string field).
+fn row_body(row: String) -> String { return std::json::find_string_field(row, "body"); }
+
+// The record's journal in a clone.
+fn record(app: String) -> String {
+    return in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout;
+}
+
+// The scripted catalog this organism runs on: every backend is a
+// `dna::FakeModel`, so the organism plans and decides with no API key.
+// The leader's answer is a plan of kind `person` assigned to bob — the
+// shape dna/core/org.hl asks for and dna/core/assembly.hl turns into a
+// `task.handed` row (`execute_plan`).
+const CATALOG: String = "// dna/org/models.hl — the catalog, scripted (the B1 fixture).\n"
+    + "import \"vendor/dna\" as dna;\n"
+    + "\n"
+    + "fn frontier() -> dna::FakeModel {\n"
+    + "    return dna::FakeModel { name: \"deep\", model: \"deep-1\", price_micros: 0, answer: \"kind: person\\nclass: application\\ntarget: (none)\\ncount: 1\\nassignee: bob\\nobligation: none\\na person chases it; nothing in the source changes\" };\n"
+    + "}\n"
+    + "\n"
+    + "fn fast() -> dna::FakeModel {\n"
+    + "    return dna::FakeModel { name: \"quick\", model: \"quick-1\", price_micros: 0, answer: \"kind: person\\nclass: application\\ntarget: (none)\\ncount: 1\\nassignee: bob\\nobligation: none\\na person chases it; nothing in the source changes\" };\n"
+    + "}\n"
+    + "\n"
+    + "fn desk() -> dna::LocalFakeModel {\n"
+    + "    return dna::LocalFakeModel { };\n"
+    + "}\n"
+    + "\n"
+    + "fn leader_models() -> dna::ModelRouter {\n"
+    + "    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };\n"
+    + "}\n"
+    + "\n"
+    + "fn editor_models() -> dna::ModelRouter {\n"
+    + "    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };\n"
+    + "}\n"
+    + "\n"
+    + "fn agent_models() -> dna::ModelRouter {\n"
+    + "    return dna::ModelRouter { quick: fast(), deep: frontier(), private: desk() };\n"
+    + "}\n"
+    + "\n"
+    + "fn org_budget() -> dna::BudgetPolicy {\n"
+    + "    return dna::BudgetPolicy { window: \"none\", allowance_micros: 5000000 };\n"
+    + "}\n"
+    + "\n"
+    + "fn probe_catalog() -> String {\n"
+    + "    return dna::probe(\"frontier\", frontier()) + dna::probe(\"fast\", fast()) + dna::probe(\"desk\", desk());\n"
+    + "}\n";
+
+main locus App {
+    params {
+        srv: std::http::Server = std::http::Server { port: 47815, handler: FakeIssuer { base: "http://127.0.0.1:47815" } };
+    }
+    placement { srv: cooperative(pool = io); }
+    // A member signs in at the issuer as `subject` and gets a session cookie.
+    fn session(ui: String, subject: String) -> String {
+        let login = curl("GET", ui + "/auth/login", "", "");
+        let authorize = dna::response_header(login.headers, "Location") + "&login_hint=" + subject;
+        let signin_line = dna::response_header(login.headers, "Set-Cookie");
+        let signin = signin_line[0..std::str::index_of(signin_line, ";")];
+        let back = dna::response_header(curl("GET", authorize, "", "").headers, "Location");
+        let landed = curl("GET", back, signin, "");
+        let cookie_line = dna::response_header(landed.headers, "Set-Cookie");
+        if landed.status != 302 || !std::str::starts_with(cookie_line, "dna_session=") { return ""; }
+        return cookie_line[0..std::str::index_of(cookie_line, ";")];
+    }
+    // The two people, as the issuer and the record know them.
+    fn configure(clone: String, who: String, ui: String) {
+        let g1 = in_dir(clone, "git\nconfig\nuser.name\n" + who);
+        let g2 = in_dir(clone, "git\nconfig\nuser.email\n" + who + "@local");
+        let c1 = in_dir(clone, "git\nconfig\ndna.principal\noidc");
+        let c2 = in_dir(clone, "git\nconfig\ndna.oidc.issuer\nhttp://127.0.0.1:47815");
+        let c3 = in_dir(clone, "git\nconfig\ndna.oidc.client\ndna-ui");
+        let c4 = in_dir(clone, "git\nconfig\ndna.oidc.redirect\n" + ui + "/auth/callback");
+        let c5 = in_dir(clone, "git\nconfig\n--add\ndna.oidc.member\nalice-sub=alice");
+        let c6 = in_dir(clone, "git\nconfig\n--add\ndna.oidc.member\nbob-sub=bob");
+        let c7 = in_dir(clone, "git\nconfig\ndna.oidc.board\nalice");
+        std::test::assert_eq_int(c7.code, 0, "configured " + clone + ": " + c7.stderr);
+    }
+    // A hosted head on `clone`, at `port`, writing through `service`; its pid.
+    fn head(clone: String, port: Int, service: String, log: String) -> String {
+        let started = in_dir(clone, "sh\n-c\nHALE_DNA_OIDC_SECRET=fake-secret HALE_DNA_KNOWLEDGE_URL=\"$3\" nohup timeout 900 \"$1\" dna ui . --port \"$2\" >\"$4\" 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + to_string(port) + "\n" + service + "\n" + log);
+        return dna::trim_nl(started.stdout);
+    }
+    // Wait, bounded, for a row of the RECORD carrying `needle`, syncing
+    // the founder's clone each try; the row, or "".
+    @unbounded
+    fn wait_in_record(app: String, service: String, needle: String, tries: Int) -> String {
+        let mut n = 0;
+        while n < tries {
+            let s = through(app, service, toolchain() + "\ndna\nsync");
+            let row = row_with(record(app), needle);
+            if len(row) > 0 { return row; }
+            std::time::sleep(500ms);
+            n = n + 1;
+        }
+        return "";
+    }
+    // Wait, bounded, for the Review whose question carries `text`; its id.
+    @unbounded
+    fn wait_review(app: String, service: String, text: String, tries: Int) -> String {
+        let mut n = 0;
+        while n < tries {
+            let s = through(app, service, toolchain() + "\ndna\nsync");
+            let line = std::str::trim(row_with(through(app, service, toolchain() + "\ndna\nreview").stdout, text));
+            if len(line) > 0 {
+                let sp = std::str::index_of(line, " ");
+                return if sp < 0 { line } else { line[0..sp] };
+            }
+            std::time::sleep(500ms);
+            n = n + 1;
+        }
+        return "";
+    }
+    fn head_up(ui: String, tries: Int) -> Bool {
+        let mut n = 0;
+        while n < tries {
+            if curl("GET", ui + "/api/board", "", "").status != 0 { return true; }
+            std::time::sleep(200ms);
+            n = n + 1;
+        }
+        return false;
+    }
+    run() {
+        let scratch = "/tmp/dna-b1-team-" + to_string(std::process::pid());
+        std::io::fs::mkdir(scratch) or discard;
+        // whatever this fixture starts under its scratch stops when it does (#637)
+        dna::reap_on_exit(scratch);
+
+        // ---- 1. a ground-up organism, its models scripted
+        let bare = scratch + "/origin.git";
+        let b0 = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nteam");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let app = scratch + "/team";
+        let other = scratch + "/team-b";
+        // 30000..46999: clear of the issuer's port below, and of the
+        // fixed ports the other OIDC fixtures bind
+        let kport = 30000 + (std::process::pid() + 31) % 17000;
+        let p1 = 30000 + (std::process::pid() + 37) % 17000;
+        let p2 = 30000 + (std::process::pid() + 43) % 17000;
+        let service = "http://127.0.0.1:" + to_string(kport);
+        let ui_a = "http://127.0.0.1:" + to_string(p1);
+        let ui_b = "http://127.0.0.1:" + to_string(p2);
+        self.configure(app, "alice", ui_a);
+        std::io::fs::write_file(app + "/dna/org/models.hl", CATALOG) or discard;
+        let checked = in_dir(app, toolchain() + "\ncheck\n--matrix\n.");
+        std::test::assert_eq_int(checked.code, 0, "the scripted organization checks: " + checked.stdout + checked.stderr);
+        let a1 = in_dir(app, "git\nadd\n-A");
+        let a2 = in_dir(app, "git\ncommit\n-q\n-m\nthe organization, with a scripted catalog");
+        let a3 = in_dir(app, "git\nremote\nadd\norigin\n" + bare);
+        let a4 = in_dir(app, "git\npush\n-q\norigin\nmain\nrefs/dna/*:refs/dna/*");
+        std::test::assert_eq_int(a4.code, 0, "pushed the genome and the record: " + a4.stderr);
+
+        // ---- 2. one admission controller, and the record adopted into it
+        let ksrv = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_DSN=memory nohup timeout 900 \"$1\" dna knowledge . --port \"$2\" >.hale/knowledge.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + to_string(kport));
+        let kpid = dna::trim_nl(ksrv.stdout);
+        let mut kup = false;
+        let mut ktries = 0;
+        while !kup && ktries < 600 {
+            if curl("GET", service + "/ledger/head", "", "").status == 200 { kup = true; } else { std::time::sleep(200ms); }
+            ktries = ktries + 1;
+        }
+        std::test::assert(kup, "the service came up at " + service);
+        let adopted = through(app, service, toolchain() + "\ndna\nledger\nadopt\n--as\nalice");
+        std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "ledger adopted at"), "adopted: " + adopted.stdout + adopted.stderr);
+
+        // the body, beside the founder's clone, writing through the same service
+        let started = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_URL=\"$2\" nohup timeout 900 \"$1\" dna run . --no-iris >.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + service);
+        let body_pid = dna::trim_nl(started.stdout);
+        let mut membrane = false;
+        let mut mtries = 0;
+        while !membrane && mtries < 600 {
+            if std::io::fs::file_exists(app + "/.hale/dna/hale-dna.intent.offered.sock") && std::io::fs::file_exists(app + "/.hale/dna/hale-dna.review.verdict.sock") && std::io::fs::file_exists(app + "/.hale/dna/org.pid") { membrane = true; } else { std::time::sleep(500ms); }
+            mtries = mtries + 1;
+        }
+        std::test::assert(membrane, "the body came up beside the founder's clone: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
+
+        // ---- 3. two heads, two clones, a session each
+        let pid_a = self.head(app, p1, service, ".hale/ui.log");
+        std::test::assert(self.head_up(ui_a, 600), "head A came up at " + ui_a);
+        let cloned = in_dir(scratch, "git\nclone\n-q\n" + bare + "\n" + other);
+        std::test::assert_eq_int(cloned.code, 0, "the second person clones the record: " + cloned.stderr);
+        self.configure(other, "bob", ui_b);
+        let synced_b = through(other, service, toolchain() + "\ndna\nsync");
+        std::test::assert(synced_b.code == 0 && std::str::contains(synced_b.stdout, "refs/dna/journal"), "clone B has the record: " + synced_b.stdout + synced_b.stderr);
+        let pid_b = self.head(other, p2, service, ".hale/ui.log");
+        std::test::assert(self.head_up(ui_b, 600), "head B came up at " + ui_b);
+
+        let alice = self.session(ui_a, "alice-sub");
+        let bob = self.session(ui_b, "bob-sub");
+        std::test::assert(len(alice) > 60 && len(bob) > 60 && alice != bob, "two people, two heads, a session each and not the same one");
+        let board_b = curl("GET", ui_b + "/api/board", bob, "");
+        std::test::assert_eq_int(board_b.status, 200, "head B answers bob's session: " + board_b.body);
+        std::test::assert_eq_int(curl("GET", ui_b + "/api/board", "", "").status, 401, "and nothing without one");
+
+        // ---- 4. alice asks through head A; the organism hands the job to bob
+        let asked = curl("POST", ui_a + "/api/ask", alice, "{\"outcome\":\"chase the late invoice\",\"to\":\"\",\"as\":\"bob\"}");
+        std::test::assert_eq_int(asked.status, 200, "alice's ask is taken: " + asked.body);
+        let offered = wait_row(service, "chase the late invoice", 240);
+        std::test::assert(std::str::contains(offered, "\"kind\": \"intent.offered\""), "the ask is a row of the ledger: " + ledger(service));
+        std::test::assert(!std::str::contains(record(app), "chase the late invoice"), "and not of the record: the day's work is the ledger's");
+        // the plan: a person's job, bob's, and the hand-off that follows it
+        let handed = wait_row(service, "\"kind\": \"task.handed\"", 240);
+        std::test::assert(len(handed) > 0, "the organism planned the ask and handed it on: " + ledger(service));
+        let tid = std::json::find_string_field(handed, "entity");
+        std::test::assert_eq_str(std::json::find_string_field(row_body(handed), "assignee"), "bob", "handed to bob, as the plan named: " + handed);
+        let planned = row_with(ledger(service), "\"kind\": \"task.planned\"");
+        std::test::assert_eq_str(std::json::find_string_field(row_body(planned), "kind"), "person", "planned as a person's job, not a change to source: " + planned);
+
+        // ---- 5. only the assignee closes it, from their own clone
+        let not_hers = through(app, service, toolchain() + "\ndna\ntask\ndone\n" + tid + "\n--as\nalice\n--note\npaid");
+        std::test::assert(not_hers.code != 0 && std::str::contains(not_hers.stdout + not_hers.stderr, "is handed to bob, not to alice"), "alice cannot close bob's job, whatever she runs it from: " + not_hers.stdout + not_hers.stderr);
+        let done = through(other, service, toolchain() + "\ndna\ntask\ndone\n" + tid + "\n--as\nbob\n--note\npaid");
+        std::test::assert(done.code == 0 && std::str::contains(done.stdout, "task " + tid + " done by bob"), "bob closes it from his own clone: " + done.stdout + done.stderr);
+        let done_row = wait_row(service, "\"kind\": \"task.done\"", 60);
+        std::test::assert(std::str::contains(done_row, "\"author\": \"bob\"") && !std::str::contains(done_row, "\"author\": \"alice\""), "in bob's name, in the one ledger: " + done_row);
+
+        // ---- 6. one record, read from both clones
+        let st_a = through(app, service, toolchain() + "\ndna\nstatus");
+        let st_b = through(other, service, toolchain() + "\ndna\nstatus");
+        let line_a = row_with(st_a.stdout, tid + " [");
+        let line_b = row_with(st_b.stdout, tid + " [");
+        std::test::assert(len(line_a) > 0 && std::str::contains(line_a, "[done]"), "the founder's clone reads the task done: " + st_a.stdout + st_a.stderr);
+        std::test::assert_eq_str(line_b, line_a, "and the second clone reads the same task, in the same state");
+        let history = through(other, service, toolchain() + "\ndna\nhistory\n" + tid).stdout;
+        std::test::assert(std::str::contains(row_with(history, "task.born"), tid) && std::str::contains(row_with(history, "task.handed"), tid) && std::str::contains(row_with(history, "task.done"), tid), "born, handed, done — one history, from bob's clone: " + history);
+
+        // ---- 7. a practice bob proposes, and the authority alice has
+        let proposed = through(other, service, toolchain() + "\ndna\npractice\npropose\ncollections/late\n--text\nChase an invoice at seven days.\n--as\nbob");
+        std::test::assert(proposed.code == 0 && std::str::contains(proposed.stdout, "practice collections/late requested in the record by bob"), "bob proposes from his clone: " + proposed.stdout + proposed.stderr);
+        // the organism hears it through the record and puts it to the Board
+        let rid = self.wait_review(app, service, "Chase an invoice at seven days.", 240);
+        std::test::assert(len(rid) > 0, "the practice became a Review the Board must decide: " + through(app, service, toolchain() + "\ndna\nreview").stdout);
+        // bob approves his own proposal from his head: his authority is not the Board's
+        let sync_b = through(other, service, toolchain() + "\ndna\nsync");
+        let bobs = curl("POST", ui_b + "/api/verdict", bob, "{\"id\":\"" + rid + "\",\"verdict\":\"approve\",\"as\":\"alice\",\"comment\":\"mine\"}");
+        std::test::assert_eq_int(bobs.status, 200, "head B takes the verdict: " + bobs.body);
+        let refused = self.wait_in_record(app, service, "\"kind\": \"review.refused\", \"entity\": \"" + rid + "\"", 240);
+        std::test::assert(std::str::contains(refused, "authority reviewer does not satisfy board"), "bob's verdict is refused for want of the Board's authority: " + refused);
+        let bob_verdict = row_with(record(app), "\"kind\": \"review.verdict\", \"entity\": \"" + rid + "\"");
+        std::test::assert(std::str::contains(bob_verdict, "\"author\": \"bob\"") && std::str::contains(row_body(bob_verdict), "\"reviewer\": \"bob\"") && std::str::contains(row_body(bob_verdict), "\"authority\": \"reviewer\""), "in bob's name, at his authority, though his form said alice: " + bob_verdict);
+
+        // alice decides it from her head, with the Board's authority
+        let hers = curl("POST", ui_a + "/api/verdict", alice, "{\"id\":\"" + rid + "\",\"verdict\":\"approve\",\"as\":\"bob\",\"comment\":\"agreed\"}");
+        std::test::assert_eq_int(hers.status, 200, "head A takes the verdict: " + hers.body);
+        let settled = self.wait_in_record(app, service, "\"kind\": \"review.settled\", \"entity\": \"" + rid + "\"", 240);
+        std::test::assert_eq_str(row_body(settled), "approve by alice", "settled in alice's name, though her form said bob: " + settled);
+        let ratified = row_with(record(app), "\"kind\": \"knowledge.ratified\"");
+        std::test::assert(std::str::contains(row_body(ratified), "\"decided_by\": \"alice\"") && std::str::contains(row_body(ratified), "\"review_id\": \"" + rid + "\""), "and the practice is the organization's, by the Board: " + ratified);
+        std::test::assert(!std::str::contains(ledger(service), "review.settled"), "a decision about what the organization is stays in the record, not the ledger");
+
+        // ---- 8. identity is not borrowed
+        let borrowed = curl("POST", ui_b + "/api/ask", bob, "{\"outcome\":\"reconcile the payroll account\",\"to\":\"\",\"as\":\"alice\"}");
+        std::test::assert_eq_int(borrowed.status, 200, "head B takes the ask: " + borrowed.body);
+        let his = wait_row(service, "reconcile the payroll account", 240);
+        std::test::assert(std::str::contains(his, "\"kind\": \"intent.requested\"") && std::str::contains(his, "\"author\": \"bob\"") && !std::str::contains(his, "\"author\": \"alice\""), "bob's ask is bob's, whatever the form said: " + his);
+        std::test::assert_eq_str(std::json::find_string_field(row_body(his), "from"), "bob", "and the row names him: " + his);
+        let forged = curl("POST", ui_b + "/api/ask", "dna_session=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "{\"outcome\":\"raise everyone's pay\",\"to\":\"\"}");
+        std::test::assert_eq_int(forged.status, 401, "a cookie nobody was given is no one: " + forged.body);
+        std::test::assert(!std::str::contains(ledger(service), "raise everyone's pay"), "and nothing reached the ledger for it");
+
+        // ---- 9. stop what this fixture started
+        let k1 = dna::run_tool("kill\n" + pid_a);
+        let k2 = dna::run_tool("kill\n" + pid_b);
+        let k3 = dna::run_tool("kill\n" + body_pid);
+        std::time::sleep(500ms);
+        let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app knowledge; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; rm -f .hale/dna/$f.pid; done; rm -f .hale/dna/*.sock; true\nsh\n" + app);
+        let k4 = dna::run_tool("kill\n" + kpid);
+        std::time::sleep(500ms);
+        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+    }
+}
+
+fn main() { App { }; }
