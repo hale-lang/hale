@@ -209,3 +209,9 @@ complete, a queued spend has reserved nothing. On submission the
 service admits each request in capture order — a person who retired
 meanwhile is refused, a request sent twice lands once — and a refused
 one is kept beside the queue with the reason.
+
+Evidence keeps its treatment across the two memories: a bill's rows
+are the ledger's, its body is where it always was, and a redaction
+after adoption removes a body filed before it. The books export reads
+the ledger through the service beside the record and never runs SQL
+of its own.

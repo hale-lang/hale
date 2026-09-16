@@ -343,11 +343,24 @@ fn completion_of(journal: String, task: String, state: String) -> String {
 // Every bill filed as evidence whose date falls in [from, to], with its
 // obligation as the record has it; totals by currency; the record's head.
 @unbounded
+// The ledger's rows, when a service is known here (GH #646 stage 4): the
+// export is a supported ledger query, `/ledger/rows`, never SQL of its
+// own; with no service the record alone is read, as before adoption.
+fn ledger_rows() -> String {
+    if !std::env::var_exists("HALE_DNA_KNOWLEDGE_URL") { return ""; }
+    let url = std::env::var("HALE_DNA_KNOWLEDGE_URL");
+    if len(url) == 0 { return ""; }
+    let resp = std::http::get(url + "/ledger/rows?from=0") or std::http::ClientResponse { status: 0, body: b"" };
+    if resp.status != 200 { return ""; }
+    return std::str::from_bytes(resp.body);
+}
+
 fn export_week(from: String, to: String) -> String {
     // the journal at the head the export names, read once: a live organism
-    // moving the ref in between cannot make the rows and the head disagree
+    // moving the ref in between cannot make the rows and the head disagree;
+    // the day's work that lives in the ledger is read beside it
     let head = std::str::trim(git("rev-parse\nrefs/dna/journal"));
-    let journal = git("show\n" + head + ":journal.jsonl");
+    let journal = git("show\n" + head + ":journal.jsonl") + "\n" + ledger_rows();
     let lo = day_number(from);
     let hi = day_number(to);
     let mut out = "bill,supplier,payer,purpose,date,amount,currency,treatment,evidence,task,assignee,state,completion,practice\n";

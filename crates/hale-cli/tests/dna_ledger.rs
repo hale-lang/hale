@@ -285,6 +285,14 @@ fn a_pre_split_organism_carries_its_history_and_unfinished_work_through_adoption
     plumb(&app, "person.retired", "alex", "{\"by\": \"riley\", \"to\": \"sam\", \"transferred\": 0}", "riley");
     plumb(&app, "handoff.published", "handoff:h-1", "{\"kind\": \"task\", \"subject\": \"t-1\", \"connection\": \"partner\", \"by\": \"riley\"}", "riley");
     plumb(&app, "schedule.declared", "weekly-close", "{\"cron\": \"0 9 * * 1\"}", "dna");
+    // a body kept in git before adoption, to be redacted after it (stage 4)
+    std::fs::write(app.join("old-invoice.txt"), "an invoice from before adoption").unwrap();
+    let (ok, filed) = hale(&["dna", "receipt", "file", "old-invoice.txt", "--as", "sam"], &app, &[]);
+    assert!(ok, "{filed}");
+    let old_digest = record(&app).iter().rev().find(|r| r["kind"] == "receipt.filed").map(|r| r["entity"].as_str().unwrap().to_string()).unwrap();
+    let old_hex = old_digest.trim_start_matches("sha256:").to_string();
+    let kept = Command::new("git").args(["rev-parse", "-q", "--verify", &format!("refs/dna/receipts/{old_hex}")]).current_dir(&app).output().unwrap();
+    assert!(kept.status.success(), "the body is a blob of the record");
     let seeded = record(&app);
     let before_kinds: Vec<String> = seeded.iter().map(|r| format!("{} {}", r["kind"].as_str().unwrap_or(""), r["entity"].as_str().unwrap_or(""))).collect();
 
@@ -323,7 +331,7 @@ fn a_pre_split_organism_carries_its_history_and_unfinished_work_through_adoption
     // the copy: exactly the operational rows, in order, with their authors
     let copied = body(&http(kport, "GET /ledger/rows?from=0 HTTP/1.0\r\nHost: x\r\n\r\n"));
     let copied_kinds: Vec<String> = copied.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).map(|v| format!("{} {}", v["kind"].as_str().unwrap_or(""), v["entity"].as_str().unwrap_or(""))).collect();
-    let expected: Vec<String> = ["intent.requested i-1", "intent.offered i-1", "task.born t-1", "task.planned t-1", "task.handed t-1", "grant.reserved op-1", "receipt.filed sha256:bbbb", "receipt.redacted sha256:bbbb", "handoff.published handoff:h-1", "schedule.declared weekly-close"].iter().map(|s| s.to_string()).collect();
+    let expected: Vec<String> = ["intent.requested i-1", "intent.offered i-1", "task.born t-1", "task.planned t-1", "task.handed t-1", "grant.reserved op-1", "receipt.filed sha256:bbbb", "receipt.redacted sha256:bbbb", "handoff.published handoff:h-1", "schedule.declared weekly-close", &format!("receipt.filed {old_digest}")].iter().map(|s| s.to_string()).collect();
     assert_eq!(copied_kinds, expected, "the operational rows, in order:\n{copied}");
     assert!(copied.contains("\"author\": \"sam\""), "with their authors:\n{copied}");
     // the record kept every row it had, plus the two adoption rows
@@ -375,6 +383,17 @@ fn a_pre_split_organism_carries_its_history_and_unfinished_work_through_adoption
             assert_eq!(unplaced(&sb[key]), unplaced(&sa[key]), "status `{key}` reads the same before and after:\nbefore {status_before}\nafter {status_after}");
         }
     }
+    // stage 4: redacted evidence keeps its treatment across the two
+    // memories — a redaction after adoption is a ledger row, and the body
+    // filed before adoption is still a blob of the record: it goes
+    let (ok, redacted) = hale(&["dna", "receipt", "redact", &old_digest, "--why", "wrong customer", "--policy", "gdpr", "--as", "riley"], &app, &[("HALE_DNA_KNOWLEDGE_URL", &url)]);
+    assert!(ok && redacted.contains("redacted"), "{redacted}");
+    let rows = body(&http(kport, "GET /ledger/rows?from=0 HTTP/1.0\r\nHost: x\r\n\r\n"));
+    assert!(rows.contains(&format!("\"kind\": \"receipt.redacted\", \"entity\": \"{old_digest}\"")), "the redaction is a row of the ledger:\n{rows}");
+    let gone = Command::new("git").args(["rev-parse", "-q", "--verify", &format!("refs/dna/receipts/{old_hex}")]).current_dir(&app).output().unwrap();
+    assert!(!gone.status.success(), "and the body filed before adoption is gone from the record");
+    let (ok, hist) = hale(&["dna", "history", &old_digest], &app, &[("HALE_DNA_KNOWLEDGE_URL", &url)]);
+    assert!(ok && hist.contains("receipt.filed") && hist.contains("receipt.redacted"), "the evidence's history spans both memories:\n{hist}");
     let _ = service.kill();
     let _ = service.wait();
     let _ = std::fs::remove_dir_all(&d);

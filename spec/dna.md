@@ -89,6 +89,36 @@ through the service, **adoption is open**: `hale dna ledger adopt`
 needs no gate. A new organism still starts on routing 0 and adopts by
 that explicit step.
 
+**Evidence and the export across two memories (stage 4, #653).**
+Receipts are placed by what they evidence: `evidence.*` (a
+verification step's output, a diff document — evidence of a mutation)
+and `review.reasoned` are the record's; `receipt.*` — a bill filed, its
+class, its disclosure, its reads, its holds, its redaction — are the
+Ledger's, whatever the class, and the body itself is where it always
+was (a git blob for an internal body, the protected store for a
+protected one; only the digest is ever a row). A redaction after
+adoption is therefore a Ledger row and the body it names may be a blob
+filed before adoption: sync applies redactions and candidate drops
+over both memories read as one, so the treatment holds across the
+split. The books export is a supported ledger query: with a service
+known (`HALE_DNA_KNOWLEDGE_URL`) it reads `/ledger/rows` beside the
+record's rows and never SQL of its own; the SQL views are a
+convenience of the Postgres adapter only. Recovery between the two
+memories needs no transaction spanning them: every step that touches
+both writes its intent in the memory that owns the decision, acts, and
+writes its outcome, and the restart scans the merged journal — a task
+settles on its mutation's outcome, a settled review births its task
+once, an effect claim is resolved by evidence or gated as unknown, a
+retirement's reassignments are reapplied, a filed body without its row
+is filed again — exactly as they did over one journal, because the
+routed journal is that journal. **The continuity gate** is a pre-split
+record built with the real git journal — unfinished work, a
+reservation, a practice bound to a handed task, a retired participant,
+redacted evidence, a pending handoff, a schedule — adopted through the
+same steps a live organism takes, its projections read before and
+after, and a redaction after adoption removing a body filed before it
+(`dna_ledger.rs`).
+
 **Coordination in the store (stage 2, #651).** On routing 1 every lease
 is a row of the store swapped by its token: the service serves
 `GET /ledger/lease?key=` and `POST /ledger/lease` (`key`, `holder`,

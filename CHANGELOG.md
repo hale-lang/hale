@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: evidence and the export across two memories; recovery scans run on both routings (GH #646 stage 4, #653)
+
+- Receipts are placed by what they evidence: `evidence.*` and `review.reasoned` (of a mutation) stay in the record; `receipt.*` (a bill filed, classified, disclosed, read, held, redacted) are the ledger's, the bodies where they always were. Sync applies redactions and candidate drops over both memories read as one, so a redaction after adoption removes a body filed before it. The books export reads the ledger through the service (`/ledger/rows`, a supported query) beside the record's rows, never SQL of its own. The recovery scans a restart runs — a task settling on its mutation's outcome, a birth before anything runs, an unknown effect gated — are exercised over the two memories as well as one (`recovery_two_memories_test.hl`), and the continuity gate (`dna_ledger.rs`) carries a pre-split record through adoption and a post-adoption redaction.
+
 ### DNA: the GitHub membrane behind a Forge interface — gh is one implementation (GH #648)
 
 - `Forge` in the core is the vocabulary of a code-review host: `open_review`, `verdicts` (who, outcome, when, and the forge's own key so each is admitted once), `comment`, `close_review`. `GitHubForge` over `gh`, `FileForge` (reviews and verdicts as files under `.hale/dna/forge/`, for fixtures) and `NoForge` (a bare remote) implement it; `hale dna github sync` is written against the interface and appends the same rows whichever forge answered; `hale dna profile`'s `github:` line names the forge found. Nothing in the core or the host spells `gh` outside the GitHub implementation (a test keeps it so).
