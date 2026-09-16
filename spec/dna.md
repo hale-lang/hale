@@ -690,39 +690,87 @@ the same way. A project's path therefore has no length rule.
 
 ## Event kinds
 
-`application.attached`, `structure.observed`, `responsibility.proposed`,
-`law.deferred`, `intent.requested`, `intent.offered`, `intent.refused`,
-`review.verdict`, `task.born`,
-`task.<state>`, `mutation.proposed`, `mutation.worktree`,
-`mutation.located`, `mutation.candidate`, `mutation.<disposition>`,
-`mutation.applied`, `mutation.retained`, `mutation.rolled_back`,
-`mutation.rejected`, `mutation.revise`, `mutation.refused`,
-`mutation.apply_retried`, `knowledge.retired`, `task.planned`,
-`grant.refused`, `grant.contracted`, `task.handed`, `org.reviewed`,
-`task.resumed`, `intent.unrecovered`, `task.reassigned`, `person.retired`,
-`concern.refused`, `body.claimed`, `body.released`, `body.provisioned`,
-`secret.rotated`, `body.credential_missing`, `body.credential_present`,
-`schedule.declared`, `schedule.refused`, `schedule.fired`,
-`schedule.skipped`, `schedule.paused`, `schedule.resumed`,
-`grant.reserved`, `grant.released`, `grant.fenced`, `grant.revoked`,
-`receipt.classified`, `receipt.withheld`, `receipt.disclosed`, `receipt.read`,
-`receipt.read_refused`, `receipt.held`, `receipt.hold_released`, `receipt.redacted`,
-`optimize.refused`,
-`mutation.failed`, `effect.requested`, `effect.result`,
-`evidence.<step>`, `evidence.magnitude`, `review.requested`,
-`review.settled`, `review.refused`, `expression.restart_requested`,
-`expression.deployed`, `expression.restarted`, `expression.observed`,
-`expression.crashed`, `pressure.raised`, `pressure.remeasured`,
-`appendage.proposed`, `model.called`, `budget.exhausted`, `knowledge.proposed`,
-`knowledge.ratified`, `knowledge.declined`, `knowledge.refused`, `knowledge.consulted`,
-`concern.requested`, `concern.raised`, `concern.proposed`, `github.pr`, `github.commented`,
-`mutation.topology`, `fleet.deploy`, `instance.up`, `instance.exited`,
-`candidate.dropped`, `ledger.adopting`, `ledger.adopted`, `ledger.abandoned`,
-`review.reasoned` (the deciding verdict's comment — a person's note or
-the Leader's reasoning — right after `review.settled`; `hale dna
-review <id>` renders it as `why:`). Their bodies are documented in the guide's reference
-chapter; the set grows by ordinary change, and a reader that meets an
-unknown kind must keep walking.
+Every kind names its memory. The **memory** column is the routing
+table under version 1 (`memory_of` in `routing.hl`); on routing 0
+every kind is the record's, and a kind no build knows is the
+record's.
+
+| kind | memory | what it is |
+|---|---|---|
+| `application.attached` | record | the application the organism oversees: its entrypoint, its artifact, the toolchain |
+| `structure.observed` | record | the compiler's model of one of its parts, at `init` |
+| `responsibility.proposed` | record | a one-line responsibility inferred for a part, not yet ratified |
+| `law.deferred` | record | a clause `init` could not certify |
+| `intent.requested` | ledger | an ask from a clone with no organization running |
+| `intent.offered` / `intent.refused` | ledger | the outcome an ask was admitted for, or the refusal |
+| `intent.unrecovered` | ledger | an intent offered before a restart that no Task was born for; never re-offered |
+| `review.verdict` | record | a verdict appended in the reviewer's name, from a clone or a forge |
+| `task.born` | ledger | the work an intent or a settled review made |
+| `task.planned` | ledger | the plan the Task will be worked under |
+| `task.handed` | ledger | handed to a person: assignee, obligation, acceptance |
+| `task.reassigned` | ledger | the assignment moved to someone else |
+| `task.resumed` | ledger | re-entered after a restart, under the plan already recorded |
+| `task.<state>` | ledger | every other state a Task passes through, to `done` or `failed` |
+| `mutation.proposed` | record | a change proposed for a Task: class, objective, target, base |
+| `mutation.worktree` | record | the sandbox opened for it, and removed |
+| `mutation.located` | record | the files found, and the grant they were found under |
+| `mutation.candidate` | record | the commit the editor produced |
+| `mutation.<disposition>` | record | what the autonomy boundary decided: `review`, `stage`, `escalate`, `release`, `deny` |
+| `mutation.topology` | record | the diff names a plan or the manifest: re-classed for the Board |
+| `mutation.applied` | record | the candidate applied to the genome |
+| `mutation.apply_retried` | record | the apply ran again on a settled review |
+| `mutation.retained` | record | kept after its observation window |
+| `mutation.rolled_back` / `mutation.rejected` / `mutation.revise` | record | the genome back at the base, refused after review, or sent back for another pass |
+| `mutation.refused` / `mutation.failed` | record | not applied (the candidate moved, the gate said no), or the change did not survive its own verification |
+| `effect.requested` / `effect.result` | ledger | the exclusive claim on an effect key, and its outcome |
+| `evidence.<step>` | record | a verification step's output, kept by the digest the row names |
+| `evidence.magnitude` | record | the measured magnitude of the change |
+| `review.requested` | record | the Review: question, authority, candidate, disposition, evidence, diffs |
+| `review.settled` / `review.refused` | record | the verdict that decided it, or why one was not admitted |
+| `review.reasoned` | record | the deciding verdict's comment — a person's note or the Leader's reasoning — right after `review.settled` (`hale dna review <id>` renders it as `why:`) |
+| `candidate.dropped` | record | a kept candidate is no longer kept, here and at every clone's sync |
+| `knowledge.proposed` / `.ratified` / `.declined` / `.refused` | record | a practice through its review |
+| `knowledge.retired` | record | a practice superseded by a later version |
+| `knowledge.consulted` | ledger | what a piece of work looked up today |
+| `grant.contracted` | record | authority narrowed, and what it leaves |
+| `grant.revoked` | record | the parent took the authority back |
+| `grant.refused` | record | a grant born wider than its ceiling — and, today, a spend the window would not admit; the routing table keeps `grant.reservation_refused` in the ledger for the money refusal, and nothing writes it yet |
+| `grant.reserved` / `grant.released` | ledger | a spend admitted against the window, and the reservation settled at what was spent |
+| `grant.fenced` | ledger | an admission refused because the grant's epoch moved since |
+| `budget.exhausted` | ledger | the window's model allowance is spent |
+| `model.called` | ledger | a model call and its evidence |
+| `optimize.refused` | ledger | the organization's pass over itself did not run |
+| `org.reviewed` | record | that pass's own answer |
+| `person.retired` | record | someone left, and who took their work |
+| `body.claimed` / `body.released` | ledger | who is running this record, by the lease's token |
+| `body.provisioned` | record | a machine made able to run it |
+| `body.credential_missing` / `body.credential_present` | ledger | whether the model's key is set where the body runs |
+| `secret.rotated` | record | a credential set or rotated — the name and the place, never the value |
+| `schedule.declared` / `schedule.refused` | ledger | a schedule the org chart declares, or one that would not be admitted |
+| `schedule.fired` / `schedule.skipped` | ledger | the Task a schedule made, or why it did not fire |
+| `schedule.paused` / `schedule.resumed` | ledger | paused and resumed by hand, in your name |
+| `receipt.classified` / `receipt.withheld` | ledger | a protected body the knowledge service keeps, or one no service could keep |
+| `receipt.disclosed` | ledger | a reader authorized, for a purpose |
+| `receipt.read` / `receipt.read_refused` | ledger | a read in the reader's name, or its refusal |
+| `receipt.held` / `receipt.hold_released` | ledger | a hold that refuses redaction, and its release |
+| `receipt.redacted` | ledger | the body removed, the digest kept |
+| `concern.requested` / `concern.raised` | ledger | a concern from a part about the part above it |
+| `concern.refused` | ledger | one the organization would not admit |
+| `concern.proposed` | record | three raises became a proposal |
+| `pressure.raised` | ledger | a signal from a source, counted |
+| `pressure.remeasured` | ledger | the declared fitness signals, measured again after the change |
+| `appendage.proposed` | record | an organ the organization proposes for itself |
+| `expression.restart_requested` | record | the organization asks for a change to be expressed |
+| `expression.restarted` / `expression.deployed` | record | the shape and build the new expression reports, or what a deployment gateway expressed and judged |
+| `expression.observed` / `expression.crashed` | record | the observation window's outcome; `crashed` names the instance and node on a fleet |
+| `fleet.deploy` | record | a genome revision expressed through the fleet's nodes |
+| `instance.up` / `instance.exited` | ledger | a node's report on one instance of the plan |
+| `github.pr` / `github.commented` | record | the pull request a Review opened, and the settlement commented back |
+| `ledger.adopting` / `ledger.adopted` / `ledger.abandoned` | record | the move of the day's work into the ledger, its checkpoint, and its undoing |
+
+Their bodies are documented in the guide's reference chapter; the set
+grows by ordinary change, and a reader that meets an unknown kind must
+keep walking.
 
 ## Storage interfaces
 

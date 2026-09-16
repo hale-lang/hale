@@ -125,6 +125,83 @@ observation that rolls back. No host is asked; the organization
 expresses through the command in its own handler and the record
 says `expression.deployed`.
 
+## The two memories, in operation
+
+An organism that has adopted the ledger runs on two memories at
+once — the record in git, the day's work in the store behind the
+knowledge service — and one verb family is how you see and move
+between them. [The record](./record.md) says what lives where; this
+is what you type.
+
+```sh
+hale dna ledger                 # routing, the service, the cutover
+hale dna ledger adopt           # the one-way move of the day's work into the store
+hale dna ledger abandon --why "back to one memory"
+```
+
+`hale dna ledger` on its own says which routing this record is on,
+which service is known here, and what the ledger holds:
+
+```text
+routing:    1 (the day's work in the ledger, adopted at 232dc8f18dde)
+service:    http://127.0.0.1:7788
+ledger:     413 row(s), cutover at 232dc8f18dde
+```
+
+`adopt` wants three things and names the one that is missing: **no
+body live** (`hale dna body` says who holds the lease; stop it
+first), **the record synced**, and **a service to copy the rows
+into** — `hale dna dev` brings one up, or `HALE_DNA_KNOWLEDGE_URL`
+points at the one the body runs. It appends `ledger.adopting`, has
+the service copy every operational row of the record keyed by its
+commit, and appends `ledger.adopted` naming the checkpoint;
+interrupted anywhere, it is rerun rather than repaired by hand.
+`abandon --why …` empties the ledger and puts the organism back on
+the record alone — the record's own rows are never removed from git,
+so nothing is lost either way.
+
+`hale dna status` carries a `memory:` line on every organism,
+adopted or not:
+
+```text
+memory:     the record alone (routing 0); `hale dna ledger adopt` moves the day's work to the ledger
+memory:     record + ledger (routing 1, adopted at 232dc8f18dde; operations and leases live in the store behind the service)
+```
+
+and when the store stops answering, that same line says so: `THE
+LEDGER IS UNREACHABLE (…): what is read here is the last projection,
+and nothing is admitted until it answers`.
+
+### Away from the service
+
+A clone that cannot reach the service keeps its requests rather than
+writing anything:
+
+```sh
+hale dna queue                  # what is waiting here
+hale dna queue submit           # send it, in capture order
+```
+
+Every verb that reaches the service drains the queue first, so this
+is usually something you read rather than something you run. The
+service revalidates each request against the record as it is then:
+nothing queued is authoritative, a request sent twice lands once,
+and a refused one is kept beside the queue with the reason.
+
+### A connection to another record's service
+
+```sh
+hale dna connect http://ops.example.com:7788 --name partner \
+  --as supplier --purpose "parts we order" --classes internal
+```
+
+A connection whose url is a service exchanges handoffs service to
+service: the envelope is delivered once by its id, `hale dna handoff
+sync` delivers again whatever the peer does not hold, and the Task
+settles only when the peer's acceptance comes back. A connection
+whose url is a record's remote exchanges through mailbox refs, as
+before. `hale dna connect` says which one a connection uses.
+
 ## What is not here yet
 
 A Review's semantic diff is the edited seed's; the deploy row names
