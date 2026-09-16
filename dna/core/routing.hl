@@ -202,6 +202,7 @@ locus ServiceLedger {
         last_error: String = "";
         calls: Int = 0;
         loaded: Bool = false;
+        unreachable: Bool = false;
     }
     birth() {
         if len(self.url) == 0 && len(self.url_env) > 0 && std::env::var_exists(self.url_env) { self.url = std::env::var(self.url_env); }
@@ -269,6 +270,16 @@ locus ServiceLedger {
     fn read(i: Int) -> Event { self.ensure_loaded(); return self.rows.get(i) or Event { }; }
     fn verify_chain() -> Bool { self.ensure_loaded(); return chain_ok(self.rows); }
     fn post(expected: Int, exact: Bool, kind: String, entity: String, body: String) -> AppendResult {
+        return self.submit(expected, exact, kind, entity, body, "", "");
+    }
+    // A request in a person's name (GH #646 stage 3, #652): the service
+    // admits it as `author` after checking the record — a retired person,
+    // a task not theirs — and a `request_id` seen before is answered as it
+    // was answered then and writes nothing (a queued request submitted
+    // twice lands once). `unreachable` is set when no answer came at all,
+    // which is when a head queues.
+    fn submit(expected: Int, exact: Bool, kind: String, entity: String, body: String, author: String, request_id: String) -> AppendResult {
+        self.unreachable = false;
         if !self.ready() { self.last_error = "no ledger service (HALE_DNA_KNOWLEDGE_URL unset)"; return AppendResult { error: "io", expected: expected, actual: self.rows.len() }; }
         let b = std::json::Builder { };
         b.begin_object();
@@ -277,11 +288,13 @@ locus ServiceLedger {
         b.string_field("kind", kind);
         b.string_field("entity", entity);
         b.string_field("body", body);
+        b.string_field("as", author);
+        b.string_field("request_id", request_id);
         b.end_object();
         self.calls = self.calls + 1;
         let resp = std::http::post(self.url + "/ledger/append", std::bytes::from_string(b.result()), "application/json") or self.failed(err);
         let text = std::str::from_bytes(resp.body);
-        if resp.status == 0 { return AppendResult { error: "io", expected: expected, actual: self.rows.len() }; }
+        if resp.status == 0 { self.unreachable = true; return AppendResult { error: "io", expected: expected, actual: self.rows.len() }; }
         if resp.status != 200 {
             let error = std::json::find_string_field(text, "error");
             if error == "stale_revision" {
@@ -289,6 +302,7 @@ locus ServiceLedger {
                 return AppendResult { error: "stale_revision", expected: expected, actual: self.rows.len() };
             }
             self.last_error = if len(error) > 0 { error } else { "http " + to_string(resp.status) };
+            if resp.status == 403 { return AppendResult { error: "refused", expected: expected, actual: self.rows.len() }; }
             return AppendResult { error: "io", expected: expected, actual: self.rows.len() };
         }
         // the row as the service holds it; anything it appended before

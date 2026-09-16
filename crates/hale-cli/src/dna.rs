@@ -283,6 +283,8 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("candidates") => host_exec("candidates", Path::new("."), &args[1..]),
         // #650: the operational memory, adopted by an explicit step
         Some("ledger") => host_exec("ledger", Path::new("."), &args[1..]),
+        // #652: requests kept while the service cannot be reached
+        Some("queue") => host_exec("queue", Path::new("."), &args[1..]),
         Some("board") => {
             let (dir, rest) = project_arg(&args[1..], true);
             host_exec("board", &dir, &rest)
@@ -337,6 +339,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    offer intent over the membrane; prints the Task born or the refusal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
     eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");
+    eprintln!("       hale dna queue [submit]      the requests kept here while the service could not be reached; send them");
     eprintln!("       hale dna ledger [status | adopt | abandon --why <w>]");
     eprintln!("                                    the operational memory: where the day's work lives, and the one-way move of it into the store");
     eprintln!("       hale dna candidates [<mutation> | drop <mutation> --why <w>]");

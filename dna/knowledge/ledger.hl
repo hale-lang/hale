@@ -51,6 +51,13 @@ interface Ledger {
     fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool;
     fn checkpoint() -> Cutover;
     fn abandon() -> Bool;
+    // ---- requests (GH #646 stage 3, #652): a request id seen before is
+    // answered as it was (the revision its row landed at, or -1 when it
+    // was refused); an id never seen is -2.
+    fn seen(request_id: String) -> Int;
+    fn mark(request_id: String, revision: Int) -> Bool;
+    // The row at `i` is in a person's name (the service admitted it as them).
+    fn name_author(i: Int, author: String) -> Bool;
 }
 
 // The row as it is served: the event plus its author.
@@ -81,6 +88,7 @@ locus MemLedger {
         record_id: String = "";
         cut: Cutover = Cutover { };
         commits: String = "\n"; // adopted commits, newline-fenced
+        requests: SeenRequests = SeenRequests { };
         error: String = "";
     }
     fn kind() -> String { return "memory"; }
@@ -131,6 +139,26 @@ locus MemLedger {
         self.cut = Cutover { };
         return true;
     }
+    fn name_author(i: Int, author: String) -> Bool {
+        if i < 0 || i >= self.authors.len() { return false; }
+        self.authors.set(i, author) or discard;
+        return true;
+    }
+    fn seen(request_id: String) -> Int {
+        let r = self.requests.get(request_id) or SeenRequest { revision: -2 };
+        return r.revision;
+    }
+    fn mark(request_id: String, revision: Int) -> Bool {
+        self.requests.set(SeenRequest { request_id: request_id, revision: revision });
+        return true;
+    }
+}
+
+type SeenRequest { request_id: String = ""; revision: Int = -2; }
+
+@form(hashmap)
+locus SeenRequests {
+    capacity { pool rows of SeenRequest indexed_by request_id; }
 }
 
 // ---- Postgres ---------------------------------------------------------------
@@ -168,7 +196,8 @@ locus PqLedger {
         let ddl = "CREATE TABLE IF NOT EXISTS ledger_rows (seq bigint PRIMARY KEY, kind text NOT NULL, entity text NOT NULL, body text NOT NULL, author text NOT NULL, prev text NOT NULL, digest text NOT NULL, at timestamptz NOT NULL DEFAULT now(), record_seq bigint, record_commit text);"
             + "CREATE UNIQUE INDEX IF NOT EXISTS ledger_rows_commit ON ledger_rows (record_commit) WHERE record_commit IS NOT NULL;"
             + "CREATE UNIQUE INDEX IF NOT EXISTS ledger_rows_claim ON ledger_rows (kind, entity) WHERE kind IN ('effect.requested', 'grant.reserved', 'task.born');"
-            + "CREATE TABLE IF NOT EXISTS ledger_meta (key text PRIMARY KEY, value text NOT NULL);";
+            + "CREATE TABLE IF NOT EXISTS ledger_meta (key text PRIMARY KEY, value text NOT NULL);"
+            + "CREATE TABLE IF NOT EXISTS ledger_requests (request_id text PRIMARY KEY, revision bigint NOT NULL, at timestamptz NOT NULL DEFAULT now());";
         let r = self.conn.exec(ddl);
         if !r.ok { return self.fail("migrate", r.err); }
         self.opened = true;
@@ -309,8 +338,32 @@ locus PqLedger {
         if len(at) == 0 { return Cutover { }; }
         return Cutover { adopted: true, checkpoint: at, copied: std::str::parse_int(self.meta("copied")) or 0, routing: std::str::parse_int(self.meta("routing")) or 0 };
     }
+    fn name_author(i: Int, author: String) -> Bool {
+        let a = db::Args { };
+        a.add(to_string(i));
+        a.add(author);
+        let r = self.conn.exec_params("UPDATE ledger_rows SET author = $2 WHERE seq = $1::bigint", a);
+        if !r.ok { return self.fail("author", r.err); }
+        if i >= 0 && i < self.authors.len() { self.authors.set(i, author) or discard; }
+        return true;
+    }
+    fn seen(request_id: String) -> Int {
+        let a = db::Args { };
+        a.add(request_id);
+        let rows = self.conn.query_params("SELECT revision FROM ledger_requests WHERE request_id = $1", a);
+        if !rows.ok || rows.n == 0 { return -2; }
+        return std::str::parse_int(dna::trim_nl(first_line(rows.csv))) or - 2;
+    }
+    fn mark(request_id: String, revision: Int) -> Bool {
+        let a = db::Args { };
+        a.add(request_id);
+        a.add(to_string(revision));
+        let r = self.conn.exec_params("INSERT INTO ledger_requests (request_id, revision) VALUES ($1, $2::bigint) ON CONFLICT (request_id) DO NOTHING", a);
+        if !r.ok { return self.fail("mark", r.err); }
+        return true;
+    }
     fn abandon() -> Bool {
-        let r = self.conn.exec("DELETE FROM ledger_rows; DELETE FROM ledger_meta");
+        let r = self.conn.exec("DELETE FROM ledger_rows; DELETE FROM ledger_meta; DELETE FROM ledger_requests");
         if !r.ok { return self.fail("abandon", r.err); }
         while self.rows.len() > 0 { let gone = self.rows.pop() or dna::Event { }; }
         while self.authors.len() > 0 { let gone = self.authors.pop() or ""; }

@@ -181,6 +181,33 @@ locus Service {
         }
         return "";
     }
+    // Why a request in `author`'s name is not admitted: a retired person
+    // (the record's `person.retired` row, effective from the head this
+    // service has), a completion for a task handed to someone else. ""
+    // when it is admitted. (GH #646 stage 3, #652; stage 4 adds grants.)
+    @unbounded
+    fn admission_refusal(kind: String, entity: String, author: String) -> String {
+        let mut i = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            if e.kind == "person.retired" && e.entity == author { return author + " retired from this organism (person.retired at row " + to_string(e.seq) + "); nothing is admitted in their name"; }
+            i = i + 1;
+        }
+        if kind == "task.done" || kind == "task.failed" || kind == "completion.linked" || kind == "completion.excepted" {
+            let mut assignee = "";
+            let mut k = 0;
+            while k < self.ledger.revision() {
+                let e = self.ledger.read(k);
+                if e.entity == entity && (e.kind == "task.handed" || e.kind == "task.reassigned") {
+                    let to = if e.kind == "task.reassigned" { std::json::find_string_field(e.body, "to") } else { std::json::find_string_field(e.body, "assignee") };
+                    if len(to) > 0 { assignee = to; }
+                }
+                k = k + 1;
+            }
+            if len(assignee) > 0 && assignee != author { return "task " + entity + " is handed to " + assignee + ", not to " + author + "; a completion is admitted in the assignee's name"; }
+        }
+        return "";
+    }
     // The Ledger's rows from `from` on, one JSON object per line.
     @unbounded
     fn ledger_rows_from(from: Int) -> String {
@@ -302,12 +329,40 @@ locus Service {
             let exact = std::json::find_bool_field(body, "exact");
             let entity = std::json::find_string_field(body, "entity");
             let text = std::json::find_string_field(body, "body");
+            let author = std::json::find_string_field(body, "as");
+            let request_id = std::json::find_string_field(body, "request_id");
             let moved = self.ledger.refresh();
+            // GH #646 stage 3: a request seen before is answered as it was
+            // and writes nothing — a queued request submitted twice lands once
+            if len(request_id) > 0 {
+                let before = self.ledger.seen(request_id);
+                if before == -1 { return refusal(403, "this request was refused when it was first submitted"); }
+                if before >= 0 {
+                    let b = std::json::Builder { };
+                    b.begin_object();
+                    b.int_field("revision", before);
+                    b.string_field("rows", self.ledger_rows_from(expected));
+                    b.bool_field("repeated", true);
+                    b.end_object();
+                    return json(b.result());
+                }
+            }
+            // in a person's name: checked against the record as it is now,
+            // whenever the request was captured (#646 decision 2)
+            if len(author) > 0 {
+                let why = self.admission_refusal(kind, entity, author);
+                if len(why) > 0 {
+                    if len(request_id) > 0 { let m = self.ledger.mark(request_id, -1); }
+                    return refusal(403, why);
+                }
+            }
             let r = if exact { self.ledger.append_exact(expected, kind, entity, text) } else { self.ledger.append(self.ledger.revision(), kind, entity, text) };
             if !r.ok {
                 if r.error == "stale_revision" { return refusal(409, "stale_revision"); }
                 return unavailable("the ledger refused the append: " + self.ledger.last_error());
             }
+            if len(author) > 0 { let named = self.ledger.name_author(r.revision - 1, author); }
+            if len(request_id) > 0 { let m = self.ledger.mark(request_id, r.revision); }
             let b = std::json::Builder { };
             b.begin_object();
             b.int_field("revision", r.revision);

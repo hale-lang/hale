@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: heads write operations through the service, and keep their requests while it is out of reach (GH #646 stage 3, #652)
+
+- On routing 1 an operational row a verb writes from a clone goes to the service in the person's name, and the service admits it against the record as it is then: a retired person's request is refused, a completion for a task handed to someone else is refused, and every request carries an id minted at capture — a request seen before is answered as it was and writes nothing, so one submitted twice lands once and one refused stays refused. A head that cannot reach the service queues the request under `.hale/dna/queue/` and says so; `hale dna queue` lists what waits, `hale dna queue submit` sends it in capture order, every verb that reaches the service drains the queue first, and a refused request is kept beside the queue with the reason. Nothing on a head is authoritative. With every operational write path through the service, `hale dna ledger adopt` needs no gate.
+
 ### DNA: coordination in the store — leases swapped by token, the body lease as a row (GH #646 stage 2, #651)
 
 - On routing 1 every lease is a row of the store: the knowledge service serves `GET /ledger/lease?key=` and `POST /ledger/lease`, and a put lands only against the token the store holds (0 for none); `PqLeaseStore` and `MemLeaseStore` implement it. `ServiceLeases` in the core is `Coordination` over those two calls, and `GitLeases` — the record's coordination — takes a mutation lease from the record's cells on routing 0 and from the store on routing 1, so an adopted organism's leases move with it and nothing in its wiring changes. The body lease moves the same way: the host takes it as a row, the fence renews the row, a stale token is refused by the store, `hale dna body` reads it there, and `refs/dna/lease/*` is not written on routing 1. A store lost after activation is handled as the git lease already was: the renewal fails, the fence stops the organism at the margin, and `status` says the ledger is unreachable and nothing is admitted.

@@ -188,3 +188,24 @@ token and the store refuses it. If the store becomes unreachable, the
 fence keeps the lease it last proved until just before it expires and
 then stops the organism; `hale dna status` says the ledger is
 unreachable and that nothing is admitted until it answers.
+
+### Working away from the service
+
+Once adopted, a verb that writes the day's work from your clone goes
+to the organism's service in your name, and the service checks it
+against the record as it is then. If the service cannot be reached,
+the request is kept on your clone instead:
+
+```text
+$ hale dna receipt file invoice.pdf --as sam
+hale dna: the service cannot be reached; `receipt.filed sha256:…` is queued locally as 3f1c… (.hale/dna/queue; `hale dna queue` lists it, `hale dna queue submit` sends it — admitted only once the service checks it)
+$ hale dna queue
+queue: 1 request(s) waiting for the service (`hale dna queue submit`)
+  3f1c…  receipt.filed sha256:…  as sam  captured 4m ago
+```
+
+Nothing queued is authoritative: a queued completion is a request to
+complete, a queued spend has reserved nothing. On submission the
+service admits each request in capture order — a person who retired
+meanwhile is refused, a request sent twice lands once — and a refused
+one is kept beside the queue with the reason.
