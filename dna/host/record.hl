@@ -372,19 +372,25 @@ fn publish_identity(repo: String) -> Bool {
 // GH #606: a redacted receipt's body goes from this clone and from the
 // remote on every sync, so a clone that fetched it drops it at its next
 // sync. The blob lingers in each object store until git collects it.
+// (GH #646 stage 4: a redaction is a row of the ledger once the record is
+// adopted, and a body filed before adoption is still a blob here — so
+// the rows are read from both memories as one)
 @unbounded
 fn apply_redactions(repo: String) -> Int {
     let r = rec(repo);
-    let text = r.text_at(r.head(JOURNAL));
     let remote = record_remote(repo);
     let mut n = 0;
-    let mut rest = text;
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = if nl < 0 { rest } else { rest[0..nl] };
-        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-        if std::json::find_string_field(line, "kind") != "receipt.redacted" { continue; }
-        let digest = std::json::find_string_field(line, "entity");
+    // the record and the ledger read as one (nothing of the ledger is read
+    // on routing 0); each locus built in place, never handed back by a factory
+    let record = dna::GitJournal { repo: repo, author: "host" };
+    let ledger = dna::ServiceLedger { url: knowledge_url(repo) };
+    let j = dna::RoutedJournal { record: record, ledger: ledger };
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "receipt.redacted" { continue; }
+        let digest = e.entity;
         let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
         if r.body(hexd).present {
             let gone = r.forget(hexd);
@@ -405,16 +411,17 @@ fn apply_redactions(repo: String) -> Int {
 @unbounded
 fn apply_drops(repo: String) -> Int {
     let r = rec(repo);
-    let text = r.text_at(r.head(JOURNAL));
     let remote = record_remote(repo);
     let mut n = 0;
-    let mut rest = text;
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = if nl < 0 { rest } else { rest[0..nl] };
-        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-        if std::json::find_string_field(line, "kind") != "candidate.dropped" { continue; }
-        let name = "candidates/" + std::json::find_string_field(line, "entity");
+    let record = dna::GitJournal { repo: repo, author: "host" };
+    let ledger = dna::ServiceLedger { url: knowledge_url(repo) };
+    let j = dna::RoutedJournal { record: record, ledger: ledger };
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "candidate.dropped" { continue; }
+        let name = "candidates/" + e.entity;
         if len(r.pointer(name)) > 0 {
             let gone = r.unpoint(name);
             n = n + 1;
