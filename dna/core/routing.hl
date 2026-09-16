@@ -369,10 +369,12 @@ locus ServiceLeases {
         if len(self.url) == 0 && len(self.url_env) > 0 && std::env::var_exists(self.url_env) { self.url = std::env::var(self.url_env); }
     }
     fn ready() -> Bool { return len(self.url) > 0; }
+    @unbounded
     fn failed(e: std::http::HttpError) -> std::http::ClientResponse {
         self.last_error = e.kind + " " + e.detail;
         return std::http::ClientResponse { status: 0, body: b"" };
     }
+    @unbounded
     fn current(key: String) -> Lease {
         if !self.ready() { self.reachable = false; self.last_error = "no ledger service (HALE_DNA_KNOWLEDGE_URL unset)"; return Lease { key: key }; }
         let resp = std::http::get(self.url + "/ledger/lease?key=" + url_encode(key)) or self.failed(err);
@@ -383,6 +385,7 @@ locus ServiceLeases {
     // Land `l` under `key` only if the store's token is `expected` (0 for
     // none). False when another holder moved it first, or the service
     // cannot be reached (`reachable` says which).
+    @unbounded
     fn put(key: String, l: Lease, expected: Int) -> Bool {
         if !self.ready() { self.reachable = false; self.last_error = "no ledger service (HALE_DNA_KNOWLEDGE_URL unset)"; return false; }
         let resp = std::http::post(self.url + "/ledger/lease", std::bytes::from_string(lease_json(key, l, expected)), "application/json") or self.failed(err);
@@ -392,6 +395,7 @@ locus ServiceLeases {
         return true;
     }
     // ---- Coordination, as MemLeases and GitLeases have it
+    @unbounded
     fn acquire(key: String, holder: String, now: Int, ttl: Int) -> Lease {
         let cur = self.current(key);
         if !self.reachable { return Lease { key: key, holder: cur.holder, token: 0, expires: cur.expires, present: false }; }
@@ -405,12 +409,14 @@ locus ServiceLeases {
         }
         return l;
     }
+    @unbounded
     fn complete(key: String, token: Int, now: Int) -> Bool {
         let cur = self.current(key);
         if !cur.present { return false; }
         if cur.token != token { return false; }
         return self.put(key, Lease { key: key, holder: cur.holder, token: cur.token, expires: 0, present: false }, cur.token);
     }
+    @unbounded
     fn holder_of(key: String) -> String {
         let cur = self.current(key);
         if cur.present { return cur.holder; }
