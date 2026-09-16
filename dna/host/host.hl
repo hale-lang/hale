@@ -319,19 +319,14 @@ locus Host {
     // by the operator wins (a Postgres of their own, or `memory`). With
     // neither compose nor a DSN the host says exactly which it needs and
     // runs without a knowledge service.
+    // GH #647: the database is the infrastructure's to bring up; the
+    // host only says what it was told
     fn compose_dsn() -> String {
-        let compose = self.root + "/dna/compose.yaml";
-        if !std::io::fs::file_exists(compose) { return ""; }
-        let have = dna::run_tool("docker\ncompose\nversion");
-        if have.code != 0 { self.say("dna/compose.yaml is here but `docker compose` is not on PATH; set HALE_DNA_KNOWLEDGE_DSN to a Postgres of your own (or `memory`) to run the knowledge service"); return ""; }
-        let up = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nup\n-d\n--wait\nknowledge-db");
-        if up.code != 0 { self.say("docker compose up failed: " + dna::trim_nl(up.stderr)); return ""; }
-        let port = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nport\nknowledge-db\n5432");
-        let hp = dna::trim_nl(port.stdout);
-        let colon = std::str::index_of(hp, ":");
-        if port.code != 0 || colon < 0 { self.say("cannot read the database's port from compose: " + dna::trim_nl(port.stderr)); return ""; }
-        let p = hp[(colon + 1)..len(hp)];
-        return "postgres://dna:dna@127.0.0.1:" + p + "/dna?sslmode=disable";
+        if !std::io::fs::file_exists(self.root + "/dna/compose.yaml") { return ""; }
+        let infra = ReferenceInfrastructure { root: self.root };
+        let db = infra.knowledge_database(self.root);
+        if !db.present { self.say(db.why); return ""; }
+        return db.dsn;
     }
     fn start_knowledge() {
         let bin = std::env::var("HALE_DNA_KNOWLEDGE_BIN");
@@ -628,7 +623,7 @@ locus Host {
         }
         let s = sync_record(self.root);
         if !s.ok { self.say("sync: " + s.summary); }
-        if len(github_repo(self.root)) > 0 {
+        if forge_kind(self.root) != "none" {
             let g = github_sync(self.root, self.seed);
             if g.ok { print(indent_lines(dna::trim_nl(g.text), "hale dna " + self.verb + ": github: ")); } else { self.say("github: " + g.text); }
         }

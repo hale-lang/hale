@@ -849,7 +849,23 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   read it. `--dry-run` prints the exact script. `hale dna body
   start|stop|logs [--body …]` reach the unit over ssh; `stop` succeeds
   when the unit is no longer active, and says so. Postgres, Docker, ssh and systemd are the
-  reference setup; the definition admits other implementations.
+  reference setup; the definition admits other implementations, and
+  names where they plug in (GH #647): `Infrastructure` — a body's
+  knowledge database, its supervisor (a unit installed, started,
+  stopped, asked, read) and its credentials (put by name, never read
+  back) — and `Transport` — how a head reaches a body (`probe`,
+  `execute`) — are interfaces in the core. `ReferenceInfrastructure`
+  in the host is compose, a systemd user unit and the env file, reached
+  through `SshTransport` (`HALE_DNA_TRANSPORT=ssh`, the default) or
+  `LocalTransport` (`local`: every script runs in this machine's shell
+  under `HALE_DNA_TRANSPORT_HOME`, which is how the fixtures exercise a
+  body with nothing stubbed on PATH for ssh); `MemInfrastructure` and
+  `MemTransport` are the core's fixtures. The provisioning script is
+  composed from the database's and the supervisor's own fragments, so
+  a body without systemd gets another supervisor's unit by
+  implementation, not by `if`. Nothing in the host spells `ssh`,
+  `systemctl`, `journalctl` or `docker compose` outside that one
+  implementation.
 - **Secrets.** `hale dna secret set <NAME> [--body <user@host>]`
   reads the value from stdin — never argv (a `NAME=value` argument is
   refused), never the record — and writes `NAME=value` into
@@ -1416,7 +1432,20 @@ The assembly names what fills each role; `hale check` sees the wiring.
   once, keyed by login, commit and state), every settlement goes back
   as a comment (`github.commented`) and an approval pushes the genome.
   GitHub is a projection of the record and the record wins: a review
-  whose head moved is refused here and shows as refused there.
+  whose head moved is refused here and shows as refused there. **The
+  forge is an implementation (GH #648):** `Forge` in the core is the
+  vocabulary of a code-review host and nothing of GitHub's —
+  `open_review`, `verdicts` (one per line: who, outcome, when, the
+  forge's own key so each is admitted once), `comment`, `close_review`,
+  `present`, `name`. `GitHubForge` (`gh`) is one implementation; the
+  `FileForge` (`.hale/dna/forge/<n>.review`, its verdicts the lines of
+  `<n>.verdicts`) is the fixtures'; `NoForge` is a bare remote's honest
+  behaviour, and `hale dna profile`'s `github:` line names which the
+  host found (`HALE_DNA_FORGE`, or `dna.github`). The membrane's pass
+  is written against the interface; the rows it appends (`github.pr`,
+  `github.commented`, `review.verdict` keyed by the forge's key) do
+  not change with the forge. Nothing in the core or the host spells
+  `gh` outside that one implementation.
 - **Deployment** — `Deployment`: `NoDeployment` (a host expresses:
   `hale dna dev`), `ShellDeployment { command, seed }` (the command
   owns expressing and judging: `express <candidate> <seed>` returning 0

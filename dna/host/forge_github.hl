@@ -1,0 +1,146 @@
+// dna/host/forge_github.hl — the code-review host behind the core's
+// `Forge` (GH #648): GitHub through `gh` is one implementation, a forge
+// of files under `.hale/dna/forge/` is the fixtures', and no forge at
+// all — a bare remote — is the honest third. This is the one file in
+// the host that spells `gh`. The host picks by `HALE_DNA_FORGE` (`github`
+// when `dna.github` names a repository, else `none`; `file` for
+// fixtures) and `forge_sync` in writers.hl is written against the
+// interface: the rows it appends do not know which forge answered.
+
+import "../core" as dna;
+
+fn gh(args: String) -> dna::RunResult {
+    return dna::run_tool("gh\n" + args);
+}
+
+// GitHub: a pull request per review, its reviews as verdicts, a
+// comment at settlement. `repo` is `owner/repo` (`dna.github`), `base`
+// the branch a candidate is proposed against.
+locus GitHubForge {
+    params { repo: String = ""; base: String = "main"; }
+    fn kind() -> String { return "github"; }
+    fn present() -> Bool { return len(self.repo) > 0; }
+    fn name() -> String { return "github " + self.repo; }
+    // `candidate` is the branch the candidate was pushed to (`dna/<review>`).
+    fn open_review(candidate: String, title: String, body: String) -> dna::ReviewRef {
+        let c = gh("pr\ncreate\n--repo\n" + self.repo + "\n--base\n" + self.base + "\n--head\n" + candidate + "\n--title\n" + title + "\n--body\n" + body);
+        if c.code != 0 { return dna::ReviewRef { why: "gh pr: " + dna::trim_nl(c.stderr) }; }
+        return dna::ReviewRef { present: true, ref: dna::trim_nl(c.stdout) };
+    }
+    // Every review on the pull request, `who\toutcome\twhen\tkey`, where
+    // `when` is the commit reviewed and `key` names the review once.
+    @unbounded
+    fn verdicts(review: String) -> String {
+        let number = review_number(review);
+        let v = gh("pr\nview\n" + number + "\n--repo\n" + self.repo + "\n--json\nstate,headRefOid,reviews");
+        if v.code != 0 { return "error\t" + dna::trim_nl(v.stderr) + "\t\t\n"; }
+        let doc = v.stdout;
+        let head_oid = std::json::find_string_field(doc, "headRefOid");
+        let mut out = "";
+        let mut it = std::json::array_first(std::json::find_field_raw(doc, "reviews"));
+        while !it.done {
+            let state = std::json::find_string_field(it.element, "state");
+            let outcome = if state == "APPROVED" { "approve" } else { if state == "CHANGES_REQUESTED" { "revise" } else { "" } };
+            if len(outcome) > 0 {
+                let login = std::json::find_string_field(std::json::find_field_raw(it.element, "author"), "login");
+                let oid_named = std::json::find_string_field(std::json::find_field_raw(it.element, "commit"), "oid");
+                let oid = if len(oid_named) > 0 { oid_named } else { head_oid };
+                out = out + login + "\t" + outcome + "\t" + oid + "\t" + login + "@" + oid + "@" + state + "\n";
+            }
+            it = std::json::array_next(it);
+        }
+        return out;
+    }
+    fn comment(review: String, text: String) -> Bool {
+        let c = gh("pr\ncomment\n" + review_number(review) + "\n--repo\n" + self.repo + "\n--body\n" + text);
+        return c.code == 0;
+    }
+    fn close_review(review: String, why: String) -> Bool {
+        let c = gh("pr\nclose\n" + review_number(review) + "\n--repo\n" + self.repo + "\n--comment\n" + why);
+        return c.code == 0;
+    }
+}
+
+// The number at the end of a pull request's url (or a bare number).
+fn review_number(review: String) -> String {
+    let sl = last_index_of(review, "/");
+    return if sl < 0 { review } else { review[(sl + 1)..len(review)] };
+}
+
+// A forge of files, for fixtures: a review opened is
+// `.hale/dna/forge/<n>.review` (title, candidate, body); its verdicts
+// are the lines of `.hale/dna/forge/<n>.verdicts`, `who outcome when`
+// each, which a fixture writes as a reviewer would decide; a comment
+// appends to `<n>.comments`. What the host does with a verdict is the
+// same as with GitHub's.
+locus FileForge {
+    params { dir: String = ".hale/dna/forge"; }
+    fn kind() -> String { return "file"; }
+    fn present() -> Bool { return true; }
+    fn name() -> String { return "file forge at " + self.dir; }
+    fn next_number() -> Int {
+        let n = std::io::fs::list_dir_count(self.dir) or 0;
+        let mut i = 0;
+        let mut most = 0;
+        while i < n {
+            let name = std::io::fs::list_dir_at(self.dir, i) or "";
+            if std::str::ends_with(name, ".review") {
+                let k = std::str::parse_int(name[0..(len(name) - 7)]) or 0;
+                if k > most { most = k; }
+            }
+            i = i + 1;
+        }
+        return most + 1;
+    }
+    fn open_review(candidate: String, title: String, body: String) -> dna::ReviewRef {
+        std::io::fs::mkdir(self.dir) or discard;
+        let n = to_string(self.next_number());
+        let w = write_text(self.dir + "/" + n + ".review", "title: " + title + "\ncandidate: " + candidate + "\n\n" + body) or false;
+        if !w { return dna::ReviewRef { why: "cannot write " + self.dir }; }
+        return dna::ReviewRef { present: true, ref: self.dir + "/" + n };
+    }
+    @unbounded
+    fn verdicts(review: String) -> String {
+        let text = std::io::fs::read_file(review + ".verdicts") or "";
+        let mut out = "";
+        let mut rest = text;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            let a = std::str::index_of(line, " ");
+            if a < 0 { continue; }
+            let who = line[0..a];
+            let more = line[(a + 1)..len(line)];
+            let b = std::str::index_of(more, " ");
+            let outcome = if b < 0 { more } else { more[0..b] };
+            let when = if b < 0 { "" } else { more[(b + 1)..len(more)] };
+            out = out + who + "\t" + outcome + "\t" + when + "\t" + who + "@" + when + "@" + outcome + "\n";
+        }
+        return out;
+    }
+    fn comment(review: String, text: String) -> Bool {
+        std::io::fs::write_file_append(review + ".comments", text + "\n") or discard;
+        return true;
+    }
+    fn close_review(review: String, why: String) -> Bool {
+        return write_text(review + ".closed", why + "\n") or false;
+    }
+}
+
+// The forge the host found: GitHub when `dna.github` names a repository
+// (or HALE_DNA_FORGE says so), the file forge for fixtures, none for a
+// bare remote. `github:` in `profile` says which.
+fn forge_kind(root: String) -> String {
+    let named = std::env::var("HALE_DNA_FORGE");
+    if len(named) > 0 { return named; }
+    if len(rec(root).setting("github")) > 0 { return "github"; }
+    return "none";
+}
+
+fn forge_name(root: String) -> String {
+    let k = forge_kind(root);
+    if k == "github" { return "github " + rec(root).setting("github"); }
+    if k == "file" { return "file forge at .hale/dna/forge"; }
+    return "none (a bare remote: no reviews are opened, no verdicts read from it)";
+}

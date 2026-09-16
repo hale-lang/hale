@@ -8,6 +8,14 @@ behavior.
 
 ## Unreleased
 
+### DNA: the GitHub membrane behind a Forge interface — gh is one implementation (GH #648)
+
+- `Forge` in the core is the vocabulary of a code-review host: `open_review`, `verdicts` (who, outcome, when, and the forge's own key so each is admitted once), `comment`, `close_review`. `GitHubForge` over `gh`, `FileForge` (reviews and verdicts as files under `.hale/dna/forge/`, for fixtures) and `NoForge` (a bare remote) implement it; `hale dna github sync` is written against the interface and appends the same rows whichever forge answered; `hale dna profile`'s `github:` line names the forge found. Nothing in the core or the host spells `gh` outside the GitHub implementation (a test keeps it so).
+
+### DNA: a body's infrastructure and transport are implementations behind the core's interfaces (GH #647)
+
+- `Infrastructure` (a body's knowledge database, its supervisor, its credentials) and `Transport` (how a head reaches a body) are the core's interfaces; `ReferenceInfrastructure` in the host is compose, a systemd user unit and the env file, reached through `SshTransport` or, under `HALE_DNA_TRANSPORT=local`, `LocalTransport` (every script runs in this machine's shell under `HALE_DNA_TRANSPORT_HOME`). `hale dna dev`'s database, `hale dna body provision` (its probe, its script — composed from the database's and the supervisor's own fragments — and its run), `hale dna body start|stop|logs` and `hale dna secret` all go through them, and nothing in the host spells `ssh`, `systemctl`, `journalctl` or `docker compose` outside that one file (a test keeps it so). The provisioning fixture runs against the local transport with nothing stubbed on PATH for ssh.
+
 ### DNA: heads write operations through the service, and keep their requests while it is out of reach (GH #646 stage 3, #652)
 
 - On routing 1 an operational row a verb writes from a clone goes to the service in the person's name, and the service admits it against the record as it is then: a retired person's request is refused, a completion for a task handed to someone else is refused, and every request carries an id minted at capture — a request seen before is answered as it was and writes nothing, so one submitted twice lands once and one refused stays refused. A head that cannot reach the service queues the request under `.hale/dna/queue/` and says so; `hale dna queue` lists what waits, `hale dna queue submit` sends it in capture order, every verb that reaches the service drains the queue first, and a refused request is kept beside the queue with the reason. Nothing on a head is authoritative. With every operational write path through the service, `hale dna ledger adopt` needs no gate.

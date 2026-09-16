@@ -1,0 +1,197 @@
+// dna/host/infra.hl — what a body runs on, and how a head reaches it,
+// as the reference tools implement it (GH #647). The interfaces are the
+// core's (`dna::Infrastructure`, `dna::Transport`, infrastructure.hl);
+// this is the one file in the host that spells `ssh`, `systemctl`,
+// `journalctl` and `docker compose`. The host picks an implementation
+// by `HALE_DNA_TRANSPORT` (`ssh`, the default; `local` runs every
+// script in this machine's shell, for fixtures) and never spells a tool
+// itself: a body without systemd, a database not started by compose, a
+// transport that is not ssh plug in here, by implementation.
+
+import "../core" as dna;
+
+// ---- transports -------------------------------------------------------------
+
+// Over ssh, `-o BatchMode=yes` so nothing ever prompts inside a tool.
+// A script goes to the body's shell from a private file (it can carry
+// a credential: a DSN, a secret's line), never on the command line.
+locus SshTransport {
+    params { scratch: String = ".hale/dna"; }
+    fn kind() -> String { return "ssh"; }
+    fn probe(target: String) -> dna::Facts {
+        let r = dna::run_tool("sh\n-c\nssh -o BatchMode=yes -o ConnectTimeout=15 \"$1\" 'command -v git >/dev/null && echo git=yes || echo git=no; command -v systemctl >/dev/null && echo systemd=yes || echo systemd=no; docker compose version >/dev/null 2>&1 && echo compose=yes || echo compose=no; command -v curl >/dev/null && echo curl=yes || echo curl=no; uname -sm'\nsh\n" + target);
+        if r.code != 0 { return dna::Facts { why: dna::trim_nl(r.stderr) }; }
+        return dna::Facts { reachable: true, facts: r.stdout };
+    }
+    // `stdin` empty: the script is the body's shell's input (`sh -s`).
+    // Otherwise the script is the command and `stdin` is its input —
+    // the shape a secret's install takes, the value never in argv.
+    fn execute(target: String, script: String, stdin: String) -> dna::RunResult {
+        let tmp = self.scratch + "/transport." + to_string(std::process::pid()) + ".tmp";
+        let mk = dna::run_tool("sh\n-c\numask 077 && mkdir -p \"$(dirname \"$1\")\" && : > \"$1\"\nsh\n" + tmp);
+        if mk.code != 0 { return dna::RunResult { code: -1, stderr: "cannot create " + tmp + " privately" }; }
+        let w = write_text(tmp, if len(stdin) == 0 { script } else { stdin }) or false;
+        if !w { return dna::RunResult { code: -1, stderr: "cannot write " + tmp }; }
+        let r = if len(stdin) == 0 {
+            dna::run_tool("sh\n-c\nssh -o BatchMode=yes -o ConnectTimeout=15 \"$1\" 'sh -s' < \"$2\"\nsh\n" + target + "\n" + tmp)
+        } else {
+            dna::run_tool("sh\n-c\nssh -o BatchMode=yes -o ConnectTimeout=15 \"$1\" \"$2\" < \"$3\"\nsh\n" + target + "\n" + script + "\n" + tmp)
+        };
+        std::io::fs::unlink(tmp) or discard;
+        return r;
+    }
+}
+
+// This machine's shell as the body's: every script runs here, under
+// the HOME the fixture names (HALE_DNA_TRANSPORT_HOME), so what a
+// provisioning writes lands where the fixture looks, with no tool
+// stubbed on PATH to stand in for ssh.
+locus LocalTransport {
+    params { home: String = ""; scratch: String = ".hale/dna"; }
+    fn kind() -> String { return "local"; }
+    fn probe(target: String) -> dna::Facts {
+        let r = dna::run_tool("sh\n-c\ncommand -v git >/dev/null && echo git=yes || echo git=no; command -v systemctl >/dev/null && echo systemd=yes || echo systemd=no; docker compose version >/dev/null 2>&1 && echo compose=yes || echo compose=no; command -v curl >/dev/null && echo curl=yes || echo curl=no; uname -sm");
+        return dna::Facts { reachable: true, facts: r.stdout };
+    }
+    fn execute(target: String, script: String, stdin: String) -> dna::RunResult {
+        let tmp = self.scratch + "/transport." + to_string(std::process::pid()) + ".tmp";
+        let mk = dna::run_tool("sh\n-c\numask 077 && mkdir -p \"$(dirname \"$1\")\" && : > \"$1\"\nsh\n" + tmp);
+        if mk.code != 0 { return dna::RunResult { code: -1, stderr: "cannot create " + tmp + " privately" }; }
+        let w = write_text(tmp, if len(stdin) == 0 { script } else { stdin }) or false;
+        if !w { return dna::RunResult { code: -1, stderr: "cannot write " + tmp }; }
+        // the fixture's home is the body's: its stubs on PATH, its files
+        let home = if len(self.home) > 0 { "export HOME=\"" + self.home + "\" PATH=\"" + self.home + "/.hale/bin:$PATH\"; cd \"$HOME\"; " } else { "" };
+        let r = if len(stdin) == 0 {
+            dna::run_tool("sh\n-c\n" + home + "sh -s < \"$1\"\nsh\n" + tmp)
+        } else {
+            dna::run_tool("sh\n-c\n" + home + "sh -c \"$1\" < \"$2\"\nsh\n" + script + "\n" + tmp)
+        };
+        std::io::fs::unlink(tmp) or discard;
+        return r;
+    }
+}
+
+// The transport the host uses: ssh unless HALE_DNA_TRANSPORT says
+// `local` (then HALE_DNA_TRANSPORT_HOME is the body's home).
+fn transport_kind() -> String {
+    let t = std::env::var("HALE_DNA_TRANSPORT");
+    return if len(t) == 0 { "ssh" } else { t };
+}
+
+// ---- the reference infrastructure -------------------------------------------
+//
+// compose for the knowledge database, a systemd user unit for the
+// supervisor, an env file under ~/.config/hale-dna for credentials —
+// each reached through the transport at `target` ("" is this machine).
+// The three compose independently: choosing a database never chooses a
+// deployment platform.
+
+locus ReferenceInfrastructure {
+    params {
+        root: String = ".";
+        target: String = ""; // "" = this machine
+        ssh: SshTransport = SshTransport { };
+        local: LocalTransport = LocalTransport { };
+        last: String = "";
+    }
+    fn kind() -> String { return "compose+systemd+envfile"; }
+    fn run_at(script: String, stdin: String) -> dna::RunResult {
+        if len(self.target) == 0 { return self.local.execute("", script, stdin); }
+        if transport_kind() == "local" { self.local.home = std::env::var("HALE_DNA_TRANSPORT_HOME"); return self.local.execute(self.target, script, stdin); }
+        return self.ssh.execute(self.target, script, stdin);
+    }
+    fn probe(target: String) -> dna::Facts {
+        if transport_kind() == "local" { return self.local.probe(target); }
+        return self.ssh.probe(target);
+    }
+    // The knowledge database, from dna/compose.yaml, brought up when it
+    // is not: the DSN. Absent compose or its file, `why` says what is
+    // needed instead.
+    fn knowledge_database(project: String) -> dna::Database {
+        let compose = self.root + "/dna/compose.yaml";
+        if !std::io::fs::file_exists(compose) { return dna::Database { why: "no dna/compose.yaml and no HALE_DNA_KNOWLEDGE_DSN: the knowledge service is not running (`hale dna upgrade` writes the compose file)" }; }
+        let have = dna::run_tool("docker\ncompose\nversion");
+        if have.code != 0 { return dna::Database { why: "dna/compose.yaml is here but `docker compose` is not on PATH; set HALE_DNA_KNOWLEDGE_DSN to a Postgres of your own (or `memory`) to run the knowledge service" }; }
+        let up = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nup\n-d\n--wait\nknowledge-db");
+        if up.code != 0 { return dna::Database { why: "docker compose up failed: " + dna::trim_nl(up.stderr) }; }
+        let port = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nport\nknowledge-db\n5432");
+        let hp = dna::trim_nl(port.stdout);
+        let colon = std::str::index_of(hp, ":");
+        if port.code != 0 || colon < 0 { return dna::Database { why: "cannot read the database's port from compose: " + dna::trim_nl(port.stderr) }; }
+        return dna::Database { present: true, dsn: "postgres://dna:dna@127.0.0.1:" + hp[(colon + 1)..len(hp)] + "/dna?sslmode=disable" };
+    }
+    // ---- the supervisor: a systemd user unit
+    fn unit_name(name: String) -> String { return "hale-dna-" + name; }
+    fn install_unit(name: String, unit: String) -> Bool {
+        let script = "umask 077; mkdir -p \"$HOME/.config/systemd/user\"; cat > \"$HOME/.config/systemd/user/" + self.unit_name(name) + ".service\" <<'UNIT'\n" + unit + "UNIT\nloginctl enable-linger \"$USER\" >/dev/null 2>&1 || true; systemctl --user daemon-reload";
+        let r = self.run_at(script, "");
+        self.last = dna::trim_nl(r.stderr + r.stdout);
+        return r.code == 0;
+    }
+    fn start(name: String) -> Bool {
+        let r = self.run_at("systemctl --user enable --now " + self.unit_name(name) + " && systemctl --user is-active " + self.unit_name(name), "");
+        self.last = dna::trim_nl(r.stdout + r.stderr);
+        return r.code == 0;
+    }
+    // A stopped unit is `inactive`, and `is-active` exits non-zero for
+    // it: stop succeeds when the unit is no longer active.
+    fn stop(name: String) -> Bool {
+        let u = self.unit_name(name);
+        let r = self.run_at("systemctl --user stop " + u + " || exit 1; if systemctl --user is-active --quiet " + u + "; then echo still active; exit 1; else echo inactive; fi", "");
+        self.last = dna::trim_nl(r.stdout + r.stderr);
+        return r.code == 0;
+    }
+    fn status(name: String) -> dna::UnitStatus {
+        let r = self.run_at("systemctl --user is-active " + self.unit_name(name), "");
+        let detail = dna::trim_nl(r.stdout + r.stderr);
+        self.last = detail;
+        return dna::UnitStatus { known: len(detail) > 0, active: r.code == 0, detail: detail };
+    }
+    fn logs(name: String, lines: Int) -> String {
+        let r = self.run_at("journalctl --user -u " + self.unit_name(name) + " -n " + to_string(lines) + " --no-pager 2>/dev/null || tail -n " + to_string(lines) + " \"$HOME\"/dna/*/.hale/dna/org.log", "");
+        self.last = dna::trim_nl(r.stderr);
+        return r.stdout;
+    }
+    // ---- credentials: one line of `~/.config/hale-dna/<project>.env`
+    // (mode 600), the value on the shell's stdin, never in argv
+    fn put_credential(name: String, value: String) -> Bool {
+        let cut = std::str::index_of(name, "/");
+        let project = if cut < 0 { "" } else { name[0..cut] };
+        let var = if cut < 0 { name } else { name[(cut + 1)..len(name)] };
+        let install = "umask 077; d=\"$HOME/.config/hale-dna\"; f=\"$d/" + project + ".env\"; mkdir -p \"$d\"; IFS= read -r line; { [ -f \"$f\" ] && grep -v '^" + var + "=' \"$f\" || true; printf '%s\\n' \"$line\"; } > \"$f.tmp\" && mv \"$f.tmp\" \"$f\" && echo \"$f\"";
+        let r = self.run_at(install, var + "=" + value + "\n");
+        self.last = dna::trim_nl(r.stdout + r.stderr);
+        return r.code == 0;
+    }
+    fn credential(name: String) -> dna::Credential {
+        let cut = std::str::index_of(name, "/");
+        let project = if cut < 0 { "" } else { name[0..cut] };
+        let var = if cut < 0 { name } else { name[(cut + 1)..len(name)] };
+        let r = self.run_at("grep -q '^" + var + "=' \"$HOME/.config/hale-dna/" + project + ".env\" 2>/dev/null && echo present || echo absent", "");
+        return dna::Credential { name: name, present: std::str::contains(r.stdout, "present") };
+    }
+    // ---- the pieces a provisioning script is composed from
+    // The supervisor's part: the unit written and enabled.
+    // (`$NAME` is the script's own variable: the plan a dry run prints
+    // names the unit as the body's shell will)
+    fn supervisor_fragment(name: String, unit: String) -> String {
+        return "umask 077; mkdir -p \"$HOME/.config/systemd/user\" \"$HOME/.config/hale-dna\"\n"
+            + "cat > \"$HOME/.config/systemd/user/hale-dna-$NAME.service\" <<'UNIT'\n" + unit + "UNIT\n"
+            + "loginctl enable-linger \"$USER\" >/dev/null 2>&1 || true\n"
+            + "systemctl --user daemon-reload && systemctl --user enable --now \"hale-dna-$NAME\" && echo \"unit hale-dna-$NAME enabled and started (systemctl --user)\"\n";
+    }
+    // The database's part: a DSN given lands in the env file; none
+    // given means compose on the body, which must have it.
+    fn database_fragment() -> String {
+        return "if [ -n \"$DSN\" ]; then f=\"$HOME/.config/hale-dna/$NAME.env\"; { [ -f \"$f\" ] && grep -v '^HALE_DNA_KNOWLEDGE_DSN=' \"$f\" || true; echo \"HALE_DNA_KNOWLEDGE_DSN=$DSN\"; } > \"$f.tmp\" && mv \"$f.tmp\" \"$f\"; echo \"knowledge: the DSN given\"; else docker compose version >/dev/null 2>&1 || { echo \"no docker compose on the body and no --dsn: the knowledge database has to come from one of them\"; exit 4; }; echo \"knowledge: compose (dna/compose.yaml)\"; fi\n";
+    }
+    // What the probe must have found for this infrastructure to be
+    // installable; "" when it can.
+    fn missing(facts: String, dsn: String) -> String {
+        if std::str::contains(facts, "git=no") { return "has no git; the body clones the record with it"; }
+        if std::str::contains(facts, "systemd=no") { return "has no systemd (`systemctl`); the reference supervisor is a user unit — write your own supervisor around `hale dna dev . --no-iris`"; }
+        if std::str::contains(facts, "curl=no") { return "has no curl; the toolchain installs with it"; }
+        if len(dsn) == 0 && std::str::contains(facts, "compose=no") { return "has no docker compose and no --dsn was given; the knowledge database has to come from one of them"; }
+        return "";
+    }
+}
