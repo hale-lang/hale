@@ -37,7 +37,7 @@ fn status_verb(root: String, seed: String, toolchain: String, json: Bool) -> Ans
     // pieces, and who runs it — never a stored label
     let now = std::time::now();
     let gap = credential_gap(p);
-    return answer(p.text() + "profile:    " + profile_name(root) + "\n" + "memory:     " + routing_line(root) + "\n" + "body:       " + body_line(root, now) + (if len(gap) > 0 { "; no credential for the model (none of " + gap + " is set where the body runs): `hale dna secret set <NAME> [--body <user@host>]`" } else { "" }) + "\n");
+    return answer(p.text() + "profile:    " + profile_name(root) + "\n" + "body:       " + body_line(root, now) + (if len(gap) > 0 { "; no credential for the model (none of " + gap + " is set where the body runs): `hale dna secret set <NAME> [--body <user@host>]`" } else { "" }) + "\n" + "memory:     " + routing_line(root) + "\n");
 }
 
 // ---- the organism's combination (GH #617) ---------------------------
