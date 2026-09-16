@@ -1512,7 +1512,10 @@ locus Dna {
             return why;
         }
         self.asked = self.asked + 1;
-        let born = self.journal.append(self.journal.revision(), "intent.offered", i.id, i.outcome);
+        // The row names who asked: the person a head identified, a schedule,
+        // an optimizer — the body writes the row, so the asker is in its body.
+        let offered_body = if i.from == "" { i.outcome } else { i.outcome + " (from " + i.from + ")" };
+        let born = self.journal.append(self.journal.revision(), "intent.offered", i.id, offered_body);
         if !born.ok { return "refused: journal " + born.error; }
         // GH #604 rule 1: the durable fact precedes the act. The id is
         // minted, the birth is journaled (naming its intent, so a reader
