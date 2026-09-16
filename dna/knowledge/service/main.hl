@@ -186,6 +186,14 @@ locus Service {
     // service has), a completion for a task handed to someone else. ""
     // when it is admitted. (GH #646 stage 3, #652; stage 4 adds grants.)
     @unbounded
+    // GH #665: why a write under `lease` at `token` is fenced, "" when it holds.
+    fn fence_refusal(lease: String, token: Int, now: Int) -> String {
+        let cur = self.leases.current(lease);
+        if !cur.known || !cur.present { return "fenced: the lease `" + lease + "` is not held; a controller writes only under a lease it holds"; }
+        if cur.token != token { return "fenced: the lease `" + lease + "` is " + cur.holder + "'s at epoch " + to_string(cur.token) + ", not epoch " + to_string(token) + "; a controller that lost its lease writes nothing"; }
+        if cur.expires <= now { return "fenced: the lease `" + lease + "` expired at " + to_string(cur.expires) + " (epoch " + to_string(token) + ") and was not renewed"; }
+        return "";
+    }
     fn admission_refusal(kind: String, entity: String, author: String) -> String {
         let mut i = 0;
         while i < self.j.revision() {
@@ -372,6 +380,18 @@ locus Service {
                     b.bool_field("repeated", true);
                     b.end_object();
                     return json(b.result());
+                }
+            }
+            // GH #665: a controller's write carries the lease it holds and
+            // its epoch; under a lease it no longer holds — taken over,
+            // released, expired — nothing lands
+            let lease = std::json::find_string_field(body, "lease");
+            if len(lease) > 0 {
+                let token = std::json::find_int_field(body, "token");
+                let fenced = self.fence_refusal(lease, token, std::time::now());
+                if len(fenced) > 0 {
+                    if len(request_id) > 0 { let m = self.ledger.mark(request_id, -1); }
+                    return refusal(403, fenced);
                 }
             }
             // in a person's name: checked against the record as it is now,

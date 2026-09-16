@@ -185,7 +185,12 @@ Once adopted, the leases move too: the mutation leases the gateway
 takes and the body lease `hale dna run` holds are rows of the store,
 swapped by their token through the service, and the fence renews a
 row rather than a ref. A host that lost its lease presents a stale
-token and the store refuses it. If the store becomes unreachable, the
+token and the store refuses it. Over a shared record (the owners map)
+the body lease is one row per owner, `owner/<owner>`, so two owners'
+bodies run side by side; the lease's token is an epoch the host hands
+its body, every write the body makes carries it, and the service
+refuses `fenced` a write under a lease that was taken over, released
+or expired. A head's write names no lease. If the store becomes unreachable, the
 fence keeps the lease it last proved until just before it expires and
 then stops the organism; `hale dna status` says the ledger is
 unreachable and that nothing is admitted until it answers.

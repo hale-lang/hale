@@ -136,7 +136,7 @@ fn routing_line(root: String) -> String {
     let r = routing_here(root);
     if r == 0 { return "the record alone (routing 0); `hale dna ledger adopt` moves the day's work to the ledger"; }
     let sl = store_leases(root);
-    let probe = sl.current("body");
+    let probe = sl.current(store_lease_key(root));
     let reach = if sl.reachable { "" } else { "; THE LEDGER IS UNREACHABLE (" + sl.last_error + "): what is read here is the last projection, and nothing is admitted until it answers" };
     return "record + ledger (routing " + to_string(r) + ", adopted at " + short(checkpoint_here(root)) + "; operations and leases live in the store behind the service" + reach + ")";
 }
@@ -713,9 +713,17 @@ fn store_leases(repo: String) -> dna::ServiceLeases {
     return dna::ServiceLeases { url: knowledge_url(repo) };
 }
 
+// GH #665: the store's key for this body's lease — one per owner over a
+// shared record (`owner/<owner>`), `body` when the organization is the
+// one owner. Its token is the epoch every write the body makes carries.
+fn store_lease_key(repo: String) -> String {
+    if shared_here(repo) { return "owner/" + owner_here(repo); }
+    return "body";
+}
+
 fn body_lease_from_store(repo: String) -> BodyLease {
     let sl = store_leases(repo);
-    let l = sl.current("body");
+    let l = sl.current(store_lease_key(repo));
     if !sl.reachable { return BodyLease { ok: false }; }
     if len(l.holder) == 0 && l.token == 0 { return BodyLease { }; }
     return BodyLease { present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: to_string(l.token) };
@@ -753,7 +761,8 @@ fn body_lease_write(repo: String, l: BodyLease, expected: String) -> Bool {
     if body_in_store(repo) {
         let sl = store_leases(repo);
         let expected_token = if len(expected) == 0 { 0 } else { std::str::parse_int(expected) or 0 };
-        return sl.put("body", dna::Lease { key: "body", holder: l.holder, token: l.token, expires: l.expires, present: l.present }, expected_token);
+        let key = store_lease_key(repo);
+        return sl.put(key, dna::Lease { key: key, holder: l.holder, token: l.token, expires: l.expires, present: l.present }, expected_token);
     }
     let r = rec(repo);
     let remote = record_remote(repo);

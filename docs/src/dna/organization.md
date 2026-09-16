@@ -184,7 +184,10 @@ not go to acme's body: it goes into the record, where north's controller
 relays it, and `hale dna status` in acme's clone shows it as
 `[unadmitted]` with north's name until then. Changing the map is a
 mutation of the organization that every affected owner approves, each
-through one of its members; one rejection settles it.
+through one of its members; one rejection settles it. Each owner's body
+holds its own lease in the store (a shared record runs no body until
+its ledger is adopted), and a write the body makes after its lease was
+taken over is refused by the service, whatever the body still believes.
 
 ## Who decides what
 

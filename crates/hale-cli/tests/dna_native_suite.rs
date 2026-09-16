@@ -123,6 +123,7 @@ fn dna_fixture_set_is_complete() {
             "knowledge_events_test.hl",
             "knowledge_store_test.hl",
             "knowledge_test.hl",
+            "lease_epoch_test.hl",
             "ledger_test.hl",
             "mutation_review_test.hl",
             "openai_chat_test.hl",
@@ -152,6 +153,7 @@ fn dna_fixture_set_is_complete() {
             "task_decide_test.hl",
             "task_evidence_test.hl",
             "two_heads_test.hl",
+            "two_owners_test.hl",
             "verification_test.hl",
             "workspace_test.hl",
         ]

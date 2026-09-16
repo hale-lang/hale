@@ -6,7 +6,8 @@
 // position another owner holds never goes over the membrane, even with
 // a body here: it goes into the record for that owner's controller, and
 // `status` here shows it waiting, by owner, while the owner's own clone
-// shows nothing waiting.
+// shows nothing waiting. A shared record runs no body until its ledger
+// is adopted (GH #665): the owners' controllers coordinate there.
 
 import "../core" as dna;
 
@@ -69,6 +70,9 @@ main locus App {
         let unknown = in_dir(app, toolchain() + "\ndna\nrun\n.\n--no-iris");
         std::test::assert(unknown.code != 0 && std::str::contains(unknown.stderr, "does not name"), "a body naming an owner the map lacks does not run: " + unknown.stderr);
         let c3 = in_dir(app, "git\nconfig\ndna.owner\nacme");
+        // GH #665: the owners' controllers coordinate through the ledger
+        let unadopted = in_dir(app, toolchain() + "\ndna\nrun\n.\n--no-iris");
+        std::test::assert(unadopted.code != 0 && std::str::contains(unadopted.stderr, "coordinate through the ledger, which it has not adopted"), "a shared record runs no body until the ledger is adopted: " + unadopted.stderr);
         // ---- with a body here (its sockets stand in for it), an ask for
         // north's position takes the record path, not the membrane
         std::io::fs::mkdir(app + "/.hale") or discard;

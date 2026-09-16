@@ -1,0 +1,101 @@
+// dna/tests/lease_epoch_test.hl — the epoch on a controller's writes (GH #665, B2).
+//
+// Against the knowledge service alone: a write that names a lease lands
+// only while that lease is held at the epoch named. Not held, another
+// epoch (a takeover), expired — each is refused `fenced`, and the
+// request is remembered as refused. A write naming no lease (a head's,
+// a host's) is admitted as before.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+type Http { status: Int = 0; body: String = ""; }
+
+fn curl(method: String, url: String, body: String) -> Http {
+    let mut argv = "curl\n-s\n-i\n-X\n" + method;
+    if len(body) > 0 { argv = argv + "\n-H\nContent-Type: application/json\n--data\n" + body; }
+    let r = dna::run_tool(argv + "\n" + url);
+    let raw = r.stdout;
+    let split = std::str::index_of(raw, "\r\n\r\n");
+    let head = if split < 0 { raw } else { raw[0..split] };
+    let rest = if split < 0 { "" } else { raw[(split + 4)..len(raw)] };
+    let sp = std::str::index_of(head, " ");
+    let status = if sp < 0 || len(head) < sp + 4 { 0 } else { std::str::parse_int(head[(sp + 1)..(sp + 4)]) or 0 };
+    return Http { status: status, body: rest };
+}
+
+fn lease(key: String, holder: String, token: Int, expires: Int, expected: Int) -> String {
+    return "{\"key\": \"" + key + "\", \"holder\": \"" + holder + "\", \"token\": " + to_string(token) + ", \"expires\": " + to_string(expires) + ", \"present\": true, \"expected\": " + to_string(expected) + "}";
+}
+
+fn append(entity: String, request: String, lease_key: String, token: Int) -> String {
+    let mut s = "{\"expected\": 0, \"exact\": false, \"kind\": \"task.born\", \"entity\": \"" + entity + "\", \"body\": \"i: born\", \"as\": \"\", \"request_id\": \"" + request + "\"";
+    if len(lease_key) > 0 { s = s + ", \"lease\": \"" + lease_key + "\", \"token\": " + to_string(token); }
+    return s + "}";
+}
+
+main locus App {
+    params {
+        core: dna::Dna = dna::Dna { planned: true, org_id: "epoch-placeholder" };
+    }
+    run() {
+        let scratch = "/tmp/dna-epoch-" + to_string(std::process::pid());
+        std::io::fs::mkdir(scratch) or discard;
+        dna::reap_on_exit(scratch);
+        let made = in_dir(scratch, toolchain() + "\ndna\nnew\nepoch");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let app = scratch + "/epoch";
+        let kport = 30000 + (std::process::pid() + 53) % 17000;
+        let service = "http://127.0.0.1:" + to_string(kport);
+        let ksrv = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_DSN=memory nohup timeout 600 \"$1\" dna knowledge . --port \"$2\" >.hale/knowledge.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + to_string(kport));
+        let kpid = dna::trim_nl(ksrv.stdout);
+        let mut kup = false;
+        let mut tries = 0;
+        while !kup && tries < 600 {
+            if curl("GET", service + "/ledger/head", "").status == 200 { kup = true; } else { std::time::sleep(200ms); }
+            tries = tries + 1;
+        }
+        std::test::assert(kup, "the service came up at " + service + ": " + (std::io::fs::read_file(app + "/.hale/knowledge.log") or ""));
+        let now = std::time::now();
+        // a controller takes its owner's lease: epoch 1
+        let l1 = curl("POST", service + "/ledger/lease", lease("owner/acme", "acme-host-1", 1, now + 300, 0));
+        std::test::assert_eq_int(l1.status, 200, "acme's lease at epoch 1: " + l1.body);
+        // its write lands under that epoch
+        let w1 = curl("POST", service + "/ledger/append", append("t1", "r1", "owner/acme", 1));
+        std::test::assert_eq_int(w1.status, 200, "a write under the held lease at its epoch lands: " + w1.body);
+        // not at another epoch, not under a lease nobody holds
+        let w0 = curl("POST", service + "/ledger/append", append("t2", "r2", "owner/acme", 0));
+        std::test::assert(w0.status == 403 && std::str::contains(w0.body, "fenced") && std::str::contains(w0.body, "at epoch 1, not epoch 0"), "a write at the wrong epoch is fenced: " + to_string(w0.status) + " " + w0.body);
+        let wn = curl("POST", service + "/ledger/append", append("t3", "r3", "owner/north", 1));
+        std::test::assert(wn.status == 403 && std::str::contains(wn.body, "is not held"), "a write under a lease nobody holds is fenced: " + wn.body);
+        // a takeover within the firm: epoch 2; the old controller's writes are refused, the new one's land
+        let l2 = curl("POST", service + "/ledger/lease", lease("owner/acme", "acme-host-2", 2, now + 300, 1));
+        std::test::assert_eq_int(l2.status, 200, "acme's lease taken over at epoch 2: " + l2.body);
+        let stale = curl("POST", service + "/ledger/append", append("t4", "r4", "owner/acme", 1));
+        std::test::assert(stale.status == 403 && std::str::contains(stale.body, "acme-host-2's at epoch 2, not epoch 1"), "the controller that lost its lease writes nothing: " + stale.body);
+        let again = curl("POST", service + "/ledger/append", append("t4", "r4", "owner/acme", 1));
+        std::test::assert(again.status == 403 && std::str::contains(again.body, "refused when it was first submitted"), "…and its request is remembered as refused: " + again.body);
+        let fresh = curl("POST", service + "/ledger/append", append("t5", "r5", "owner/acme", 2));
+        std::test::assert_eq_int(fresh.status, 200, "the new controller's write lands: " + fresh.body);
+        // expired and not renewed: fenced too
+        let l3 = curl("POST", service + "/ledger/lease", lease("owner/acme", "acme-host-2", 3, now - 1, 2));
+        std::test::assert_eq_int(l3.status, 200, "the lease lapses: " + l3.body);
+        let late = curl("POST", service + "/ledger/append", append("t6", "r6", "owner/acme", 3));
+        std::test::assert(late.status == 403 && std::str::contains(late.body, "expired at"), "a write under an expired lease is fenced: " + late.body);
+        // a head's write names no lease and is admitted as before
+        let head = curl("POST", service + "/ledger/append", append("t7", "r7", "", 0));
+        std::test::assert_eq_int(head.status, 200, "a write naming no lease is admitted: " + head.body);
+        let rows = curl("GET", service + "/ledger/rows?from=0", "").body;
+        std::test::assert(std::str::contains(rows, "\"entity\": \"t1\"") && std::str::contains(rows, "\"entity\": \"t5\"") && std::str::contains(rows, "\"entity\": \"t7\"") && !std::str::contains(rows, "\"entity\": \"t2\"") && !std::str::contains(rows, "\"entity\": \"t4\"") && !std::str::contains(rows, "\"entity\": \"t6\""), "exactly the admitted writes are rows: " + rows);
+        let k = dna::run_tool("kill\n" + kpid);
+    }
+}
+fn main() { App { }; }

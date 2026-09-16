@@ -313,6 +313,10 @@ locus Host {
         // GH #664: which owner this body is, over a shared record
         let me = owner_here(self.root);
         if len(me) > 0 { e = e + "\nHALE_DNA_OWNER=" + me; }
+        // GH #665: the lease the body holds and its epoch; every ledger
+        // write the organism makes carries them, and the service refuses
+        // one under a lease it no longer holds
+        if len(self.holder) > 0 && body_in_store(self.root) { e = e + "\nHALE_DNA_LEASE=" + store_lease_key(self.root) + "\nHALE_DNA_LEASE_TOKEN=" + to_string(self.lease.token); }
         return e;
     }
     // ---- the knowledge graph's environment (GH #583 K1) ----------------
@@ -829,6 +833,12 @@ fn host_main(verb: String, root: String, seed: String, fleet: String, plan: Stri
         }
         if !dna::word_in(me, owners_here(root)) {
             eprintln("hale dna ", verb, ": dna.owner is `", me, "`, which ", OWNERS_FILE, " does not name (owners: ", owners_here(root), ")");
+            std::process::exit(2);
+        }
+        // GH #665: the owners' controllers coordinate through the ledger —
+        // a lease per owner in the store, an epoch on every write
+        if verb == "run" && routing_here(root) == 0 {
+            eprintln("hale dna run: this record is shared (", OWNERS_FILE, ": ", owners_here(root), "), and its controllers coordinate through the ledger, which it has not adopted; `hale dna ledger adopt` first (under `hale dna dev`, or with HALE_DNA_KNOWLEDGE_URL)");
             std::process::exit(2);
         }
     }
