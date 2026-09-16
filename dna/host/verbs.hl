@@ -107,6 +107,21 @@ fn profile_verb(root: String) -> Answer {
 }
 
 // `hale dna body [claim [--force] | release] [--as <who>]`
+// Release the lease `holder` holds at `token`, against the version the
+// authority has now, re-read after each lost race (a renewal in between):
+// five tries, then false.
+fn body_lease_take(root: String, holder: String, token: Int) -> Bool {
+    let mut tries = 0;
+    while tries < 5 {
+        tries = tries + 1;
+        let cur = body_lease_read(root);
+        if !cur.ok { return false; }
+        if !cur.present || cur.holder != holder || cur.token != token { return !cur.present; }
+        if body_lease_write(root, BodyLease { present: false, holder: cur.holder, token: cur.token, expires: 0 }, cur.sha) { return true; }
+    }
+    return false;
+}
+
 fn body_verb(root: String, sub: String, force: Bool, who_flag: String) -> Answer {
     if len(record_head(root)) == 0 { return fail(no_record(root)); }
     let now = std::time::now();
@@ -117,7 +132,10 @@ fn body_verb(root: String, sub: String, force: Bool, who_flag: String) -> Answer
     if sub == "claim" {
         if !body_live(cur, now) { return answer("body: " + body_line(root, now) + "\n"); }
         if !force { return fail("body: live on " + cur.holder + ", ticked " + ago(now - (cur.expires - BODY_TTL)) + "; a record admits one body. `hale dna body claim --force` takes the lease from a body that is gone (it stops itself when it next asserts the lease)"); }
-        if !body_lease_write(root, BodyLease { present: false, holder: cur.holder, token: cur.token, expires: 0 }, cur.sha) { return fail("body: the lease moved while claiming; try again"); }
+        // the body renews its lease every few seconds: a claim that read
+        // the lease just before a renewal reads it again and claims the
+        // renewed one, a few times, before giving up
+        if !body_lease_take(root, cur.holder, cur.token) { return fail("body: the lease moved while claiming; try again"); }
         let ok = append_as(root, "body.claimed", cur.holder, "{\"token\": " + to_string(cur.token) + ", \"forced\": true, \"from\": " + quote(cur.holder) + ", \"by\": " + quote(who) + "}", who);
         let s = sync_record(root);
         return answer("body: the lease of " + cur.holder + " was taken by " + who + " (body.claimed, forced); that body stops when it next asserts the lease, and the next `hale dna run` takes it\n");
@@ -126,7 +144,7 @@ fn body_verb(root: String, sub: String, force: Bool, who_flag: String) -> Answer
         if !cur.present { return answer("body: " + body_line(root, now) + "\n"); }
         let mine = body_holder(root);
         if cur.holder != mine && !force { return fail("body: the lease is held by " + cur.holder + ", not this clone (" + mine + "); `hale dna body release --force` releases another's"); }
-        if !body_lease_write(root, BodyLease { present: false, holder: cur.holder, token: cur.token, expires: 0 }, cur.sha) { return fail("body: the lease moved while releasing; try again"); }
+        if !body_lease_take(root, cur.holder, cur.token) { return fail("body: the lease moved while releasing; try again"); }
         let ok = append_as(root, "body.released", cur.holder, "{\"token\": " + to_string(cur.token) + ", \"by\": " + quote(who) + "}", who);
         let s = sync_record(root);
         return answer("body: released the lease of " + cur.holder + " (body.released)\n");

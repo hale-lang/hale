@@ -298,6 +298,33 @@ locus Service {
             b.end_object();
             return json(b.result());
         }
+        // ---- the exchange (GH #646 stage 5, #662): this record's identity,
+        // and its mailboxes, one per connected record
+        if std::http::is_route(ctx, "GET", "/identity") {
+            return json("{\"identity\": \"" + self.j.genesis() + "\"}");
+        }
+        if std::http::is_route(ctx, "GET", "/exchange") {
+            return std::http::Response { status: 200, content_type: "application/x-ndjson", headers: "Cache-Control: no-store", body: self.ledger.mailboxes() };
+        }
+        if std::http::is_route(ctx, "GET", "/exchange/has") {
+            let sender = know::url_decode(std::http::query_param(ctx.params, "sender"));
+            let kind = know::url_decode(std::http::query_param(ctx.params, "kind"));
+            let entity = know::url_decode(std::http::query_param(ctx.params, "entity"));
+            return json("{\"has\": " + (if self.ledger.mailbox_has(sender, kind, entity) { "true" } else { "false" }) + "}");
+        }
+        if std::str::starts_with(req.path, "/exchange/") && req.method == "POST" {
+            // an envelope from the record whose identity names the mailbox,
+            // once by (kind, entity): a delivery repeated is one envelope
+            let sender = know::url_decode(req.path[10..len(req.path)]);
+            if len(sender) == 0 { return refusal(400, "an envelope names its sender"); }
+            let body = req.body;
+            let kind = std::json::find_string_field(body, "kind");
+            let entity = std::json::find_string_field(body, "entity");
+            if len(kind) == 0 || len(entity) == 0 { return refusal(400, "an envelope has a kind and an entity"); }
+            if std::json::find_string_field(std::json::find_string_field(body, "body"), "origin_record") != sender && kind == "handoff.received" { return refusal(403, "an envelope claiming another origin than its sender is not its sender's"); }
+            if !self.ledger.mailbox_put(sender, kind, entity, std::json::find_string_field(body, "body"), std::json::find_string_field(body, "author")) { return unavailable("the mailbox could not take the envelope: " + self.ledger.last_error()); }
+            return json("{\"delivered\": true, \"ref\": \"" + sender + "/" + kind + "/" + entity + "\"}");
+        }
         if std::http::is_route(ctx, "GET", "/ledger/lease") {
             let key = know::url_decode(std::http::query_param(ctx.params, "key"));
             if len(key) == 0 { return refusal(400, "a lease has a key"); }
@@ -405,7 +432,7 @@ locus Service {
         // the ledger and the leases are answered from the store alone:
         // applying the record's knowledge first (below) is a read of the
         // whole record, and an organism asks for its ledger every tick
-        if std::str::starts_with(req.path, "/ledger/") {
+        if std::str::starts_with(req.path, "/ledger/") || std::str::starts_with(req.path, "/exchange") || req.path == "/identity" {
             let moved = self.j.refresh();
             if !self.ensure_open() { return unavailable(self.last_error); }
             return self.handle_ledger(req, ctx);

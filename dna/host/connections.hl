@@ -44,6 +44,21 @@ type Connection {
 type PeerWrite {
     commit: String = "";
     why: String = "";
+    unreachable: Bool = false; // the peer could not be reached at all: delivered again later
+}
+
+// GH #646 stage 5 (#662): a connection whose url is a service (`http://…`)
+// exchanges envelopes service to service; one whose url is a record's
+// remote exchanges them as mailbox refs in a private peer cache. Both
+// are the core's `Exchange`: a stable identity per envelope, delivery
+// repeated after an interruption landing once, the connection's classes
+// as the disclosure scope, settlement only on the receiver's acceptance.
+fn service_url(url: String) -> Bool { return std::str::starts_with(url, "http://") || std::str::starts_with(url, "https://"); }
+
+fn exchange_kind(url: String) -> String { return if service_url(url) { "service" } else { "git" }; }
+
+fn http_failed(e: std::http::HttpError) -> std::http::ClientResponse {
+    return std::http::ClientResponse { status: 0, body: std::bytes::from_string(e.kind + " " + e.detail) };
 }
 
 // A path relative to the project, made absolute (git resolves a relative
@@ -66,8 +81,14 @@ fn peer_cache(root: String, name: String) -> String {
     return cache;
 }
 
-// The identity the record at `url` publishes ("" when it publishes none).
+// The identity the record at `url` publishes ("" when it publishes none):
+// its service's `/identity`, or the identity ref at its remote.
 fn peer_identity(root: String, name: String, url: String) -> String {
+    if service_url(url) {
+        let resp = std::http::get(url + "/identity") or http_failed(err);
+        if resp.status != 200 { return ""; }
+        return std::json::find_string_field(std::str::from_bytes(resp.body), "identity");
+    }
     let cache = peer_cache(root, name);
     if len(cache) == 0 { return ""; }
     let pc = rec(cache);
@@ -91,6 +112,25 @@ fn outbound_mailbox(cache: String, c: Connection, mine: String) -> String {
 fn peer_append(root: String, c: Connection, kind: String, entity: String, body: String, author: String) -> PeerWrite {
     let mine = record_identity(root);
     if len(mine) == 0 { return PeerWrite { why: "this record has no identity yet (no journal)" }; }
+    if service_url(c.url) {
+        // unreachable is not "another record": a service that does not
+        // answer is delivered to again later
+        let probe = std::http::get(c.url + "/identity") or http_failed(err);
+        if probe.status == 0 { return PeerWrite { why: "the other record's service cannot be reached (" + std::str::from_bytes(probe.body) + "); deliver again later", unreachable: true }; }
+        if probe.status != 200 || std::json::find_string_field(std::str::from_bytes(probe.body), "identity") != c.peer { return PeerWrite { why: c.url + " no longer serves record " + short(c.peer) }; }
+        let e = std::json::Builder { };
+        e.begin_object();
+        e.string_field("kind", kind);
+        e.string_field("entity", entity);
+        e.string_field("body", body);
+        e.string_field("author", author);
+        e.end_object();
+        let resp = std::http::post(c.url + "/exchange/" + dna::url_encode(mine), std::bytes::from_string(e.result()), "application/json") or http_failed(err);
+        let text = std::str::from_bytes(resp.body);
+        if resp.status == 0 { return PeerWrite { why: "the other record's service cannot be reached (" + text + "); deliver again later", unreachable: true }; }
+        if resp.status != 200 { return PeerWrite { why: "the other record's service refused the envelope: " + std::json::find_string_field(text, "error") }; }
+        return PeerWrite { commit: std::json::find_string_field(text, "ref") };
+    }
     let chain = "exchange/" + mine;
     let mut tries = 0;
     while tries < 5 {
@@ -112,6 +152,7 @@ fn peer_append(root: String, c: Connection, kind: String, entity: String, body: 
 // envelope of `kind` about `entity`.
 @unbounded
 fn delivered(root: String, c: Connection, kind: String, entity: String) -> Bool {
+    if service_url(c.url) { return len(delivered_commit(root, c, kind, entity)) > 0; }
     let cache = peer_cache(root, c.name);
     if len(cache) == 0 { return false; }
     let head = outbound_mailbox(cache, c, record_identity(root));
@@ -131,6 +172,13 @@ fn delivered(root: String, c: Connection, kind: String, entity: String) -> Bool 
 // reuses it instead of writing a second (#637).
 @unbounded
 fn delivered_commit(root: String, c: Connection, kind: String, entity: String) -> String {
+    if service_url(c.url) {
+        let mine = record_identity(root);
+        let resp = std::http::get(c.url + "/exchange/has?sender=" + dna::url_encode(mine) + "&kind=" + dna::url_encode(kind) + "&entity=" + dna::url_encode(entity)) or http_failed(err);
+        if resp.status != 200 { return ""; }
+        if !std::json::find_bool_field(std::str::from_bytes(resp.body), "has") { return ""; }
+        return mine + "/" + kind + "/" + entity;
+    }
     if !delivered(root, c, kind, entity) { return ""; }
     let cache = peer_cache(root, c.name);
     let pc = rec(cache);
@@ -154,11 +202,46 @@ fn delivered_commit(root: String, c: Connection, kind: String, entity: String) -
     return dna::line_at(ids, found);
 }
 
-// The envelope rows a mailbox in this clone holds ("" when absent).
+// The envelope rows a mailbox holds ("" when absent): a ref in this
+// clone, or `service:<sender>` — the envelopes that sender put in this
+// record's service.
+@unbounded
 fn mailbox_text(root: String, ref: String) -> String {
+    if std::str::starts_with(ref, "service:") {
+        let sender = ref[8..len(ref)];
+        let mut out = "";
+        let mut rest = service_mailboxes(root);
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if std::json::find_string_field(line, "sender") == sender { out = out + line + "\n"; }
+        }
+        return out;
+    }
     let chain = if std::str::starts_with(ref, "refs/dna/") { ref[9..len(ref)] } else { ref };
     let r = rec(root);
     return r.text_at(r.head(chain));
+}
+
+// The sender a mailbox ref names.
+fn mailbox_sender(ref: String) -> String {
+    if std::str::starts_with(ref, "service:") { return ref[8..len(ref)]; }
+    return ref[len(EXCHANGE_PREFIX)..len(ref)];
+}
+
+// Every envelope in this record's service ("" with no service known here).
+fn service_mailboxes(root: String) -> String {
+    let url = knowledge_url(root);
+    if len(url) == 0 { return ""; }
+    let resp = std::http::get(url + "/exchange") or http_failed(err);
+    if resp.status != 200 { return ""; }
+    return std::str::from_bytes(resp.body);
+}
+
+// The rows a peer put in this record's mailboxes, by either exchange.
+fn mailbox_text_for(root: String, peer: String) -> String {
+    return mailbox_text(root, EXCHANGE_PREFIX + peer) + mailbox_text(root, "service:" + peer);
 }
 
 // This clone's inbound mailboxes (its sync fetches them from its remote),
@@ -172,6 +255,16 @@ fn mailboxes(root: String) -> String {
         let name = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         if len(name) > 0 { out = out + "refs/dna/" + name + "\n"; }
+    }
+    // and the senders with envelopes in this record's service, once each
+    let mut senders = "\n";
+    let mut lines = service_mailboxes(root);
+    while len(lines) > 0 {
+        let nl = std::str::index_of(lines, "\n");
+        let line = if nl < 0 { lines } else { lines[0..nl] };
+        lines = if nl < 0 { "" } else { lines[(nl + 1)..len(lines)] };
+        let sender = std::json::find_string_field(line, "sender");
+        if len(sender) > 0 && !std::str::contains(senders, "\n" + sender + "\n") { senders = senders + sender + "\n"; out = out + "service:" + sender + "\n"; }
     }
     return out + "\n";
 }
@@ -292,6 +385,7 @@ fn connect_verb(root: String, seed: String, url_in: String, name: String, positi
     b.string_field("classes", norm);
     b.string_field("by", by);
     b.string_field("review_id", review_id);
+    b.string_field("exchange", exchange_kind(url));
     b.end_object();
     if !append_as(root, "connection.proposed", "connection:" + name, b.result(), by) { return fail("the record refused the append"); }
     let question = "connect this record to record " + short(peer) + " at " + url + " as `" + position + "` for `" + purpose + "`, carrying " + norm + "?";
@@ -306,7 +400,7 @@ fn connect_verb(root: String, seed: String, url_in: String, name: String, positi
     q.end_object();
     if !append_as(root, "review.requested", "review:" + review_id, q.result(), by) { return fail("the record refused the append"); }
     let s2 = sync_record(root);
-    return answer("connection " + name + " proposed: record " + short(peer) + " at " + url + ", as `" + position + "`, for `" + purpose + "`, carrying " + norm + "\nthe Board decides it: `hale dna review " + review_id + " approve --authority board`, by someone other than " + by + "\n");
+    return answer("connection " + name + " proposed: record " + short(peer) + " at " + url + " (" + exchange_kind(url) + " exchange), as `" + position + "`, for `" + purpose + "`, carrying " + norm + "\nthe Board decides it: `hale dna review " + review_id + " approve --authority board`, by someone other than " + by + "\n");
 }
 
 @unbounded
@@ -459,7 +553,7 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
     // landed and before this record's row) is not written twice (#637)
     let existing = delivered_commit(root, c, "handoff.received", "handoff:" + hid);
     let landed = if len(existing) > 0 { PeerWrite { commit: existing } } else { peer_append(root, c, "handoff.received", "handoff:" + hid, b.result(), who) };
-    if len(landed.commit) == 0 { return fail("handoff: " + landed.why + "; nothing was recorded here"); }
+    if len(landed.commit) == 0 { return fail("handoff: " + landed.why + "; nothing was recorded here" + (if landed.unreachable { " — `hale dna handoff " + name + " " + kind + " " + subject_in + "` again delivers it" } else { "" })); }
     let pb = std::json::Builder { };
     pb.begin_object();
     pb.string_field("connection", name);
@@ -471,6 +565,8 @@ fn handoff_publish_verb(root: String, seed: String, name: String, kind: String, 
     pb.string_field("peer_row", landed.commit);
     pb.string_field("by", who);
     pb.string_field("note", note);
+    // the envelope as delivered: a delivery the peer lost is made again from it
+    pb.string_field("envelope", b.result());
     pb.end_object();
     if !append_as(root, "handoff.published", "handoff:" + hid, pb.result(), who) { return fail("handoff: written into record " + short(c.peer) + "'s mailbox as " + short(landed.commit) + ", but this record refused the append"); }
     if kind == "task" {
@@ -508,7 +604,7 @@ fn received_line(root: String, entity: String) -> String {
         let ref = if nl < 0 { refs } else { refs[0..nl] };
         refs = if nl < 0 { "" } else { refs[(nl + 1)..len(refs)] };
         if len(ref) == 0 { continue; }
-        let sender = ref[len(EXCHANGE_PREFIX)..len(ref)];
+        let sender = mailbox_sender(ref);
         let mut rest = mailbox_text(root, ref);
         while len(rest) > 0 {
             let lnl = std::str::index_of(rest, "\n");
@@ -547,7 +643,7 @@ fn handoff_list_verb(root: String, seed: String) -> Answer {
         let ref = if nl < 0 { refs } else { refs[0..nl] };
         refs = if nl < 0 { "" } else { refs[(nl + 1)..len(refs)] };
         if len(ref) == 0 { continue; }
-        let sender = ref[len(EXCHANGE_PREFIX)..len(ref)];
+        let sender = mailbox_sender(ref);
         let mut rest = mailbox_text(root, ref);
         while len(rest) > 0 {
             let lnl = std::str::index_of(rest, "\n");
@@ -635,7 +731,22 @@ fn handoff_sync_verb(root: String, seed: String) -> Answer {
         let c = connection_of(p, name);
         if len(c.closed) > 0 { out = out + "  " + name + ": closed — nothing admitted from it\n"; continue; }
         if !connection_live(c) { continue; }
-        let mut rest = mailbox_text(root, EXCHANGE_PREFIX + c.peer);
+        // durable delivery (#662): a handoff published here whose envelope
+        // the peer does not hold — a delivery interrupted, a mailbox lost —
+        // is delivered again, once, from the envelope kept with the row
+        let mut k = 0;
+        while k < p.rows() {
+            let e = p.row(k);
+            k = k + 1;
+            if e.kind != "handoff.published" || std::json::find_string_field(e.body, "connection") != name { continue; }
+            if p.has_row("handoff.accepted_by_peer", e.entity) { continue; }
+            let envelope = std::json::find_string_field(e.body, "envelope");
+            if len(envelope) == 0 { continue; }
+            if len(delivered_commit(root, c, "handoff.received", e.entity)) > 0 { continue; }
+            let again = peer_append(root, c, "handoff.received", e.entity, envelope, std::json::find_string_field(e.body, "by"));
+            out = out + "  " + name + ": " + e.entity[8..len(e.entity)] + (if len(again.commit) > 0 { " delivered again (the other record did not hold it)" } else { " not delivered: " + again.why }) + "\n";
+        }
+        let mut rest = mailbox_text_for(root, c.peer);
         while len(rest) > 0 {
             let lnl = std::str::index_of(rest, "\n");
             let line = if lnl < 0 { rest } else { rest[0..lnl] };

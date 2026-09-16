@@ -119,6 +119,33 @@ same steps a live organism takes, its projections read before and
 after, and a redaction after adoption removing a body filed before it
 (`dna_ledger.rs`).
 
+**Handoffs service to service (stage 5, #662).** A handoff crosses
+between records as an envelope through an `Exchange`, the core's
+contract for one record's mailbox in another and nothing of git's or
+HTTP's: `peer_identity`, `deliver` (idempotent by the envelope's kind
+and entity — its entity is `handoff:<id>` and the id is the handoff's
+origin, peer, kind and subject, so a delivery repeated after an
+interruption is one envelope), `delivered` (whether the peer already
+holds it), `received` (every mailbox of this record). A connection
+whose url is a service (`http://…`) exchanges service to service: the
+peer's service publishes its identity at `/identity`, takes an
+envelope at `POST /exchange/<sender>` once by (sender, kind, entity)
+and refuses one claiming another origin than its sender, answers
+`/exchange/has` and serves the record's mailboxes at `/exchange`; the
+connection's row says `exchange: service`. A connection whose url is
+a record's remote exchanges as before, mailbox refs in a private peer
+cache. Both keep the contract #646 set: **durable delivery** — a
+handoff published here whose envelope the peer does not hold is
+delivered again, once, by `hale dna handoff sync` from the envelope
+kept with its `handoff.published` row; a delivery that cannot reach
+the peer at all records nothing and says to deliver again; **the
+disclosure scope** is the connection's classes, checked before
+anything is delivered and again before anything is admitted;
+**settlement only on the receiver's acceptance** — the origin's task
+moves to `transfer_accepted` when the receiver's `handoff.accepted`
+envelope reaches it through the exchange, never when a delivery
+returned. `hale dna connect` says which exchange a connection uses.
+
 **Coordination in the store (stage 2, #651).** On routing 1 every lease
 is a row of the store swapped by its token: the service serves
 `GET /ledger/lease?key=` and `POST /ledger/lease` (`key`, `holder`,
