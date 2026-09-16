@@ -803,17 +803,23 @@ fn deploy_verb(root: String, fleet: String, plan_rel: String, what: String, roll
     return answer("fleet.deploy #" + to_string(d.seq) + ": " + fleet + " at " + short(d.revision) + " touching " + (if len(d.touched) == 0 { "no instance (none has a node)" } else { d.touched }) + "\n");
 }
 
-// ---- GitHub as a membrane -------------------------------------------
-
-fn gh(args: String) -> dna::RunResult {
-    return dna::run_tool("gh\n" + args);
-}
+// ---- the forge as a membrane (GH #648) -----------------------------------
+//
+// One pass, written against `dna::Forge` and nothing of GitHub's: every
+// pending mutation Review without a review at the forge gets one; every
+// verdict the forge reports becomes a `review.verdict` row in the
+// reviewer's name, once each (keyed by the forge's own key); every
+// settled Review with a review at the forge gets the outcome as a
+// comment, and an approval pushes the genome. The forge is a projection
+// of the record, never the record. The rows are `github.pr` and
+// `github.commented` still: a reader that met them before meets them
+// now, whichever forge answered.
 
 fn github_repo(root: String) -> String {
     return rec(root).setting("github");
 }
 
-// The pull request opened for a Review, "" when none.
+// The review opened at the forge for a Review, "" when none.
 fn pr_of(p: Projection, id: String) -> String {
     let mut i = p.rows() - 1;
     while i >= 0 {
@@ -834,15 +840,9 @@ fn has_row(p: Projection, kind: String, entity: String, needle: String) -> Bool 
     return false;
 }
 
-// One pass: every pending mutation Review without a pull request gets
-// one; every open pull request's GitHub reviews become verdicts in the
-// reviewer's login, once each; every settled Review with a pull
-// request gets the outcome as a comment, and an approval pushes the
-// genome. GitHub is a projection of the record, never the record.
 @unbounded
-fn github_sync(root: String, seed: String) -> Answer {
-    let repo = github_repo(root);
-    if len(repo) == 0 { return fail("no `dna.github` in git config"); }
+fn forge_sync(root: String, seed: String, forge: dna::Forge) -> Answer {
+    if !forge.present() { return fail("no forge: " + forge.name()); }
     let board = "," + std::str::replace(rec(root).setting("github.board"), " ", "") + ",";
     let remote_named = record_remote(root);
     let remote = if len(remote_named) == 0 { "origin" } else { remote_named };
@@ -852,18 +852,20 @@ fn github_sync(root: String, seed: String) -> Answer {
     let p = open_projection(root, seed, "");
     let ids = p.review_ids();
     let n = list_len(ids);
-    // 1. out: a pull request per pending mutation Review
+    // 1. out: a review at the forge per pending mutation Review
     let mut i = 0;
     while i < n {
         let r = p.review_of(nth(ids, i));
         if r.state == "pending" && r.is_mutation && len(pr_of(p, r.id)) == 0 {
             let head = "dna/" + r.id;
-            let e = genome_push_branch(root, remote, r.candidate_commit, head, true);
-            if len(e) > 0 { return fail(e); }
+            if forge.kind() == "github" {
+                let e = genome_push_branch(root, remote, r.candidate_commit, head, true);
+                if len(e) > 0 { return fail(e); }
+            }
             let body = render_review(p, r.id, false);
-            let c = gh("pr\ncreate\n--repo\n" + repo + "\n--base\n" + branch + "\n--head\n" + head + "\n--title\n" + r.question + "\n--body\n" + body.text);
-            if c.code != 0 { return fail("gh pr: " + dna::trim_nl(c.stderr)); }
-            let url = dna::trim_nl(c.stdout);
+            let opened = forge.open_review(if forge.kind() == "github" { head } else { r.candidate_commit }, r.question, body.text);
+            if !opened.present { return fail(opened.why); }
+            let url = opened.ref;
             let sl = last_index_of(url, "/");
             let number = std::str::parse_int(if sl < 0 { url } else { url[(sl + 1)..len(url)] }) or 0;
             let b = std::json::Builder { };
@@ -872,50 +874,49 @@ fn github_sync(root: String, seed: String) -> Answer {
             b.string_field("url", url);
             b.string_field("head", head);
             b.string_field("candidate", r.candidate_commit);
+            b.string_field("forge", forge.kind());
             b.end_object();
             if !append_as(root, "github.pr", r.id, b.result(), "") { return fail("the record refused the append"); }
-            out = out + r.id + ": pull request #" + to_string(number) + " opened (" + url + ")\n";
+            out = out + r.id + ": review opened at the forge (" + url + ")\n";
         }
         i = i + 1;
     }
-    // 2. in: GitHub reviews on open pull requests become verdicts, once each
+    // 2. in: the forge's verdicts become verdicts here, once each
     i = 0;
     while i < n {
         let r = p.review_of(nth(ids, i));
         let pr = pr_of(p, r.id);
         if r.state == "pending" && r.is_mutation && len(pr) > 0 {
+            let ref = std::json::find_string_field(pr, "url");
             let number = to_string(std::json::find_int_field(pr, "number"));
-            let v = gh("pr\nview\n" + number + "\n--repo\n" + repo + "\n--json\nstate,headRefOid,reviews");
-            if v.code != 0 { return fail("gh pr view: " + dna::trim_nl(v.stderr)); }
-            let doc = v.stdout;
-            let head_oid = std::json::find_string_field(doc, "headRefOid");
-            let mut it = std::json::array_first(std::json::find_field_raw(doc, "reviews"));
-            while !it.done {
-                let state = std::json::find_string_field(it.element, "state");
-                let verdict = if state == "APPROVED" { "approve" } else { if state == "CHANGES_REQUESTED" { "revise" } else { "" } };
-                if len(verdict) > 0 {
-                    let login = std::json::find_string_field(std::json::find_field_raw(it.element, "author"), "login");
-                    let oid_named = std::json::find_string_field(std::json::find_field_raw(it.element, "commit"), "oid");
-                    let oid = if len(oid_named) > 0 { oid_named } else { head_oid };
-                    let key = login + "@" + oid + "@" + state;
-                    let q = open_projection(root, seed, "");
-                    if !has_row(q, "review.verdict", r.id, "\"github\": \"" + key + "\"") {
-                        let authority = if std::str::contains(board, "," + login + ",") { "board" } else { "reviewer" };
-                        let b = std::json::Builder { };
-                        b.begin_object();
-                        b.string_field("review_id", r.id);
-                        b.string_field("subject_digest", oid);
-                        b.string_field("verdict", verdict);
-                        b.string_field("reviewer", login);
-                        b.string_field("authority", authority);
-                        b.string_field("comment", "github review #" + number);
-                        b.string_field("github", key);
-                        b.end_object();
-                        if !append_as(root, "review.verdict", r.id, b.result(), "") { return fail("the record refused the append"); }
-                        out = out + r.id + ": " + verdict + " by " + login + " (" + authority + ") from pull request #" + number + "\n";
-                    }
+            let mut rest = forge.verdicts(ref);
+            while len(rest) > 0 {
+                let nl = std::str::index_of(rest, "\n");
+                let line = if nl < 0 { rest } else { rest[0..nl] };
+                rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+                if len(line) == 0 { continue; }
+                let login = tab_field(line, 0);
+                let verdict = tab_field(line, 1);
+                let oid = tab_field(line, 2);
+                let key = tab_field(line, 3);
+                if login == "error" { return fail("the forge did not answer: " + verdict); }
+                if len(verdict) == 0 { continue; }
+                let q = open_projection(root, seed, "");
+                if !has_row(q, "review.verdict", r.id, "\"github\": \"" + key + "\"") {
+                    let authority = if std::str::contains(board, "," + login + ",") { "board" } else { "reviewer" };
+                    let b = std::json::Builder { };
+                    b.begin_object();
+                    b.string_field("review_id", r.id);
+                    b.string_field("subject_digest", oid);
+                    b.string_field("verdict", verdict);
+                    b.string_field("reviewer", login);
+                    b.string_field("authority", authority);
+                    b.string_field("comment", forge.kind() + " review #" + number);
+                    b.string_field("github", key);
+                    b.end_object();
+                    if !append_as(root, "review.verdict", r.id, b.result(), "") { return fail("the record refused the append"); }
+                    out = out + r.id + ": " + verdict + " by " + login + " (" + authority + ") from the forge's review #" + number + "\n";
                 }
-                it = std::json::array_next(it);
             }
         }
         i = i + 1;
@@ -926,16 +927,50 @@ fn github_sync(root: String, seed: String) -> Answer {
         let r = p.review_of(nth(ids, i));
         let pr = pr_of(p, r.id);
         if r.state == "settled" && r.is_mutation && len(pr) > 0 && !has_row(p, "github.commented", r.id, "") {
+            let ref = std::json::find_string_field(pr, "url");
             let number = to_string(std::json::find_int_field(pr, "number"));
-            if std::str::starts_with(r.settled, "approve") { let pushed = genome_push_branch(root, remote, branch, branch, false); }
-            let c = gh("pr\ncomment\n" + number + "\n--repo\n" + repo + "\n--body\ndna: review " + r.id + " settled: " + r.settled);
-            if c.code != 0 { return fail("gh pr comment: " + dna::trim_nl(c.stderr)); }
+            if std::str::starts_with(r.settled, "approve") && forge.kind() == "github" { let pushed = genome_push_branch(root, remote, branch, branch, false); }
+            if !forge.comment(ref, "dna: review " + r.id + " settled: " + r.settled) { return fail("the forge did not take the comment"); }
             if !append_as(root, "github.commented", r.id, "#" + number + ": " + r.settled, "") { return fail("the record refused the append"); }
-            out = out + r.id + ": pull request #" + number + " told: " + r.settled + "\n";
+            out = out + r.id + ": the forge's review #" + number + " told: " + r.settled + "\n";
         }
         i = i + 1;
     }
     return answer(out);
+}
+
+// The n-th tab-separated field of a line.
+fn tab_field(line: String, n: Int) -> String {
+    let mut rest = line;
+    let mut i = 0;
+    while i < n {
+        let t = std::str::index_of(rest, "\t");
+        if t < 0 { return ""; }
+        rest = rest[(t + 1)..len(rest)];
+        i = i + 1;
+    }
+    let t = std::str::index_of(rest, "\t");
+    return if t < 0 { rest } else { rest[0..t] };
+}
+
+// The forge the record's configuration names, as `dna::Forge`.
+// (each forge is bound to a local before it is handed to the interface
+// parameter: constructed inline as the argument it reaches the callee
+// unborn)
+fn github_sync(root: String, seed: String) -> Answer {
+    let k = forge_kind(root);
+    if k == "github" {
+        let branch = genome_branch(root);
+        let gh_forge = GitHubForge { repo: github_repo(root), base: (if len(branch) == 0 { "main" } else { branch }) };
+        return forge_sync(root, seed, gh_forge);
+    }
+    if k == "file" {
+        let forge_dir = root + "/.hale/dna/forge";
+        let file_forge = FileForge { dir: forge_dir };
+        return forge_sync(root, seed, file_forge);
+    }
+    let none = dna::NoForge { };
+    return forge_sync(root, seed, none);
 }
 
 fn github_verb(root: String, seed: String, sub: String) -> Answer {

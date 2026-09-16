@@ -185,3 +185,53 @@ fn only_the_record_and_the_genome_spell_git() {
     }
     assert!(offenders.is_empty(), "git is spelled outside the record's implementation and the genome's files:\n{}", offenders.join("\n"));
 }
+
+/// GH #647: a body's infrastructure and transport are implementations
+/// behind the core's interfaces. In the host, `ssh`, `systemctl`,
+/// `journalctl` and `docker compose` are invoked from exactly one file.
+#[test]
+fn only_the_reference_infrastructure_spells_its_tools() {
+    let root = repo_root();
+    let mut offenders = Vec::new();
+    for e in std::fs::read_dir(root.join("dna/host")).expect("dna/host").flatten() {
+        let p = e.path();
+        if p.extension().map(|x| x != "hl").unwrap_or(true) || p.file_name().unwrap() == "infra.hl" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&p).unwrap();
+        for (i, l) in text.lines().enumerate() {
+            let t = l.trim_start();
+            if t.starts_with("//") {
+                continue;
+            }
+            if t.contains("ssh -o") || t.contains("systemctl --user") || t.contains("journalctl") || t.contains("docker\\ncompose") {
+                offenders.push(format!("dna/host/{}:{}: {}", p.file_name().unwrap().to_string_lossy(), i + 1, t));
+            }
+        }
+    }
+    assert!(offenders.is_empty(), "a tool of the body's infrastructure is spelled outside dna/host/infra.hl:\n{}", offenders.join("\n"));
+}
+
+/// GH #648: the code-review host is an implementation behind `Forge`;
+/// `gh` is invoked from exactly one file in the host.
+#[test]
+fn only_the_github_forge_spells_gh() {
+    let root = repo_root();
+    let mut offenders = Vec::new();
+    for dir in ["dna/core", "dna/host"] {
+        for e in std::fs::read_dir(root.join(dir)).expect("dna dir").flatten() {
+            let p = e.path();
+            if p.extension().map(|x| x != "hl").unwrap_or(true) || p.file_name().unwrap() == "forge_github.hl" {
+                continue;
+            }
+            let text = std::fs::read_to_string(&p).unwrap();
+            for (i, l) in text.lines().enumerate() {
+                let t = l.trim_start();
+                if !t.starts_with("//") && (t.contains("run_tool(\"gh") || t.contains("\"gh\\n")) {
+                    offenders.push(format!("{dir}/{}:{}: {}", p.file_name().unwrap().to_string_lossy(), i + 1, t));
+                }
+            }
+        }
+    }
+    assert!(offenders.is_empty(), "gh is spelled outside dna/host/forge_github.hl:\n{}", offenders.join("\n"));
+}

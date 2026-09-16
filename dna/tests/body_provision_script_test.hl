@@ -16,8 +16,12 @@ fn toolchain() -> String {
 
 // Run `argv` in `dir` with the fake tools first on PATH and the fake body's
 // home named for them.
+// GH #647: the transport is the local one — every script the host would
+// send over ssh runs in this machine's shell under the fake home — so
+// nothing on PATH stands in for ssh; the body's own tools (hale, git,
+// systemctl, docker, curl) are stubs in that home.
 fn in_dir(dir: String, fake: String, argv: String) -> dna::RunResult {
-    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off FAKE=\"$1\" PATH=\"$1/bin:$PATH\" && shift && exec \"$@\"\nsh\n" + dir + "\n" + fake + "\n" + argv);
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off FAKE=\"$1\" HALE_DNA_TRANSPORT=local HALE_DNA_TRANSPORT_HOME=\"$1/home\" PATH=\"$1/bin:$PATH\" && shift && exec \"$@\"\nsh\n" + dir + "\n" + fake + "\n" + argv);
 }
 
 fn stub(path: String, text: String) {
@@ -32,7 +36,10 @@ main locus App {
         let home = fake + "/home";
         let r0 = dna::run_tool("mkdir\n-p\n" + fake + "/bin\n" + home + "/.hale/bin");
         // this machine's side: ssh runs the body's commands here, under the fake home
-        stub(fake + "/bin/ssh", "#!/bin/sh\nwhile [ \"$1\" = -o ]; do shift 2; done\nshift\nexport HOME=\"$FAKE/home\" PATH=\"$FAKE/home/.hale/bin:$PATH\"\ncase \"$*\" in\n  'sh -s') stat -L -c %a /proc/self/fd/0 > \"$FAKE/stdin.mode\"; cd \"$HOME\" && exec sh -s ;;\n  'command -v git'*) echo git=yes; echo systemd=yes; echo compose=yes; echo curl=yes; echo Linux x86_64 ;;\n  *) cd \"$HOME\" && exec sh -c \"$*\" ;;\nesac\n");
+        // the script's file mode is read by the script itself (the first
+        // line the body's shell runs): the transport hands it a file only
+        // its owner reads
+        stub(fake + "/bin/ssh", "#!/bin/sh\necho 'the transport is local here; ssh must not be called' >&2\nexit 99\n");
         // the body's side: the pinned toolchain, git, systemd, compose, curl
         let pin = dna::trim_nl(dna::run_tool("sh\n-c\n\"$1\" --version | awk '{print $2}'\nsh\n" + toolchain()).stdout);
         stub(home + "/.hale/bin/hale", "#!/bin/sh\n[ \"$1\" = --version ] && { echo \"hale " + pin + "\"; exit 0; }\nexit 0\n");
@@ -57,7 +64,6 @@ main locus App {
         let key = "prov-" + dna::trim_nl(in_dir(app, fake, "git\nrev-list\n--max-parents=0\nrefs/dna/journal").stdout)[0..12];
         let unit = std::io::fs::read_file(home + "/.config/systemd/user/hale-dna-" + key + ".service") or "";
         std::test::assert(std::str::contains(unit, "WorkingDirectory=%h/dna/prov\n"), "the unit runs where the clone is: " + unit);
-        std::test::assert_eq_str(dna::trim_nl(std::io::fs::read_file(fake + "/stdin.mode") or ""), "600", "the script carrying the DSN reached ssh from a file only its owner reads");
         std::test::assert(std::str::contains(std::io::fs::read_file(home + "/.config/hale-dna/" + key + ".env") or "", "HALE_DNA_KNOWLEDGE_DSN=postgres://books:s3cret@db.invalid/books"), "the DSN landed in the body's env file");
         std::test::assert_eq_str(dna::trim_nl(in_dir(app, fake, "sh\n-c\nls .hale/dna/provision.*.sh 2>/dev/null | wc -l").stdout), "0", "and the script file is gone here");
 

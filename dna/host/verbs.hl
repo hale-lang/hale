@@ -81,7 +81,7 @@ fn profile_name(root: String) -> String {
     let here = live && holder_host(l.holder) == this_host();
     let mut name = if len(remote) == 0 { "local" } else if live && !here { "remote body" } else if live { "local body, shared record" } else { "shared record, no body" };
     if len(fleet_name(root)) > 0 { name = name + " + fleet"; }
-    if len(github_repo(root)) > 0 { name = name + " + github"; }
+    if forge_kind(root) != "none" { name = name + " + " + forge_kind(root); }
     return name + " (detected)";
 }
 
@@ -100,8 +100,8 @@ fn profile_verb(root: String) -> Answer {
     let compose = std::io::fs::file_exists(root + "/dna/compose.yaml");
     out = out + "knowledge:   " + (if len(dsn) > 0 { (if dsn == "memory" { "in-memory (HALE_DNA_KNOWLEDGE_DSN=memory)" } else { "a Postgres of your own (HALE_DNA_KNOWLEDGE_DSN)" }) } else if compose { "compose (dna/compose.yaml, under `hale dna dev`)" } else { "none" }) + "\n";
     out = out + "trust:       " + trust_mode(root) + (if trust_mode(root) == "signed" { " (rows from the record are admitted only with a signature git verifies)" } else { " (every writer to the record is trusted)" }) + "\n";
-    let gh = github_repo(root);
-    out = out + "github:      " + (if len(gh) == 0 { "none" } else { gh }) + "\n";
+    // GH #648: the forge the host found, whichever it is
+    out = out + "github:      " + forge_name(root) + "\n";
     out = out + "connections: none\n";
     return answer(out);
 }
@@ -643,6 +643,7 @@ fn unit_text(name: String, dir: String) -> String {
 // record, the database (compose, or the DSN into the body's env
 // file), the unit, enabled and started.
 fn provision_script(name: String, pin: String, remote_url: String, dir: String, dsn: String) -> String {
+    let infra = ReferenceInfrastructure { };
     let mut s = "set -eu\nPIN=" + sq(pin) + "\nREMOTE=" + sq(remote_url) + "\nDIR=" + shell_path(dir) + "\nNAME=" + sq(name) + "\nDSN=" + sq(dsn) + "\n";
     s = s + "have=$(\"$HOME/.hale/bin/hale\" --version 2>/dev/null | awk '{print $2}' || true)\n";
     s = s + "if [ \"$have\" != \"$PIN\" ]; then echo \"installing hale $PIN\"; HALE_VERSION=\"v$PIN\" sh -c \"$(curl -fsSL https://hale-lang.org/install.sh)\" >/dev/null; fi\n";
@@ -650,26 +651,13 @@ fn provision_script(name: String, pin: String, remote_url: String, dir: String, 
     s = s + "export PATH=\"$HOME/.hale/bin:$PATH\"\n";
     s = s + "if [ -d \"$DIR/.git\" ]; then git -C \"$DIR\" fetch -q; echo \"fetched into $DIR\"; else mkdir -p \"$(dirname \"$DIR\")\"; git clone -q \"$REMOTE\" \"$DIR\"; echo \"cloned into $DIR\"; fi\n";
     s = s + "cd \"$DIR\" && hale dna upgrade . >/dev/null && (hale dna sync >/dev/null 2>&1 || true)\n";
-    s = s + "umask 077; mkdir -p \"$HOME/.config/systemd/user\" \"$HOME/.config/hale-dna\"\n";
-    s = s + "if [ -n \"$DSN\" ]; then f=\"$HOME/.config/hale-dna/$NAME.env\"; { [ -f \"$f\" ] && grep -v '^HALE_DNA_KNOWLEDGE_DSN=' \"$f\" || true; echo \"HALE_DNA_KNOWLEDGE_DSN=$DSN\"; } > \"$f.tmp\" && mv \"$f.tmp\" \"$f\"; echo \"knowledge: the DSN given\"; else docker compose version >/dev/null 2>&1 || { echo \"no docker compose on the body and no --dsn: the knowledge database has to come from one of them\"; exit 4; }; echo \"knowledge: compose (dna/compose.yaml)\"; fi\n";
-    s = s + "cat > \"$HOME/.config/systemd/user/hale-dna-$NAME.service\" <<'UNIT'\n" + unit_text(name, dir) + "UNIT\n";
-    s = s + "loginctl enable-linger \"$USER\" >/dev/null 2>&1 || true\n";
-    s = s + "systemctl --user daemon-reload && systemctl --user enable --now \"hale-dna-$NAME\" && echo \"unit hale-dna-$NAME enabled and started (systemctl --user)\"\n";
+    // GH #647: the database's and the supervisor's parts are theirs to
+    // write; a body with another supervisor or another database gets
+    // another implementation's, not another `if`
+    s = s + "umask 077; mkdir -p \"$HOME/.config/hale-dna\"\n";
+    s = s + infra.database_fragment();
+    s = s + infra.supervisor_fragment(name, unit_text(name, dir));
     return s;
-}
-
-// Over ssh, run a script from the body's stdin; `-o BatchMode=yes`
-// so nothing ever prompts inside a tool.
-fn ssh_script(target: String, script: String, tmp: String) -> dna::RunResult {
-    // the script can carry a credential (a DSN): its file is created
-    // empty under umask 077 before a byte is written, as a secret's is
-    let mk = dna::run_tool("sh\n-c\numask 077 && : > \"$1\"\nsh\n" + tmp);
-    if mk.code != 0 { return dna::RunResult { code: -1, stderr: "cannot create " + tmp + " privately" }; }
-    let w = write_text(tmp, script) or false;
-    if !w { return dna::RunResult { code: -1, stderr: "cannot write " + tmp }; }
-    let r = dna::run_tool("sh\n-c\nssh -o BatchMode=yes -o ConnectTimeout=15 \"$1\" 'sh -s' < \"$2\"\nsh\n" + target + "\n" + tmp);
-    std::io::fs::unlink(tmp) or discard;
-    return r;
 }
 
 // `hale dna body provision <user@host> [--dsn <url>] [--dir <path>] [--dry-run] [--as <who>]`
@@ -690,15 +678,14 @@ fn body_provision_verb(root: String, target: String, dsn: String, dir_flag: Stri
         return answer("body provision (dry run): nothing was written. On " + target + " this would run:\n" + indent_lines(script, "    ") + "\nthen here: git config dna.body " + target + "; a `body.provisioned` row in the record\n");
     }
     // 1. reachable, and the pieces a body is made of: stop before writing anything otherwise
-    let probe = dna::run_tool("sh\n-c\nssh -o BatchMode=yes -o ConnectTimeout=15 \"$1\" 'command -v git >/dev/null && echo git=yes || echo git=no; command -v systemctl >/dev/null && echo systemd=yes || echo systemd=no; docker compose version >/dev/null 2>&1 && echo compose=yes || echo compose=no; command -v curl >/dev/null && echo curl=yes || echo curl=no; uname -sm'\nsh\n" + target);
-    if probe.code != 0 { return fail("body provision: ssh " + target + " is not reachable (" + dna::trim_nl(probe.stderr) + "); nothing was written"); }
-    let facts = probe.stdout;
-    if std::str::contains(facts, "git=no") { return fail("body provision: " + target + " has no git; the body clones the record with it — nothing was written"); }
-    if std::str::contains(facts, "systemd=no") { return fail("body provision: " + target + " has no systemd (`systemctl`); the reference supervisor is a user unit — write your own supervisor around `hale dna dev . --no-iris`; nothing was written"); }
-    if std::str::contains(facts, "curl=no") { return fail("body provision: " + target + " has no curl; the toolchain installs with it — nothing was written"); }
-    if len(dsn) == 0 && std::str::contains(facts, "compose=no") { return fail("body provision: " + target + " has no docker compose and no --dsn was given; the knowledge database has to come from one of them — nothing was written"); }
-    // 2. the script, in the body's shell
-    let r = ssh_script(target, script, root + "/.hale/dna/provision." + to_string(std::process::pid()) + ".sh");
+    let scratch_dir = root + "/.hale/dna";
+    let infra = ReferenceInfrastructure { root: root, target: target, local: LocalTransport { scratch: scratch_dir }, ssh: SshTransport { scratch: scratch_dir } };
+    let probe = infra.probe(target);
+    if !probe.reachable { return fail("body provision: " + transport_kind() + " " + target + " is not reachable (" + probe.why + "); nothing was written"); }
+    let lacks = infra.missing(probe.facts, dsn);
+    if len(lacks) > 0 { return fail("body provision: " + target + " " + lacks + " — nothing was written"); }
+    // 2. the script, in the body's shell, through the transport
+    let r = infra.run_at(script, "");
     if r.code != 0 { return fail("body provision on " + target + " stopped (" + to_string(r.code) + "):\n" + indent_lines(r.stdout + r.stderr, "    ")); }
     // 3. remembered here, and in the record — the target and the pin, never a credential
     let c1 = rec(root).set_setting("body", target);
@@ -712,14 +699,14 @@ fn body_provision_verb(root: String, target: String, dsn: String, dir_flag: Stri
 fn body_ctl_verb(root: String, sub: String, body_flag: String) -> Answer {
     let target = body_target(root, body_flag);
     if len(target) == 0 { return fail("body " + sub + ": no body is known here (`hale dna body provision <user@host>` sets `dna.body`; `--body <user@host>` names one)"); }
-    let name = project_name(root);
-    let unit = "hale-dna-" + body_key(root);
-    // a stopped unit is `inactive`, and `is-active` exits non-zero for it:
-    // stop succeeds when the unit is no longer active
-    let cmd = if sub == "logs" { "journalctl --user -u " + unit + " -n 200 --no-pager 2>/dev/null || tail -n 200 \"$HOME\"/dna/" + name + "/.hale/dna/org.log" } else if sub == "stop" { "systemctl --user stop " + unit + " || exit 1; if systemctl --user is-active --quiet " + unit + "; then echo still active; exit 1; else echo inactive; fi" } else { "systemctl --user " + sub + " " + unit + " && systemctl --user is-active " + unit };
-    let r = dna::run_tool("sh\n-c\nssh -o BatchMode=yes -o ConnectTimeout=15 \"$1\" \"$2\"\nsh\n" + target + "\n" + cmd);
-    if r.code != 0 { return fail("body " + sub + " on " + target + ": " + dna::trim_nl(r.stderr + r.stdout)); }
-    return answer("body " + sub + " on " + target + ":\n" + indent_lines(dna::trim_nl(r.stdout), "    ") + "\n");
+    // GH #647: the supervisor is the infrastructure's; the host names the unit
+    let scratch_dir = root + "/.hale/dna";
+    let infra = ReferenceInfrastructure { root: root, target: target, local: LocalTransport { scratch: scratch_dir }, ssh: SshTransport { scratch: scratch_dir } };
+    let key = body_key(root);
+    if sub == "logs" { let text = infra.logs(key, 200); return answer("body logs on " + target + ":\n" + indent_lines(dna::trim_nl(text), "    ") + "\n"); }
+    let ok = if sub == "stop" { infra.stop(key) } else { infra.start(key) };
+    if !ok { return fail("body " + sub + " on " + target + ": " + infra.last); }
+    return answer("body " + sub + " on " + target + ":\n" + indent_lines(infra.last, "    ") + "\n");
 }
 
 // ---- secrets (GH #617 ask 4) ----------------------------------------
@@ -761,24 +748,15 @@ fn secret_verb(root: String, sub: String, name: String, body_flag: String, who_f
     eprintln("value for ", name, (if len(target) > 0 { " on " + target } else { " (this machine)" }), ", on one line:");
     let value = dna::trim_nl(std::io::stdin::read_line());
     if len(value) == 0 { return fail("secret " + sub + ": no value was given on stdin"); }
-    // the line goes to the shell through a file only this user can
-    // read, created empty by the shell under umask 077 first
-    let tmp = root + "/.hale/dna/secret." + to_string(std::process::pid()) + ".tmp";
-    let mk = dna::run_tool("sh\n-c\numask 077 && mkdir -p \"$(dirname \"$1\")\" && : > \"$1\"\nsh\n" + tmp);
-    if mk.code != 0 { return fail("secret " + sub + ": cannot create " + tmp); }
-    let w = write_text(tmp, name + "=" + value + "\n") or false;
-    if !w { std::io::fs::unlink(tmp) or discard; return fail("secret " + sub + ": cannot write " + tmp); }
-    let install = "umask 077; d=\"$HOME/.config/hale-dna\"; f=\"$d/" + project + ".env\"; mkdir -p \"$d\"; IFS= read -r line; { [ -f \"$f\" ] && grep -v '^" + name + "=' \"$f\" || true; printf '%s\\n' \"$line\"; } > \"$f.tmp\" && mv \"$f.tmp\" \"$f\" && echo \"$f\"";
-    let r = if len(target) > 0 {
-        dna::run_tool("sh\n-c\nssh -o BatchMode=yes -o ConnectTimeout=15 \"$1\" \"$2\" < \"$3\"\nsh\n" + target + "\n" + install + "\n" + tmp)
-    } else {
-        dna::run_tool("sh\n-c\nsh -c \"$1\" < \"$2\"\nsh\n" + install + "\n" + tmp)
-    };
-    std::io::fs::unlink(tmp) or discard;
-    if r.code != 0 { return fail("secret " + sub + (if len(target) > 0 { " on " + target } else { "" }) + ": " + dna::trim_nl(r.stderr + r.stdout) + "; nothing was recorded"); }
+    // GH #647: the credential is the infrastructure's to keep — the value
+    // reaches the body's shell on its stdin through a private file, never
+    // in argv, here or over the transport
+    let scratch_dir = root + "/.hale/dna";
+    let infra = ReferenceInfrastructure { root: root, target: target, local: LocalTransport { scratch: scratch_dir }, ssh: SshTransport { scratch: scratch_dir } };
+    if !infra.put_credential(project + "/" + name, value) { return fail("secret " + sub + (if len(target) > 0 { " on " + target } else { "" }) + ": " + infra.last + "; nothing was recorded"); }
     let row = append_as(root, "secret.rotated", name, "{\"where\": " + quote(if len(target) > 0 { target } else { "local" }) + ", \"by\": " + quote(who) + "}", who);
     let s = sync_record(root);
-    return answer("secret " + sub + ": " + name + " is in " + dna::trim_nl(r.stdout) + (if len(target) > 0 { " on " + target } else { "" }) + " (secret.rotated " + name + "; the value is nowhere in the record). A running body reads it at its next start: `hale dna body stop && hale dna body start`\n");
+    return answer("secret " + sub + ": " + name + " is in " + infra.last + (if len(target) > 0 { " on " + target } else { "" }) + " (secret.rotated " + name + "; the value is nowhere in the record). A running body reads it at its next start: `hale dna body stop && hale dna body start`\n");
 }
 
 // The model credentials the catalog names (`env_var: "X"` in

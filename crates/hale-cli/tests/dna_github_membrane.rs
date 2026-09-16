@@ -185,3 +185,93 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
     assert_ne!(origin_main, base);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// GH #648: the same membrane against the file forge — reviews and
+/// verdicts as files, no `gh` anywhere — appends the same rows, and the
+/// host's profile says which forge it found.
+#[test]
+fn the_same_rows_come_from_the_file_forge_and_the_profile_names_it() {
+    let d = std::env::temp_dir().join(format!("hale_dna_forge_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.clone());
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let hale = |args: &[&str], cwd: &Path| -> (bool, String) {
+        let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+            .args(args)
+            .current_dir(cwd)
+            .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+            .env("HALE_DNA_DISCOVER", "off")
+            .env("HALE_DNA_FORGE", "file")
+            .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
+            .output()
+            .expect("hale");
+        (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+    };
+    let (ok, out) = hale(&["dna", "new", "orgfile"], &d);
+    assert!(ok, "{out}");
+    let app: PathBuf = d.join("orgfile");
+    let bare = d.join("origin.git");
+    git(&["init", "-q", "--bare", "-b", "main", &bare.to_string_lossy()], &d);
+    git(&["config", "user.name", "riley"], &app);
+    git(&["config", "user.email", "r@l"], &app);
+    git(&["config", "dna.github.board", "octocat,riley"], &app);
+    git(&["add", "-A"], &app);
+    git(&["commit", "-q", "-m", "the app"], &app);
+    git(&["remote", "add", "origin", &bare.to_string_lossy()], &app);
+    git(&["push", "-q", "origin", "main", "refs/dna/*:refs/dna/*"], &app);
+    let (ok, prof) = hale(&["dna", "profile", "."], &app);
+    assert!(ok && prof.contains("github:      file forge at .hale/dna/forge"), "the profile names the forge found:\n{prof}");
+    std::fs::create_dir_all(app.join("mutate")).unwrap();
+    std::fs::write(app.join("mutate/main.hl"), DRIVER).unwrap();
+    let (ok, out) = hale(&["run", "mutate"], &app);
+    assert!(ok && out.contains("m1: review"), "driver:\n{out}");
+    let cand = journal(&app).iter().find(|(k, e, _)| k == "mutation.candidate" && e == "m1").map(|r| r.2.clone()).expect("candidate");
+    let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["dna", "run", ".", "--no-iris"])
+        .current_dir(&app)
+        .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
+        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
+        .env("HALE_DNA_DISCOVER", "off")
+        .env("HALE_DNA_FORGE", "file")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("hale dna run");
+    let stop = |host: &mut std::process::Child| {
+        let _ = host.kill();
+        let _ = host.wait();
+        for f in ["org.pid", "app.pid"] {
+            if let Ok(pid) = std::fs::read_to_string(app.join(".hale/dna").join(f)) {
+                let _ = Command::new("kill").args(["-9", pid.trim()]).status();
+            }
+        }
+    };
+    if !wait_for(&app, 90, "github.pr", "m1") {
+        stop(&mut host);
+        panic!("no review was opened at the file forge for m1");
+    }
+    let pr_row = journal(&app).iter().find(|(k, e, _)| k == "github.pr" && e == "m1").map(|r| r.2.clone()).unwrap_or_default();
+    let listing = Command::new("sh").args(["-c", "ls -la .hale/dna .hale/dna/forge 2>&1"]).current_dir(&app).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    let review = std::fs::read_to_string(app.join(".hale/dna/forge/1.review")).unwrap_or_else(|e| { stop(&mut host); panic!("the review file: {e}\ngithub.pr: {pr_row}\n{listing}") });
+    assert!(review.contains("title: ") && review.contains(&format!("candidate: {cand}")) && review.contains("source diff (git"), "the review file carries the three views:\n{review}");
+    // octocat decides, as a reviewer at this forge would
+    std::fs::write(app.join(".hale/dna/forge/1.verdicts"), format!("octocat approve {cand}\n")).unwrap();
+    let settled = wait_for(&app, 90, "review.settled", "m1");
+    let told = wait_for(&app, 60, "github.commented", "m1");
+    std::thread::sleep(Duration::from_secs(1));
+    let rows = journal(&app);
+    stop(&mut host);
+    let dump: Vec<String> = rows.iter().map(|(k, e, b)| format!("{k} {e} {}", b.chars().take(90).collect::<String>())).collect();
+    let dump = dump.join("\n");
+    let pr = rows.iter().find(|(k, e, _)| k == "github.pr" && e == "m1").unwrap();
+    let prb: serde_json::Value = serde_json::from_str(&pr.2).unwrap();
+    assert!(prb["number"] == 1 && prb["forge"] == "file", "{}", pr.2);
+    assert!(settled, "the forge's verdict became the verdict and settled:\n{dump}");
+    let verdict = rows.iter().find(|(k, e, _)| k == "review.verdict" && e == "m1").expect("a verdict row");
+    let vb: serde_json::Value = serde_json::from_str(&verdict.2).unwrap();
+    assert!(vb["reviewer"] == "octocat" && vb["authority"] == "board" && vb["github"] == format!("octocat@{cand}@approve"), "{}", verdict.2);
+    assert!(told, "the settlement went back as a comment:\n{dump}");
+    let comments = std::fs::read_to_string(app.join(".hale/dna/forge/1.comments")).unwrap_or_default();
+    assert!(comments.contains("review m1 settled: approve"), "{comments}");
+    let _ = std::fs::remove_dir_all(&d);
+}
