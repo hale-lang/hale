@@ -127,13 +127,35 @@ repository:
   content, never its `seq` (a reconcile renumbers, and a node raising
   one concern three times writes three identical rows, each a fact):
   a host relays and handles by that identity, so a renumbered fact is
-  not relayed twice and a repeated one is not relayed once. **A remote with
+  not relayed twice and a repeated one is not relayed once. **A reconcile
+  rebuilds only what this clone may sign (GH #639).** Under
+  `dna.trust = signed` every local-only row is read before any chain
+  moves: a row this clone signed is rebuilt and re-signed, and its
+  commit names the original (`Rebuilt-From: <commit>` in the message's
+  body); a row never signed is rebuilt unsigned, so a reconcile upgrades
+  nobody's provenance; a row signed with another key refuses the whole
+  reconcile — the row and the key it was signed with are named, every
+  local row and commit stays where it is, the remote is untouched, and
+  the refusal says what keeps the work (that row's writer syncs first,
+  since a writer rebuilds its own rows; or the remote is fast-forwarded
+  once it holds the row). A fast-forward is never refused. Under `local`
+  trust nothing is read and every row is rebuilt as before. **A remote with
   no record yet is the local one's push**, not "up to date": the first
   sync after an ordinary `git push origin main` carries the record, so
   no one has to push `refs/dna/*` by hand for a second clone to have
-  the organization's history. Receipts travel
-  by refspec both ways. The remote is `dna.remote` in git config, or
+  the organization's history. Receipts and candidates travel
+  by refspec both ways; mailboxes are received. The remote is `dna.remote` in git config, or
   `origin`. A plain clone has no record until it syncs.
+- **Candidates are kept.** The gateway points `refs/dna/candidates/<mutation>`
+  at a candidate when it commits it, and sync carries the pointers with
+  the record, so a refused or revised change stays readable as a diff
+  after its worktree is gone: `hale dna candidates` lists them with
+  their Review's state, `hale dna candidates <mutation>` shows one from
+  its Review's base, and `hale dna candidates drop <mutation> --why <why>`
+  appends `candidate.dropped <mutation> {by, why}` and stops keeping it —
+  here, at the remote, and at every clone on its next sync, the way a
+  redaction removes a receipt. The commits stay in each object store
+  until git collects them.
 - **An apply expresses the candidate, tree and all.** An approval
   applies exactly the reviewed candidate, or nothing: the candidate's
   worktree head is the pinned digest, the genome's head is the base the
@@ -532,6 +554,7 @@ the same way. A project's path therefore has no length rule.
 `knowledge.ratified`, `knowledge.declined`, `knowledge.refused`, `knowledge.consulted`,
 `concern.requested`, `concern.raised`, `concern.proposed`, `github.pr`, `github.commented`,
 `mutation.topology`, `fleet.deploy`, `instance.up`, `instance.exited`,
+`candidate.dropped`,
 `review.reasoned` (the deciding verdict's comment — a person's note or
 the Leader's reasoning — right after `review.settled`; `hale dna
 review <id>` renders it as `why:`). Their bodies are documented in the guide's reference
@@ -547,6 +570,35 @@ core. The git-backed implementations are the ones an assembly wires
 for an organism; the in-memory ones exist for tests. Protected bodies
 go through `ReceiptVault` to the knowledge service's `ProtectedBodies`
 (`MemProtected`, `PqProtected`) instead (GH #606).
+
+**The record has an API of its own (GH #646 stage 0).** `Record` is
+the one boundary the git-backed `GitJournal`, `GitReceipts` and
+`GitLeases` and the host's sync, reconcile, body lease, identity and
+exchange mailboxes all stand on, with a vocabulary that never names
+the tool: *chains* of rows appended under compare-and-swap at a head
+(`journal`; `exchange/<identity>` for a mailbox; `remote/journal` for
+what the remote held at the last receive), a row *built* beside every
+chain and swapped in later, *bodies* kept by the digest of their
+content, *cells* swapped by version (a lease, the published identity),
+*pointers* naming an object the repository already holds
+(`candidates/<mutation>`, `revisions/<rev>`), *families* received from
+and shared with a remote, the *signer* of a row, and the `dna.*`
+settings. `GitRecord` is the one implementation over git plumbing —
+the only file in the core and the host that spells `git` for the
+record; the genome's own git in `workspace.hl`, `verification.hl`,
+`org.hl` and the host's `genome.hl` is the Structure, not the record.
+`MemRecord` is the one for fixtures. `hale dna init` and `upgrade` seed
+the record through the host (`record-seed`, `design-upgrade`): the
+driver keeps no record code of its own.
+
+Every external dependency of the DNA is declared the same way, one
+interface in the core with one implementation over the real thing and
+one in memory: `Infrastructure` (a body's database, supervisor and
+credentials; GH #647) and `Transport` (how a head reaches a body) in
+`infrastructure.hl`, `Forge` (a code-review host; GH #648) in
+`forge.hl`. Their memory implementations exist; the host still drives
+compose, systemd, ssh and `gh` directly until each is moved behind its
+interface.
 
 ## The organization
 

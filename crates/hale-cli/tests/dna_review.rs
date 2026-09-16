@@ -163,6 +163,20 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
     }
     let (ok4, out4) = hale(&["dna", "history", "m1"], &app);
     finish(&mut host);
+    // #649: the candidate is kept under the mutation's name whatever
+    // happens to its worktree — listed, shown as a diff, and dropped by a row
+    let kept = Command::new("git").args(["rev-parse", "-q", "--verify", "refs/dna/candidates/m1"]).current_dir(&app).output().unwrap();
+    assert!(kept.status.success(), "the candidate is pointed at under refs/dna/candidates/m1");
+    let (ok5, out5) = hale(&["dna", "candidates"], &app);
+    assert!(ok5 && out5.contains("m1") && out5.contains("review m1 settled"), "candidates:\n{out5}");
+    let (ok6, out6) = hale(&["dna", "candidates", "m1"], &app);
+    assert!(ok6 && out6.contains("candidate m1 at") && out6.contains("diff ("), "one candidate as a diff:\n{out6}");
+    let (ok7, out7) = hale(&["dna", "candidates", "drop", "m1", "--why", "reviewed and applied; the diff is in the genome", "--as", "riley"], &app);
+    assert!(ok7 && out7.contains("candidate m1 dropped by riley"), "drop:\n{out7}");
+    let gone = Command::new("git").args(["rev-parse", "-q", "--verify", "refs/dna/candidates/m1"]).current_dir(&app).output().unwrap();
+    assert!(!gone.status.success(), "dropped: no longer pointed at");
+    let (ok8, out8) = hale(&["dna", "history", "m1"], &app);
+    assert!(ok8 && out8.contains("candidate.dropped"), "the drop is a row:\n{out8}");
     assert!(ok1 && out1.contains("refused the verdict: digest mismatch"), "wrong digest:\n{out1}");
     assert!(ok2 && out2.contains("review m1 settled: approve by riley"), "settle:\n{out2}");
     // approval applies (D5): the mutation is past `reviewed` by the time the status is read

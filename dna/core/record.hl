@@ -1,0 +1,1059 @@
+// dna/core/record.hl — the record's own API (GH #646 stage 0, #649).
+//
+// The record is the organism's evolutionary memory: chains of rows,
+// content-addressed bodies, compare-and-swap cells, named pointers, and a
+// remote the chains are published to and received from. `Record` is the
+// one boundary the core's `GitJournal`, `GitReceipts` and `GitLeases` and
+// the host's sync, reconcile, body lease and exchange mailboxes all stand
+// on, with a vocabulary that never names the tool. `GitRecord` is the one
+// implementation over git plumbing — the only file in the core and the
+// host that spells `git` for the record — and `MemRecord` is the one for
+// fixtures. The genome's own git (`workspace.hl`, `verification.hl`,
+// `org.hl`) is the Structure, not the record, and stays where it is.
+//
+// Vocabulary:
+// - a CHAIN is an ordered list of rows under a name (`journal` is the
+//   record; `exchange/<identity>` a mailbox; `remote/journal` what the
+//   remote held at the last receive). A row's id is its position's
+//   durable identity — in git, the commit.
+// - a BODY is text kept under the digest of its content (a receipt).
+// - a CELL is a small value swapped under compare-and-swap (a lease, the
+//   published identity); its version is what a swap expects.
+// - a POINTER names an object the repository already holds (a candidate,
+//   a revision) so it survives whatever collects the rest.
+// - a FAMILY names what a transfer carries: `journal`, `receipts`,
+//   `exchange`, `exchange/<id>`, `candidates`, `revisions/<rev>`,
+//   `lease/body`, `identity`, `peer/identity`; several at once
+//   comma-separated.
+
+type Row {
+    seq: Int = 0;
+    kind: String = "";
+    entity: String = "";
+    body: String = "";
+    author: String = "";
+    id: String = ""; // the row's durable identity once appended ("" before)
+}
+
+// F.7: interface methods cannot be `fallible(E)`; results carry their failure.
+type Appended {
+    ok: Bool = false;
+    id: String = "";
+    error: String = ""; // "stale" (the chain moved past `at`) | "io: <why>"
+}
+
+type Kept {
+    present: Bool = false;
+    text: String = "";
+}
+
+type Cell {
+    present: Bool = false;
+    text: String = "";
+    version: String = ""; // what a swap must expect; "" when absent
+}
+
+type Transfer {
+    ok: Bool = false;
+    absent: Bool = false; // the remote holds nothing under the family (not an error)
+    why: String = "";
+}
+
+type Signer {
+    signed: Bool = false; // the row carries a signature at all
+    verified: Bool = false; // and the record's trust accepts it
+    key: String = ""; // the verified key, "" when unverified
+}
+
+interface Record {
+    fn kind() -> String;
+    // ---- the record itself
+    fn is_repository() -> Bool;
+    fn root() -> String;
+    // The record's identity: its first row's id, the same in every clone.
+    fn identity() -> String;
+    // ---- chains
+    fn head(chain: String) -> String;
+    fn count(chain: String) -> Int;
+    // The rows at `id` as the record's own line format (one JSON object
+    // per line, newline-terminated; "" for no id).
+    fn text_at(id: String) -> String;
+    // Every row id of the chain, oldest first, newline-terminated.
+    fn ids(chain: String) -> String;
+    // The row an id was appended as.
+    fn row_of(id: String) -> Row;
+    // The ids after `from` up to and including `to`, oldest first.
+    fn between(from: String, to: String) -> String;
+    fn precedes(a: String, b: String) -> Bool;
+    // One row on top of `at`, moving `chain` there under compare-and-swap:
+    // `stale` when the chain is no longer at `at` ("" = empty). `sign`
+    // signs the row as this record's writer; `note` is kept with it.
+    fn append(chain: String, at: String, row: Row, sign: Bool, note: String) -> Appended;
+    // The same row built beside every chain and moving none: a reconcile
+    // builds a whole chain and swaps once (GH #603). The id, "" on failure.
+    fn build(at: String, row: Row, sign: Bool, note: String) -> String;
+    // Move a chain to `id` if it is at `expected` ("" = must not exist,
+    // "*" = wherever it is).
+    fn move_chain(chain: String, id: String, expected: String) -> Bool;
+    fn drop_chain(chain: String) -> Bool;
+    // ---- bodies
+    fn keep(text: String) -> String;
+    fn body(digest: String) -> Kept;
+    fn forget(digest: String) -> Bool;
+    // ---- cells
+    fn cell(key: String) -> Cell;
+    fn swap(key: String, text: String, expected: String) -> Bool;
+    fn drop_cell(key: String) -> Bool;
+    // ---- pointers
+    fn point(name: String, id: String) -> Bool;
+    fn pointer(name: String) -> String;
+    // Every pointer under `prefix`, one name per line.
+    fn pointers(prefix: String) -> String;
+    fn unpoint(name: String) -> Bool;
+    // ---- the remote
+    fn remote() -> String;
+    fn remote_url(name: String) -> String;
+    fn receive(remote: String, what: String) -> Transfer;
+    // `expected`: "" publishes plainly; "force" overwrites; "new" requires
+    // the remote to hold nothing; anything else is the version the remote
+    // must still be at (compare-and-swap at the remote).
+    fn share(remote: String, what: String, expected: String) -> Transfer;
+    fn withdraw(remote: String, what: String) -> Transfer;
+    // The id the remote holds under a single-ref family, "" for none.
+    fn remote_has(remote: String, what: String) -> String;
+    // A private store of this record's own at `path` (a peer cache):
+    // made when absent, and proven to be one before anything is received
+    // into it.
+    fn private_store(path: String) -> Bool;
+    // ---- provenance (#639)
+    fn signer(id: String) -> Signer;
+    // The key this record signs with, "" when it cannot sign.
+    fn own_key() -> String;
+    // ---- settings the record carries (`dna.*`)
+    fn setting(name: String) -> String;
+    fn set_setting(name: String, value: String) -> Bool;
+    fn unset_setting(name: String) -> Bool;
+    fn why() -> String;
+}
+
+// ---- the line format ---------------------------------------------------
+
+fn row_line(seq: Int, row: Row, author: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.int_field("seq", seq);
+    b.string_field("kind", row.kind);
+    b.string_field("entity", row.entity);
+    b.string_field("body", row.body);
+    b.string_field("author", author);
+    b.end_object();
+    return b.result() + "\n";
+}
+
+fn parse_row(line: String, id: String) -> Row {
+    return Row {
+        seq: std::json::find_int_field(line, "seq"),
+        kind: std::json::find_string_field(line, "kind"),
+        entity: std::json::find_string_field(line, "entity"),
+        body: std::json::find_string_field(line, "body"),
+        author: std::json::find_string_field(line, "author"),
+        id: id
+    };
+}
+
+// The last non-empty line of a text.
+fn last_line(text: String) -> String {
+    let mut rest = text;
+    let mut last = "";
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        if len(trim_nl(line)) > 0 { last = line; }
+        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+    }
+    return last;
+}
+
+fn count_lines(text: String) -> Int {
+    let mut rest = text;
+    let mut n = 0;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        if len(trim_nl(line)) > 0 { n = n + 1; }
+        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+    }
+    return n;
+}
+
+// The k-th line (0-based) of a newline-separated list, "" past the end.
+fn line_at(list: String, k: Int) -> String {
+    let mut rest = list;
+    let mut i = 0;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        if i == k { return line; }
+        i = i + 1;
+        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+    }
+    return "";
+}
+
+fn hex_digest(text: String) -> String {
+    return hex(std::crypto::sha256(std::bytes::from_string(text)));
+}
+
+// ---- in memory -----------------------------------------------------------
+
+type MemRow {
+    chain: String = ""; // "" while built beside every chain
+    parent: String = "";
+    row: Row = Row { };
+}
+
+@form(vec)
+locus MemRows {
+    capacity { heap rows of MemRow; }
+}
+
+type MemBody { digest: String = ""; text: String = ""; }
+
+@form(hashmap)
+locus MemBodies {
+    capacity { pool rows of MemBody indexed_by digest; }
+}
+
+type MemCell { key: String = ""; text: String = ""; version: String = ""; }
+
+@form(hashmap)
+locus MemCells {
+    capacity { pool rows of MemCell indexed_by key; }
+}
+
+type MemPointer { name: String = ""; id: String = ""; }
+
+@form(hashmap)
+locus MemPointers {
+    capacity { pool rows of MemPointer indexed_by name; }
+}
+
+type MemSetting { name: String = ""; value: String = ""; }
+
+@form(hashmap)
+locus MemSettings {
+    capacity { pool rows of MemSetting indexed_by name; }
+}
+
+// The record in memory: every chain, body, cell and pointer for the life
+// of the process; transfers succeed and carry nothing (there is no
+// remote); nothing is signed.
+locus MemRecord {
+    params {
+        rows: MemRows = MemRows { };
+        bodies: MemBodies = MemBodies { };
+        cells: MemCells = MemCells { };
+        marks: MemPointers = MemPointers { };
+        settings: MemSettings = MemSettings { };
+        next_version: Int = 1;
+        next_id: Int = 1;
+        last_error: String = "";
+    }
+    fn kind() -> String { return "memory"; }
+    fn why() -> String { return self.last_error; }
+    fn is_repository() -> Bool { return true; }
+    fn root() -> String { return "."; }
+    fn identity() -> String { return self.first_id("journal"); }
+    @unbounded
+    fn first_id(chain: String) -> String {
+        let mut i = 0;
+        while i < self.rows.len() {
+            let r = self.rows.get(i) or MemRow { };
+            if r.chain == chain { return r.row.id; }
+            i = i + 1;
+        }
+        return "";
+    }
+    @unbounded
+    fn head(chain: String) -> String {
+        let mut last = "";
+        let mut i = 0;
+        while i < self.rows.len() {
+            let r = self.rows.get(i) or MemRow { };
+            if r.chain == chain { last = r.row.id; }
+            i = i + 1;
+        }
+        return last;
+    }
+    @unbounded
+    fn count(chain: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.rows.len() {
+            let r = self.rows.get(i) or MemRow { };
+            if r.chain == chain { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    // The chain an id belongs to ("" when unknown).
+    @unbounded
+    fn chain_of(id: String) -> String {
+        let mut i = 0;
+        while i < self.rows.len() {
+            let r = self.rows.get(i) or MemRow { };
+            if r.row.id == id { return r.chain; }
+            i = i + 1;
+        }
+        return "";
+    }
+    // The rows from the first up to and including `id`, following parents.
+    @unbounded
+    fn text_at(id: String) -> String {
+        if len(id) == 0 { return ""; }
+        let mut out = "";
+        let mut cur = id;
+        while len(cur) > 0 {
+            let r = self.row_at(cur);
+            if len(r.row.id) == 0 { break; }
+            out = row_line(r.row.seq, r.row, r.row.author) + out;
+            cur = r.parent;
+        }
+        return out;
+    }
+    @unbounded
+    fn ids(chain: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.rows.len() {
+            let r = self.rows.get(i) or MemRow { };
+            if r.chain == chain { out = out + r.row.id + "\n"; }
+            i = i + 1;
+        }
+        return out;
+    }
+    @unbounded
+    fn row_of(id: String) -> Row {
+        let mut i = 0;
+        while i < self.rows.len() {
+            let r = self.rows.get(i) or MemRow { };
+            if r.row.id == id { return r.row; }
+            i = i + 1;
+        }
+        return Row { };
+    }
+    @unbounded
+    fn between(from: String, to: String) -> String {
+        let chain = self.chain_of(to);
+        let mut out = "";
+        let mut after = len(from) == 0;
+        let mut i = 0;
+        while i < self.rows.len() {
+            let r = self.rows.get(i) or MemRow { };
+            if r.chain == chain {
+                if after { out = out + r.row.id + "\n"; }
+                if r.row.id == from { after = true; }
+                if r.row.id == to { return out; }
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+    fn precedes(a: String, b: String) -> Bool {
+        if a == b { return true; }
+        let ids = self.ids(self.chain_of(b));
+        let ia = std::str::index_of(ids, a);
+        let ib = std::str::index_of(ids, b);
+        return ia >= 0 && ib >= 0 && ia < ib;
+    }
+    fn append(chain: String, at: String, row: Row, sign: Bool, note: String) -> Appended {
+        if self.head(chain) != at { return Appended { error: "stale" }; }
+        let id = "mem" + to_string(self.next_id);
+        self.next_id = self.next_id + 1;
+        let author = if len(row.author) > 0 { row.author } else { "host" };
+        self.rows.push(MemRow { chain: chain, parent: at, row: Row { seq: self.count(chain), kind: row.kind, entity: row.entity, body: row.body, author: author, id: id } });
+        return Appended { ok: true, id: id };
+    }
+    // The number of rows from the first up to and including `id` on its
+    // chain, following parents: the seq a built row gets.
+    @unbounded
+    fn depth(id: String) -> Int {
+        let mut n = 0;
+        let mut cur = id;
+        while len(cur) > 0 {
+            n = n + 1;
+            let mut i = 0;
+            let mut parent = "";
+            while i < self.rows.len() {
+                let r = self.rows.get(i) or MemRow { };
+                if r.row.id == cur { parent = r.parent; }
+                i = i + 1;
+            }
+            cur = parent;
+        }
+        return n;
+    }
+    // A row beside every chain: kept with its parent and no chain until a
+    // swap attaches it.
+    fn build(at: String, row: Row, sign: Bool, note: String) -> String {
+        let id = "mem" + to_string(self.next_id);
+        self.next_id = self.next_id + 1;
+        let author = if len(row.author) > 0 { row.author } else { "host" };
+        self.rows.push(MemRow { chain: "", parent: at, row: Row { seq: self.depth(at), kind: row.kind, entity: row.entity, body: row.body, author: author, id: id } });
+        return id;
+    }
+    // Move a chain to `id`: rows built beside it back to the row where
+    // they branch off join the chain, and the rows after that point that
+    // were the chain's leave it (unreachable, as git's would be).
+    @unbounded
+    fn move_chain(chain: String, id: String, expected: String) -> Bool {
+        let cur = self.head(chain);
+        if expected != "*" && cur != expected { return false; }
+        if len(id) == 0 || self.chain_of(id) == chain { return true; }
+        // the path from `id` back to the chain (or to the root)
+        let mut path = "\n";
+        let mut walk = id;
+        let mut joins = "";
+        while len(walk) > 0 {
+            let r = self.row_at(walk);
+            if r.chain == chain { joins = walk; break; }
+            path = path + walk + "\n";
+            walk = r.parent;
+        }
+        // rows of the chain after the join point leave it
+        let mut i = 0;
+        let mut after = len(joins) == 0;
+        while i < self.rows.len() {
+            let r = self.rows.get(i) or MemRow { };
+            if r.chain == chain {
+                if after { self.rows.set(i, MemRow { chain: "orphan", parent: r.parent, row: r.row }) or discard; }
+                if r.row.id == joins { after = true; }
+            }
+            i = i + 1;
+        }
+        // the built rows join, in order (the path was walked newest first)
+        i = 0;
+        while i < self.rows.len() {
+            let r = self.rows.get(i) or MemRow { };
+            if len(r.chain) == 0 && std::str::contains(path, "\n" + r.row.id + "\n") { self.rows.set(i, MemRow { chain: chain, parent: r.parent, row: r.row }) or discard; }
+            i = i + 1;
+        }
+        return true;
+    }
+    @unbounded
+    fn row_at(id: String) -> MemRow {
+        let mut i = 0;
+        while i < self.rows.len() {
+            let r = self.rows.get(i) or MemRow { };
+            if r.row.id == id { return r; }
+            i = i + 1;
+        }
+        return MemRow { };
+    }
+    @unbounded
+    fn drop_chain(chain: String) -> Bool {
+        let mut keep = MemRows { };
+        let mut i = 0;
+        while i < self.rows.len() {
+            let r = self.rows.get(i) or MemRow { };
+            if r.chain != chain { keep.push(r); }
+            i = i + 1;
+        }
+        while self.rows.len() > 0 { let gone = self.rows.pop() or MemRow { }; }
+        i = 0;
+        while i < keep.len() {
+            self.rows.push(keep.get(i) or MemRow { });
+            i = i + 1;
+        }
+        return true;
+    }
+    fn keep(text: String) -> String {
+        let digest = hex_digest(text);
+        self.bodies.set(MemBody { digest: digest, text: text });
+        return digest;
+    }
+    fn body(digest: String) -> Kept {
+        let b = self.bodies.get(digest) or MemBody { };
+        return Kept { present: len(b.digest) > 0, text: b.text };
+    }
+    fn forget(digest: String) -> Bool {
+        self.bodies.remove(digest) or discard;
+        return true;
+    }
+    fn cell(key: String) -> Cell {
+        let c = self.cells.get(key) or MemCell { };
+        return Cell { present: len(c.key) > 0, text: c.text, version: c.version };
+    }
+    fn swap(key: String, text: String, expected: String) -> Bool {
+        let cur = self.cells.get(key) or MemCell { };
+        if expected != "*" && cur.version != expected { return false; }
+        self.cells.set(MemCell { key: key, text: text, version: "v" + to_string(self.next_version) });
+        self.next_version = self.next_version + 1;
+        return true;
+    }
+    fn drop_cell(key: String) -> Bool {
+        self.cells.remove(key) or discard;
+        return true;
+    }
+    fn point(name: String, id: String) -> Bool {
+        self.marks.set(MemPointer { name: name, id: id });
+        return true;
+    }
+    fn pointer(name: String) -> String {
+        let p = self.marks.get(name) or MemPointer { };
+        return p.id;
+    }
+    fn pointers(prefix: String) -> String {
+        // a hashmap form walks nothing in order; fixtures ask for the
+        // pointers they set
+        return "";
+    }
+    fn unpoint(name: String) -> Bool {
+        self.marks.remove(name) or discard;
+        return true;
+    }
+    fn remote() -> String { return ""; }
+    fn remote_url(name: String) -> String { return ""; }
+    fn receive(remote: String, what: String) -> Transfer { return Transfer { ok: true, absent: true }; }
+    fn share(remote: String, what: String, expected: String) -> Transfer { return Transfer { ok: true }; }
+    fn withdraw(remote: String, what: String) -> Transfer { return Transfer { ok: true }; }
+    fn remote_has(remote: String, what: String) -> String { return ""; }
+    fn private_store(path: String) -> Bool { return true; }
+    fn signer(id: String) -> Signer { return Signer { }; }
+    fn own_key() -> String { return ""; }
+    fn setting(name: String) -> String {
+        let s = self.settings.get(name) or MemSetting { };
+        return s.value;
+    }
+    fn set_setting(name: String, value: String) -> Bool {
+        self.settings.set(MemSetting { name: name, value: value });
+        return true;
+    }
+    fn unset_setting(name: String) -> Bool {
+        self.settings.remove(name) or discard;
+        return true;
+    }
+}
+
+// ---- over git plumbing ---------------------------------------------------
+//
+// `refs/dna/journal` is the record: one commit per row, the rows as
+// `journal.jsonl` in the commit's tree, the commit DAG as the chain (a
+// row's id IS its commit). A body is a blob under
+// `refs/dna/receipts/<sha256>`, a cell a blob under `refs/dna/<key>`
+// (its version the blob), a pointer a ref under `refs/dna/<name>`.
+// Every chain, cell and pointer is compare-and-swapped on its ref.
+// Every operation is a subprocess (no FFI in the core); the index a
+// tree is built through is a private file under `.hale/dna/`, named per
+// process, so two writers in one repository never share one.
+
+const NO_OBJECT: String = "0000000000000000000000000000000000000000";
+
+locus GitRecord {
+    params {
+        repo: String = ".";
+        last_error: String = "";
+        own: String = "";
+        own_known: Bool = false;
+    }
+    fn kind() -> String { return "git"; }
+    fn why() -> String { return self.last_error; }
+    fn ref_of(name: String) -> String { return "refs/dna/" + name; }
+    fn scratch() -> String { return self.repo + "/.hale/dna"; }
+    fn tmp(what: String) -> String { return self.scratch() + "/" + what + "." + to_string(std::process::pid()) + ".tmp"; }
+    fn make_scratch() {
+        std::io::fs::mkdir(self.repo + "/.hale") or discard;
+        std::io::fs::mkdir(self.scratch()) or discard;
+    }
+    // `git -C <repo> <args…>`; argv newline-separated. A call that crosses
+    // the network is bounded by HALE_DNA_GIT_TIMEOUT when set, and never
+    // past the deadline the body fence last proved (`body.deadline`), so a
+    // renewal of several bounded calls cannot outlast the lease together
+    // (the second and third reviews of #622). A local read is never cut
+    // off: cut off at the deadline it would look like no record at all.
+    fn git(args: String) -> RunResult {
+        let nl = std::str::index_of(args, "\n");
+        let sub = if nl < 0 { args } else { args[0..nl] };
+        let t = std::env::var("HALE_DNA_GIT_TIMEOUT");
+        if len(t) > 0 && (sub == "fetch" || sub == "push" || sub == "ls-remote") {
+            let mut secs = std::str::parse_int(t) or 8;
+            let deadline = std::str::parse_int(trim_nl(std::io::fs::read_file(self.scratch() + "/body.deadline") or "")) or 0;
+            if deadline > 0 {
+                let left = deadline - std::time::now();
+                if left <= 0 { return RunResult { code: 124, stdout: "", stderr: "the body lease's deadline has passed; no more transfers are tried" }; }
+                if left < secs { secs = left; }
+            }
+            return run_tool("timeout\n" + to_string(secs) + "\ngit\n-C\n" + self.repo + "\n" + args);
+        }
+        return run_tool("git\n-C\n" + self.repo + "\n" + args);
+    }
+    fn git_ok(args: String) -> Bool { return self.git(args).code == 0; }
+    fn git_out(args: String) -> String {
+        let r = self.git(args);
+        if r.code != 0 { return ""; }
+        return trim_nl(r.stdout);
+    }
+    fn is_repository() -> Bool { return self.git_ok("rev-parse\n--git-dir"); }
+    fn root() -> String { return self.git_out("rev-parse\n--show-toplevel"); }
+    fn identity() -> String { return self.git_out("rev-list\n--max-parents=0\n" + self.ref_of("journal")); }
+    // ---- chains
+    fn head(chain: String) -> String { return self.git_out("rev-parse\n-q\n--verify\n" + self.ref_of(chain)); }
+    fn count(chain: String) -> Int {
+        if len(self.head(chain)) == 0 { return 0; }
+        return std::str::parse_int(self.git_out("rev-list\n--count\n" + self.ref_of(chain))) or 0;
+    }
+    fn text_at(id: String) -> String {
+        if len(id) == 0 { return ""; }
+        let t = self.git_out("show\n" + id + ":journal.jsonl");
+        return if len(t) == 0 { "" } else { t + "\n" };
+    }
+    fn ids(chain: String) -> String {
+        if len(self.head(chain)) == 0 { return ""; }
+        return self.git_out("rev-list\n--reverse\n" + self.ref_of(chain)) + "\n";
+    }
+    fn row_of(id: String) -> Row { return parse_row(last_line(self.text_at(id)), id); }
+    fn between(from: String, to: String) -> String {
+        if len(to) == 0 { return ""; }
+        let range = if len(from) == 0 { to } else { from + ".." + to };
+        let out = self.git_out("rev-list\n--reverse\n" + range);
+        return if len(out) == 0 { "" } else { out + "\n" };
+    }
+    fn precedes(a: String, b: String) -> Bool { return self.git_ok("merge-base\n--is-ancestor\n" + a + "\n" + b); }
+    fn append(chain: String, at: String, row: Row, sign: Bool, note: String) -> Appended {
+        if self.head(chain) != at { return Appended { error: "stale" }; }
+        let id = self.build(at, row, sign, note);
+        if len(id) == 0 { return Appended { error: "io: " + self.last_error }; }
+        if self.move_chain(chain, id, at) { return Appended { ok: true, id: id }; }
+        return Appended { error: "stale" };
+    }
+    // One commit for `journal.jsonl` + the row's line on top of `at`.
+    // Touches no ref. Under a signing writer the commit is signed (GH #604
+    // rule 6); `note` becomes the message's body.
+    @unbounded
+    fn build(at: String, row: Row, sign: Bool, note: String) -> String {
+        self.make_scratch();
+        let tmp = self.tmp("journal");
+        let idx = self.tmp("index");
+        let text = self.text_at(at);
+        let user = self.git_out("config\nuser.name");
+        let who = if len(row.author) > 0 { row.author } else { if len(user) > 0 { user } else { "host" } };
+        let identity = if len(user) == 0 { "-c\nuser.name=" + who + "\n-c\nuser.email=" + who + "@dna\n" } else { "" };
+        std::io::fs::write_file(tmp, text + row_line(count_lines(text), row, who)) or self.io_failed(err);
+        let blob = self.git_out("hash-object\n-w\n" + tmp);
+        if len(blob) == 0 { self.last_error = "the row could not be stored"; return ""; }
+        std::io::fs::unlink(idx) or discard;
+        let withidx = "env\nGIT_INDEX_FILE=" + idx + "\ngit\n-C\n" + self.repo + "\n";
+        let rt = run_tool(withidx + (if len(at) > 0 { "read-tree\n" + at } else { "read-tree\n--empty" }));
+        if rt.code != 0 { self.last_error = "read-tree: " + trim_nl(rt.stderr); return ""; }
+        let ui = run_tool(withidx + "update-index\n--add\n--cacheinfo\n100644," + blob + ",journal.jsonl");
+        if ui.code != 0 { self.last_error = "update-index: " + trim_nl(ui.stderr); return ""; }
+        let wt = run_tool(withidx + "write-tree");
+        if wt.code != 0 { self.last_error = "write-tree: " + trim_nl(wt.stderr); return ""; }
+        let tree = trim_nl(wt.stdout);
+        let parent = if len(at) > 0 { "-p\n" + at + "\n" } else { "" };
+        let signed = if sign { "-S\n" } else { "" };
+        // argv is newline-separated: the note is its own paragraph
+        let message = "-m\n" + row.kind + " " + row.entity + (if len(note) > 0 { "\n-m\n" + note } else { "" });
+        let ct = self.git(identity + "commit-tree\n" + tree + "\n" + parent + signed + message);
+        std::io::fs::unlink(tmp) or discard;
+        std::io::fs::unlink(idx) or discard;
+        if ct.code != 0 { self.last_error = "commit-tree: " + trim_nl(ct.stderr); return ""; }
+        return trim_nl(ct.stdout);
+    }
+    fn io_failed(e: IoError) { self.last_error = e.kind; }
+    fn move_chain(chain: String, id: String, expected: String) -> Bool {
+        let old = if expected == "*" { "" } else { if len(expected) == 0 { NO_OBJECT } else { expected } };
+        return self.git_ok("update-ref\n" + self.ref_of(chain) + "\n" + id + (if len(old) > 0 { "\n" + old } else { "" }));
+    }
+    fn drop_chain(chain: String) -> Bool { return self.git_ok("update-ref\n-d\n" + self.ref_of(chain)); }
+    // ---- bodies: blobs under refs/dna/receipts/<sha256>, never collected
+    fn keep(text: String) -> String {
+        let digest = hex_digest(text);
+        let ref = self.ref_of("receipts/" + digest);
+        if len(self.git_out("rev-parse\n-q\n--verify\n" + ref)) > 0 { return digest; }
+        self.make_scratch();
+        let tmp = self.tmp("receipt");
+        std::io::fs::write_file(tmp, text) or self.io_failed(err);
+        let blob = self.git_out("hash-object\n-w\n" + tmp);
+        std::io::fs::unlink(tmp) or discard;
+        if len(blob) == 0 { return ""; }
+        if !self.git_ok("update-ref\n" + ref + "\n" + blob) { return ""; }
+        return digest;
+    }
+    fn body(digest: String) -> Kept {
+        let r = self.git("cat-file\n-p\n" + self.ref_of("receipts/" + digest));
+        if r.code != 0 { return Kept { }; }
+        return Kept { present: true, text: r.stdout };
+    }
+    // The ref goes; the blob stays in the object store until git
+    // collects it, and a clone that fetched it keeps a copy until it
+    // syncs (sync withdraws the refs of redacted receipts).
+    fn forget(digest: String) -> Bool {
+        let ref = self.ref_of("receipts/" + digest);
+        let d = self.git("update-ref\n-d\n" + ref);
+        return len(self.git_out("rev-parse\n-q\n--verify\n" + ref)) == 0;
+    }
+    // ---- cells: a blob under refs/dna/<key>, its version the blob
+    fn cell(key: String) -> Cell {
+        let sha = self.git_out("rev-parse\n-q\n--verify\n" + self.ref_of(key));
+        if len(sha) == 0 { return Cell { }; }
+        let r = self.git("cat-file\n-p\n" + sha);
+        if r.code != 0 { return Cell { }; }
+        return Cell { present: true, text: r.stdout, version: sha };
+    }
+    fn swap(key: String, text: String, expected: String) -> Bool {
+        self.make_scratch();
+        let tmp = self.tmp("cell");
+        std::io::fs::write_file(tmp, text) or self.io_failed(err);
+        let blob = self.git_out("hash-object\n-w\n" + tmp);
+        std::io::fs::unlink(tmp) or discard;
+        if len(blob) == 0 { return false; }
+        return self.move_chain(key, blob, expected);
+    }
+    fn drop_cell(key: String) -> Bool { return self.git_ok("update-ref\n-d\n" + self.ref_of(key)); }
+    // ---- pointers
+    fn point(name: String, id: String) -> Bool { return self.git_ok("update-ref\n" + self.ref_of(name) + "\n" + id); }
+    fn pointer(name: String) -> String { return self.git_out("rev-parse\n-q\n--verify\n" + self.ref_of(name)); }
+    fn pointers(prefix: String) -> String {
+        let out = self.git_out("for-each-ref\n--format=%(refname:lstrip=2)\n" + self.ref_of(prefix));
+        return if len(out) == 0 { "" } else { out + "\n" };
+    }
+    fn unpoint(name: String) -> Bool { return self.git_ok("update-ref\n-d\n" + self.ref_of(name)); }
+    // ---- the remote
+    // `dna.remote` in git config, or `origin`; "" when the repository has none.
+    fn remote() -> String {
+        let named = self.git_out("config\ndna.remote");
+        let name = if len(named) == 0 { "origin" } else { named };
+        if !self.git_ok("remote\nget-url\n" + name) { return ""; }
+        return name;
+    }
+    fn remote_url(name: String) -> String { return self.git_out("remote\nget-url\n" + name); }
+    // A family as it is fetched: `+<their ref(s)>:<our ref(s)>`.
+    fn fetch_spec(family: String) -> String {
+        if family == "journal" { return "+refs/dna/journal:refs/dna/remote/journal"; }
+        if family == "lease/body" { return "+refs/dna/lease/body:refs/dna/remote/lease/body"; }
+        if family == "peer/identity" { return "+refs/dna/identity:refs/dna/peer/identity"; }
+        if family == "receipts" || family == "exchange" || family == "candidates" || family == "revisions" { return "+refs/dna/" + family + "/*:refs/dna/" + family + "/*"; }
+        return "+refs/dna/" + family + ":refs/dna/" + family;
+    }
+    // A family as it is pushed: `<our ref(s)>:<their ref(s)>`.
+    fn push_spec(family: String) -> String {
+        if family == "receipts" || family == "exchange" || family == "candidates" || family == "revisions" { return "refs/dna/" + family + "/*:refs/dna/" + family + "/*"; }
+        return "refs/dna/" + family + ":refs/dna/" + family;
+    }
+    @unbounded
+    fn specs(what: String, push: Bool) -> String {
+        let mut out = "";
+        let mut rest = what;
+        while len(rest) > 0 {
+            let c = std::str::index_of(rest, ",");
+            let fam = if c < 0 { rest } else { rest[0..c] };
+            rest = if c < 0 { "" } else { rest[(c + 1)..len(rest)] };
+            if len(fam) == 0 { continue; }
+            out = out + "\n" + (if push { self.push_spec(fam) } else { self.fetch_spec(fam) });
+        }
+        return out;
+    }
+    fn receive(remote: String, what: String) -> Transfer {
+        let f = self.git("fetch\n-q\n" + remote + self.specs(what, false));
+        if f.code == 0 { return Transfer { ok: true }; }
+        // a remote with nothing under the family yet is not an error
+        if std::str::contains(f.stderr, "ouldn't find remote ref") { return Transfer { ok: false, absent: true, why: trim_nl(f.stderr) }; }
+        return Transfer { why: trim_nl(f.stderr) };
+    }
+    fn share(remote: String, what: String, expected: String) -> Transfer {
+        let mut opts = "";
+        if expected == "force" { opts = "\n-f"; }
+        else if expected == "new" { opts = "\n--force-with-lease=" + self.ref_of(what) + ":" + NO_OBJECT; }
+        else if len(expected) > 0 { opts = "\n--force-with-lease=" + self.ref_of(what) + ":" + expected; }
+        let p = self.git("push\n-q" + opts + "\n" + remote + self.specs(what, true));
+        if p.code == 0 { return Transfer { ok: true }; }
+        return Transfer { why: trim_nl(p.stderr) };
+    }
+    fn withdraw(remote: String, what: String) -> Transfer {
+        let p = self.git("push\n-q\n" + remote + "\n--delete\n" + self.ref_of(what));
+        if p.code == 0 { return Transfer { ok: true }; }
+        return Transfer { why: trim_nl(p.stderr) };
+    }
+    fn remote_has(remote: String, what: String) -> String {
+        let out = self.git_out("ls-remote\n" + remote + "\n" + self.ref_of(what));
+        let tab = std::str::index_of(out, "\t");
+        return if tab < 0 { "" } else { out[0..tab] };
+    }
+    // A bare repository of this record's own, proven to be one before
+    // anything is received into it, so a receive can never land in this
+    // project's repository.
+    fn private_store(path: String) -> Bool {
+        let there = GitRecord { repo: path };
+        if there.git_out("rev-parse\n--is-bare-repository") == "true" { return true; }
+        let i = run_tool("git\ninit\n-q\n--bare\n" + path);
+        if i.code != 0 { self.last_error = trim_nl(i.stderr); return false; }
+        return there.git_out("rev-parse\n--is-bare-repository") == "true";
+    }
+    // ---- provenance (#639)
+    // Whether the row's commit carries a signature, and whether git's own
+    // trust (its keyring or allowed-signers file) verifies it; the key it
+    // names when it does.
+    fn signer(id: String) -> Signer {
+        let raw = self.git("cat-file\n-p\n" + id);
+        if raw.code != 0 { return Signer { }; }
+        if !std::str::contains(raw.stdout, "\ngpgsig ") { return Signer { }; }
+        // gpg reports `GOODSIG <key> …`; ssh reports `Good "git" signature
+        // … with <type> key <fingerprint>` (and `No principal matched` for
+        // a key outside the allowed signers, still naming the key)
+        let v = self.git("verify-commit\n--raw\n" + id);
+        let status = v.stdout + "\n" + v.stderr;
+        let good = std::str::index_of(status, "GOODSIG ");
+        let ssh = std::str::index_of(status, " key ");
+        let at = if good >= 0 { good + 8 } else { if ssh >= 0 { ssh + 5 } else { -1 } };
+        if at < 0 { return Signer { signed: true, verified: v.code == 0 }; }
+        let rest = status[at..len(status)];
+        let mut end = std::str::index_of(rest, " ");
+        let nl = std::str::index_of(rest, "\n");
+        if end < 0 || (nl >= 0 && nl < end) { end = nl; }
+        return Signer { signed: true, verified: v.code == 0, key: if end < 0 { rest } else { rest[0..end] } };
+    }
+    // The key this record signs with: a throwaway signed commit no ref
+    // points at, read back the way any row is verified. Learned once.
+    fn own_key() -> String {
+        if self.own_known { return self.own; }
+        self.own_known = true;
+        let id = self.build("", Row { kind: "probe", entity: "own-key", author: "probe" }, true, "");
+        if len(id) == 0 { return ""; }
+        self.own = self.signer(id).key;
+        return self.own;
+    }
+    // ---- settings
+    fn setting(name: String) -> String { return trim_nl(self.git_out("config\ndna." + name)); }
+    fn set_setting(name: String, value: String) -> Bool { return self.git_ok("config\ndna." + name + "\n" + value); }
+    fn unset_setting(name: String) -> Bool { return self.git_ok("config\n--unset\ndna." + name); }
+}
+
+// ---- the record as the core's storage interfaces see it -------------------
+
+// `Journal` over the record's `journal` chain: one row per commit, the
+// commit DAG as the chain (an event's digest IS its commit; `prev` is
+// the parent). Git holds the history of the genome; this chain holds the
+// minutes of the organization, and every clone that fetches
+// `refs/dna/*` has both.
+locus GitJournal {
+    params {
+        repo: String = ".";
+        ref_name: String = "refs/dna/journal";
+        author: String = "dna"; // the identity on the organism's own events
+        record: GitRecord = GitRecord { };
+        rows: EventRows = EventRows { };
+        text: String = ""; // journal.jsonl as of `head_sha`
+        head_sha: String = "";
+        root_sha: String = ""; // the first commit: the record's identity (GH #613)
+        loaded: Int = 0;
+        retries: Int = 0; // appends that lost a CAS race and re-appended at the new tail
+        io_errors: Int = 0;
+        last_error: String = "";
+    }
+    birth() {
+        self.record.repo = self.repo;
+        self.load();
+    }
+    fn chain() -> String {
+        if std::str::starts_with(self.ref_name, "refs/dna/") { return self.ref_name[9..len(self.ref_name)]; }
+        return self.ref_name;
+    }
+    fn scratch() -> String { return self.repo + "/.hale/dna"; }
+    // Rehydrate from the chain: the text is the events, the ids are the chain.
+    @effects(is: { journal_io })
+    fn load() {
+        while self.rows.len() > 0 { let gone = self.rows.pop() or Event { }; }
+        self.loaded = 0;
+        self.head_sha = self.record.head(self.chain());
+        if self.head_sha == "" { self.text = ""; self.root_sha = ""; return; }
+        self.text = self.record.text_at(self.head_sha);
+        let shas = self.record.ids(self.chain());
+        let first_nl = std::str::index_of(shas, "\n");
+        self.root_sha = if first_nl < 0 { shas } else { shas[0..first_nl] };
+        let mut rest = self.text;
+        let mut srest = shas;
+        let mut prev = "genesis";
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            let snl = std::str::index_of(srest, "\n");
+            let sha = if snl < 0 { srest } else { srest[0..snl] };
+            if len(line) > 0 {
+                self.rows.push(Event {
+                    seq: std::json::find_int_field(line, "seq"),
+                    kind: std::json::find_string_field(line, "kind"),
+                    entity: std::json::find_string_field(line, "entity"),
+                    body: std::json::find_string_field(line, "body"),
+                    prev: prev,
+                    digest: sha
+                });
+                self.loaded = self.loaded + 1;
+                prev = sha;
+            }
+            if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+            if snl < 0 { srest = ""; } else { srest = srest[(snl + 1)..len(srest)]; }
+        }
+    }
+    // Another writer (the CLI, a host) may have advanced the chain: reload
+    // when it moved. True when it had.
+    @effects(is: { journal_io })
+    fn refresh() -> Bool {
+        let now = self.record.head(self.chain());
+        if now == self.head_sha { return false; }
+        self.load();
+        return true;
+    }
+    fn revision() -> Int { return self.rows.len(); }
+    // The record's identity: the sha of its first commit, the same in
+    // every clone of the record and different for every record. Empty
+    // while the record has no rows. The knowledge store is scoped by it
+    // (GH #613).
+    fn genesis() -> String { return self.root_sha; }
+    fn head() -> String {
+        if self.head_sha == "" { return "genesis"; }
+        return self.head_sha;
+    }
+    fn read(i: Int) -> Event { return self.rows.get(i) or Event { }; }
+    // The chain is the record's: it still ends where we loaded it, and
+    // its row count is ours.
+    fn verify_chain() -> Bool {
+        let now = self.record.head(self.chain());
+        if now != self.head_sha { return false; }
+        if self.head_sha == "" { return self.rows.len() == 0; }
+        return self.record.count(self.chain()) == self.rows.len();
+    }
+    fn landed(a: Appended, kind: String, entity: String, body: String, line: String) -> AppendResult {
+        let seq = self.rows.len();
+        self.rows.push(Event { seq: seq, kind: kind, entity: entity, body: body, prev: self.head(), digest: a.id });
+        self.text = self.text + line;
+        self.head_sha = a.id;
+        return AppendResult { ok: true, revision: seq + 1 };
+    }
+    // One event = one commit. Compare-and-append: the in-process check
+    // against `expected`, then the record's compare-and-swap. A swap
+    // lost to another process reloads and, when the caller was appending
+    // at the tail, re-appends at the new tail (the intent "append after
+    // everything" is preserved; the seq moves). A lost race is not an
+    // error: it is retried until it lands, within a bound only a wedged
+    // repository reaches — three tries used to be the bound, a host
+    // reconciling beside a busy organism won every one, and the
+    // organism's own rows (an apply, a restart request) were dropped in
+    // silence (GH #603).
+    @effects(is: { journal_io })
+    fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        let rev = self.rows.len();
+        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        let mut attempt = 0;
+        while attempt < 200 {
+            let row = Row { kind: kind, entity: entity, body: body, author: self.author };
+            let a = self.record.append(self.chain(), self.head_sha, row, false, "");
+            if a.ok { return self.landed(a, kind, entity, body, row_line(self.rows.len(), row, self.author)); }
+            if std::str::starts_with(a.error, "io") {
+                self.io_errors = self.io_errors + 1;
+                self.last_error = a.error;
+                return AppendResult { error: "io", expected: expected, actual: self.rows.len() };
+            }
+            // the chain moved under us: reload and retry at the tail
+            self.retries = self.retries + 1;
+            self.load();
+            attempt = attempt + 1;
+        }
+        self.io_errors = self.io_errors + 1;
+        self.last_error = "append lost the ref race two hundred times";
+        return AppendResult { error: "io", expected: expected, actual: self.rows.len() };
+    }
+    // One compare-and-swap at `expected`: the chain read now, the row
+    // built on it, the swap refused if another writer moved the chain in
+    // between — and then stale, never retried at the tail.
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        let moved = self.refresh();
+        let seq = self.rows.len();
+        if expected != seq { return AppendResult { error: "stale_revision", expected: expected, actual: seq }; }
+        let row = Row { kind: kind, entity: entity, body: body, author: self.author };
+        let a = self.record.append(self.chain(), self.head_sha, row, false, "");
+        if a.ok { return self.landed(a, kind, entity, body, row_line(seq, row, self.author)); }
+        if std::str::starts_with(a.error, "io") {
+            self.io_errors = self.io_errors + 1;
+            self.last_error = a.error;
+            return AppendResult { error: "io", expected: expected, actual: seq };
+        }
+        self.retries = self.retries + 1;
+        self.load();
+        return AppendResult { error: "stale_revision", expected: expected, actual: self.rows.len() };
+    }
+}
+
+// `Receipts` as bodies of the record: fetched and pushed with it, never
+// garbage-collected.
+locus GitReceipts {
+    params { repo: String = "."; record: GitRecord = GitRecord { }; stored: Int = 0; }
+    birth() { self.record.repo = self.repo; }
+    fn kind() -> String { return "git"; }
+    @effects(is: { journal_io })
+    fn store(text: String) -> String {
+        let digest = self.record.keep(text);
+        if len(digest) > 0 { self.stored = self.stored + 1; }
+        return digest;
+    }
+    fn read(digest: String) -> String { return self.record.body(digest).text; }
+    fn erase(digest: String) -> Bool { return self.record.forget(digest); }
+}
+
+// `Coordination` as cells of the record, `lease/<key>`
+// ("holder\ntoken\nexpires\npresent"), compare-and-swapped: two organisms
+// or hosts on one repository fence each other through the record itself.
+locus GitLeases {
+    params { repo: String = "."; record: GitRecord = GitRecord { }; races: Int = 0; }
+    birth() { self.record.repo = self.repo; }
+    fn key_of(key: String) -> String { return "lease/" + ref_safe(key); }
+    fn parse(key: String, text: String) -> Lease {
+        if len(text) == 0 { return Lease { key: key }; }
+        let a = std::str::index_of(text, "\n");
+        let holder = text[0..a];
+        let rest = text[(a + 1)..len(text)];
+        let b = std::str::index_of(rest, "\n");
+        let token = std::str::parse_int(rest[0..b]) or 0;
+        let rest2 = rest[(b + 1)..len(rest)];
+        let c = std::str::index_of(rest2, "\n");
+        let expires = std::str::parse_int(rest2[0..c]) or 0;
+        let present = rest2[(c + 1)..len(rest2)] == "1";
+        return Lease { key: key, holder: holder, token: token, expires: expires, present: present };
+    }
+    fn read(key: String) -> Lease {
+        let c = self.record.cell(self.key_of(key));
+        if !c.present { return Lease { key: key }; }
+        return self.parse(key, c.text);
+    }
+    @effects(is: { journal_io })
+    fn write(key: String, l: Lease) -> Bool {
+        let cur = self.record.cell(self.key_of(key));
+        let text = l.holder + "\n" + to_string(l.token) + "\n" + to_string(l.expires) + "\n" + (if l.present { "1" } else { "0" });
+        if !self.record.swap(self.key_of(key), text, cur.version) { self.races = self.races + 1; return false; }
+        return true;
+    }
+    fn acquire(key: String, holder: String, now: Int, ttl: Int) -> Lease {
+        let cur = self.read(key);
+        if cur.present && cur.expires > now && cur.holder != holder {
+            return Lease { key: key, holder: cur.holder, token: 0, expires: cur.expires, present: false };
+        }
+        let l = Lease { key: key, holder: holder, token: cur.token + 1, expires: now + ttl, present: true };
+        if !self.write(key, l) {
+            let again = self.read(key);
+            return Lease { key: key, holder: again.holder, token: 0, expires: again.expires, present: false };
+        }
+        return l;
+    }
+    fn complete(key: String, token: Int, now: Int) -> Bool {
+        let cur = self.read(key);
+        if !cur.present { return false; }
+        if cur.token != token { return false; }
+        return self.write(key, Lease { key: key, holder: cur.holder, token: cur.token, expires: 0, present: false });
+    }
+    fn holder_of(key: String) -> String {
+        let cur = self.read(key);
+        if cur.present { return cur.holder; }
+        return "";
+    }
+    fn current(key: String) -> Lease { return self.read(key); }
+}

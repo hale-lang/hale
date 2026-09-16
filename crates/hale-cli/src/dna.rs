@@ -60,51 +60,71 @@ const PRACTICE_SOCK_REL: &str = ".hale/dna/hale-dna.practice.requested.sock";
 /// with the toolchain, the membrane client and the toolchain version
 /// in the environment. This shim resolves the project (the manifest is
 /// the compiler's) and forwards the exit status.
+/// The host's command for a verb: the project resolved, the host and
+/// the membrane client built once into the toolchain cache, the
+/// environment the host expects.
+fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
+    let (root, seed) = project(dir)?;
+    let seed_rel = seed.strip_prefix(&root).ok().map(|p| p.to_string_lossy().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| ".".into());
+    let (fleet, plan_rel) = match crate::pkg::read_dna_fleet(&root.join("hale.toml"))? {
+        Some((name, path)) => (name, path.strip_prefix(&root).unwrap_or(&path).to_string_lossy().to_string()),
+        None => (String::new(), String::new()),
+    };
+    let cache = hale_iris::materialize().map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
+    let host = crate::iris::ensure_built_in(&cache, hale_dna::HOST_SEED, hale_dna::HOST_BIN, "the host")?;
+    let membrane = crate::iris::ensure_built_in(&cache, hale_dna::MEMBRANE_SEED, hale_dna::MEMBRANE_BIN, "the membrane client")?;
+    // GH #583 K1: `dev` runs the knowledge service beside the
+    // organization; the binary is built here, once, like the others
+    let knowledge = if verb == "dev" {
+        crate::iris::ensure_built_in(&cache, hale_dna::KNOWLEDGE_SEED, hale_dna::KNOWLEDGE_BIN, "the knowledge service")?
+    } else {
+        PathBuf::new()
+    };
+    let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut cmd = Command::new(&host);
+    cmd.arg(verb)
+        .arg(&root)
+        .arg(&seed_rel)
+        .arg(&fleet)
+        .arg(&plan_rel)
+        .current_dir(&root)
+        .env("HALE_BIN", &me)
+        // GH #583: the genome a harness must never reach. The
+        // organization gets it from the host's child_envs, but a
+        // verb that runs a model itself — `hale dna models`, whose
+        // probe is its own process — is launched from here, and a
+        // confined harness with nothing to mask is refused rather
+        // than run, so the probe of a generated catalog failed
+        // outside `run`/`dev` (the review's second round, finding 2).
+        .env("HALE_DNA_GENOME", &root)
+        .env("HALE_DNA_MEMBRANE", &membrane)
+        .env("HALE_DNA_TOOLCHAIN", TOOLCHAIN)
+        .env("HALE_DNA_KNOWLEDGE_BIN", &knowledge);
+    Ok((cmd, root))
+}
+
+/// Run a host verb to completion and return what it printed; its
+/// complaint when it failed. For the verbs the driver itself needs
+/// (`init` seeding the record, `ui` syncing before it serves).
+fn host_run(verb: &str, dir: &Path, args: &[String]) -> Result<String, String> {
+    let (mut cmd, _) = host_command(verb, dir)?;
+    let out = cmd.args(args).output().map_err(|e| format!("hale dna {verb}: {e}"))?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() { format!("hale dna {verb} failed") } else { err });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
 fn host_exec(verb: &str, dir: &Path, args: &[String]) -> ExitCode {
     let run = || -> Result<i32, String> {
-        let (root, seed) = project(dir)?;
-        let seed_rel = seed.strip_prefix(&root).ok().map(|p| p.to_string_lossy().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| ".".into());
-        let (fleet, plan_rel) = match crate::pkg::read_dna_fleet(&root.join("hale.toml"))? {
-            Some((name, path)) => (name, path.strip_prefix(&root).unwrap_or(&path).to_string_lossy().to_string()),
-            None => (String::new(), String::new()),
-        };
-        let cache = hale_iris::materialize().map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
-        let host = crate::iris::ensure_built_in(&cache, hale_dna::HOST_SEED, hale_dna::HOST_BIN, "the host")?;
-        let membrane = crate::iris::ensure_built_in(&cache, hale_dna::MEMBRANE_SEED, hale_dna::MEMBRANE_BIN, "the membrane client")?;
-        // GH #583 K1: `dev` runs the knowledge service beside the
-        // organization; the binary is built here, once, like the others
-        let knowledge = if verb == "dev" {
-            crate::iris::ensure_built_in(&cache, hale_dna::KNOWLEDGE_SEED, hale_dna::KNOWLEDGE_BIN, "the knowledge service")?
-        } else {
-            PathBuf::new()
-        };
-        let me = std::env::current_exe().map_err(|e| e.to_string())?;
+        let (mut cmd, _) = host_command(verb, dir)?;
         // exec in place: the pid that ran `hale dna <verb>` IS the host,
         // so a signal to it — a supervisor's, a test's — reaches the host
         // rather than an orphaned child that keeps ticking (dozens of
         // `host node` processes survived their tests before this)
         use std::os::unix::process::CommandExt;
-        let e = Command::new(&host)
-            .arg(verb)
-            .arg(&root)
-            .arg(&seed_rel)
-            .arg(&fleet)
-            .arg(&plan_rel)
-            .args(args)
-            .current_dir(&root)
-            .env("HALE_BIN", &me)
-            // GH #583: the genome a harness must never reach. The
-            // organization gets it from the host's child_envs, but a
-            // verb that runs a model itself — `hale dna models`, whose
-            // probe is its own process — is launched from here, and a
-            // confined harness with nothing to mask is refused rather
-            // than run, so the probe of a generated catalog failed
-            // outside `run`/`dev` (the review's second round, finding 2).
-            .env("HALE_DNA_GENOME", &root)
-            .env("HALE_DNA_MEMBRANE", &membrane)
-            .env("HALE_DNA_TOOLCHAIN", TOOLCHAIN)
-            .env("HALE_DNA_KNOWLEDGE_BIN", &knowledge)
-            .exec();
+        let e = cmd.args(args).exec();
         Err(format!("hale dna {verb}: {e}"))
     };
     match run() {
@@ -259,6 +279,8 @@ pub fn run(args: &[String]) -> ExitCode {
             let (dir, rest) = project_arg(&args[1..], true);
             host_exec("sync", &dir, &rest)
         }
+        // #649: the candidates the record keeps, whatever the review decided
+        Some("candidates") => host_exec("candidates", Path::new("."), &args[1..]),
         Some("board") => {
             let (dir, rest) = project_arg(&args[1..], true);
             host_exec("board", &dir, &rest)
@@ -313,6 +335,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    offer intent over the membrane; prints the Task born or the refusal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
     eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");
+    eprintln!("       hale dna candidates [<mutation> | drop <mutation> --why <w>]");
+    eprintln!("                                    the candidates the record keeps, whatever the review decided; one as a diff; stop keeping one");
     eprintln!("       hale dna new <name> [--profile local|remote-body --remote <url> [--body <user@host>]]");
     eprintln!("                                    the profile sets the pieces (a remote, a body host); the combination is always detected");
     eprintln!("       hale dna profile [project]   the organism's combination, detected from its pieces: record, body, head, fleet, knowledge, trust");
@@ -600,13 +624,13 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
         out.push(format!("kept    {} (declares environments already)", manifest.display()));
     }
     // 7. the record, seeded from the artifact
-    if record_head(&app.root).is_some() {
+    if record_exists(&app.root)? {
         out.push(format!("kept    {RECORD_REF} (a record exists; not reseeded)"));
     } else {
         let n = seed_journal(&app.root, &app, &art, &raw, &purpose_digest)?;
         out.push(format!("seeded  {RECORD_REF} ({n} event(s): application.attached, structure.observed, responsibility.proposed, review.requested)"));
         // GH #596 C: the design, as proposals — one Review per practice
-        let d = seed_design(&app.root, None)?;
+        let (d, _, _) = design_upgrade(&app.root)?;
         out.push(format!("seeded  design ({d} practice(s) proposed, one Board Review each: `hale dna review` lists them under `design`)"));
     }
     // 8. .gitignore hygiene
@@ -689,8 +713,8 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             ORG_SEED
         ));
     }
-    if record_head(&root).is_some() {
-        let (proposed, superseded, waiting) = upgrade_design(&root)?;
+    if record_exists(&root)? {
+        let (proposed, superseded, waiting) = design_upgrade(&root)?;
         if proposed > 0 {
             out.push(format!("design  {proposed} practice(s) proposed ({superseded} superseding an earlier version); the Board decides each: `hale dna review`"));
         }
@@ -1128,156 +1152,6 @@ fn ensure_repo(root: &Path) -> Result<bool, String> {
     git(root, &["init", "-q", "-b", "main"]).map(|_| true)
 }
 
-fn record_head(root: &Path) -> Option<String> {
-    git(root, &["rev-parse", "-q", "--verify", RECORD_REF]).ok().filter(|s| !s.is_empty())
-}
-
-/// Append one event to the record: one commit on `refs/dna/journal`,
-/// compare-and-swapped on the ref, so the organism, the host and a CLI in
-/// another clone never lose each other's events. The author is git's
-/// identity for the user running this (a human's verdict is theirs).
-fn append_journal(root: &Path, kind: &str, entity: &str, body: &str) -> Result<(), String> {
-    append_journal_as(root, kind, entity, body, None)
-}
-
-pub(crate) fn append_journal_as(root: &Path, kind: &str, entity: &str, body: &str, author: Option<&str>) -> Result<(), String> {
-    let dna_dir = root.join(".hale/dna");
-    fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
-    let pid = std::process::id();
-    let tmp = dna_dir.join(format!("journal.host.{pid}.tmp"));
-    let idx = dna_dir.join(format!("index.host.{pid}.tmp"));
-    let identity: Vec<String> = if git(root, &["config", "user.name"]).map(|n| n.is_empty()).unwrap_or(true) {
-        vec!["-c".into(), "user.name=host".into(), "-c".into(), "user.email=host@dna".into()]
-    } else {
-        Vec::new()
-    };
-    for _ in 0..3 {
-        let head = record_head(root);
-        let text = match &head {
-            Some(_) => git(root, &["show", &format!("{RECORD_REF}:journal.jsonl")])? + "\n",
-            None => String::new(),
-        };
-        let seq = text.lines().filter(|l| !l.trim().is_empty()).count();
-        let who = author.map(|a| a.to_string()).unwrap_or_else(|| git(root, &["config", "user.name"]).ok().filter(|n| !n.is_empty()).unwrap_or_else(|| "host".into()));
-        let line = serde_json::json!({"seq": seq, "kind": kind, "entity": entity, "body": body, "author": who}).to_string();
-        fs::write(&tmp, format!("{text}{line}\n")).map_err(|e| e.to_string())?;
-        let blob = git(root, &["hash-object", "-w", &tmp.to_string_lossy()])?;
-        let _ = fs::remove_file(&idx);
-        let with_index = |args: &[&str]| -> Result<String, String> {
-            let out = Command::new("git").arg("-C").arg(root).env("GIT_INDEX_FILE", &idx).args(args).output().map_err(|e| format!("git: {e}"))?;
-            if !out.status.success() {
-                return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-            }
-            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-        };
-        match &head {
-            Some(h) => with_index(&["read-tree", h])?,
-            None => with_index(&["read-tree", "--empty"])?,
-        };
-        with_index(&["update-index", "--add", "--cacheinfo", &format!("100644,{blob},journal.jsonl")])?;
-        let tree = with_index(&["write-tree"])?;
-        let mut ct: Vec<String> = identity.clone();
-        ct.extend(["commit-tree".into(), tree]);
-        if let Some(h) = &head {
-            ct.extend(["-p".into(), h.clone()]);
-        }
-        ct.extend(["-m".into(), format!("{kind} {entity}")]);
-        let ct_args: Vec<&str> = ct.iter().map(|s| s.as_str()).collect();
-        let commit = git(root, &ct_args)?;
-        let old = head.clone().unwrap_or_default();
-        if git(root, &["update-ref", RECORD_REF, &commit, &old]).is_ok() {
-            let _ = fs::remove_file(&tmp);
-            let _ = fs::remove_file(&idx);
-            return Ok(());
-        }
-        // the ref moved under us: re-read and re-append at the new tail
-    }
-    Err("append lost the record's ref race three times".into())
-}
-
-// ---------------------------------------------------------------
-// the record across clones: sync with origin, and the membrane over it
-// ---------------------------------------------------------------
-
-const REMOTE_TRACK: &str = "refs/dna/remote/journal";
-
-/// The remote the record syncs with, when the repository has one.
-pub(crate) fn record_remote(root: &Path) -> Option<String> {
-    let name = git(root, &["config", "dna.remote"]).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "origin".into());
-    git(root, &["remote", "get-url", &name]).ok().map(|_| name)
-}
-
-/// Fetch, reconcile, push (GH #566 F1). The record is linear: when
-/// this clone and the remote both appended, the local-only events are
-/// re-appended on top of the remote's head (their bodies and authors
-/// unchanged; their seq is their new position) and pushed. Receipts
-/// travel both ways by refspec. Returns a one-line summary.
-pub(crate) fn sync_record(root: &Path) -> Result<String, String> {
-    let Some(remote) = record_remote(root) else {
-        return Ok("no remote: the record is local".into());
-    };
-    git(root, &["fetch", "-q", &remote, &format!("+{RECORD_REF}:{REMOTE_TRACK}"), "+refs/dna/receipts/*:refs/dna/receipts/*"]).or_else(|e| {
-        // a remote with no record yet is not an error
-        if e.contains("couldn't find remote ref") || e.contains("Couldn't find remote ref") { Ok(String::new()) } else { Err(format!("fetch {remote}: {e}")) }
-    })?;
-    let mut summary = String::new();
-    for _ in 0..3 {
-        let local = record_head(root);
-        let remote_head = git(root, &["rev-parse", "-q", "--verify", REMOTE_TRACK]).ok().filter(|s| !s.is_empty());
-        let (Some(l), Some(r)) = (local.clone(), remote_head.clone()) else {
-            if local.is_none() && remote_head.is_some() {
-                git(root, &["update-ref", RECORD_REF, remote_head.as_deref().unwrap()])?;
-                summary = "pulled the record".into();
-            }
-            break;
-        };
-        if l == r {
-            if summary.is_empty() {
-                summary = "up to date".into();
-            }
-            break;
-        }
-        if git(root, &["merge-base", "--is-ancestor", &r, &l]).is_ok() {
-            // local ahead: push below
-            let n = git(root, &["rev-list", "--count", &format!("{r}..{l}")]).unwrap_or_default();
-            summary = format!("pushed {n} event(s)");
-        } else if git(root, &["merge-base", "--is-ancestor", &l, &r]).is_ok() {
-            git(root, &["update-ref", RECORD_REF, &r, &l])?;
-            let n = git(root, &["rev-list", "--count", &format!("{l}..{r}")]).unwrap_or_default();
-            summary = format!("pulled {n} event(s)");
-            break;
-        } else {
-            // diverged: re-append the local-only events on top of the remote
-            let mine = git(root, &["rev-list", "--reverse", &format!("{r}..{l}")])?;
-            let mine: Vec<String> = mine.lines().map(|s| s.to_string()).collect();
-            let mut events: Vec<(String, String, String, String)> = Vec::new();
-            for c in &mine {
-                let text = git(root, &["show", &format!("{c}:journal.jsonl")])?;
-                let Some(last) = text.lines().filter(|l| !l.trim().is_empty()).last() else { continue };
-                let v: Value = serde_json::from_str(last).map_err(|e| e.to_string())?;
-                let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
-                events.push((s("kind"), s("entity"), s("body"), s("author")));
-            }
-            git(root, &["update-ref", RECORD_REF, &r, &l])?;
-            for (kind, entity, body, author) in &events {
-                append_journal_as(root, kind, entity, body, Some(author))?;
-            }
-            summary = format!("re-appended {} local event(s) onto the remote's {}", events.len(), git(root, &["rev-list", "--count", &format!("{l}..{r}")]).unwrap_or_default());
-        }
-        match git(root, &["push", "-q", &remote, &format!("{RECORD_REF}:{RECORD_REF}"), "refs/dna/receipts/*:refs/dna/receipts/*"]) {
-            Ok(_) => {
-                let _ = git(root, &["update-ref", REMOTE_TRACK, &record_head(root).unwrap_or_default()]);
-                break;
-            }
-            Err(_) => {
-                // the remote moved again: fetch and go round
-                git(root, &["fetch", "-q", &remote, &format!("+{RECORD_REF}:{REMOTE_TRACK}")])?;
-            }
-        }
-    }
-    Ok(summary)
-}
-
 // ---------------------------------------------------------------
 // The fleet as the expression (GH #566 F5): `fleet.deploy` rows out,
 // `instance.up` / `instance.exited` rows back from the nodes
@@ -1312,7 +1186,7 @@ fn ui_cmd(args: &[String]) -> ExitCode {
         let cache = hale_iris::materialize().map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
         let bin = crate::iris::ensure_built_in(&cache, hale_dna::UI_SEED, hale_dna::UI_BIN, "the surface")?;
         let me = std::env::current_exe().map_err(|e| e.to_string())?;
-        let _ = sync_record(&root);
+        let _ = host_run("sync", &root, &[]);
         // exec in place, for the same reason as the host: the pid is the surface
         use std::os::unix::process::CommandExt;
         let e = Command::new(&bin).arg(&port).arg(cache.join(hale_dna::UI_HTML.path)).current_dir(&root).env("HALE_BIN", &me).exec();
@@ -1769,10 +1643,56 @@ fn seed_journal(root: &Path, app: &App, art: &Value, raw: &str, purpose_digest: 
         })
         .to_string(),
     );
+    // through the host, which holds the record's one implementation
+    // (GH #646 stage 0): the rows as a file, one JSON object per line
+    let dna_dir = root.join(".hale/dna");
+    fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
+    let path = dna_dir.join(format!("seed.{}.jsonl", std::process::id()));
+    let mut text = String::new();
     for (kind, entity, body) in &c.lines {
-        append_journal(root, kind, entity, body)?;
+        text.push_str(&serde_json::json!({"kind": kind, "entity": entity, "body": body}).to_string());
+        text.push('\n');
     }
-    Ok(c.lines.len())
+    fs::write(&path, text).map_err(|e| e.to_string())?;
+    let out = host_run("record-seed", root, &[path.to_string_lossy().to_string()]);
+    let _ = fs::remove_file(&path);
+    let n: usize = out?.trim().parse().map_err(|e| format!("record-seed answered oddly: {e}"))?;
+    if n != c.lines.len() {
+        return Err(format!("record-seed appended {n} of {} rows", c.lines.len()));
+    }
+    Ok(n)
+}
+
+/// Whether the record exists: the host answers `none` or its head.
+fn record_exists(root: &Path) -> Result<bool, String> {
+    Ok(host_run("record-head", root, &[])?.trim() != "none")
+}
+
+/// The toolchain's design, proposed where the record does not hold its
+/// current text (all of it at `init`; what changed at `upgrade`): the
+/// practices handed to the host as a file, the host deciding against
+/// the record. Returns (proposed, of which superseding, waiting on a
+/// pending Review).
+fn design_upgrade(root: &Path) -> Result<(usize, usize, usize), String> {
+    let dna_dir = root.join(".hale/dna");
+    fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
+    let path = dna_dir.join(format!("design.{}.jsonl", std::process::id()));
+    let mut text = String::new();
+    for p in DESIGN {
+        text.push_str(&serde_json::json!({"name": p.name, "text": design_text(p)}).to_string());
+        text.push('\n');
+    }
+    fs::write(&path, text).map_err(|e| e.to_string())?;
+    let out = host_run("design-upgrade", root, &[path.to_string_lossy().to_string()]);
+    let _ = fs::remove_file(&path);
+    let out = out?;
+    let field = |name: &str| -> Result<usize, String> {
+        out.split_whitespace()
+            .find_map(|w| w.strip_prefix(&format!("{name}=")))
+            .and_then(|v| v.parse().ok())
+            .ok_or_else(|| format!("design-upgrade answered oddly: {out}"))
+    };
+    Ok((field("proposed")?, field("superseding")?, field("waiting")?))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -1838,230 +1758,6 @@ const DESIGN: &[DesignPractice] = &[
     DesignPractice { name: "design/optimize", text: "On a cadence the Board sets, walk the machinery, not the work: are the change classes right, are Reviews going to the right authority, is the routing catching what it should, does the topology still fit, is the knowledge still true. Propose one small change with its reasoning, or record that the state is clean. Never propose a large restructure unprompted, and never create work for the sake of activity." },
     DesignPractice { name: "design/software-delivery", text: "For an appendage or a product: process boundaries first (what runs, fails and scales independently), then the shapes and verbs that flow between them. Deliver vertical slices that can be demonstrated, never horizontal layers that cannot. Know a change's kind before starting, aesthetic, functional or structural, and update in dependency order. The specification is the source of truth; changes flow from it. The primary test surface is an integration harness through the real system, with the model as the only injected dependency; unit tests sparingly, for pure logic." },
 ];
-
-/// The canonical document of a seeded practice: the same fields the
-/// organization writes for its own proposals (`knowledge_document`),
-/// so the tail and the package treat both alike.
-fn design_document(p: &DesignPractice, supersedes: Option<&str>) -> String {
-    let mut doc = serde_json::Map::new();
-    doc.insert("kind".into(), "practice".into());
-    doc.insert("text".into(), design_text(p).into());
-    doc.insert("author".into(), "org".into());
-    doc.insert("target".into(), "org".into());
-    doc.insert("provenance".into(), "design".into());
-    doc.insert("name".into(), p.name.into());
-    doc.insert("toolchain".into(), TOOLCHAIN.into());
-    if let Some(old) = supersedes {
-        doc.insert("supersedes".into(), old.into());
-    }
-    serde_json::Value::Object(doc).to_string()
-}
-
-/// A receipt blob under `refs/dna/receipts/<sha256>`, as the
-/// organization's `GitReceipts.store` files it. Idempotent by digest.
-fn store_receipt(root: &Path, text: &str) -> Result<String, String> {
-    let digest = hex(&openssl::sha::sha256(text.as_bytes()));
-    let r = format!("refs/dna/receipts/{digest}");
-    if git(root, &["rev-parse", "-q", "--verify", &r]).is_ok() {
-        return Ok(digest);
-    }
-    let dna_dir = root.join(".hale/dna");
-    fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
-    let tmp = dna_dir.join(format!("receipt.{}.{digest}.tmp", std::process::id()));
-    fs::write(&tmp, text).map_err(|e| e.to_string())?;
-    let blob = git(root, &["hash-object", "-w", &tmp.to_string_lossy()])?;
-    let _ = fs::remove_file(&tmp);
-    git(root, &["update-ref", &r, &blob])?;
-    Ok(digest)
-}
-
-/// Propose one practice: its receipt, a `knowledge.proposed` row and a
-/// Review of its own, grouped `design` for the listing. Returns the
-/// review id.
-fn propose_design(root: &Path, p: &DesignPractice, supersedes: Option<&str>) -> Result<String, String> {
-    let doc = design_document(p, supersedes);
-    let raw = store_receipt(root, &doc)?;
-    let digest = format!("sha256:{raw}");
-    let review_id = format!("k:{}", &raw[..12]);
-    append_journal(
-        root,
-        "knowledge.proposed",
-        &digest,
-        &serde_json::json!({
-            "digest": digest, "review_id": review_id, "kind": "practice", "author": "org",
-            "target": "org", "class": "initiative", "provenance": "design", "name": p.name,
-            "supersedes": supersedes.unwrap_or("")
-        })
-        .to_string(),
-    )?;
-    let text = design_text(p);
-    let first: String = text.chars().take(72).collect();
-    let question = format!(
-        "ratify the design practice `{}`{}: {}{}",
-        p.name,
-        if supersedes.is_some() { " (replacing an earlier version)" } else { "" },
-        first,
-        if text.chars().count() > 72 { "…" } else { "" }
-    );
-    append_journal(
-        root,
-        "review.requested",
-        &format!("review:{review_id}"),
-        &serde_json::json!({
-            "question": question, "subject_digest": digest, "required_authority": "board",
-            "author": "org", "knowledge_digest": digest, "kind": "practice", "target": "org",
-            "class": "initiative", "group": "design", "name": p.name
-        })
-        .to_string(),
-    )?;
-    Ok(review_id)
-}
-
-/// Seed every practice of the design (at `init`). `only` restricts to
-/// names, for tests.
-fn seed_design(root: &Path, only: Option<&[&str]>) -> Result<usize, String> {
-    let mut n = 0;
-    for p in DESIGN {
-        if let Some(names) = only {
-            if !names.contains(&p.name) {
-                continue;
-            }
-        }
-        propose_design(root, p, None)?;
-        n += 1;
-    }
-    Ok(n)
-}
-
-/// What the record holds under each practice name: the text of the
-/// LATEST proposal (so a text already proposed is not proposed again,
-/// whatever the Board said to it), and the ACTIVE digest — ratified and
-/// not retired — which is the one a replacement supersedes. These are
-/// different questions: after accepted A, rejected replacement B and a
-/// new text C, C must retire A, not the never-active B (a review found
-/// C naming B, so A and C both served).
-struct DesignState {
-    latest_text: String,
-    active: Option<String>,
-    /// the latest proposal under the name awaits the Board
-    pending: bool,
-    /// the latest proposal was refused at ratification (it superseded
-    /// a version retired meanwhile) — it must be proposed again
-    refused: bool,
-}
-
-fn design_in_record(root: &Path) -> Result<std::collections::BTreeMap<String, DesignState>, String> {
-    let text = match record_head(root) {
-        Some(_) => git(root, &["show", &format!("{RECORD_REF}:journal.jsonl")])?,
-        None => String::new(),
-    };
-    let mut by_name: std::collections::BTreeMap<String, DesignState> = std::collections::BTreeMap::new();
-    // digest -> name, from the receipts the proposals point at
-    let mut name_of: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
-    let mut ratified: Vec<String> = Vec::new();
-    let mut retired: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut decided: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut refused: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut latest: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
-    for line in text.lines().filter(|l| !l.trim().is_empty()) {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-        let kind = v["kind"].as_str().unwrap_or("");
-        let entity = v["entity"].as_str().unwrap_or("").to_string();
-        match kind {
-            "knowledge.proposed" => {
-                let Ok(body) = serde_json::from_str::<serde_json::Value>(v["body"].as_str().unwrap_or("")) else { continue };
-                let digest = body["digest"].as_str().unwrap_or("").to_string();
-                if digest.is_empty() {
-                    continue;
-                }
-                // the receipt is canonical: its name and its text
-                let raw = digest.strip_prefix("sha256:").unwrap_or(&digest).to_string();
-                let Ok(doc) = git(root, &["cat-file", "-p", &format!("refs/dna/receipts/{raw}")]) else { continue };
-                let Ok(d) = serde_json::from_str::<serde_json::Value>(&doc) else { continue };
-                let name = d["name"].as_str().unwrap_or("").to_string();
-                if name.is_empty() {
-                    continue;
-                }
-                name_of.insert(digest.clone(), name.clone());
-                let e = by_name.entry(name.clone()).or_insert(DesignState { latest_text: String::new(), active: None, pending: false, refused: false });
-                e.latest_text = d["text"].as_str().unwrap_or("").to_string();
-                latest.insert(name, digest);
-            }
-            "knowledge.ratified" => {
-                decided.insert(entity.clone());
-                ratified.push(entity)
-            }
-            "knowledge.declined" => {
-                decided.insert(entity);
-            }
-            "knowledge.refused" => {
-                decided.insert(entity.clone());
-                refused.insert(entity);
-            }
-            "knowledge.retired" => {
-                retired.insert(entity);
-            }
-            _ => {}
-        }
-    }
-    // the active digest under a name: the last ratified one not retired
-    for digest in ratified {
-        if retired.contains(&digest) {
-            continue;
-        }
-        if let Some(name) = name_of.get(&digest) {
-            if let Some(e) = by_name.get_mut(name) {
-                e.active = Some(digest.clone());
-            }
-        }
-    }
-    for (name, digest) in latest {
-        if let Some(e) = by_name.get_mut(&name) {
-            e.pending = !decided.contains(&digest);
-            e.refused = refused.contains(&digest);
-        }
-    }
-    Ok(by_name)
-}
-
-/// At `upgrade`: propose each practice whose current text is not the
-/// latest proposed under its name — superseding the ACTIVE digest under
-/// that name when there is one, and plainly when nothing is active
-/// (a pending or rejected proposal is not a predecessor: retiring it
-/// would retire nothing). Unchanged practices propose nothing. One
-/// replacement at a time under a name: while the latest proposal awaits
-/// the Board, a changed text waits too — two pending replacements would
-/// both name the same predecessor, and the assembly refuses to ratify
-/// the second once the first has retired it. A refused one is proposed
-/// again, against what is active now. Returns (proposed, of which
-/// superseding, waiting on a pending Review).
-fn upgrade_design(root: &Path) -> Result<(usize, usize, usize), String> {
-    let have = design_in_record(root)?;
-    let mut proposed = 0;
-    let mut superseding = 0;
-    let mut waiting = 0;
-    for p in DESIGN {
-        let text = design_text(p);
-        match have.get(p.name) {
-            // the latest proposal under this name already says this
-            Some(st) if st.latest_text == text && !st.refused => continue,
-            Some(st) if st.pending => waiting += 1,
-            Some(st) => {
-                let old = st.active.clone();
-                propose_design(root, p, old.as_deref())?;
-                proposed += 1;
-                if old.is_some() {
-                    superseding += 1;
-                }
-            }
-            None => {
-                propose_design(root, p, None)?;
-                proposed += 1;
-            }
-        }
-    }
-    Ok((proposed, superseding, waiting))
-}
 
 /// A practice's text as this toolchain states it. `HALE_DNA_DESIGN_SUFFIX`
 /// appends to every practice, for fixtures only: it is how a test makes

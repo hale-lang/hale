@@ -208,6 +208,10 @@ interface Repository {
     fn root() -> String; // the repository's path: what a harness must never reach (GH #583 M3)
     fn head(path: String) -> String;
     fn commit_all(path: String, message: String) -> String;
+    // Keep a candidate reachable under the Mutation's name whatever the
+    // review decides and whatever collects its worktree (#649): the
+    // record shares `candidates/<mutation>` with the rest.
+    fn mark_candidate(mutation_id: String, commit: String) -> Bool;
     fn diff(path: String, base: String, candidate: String) -> String;
     fn contains(path: String, commit: String) -> Bool;
     fn apply(candidate: String) -> Bool;
@@ -253,6 +257,11 @@ locus LocalGit {
         let c = run_tool("git\n-C\n" + path + "\n-c\nuser.name=dna\n-c\nuser.email=dna@local\ncommit\n-q\n--allow-empty\n-m\n" + message + "\n--author\n" + self.author);
         if c.code != 0 { self.last_error = trim_nl(c.stderr); return ""; }
         return self.head(path);
+    }
+    fn mark_candidate(mutation_id: String, commit: String) -> Bool {
+        let r = run_tool("git\n-C\n" + self.repo + "\nupdate-ref\nrefs/dna/candidates/" + mutation_id + "\n" + commit);
+        if r.code != 0 { self.last_error = trim_nl(r.stderr); return false; }
+        return true;
     }
     fn diff(path: String, base: String, candidate: String) -> String {
         let r = run_tool("git\n-C\n" + path + "\ndiff\n" + base + "\n" + candidate);
@@ -476,6 +485,7 @@ locus MutationGateway {
         let sha = self.repo.commit_all(self.workspaces.path_of(mutation_id), message);
         let r = effect_result(j, key, sha != "");
         if sha == "" { return self.refuse("commit failed"); }
+        let kept = self.repo.mark_candidate(mutation_id, sha);
         let j = j.append(j.revision(), "mutation.candidate", mutation_id, sha);
         return GateResult { ok: true, value: sha };
     }

@@ -134,6 +134,7 @@ fn dna_fixture_set_is_complete() {
             "prompt_receipt_test.hl",
             "receipt_retention_test.hl",
             "receipt_vault_test.hl",
+            "record_test.hl",
             "recorded_model_test.hl",
             "recursion_settlement_test.hl",
             "rehydrate_work_test.hl",
@@ -148,4 +149,37 @@ fn dna_fixture_set_is_complete() {
             "workspace_test.hl",
         ]
     );
+}
+
+/// GH #646 stage 0 (#649): the record has an API of its own, and only its
+/// implementation spells the tool. In the core and the host, `git` is
+/// invoked from exactly the record's implementation and the genome's own
+/// files (the Structure): a new call site anywhere else is a boundary
+/// crossed, and this fails the build until it goes behind `dna::Record`
+/// (or `genome.hl` in the host).
+#[test]
+fn only_the_record_and_the_genome_spell_git() {
+    let root = repo_root();
+    let allowed = ["dna/core/record.hl", "dna/core/workspace.hl", "dna/core/verification.hl", "dna/core/org.hl", "dna/host/genome.hl"];
+    let mut offenders = Vec::new();
+    for dir in ["dna/core", "dna/host"] {
+        for e in std::fs::read_dir(root.join(dir)).expect("dna dir").flatten() {
+            let p = e.path();
+            if p.extension().map(|x| x != "hl").unwrap_or(true) {
+                continue;
+            }
+            let rel = format!("{dir}/{}", p.file_name().unwrap().to_string_lossy());
+            let text = std::fs::read_to_string(&p).unwrap();
+            let spells = text.lines().enumerate().filter(|(_, l)| {
+                let l = l.trim_start();
+                !l.starts_with("//") && (l.contains("run_tool(\"git") || l.contains("\"git\\n") || l.contains("\\ngit\\n") || l.contains("process::run(\"git"))
+            });
+            for (i, l) in spells {
+                if !allowed.contains(&rel.as_str()) {
+                    offenders.push(format!("{rel}:{}: {}", i + 1, l.trim()));
+                }
+            }
+        }
+    }
+    assert!(offenders.is_empty(), "git is spelled outside the record's implementation and the genome's files:\n{}", offenders.join("\n"));
 }

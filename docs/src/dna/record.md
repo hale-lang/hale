@@ -68,9 +68,60 @@ compare-and-swap, so the record never loses a row it held a moment
 before: a reader's view only grows, a writer that reloads finds its
 own rows, and a clone that appended meanwhile is not overwritten (the
 swap fails and the reconcile goes round). Receipts and
-leases travel by refspec both ways. The remote is `dna.remote` in
-git config, or `origin`. The host does this every second; a plain
-clone has no record until it syncs.
+candidates travel by refspec both ways; mailboxes are received. The
+remote is `dna.remote` in git config, or `origin`. The host does this
+every second; a plain clone has no record until it syncs.
+
+Under `git config dna.trust signed`, a reconcile rebuilds only what
+this clone may sign. A row this clone signed is re-signed and its
+commit names the original (`Rebuilt-From: <commit>`); a row that was
+never signed is rebuilt unsigned; a row signed with another key
+refuses the whole sync before anything moves:
+
+```text
+$ hale dna sync
+hale dna: the record diverged, and local event 8c1f… (intent.requested i-4, by riley)
+was signed with key SHA256:zzu3…, not this clone's; a reconcile would re-sign it as
+this clone's, so the record was not changed and every local row is kept at
+refs/dna/journal. Have that row's writer sync first — a writer rebuilds its own
+rows — then sync again to fast-forward; or fetch and fast-forward once the remote
+holds it
+```
+
+Nothing is discarded: the rows are still on `refs/dna/journal` in
+this clone, and a fast-forward is never refused. Under the default
+`local` trust every row is rebuilt as before.
+
+## Candidates
+
+A candidate is the commit a Mutation's worktree ends in. The record
+keeps a pointer to each under `refs/dna/candidates/<mutation>`, shared
+with the record, so a refused or revised change stays readable as a
+diff after its worktree is gone:
+
+```sh
+hale dna candidates                 # every kept candidate, with its Review's state
+hale dna candidates m7              # one, as a diff from its Review's base
+hale dna candidates drop m7 --why "superseded by m9"
+```
+
+`drop` is a row, `candidate.dropped <mutation> {by, why}`: the pointer
+goes here and at the remote, and every other clone drops it at its
+next sync, the way a redacted receipt goes. The commits stay in each
+object store until git collects them.
+
+## The record's own API
+
+Everything above is one interface in the core, `Record`, with a
+vocabulary that never names git: chains of rows, bodies by digest,
+cells swapped by version, pointers, families received and shared,
+the signer of a row, the `dna.*` settings. `GitRecord` is the one
+implementation over git plumbing, and the only file in the core and
+the host that spells `git` for the record; `MemRecord` is the one
+fixtures use. The organism's `GitJournal`, `GitReceipts` and
+`GitLeases`, the host's sync and body lease, and the mailboxes between
+records all stand on it — which is what lets the operational memory
+move to a store without the record changing shape.
 
 ## The membrane over the record
 

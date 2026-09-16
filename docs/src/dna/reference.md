@@ -31,6 +31,8 @@ hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authorit
                              [--comment <c>] [--digest <sha>] [--no-wait]
 hale dna history [<entity>]  walk the record by causal links (offline)
 hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*)
+hale dna candidates [<mutation> | drop <mutation> --why <w>]
+                             the candidates the record keeps; one as a diff; stop keeping one
 hale dna profile [project]   the organism's combination, detected from its pieces
 hale dna body                who runs this record (the body lease); `claim --force` takes it from a
                              body that is gone; `release [--force]` gives it up; rows in your name
@@ -98,6 +100,7 @@ tree, one JSON object per line: `seq`, `kind`, `entity`, `body`,
 | `law.deferred` | a clause | why `init` could not certify it |
 | `intent.requested` | the intent id | an ask from a clone with no organization: outcome, from, to |
 | `intent.offered` / `intent.refused` | the intent id | the outcome asked for / the refusal |
+| `candidate.dropped` | the mutation | `by`, `why`: the candidate's pointer is no longer kept (applied at every clone's sync) |
 | `task.born` | `t<n>` | `<intent>: <outcome>` |
 | `task.pending` / `task.done` / `task.failed` | `t<n>` | the Workflow detail, or the Work and performer that settled it |
 | `mutation.proposed` | `m<n>` | `task t<n> <class>: <objective> (<target>) at <base>` |
@@ -173,6 +176,8 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `refs/dna/receipts/<sha256>` | receipts by content digest |
 | `refs/dna/lease/<key>` | leases with fencing tokens |
 | `refs/dna/revisions/<rev>` | revisions a deploy asked for |
+| `refs/dna/candidates/<mutation>` | a Mutation's candidate, kept whatever its Review decided |
+| `refs/dna/exchange/<identity>` | a connected record's mailbox for this one |
 | `.hale/dna/` | sockets, `status.json`, `worktrees/<id>/`, `scratch/`, the artifacts as attached / running / before the last restart |
 | `.hale/node/<name>/` | on a node: `<instance>.pid`, `<instance>.topology` |
 | `<plan>.plan.json` | the fleet plan (schema 1.2: `seed`, `node` on an instance) |
@@ -185,7 +190,10 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 |---|---|
 | `assembly.hl` | `Dna` (the substrate), `Board`, `OrgPolicy` and the other review policies, `NoDeployment` / `ShellDeployment` / `LocalApplyDeployment` |
 | `org.hl` | `Leader`, `SourceReader` |
-| `journal.hl` | `Journal`, `MemJournal`, `GitJournal`, `Receipts` (`FileReceipts`, `GitReceipts`), `GitLeases`, the effect idempotency helpers |
+| `journal.hl` | `Journal`, `MemJournal`, `Receipts` (`FileReceipts`), `Coordination` (`MemLeases`), the effect idempotency helpers |
+| `record.hl` | `Record` — the record's own API — with `GitRecord` (the one file that spells `git` for the record) and `MemRecord`; `GitJournal`, `GitReceipts`, `GitLeases` over it |
+| `infrastructure.hl` | `Infrastructure` (a body's database, supervisor, credentials) and `Transport` (how a head reaches a body), declared with their memory implementations |
+| `forge.hl` | `Forge` (a code-review host), `MemForge`, `NoForge` |
 | `process.hl` | `Task`, `Workflow`, `Step`, `Work`, `Attempt`, `Metabolism` |
 | `work_system.hl` | `WorkSystem`, routing perspectives, the performers |
 | `review.hl` | `Review`, `AutonomyBoundary`, authority ranks |
