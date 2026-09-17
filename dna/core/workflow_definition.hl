@@ -484,6 +484,84 @@ locus WorkflowCatalog {
         return Expansion { ok: false, why: why, limits: limits };
     }
 
+    // ---- the bound recipe, as one document -------------------------------
+
+    // What `expand` bound, so an admission can carry it (card 05).
+    @unbounded
+    fn encode_bound() -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("format", "dna.workflow-recipe/1");
+        b.begin_array_field("nodes");
+        let mut i = 0;
+        while i < self.bound.len() {
+            let n = self.bound.get(i) or BoundNode { };
+            b.begin_object();
+            b.string_field("kind", n.kind);
+            b.string_field("id", n.id);
+            b.string_field("parent", n.parent);
+            b.string_field("spawning_step", n.spawning_step);
+            b.string_field("member_key", n.member_key);
+            b.string_field("definition", n.definition);
+            b.int_field("revision", n.revision);
+            b.string_field("workflow_id", n.workflow_id);
+            b.int_field("step_index", n.step_index);
+            b.int_field("depth", n.depth);
+            b.string_field("path", n.path);
+            b.string_field("objective", n.objective);
+            b.string_field("context_digest", n.context_digest);
+            b.string_field("knowledge_bindings", n.knowledge_bindings);
+            b.string_field("output_contract", n.output_contract);
+            b.string_field("data_class", n.data_class);
+            b.string_field("requires", n.requires);
+            b.string_field("target", n.target);
+            b.int_field("cost_ceiling", n.cost_ceiling);
+            b.int_field("attempts", n.attempts);
+            b.end_object();
+            i = i + 1;
+        }
+        b.end_array();
+        b.end_object();
+        return b.result();
+    }
+    // Read a recipe back as this catalog's bound nodes. "" when read, else
+    // why not; nothing is bound when it is refused.
+    @unbounded
+    fn decode_bound(text: String) -> String {
+        if std::json::find_string_field(text, "format") != "dna.workflow-recipe/1" {
+            return "not a workflow recipe (format " + std::json::find_string_field(text, "format") + ")";
+        }
+        self.bound = BoundNodeRows { };
+        let mut it = std::json::array_first(std::json::find_field_raw(text, "nodes"));
+        while !it.done {
+            let e = it.element;
+            self.bound.push(BoundNode {
+                kind: std::json::find_string_field(e, "kind"),
+                id: std::json::find_string_field(e, "id"),
+                parent: std::json::find_string_field(e, "parent"),
+                spawning_step: std::json::find_string_field(e, "spawning_step"),
+                member_key: std::json::find_string_field(e, "member_key"),
+                definition: std::json::find_string_field(e, "definition"),
+                revision: std::json::find_int_field(e, "revision"),
+                workflow_id: std::json::find_string_field(e, "workflow_id"),
+                step_index: std::json::find_int_field(e, "step_index"),
+                depth: std::json::find_int_field(e, "depth"),
+                path: std::json::find_string_field(e, "path"),
+                objective: std::json::find_string_field(e, "objective"),
+                context_digest: std::json::find_string_field(e, "context_digest"),
+                knowledge_bindings: std::json::find_string_field(e, "knowledge_bindings"),
+                output_contract: std::json::find_string_field(e, "output_contract"),
+                data_class: std::json::find_string_field(e, "data_class"),
+                requires: std::json::find_string_field(e, "requires"),
+                target: std::json::find_string_field(e, "target"),
+                cost_ceiling: std::json::find_int_field(e, "cost_ceiling"),
+                attempts: std::json::find_int_field(e, "attempts")
+            });
+            it = std::json::array_next(it);
+        }
+        return "";
+    }
+
     // ---- the machine form ------------------------------------------------
 
     // Every definition and member, as one JSON document.

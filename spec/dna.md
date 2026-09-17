@@ -870,8 +870,39 @@ path is written with. `encode()` writes every definition and member as
 one JSON document (`format: dna.workflow-definitions/1`) and
 `decode(text)` reads one back, refusing another format, an id outside
 the grammar, an already defined revision, or a document that defines one
-revision twice, and adding nothing then. Nothing yet admits, records or executes a bound
+revision twice, and adding nothing then. Nothing yet executes a bound
 expansion.
+
+## Workflow facts
+
+What a workflow execution leaves behind is written as a fact of the day's
+work (`dna/core/workflow_events.hl`). Seven kinds carry an execution:
+`workflow.admitted` names the Task, the definition and revision, the
+inputs and their receipt, the bound recipe, the limits that were applied
+and what the expansion came to; `step.registered` names a step's whole
+required set before any of it is dispatched; `attempt.admitted` carries
+one attempt's id and the `WorkRequest` it was admitted with;
+`attempt.outcome` its disposition, result and evidence; and
+`work.settled`, `step.completed` / `step.failed` and `workflow.settled`
+settle each level to the one above it, a child workflow naming the parent
+Task and spawning step it answers. Each fact carries the engine (`wf1`)
+and a version. A decoder refuses a version it does not know, another
+engine's admission, and a fact that does not name the entity it is
+about; it never half-reads one.
+
+These kinds are the ledger's under split routing and the record's on
+routing 0, like every other operational kind.
+
+An attempt's id is its Work and its number (`<work>/a<n>`), so a retry
+is a new id and a re-sent admission is the same one. A transition's
+proposal id (§9 of `dna/WORKFLOW-CONTRACT.md`) is what the transition
+does, not a counter or a clock: the same id carrying the same scope,
+key, kind, entity and body is that transition proposed again, which the
+committer answers from its journal; the same id carrying anything else
+is a conflict, and `transition_conflict` names which part differs.
+
+Nothing yet admits, records or executes a workflow; these are the
+durable shapes it will be written in.
 
 ## Storage interfaces
 

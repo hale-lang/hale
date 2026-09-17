@@ -237,6 +237,7 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `process.hl` | `Task`, `Workflow`, `Step`, `Work`, `Attempt`, `Metabolism` |
 | `work_system.hl` | `WorkSystem`, routing perspectives, the performers |
 | `workflow_definition.hl` | `WorkflowCatalog` (code-authored workflow definitions: `define`, `leaf`, `child`, `expand`, `encode` / `decode`), `AdmissionLimits`, `bound_request` — definitions and their bound expansion only; nothing executes them yet |
+| `workflow_events.hl` | the durable facts of one workflow execution: `AdmittedWorkflow`, `RegisteredMembers`, `AdmittedAttempt`, `AttemptOutcome`, `WorkOutcome`, `StepOutcome`, `WorkflowOutcome` with their `encode_*` / `decode_*`, plus `attempt_id_of`, `transition_id` and `transition_conflict` (a repeated proposal id is a replay only if it repeats the proposal) |
 | `review.hl` | `Review`, `AutonomyBoundary`, authority ranks |
 | `models.hl` | `ModelRouter`, `OpenAiChat`, `AnthropicMessages`, `HarnessModel`, `LocalModel`, `FakeModel`, `HostedCredential` (with its `scheme`), `Confinement` (`Bubblewrap`, `NoConfinement`), `probe` |
 | `budget.hl` | `BudgetPolicy`, `Budget` (the substrate's one counter) |

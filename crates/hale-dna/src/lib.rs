@@ -53,6 +53,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "verification",
     "work_system",
     "workflow_definition",
+    "workflow_events",
     "workspace",
 ];
 

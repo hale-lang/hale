@@ -1,0 +1,159 @@
+// dna/tests/workflow_events_test.hl — the durable facts of a workflow
+// execution and its transition envelope (DNA workflow card 05).
+//
+// Every fact round-trips field for field. A decoder refuses a version it
+// does not know, another engine's admission, and a fact that names
+// nothing. Each new kind is the Ledger's under split routing and the
+// record's on routing 0. One id is a replay only when it repeats its
+// transition, and a conflict otherwise. The bound recipe of the canonical
+// example travels inside an admission and comes back the same execution.
+
+import "../core" as dna;
+
+main locus App {
+    params {
+        cat: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        back: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+    }
+    @unbounded
+    fn ids(c: dna::WorkflowCatalog) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < c.bound_count() {
+            let n = c.bound_at(i);
+            out = out + n.kind + ":" + n.id + " ";
+            i = i + 1;
+        }
+        return out;
+    }
+    fn routed(kind: String, label: String) {
+        std::test::assert_eq_str(dna::memory_of(kind), "ledger", label + " is the day's work");
+        std::test::assert_eq_str(dna::route(1, kind), "ledger", label + " is the ledger's under split routing");
+        std::test::assert_eq_str(dna::route(0, kind), "record", label + " is the record's on routing 0");
+    }
+    run() {
+        // ---- the admission: the engine, the bound recipe and its limits
+        std::test::assert_eq_str(self.cat.define("close-month", 1, 2, "close the month"), "", "close-month");
+        std::test::assert_eq_str(self.cat.define("collect-receipts", 1, 2, ""), "", "collect-receipts");
+        std::test::assert_eq_str(self.cat.define("chase-supplier", 1, 1, ""), "", "chase-supplier");
+        std::test::assert_eq_str(self.cat.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed", context_digest: "sha256:c0ffee", output_contract: "Assessment", data_class: "confidential", requires: "judgment", target: "bank.csv", cost_ceiling: 42 }, 3), "", "a");
+        std::test::assert_eq_str(self.cat.child("close-month", 1, 0, "b", "collect-receipts", 1), "", "b");
+        std::test::assert_eq_str(self.cat.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries" }, 1), "", "d");
+        std::test::assert_eq_str(self.cat.leaf("collect-receipts", 1, 0, "b1", dna::WorkRequest { objective: "list missing receipts" }, 1), "", "b1");
+        std::test::assert_eq_str(self.cat.child("collect-receipts", 1, 1, "c", "chase-supplier", 1), "", "c");
+        std::test::assert_eq_str(self.cat.leaf("chase-supplier", 1, 0, "c1", dna::WorkRequest { objective: "email the supplier" }, 2), "", "c1");
+        let limits = dna::AdmissionLimits { max_depth: 6, max_steps: 12, max_members: 9, max_attempts: 4, max_works: 99 };
+        let x = self.cat.expand("t1", "close-month", 1, limits);
+        std::test::assert(x.ok, "the canonical example expands: " + x.why);
+
+        let admission = dna::AdmittedWorkflow {
+            task_id: "t1", definition: "close-month", revision: 1,
+            parent_task: "", spawning_step: "", member_key: "",
+            inputs: "{\"month\": \"2026-08\"}",
+            inputs_ref: "sha256:beef",
+            recipe: self.cat.encode_bound(),
+            limits: limits, works: x.works, tasks: x.tasks, steps: x.steps, depth: x.depth
+        };
+        let text = dna::encode_admission(admission);
+        let read = dna::decode_admission(text);
+        std::test::assert(read.ok, "the admission reads back: " + read.why);
+        let a = read.value;
+        std::test::assert(a.engine == "wf1" && a.task_id == "t1" && a.definition == "close-month" && a.revision == 1, "its engine and definition");
+        std::test::assert(a.inputs == admission.inputs && a.inputs_ref == "sha256:beef", "its inputs and their reference");
+        std::test::assert(a.works == 4 && a.tasks == 3 && a.steps == 5 && a.depth == 3, "what it expanded to");
+        std::test::assert(a.limits.max_depth == 6 && a.limits.max_steps == 12 && a.limits.max_members == 9 && a.limits.max_attempts == 4 && a.limits.max_works == 99, "and the limits that were applied, not the defaults");
+        // the recipe is the execution, still
+        std::test::assert_eq_str(self.back.decode_bound(a.recipe), "", "the recipe reads back");
+        std::test::assert_eq_str(self.ids(self.back), self.ids(self.cat), "the same execution, node for node: " + self.ids(self.back));
+        std::test::assert(std::str::contains(self.back.bound_node("t1/wf1/s0/a").context_digest, "sha256:c0ffee") && self.back.bound_node("t1/wf1/s0/a").attempts == 3, "with each Work's bound content");
+        std::test::assert(std::str::contains(self.back.decode_bound("{\"format\": \"other\"}"), "not a workflow recipe"), "another document is not a recipe");
+
+        // a child's admission names where it came from
+        let child = dna::decode_admission(dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: "t1.s0.b", definition: "collect-receipts", revision: 1,
+            parent_task: "t1", spawning_step: "t1/wf1/s0", member_key: "b", recipe: "{}"
+        }));
+        std::test::assert(child.ok && child.value.parent_task == "t1" && child.value.spawning_step == "t1/wf1/s0" && child.value.member_key == "b", "a child's admission names its parent, step and key");
+
+        // ---- refusals
+        std::test::assert(std::str::contains(dna::decode_admission(std::str::replace(text, "\"version\": 1", "\"version\": 2")).why, "unsupported admission version 2"), "a version this engine does not know is refused");
+        std::test::assert(std::str::contains(dna::decode_admission(std::str::replace(text, "\"engine\": \"wf1\"", "\"engine\": \"wf2\"")).why, "another engine's admission (wf2)"), "another engine's admission is refused");
+        std::test::assert(std::str::contains(dna::decode_admission(std::str::replace(text, "\"task_id\": \"t1\"", "\"task_id\": \"\"")).why, "an admission names its task_id"), "an admission without its Task is refused");
+        std::test::assert(std::str::contains(dna::decode_admission(std::str::replace(text, "\"recipe\":", "\"norecipe\":")).why, "an admission names its recipe"), "and one without its recipe");
+
+        // ---- the members registered before anything is dispatched
+        let members = dna::RegisteredMembers { step_id: "t1/wf1/s0", task_id: "t1", workflow_id: "t1/wf1", step_index: 0, members: "a:leaf:t1/wf1/s0/a b:child:t1.s0.b" };
+        let mread = dna::decode_members(dna::encode_members(members));
+        std::test::assert(mread.ok && mread.value.step_id == "t1/wf1/s0" && mread.value.task_id == "t1" && mread.value.workflow_id == "t1/wf1" && mread.value.step_index == 0 && mread.value.members == members.members, "the required set round-trips: " + mread.why);
+        std::test::assert(std::str::contains(dna::decode_members(std::str::replace(dna::encode_members(members), "\"members\":", "\"none\":")).why, "a member registration names its members"), "a registration without its members is refused");
+
+        // ---- one admitted attempt, and its outcome
+        std::test::assert_eq_str(dna::attempt_id_of("t1/wf1/s0/a", 1), "t1/wf1/s0/a/a1", "an attempt id is its Work and its number");
+        let attempt = dna::AdmittedAttempt {
+            attempt_id: dna::attempt_id_of("t1/wf1/s0/a", 1), work_id: "t1/wf1/s0/a",
+            step_id: "t1/wf1/s0", task_id: "t1", attempt_no: 1, performer_kind: "agent",
+            request: dna::bound_request(self.cat.bound_node("t1/wf1/s0/a"), "t1", "t1/wf1/s0")
+        };
+        let aread = dna::decode_attempt(dna::encode_attempt(attempt));
+        std::test::assert(aread.ok, "the attempt reads back: " + aread.why);
+        std::test::assert(aread.value.attempt_id == "t1/wf1/s0/a/a1" && aread.value.attempt_no == 1 && aread.value.performer_kind == "agent" && aread.value.step_id == "t1/wf1/s0" && aread.value.task_id == "t1", "its identity");
+        let req = aread.value.request;
+        std::test::assert(req.work_id == "t1/wf1/s0/a" && req.task_id == "t1" && req.step_id == "t1/wf1/s0" && req.objective == "reconcile the bank feed" && req.context_digest == "sha256:c0ffee" && req.output_contract == "Assessment" && req.data_class == "confidential" && req.requires == "judgment" && req.target == "bank.csv" && req.cost_ceiling == 42, "and the whole request it was admitted with");
+        std::test::assert(std::str::contains(dna::decode_attempt(std::str::replace(dna::encode_attempt(attempt), "\"attempt_id\"", "\"id\"")).why, "an attempt admission names its attempt_id"), "an attempt without its id is refused");
+
+        let outcome = dna::AttemptOutcome {
+            attempt_id: "t1/wf1/s0/a/a1", work_id: "t1/wf1/s0/a", disposition: "done",
+            performer: "architect", result: "reconciled", result_ref: "sha256:res",
+            evidence_ref: "sha256:ev", narrative: "two model calls"
+        };
+        let oread = dna::decode_attempt_outcome(dna::encode_attempt_outcome(outcome));
+        std::test::assert(oread.ok && oread.value.attempt_id == outcome.attempt_id && oread.value.work_id == outcome.work_id && oread.value.disposition == "done" && oread.value.performer == "architect" && oread.value.result == "reconciled" && oread.value.result_ref == "sha256:res" && oread.value.evidence_ref == "sha256:ev" && oread.value.narrative == "two model calls", "the attempt's outcome round-trips, with its result and evidence references: " + oread.why);
+        std::test::assert(std::str::contains(dna::decode_attempt_outcome(std::str::replace(dna::encode_attempt_outcome(outcome), "\"disposition\": \"done\"", "\"disposition\": \"\"")).why, "an attempt outcome names its disposition"), "an outcome without a disposition is refused");
+
+        // ---- the Work, the Step and the Workflow settle
+        let w = dna::decode_work_outcome(dna::encode_work_outcome(dna::WorkOutcome { work_id: "t1/wf1/s0/a", step_id: "t1/wf1/s0", attempt_id: "t1/wf1/s0/a/a1", disposition: "done", result_ref: "sha256:res" }));
+        std::test::assert(w.ok && w.value.work_id == "t1/wf1/s0/a" && w.value.attempt_id == "t1/wf1/s0/a/a1" && w.value.step_id == "t1/wf1/s0" && w.value.result_ref == "sha256:res", "a Work settles on the attempt that answered it: " + w.why);
+        let st = dna::decode_step_outcome(dna::encode_step_outcome(dna::StepOutcome { step_id: "t1/wf1/s0", task_id: "t1", disposition: "completed", members: "a b" }));
+        std::test::assert(st.ok && st.value.step_id == "t1/wf1/s0" && st.value.disposition == "completed" && st.value.members == "a b", "a Step completes on its whole required set: " + st.why);
+        let sf = dna::decode_step_outcome(dna::encode_step_outcome(dna::StepOutcome { step_id: "t1.s0.b/wf1/s1", task_id: "t1.s0.b", disposition: "failed", members: "c", failed_member: "c" }));
+        std::test::assert(sf.ok && sf.value.failed_member == "c", "and a failed one names the member that failed it");
+        let wf = dna::decode_workflow_outcome(dna::encode_workflow_outcome(dna::WorkflowOutcome { task_id: "t1.s0.b", disposition: "failed", reason: "step t1.s0.b/wf1/s1 failed", parent_task: "t1", spawning_step: "t1/wf1/s0" }));
+        std::test::assert(wf.ok && wf.value.task_id == "t1.s0.b" && wf.value.disposition == "failed" && wf.value.reason == "step t1.s0.b/wf1/s1 failed" && wf.value.parent_task == "t1" && wf.value.spawning_step == "t1/wf1/s0", "a child workflow settles to its parent's step: " + wf.why);
+        std::test::assert(std::str::contains(dna::decode_workflow_outcome("{\"version\": 1, \"disposition\": \"done\"}").why, "a workflow outcome names its task_id"), "a workflow outcome without its Task is refused");
+
+        // ---- where these facts live
+        self.routed("workflow.admitted", "an admission");
+        self.routed("workflow.refused", "a refused admission");
+        self.routed("workflow.settled", "a settled execution");
+        self.routed("step.registered", "a required set");
+        self.routed("step.activated", "an activation");
+        self.routed("step.completed", "a completed step");
+        self.routed("step.failed", "a failed step");
+        self.routed("work.settled", "a settled Work");
+        self.routed("attempt.admitted", "an admitted attempt");
+        self.routed("attempt.outcome", "an attempt's outcome");
+        // the names these facts do not take: `task.*` still means what it did
+        std::test::assert_eq_str(dna::memory_of("task.born"), "ledger", "task.born is untouched");
+        std::test::assert_eq_str(dna::memory_of("mutation.proposed"), "record", "and the record's kinds are untouched");
+
+        // ---- one transition id, one transition
+        let proposal = dna::TransitionProposal {
+            scope: "org", key: "t1/wf1/s0", proposal_id: dna::transition_id("t1/wf1/s0", "activated"),
+            kind: "step.activated", entity: "t1/wf1/s0", body: "{\"version\": 1}"
+        };
+        std::test::assert_eq_str(proposal.proposal_id, "t1/wf1/s0@activated", "a transition id says what it does");
+        std::test::assert_eq_str(dna::transition_conflict(proposal, proposal), "", "the same proposal again is a replay");
+        let same = dna::TransitionProposal { scope: "org", key: "t1/wf1/s0", proposal_id: "t1/wf1/s0@activated", kind: "step.activated", entity: "t1/wf1/s0", body: "{\"version\": 1}" };
+        std::test::assert_eq_str(dna::transition_conflict(proposal, same), "", "and so is an identical one built again");
+        let other_body = dna::TransitionProposal { scope: "org", key: "t1/wf1/s0", proposal_id: "t1/wf1/s0@activated", kind: "step.activated", entity: "t1/wf1/s0", body: "{\"version\": 1, \"forced\": true}" };
+        std::test::assert(std::str::contains(dna::transition_conflict(proposal, other_body), "was committed with another body"), "another body under one id is a conflict: " + dna::transition_conflict(proposal, other_body));
+        let other_kind = dna::TransitionProposal { scope: "org", key: "t1/wf1/s0", proposal_id: "t1/wf1/s0@activated", kind: "step.completed", entity: "t1/wf1/s0", body: "{\"version\": 1}" };
+        std::test::assert(std::str::contains(dna::transition_conflict(proposal, other_kind), "another kind"), "and so is another kind");
+        let other_scope = dna::TransitionProposal { scope: "elsewhere", key: "t1/wf1/s0", proposal_id: "t1/wf1/s0@activated", kind: "step.activated", entity: "t1/wf1/s0", body: "{\"version\": 1}" };
+        std::test::assert(std::str::contains(dna::transition_conflict(proposal, other_scope), "another scope"), "and another scope");
+        let answer = dna::TransitionAnswer { scope: "org", key: "t1/wf1/s0", proposal_id: proposal.proposal_id, ok: true, revision: 7 };
+        std::test::assert(answer.proposal_id == proposal.proposal_id && answer.key == proposal.key && answer.revision == 7, "the answer names the proposal it answers");
+    }
+}
+
+fn main() { App { }; }
