@@ -1,0 +1,215 @@
+// dna/tests/workflow_projection_test.hl — the state of an execution, read
+// from its facts and nothing else (DNA workflow card 06).
+//
+// The oracle the plan names: a Step requiring `{a, b}` does not complete
+// on `a` alone, does not complete when `a` answers again, and completes
+// once when `b` answers. Around it: a member the Step never had, a Work
+// under another Step, an attempt that was superseded, a Work that
+// settled, a Step that failed on a member, and the whole sequence applied
+// a second time, which must move nothing.
+//
+// Replaying reaches nothing outside the projection. `replay` carries
+// `@no_syscall`, so a journal append, a performer call, a clock or a
+// print anywhere under it fails the build; this fixture also holds the
+// projection to its own rows, which is the part a contract cannot state.
+
+import "../core" as dna;
+
+main locus App {
+    params {
+        p: dna::WorkflowProjection = dna::WorkflowProjection { };
+        cat: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+    }
+    fn admission(task_id: String, definition: String) -> String {
+        let limits = dna::AdmissionLimits { };
+        return dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: task_id, definition: definition, revision: 1,
+            recipe: self.cat.encode_bound(), limits: limits,
+            works: 2, tasks: 1, steps: 2, depth: 1
+        });
+    }
+    fn child_admission(task_id: String, parent: String, step_id: String, key: String) -> String {
+        return dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: task_id, definition: "collect-receipts", revision: 1,
+            parent_task: parent, spawning_step: step_id, member_key: key,
+            recipe: self.cat.encode_bound(), limits: dna::AdmissionLimits { },
+            works: 1, tasks: 1, steps: 1, depth: 2
+        });
+    }
+    fn child_settled(task_id: String, parent: String, step_id: String, disposition: String) -> String {
+        return dna::encode_workflow_outcome(dna::WorkflowOutcome {
+            task_id: task_id, disposition: disposition,
+            reason: if disposition == "done" { "" } else { "it did not" },
+            parent_task: parent, spawning_step: step_id
+        });
+    }
+    fn registration(step_id: String, task_id: String, index: Int, members: String) -> String {
+        return dna::encode_members(dna::RegisteredMembers {
+            step_id: step_id, task_id: task_id, workflow_id: task_id + "/wf1",
+            step_index: index, members: members
+        });
+    }
+    fn attempt(work_id: String, step_id: String, task_id: String, no: Int) -> String {
+        return dna::encode_attempt(dna::AdmittedAttempt {
+            attempt_id: dna::attempt_id_of(work_id, no), work_id: work_id,
+            step_id: step_id, task_id: task_id, attempt_no: no, performer_kind: "agent",
+            request: dna::WorkRequest { objective: "do the thing" }
+        });
+    }
+    fn outcome(work_id: String, no: Int, disposition: String, result: String) -> String {
+        return dna::encode_attempt_outcome(dna::AttemptOutcome {
+            attempt_id: dna::attempt_id_of(work_id, no), work_id: work_id,
+            disposition: disposition, performer: "architect", result: result,
+            result_ref: "sha256:" + result
+        });
+    }
+    fn settle(work_id: String, step_id: String, no: Int, disposition: String) -> String {
+        return dna::encode_work_outcome(dna::WorkOutcome {
+            work_id: work_id, step_id: step_id, attempt_id: dna::attempt_id_of(work_id, no),
+            disposition: disposition, result_ref: "sha256:kept"
+        });
+    }
+    fn step_outcome(step_id: String, task_id: String, disposition: String, members: String, failed: String) -> String {
+        return dna::encode_step_outcome(dna::StepOutcome {
+            step_id: step_id, task_id: task_id, disposition: disposition,
+            members: members, failed_member: failed
+        });
+    }
+    // Every application goes through the one entry point that carries the
+    // effect contract, so what the fixture exercises is what the compiler
+    // checked.
+    fn apply(kind: String, body: String) -> dna::Applied {
+        return dna::replay(self.p, kind, "", body);
+    }
+    fn must(kind: String, body: String, label: String) {
+        let a = self.apply(kind, body);
+        std::test::assert(a.ok && a.changed, label + ": " + a.why);
+    }
+    fn must_refuse(kind: String, body: String, needle: String, label: String) {
+        let a = self.apply(kind, body);
+        std::test::assert(!a.ok, label + " (it was accepted)");
+        std::test::assert(std::str::contains(a.why, needle), label + ": " + a.why);
+    }
+    fn must_replay(kind: String, body: String, label: String) {
+        let a = self.apply(kind, body);
+        std::test::assert(a.ok && !a.changed, label + ": " + a.why);
+    }
+    run() {
+        let s0 = "t1/wf1/s0";
+        let s1 = "t1/wf1/s1";
+        let wa = s0 + "/a";
+        let wb = s0 + "/b";
+        let wc = s1 + "/c";
+
+        // ---- a fact of no execution at all
+        self.must_refuse("task.born", "{}", "no fact of a workflow execution", "a Task row is not a workflow fact");
+
+        // ---- nothing exists before the admission
+        self.must_refuse("step.registered", self.registration(s0, "t1", 0, "a:leaf:" + wa), "never admitted", "a step of a task nobody admitted");
+        self.must("workflow.admitted", self.admission("t1", "close-month"), "the execution is admitted");
+        self.must_replay("workflow.admitted", self.admission("t1", "close-month"), "and admitted again is the same execution");
+        self.must_refuse("workflow.admitted", self.admission("t1", "other-month"), "was admitted for", "but not another definition under that id");
+
+        // ---- the required set, whole, before anything is dispatched
+        self.must("step.registered", self.registration(s0, "t1", 0, "a:leaf:" + wa + " b:child:t1.s0.b"), "the step registers a and b");
+        std::test::assert_eq_str(self.p.step(s0).required, "a b", "both members are required");
+        self.must_replay("step.registered", self.registration(s0, "t1", 0, "a:leaf:" + wa + " b:child:t1.s0.b"), "registered again is the same set");
+        self.must_refuse("step.registered", self.registration(s0, "t1", 0, "a:leaf:" + wa), "registered once", "a step does not shrink its required set");
+        self.must("step.activated", dna::encode_activation(dna::ActivatedStep { step_id: s0, task_id: "t1", workflow_id: "t1/wf1", step_index: 0, dispatched: "a b" }), "the step is activated");
+        self.must_replay("step.activated", dna::encode_activation(dna::ActivatedStep { step_id: s0, task_id: "t1", workflow_id: "t1/wf1", step_index: 0, dispatched: "a b" }), "activated again moves nothing");
+
+        // ---- a member the step never had, and a Work under another step
+        self.must_refuse("attempt.admitted", self.attempt(s0 + "/zz", s0, "t1", 0), "has no member `zz`", "a member the step never registered");
+        self.must_refuse("attempt.admitted", self.attempt(s1 + "/a", s1, "t1", 0), "never registered", "a Work under a step that was never registered");
+        // a Work further down is not this Step's member `a`: it is no
+        // member of it. Read off the end of the id it would have been one,
+        // and `a` could then answer twice.
+        self.must_refuse("attempt.admitted", self.attempt(s0 + "/x/a", s0, "t1", 0), "is not a work of step", "a Work nested below the step is not its member");
+        self.must_refuse("work.settled", self.settle(s0 + "/x/a", s0, 0, "done"), "is not a work of step", "and cannot answer for one");
+
+        // ---- a alone: the Step does not complete
+        self.must("attempt.admitted", self.attempt(wa, s0, "t1", 0), "a is attempted");
+        self.must("attempt.outcome", self.outcome(wa, 0, "done", "reconciled"), "and the attempt is done");
+        self.must("work.settled", self.settle(wa, s0, 0, "done"), "so a settles");
+        std::test::assert_eq_str(self.p.step(s0).settled, "a", "a has answered");
+        std::test::assert_eq_str(self.p.pending(s0), "b", "b has not");
+        std::test::assert(!self.p.joined(s0), "the step is not joined on one of two members");
+        self.must_refuse("step.completed", self.step_outcome(s0, "t1", "completed", "a b", ""), "still waits for `b`", "a alone does not complete the step");
+
+        // ---- another a still does not
+        self.must_replay("work.settled", self.settle(wa, s0, 0, "done"), "a settling again is the same answer");
+        self.must_refuse("attempt.admitted", self.attempt(wa, s0, "t1", 1), "is not attempted again", "a settled Work is not attempted again");
+        self.must_refuse("work.settled", self.settle(wa, s0, 0, "failed"), "does not settle again", "and does not settle to something else");
+        std::test::assert_eq_str(self.p.step(s0).settled, "a", "one member, one answer");
+        std::test::assert(!self.p.joined(s0), "still not joined");
+        self.must_refuse("step.completed", self.step_outcome(s0, "t1", "completed", "a b", ""), "still waits for `b`", "a second answer from a does not complete the step");
+
+        // ---- b is a child: it answers by settling, and only that way
+        self.must_refuse("attempt.admitted", self.attempt(wb, s0, "t1", 0), "answers by settling, not as a Work", "a child member is not attempted as a Work");
+        self.must("workflow.admitted", self.child_admission("t1.s0.b", "t1", s0, "b"), "the child execution is admitted");
+        self.must_refuse("workflow.settled", self.child_settled("t1.s0.b", "t1", s1, "done"), "answers step " + s0, "a child's settlement cannot redirect its answer to another step");
+        self.must("workflow.settled", self.child_settled("t1.s0.b", "t1", s0, "done"), "the child settles into its parent's step");
+        self.must_replay("workflow.settled", self.child_settled("t1.s0.b", "t1", s0, "done"), "and settling again moves nothing");
+        std::test::assert(self.p.joined(s0), "both members have answered: " + self.p.step(s0).settled);
+        std::test::assert_eq_str(self.p.pending(s0), "", "nothing is pending");
+
+        // ---- and the step completes, once
+        self.must("step.completed", self.step_outcome(s0, "t1", "completed", "a b", ""), "b completes the step");
+        self.must_replay("step.completed", self.step_outcome(s0, "t1", "completed", "a b", ""), "completed again moves nothing");
+        self.must_refuse("step.failed", self.step_outcome(s0, "t1", "failed", "a b", "a"), "does not settle again", "and a completed step does not fail");
+
+        // ---- results, by Work identity
+        std::test::assert_eq_str(self.p.result_of(wa), "reconciled", "a's result is a's");
+        std::test::assert_eq_str(self.p.task("t1.s0.b").disposition, "done", "the child is done");
+        std::test::assert_eq_str(self.p.result_of(s0 + "/zz"), "", "a Work nobody ran has no result");
+        std::test::assert_eq_str(self.p.work(wb).work_id, "", "and there is no Work under b at all");
+
+        // ---- a terminal outcome the other way: a step fails on a member
+        self.must("step.registered", self.registration(s1, "t1", 1, "c:leaf:" + wc), "a second step registers c");
+        self.must_refuse("step.registered", self.registration("t1/wf1/s2", "t1", 2, "e:thing:x"), "neither a leaf nor a child", "a member of no known kind is not a member");
+        self.must("attempt.admitted", self.attempt(wc, s1, "t1", 0), "c is attempted");
+        self.must("attempt.admitted", self.attempt(wc, s1, "t1", 1), "and retried");
+        self.must_refuse("attempt.outcome", self.outcome(wc, 0, "done", "stale"), "superseded", "the superseded attempt's outcome decides nothing");
+        self.must_refuse("work.settled", self.settle(wc, s1, 0, "done"), "cannot settle on", "and c cannot settle on it");
+        self.must_replay("workflow.settled", self.child_settled("t1.s0.b", "t1", s0, "done"), "a settled child does not answer again");
+        // nor does a child answer for a member that is a Work
+        self.must("workflow.admitted", self.child_admission("t1.s0.impostor", "t1", s0, "a"), "a child claiming a leaf member's key is admitted");
+        self.must_refuse("workflow.settled", self.child_settled("t1.s0.impostor", "t1", s0, "done"), "is a Work; it answers when it settles", "but it cannot answer for a Work");
+        // a child admitted from a step nobody registered answers nothing
+        self.must("workflow.admitted", self.child_admission("t1.s9.zz", "t1", "t1/wf1/s9", "zz"), "a child of an unregistered step is admitted");
+        self.must_refuse("workflow.settled", self.child_settled("t1.s9.zz", "t1", "t1/wf1/s9", "done"), "was never registered", "and cannot answer it");
+        self.must("attempt.outcome", self.outcome(wc, 1, "failed", "no"), "the retry fails");
+        self.must("work.settled", self.settle(wc, s1, 1, "failed"), "so c settles failed");
+        std::test::assert(!self.p.joined(s1), "a failed member does not join its step");
+        std::test::assert_eq_str(self.p.pending(s1), "c", "c is still outstanding as far as the join is concerned");
+        self.must_refuse("step.completed", self.step_outcome(s1, "t1", "completed", "c", ""), "still waits for `c`", "a failed member does not complete the step");
+        // a fact whose own member set names `zz` reads (card 05 checks a fact
+        // against itself), and the projection refuses it against the set the
+        // Step actually registered
+        self.must_refuse("step.failed", self.step_outcome(s1, "t1", "failed", "zz", "zz"), "has no member `zz`", "and a step cannot fail on a member it never registered");
+        self.must("step.failed", self.step_outcome(s1, "t1", "failed", "c", "c"), "the step fails on c");
+
+        // ---- the execution settles
+        self.must("workflow.settled", dna::encode_workflow_outcome(dna::WorkflowOutcome { task_id: "t1", disposition: "failed", reason: "step " + s1 + " failed" }), "the execution settles failed");
+        self.must_replay("workflow.settled", dna::encode_workflow_outcome(dna::WorkflowOutcome { task_id: "t1", disposition: "failed", reason: "step " + s1 + " failed" }), "settled again moves nothing");
+        self.must_refuse("workflow.settled", dna::encode_workflow_outcome(dna::WorkflowOutcome { task_id: "t1", disposition: "done" }), "does not settle again", "and does not settle another way");
+        std::test::assert_eq_str(self.p.task("t1").disposition, "failed", "the task is failed");
+
+        // ---- the whole sequence again moves nothing
+        let works = self.p.work_count();
+        let steps = self.p.step_count();
+        let tasks = self.p.task_count();
+        let settled = self.p.step(s0).settled;
+        self.must_replay("workflow.admitted", self.admission("t1", "close-month"), "the admission again");
+        self.must_replay("step.registered", self.registration(s0, "t1", 0, "a:leaf:" + wa + " b:child:t1.s0.b"), "the registration again");
+        self.must_replay("work.settled", self.settle(wa, s0, 0, "done"), "a's settlement again");
+        self.must_replay("workflow.settled", self.child_settled("t1.s0.b", "t1", s0, "done"), "the child's settlement again");
+        self.must_replay("step.completed", self.step_outcome(s0, "t1", "completed", "a b", ""), "the completion again");
+        self.must_replay("step.failed", self.step_outcome(s1, "t1", "failed", "c", "c"), "the failure again");
+        std::test::assert(self.p.work_count() == works && self.p.step_count() == steps && self.p.task_count() == tasks, "no row was added by replaying");
+        std::test::assert_eq_str(self.p.step(s0).settled, settled, "and no member answered twice");
+        std::test::assert_eq_str(self.p.result_of(wa), "reconciled", "the results are what they were");
+    }
+}
+
+fn main() { App { }; }

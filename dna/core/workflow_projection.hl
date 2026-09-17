@@ -1,0 +1,606 @@
+// dna/core/workflow_projection.hl — the state an execution is in, read
+// from its facts and nothing else (DNA workflow card 06;
+// dna/WORKFLOW-CONTRACT.md §5, §6, §8).
+//
+// Every fact card 05 writes is applied here to plain rows. Applying one
+// asks nothing of the world: no journal, no bus, no performer, no clock.
+// `@no_syscall` says so where the compiler can check it, and the locus
+// holds no journal, no gateway and no model to call — a replay of a
+// thousand facts reaches nothing outside this arena.
+//
+// The join is by identity, not by counting (§6). A Step names its whole
+// required set before anything is dispatched; a Work settles under the
+// key it was registered as; the Step completes when every key in its
+// required set has settled `done`, and never because the right NUMBER of
+// members answered. Two answers from one member are one member.
+//
+// Applying a fact answers one of three things, which is the whole
+// vocabulary a reader needs:
+//
+//   refused  the fact does not belong to this execution, or would undo
+//            what is already settled — an unknown member, another Step's
+//            Work, a superseded attempt, a second disposition
+//   replay   the fact is already in the projection; nothing moved
+//   applied  the projection moved
+//
+// Nothing here dispatches, admits or appends. Card 07 admits.
+
+// One Work, as its facts leave it.
+type WorkView {
+    work_id: String = "";
+    step_id: String = "";
+    member_key: String = "";
+    attempt_id: String = ""; // the attempt admitted last: the current one
+    attempt_no: Int = -1; // -1 until one is admitted (§4 numbers from 0)
+    attempt_disposition: String = "";
+    disposition: String = ""; // "" until the Work itself settles
+    result: String = "";
+    result_ref: String = "";
+}
+
+// One Step: the members it must have, and the ones it has.
+type StepView {
+    step_id: String = "";
+    task_id: String = "";
+    workflow_id: String = "";
+    step_index: Int = 0;
+    required: String = ""; // every member key, space-separated
+    kinds: String = ""; // `<key>:<leaf|child>` per member, as registered
+    settled: String = ""; // the keys that have settled `done`
+    activated: Bool = false;
+    disposition: String = "";
+    failed_member: String = "";
+}
+
+// One Task, from its admission to its settlement.
+type TaskView {
+    task_id: String = "";
+    definition: String = "";
+    revision: Int = 0;
+    parent_task: String = "";
+    spawning_step: String = "";
+    member_key: String = "";
+    disposition: String = ""; // "" while it runs
+    reason: String = "";
+}
+
+@form(vec)
+locus WorkViewRows {
+    capacity { heap rows of WorkView; }
+}
+
+@form(vec)
+locus StepViewRows {
+    capacity { heap rows of StepView; }
+}
+
+@form(vec)
+locus TaskViewRows {
+    capacity { heap rows of TaskView; }
+}
+
+// What applying one fact did. `ok` is false only when the fact does not
+// belong here; a replay is `ok` and moved nothing.
+type Applied {
+    ok: Bool = false;
+    changed: Bool = false;
+    why: String = "";
+}
+
+fn applied() -> Applied {
+    return Applied { ok: true, changed: true };
+}
+
+fn replayed(why: String) -> Applied {
+    return Applied { ok: true, changed: false, why: why };
+}
+
+fn refused(why: String) -> Applied {
+    return Applied { ok: false, changed: false, why: why };
+}
+
+// Whether a space-separated set names this key. The whole key, never a
+// prefix of one: `b` is not in `bb c`.
+fn set_has(set: String, key: String) -> Bool {
+    if len(key) == 0 { return false; }
+    return std::str::contains(" " + set + " ", " " + key + " ");
+}
+
+fn set_add(set: String, key: String) -> String {
+    if set_has(set, key) { return set; }
+    if len(set) == 0 { return key; }
+    return set + " " + key;
+}
+
+@unbounded
+fn set_count(set: String) -> Int {
+    let mut n = 0;
+    let mut rest = set;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest + " ", " ");
+        if sp > 0 { n = n + 1; }
+        rest = if sp + 1 >= len(rest) { "" } else { rest[(sp + 1)..len(rest)] };
+    }
+    return n;
+}
+
+// The kind of one member of a registered set (`a:leaf b:child`), "" when
+// the set does not name it. A leaf is answered by its Work settling; a
+// child is answered by the execution it invoked settling (§6). One is
+// never the other.
+fn member_kind(kinds: String, key: String) -> String {
+    let mut rest = " " + kinds + " ";
+    let at = std::str::index_of(rest, " " + key + ":");
+    if at < 0 { return ""; }
+    let tail = rest[(at + len(key) + 2)..len(rest)];
+    let sp = std::str::index_of(tail, " ");
+    return if sp < 0 { tail } else { tail[0..sp] };
+}
+
+// `<key>:<kind>` per member, from a registered set (`a:leaf:<id> …`).
+@unbounded
+fn member_kinds(members: String) -> String {
+    let mut out = "";
+    let mut rest = members;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest + " ", " ");
+        let one = rest[0..sp];
+        rest = if sp + 1 >= len(rest) { "" } else { rest[(sp + 1)..len(rest)] };
+        if len(one) > 0 {
+            let colon = std::str::index_of(one, ":");
+            if colon < 0 { return ""; }
+            let after = one[(colon + 1)..len(one)];
+            let next = std::str::index_of(after, ":");
+            let kind = if next < 0 { after } else { after[0..next] };
+            if kind != "leaf" && kind != "child" { return ""; }
+            out = set_add(out, one[0..colon] + ":" + kind);
+        }
+    }
+    return out;
+}
+
+// The keys of a registered member set (`a:leaf:<id> b:child:<id>`), in
+// the order they were registered.
+@unbounded
+fn member_keys(members: String) -> String {
+    let mut out = "";
+    let mut rest = members;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest + " ", " ");
+        let one = rest[0..sp];
+        rest = if sp + 1 >= len(rest) { "" } else { rest[(sp + 1)..len(rest)] };
+        if len(one) > 0 {
+            let colon = std::str::index_of(one, ":");
+            out = set_add(out, if colon < 0 { one } else { one[0..colon] });
+        }
+    }
+    return out;
+}
+
+// The member key a Work id carries under its Step: a Work is
+// `<step>/<key>` and nothing longer (§4). `<step>/x/a` is not the member
+// `a` of that Step — it is not a member of it at all — so the key is read
+// against the Step, not off the end of the id.
+fn work_key_under(step_id: String, work_id: String) -> String {
+    if !id_below(step_id, work_id) { return ""; }
+    let key = work_id[(len(step_id) + 1)..len(work_id)];
+    if std::str::contains(key, "/") { return ""; }
+    return key;
+}
+
+// Applying a fact reaches nothing outside this arena. The contract is on
+// this one entry point and the checker follows it through every method it
+// reaches: a journal append, a performer, a clock or a print anywhere
+// under `apply` fails the build here rather than in a review. The locus
+// holds no journal, no gateway and no model to call either, so there is
+// nothing for a replay to reach even before the contract is read.
+@no_syscall
+fn replay(p: WorkflowProjection, kind: String, entity: String, body: String) -> Applied {
+    return p.apply(kind, entity, body);
+}
+
+// The state of one execution, and nothing but. It holds rows; it does not
+// hold a journal, a bus, a performer or a clock, so there is nothing here
+// for a replay to reach.
+locus WorkflowProjection {
+    params {
+        works: WorkViewRows = WorkViewRows { };
+        steps: StepViewRows = StepViewRows { };
+        tasks: TaskViewRows = TaskViewRows { };
+    }
+
+    // ---- what it knows ------------------------------------------------
+
+    fn work_count() -> Int { return self.works.len(); }
+    fn step_count() -> Int { return self.steps.len(); }
+    fn task_count() -> Int { return self.tasks.len(); }
+
+    @unbounded
+    fn work_at(i: Int) -> WorkView { return self.works.get(i) or WorkView { }; }
+
+    @unbounded
+    fn work(work_id: String) -> WorkView {
+        let mut i = 0;
+        while i < self.works.len() {
+            let w = self.works.get(i) or WorkView { };
+            if w.work_id == work_id { return w; }
+            i = i + 1;
+        }
+        return WorkView { };
+    }
+
+    @unbounded
+    fn step(step_id: String) -> StepView {
+        let mut i = 0;
+        while i < self.steps.len() {
+            let s = self.steps.get(i) or StepView { };
+            if s.step_id == step_id { return s; }
+            i = i + 1;
+        }
+        return StepView { };
+    }
+
+    @unbounded
+    fn task(task_id: String) -> TaskView {
+        let mut i = 0;
+        while i < self.tasks.len() {
+            let t = self.tasks.get(i) or TaskView { };
+            if t.task_id == task_id { return t; }
+            i = i + 1;
+        }
+        return TaskView { };
+    }
+
+    // The result of one Work, by its id: what the attempt it settled on
+    // produced. "" when it has not settled.
+    fn result_of(work_id: String) -> String {
+        return self.work(work_id).result;
+    }
+
+    fn result_ref_of(work_id: String) -> String {
+        return self.work(work_id).result_ref;
+    }
+
+    // The members a Step is still waiting for, in registration order.
+    @unbounded
+    fn pending(step_id: String) -> String {
+        let s = self.step(step_id);
+        let mut out = "";
+        let mut rest = s.required;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest + " ", " ");
+            let key = rest[0..sp];
+            rest = if sp + 1 >= len(rest) { "" } else { rest[(sp + 1)..len(rest)] };
+            if len(key) > 0 && !set_has(s.settled, key) { out = set_add(out, key); }
+        }
+        return out;
+    }
+
+    // Whether every member of a Step's required set has settled `done`.
+    // A Step with no required set is not ready: it was never registered.
+    fn joined(step_id: String) -> Bool {
+        let s = self.step(step_id);
+        if len(s.required) == 0 { return false; }
+        return len(self.pending(step_id)) == 0;
+    }
+
+    // ---- applying one fact ---------------------------------------------
+
+    @unbounded
+    fn apply(kind: String, entity: String, body: String) -> Applied {
+        if kind == "workflow.admitted" { return self.admitted(body); }
+        if kind == "workflow.refused" { return self.refusal(body); }
+        if kind == "step.registered" { return self.registered(body); }
+        if kind == "step.activated" { return self.activated(body); }
+        if kind == "attempt.admitted" { return self.attempt(body); }
+        if kind == "attempt.outcome" { return self.attempt_outcome(body); }
+        if kind == "work.settled" { return self.work_settled(body); }
+        if kind == "step.completed" || kind == "step.failed" { return self.step_settled(body); }
+        if kind == "workflow.settled" { return self.workflow_settled(body); }
+        return refused("`" + kind + "` is no fact of a workflow execution");
+    }
+
+    @unbounded
+    fn admitted(body: String) -> Applied {
+        let read = decode_admission(body);
+        if !read.ok { return refused(read.why); }
+        let a = read.value;
+        let known = self.task(a.task_id);
+        if len(known.task_id) > 0 {
+            if known.definition != a.definition || known.revision != a.revision {
+                return refused("task " + a.task_id + " was admitted for " + definition_name(known.definition, known.revision) + ", not " + definition_name(a.definition, a.revision));
+            }
+            return replayed("task " + a.task_id + " was already admitted");
+        }
+        self.tasks.push(TaskView {
+            task_id: a.task_id, definition: a.definition, revision: a.revision,
+            parent_task: a.parent_task, spawning_step: a.spawning_step, member_key: a.member_key
+        });
+        return applied();
+    }
+
+    @unbounded
+    fn refusal(body: String) -> Applied {
+        let read = decode_refusal(body);
+        if !read.ok { return refused(read.why); }
+        let r = read.value;
+        let known = self.task(r.task_id);
+        if len(known.task_id) > 0 {
+            if known.disposition == "refused" { return replayed("task " + r.task_id + " was already refused"); }
+            return refused("task " + r.task_id + " was admitted; a refusal does not undo that");
+        }
+        self.tasks.push(TaskView {
+            task_id: r.task_id, definition: r.definition, revision: r.revision,
+            parent_task: r.parent_task, spawning_step: r.spawning_step, member_key: r.member_key,
+            disposition: "refused", reason: r.why
+        });
+        return applied();
+    }
+
+    @unbounded
+    fn registered(body: String) -> Applied {
+        let read = decode_members(body);
+        if !read.ok { return refused(read.why); }
+        let m = read.value;
+        if len(self.task(m.task_id).task_id) == 0 {
+            return refused("step " + m.step_id + " belongs to task " + m.task_id + ", which was never admitted");
+        }
+        let keys = member_keys(m.members);
+        if len(keys) == 0 { return refused("step " + m.step_id + " registers no member"); }
+        let kinds = member_kinds(m.members);
+        if len(kinds) == 0 { return refused("step " + m.step_id + " registers a member that is neither a leaf nor a child"); }
+        let known = self.step(m.step_id);
+        if len(known.step_id) > 0 {
+            if known.required != keys {
+                return refused("step " + m.step_id + " required `" + known.required + "`; a step's required set is registered once, not `" + keys + "`");
+            }
+            return replayed("step " + m.step_id + " was already registered");
+        }
+        self.steps.push(StepView {
+            step_id: m.step_id, task_id: m.task_id, workflow_id: m.workflow_id,
+            step_index: m.step_index, required: keys, kinds: kinds
+        });
+        return applied();
+    }
+
+    @unbounded
+    fn activated(body: String) -> Applied {
+        let read = decode_activation(body);
+        if !read.ok { return refused(read.why); }
+        let a = read.value;
+        let mut i = 0;
+        while i < self.steps.len() {
+            let s = self.steps.get(i) or StepView { };
+            if s.step_id == a.step_id {
+                if s.activated { return replayed("step " + a.step_id + " was already activated"); }
+                s.activated = true;
+                self.steps.set(i, s) or discard;
+                return applied();
+            }
+            i = i + 1;
+        }
+        return refused("step " + a.step_id + " was activated before its members were registered");
+    }
+
+    @unbounded
+    fn attempt(body: String) -> Applied {
+        let read = decode_attempt(body);
+        if !read.ok { return refused(read.why); }
+        let a = read.value;
+        let gap = self.member_gap(a.step_id, a.work_id);
+        if len(gap) > 0 { return refused(gap); }
+        let mut i = 0;
+        while i < self.works.len() {
+            let w = self.works.get(i) or WorkView { };
+            if w.work_id == a.work_id {
+                if len(w.disposition) > 0 {
+                    return refused("work " + a.work_id + " settled " + w.disposition + "; a settled Work is not attempted again");
+                }
+                if w.attempt_no == a.attempt_no { return replayed("attempt " + a.attempt_id + " was already admitted"); }
+                if a.attempt_no < w.attempt_no {
+                    return refused("attempt " + a.attempt_id + " was superseded by " + w.attempt_id);
+                }
+                w.attempt_id = std::str::clone(a.attempt_id);
+                w.attempt_no = a.attempt_no;
+                w.attempt_disposition = "";
+                self.works.set(i, w) or discard;
+                return applied();
+            }
+            i = i + 1;
+        }
+        self.works.push(WorkView {
+            work_id: a.work_id, step_id: a.step_id, member_key: work_key_under(a.step_id, a.work_id),
+            attempt_id: a.attempt_id, attempt_no: a.attempt_no
+        });
+        return applied();
+    }
+
+    @unbounded
+    fn attempt_outcome(body: String) -> Applied {
+        let read = decode_attempt_outcome(body);
+        if !read.ok { return refused(read.why); }
+        let o = read.value;
+        let mut i = 0;
+        while i < self.works.len() {
+            let w = self.works.get(i) or WorkView { };
+            if w.work_id == o.work_id {
+                if w.attempt_id != o.attempt_id {
+                    return refused("attempt " + o.attempt_id + " was superseded by " + w.attempt_id + "; its outcome decides nothing");
+                }
+                if w.attempt_disposition == o.disposition { return replayed("attempt " + o.attempt_id + " already " + o.disposition); }
+                if len(w.attempt_disposition) > 0 {
+                    return refused("attempt " + o.attempt_id + " was " + w.attempt_disposition + "; an attempt has one outcome");
+                }
+                w.attempt_disposition = std::str::clone(o.disposition);
+                w.result = std::str::clone(o.result);
+                w.result_ref = std::str::clone(o.result_ref);
+                self.works.set(i, w) or discard;
+                return applied();
+            }
+            i = i + 1;
+        }
+        return refused("work " + o.work_id + " was never attempted");
+    }
+
+    @unbounded
+    fn work_settled(body: String) -> Applied {
+        let read = decode_work_outcome(body);
+        if !read.ok { return refused(read.why); }
+        let o = read.value;
+        let gap = self.member_gap(o.step_id, o.work_id);
+        if len(gap) > 0 { return refused(gap); }
+        let mut i = 0;
+        while i < self.works.len() {
+            let w = self.works.get(i) or WorkView { };
+            if w.work_id == o.work_id {
+                if w.step_id != o.step_id {
+                    return refused("work " + o.work_id + " is a member of step " + w.step_id + ", not " + o.step_id);
+                }
+                if w.attempt_id != o.attempt_id {
+                    return refused("work " + o.work_id + " ran attempt " + w.attempt_id + "; it cannot settle on " + o.attempt_id);
+                }
+                if w.disposition == o.disposition { return replayed("work " + o.work_id + " already settled " + o.disposition); }
+                if len(w.disposition) > 0 {
+                    return refused("work " + o.work_id + " settled " + w.disposition + "; a settled Work does not settle again");
+                }
+                w.disposition = std::str::clone(o.disposition);
+                if len(o.result_ref) > 0 { w.result_ref = std::str::clone(o.result_ref); }
+                self.works.set(i, w) or discard;
+                if o.disposition == "done" {
+                    let j = self.join(o.step_id, w.member_key);
+                    if !j.ok { return j; }
+                    return Applied { ok: true, changed: true, why: j.why };
+                }
+                return applied();
+            }
+            i = i + 1;
+        }
+        return refused("work " + o.work_id + " was never attempted");
+    }
+
+    // A member that settled `done` joins its Step's settled set, once, by
+    // its key. Two answers from one member are one member.
+    @unbounded
+    fn join(step_id: String, key: String) -> Applied {
+        let mut i = 0;
+        while i < self.steps.len() {
+            let s = self.steps.get(i) or StepView { };
+            if s.step_id == step_id {
+                if set_has(s.settled, key) { return replayed("member `" + key + "` of step " + step_id + " had already answered"); }
+                s.settled = set_add(s.settled, key);
+                self.steps.set(i, s) or discard;
+                return applied();
+            }
+            i = i + 1;
+        }
+        return refused("step " + step_id + " was never registered");
+    }
+
+    @unbounded
+    fn step_settled(body: String) -> Applied {
+        let read = decode_step_outcome(body);
+        if !read.ok { return refused(read.why); }
+        let o = read.value;
+        let mut i = 0;
+        while i < self.steps.len() {
+            let s = self.steps.get(i) or StepView { };
+            if s.step_id == o.step_id {
+                if s.disposition == o.disposition { return replayed("step " + o.step_id + " already " + o.disposition); }
+                if len(s.disposition) > 0 {
+                    return refused("step " + o.step_id + " " + s.disposition + "; a settled Step does not settle again");
+                }
+                if o.disposition == "completed" && !self.joined(o.step_id) {
+                    return refused("step " + o.step_id + " still waits for `" + self.pending(o.step_id) + "`");
+                }
+                if o.disposition == "failed" && !set_has(s.required, o.failed_member) {
+                    return refused("step " + o.step_id + " has no member `" + o.failed_member + "`");
+                }
+                s.disposition = std::str::clone(o.disposition);
+                s.failed_member = std::str::clone(o.failed_member);
+                self.steps.set(i, s) or discard;
+                return applied();
+            }
+            i = i + 1;
+        }
+        return refused("step " + o.step_id + " was never registered");
+    }
+
+    @unbounded
+    fn workflow_settled(body: String) -> Applied {
+        let read = decode_workflow_outcome(body);
+        if !read.ok { return refused(read.why); }
+        let o = read.value;
+        let mut i = 0;
+        while i < self.tasks.len() {
+            let t = self.tasks.get(i) or TaskView { };
+            if t.task_id == o.task_id {
+                if t.disposition == o.disposition { return replayed("task " + o.task_id + " already " + o.disposition); }
+                if len(t.disposition) > 0 {
+                    return refused("task " + o.task_id + " " + t.disposition + "; a settled execution does not settle again");
+                }
+                // §6: a child answers the step that invoked it by settling.
+                // Whether its parent can receive that is decided before the
+                // child moves, so a refusal leaves nothing half-applied.
+                // the settlement may not redirect the answer: where a
+                // child answers is where it was admitted from
+                if len(o.parent_task) > 0 && o.parent_task != t.parent_task {
+                    return refused("task " + o.task_id + " was admitted under " + t.parent_task + ", not " + o.parent_task);
+                }
+                if len(o.spawning_step) > 0 && o.spawning_step != t.spawning_step {
+                    return refused("task " + o.task_id + " answers step " + t.spawning_step + ", not " + o.spawning_step);
+                }
+                let answers = o.disposition == "done" && len(t.spawning_step) > 0 && len(t.member_key) > 0;
+                if answers {
+                    let gap = self.child_gap(t.spawning_step, t.member_key);
+                    if len(gap) > 0 { return refused(gap); }
+                }
+                let up = std::str::clone(t.spawning_step);
+                let key = std::str::clone(t.member_key);
+                t.disposition = std::str::clone(o.disposition);
+                t.reason = std::str::clone(o.reason);
+                self.tasks.set(i, t) or discard;
+                if answers {
+                    let j = self.join(up, key);
+                    if !j.ok { return j; }
+                    return Applied { ok: true, changed: true, why: j.why };
+                }
+                return applied();
+            }
+            i = i + 1;
+        }
+        return refused("task " + o.task_id + " was never admitted");
+    }
+
+    // Why this Work is not a member of that Step, "" when it is. The Step
+    // has to be registered, the Work has to live under it (§4), and its
+    // key has to be one the Step named.
+    @unbounded
+    fn member_gap(step_id: String, work_id: String) -> String {
+        let s = self.step(step_id);
+        if len(s.step_id) == 0 { return "step " + step_id + " was never registered"; }
+        let key = work_key_under(step_id, work_id);
+        if len(key) == 0 { return "work " + work_id + " is not a work of step " + step_id; }
+        if !set_has(s.required, key) {
+            return "step " + step_id + " has no member `" + key + "` (it required `" + s.required + "`)";
+        }
+        if member_kind(s.kinds, key) != "leaf" {
+            return "member `" + key + "` of step " + step_id + " is a child workflow; it answers by settling, not as a Work";
+        }
+        return "";
+    }
+
+    // Why this child's key is not a member its spawning Step waits for,
+    // "" when it is.
+    @unbounded
+    fn child_gap(step_id: String, key: String) -> String {
+        let s = self.step(step_id);
+        if len(s.step_id) == 0 { return "step " + step_id + " was never registered"; }
+        if !set_has(s.required, key) {
+            return "step " + step_id + " has no member `" + key + "` (it required `" + s.required + "`)";
+        }
+        if member_kind(s.kinds, key) != "child" {
+            return "member `" + key + "` of step " + step_id + " is a Work; it answers when it settles, not as a child workflow";
+        }
+        return "";
+    }
+}

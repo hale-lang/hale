@@ -868,8 +868,8 @@ A definition id is `[a-z0-9][a-z0-9-]*`, checked when it is defined and
 when it is read, so an id can never carry the delimiters the definition
 path is written with. `encode()` writes every definition and member as
 one JSON document (`format: dna.workflow-definitions/1`) and
-`decode(text)` reads one back, refusing a document that is not one
-complete JSON value, another format, an id outside
+`decode(text)` reads one back, refusing a document that does not close,
+another format, an id outside
 the grammar, an already defined revision, or a document that defines one
 revision twice, and adding nothing then.
 
@@ -878,9 +878,12 @@ dna.workflow-recipe/1`) carrying the node count it was written with, and
 `decode_bound(text)` reads one back. It refuses another format, a missing
 node array, a count that disagrees with what the document carries, a node
 without an identity or of no known kind, a node whose number was written
-as text or whose text was written as a number, and a document that is not
-one complete JSON value: every object, array and string closed, and
-nothing after it. A whole final node also ends in `}`, so the last
+as text or whose text was written as a number, and a document that does not close: every object,
+array and string closed by its own delimiter, with nothing after the
+value. That is a closure scan rather than a JSON grammar validator — it
+does not check escape sequences or number syntax — which is what reading
+back one encoder's own output needs; a document from outside the system
+wants a real parser in front of it. A whole final node also ends in `}`, so the last
 character says nothing about the document. Every refusal binds nothing:
 half a recipe is not a smaller execution. Nothing yet executes a bound
 expansion.
@@ -930,8 +933,38 @@ key, kind, entity and body is that transition proposed again, which the
 committer answers from its journal; the same id carrying anything else
 is a conflict, and `transition_conflict` names which part differs.
 
+## Workflow state
+
+The state an execution is in is read from those facts and nothing else
+(`dna/core/workflow_projection.hl`). `replay(projection, kind, entity,
+body)` applies one fact to plain rows and answers one of three things:
+the fact was **applied**, it is a **replay** of what the projection
+already holds, or it is **refused** because it does not belong to this
+execution or would undo what is settled. Applying a fact asks nothing of
+the world: the entry point carries `@no_syscall`, which the compiler
+checks through everything it reaches, and the projection holds no
+journal, gateway or model to call.
+
+The join is by identity, never by counting (§6 of the contract). A Step
+registers its whole required set before anything is dispatched, with each
+member's kind; a member answers once, under the key it was registered as;
+and the Step completes only when every key has settled. A leaf member is
+answered by its Work settling, a child member by the execution it invoked
+settling into the step that spawned it, and neither can answer for the
+other. Two answers from one member are one member: the second is a
+replay, and the Step does not complete because the right *number* of
+answers arrived.
+
+A fact is refused when its Step was never registered, when its Work is
+not a member of that Step (a Work is `<step>/<key>` and nothing longer),
+when its attempt was superseded by a later one, when a settled Work or
+Step or execution would settle again or differently, when a child's
+settlement would redirect its answer to another step than the one it was
+admitted from, and when a Step would complete with members still
+outstanding. Results are read back by Work identity.
+
 Nothing yet admits, records or executes a workflow; these are the
-durable shapes it will be written in.
+durable shapes it is written in, and the state they add up to.
 
 ## Storage interfaces
 

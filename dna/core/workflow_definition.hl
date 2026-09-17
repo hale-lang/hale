@@ -193,12 +193,19 @@ fn bound_request(n: BoundNode, task_id: String, step_id: String) -> WorkRequest 
     };
 }
 
-// Whether `text` is one complete JSON value and nothing else: every
-// object and array closed by its own delimiter, every string closed, and
-// only space after the value ends. A document cut off mid-write fails
-// wherever it was cut — inside a node, before the array's `]`, or before
-// the document's own `}` — which a last-character check cannot tell apart
-// from a whole one, because a complete final node also ends in `}`.
+// Whether `text` CLOSES: every object and array closed by its own
+// delimiter, every string closed, and only space after the value ends. A
+// document cut off mid-write fails wherever it was cut — inside a node,
+// before the array's `]`, or before the document's own `}` — which a
+// last-character check cannot tell apart from a whole one, because a
+// complete final node also ends in `}`.
+//
+// This is a closure scan, not a JSON grammar validator: it does not
+// check escape sequences, number syntax or the literals, so a document
+// carrying `\q` inside a string closes and is read. That is enough for
+// what this format is — one encoder's own output, read back — and it is
+// not enough to validate a document from somewhere else. Anything read
+// from outside wants a real parser in front of it.
 @unbounded
 fn json_whole(text: String) -> Bool {
     let mut open = ""; // the containers still open, innermost last

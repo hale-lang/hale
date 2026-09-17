@@ -179,6 +179,17 @@ root  t1  definition close-month rev 1
       d   leaf   "post the journal entries"         Work t1/wf1/s1/d
 ```
 
+**How a member answers (card 06).** A step registers its whole required
+set with each member's kind before anything is dispatched, and a member
+answers once, under the key it was registered as. A `leaf` answers when
+its Work settles; a `child` answers when the execution it invoked
+settles into the step that spawned it. Neither answers for the other,
+and a step completes only when every key in its required set has
+settled — never because the right *number* of answers arrived.
+`dna/core/workflow_projection.hl` reads this from the facts alone and
+reaches nothing outside itself (`@no_syscall` on its entry point).
+**[decided; proven: `workflow_projection_test.hl`, card 06]**
+
 **When D may start.** Only after all of the following are committed,
 in this order of dependency: `c1` done; step `t1.s0.b.s1.c/wf1/s0`
 complete; Task `t1.s0.b.s1.c` settled done; step `t1.s0.b/wf1/s1`
