@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: recovery finds a Task's Mutation in either memory's order (workflow card 02)
+
+- After a restart, `resume_work` looked for a Task's `mutation.proposed` only after its `task.born`. Read as record + ledger, the record's Mutation rows come before the ledger's births, so a Task awaiting its Mutation's review was resumed and planned again on an adopted organism, while the same facts in one journal waited correctly. The Mutation is now found by the Task it names anywhere in the journal (`mutation_of_task`); the plan, a ledger row like the birth, is still read after it. No global order is invented. `recovery_association_test.hl` seeds the same awaiting-review, in-flight and settled Tasks into one journal and into a split record and ledger, and asserts the same restart for both.
+
 ### DNA: a publish the membrane loses is not a lost fact (GH #682)
 
 - The membrane client exits once it has handed a fact to its binding; under load the organism could miss it, and nothing noticed: an ask beside a live organism left no durable row, the host relayed each record row exactly once, and an `expression.observed` report that went missing left a mutation applied and never retained. Delivery is now confirmed by the answer in the record. `hale dna ask`, `review`, `concern raise` and `practice propose` beside a live organism write their row before publishing; the host relays a row again while it stays unanswered (every 30s); the organism admits an intent once by its id and answers a practice request once; the host reports an observation again until the organism records it. `membrane_loss_test.hl` drops the first relay and shows the intent admitted once; it fails without the relay-again rule. The books fixture's state check now prints every row about the task when it fails.
