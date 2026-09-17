@@ -48,8 +48,10 @@ fn keys_add(list: String, key: String) -> String {
 // of their own, so an answer naming that entity is that request's. Several
 // concerns from one source share an entity, so a concern carries its own
 // id (`request` in its body) and the organization writes that id into the
-// `concern.raised` it answers with: the answer is matched by identity, and
-// a repeated or a later answer can neither answer an earlier request nor
+// `concern.raised` it answers with, in a field of its own, which is read
+// back whole and compared whole (`dna::request_named`): the answer is
+// matched by identity, an answer to `c10` is not an answer to `c1`, and a
+// repeated or a later answer can neither answer an earlier request nor
 // hide one that was never delivered.
 //
 // A request written before this rule carries no id. Those fall back to
@@ -65,7 +67,7 @@ fn request_answered(p: Projection, i: Int, kinds: String) -> Bool {
         let mut j = i + 1;
         while j < p.rows() {
             let o = p.row(j);
-            if o.entity == r.entity && std::str::contains(kinds, " " + o.kind + " ") && std::str::contains(o.body, "request:" + id) { return true; }
+            if o.entity == r.entity && std::str::contains(kinds, " " + o.kind + " ") && dna::request_named(o.body) == id { return true; }
             j = j + 1;
         }
         return false;
@@ -85,7 +87,7 @@ fn request_answered(p: Projection, i: Int, kinds: String) -> Bool {
     j = first + 1;
     while j < p.rows() {
         let o = p.row(j);
-        if o.entity == r.entity && std::str::contains(kinds, " " + o.kind + " ") && !std::str::contains(o.body, "request:") { answers = answers + 1; }
+        if o.entity == r.entity && std::str::contains(kinds, " " + o.kind + " ") && len(dna::request_named(o.body)) == 0 { answers = answers + 1; }
         j = j + 1;
     }
     return answers >= occurrence;
@@ -485,7 +487,7 @@ locus Host {
                 self.relayed = relay_mark(self.relayed, fact_key(p, i), std::time::now());
                 self.say("refused an unverified " + r.kind + " (" + r.entity + ") from the record");
             } else if (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") {
-                let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else { " review.settled review.refused " };
+                let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised concern.refused " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else { " review.settled review.refused " };
                 let answered = request_answered(p, i, answers);
                 // GH #664: an intent for a position another owner holds is
                 // theirs to admit; it stays in the record, unanswered here

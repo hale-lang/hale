@@ -23,6 +23,22 @@ fn in_dir(dir: String, cache: String, argv: String) -> dna::RunResult {
     return dna::run_tool("sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off XDG_CACHE_HOME=\"$1\" && shift && exec \"$@\"\nsh\n" + dir + "\n" + cache + "\n" + argv);
 }
 
+// How many rows answer this request, by identity: the id is a field of
+// its own in the body, read back whole and compared whole (GH #689
+// review). An answer to `c10` must not count as an answer to `c1`.
+@unbounded
+fn answers(repo: String, request: String) -> Int {
+    let j = dna::GitJournal { repo: repo };
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "concern.raised" && dna::request_named(e.body) == request { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
 @unbounded
 fn rows(repo: String, kind: String, needle: String) -> Int {
     let j = dna::GitJournal { repo: repo };
@@ -97,9 +113,14 @@ main locus App {
         // answer is named by its own id, not by any answer for its source
         // (GH #689). Each concern says something of its own, so the answers
         // can be told apart.
+        //
+        // The ids are `c1` and `c10`, one a prefix of the other (the review
+        // of the first fix): matching the id by searching the body for it
+        // lets c10's answer pass for c1's, and c1 — whose delivery was lost
+        // — is then never relayed again.
         let j = dna::GitJournal { repo: a, author: "edge" };
-        let first = "{\"request\": \"c-first\", \"source\": \"org/repeated/worker\", \"what\": \"mail backlog behind fulfilment\", \"severity\": 2}";
-        let second = "{\"request\": \"c-second\", \"source\": \"org/repeated/worker\", \"what\": \"the printer is out of paper\", \"severity\": 1}";
+        let first = "{\"request\": \"c1\", \"source\": \"org/repeated/worker\", \"what\": \"mail backlog behind fulfilment\", \"severity\": 2}";
+        let second = "{\"request\": \"c10\", \"source\": \"org/repeated/worker\", \"what\": \"the printer is out of paper\", \"severity\": 1}";
         let w1 = j.append(j.revision(), "concern.requested", "org/repeated/worker", first);
         std::test::assert(w1.ok, "the first concern is in the record: " + w1.error);
         let mut tries = 0;
@@ -113,19 +134,19 @@ main locus App {
         let mut answered_second = false;
         tries = 0;
         while !answered_second && tries < 240 {
-            answered_second = std::str::contains(record(a), "request:c-second");
+            answered_second = answers(a, "c10") == 1;
             if !answered_second { std::time::sleep(500ms); }
             tries = tries + 1;
         }
         std::test::assert(answered_second, "the second concern was raised: " + (std::io::fs::read_file(a + "/host.log") or ""));
-        std::test::assert(!std::str::contains(record(a), "request:c-first"), "and the lost one is still unanswered");
+        std::test::assert_eq_int(answers(a, "c1"), 0, "and the lost one is still unanswered, whatever c10's answer looks like");
 
         // the host relays an unanswered request again; the answer to the
         // second must not pass for the first's
         let mut answered_first = false;
         tries = 0;
         while !answered_first && tries < 300 {
-            answered_first = std::str::contains(record(a), "request:c-first");
+            answered_first = answers(a, "c1") == 1;
             if !answered_first { std::time::sleep(500ms); }
             tries = tries + 1;
         }

@@ -695,8 +695,16 @@ repository:
   verdict's review and a practice request have an entity of their own,
   and a concern — whose entity is its source, shared by every concern
   from it — carries a `request` id that the organization writes into
-  the `concern.raised` answering it. A row written before that rule
-  carries no id and is matched by counting, as this host did before. **A
+  the `concern.raised` answering it, as a field of its own
+  (`… [request <id>]`), which the host parses out and compares whole: an
+  answer to `c10` is not an answer to `c1`. A row written before that
+  rule carries no such field and is matched by counting, as this host did
+  before. **One request is one concern**: a request delivered twice — the
+  host relays a row again while it looks unanswered — writes one
+  `concern.raised`, and the count that turns concerns into a knowledge
+  proposal counts distinct requests, never redeliveries. Two requests
+  raising the same words are two concerns; one id used for two different
+  concerns is refused once, in `concern.refused`. **A
   membrane publish is confirmed by its answer in the record, never by
   the client's exit** (GH #682): the client hands the fact to its
   binding and exits, and under load the organism may never see it, so
@@ -812,7 +820,7 @@ record's.
 | `receipt.read` / `receipt.read_refused` | ledger | a read in the reader's name, or its refusal |
 | `receipt.held` / `receipt.hold_released` | ledger | a hold that refuses redaction, and its release |
 | `receipt.redacted` | ledger | the body removed, the digest kept |
-| `concern.requested` / `concern.raised` | ledger | a concern from a part about the part above it; the request carries its own `request` id and the answer names it (`… request:<id>`) |
+| `concern.requested` / `concern.raised` | ledger | a concern from a part about the part above it; the request carries its own `request` id and the answer names it in a field of its own (`… [request <id>]`), parsed and compared whole; one request is one concern, however often it is delivered |
 | `concern.refused` | ledger | one the organization would not admit |
 | `concern.proposed` | record | three raises became a proposal |
 | `pressure.raised` | ledger | a signal from a source, counted |
