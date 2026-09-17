@@ -870,7 +870,15 @@ path is written with. `encode()` writes every definition and member as
 one JSON document (`format: dna.workflow-definitions/1`) and
 `decode(text)` reads one back, refusing another format, an id outside
 the grammar, an already defined revision, or a document that defines one
-revision twice, and adding nothing then. Nothing yet executes a bound
+revision twice, and adding nothing then.
+
+`encode_bound()` writes one bound execution as a recipe (`format:
+dna.workflow-recipe/1`) carrying the node count it was written with, and
+`decode_bound(text)` reads one back. It refuses another format, a missing
+node array, a count that disagrees with what the document carries, a node
+without an identity or of no known kind, a node whose number was written
+as text, and a document that ends mid-write. Every refusal binds nothing:
+half a recipe is not a smaller execution. Nothing yet executes a bound
 expansion.
 
 ## Workflow facts
@@ -885,10 +893,26 @@ one attempt's id and the `WorkRequest` it was admitted with;
 `attempt.outcome` its disposition, result and evidence; and
 `work.settled`, `step.completed` / `step.failed` and `workflow.settled`
 settle each level to the one above it, a child workflow naming the parent
-Task and spawning step it answers. Each fact carries the engine (`wf1`)
-and a version. A decoder refuses a version it does not know, another
-engine's admission, and a fact that does not name the entity it is
-about; it never half-reads one.
+Task and spawning step it answers. An admission also names the engine (`wf1`), and every fact a version.
+A decoder refuses a version it does not know, another engine's
+admission or refusal, a fact that does not name the entity it is about,
+a fact that says nothing where a number belongs (an absent revision is
+not revision 0), and a fact whose own identities contradict each other:
+an attempt id that is not its Work and number, an attempt carrying a
+request for another Work or another attempt, a Work settling under a
+Step it is not part of or on another Work's attempt, a step failing on
+a member it never had, a child naming its parent but not the step that
+spawned it, an admission deeper or wider than the limits it says were
+applied. A fact is read whole or not at all. The identities an attempt
+admission carries are written once and derived from the fact, so its id,
+its number and its embedded request cannot disagree.
+
+`step.activated` and `workflow.refused` have codecs of their own, like
+the rest; a routing row is not a durable shape. A fact a transition
+committed carries the scope, key and proposal id it was committed
+under, appended with it, so the committed proposal can be reconstructed
+from the journal after a restart and compared against a later reuse of
+that id.
 
 These kinds are the ledger's under split routing and the record's on
 routing 0, like every other operational kind.

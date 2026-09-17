@@ -193,6 +193,70 @@ fn bound_request(n: BoundNode, task_id: String, step_id: String) -> WorkRequest 
     };
 }
 
+// Whether a JSON document or element closes: its last character, ignoring
+// trailing space, is `}`. A document cut off mid-write does not.
+fn whole_document(text: String) -> Bool {
+    let mut i = len(text);
+    while i > 0 {
+        let c = text[(i - 1)..i];
+        if c != " " && c != "\n" && c != "\t" && c != "\r" {
+            return c == "}";
+        }
+        i = i - 1;
+    }
+    return false;
+}
+
+// Whether a raw JSON value is a number, rather than absent, a string or
+// anything else. `find_int_field` answers 0 for all three.
+fn is_number(raw: String) -> Bool {
+    if len(raw) == 0 { return false; }
+    let first = raw[0..1];
+    if first == "-" { return len(raw) > 1 && is_digit(raw[1..2]); }
+    return is_digit(first);
+}
+
+fn is_digit(c: String) -> Bool {
+    return c >= "0" && c <= "9";
+}
+
+// Why one node of a recipe cannot be read, "" when it can. `at` is its
+// position, so a refusal says which node broke without an id to name.
+@unbounded
+fn node_gap(e: String, at: Int) -> String {
+    let at_node = " (node " + to_string(at) + ")";
+    if !whole_document(e) { return "a node ends mid-document" + at_node; }
+    // every node carries every field; the last one written is `attempts`,
+    // so a node missing it was cut short whatever else parsed
+    let mut nums = "revision step_index depth cost_ceiling attempts";
+    while len(nums) > 0 {
+        let sp = std::str::index_of(nums + " ", " ");
+        let name = nums[0..sp];
+        nums = if sp + 1 >= len(nums) { "" } else { nums[(sp + 1)..len(nums)] };
+        if !is_number(std::json::find_field_raw(e, name)) {
+            return "a node's " + name + " is not a number" + at_node;
+        }
+    }
+    let kind = std::json::find_string_field(e, "kind");
+    if kind != "task" && kind != "step" && kind != "work" {
+        return "a node is a task, a step or a work, not `" + kind + "`" + at_node;
+    }
+    let id = std::json::find_string_field(e, "id");
+    if len(id) == 0 { return "a " + kind + " node carries no id" + at_node; }
+    if kind == "task" {
+        if len(std::json::find_string_field(e, "definition")) == 0 { return "task " + id + " names no definition"; }
+        if std::json::find_int_field(e, "depth") < 1 { return "task " + id + " is at no depth"; }
+        return "";
+    }
+    if len(std::json::find_string_field(e, "parent")) == 0 {
+        return "the " + kind + " " + id + " names no parent";
+    }
+    if kind == "step" && len(std::json::find_string_field(e, "workflow_id")) == 0 {
+        return "step " + id + " names no workflow";
+    }
+    return "";
+}
+
 locus WorkflowCatalog {
     params {
         workflows: WorkflowDefRows = WorkflowDefRows { };
@@ -492,6 +556,9 @@ locus WorkflowCatalog {
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("format", "dna.workflow-recipe/1");
+        // how many nodes the writer wrote: a reader that decodes a
+        // different number has half a recipe, whatever it parsed
+        b.int_field("count", self.bound.len());
         b.begin_array_field("nodes");
         let mut i = 0;
         while i < self.bound.len() {
@@ -524,14 +591,44 @@ locus WorkflowCatalog {
         b.end_object();
         return b.result();
     }
-    // Read a recipe back as this catalog's bound nodes. "" when read, else
-    // why not; nothing is bound when it is refused.
+    // Why a recipe cannot be read whole, "" when it can. Checked before a
+    // node of it is bound: a document that was cut off, or that carries a
+    // node without an identity or with a field of the wrong type, is not a
+    // smaller recipe, it is half of one.
     @unbounded
-    fn decode_bound(text: String) -> String {
+    fn recipe_gap(text: String) -> String {
         if std::json::find_string_field(text, "format") != "dna.workflow-recipe/1" {
             return "not a workflow recipe (format " + std::json::find_string_field(text, "format") + ")";
         }
+        if !whole_document(text) { return "the recipe ends mid-document"; }
+        if !is_number(std::json::find_field_raw(text, "count")) { return "a recipe says how many nodes it carries"; }
+        let said = std::json::find_int_field(text, "count");
+        let nodes = std::json::find_field_raw(text, "nodes");
+        if len(nodes) == 0 { return "a recipe carries its nodes"; }
+        let mut seen = 0;
+        let mut it = std::json::array_first(nodes);
+        while !it.done {
+            let e = it.element;
+            seen = seen + 1;
+            let gap = node_gap(e, seen);
+            if len(gap) > 0 { return gap; }
+            it = std::json::array_next(it);
+        }
+        if seen != said {
+            return "a recipe of " + to_string(said) + " node(s) carries " + to_string(seen);
+        }
+        if seen == 0 { return "a recipe of no nodes is no execution"; }
+        return "";
+    }
+
+    // Read a recipe back as this catalog's bound nodes. "" when read, else
+    // why not; nothing is bound when it is refused, whichever rule refused
+    // it, and nothing is bound until the whole document has been read.
+    @unbounded
+    fn decode_bound(text: String) -> String {
         self.bound = BoundNodeRows { };
+        let gap = self.recipe_gap(text);
+        if len(gap) > 0 { return gap; }
         let mut it = std::json::array_first(std::json::find_field_raw(text, "nodes"));
         while !it.done {
             let e = it.element;
