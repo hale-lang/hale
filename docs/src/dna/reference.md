@@ -236,6 +236,7 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `forge.hl` | `Forge` (a code-review host), `MemForge`, `NoForge`; the host's `forge_github.hl` is `GitHubForge` over `gh` and the `FileForge` fixtures use |
 | `process.hl` | `Task`, `Workflow`, `Step`, `Work`, `Attempt`, `Metabolism` |
 | `work_system.hl` | `WorkSystem`, routing perspectives, the performers |
+| `workflow_definition.hl` | `WorkflowCatalog` (code-authored workflow definitions: `define`, `leaf`, `child`, `expand`, `encode` / `decode`), `AdmissionLimits`, `bound_request` — definitions and their bound expansion only; nothing executes them yet |
 | `review.hl` | `Review`, `AutonomyBoundary`, authority ranks |
 | `models.hl` | `ModelRouter`, `OpenAiChat`, `AnthropicMessages`, `HarnessModel`, `LocalModel`, `FakeModel`, `HostedCredential` (with its `scheme`), `Confinement` (`Bubblewrap`, `NoConfinement`), `probe` |
 | `budget.hl` | `BudgetPolicy`, `Budget` (the substrate's one counter) |

@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: code-authored workflow definitions and their bound expansion (workflow card 04)
+
+- `dna/core/workflow_definition.hl`: a `WorkflowCatalog` of plain definitions (`define`, `leaf`, `child`) and `expand`, which binds one execution's whole finite tree with its Task, Step and Work ids, or refuses it whole, naming a missing definition, an empty workflow or step, a malformed or repeated member key, an unknown member kind, a self-containing workflow, or an exceeded `AdmissionLimits` value (depth 8, steps 32, members 32, attempts 8, works 256 by default; the caller supplies them). Two invocations of one definition get distinct executions; `encode` / `decode` round-trip every field. Nothing executes a bound expansion yet. `workflow_definition_test.hl` covers the canonical three-level example of `dna/WORKFLOW-CONTRACT.md` and each rule.
+
 ### DNA: a publish the membrane loses is not a lost fact (GH #682)
 
 - The membrane client exits once it has handed a fact to its binding; under load the organism could miss it, and nothing noticed: an ask beside a live organism left no durable row, the host relayed each record row exactly once, and an `expression.observed` report that went missing left a mutation applied and never retained. Delivery is now confirmed by the answer in the record. `hale dna ask`, `review`, `concern raise` and `practice propose` beside a live organism write their row before publishing; the host relays a row again while it stays unanswered (every 30s); the organism admits an intent once by its id and answers a practice request once; the host reports an observation again until the organism records it. `membrane_loss_test.hl` drops the first relay and shows the intent admitted once; it fails without the relay-again rule. The books fixture's state check now prints every row about the task when it fails.
