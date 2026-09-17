@@ -9,7 +9,13 @@
 // - requests and replies are DNA's `WorkRequested` / `WorkDone`, keyed by
 //   `work_id`, so the resident types share topics with DNA's flow types;
 // - a standalone `dna::Metabolism` runs routed and in-tower Tasks in the
-//   same program, answered by the same responder.
+//   same program, answered by the same responder;
+// - every transition carries a proposal id (`<key>@s<stage>`): the
+//   proposer acts on the answer to its one outstanding proposal, once, and
+//   the committer answers a proposal it already committed without
+//   appending again (the review of card 03). A replayed answer while work
+//   is pending, an old answer while a newer transition is held, and a
+//   proposal re-sent after its answer was lost each dispatch nothing extra.
 //
 // The resident types are test-local: DNA's Task, Workflow, Step, Work and
 // Attempt are flows program-wide because each has a `release` hook.
@@ -22,10 +28,18 @@ topic Lives { payload: Life; subject: "wfd.life"; }
 type Offer { scope: String = ""; key: String = ""; nested: Bool = false; }
 topic Offers { payload: Offer; subject: "wfd.offer"; keyed_by scope; }
 
-type Proposal { scope: String = ""; key: String = ""; kind: String = ""; entity: String = ""; body: String = ""; }
+type Proposal { scope: String = ""; key: String = ""; proposal_id: String = ""; kind: String = ""; entity: String = ""; }
 topic Proposals { payload: Proposal; subject: "wfd.proposal"; keyed_by scope; }
-type Ack { key: String = ""; ok: Bool = false; revision: Int = 0; why: String = ""; }
+type Ack { scope: String = ""; key: String = ""; proposal_id: String = ""; ok: Bool = false; revision: Int = 0; why: String = ""; }
 topic Acks { payload: Ack; subject: "wfd.ack"; keyed_by key; }
+
+// The test's hand on the committer: commit a held proposal, and lose the
+// answer when told to.
+type Release { proposal_id: String = ""; lose_answer: Bool = false; }
+topic Releases { payload: Release; subject: "wfd.release"; }
+// The test's hand on a proposer: send the outstanding proposal again.
+type Resend { key: String = ""; }
+topic Resends { payload: Resend; subject: "wfd.resend"; keyed_by key; }
 
 type Done { key: String = ""; disposition: String = ""; }
 topic Completions { payload: Done; subject: "wfd.done"; keyed_by key; }
@@ -58,30 +72,75 @@ locus RefuseMarked {
     fn verify_chain() -> Bool { return self.inner.verify_chain(); }
 }
 
-// The one journal owner.
+// The one journal owner. A committed row's body is its proposal id, so a
+// proposal already committed is found in the journal and answered again
+// without a second append. It holds a stage-2 proposal of "h-hold" until
+// released, so the test can make a newer transition wait.
 locus Committer {
     params {
         scope: String = "";
         journal: dna::Journal = dna::MemJournal { };
         refused: Int = 0;
+        repeated: Int = 0; // proposals answered from the journal, not appended
+        held: Proposal = Proposal { };
     }
     bus {
         subscribe Proposals as on_proposal where key == self.scope;
+        subscribe Releases as on_release;
         publish Acks;
     }
-    fn on_proposal(p: Proposal) {
-        // exact compare-and-append; a stale revision is read again, once
-        let mut r = self.journal.append_exact(self.journal.revision(), p.kind, p.entity, p.body);
+    // The revision a proposal was committed at, -1 when it was not.
+    @unbounded
+    fn committed_at(proposal_id: String) -> Int {
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            if e.kind == "wfprobe.dispatched" && e.body == proposal_id { return i + 1; }
+            i = i + 1;
+        }
+        return -1;
+    }
+    fn answer(p: Proposal, ok: Bool, revision: Int, why: String) {
+        Acks <- Ack { scope: self.scope, key: p.key, proposal_id: p.proposal_id, ok: ok, revision: revision, why: why };
+    }
+    // Exact compare-and-append. A stale revision is read again once; the
+    // proof has no domain state to re-evaluate (cards 06 and 07 do).
+    fn commit(p: Proposal) -> dna::AppendResult {
+        let mut r = self.journal.append_exact(self.journal.revision(), p.kind, p.entity, p.proposal_id);
         if !r.ok && r.error == "stale_revision" {
             let moved = self.journal.refresh();
-            r = self.journal.append_exact(self.journal.revision(), p.kind, p.entity, p.body);
+            r = self.journal.append_exact(self.journal.revision(), p.kind, p.entity, p.proposal_id);
         }
-        if !r.ok {
-            self.refused = self.refused + 1;
-            Acks <- Ack { key: p.key, ok: false, why: r.error };
+        if !r.ok { self.refused = self.refused + 1; }
+        return r;
+    }
+    fn on_proposal(p: Proposal) {
+        let at = self.committed_at(p.proposal_id);
+        if at >= 0 {
+            self.repeated = self.repeated + 1;
+            self.answer(p, true, at, "");
             return;
         }
-        Acks <- Ack { key: p.key, ok: true, revision: r.revision };
+        if std::str::starts_with(p.key, "h-hold") && std::str::ends_with(p.proposal_id, "@s2") && len(self.held.proposal_id) == 0 {
+            // a payload's strings live only as long as its delivery: keep copies
+            self.held = Proposal {
+                scope: std::str::clone(p.scope),
+                key: std::str::clone(p.key),
+                proposal_id: std::str::clone(p.proposal_id),
+                kind: std::str::clone(p.kind),
+                entity: std::str::clone(p.entity)
+            };
+            return;
+        }
+        let r = self.commit(p);
+        self.answer(p, r.ok, r.revision, r.error);
+    }
+    fn on_release(rel: Release) {
+        if rel.proposal_id != self.held.proposal_id || len(rel.proposal_id) == 0 { return; }
+        let r = self.commit(self.held);
+        if !rel.lose_answer { self.answer(self.held, r.ok, r.revision, r.error); }
+        // cleared last: a local bound to the field would follow it
+        self.held = Proposal { };
     }
 }
 
@@ -114,7 +173,7 @@ locus Responder {
 }
 
 locus Inner {
-    params { scope: String = ""; key: String = ""; settled: Bool = false; }
+    params { scope: String = ""; key: String = ""; settled: Bool = false; outstanding: String = ""; }
     bus {
         subscribe Acks as on_ack where key == self.key;
         subscribe dna::WorkDone as on_done where key == self.key;
@@ -125,9 +184,13 @@ locus Inner {
     }
     birth() { Lives <- Life { key: self.key, what: "born" }; }
     run() {
-        Proposals <- Proposal { scope: self.scope, key: self.key, kind: "wfprobe.dispatched", entity: self.key, body: "stage 0" };
+        self.outstanding = self.key + "@s0";
+        Proposals <- Proposal { scope: self.scope, key: self.key, proposal_id: self.outstanding, kind: "wfprobe.dispatched", entity: self.key };
     }
     fn on_ack(a: Ack) {
+        // only the answer to the one outstanding proposal, and only once
+        if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
+        self.outstanding = "";
         if !a.ok {
             Completions <- Done { key: self.key, disposition: "refused" };
             terminate;
@@ -151,11 +214,13 @@ locus Waiter {
         child_key: String = ""; // given at construction: a keyed subscription reads it at registration
         stage: Int = 0;
         settled: Bool = false;
+        outstanding: String = ""; // the one proposal awaiting its answer
     }
     bus {
         subscribe Acks as on_ack where key == self.key;
         subscribe dna::WorkDone as on_done where key == self.key;
         subscribe Completions as on_child where key == self.child_key;
+        subscribe Resends as on_resend where key == self.key;
         publish Lives;
         publish Proposals;
         publish dna::WorkRequested;
@@ -163,10 +228,21 @@ locus Waiter {
     }
     accept(c: Inner) { }
     birth() { Lives <- Life { key: self.key, what: "born" }; }
-    run() {
-        Proposals <- Proposal { scope: self.scope, key: self.key, kind: "wfprobe.dispatched", entity: self.key, body: "stage 0" };
+    run() { self.propose(); }
+    // One proposal per transition, named by the stage it dispatches.
+    fn propose() {
+        self.outstanding = self.key + "@s" + to_string(self.stage);
+        Proposals <- Proposal { scope: self.scope, key: self.key, proposal_id: self.outstanding, kind: "wfprobe.dispatched", entity: self.key };
+    }
+    // A proposal whose answer was lost is sent again under the same id.
+    fn on_resend(r: Resend) {
+        if len(self.outstanding) == 0 { return; }
+        Proposals <- Proposal { scope: self.scope, key: self.key, proposal_id: self.outstanding, kind: "wfprobe.dispatched", entity: self.key };
     }
     fn on_ack(a: Ack) {
+        // only the answer to the one outstanding proposal, and only once
+        if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
+        self.outstanding = "";
         if !a.ok {
             self.settled = true;
             Completions <- Done { key: self.key, disposition: "refused" };
@@ -194,7 +270,7 @@ locus Waiter {
             terminate;
         }
         self.stage = 2;
-        Proposals <- Proposal { scope: self.scope, key: self.key, kind: "wfprobe.dispatched", entity: self.key, body: "stage 2" };
+        self.propose();
     }
     dissolve() { Lives <- Life { key: self.key, what: "dissolved" }; }
 }
@@ -236,6 +312,9 @@ main locus App {
         publish Offers;
         publish Flushes;
         publish dna::WorkDone;
+        publish Acks;
+        publish Releases;
+        publish Resends;
     }
     @unbounded
     fn on_life(l: Life) { self.lives = self.lives + l.key + ":" + l.what + " "; }
@@ -289,6 +368,10 @@ main locus App {
         self.settle();
         std::test::assert_eq_int(self.count(self.responder.requests, "h-late"), 1, "delayed: one request: " + self.responder.requests);
         std::test::assert_eq_int(self.count(self.lives, "h-late:dissolved"), 0, "delayed: alive after its handler and run(): " + self.lives);
+        // a replayed answer while the work is pending dispatches nothing more
+        Acks <- Ack { scope: "main", key: "h-late", proposal_id: "h-late@s0", ok: true, revision: 1 };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.responder.requests, "h-late"), 1, "delayed: a replayed commit answer does not dispatch the work again: " + self.responder.requests);
         dna::WorkDone <- dna::WorkSettlement { work_id: "h-unrelated", disposition: "done" };
         self.settle();
         std::test::assert_eq_int(self.count(self.done, "h-late:done"), 0, "delayed: an unrelated WorkDone does not reach it");
@@ -315,6 +398,41 @@ main locus App {
         std::test::assert_eq_int(self.count(self.done, "h-nest:done"), 1, "nested: completed once: " + self.done);
         std::test::assert_eq_int(self.count(self.lives, "h-nest:dissolved"), 1, "nested: reclaimed");
 
+        // transition identity: an old answer while a newer transition waits,
+        // and a proposal re-sent after its answer was lost
+        Offers <- Offer { scope: "main", key: "h-hold", nested: true };
+        self.settle();
+        Flushes <- Flush { work_id: "h-hold" };
+        self.settle();
+        Flushes <- Flush { work_id: "h-hold.c" };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.done, "h-hold.c:done"), 1, "hold: the child completed: " + self.done);
+        std::test::assert_eq_int(self.committed("h-hold"), 1, "hold: stage 2 is proposed and held, not committed");
+        std::test::assert_eq_str(self.committer.held.proposal_id, "h-hold@s2", "hold: the committer holds stage 2");
+        Acks <- Ack { scope: "main", key: "h-hold", proposal_id: "h-hold@s0", ok: true, revision: 1 };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.responder.requests, "h-hold"), 1, "hold: an old answer does not release the newer transition: " + self.responder.requests);
+        Acks <- Ack { scope: "other", key: "h-hold", proposal_id: "h-hold@s2", ok: true, revision: 1 };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.responder.requests, "h-hold"), 1, "hold: nor does another committer's answer with the right id: " + self.responder.requests);
+        Releases <- Release { proposal_id: "h-hold@s2", lose_answer: true };
+        self.settle();
+        std::test::assert_eq_int(self.committed("h-hold"), 2, "hold: stage 2 committed, its answer lost");
+        std::test::assert_eq_int(self.count(self.responder.requests, "h-hold"), 1, "hold: nothing dispatched without the answer");
+        Resends <- Resend { key: "h-hold" };
+        self.settle();
+        std::test::assert_eq_int(self.committed("h-hold"), 2, "hold: the re-sent proposal is not appended again");
+        std::test::assert_eq_int(self.committer.repeated, 1, "hold: it is answered from the journal");
+        std::test::assert_eq_int(self.count(self.responder.requests, "h-hold"), 2, "hold: and stage 2 is dispatched once: " + self.responder.requests);
+        Resends <- Resend { key: "h-hold" };
+        Acks <- Ack { scope: "main", key: "h-hold", proposal_id: "h-hold@s2", ok: true, revision: 99 };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.responder.requests, "h-hold"), 2, "hold: once answered, a resend or a repeated answer changes nothing: " + self.responder.requests);
+        Flushes <- Flush { work_id: "h-hold" };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.done, "h-hold:done"), 1, "hold: completed once: " + self.done);
+        std::test::assert_eq_int(self.count(self.lives, "h-hold:dissolved") + self.count(self.lives, "h-hold.c:dissolved"), 2, "hold: both reclaimed");
+
         // a journal refusal: nothing dispatched
         Offers <- Offer { scope: "main", key: "k-refuse" };
         self.settle();
@@ -335,8 +453,8 @@ main locus App {
         // the flow Tasks are unaffected, and nothing leaked
         let t_after = self.metabolism.offer(dna::Intent { outcome: "after", from: "test" }, dna::Knobs { routed: true });
         std::test::assert_eq_str(self.metabolism.find(t_after).disposition, "done", "a routed Task still settles after the residents came and went");
-        std::test::assert_eq_int(self.count(self.lives, "k-now:born") + self.count(self.lives, "h-late:born") + self.count(self.lives, "h-nest:born") + self.count(self.lives, "h-nest.c:born") + self.count(self.lives, "k-refuse:born"), 5, "five residents were born in main's scope");
-        std::test::assert_eq_int(self.count(self.lives, "k-now:dissolved") + self.count(self.lives, "h-late:dissolved") + self.count(self.lives, "h-nest:dissolved") + self.count(self.lives, "h-nest.c:dissolved") + self.count(self.lives, "k-refuse:dissolved"), 5, "and all five were reclaimed");
+        std::test::assert_eq_int(self.count(self.lives, "k-now:born") + self.count(self.lives, "h-late:born") + self.count(self.lives, "h-nest:born") + self.count(self.lives, "h-nest.c:born") + self.count(self.lives, "h-hold:born") + self.count(self.lives, "h-hold.c:born") + self.count(self.lives, "k-refuse:born"), 7, "seven residents were born in main's scope");
+        std::test::assert_eq_int(self.count(self.lives, "k-now:dissolved") + self.count(self.lives, "h-late:dissolved") + self.count(self.lives, "h-nest:dissolved") + self.count(self.lives, "h-nest.c:dissolved") + self.count(self.lives, "h-hold:dissolved") + self.count(self.lives, "h-hold.c:dissolved") + self.count(self.lives, "k-refuse:dissolved"), 7, "and all seven were reclaimed");
     }
 }
 

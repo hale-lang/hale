@@ -31,9 +31,11 @@ topic Lives { payload: Life; subject: "wf.life"; }
 type Offer { scope: String = ""; key: String = ""; nested: Bool = false; delegate: Bool = false; }
 topic Offers { payload: Offer; subject: "wf.offer"; keyed_by scope; }
 
-type Proposal { scope: String = ""; key: String = ""; kind: String = ""; entity: String = ""; }
+// Every transition has a proposal id (its entity here); the proposer acts
+// on the answer to its one outstanding proposal, once.
+type Proposal { scope: String = ""; key: String = ""; proposal_id: String = ""; kind: String = ""; entity: String = ""; }
 topic Proposals { payload: Proposal; subject: "wf.proposal"; keyed_by scope; }
-type Ack { key: String = ""; ok: Bool = false; revision: Int = 0; why: String = ""; }
+type Ack { scope: String = ""; key: String = ""; proposal_id: String = ""; ok: Bool = false; revision: Int = 0; why: String = ""; }
 topic Acks { payload: Ack; subject: "wf.ack"; keyed_by key; }
 
 type Req { key: String = ""; stage: Int = 0; }
@@ -53,23 +55,36 @@ locus Committer {
     params {
         scope: String = "";
         rows: String = ""; // "<kind> <entity>\n" per committed transition
+        committed: String = "\n"; // "<proposal id>=<revision>\n" per committed proposal
         revision: Int = 0;
         refused: Int = 0;
+        repeated: Int = 0;
     }
     bus {
         subscribe Proposals as on_proposal where key == self.scope;
         publish Acks;
     }
     fn on_proposal(p: Proposal) {
+        // a proposal committed before is answered again, not appended again
+        let seen = std::str::index_of(self.committed, "\n" + p.proposal_id + "=");
+        if seen >= 0 {
+            self.repeated = self.repeated + 1;
+            let from = seen + len(p.proposal_id) + 2;
+            let rest = self.committed[from..len(self.committed)];
+            let at = std::str::parse_int(rest[0..std::str::index_of(rest, "\n")]) or 0;
+            Acks <- Ack { scope: self.scope, key: p.key, proposal_id: p.proposal_id, ok: true, revision: at };
+            return;
+        }
         // a deterministic journal: it refuses what the test marks
         if std::str::contains(p.entity, "refuse") {
             self.refused = self.refused + 1;
-            Acks <- Ack { key: p.key, ok: false, why: "the journal refused " + p.entity };
+            Acks <- Ack { scope: self.scope, key: p.key, proposal_id: p.proposal_id, ok: false, why: "the journal refused " + p.entity };
             return;
         }
         self.rows = self.rows + p.kind + " " + p.entity + "\n";
         self.revision = self.revision + 1;
-        Acks <- Ack { key: p.key, ok: true, revision: self.revision };
+        self.committed = self.committed + p.proposal_id + "=" + to_string(self.revision) + "\n";
+        Acks <- Ack { scope: self.scope, key: p.key, proposal_id: p.proposal_id, ok: true, revision: self.revision };
     }
 }
 
@@ -117,7 +132,7 @@ locus Responder {
 // ---- the resident execution loci -----------------------------------------
 
 locus Inner {
-    params { scope: String = ""; key: String = ""; settled: Bool = false; }
+    params { scope: String = ""; key: String = ""; settled: Bool = false; outstanding: String = ""; }
     bus {
         subscribe Acks as on_ack where key == self.key;
         subscribe Replies as on_reply where key == self.key;
@@ -129,9 +144,12 @@ locus Inner {
     birth() { Lives <- Life { key: self.key, what: "born" }; }
     run() {
         // propose, and return: the Inner waits as a resident
-        Proposals <- Proposal { scope: self.scope, key: self.key, kind: "dispatch", entity: self.key + "/s0" };
+        self.outstanding = self.key + "/s0";
+        Proposals <- Proposal { scope: self.scope, key: self.key, proposal_id: self.outstanding, kind: "dispatch", entity: self.outstanding };
     }
     fn on_ack(a: Ack) {
+        if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
+        self.outstanding = "";
         if !a.ok {
             Completions <- Done { key: self.key, disposition: "refused" };
             terminate;
@@ -157,6 +175,7 @@ locus Waiter {
         stage: Int = 0;
         settled: Bool = false;
         stale: Int = 0; // replies that did not match the current stage
+        outstanding: String = ""; // the one proposal awaiting its answer
     }
     bus {
         subscribe Acks as on_ack where key == self.key;
@@ -172,10 +191,15 @@ locus Waiter {
     // `child_key` comes with the constructor: a keyed subscription reads
     // its key field when it is registered, before birth() runs
     birth() { Lives <- Life { key: self.key, what: "born" }; }
-    run() {
-        Proposals <- Proposal { scope: self.scope, key: self.key, kind: "dispatch", entity: self.key + "/s0" };
+    run() { self.propose("/s0"); }
+    fn propose(stage: String) {
+        self.outstanding = self.key + stage;
+        Proposals <- Proposal { scope: self.scope, key: self.key, proposal_id: self.outstanding, kind: "dispatch", entity: self.outstanding };
     }
     fn on_ack(a: Ack) {
+        // only the answer to the one outstanding proposal, and only once
+        if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
+        self.outstanding = "";
         if !a.ok {
             // an append refusal: nothing is dispatched
             self.settled = true;
@@ -215,7 +239,7 @@ locus Waiter {
             Completions <- Done { key: self.key, disposition: "failed" };
             terminate;
         }
-        Proposals <- Proposal { scope: self.scope, key: self.key, kind: "dispatch", entity: self.key + "/s1" };
+        self.propose("/s1");
     }
     dissolve() { Lives <- Life { key: self.key, what: "dissolved" }; }
 }
@@ -258,6 +282,7 @@ main locus App {
         subscribe Completions as on_done;
         publish Offers;
         publish Flushes;
+        publish Acks;
     }
     fn on_life(l: Life) { self.lives = self.lives + l.key + ":" + l.what + " "; }
     fn on_done(d: Done) { self.done = self.done + d.key + ":" + d.disposition + " "; }
@@ -305,6 +330,10 @@ main locus App {
         std::test::assert_eq_int(self.count(self.done, "h-late:done"), 0, "nothing is done while the reply is held");
         std::test::assert_eq_int(self.count(self.lives, "h-late:born"), 1, "born");
         std::test::assert_eq_int(self.count(self.lives, "h-late:dissolved"), 0, "and still alive after its handler and run() returned: " + self.lives);
+        // a replayed commit answer while the work is pending dispatches nothing
+        Acks <- Ack { scope: "main", key: "h-late", proposal_id: "h-late/s0", ok: true, revision: 2 };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.responder.requests, "h-late:0"), 1, "a replayed answer does not dispatch again: " + self.responder.requests);
         Flushes <- Flush { key: "h-late" };
         self.settle();
         std::test::assert_eq_int(self.count(self.done, "h-late:done"), 1, "the delayed reply reached it and it completed: " + self.done);

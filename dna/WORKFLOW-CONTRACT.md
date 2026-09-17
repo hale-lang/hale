@@ -296,6 +296,11 @@ The rules the proof pinned down, natively (hale 0.20.0, this tree):
   answered inside the handler that asked. **[observed]**
 - A flow-typed child that declares no `run()` was not reclaimed at
   birth. Nothing may rely on this. **[observed]**
+- A local bound to a struct field follows the field: `let p =
+  self.held; self.held = Empty { };` leaves `p` empty. Clear a field
+  only after its last use. A payload's strings live only as long as its
+  delivery; a field that keeps them stores `std::str::clone` copies.
+  **[observed: `workflow_lifetime_dna_test.hl`]**
 
 **Migration of the existing process types.** `Attempt` (released by
 `Work` and `WorkSystem`), `Work` (by `Step`), `Step` (by `Workflow`),
@@ -321,27 +326,60 @@ calls, not a resident locus.
 **Persistence wiring.** An execution locus does not hold a journal: an
 interface-typed value cannot flow into a child's field (F.3). It
 proposes each transition to the one committer over the bus, keyed by
-its own id, and acts only on the committer's answer. Frozen for card 05:
+its own id, and acts only on the committer's answer to that transition.
+The envelope, amended after the review of card 03, frozen for card 05:
 
 ```
 topic TransitionProposed  { payload: TransitionProposal; keyed_by scope; }
-type  TransitionProposal  { scope; key; kind; entity; body }
+type  TransitionProposal  { scope; key; proposal_id; kind; entity; body }
 topic TransitionAnswered  { payload: TransitionAnswer;   keyed_by key; }
-type  TransitionAnswer    { key; ok; revision; why }
+type  TransitionAnswer    { scope; key; proposal_id; ok; revision; why }
 ```
 
-The committer validates, appends with exact compare-and-append (on a
-stale revision it refreshes and evaluates again), and answers. The
-proposer dispatches or announces only on `ok`; on a refusal it
-dispatches nothing. `scope` names the one committer that answers: `Dna`
-in an assembled organism (its journal), or a standalone `Metabolism`
-over its own memory journal, chosen at construction. The memory-backed
-assembly gives process-local guarantees only; durable restart needs a
-persistent journal. **[proven: both lifetime fixtures, including a
-journal refusal that dispatches nothing]**
+- **`proposal_id` names one logical transition**, stably: it is derived
+  from what the transition does (the entity and the step, attempt or
+  activation it moves), never from a counter or a clock, so a retry of
+  the same transition carries the same id and a different transition
+  never does.
+- **The proposer holds one outstanding proposal at a time** and acts on
+  an answer only when its `scope` and `proposal_id` match that proposal,
+  consuming it once. A repeated answer, an answer to an earlier
+  transition, and an answer from another committer change nothing. A
+  proposer whose answer may have been lost sends the same proposal
+  again.
+- **The committer deduplicates by `proposal_id`**: the committed row
+  records the id, so a proposal already committed is answered again
+  with its original revision and not appended again, including after a
+  restart. A refused proposal is not remembered and is evaluated again
+  when re-sent.
+- **The committer validates against current state before appending**,
+  and appends with exact compare-and-append. On a stale revision it
+  refreshes and evaluates the transition again against the new state;
+  it does not simply retry the append. The proof's committer has no
+  domain state and only retries; cards 06 and 07 implement the
+  re-evaluation.
+- **Only `ok` dispatches.** On a refusal the proposer dispatches
+  nothing.
 
-Not yet exercised: delivery across an off-thread binding (a bound
-organism's sockets), and restart. Cards 12–13 and 19 cover them.
+`scope` names the one committer that answers: `Dna` in an assembled
+organism (its journal), or a standalone `Metabolism` over its own memory
+journal, chosen at construction. The memory-backed assembly gives
+process-local guarantees only; durable restart needs a persistent
+journal.
+**[proven: both lifetime fixtures — a journal refusal that dispatches
+nothing; a replayed answer while work is pending; an old answer while a
+newer transition is held; an answer with the right id from another
+scope; a proposal re-sent after its answer was lost, answered from the
+journal and dispatched once. Each case fails with the proposer's
+identity check or the committer's lookup removed.]**
+
+What the fixtures do not establish, left to the cards that own it:
+domain re-evaluation on a stale revision (06, 07); every stale and
+duplicate child or attempt case (05, 06, 09–11); delivery across an
+off-thread binding (a bound organism's sockets) and restart (12–13, 19).
+The two supplied diagnostic probes print, so `hale test` reports them
+failed even when their assertions hold; the silent regressions in cards
+01 and 02 are the evidence, not the probes.
 
 ## 10. Compatibility
 
@@ -370,6 +408,7 @@ equivalent definition.
 | completion and parent shutdown reclaim it; births equal dissolves at volume | proven, card 03 |
 | a duplicate terminal message cannot advance it twice | proven, card 03 |
 | child → committer → acknowledgement → dispatch, and refusal → no dispatch | proven, card 03 |
+| transition identity: repeated, old and foreign answers ignored; re-sent proposals answered once | proven, card 03 (review) |
 | the shape works in a program that imports the DNA core, beside DNA's flow types | proven, card 03 |
 | `release` is type-wide | proven, card 03 |
 | delivery across off-thread bindings; restart | not yet, cards 12–13, 19 |
