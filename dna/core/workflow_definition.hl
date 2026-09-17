@@ -755,9 +755,12 @@ locus WorkflowCatalog {
     // when read, else why not; nothing is added when it is refused.
     @unbounded
     fn decode(text: String) -> String {
-        if std::json::find_string_field(text, "format") != "dna.workflow-definitions/1" {
+        if !is_text(std::json::find_field_raw(text, "format")) || std::json::find_string_field(text, "format") != "dna.workflow-definitions/1" {
             return "not a workflow definition document (format " + std::json::find_string_field(text, "format") + ")";
         }
+        // the same rule the recipe reads under: a document that was cut off
+        // is not a shorter catalog (the review of card 05)
+        if !json_whole(text) { return "the document ends mid-write"; }
         // every incoming definition is checked against this catalog AND
         // against the ones before it in the document: a document that
         // defines one revision twice is refused whole, as `define` would

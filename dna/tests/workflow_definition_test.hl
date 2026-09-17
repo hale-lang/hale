@@ -233,6 +233,11 @@ main locus App {
         let text = self.cat.encode();
         std::test::assert_eq_str(self.copy.decode(text), "", "the document reads back");
         std::test::assert_eq_str(self.copy.encode(), text, "and encodes to the same document");
+        // a document that was cut off is not a shorter catalog: it closes,
+        // or it is refused (the same rule a bound recipe reads under)
+        let n = self.copy.workflow_count();
+        std::test::assert(std::str::contains(self.copy.decode(text[0..(len(text) - 2)]), "ends mid-write"), "a document cut off before its last delimiters is refused");
+        std::test::assert_eq_int(self.copy.workflow_count(), n, "and adds nothing");
         std::test::assert_eq_int(self.copy.workflow_count(), self.cat.workflow_count(), "every workflow");
         std::test::assert_eq_int(self.copy.member_count(), self.cat.member_count(), "every member");
         let ma = self.copy.member_at(0);

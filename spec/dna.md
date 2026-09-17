@@ -868,7 +868,8 @@ A definition id is `[a-z0-9][a-z0-9-]*`, checked when it is defined and
 when it is read, so an id can never carry the delimiters the definition
 path is written with. `encode()` writes every definition and member as
 one JSON document (`format: dna.workflow-definitions/1`) and
-`decode(text)` reads one back, refusing another format, an id outside
+`decode(text)` reads one back, refusing a document that is not one
+complete JSON value, another format, an id outside
 the grammar, an already defined revision, or a document that defines one
 revision twice, and adding nothing then.
 
