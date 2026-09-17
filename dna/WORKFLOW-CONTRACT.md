@@ -352,6 +352,15 @@ type  TransitionAnswer    { scope; key; proposal_id; ok; revision; why }
   with its original revision and not appended again, including after a
   restart. A refused proposal is not remembered and is evaluated again
   when re-sent.
+- **A repeated id is a replay only if it repeats the proposal.** The
+  same `scope` and `proposal_id` carrying the same `key`, `kind`,
+  `entity` and `body` is the same transition sent again, and is
+  answered from what was committed. The same id carrying anything else
+  is a conflict: the committer refuses it, naming the id and what
+  differs, and appends nothing. A proposer never reuses an id for
+  another transition, so a conflict is a defect in the proposer or a
+  forged proposal, not a race. The lifetime proof's lookup shows the
+  replay half; the refusal is card 05's to implement with the codecs.
 - **The committer validates against current state before appending**,
   and appends with exact compare-and-append. On a stale revision it
   refreshes and evaluates the transition again against the new state;
