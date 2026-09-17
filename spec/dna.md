@@ -407,6 +407,16 @@ repository:
   `practice.proposed <request_id>` (`name`, `digest`, `review_id`, `by`,
   `because`, `supersedes`); a request without a name or a text is
   `practice.refused`. Nothing is in force until the Board ratifies it.
+  **Roles are authorities, not identities.** The person who proposed
+  a practice may ratify it: the proposal is in their name (`by`), the
+  verdict carries the Board's authority, and the record keeps both, so
+  one person holding several roles — the Board, and the hands doing
+  the work the practice describes — proposes as one and decides as
+  the other. The Review's independence rule refuses the candidate's
+  *author*, which for a practice is the organization (`org`), never
+  the proposer. This is the design, not an artifact; an organization
+  that wants the proposer barred from ratifying their own proposal
+  needs a review policy that says so, and none ships.
   The text arrives byte for byte, newlines included: the host escapes an
   argument's own backslashes and newlines in its argument list and
   unescapes every value it reads.

@@ -44,6 +44,14 @@ boundary: dna::AutonomyBoundary {
 review_policy: dna::OrgPolicy { },
 ```
 
+One person may hold more than one role. Propose a practice as the
+person doing the work (`hale dna practice propose … --as you`) and
+ratify it as the Board (`hale dna review … approve --as you
+--authority board`): the record keeps who proposed and who decided,
+and nothing refuses the two being the same person. A team that wants
+an independent approver for practices would need a review policy
+saying so; none ships.
+
 The Leader is the organism's **architect**: it proposes and the
 Board decides, and it thinks at two moments. When an ask enters, it
 reads its brief — the charter, the purpose, the law as the genome
