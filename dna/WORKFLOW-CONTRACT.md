@@ -65,16 +65,31 @@ member's content, the definition ids and revisions, and the inputs. The
 bound recipe is recorded, not just a revision number, so a later change
 to a definition affects only later admissions. **[decided]**
 
-Bounds, checked at admission (card 04), with a refusal naming the bound
-and nothing admitted when one is exceeded **[decided]**:
+**Admission limits.** Admission checks the expansion against limits the
+assembly supplies (`AdmissionLimits`); an application or assembly may
+raise or lower them. The documented defaults are **[decided]**:
 
-| Bound | Limit |
-|---|---|
-| nesting depth (root = 1) | 8 |
-| steps per workflow | 32 |
-| members per step | 32 |
-| attempts per Work (retry policy) | 8 |
-| Works in one bound recipe, all levels | 256 |
+| Limit | Default | What it bounds |
+|---|---|---|
+| `max_depth` (root = 1) | 8 | how deep child workflows nest |
+| `max_steps` | 32 | steps in one workflow |
+| `max_members` | 32 | members in one step |
+| `max_attempts` | 8 | the largest retry allowance a leaf may bind |
+| `max_works` | 256 | leaf Works in one bound recipe, all levels |
+
+These are capacity policy, not language or implementation ceilings: no
+hard limit is known for any of them. They bound the work one admission
+may create, the size of the recipe recorded with it and the depth of
+the expansion. The limits applied are bound into the execution with its
+recipe, so a later change of defaults never reinterprets an admitted
+execution. If persistence (card 05) meets a real ceiling — a journal
+row size, a transport limit — it is named there as such, separately
+from these defaults. `max_attempts` caps what a leaf's retry allowance
+may be; the retry policy itself (how many attempts a leaf wants, which
+performer each attempt uses) is the application's. Exceeding any limit
+refuses the whole admission, naming the limit, the value and the
+member or workflow that exceeded it; nothing is admitted.
+**[decided]**
 
 A definition that refers to itself, directly or through children, is
 refused at admission as unbounded. **[decided]**
