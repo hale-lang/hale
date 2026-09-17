@@ -1,0 +1,107 @@
+// dna/tests/membrane_loss_test.hl — a publish the membrane loses is not a
+// lost intent (GH #682).
+//
+// A membrane publish is fire-and-forget: the client exits once it has
+// handed the fact to its binding, and under load the organism may never
+// see it. Delivery is therefore confirmed by the fact's answer in the
+// record, never by the client's exit. Here the host's membrane client is
+// a wrapper that silently drops the first intent it is given. An
+// `intent.requested` row lands in the record; the host relays it, the
+// relay is lost, and after the relay interval the host relays it again
+// because it is still unanswered. The organism admits it once.
+//
+// The host binary runs directly (as `hale dna run` would exec it) so its
+// membrane client can be the wrapper.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` (newline-separated) in `dir`: discovery and hosted models off,
+// a cache of this fixture's own so the host binary is found in one place.
+fn in_dir(dir: String, cache: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off XDG_CACHE_HOME=\"$1\" && shift && exec \"$@\"\nsh\n" + dir + "\n" + cache + "\n" + argv);
+}
+
+@unbounded
+fn rows(repo: String, kind: String, needle: String) -> Int {
+    let j = dna::GitJournal { repo: repo };
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind && (std::str::contains(e.entity, needle) || std::str::contains(e.body, needle)) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+main locus App {
+    run() {
+        let scratch = "/tmp/dna-membraneloss-" + to_string(std::process::pid());
+        std::io::fs::mkdir(scratch) or discard;
+        // whatever this fixture starts under its scratch stops when it does (#637)
+        dna::reap_on_exit(scratch);
+        let cache = scratch + "/cache";
+        std::io::fs::mkdir(cache) or discard;
+        let made = in_dir(scratch, cache, toolchain() + "\ndna\nnew\nlossy");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let a = scratch + "/lossy";
+        let g1 = in_dir(a, cache, "git\nconfig\nuser.name\norganism-host");
+        let g2 = in_dir(a, cache, "git\nconfig\nuser.email\nhost@dna");
+        let g3 = in_dir(a, cache, "git\nadd\n-A");
+        let g4 = in_dir(a, cache, "git\ncommit\n-q\n-m\nthe app");
+
+        // the host and membrane binaries, built into this fixture's cache
+        let built = in_dir(a, cache, toolchain() + "\ndna\nprofile\n.");
+        let host = dna::trim_nl(in_dir(scratch, cache, "sh\n-c\nfind \"$1\" -path '*/dna/host/host' -type f | head -1\nsh\n" + cache).stdout);
+        let membrane = dna::trim_nl(in_dir(scratch, cache, "sh\n-c\nfind \"$1\" -path '*/dna/membrane/membrane' -type f | head -1\nsh\n" + cache).stdout);
+        std::test::assert(len(host) > 0 && len(membrane) > 0, "the host and the membrane client are built: " + built.stdout + built.stderr);
+        let version = dna::trim_nl(in_dir(scratch, cache, toolchain() + "\n--version").stdout);
+
+        // a membrane client that loses the first intent it is given: it
+        // exits 0 as the real client does, having published nothing
+        let lossy = scratch + "/lossy-membrane";
+        let calls = scratch + "/membrane.calls";
+        std::io::fs::write_file(lossy, "#!/bin/sh\necho \"$1\" >> \"" + calls + "\"\nif [ \"$1\" = intent ] && [ ! -f \"" + scratch + "/dropped\" ]; then touch \"" + scratch + "/dropped\"; echo 'membrane: published intent'; exit 0; fi\nexec \"" + membrane + "\" \"$@\"\n") or discard;
+        let x = dna::run_tool("chmod\n+x\n" + lossy);
+
+        let started = in_dir(a, cache, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_MEMBRANE=\"$2\" HALE_DNA_TOOLCHAIN=\"$3\" HALE_DNA_GENOME=\"$4\" nohup timeout 300 \"$5\" run \"$4\" . \"\" \"\" --no-iris >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + lossy + "\n" + version + "\n" + a + "\n" + host);
+        let host_pid = dna::trim_nl(started.stdout);
+        let mut up = false;
+        let mut tries = 0;
+        while !up && tries < 600 {
+            if std::io::fs::file_exists(a + "/.hale/dna/hale-dna.intent.offered.sock") && std::io::fs::file_exists(a + "/.hale/dna/org.pid") { up = true; } else { std::time::sleep(500ms); }
+            tries = tries + 1;
+        }
+        std::test::assert(up, "the organization came up: " + (std::io::fs::read_file(a + "/host.log") or ""));
+
+        // an intent in the record, as a clone with no organism writes it
+        let j = dna::GitJournal { repo: a, author: "riley" };
+        let w = j.append(j.revision(), "intent.requested", "i-lost-once", "{\"outcome\": \"reconcile the day\", \"from\": \"riley\", \"to\": \"\"}");
+        std::test::assert(w.ok, "the intent is in the record: " + w.error);
+
+        // relayed, lost, relayed again, admitted — once
+        let mut offered = false;
+        tries = 0;
+        while !offered && tries < 240 {
+            if rows(a, "intent.offered", "i-lost-once") > 0 { offered = true; } else { std::time::sleep(500ms); }
+            tries = tries + 1;
+        }
+        let seen = std::io::fs::read_file(calls) or "";
+        std::test::assert(std::io::fs::file_exists(scratch + "/dropped"), "the first relay was lost: " + seen);
+        std::test::assert(offered, "the host relayed the unanswered intent again and the organism admitted it: calls " + seen + "\n" + (std::io::fs::read_file(a + "/host.log") or ""));
+        std::test::assert(rows(a, "intent.offered", "i-lost-once") == 1 && rows(a, "task.born", "i-lost-once: ") == 1, "admitted once");
+        std::time::sleep(1500ms);
+        std::test::assert_eq_int(rows(a, "task.born", "i-lost-once: "), 1, "and not again once answered");
+
+        let k1 = dna::run_tool("kill\n" + host_pid);
+        let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; done; true\nsh\n" + a);
+        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+    }
+}
+
+fn main() { App { }; }

@@ -155,6 +155,20 @@ fn row_with(text: String, needle: String) -> String {
     return "";
 }
 
+// How many lines of `text` carry `needle`.
+@unbounded
+fn count_rows(text: String, needle: String) -> Int {
+    let mut n = 0;
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::contains(line, needle) { n = n + 1; }
+    }
+    return n;
+}
+
 // The ledger, as the one admission controller serves it.
 fn ledger(service: String) -> String {
     return curl("GET", service + "/ledger/rows?from=0", "", "").body;
@@ -371,8 +385,13 @@ main locus App {
         // ---- 4. alice asks through head A; the organism hands the job to bob
         let asked = curl("POST", ui_a + "/api/ask", alice, "{\"outcome\":\"chase the late invoice\",\"to\":\"\",\"as\":\"bob\"}");
         std::test::assert_eq_int(asked.status, 200, "alice's ask is taken: " + asked.body);
-        let offered = wait_row(service, "chase the late invoice", 240);
-        std::test::assert(std::str::contains(offered, "\"kind\": \"intent.offered\""), "the ask is a row of the ledger: " + ledger(service));
+        // the head's own row first (GH #682: the durable fact before the
+        // publish), in alice's name, then the organism's admission
+        let requested = wait_row(service, "\"kind\": \"intent.requested\"", 240);
+        std::test::assert(std::str::contains(requested, "\"author\": \"alice\"") && std::str::contains(row_body(requested), "chase the late invoice"), "the ask is a row of the ledger in alice's name before anything acts on it: " + ledger(service));
+        let offered = wait_row(service, "\"kind\": \"intent.offered\"", 240);
+        std::test::assert(std::str::contains(offered, "chase the late invoice"), "and the organism admitted it: " + ledger(service));
+        std::test::assert_eq_int(count_rows(ledger(service), "\"kind\": \"task.born\""), 1, "once, though the head both wrote and published it");
         std::test::assert(std::str::contains(offered, "chase the late invoice (from alice)"), "and it names who asked, the person head A identified, not the form's `as`: " + offered);
         std::test::assert(!std::str::contains(record(app), "chase the late invoice"), "and not of the record: the day's work is the ledger's");
         // the plan: a person's job, bob's, and the hand-off that follows it

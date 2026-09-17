@@ -125,6 +125,7 @@ fn dna_fixture_set_is_complete() {
             "knowledge_test.hl",
             "lease_epoch_test.hl",
             "ledger_test.hl",
+            "membrane_loss_test.hl",
             "mutation_review_test.hl",
             "openai_chat_test.hl",
             "optimize_test.hl",

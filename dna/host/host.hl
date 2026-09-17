@@ -42,6 +42,30 @@ fn keys_has(list: String, key: String) -> Bool {
 fn keys_add(list: String, key: String) -> String {
     return (if len(list) == 0 { "\n" } else { list }) + key + "\n";
 }
+// GH #682: when a row was last relayed (`<key>@<unix>` lines), -1 never.
+@unbounded
+fn relayed_at(list: String, key: String) -> Int {
+    let mut at = -1;
+    let mut rest = list;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::starts_with(line, key + "@") {
+            let t = std::str::parse_int(line[(len(key) + 1)..len(line)]) or - 1;
+            if t > at { at = t; }
+        }
+    }
+    return at;
+}
+fn relay_mark(list: String, key: String, now: Int) -> String {
+    return keys_add(list, key + "@" + to_string(now));
+}
+// A membrane publish is confirmed by its answer in the record, never by the
+// client's exit: after this long unanswered, the row is relayed again
+// (the organism admits an intent once by id; a duplicate verdict is refused
+// as already settled).
+const RELAY_AGAIN_AFTER: Int = 30;
 
 // The latest `expression.restart_requested` this host has not handled
 // and the organism has not already answered with `expression.restarted`.
@@ -403,21 +427,30 @@ locus Host {
         let mut i = 0;
         while i < p.rows() {
             let r = p.row(i);
-            if (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") && !keys_has(self.relayed, fact_key(p, i)) && trust == "signed" && !row_verified(self.root, r.digest) {
+            if (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") && relayed_at(self.relayed, fact_key(p, i)) < 0 && trust == "signed" && !row_verified(self.root, r.digest) {
                 // GH #604 rule 6: an unverified writer's row is refused in
                 // the record, in the host's name, and never relayed; the
                 // refusal is the answer a waiting CLI reads
                 let refused = if r.kind == "intent.requested" { "intent.refused" } else if r.kind == "concern.requested" { "concern.refused" } else if r.kind == "practice.requested" { "practice.refused" } else { "review.refused" };
                 let ok = append_as(self.root, refused, r.entity, "unverified writer: commit " + r.digest + " carries no signature git accepts (dna.trust = signed); not relayed", "host");
-                self.relayed = keys_add(self.relayed, fact_key(p, i));
+                self.relayed = relay_mark(self.relayed, fact_key(p, i), std::time::now());
                 self.say("refused an unverified " + r.kind + " (" + r.entity + ") from the record");
-            } else if (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") && !keys_has(self.relayed, fact_key(p, i)) && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") {
+            } else if (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") {
                 let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else { " review.settled review.refused " };
                 let answered = find_after(p, i + 1, answers, r.entity).seq >= 0;
                 // GH #664: an intent for a position another owner holds is
                 // theirs to admit; it stays in the record, unanswered here
                 let ours = r.kind != "intent.requested" || admits_here(self.root, std::json::find_string_field(r.body, "to"));
-                if !answered && ours {
+                // GH #682: relayed before and still unanswered — relay again
+                let mut last = relayed_at(self.relayed, fact_key(p, i));
+                // a head beside this organism published it itself: count that
+                // as the first delivery, and relay only if it stays unanswered
+                if last < 0 && std::str::contains(r.body, "\"via\": \"membrane\"") {
+                    self.relayed = relay_mark(self.relayed, fact_key(p, i), std::time::now());
+                    last = std::time::now();
+                }
+                let due = last < 0 || std::time::now() - last >= RELAY_AGAIN_AFTER;
+                if !answered && ours && due {
                     let mut body = r.body;
                     if r.kind == "intent.requested" {
                         // the row's entity is the intent id
@@ -426,7 +459,7 @@ locus Host {
                         if close > 0 { body = inner[0..close] + ", \"intent_id\": " + quote(r.entity) + "}"; }
                     }
                     let e = publish_on_membrane(self.root, if r.kind == "intent.requested" { "intent" } else if r.kind == "concern.requested" { "concern" } else if r.kind == "practice.requested" { "practice" } else { "verdict" }, body);
-                    if len(e) == 0 { self.relayed = keys_add(self.relayed, fact_key(p, i)); n = n + 1; }
+                    if len(e) == 0 { self.relayed = relay_mark(self.relayed, fact_key(p, i), std::time::now()); n = n + 1; }
                 }
             }
             i = i + 1;
@@ -441,8 +474,35 @@ locus Host {
         b.string_field("model_hash", model_hash);
         b.string_field("detail", detail);
         b.end_object();
-        let e = publish_on_membrane(self.root, "observed", b.result());
-        if len(e) > 0 { self.say("could not report on the membrane: " + e); }
+        // GH #682: a publish the membrane loses leaves a mutation applied and
+        // never retained; the observation is confirmed by the row the
+        // organism writes on receipt, and sent again until it is, thrice
+        let mut attempts = 0;
+        while attempts < 3 {
+            attempts = attempts + 1;
+            let e = publish_on_membrane(self.root, "observed", b.result());
+            if len(e) > 0 { self.say("could not report on the membrane: " + e); }
+            if self.observation_landed(mutation_id, outcome, 20) { return; }
+            self.say("the organism has not recorded the " + outcome + " observation of " + mutation_id + " yet; reporting it again");
+        }
+        self.say("the " + outcome + " observation of " + mutation_id + " was reported three times and the organism recorded none of them");
+    }
+    // Whether `expression.observed <id>` with `outcome` is in the record,
+    // waiting up to `secs` for it.
+    @unbounded
+    fn observation_landed(mutation_id: String, outcome: String, secs: Int) -> Bool {
+        let deadline = std::time::now() + secs;
+        while std::time::now() <= deadline {
+            let p = open_projection(self.root, self.seed, self.toolchain);
+            let mut i = 0;
+            while i < p.rows() {
+                let e = p.row(i);
+                if e.kind == "expression.observed" && e.entity == mutation_id && std::str::starts_with(e.body, outcome + " ") { return true; }
+                i = i + 1;
+            }
+            std::time::sleep(500ms);
+        }
+        return false;
     }
     // Rebuild the organization and restart it for a Mutation of its own
     // seed: sockets down, the new org up with the Mutation in its

@@ -142,6 +142,11 @@ main locus App {
         // ---- admission
         let mine = self.acme.ask(dna::Intent { id: "i1", outcome: "chase the late invoice", from: "alice", to: "org/books" }, dna::Knobs { routed: true });
         std::test::assert_eq_str(mine, "acme:t1", "an intent for acme's position is admitted by acme's body, under acme's id: " + mine);
+        // GH #682: the same intent offered again (the host's relay of the row a
+        // head also published, or a re-delivery) is admitted once
+        let rows_before = self.acme.journal.revision();
+        std::test::assert_eq_str(self.acme.ask(dna::Intent { id: "i1", outcome: "chase the late invoice", from: "alice", to: "org/books" }, dna::Knobs { routed: true }), "acme:t1", "offered again by id: the Task born for it answers");
+        std::test::assert_eq_int(self.acme.journal.revision(), rows_before, "and nothing more is journaled");
         let theirs = self.acme.ask(dna::Intent { id: "i2", outcome: "call the collections agency", from: "alice", to: "org/collections" }, dna::Knobs { routed: true });
         std::test::assert_eq_str(theirs, "refused: not this organization's to admit — `org/collections` is owned by north, not acme", "an intent for north's position is refused by name");
         std::test::assert(std::str::contains(self.last(self.acme.journal, "intent.refused"), "owned by north"), "the refusal is a row: " + self.last(self.acme.journal, "intent.refused"));
