@@ -310,14 +310,49 @@ main locus App {
         }
         return n;
     }
+    // Let the queue dispatch. A loaded machine is slower than this
+    // fixture's steps, so a wait that expects something waits for it;
+    // `settle` alone is for the checks that expect nothing to happen.
     fn settle() {
         let mut i = 0;
-        while i < 6 { std::time::sleep(20ms); i = i + 1; }
+        while i < 10 {
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    // Wait until `item` has been seen `n` times in `lives`, or give up
+    // after twenty seconds and let the assertion say what happened.
+    @unbounded
+    fn until_life(item: String, n: Int) {
+        let mut i = 0;
+        while i < 1000 {
+            if self.count(self.lives, item) >= n { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    @unbounded
+    fn until_prefix(list: String, prefix: String, suffix: String, n: Int) {
+        let mut i = 0;
+        while i < 1000 {
+            if self.count_prefix(self.lives, prefix, suffix) >= n { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    @unbounded
+    fn until_done(item: String, n: Int) {
+        let mut i = 0;
+        while i < 1000 {
+            if self.count(self.done, item) >= n { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
     }
     run() {
         // 1. an immediate reply: born, committed, requested, answered, gone
         Offers <- Offer { scope: "main", key: "k-now" };
-        self.settle();
+        self.until_life("k-now:dissolved", 1);
         std::test::assert_eq_int(self.count(self.done, "k-now:done"), 1, "the immediate case completes once: " + self.done);
         std::test::assert_eq_int(self.count(self.lives, "k-now:born"), 1, "born once: " + self.lives);
         std::test::assert_eq_int(self.count(self.lives, "k-now:dissolved"), 1, "and reclaimed on completion: " + self.lives);
@@ -335,7 +370,7 @@ main locus App {
         self.settle();
         std::test::assert_eq_int(self.count(self.responder.requests, "h-late:0"), 1, "a replayed answer does not dispatch again: " + self.responder.requests);
         Flushes <- Flush { key: "h-late" };
-        self.settle();
+        self.until_done("h-late:done", 1);
         std::test::assert_eq_int(self.count(self.done, "h-late:done"), 1, "the delayed reply reached it and it completed: " + self.done);
         std::test::assert_eq_int(self.count(self.lives, "h-late:dissolved"), 1, "then it was reclaimed: " + self.lives);
 
@@ -343,6 +378,7 @@ main locus App {
         Offers <- Offer { scope: "main", key: "h-dup" };
         self.settle();
         Flushes <- Flush { key: "h-dup", times: 3 };
+        self.until_done("h-dup:done", 1);
         self.settle();
         std::test::assert_eq_int(self.count(self.done, "h-dup:done"), 1, "three replies, one completion: " + self.done);
         std::test::assert_eq_int(self.count(self.lives, "h-dup:dissolved"), 1, "reclaimed once: " + self.lives);
@@ -355,11 +391,12 @@ main locus App {
         Offers <- Offer { scope: "main", key: "h-nest", nested: true };
         self.settle();
         Flushes <- Flush { key: "h-nest" };
-        self.settle();
+        self.until_life("h-nest.c:born", 1);
         std::test::assert_eq_int(self.count(self.lives, "h-nest.c:born"), 1, "the nested child was born from the reply handler: " + self.lives);
         std::test::assert_eq_int(self.count(self.done, "h-nest:done"), 0, "the parent waits for its nested child");
         std::test::assert_eq_int(self.count(self.responder.requests, "h-nest:1"), 0, "and does not start stage 1 before it: " + self.responder.requests);
         Flushes <- Flush { key: "h-nest.c" };
+        self.until_done("h-nest.c:done", 1);
         self.settle();
         std::test::assert_eq_int(self.count(self.done, "h-nest.c:done"), 1, "the nested child completed: " + self.done);
         std::test::assert_eq_int(self.count(self.lives, "h-nest.c:dissolved"), 1, "and was reclaimed: " + self.lives);
@@ -376,10 +413,11 @@ main locus App {
         Offers <- Offer { scope: "main", key: "h-deleg", delegate: true };
         self.settle();
         Flushes <- Flush { key: "h-deleg" };
-        self.settle();
+        self.until_life("h-deleg.c:born", 1);
         std::test::assert_eq_int(self.count(self.lives, "h-deleg.c:born"), 1, "the delegated child was born, by the Manager: " + self.lives);
         std::test::assert_eq_int(self.count(self.done, "h-deleg:done"), 0, "the parent waits for it");
         Flushes <- Flush { key: "h-deleg.c" };
+        self.until_done("h-deleg.c:done", 1);
         self.settle();
         std::test::assert_eq_int(self.count(self.done, "h-deleg.c:done"), 1, "the delegated child completed: " + self.done);
         std::test::assert_eq_int(self.count(self.lives, "h-deleg.c:dissolved"), 1, "and was reclaimed");
@@ -391,7 +429,7 @@ main locus App {
 
         // 5. an append refusal: no request is dispatched
         Offers <- Offer { scope: "main", key: "k-refuse" };
-        self.settle();
+        self.until_done("k-refuse:refused", 1);
         std::test::assert_eq_int(self.committer.refused, 1, "the journal refused the transition");
         std::test::assert_eq_int(self.count(self.responder.requests, "k-refuse:0"), 0, "and nothing was dispatched: " + self.responder.requests);
         std::test::assert_eq_int(self.count(self.done, "k-refuse:refused"), 1, "the Waiter reported the refusal once: " + self.done);
@@ -399,7 +437,7 @@ main locus App {
 
         // 6. parent shutdown reclaims a Waiter that is still waiting
         Session { };
-        self.settle();
+        self.until_life("h-short:dissolved", 1);
         std::test::assert_eq_int(self.count(self.lives, "h-short:born"), 1, "the session's Waiter was born: " + self.lives);
         std::test::assert_eq_int(self.count(self.lives, "h-short:dissolved"), 1, "and reclaimed when its manager dissolved: " + self.lives);
         std::test::assert_eq_int(self.count(self.done, "h-short:done"), 0, "without completing");
@@ -421,7 +459,7 @@ main locus App {
             Flushes <- Flush { key: "h-many-" + to_string(i) };
             i = i + 1;
         }
-        self.settle();
+        self.until_prefix(self.lives, "h-many-", ":dissolved", 40);
         std::test::assert_eq_int(self.count_prefix(self.lives, "k-many-", ":born"), 40, "forty immediate Waiters born");
         std::test::assert_eq_int(self.count_prefix(self.lives, "k-many-", ":dissolved"), 40, "and forty reclaimed");
         std::test::assert_eq_int(self.count_prefix(self.done, "h-many-", ":done"), 40, "forty delayed replies completed forty Waiters, once each");

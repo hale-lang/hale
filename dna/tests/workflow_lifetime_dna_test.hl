@@ -342,9 +342,32 @@ main locus App {
         }
         return n;
     }
+    // Let the queue dispatch. A loaded machine is slower than this
+    // fixture's steps, so a wait that expects something waits for it;
+    // `settle` alone is for the checks that expect nothing to happen.
     fn settle() {
         let mut i = 0;
-        while i < 6 {
+        while i < 10 {
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    // Wait until `item` has been seen `n` times in `lives`, or give up
+    // after twenty seconds and let the assertion say what happened.
+    @unbounded
+    fn until_life(item: String, n: Int) {
+        let mut i = 0;
+        while i < 1000 {
+            if self.count(self.lives, item) >= n { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    @unbounded
+    fn until_done(item: String, n: Int) {
+        let mut i = 0;
+        while i < 1000 {
+            if self.count(self.done, item) >= n { return; }
             std::time::sleep(20ms);
             i = i + 1;
         }
@@ -358,7 +381,8 @@ main locus App {
 
         // immediate
         Offers <- Offer { scope: "main", key: "k-now" };
-        self.settle();
+        self.until_done("k-now:done", 1);
+        self.until_life("k-now:dissolved", 1);
         std::test::assert_eq_int(self.count(self.done, "k-now:done"), 1, "immediate: completed once: " + self.done);
         std::test::assert_eq_int(self.committed("k-now"), 1, "immediate: the dispatch was committed in the journal");
         std::test::assert_eq_int(self.count(self.lives, "k-now:dissolved"), 1, "immediate: reclaimed: " + self.lives);
@@ -376,6 +400,7 @@ main locus App {
         self.settle();
         std::test::assert_eq_int(self.count(self.done, "h-late:done"), 0, "delayed: an unrelated WorkDone does not reach it");
         Flushes <- Flush { work_id: "h-late", times: 2 };
+        self.until_done("h-late:done", 1);
         self.settle();
         std::test::assert_eq_int(self.count(self.done, "h-late:done"), 1, "delayed: two replies, one completion: " + self.done);
         std::test::assert_eq_int(self.count(self.lives, "h-late:dissolved"), 1, "delayed: reclaimed once: " + self.lives);
@@ -384,9 +409,10 @@ main locus App {
         Offers <- Offer { scope: "main", key: "h-nest", nested: true };
         self.settle();
         Flushes <- Flush { work_id: "h-nest" };
-        self.settle();
+        self.until_life("h-nest.c:born", 1);
         std::test::assert_eq_int(self.count(self.lives, "h-nest.c:born"), 1, "nested: the child was born: " + self.lives);
         Flushes <- Flush { work_id: "h-nest.c" };
+        self.until_done("h-nest.c:done", 1);
         self.settle();
         std::test::assert_eq_int(self.count(self.done, "h-nest.c:done"), 1, "nested: the child completed: " + self.done);
         std::test::assert_eq_int(self.count(self.lives, "h-nest.c:dissolved"), 1, "nested: and was reclaimed");
@@ -401,10 +427,11 @@ main locus App {
         // transition identity: an old answer while a newer transition waits,
         // and a proposal re-sent after its answer was lost
         Offers <- Offer { scope: "main", key: "h-hold", nested: true };
-        self.settle();
+        self.until_life("h-hold:born", 1);
         Flushes <- Flush { work_id: "h-hold" };
-        self.settle();
+        self.until_life("h-hold.c:born", 1);
         Flushes <- Flush { work_id: "h-hold.c" };
+        self.until_done("h-hold.c:done", 1);
         self.settle();
         std::test::assert_eq_int(self.count(self.done, "h-hold.c:done"), 1, "hold: the child completed: " + self.done);
         std::test::assert_eq_int(self.committed("h-hold"), 1, "hold: stage 2 is proposed and held, not committed");
@@ -435,7 +462,7 @@ main locus App {
 
         // a journal refusal: nothing dispatched
         Offers <- Offer { scope: "main", key: "k-refuse" };
-        self.settle();
+        self.until_done("k-refuse:refused", 1);
         std::test::assert_eq_int(self.committer.refused, 1, "refusal: the journal refused the append");
         std::test::assert_eq_int(self.count(self.responder.requests, "k-refuse"), 0, "refusal: no request: " + self.responder.requests);
         std::test::assert_eq_int(self.committed("k-refuse"), 0, "refusal: nothing in the journal");
@@ -444,7 +471,7 @@ main locus App {
 
         // parent shutdown
         Session { };
-        self.settle();
+        self.until_life("h-short:dissolved", 1);
         std::test::assert(self.count(self.lives, "h-short:born") == 1 && self.count(self.lives, "h-short:dissolved") == 1, "shutdown: born, and reclaimed with its manager: " + self.lives);
         Flushes <- Flush { work_id: "h-short" };
         self.settle();
