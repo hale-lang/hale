@@ -937,31 +937,47 @@ is a conflict, and `transition_conflict` names which part differs.
 
 The state an execution is in is read from those facts and nothing else
 (`dna/core/workflow_projection.hl`). `replay(projection, kind, entity,
-body)` applies one fact to plain rows and answers one of three things:
-the fact was **applied**, it is a **replay** of what the projection
-already holds, or it is **refused** because it does not belong to this
-execution or would undo what is settled. Applying a fact asks nothing of
-the world: the entry point carries `@no_syscall`, which the compiler
-checks through everything it reaches, and the projection holds no
-journal, gateway or model to call.
+body)` applies one row and answers one of three things: the fact was
+**applied**, it is a **replay** of what the projection already holds, or
+it is **refused**. Applying a fact asks nothing of the world: the entry
+point carries `@no_syscall`, which the compiler checks through everything
+it reaches, and the projection holds no journal, gateway or model to
+call. The contract guards syscall-class effects; having nothing to call
+is what rules out the rest.
 
-The join is by identity, never by counting (§6 of the contract). A Step
-registers its whole required set before anything is dispatched, with each
-member's kind; a member answers once, under the key it was registered as;
-and the Step completes only when every key has settled. A leaf member is
-answered by its Work settling, a child member by the execution it invoked
-settling into the step that spawned it, and neither can answer for the
-other. Two answers from one member are one member: the second is a
-replay, and the Step does not complete because the right *number* of
-answers arrived.
+**The admitted recipe is the authority.** An admission carries the whole
+bound tree under its Task, and every later fact is checked against it: a
+Step is one the recipe binds for that Task at that index; a registration
+names exactly the members the recipe bound under that Step, each by key,
+kind and entity, none missing and none invented; a Work's retry allowance
+is the one bound for it; a child is admitted only as the Task its parent
+bound under that key, from a step that is registered and active, and
+answers only as that Task. A fact the recipe does not know is refused,
+however well-formed.
 
-A fact is refused when its Step was never registered, when its Work is
-not a member of that Step (a Work is `<step>/<key>` and nothing longer),
-when its attempt was superseded by a later one, when a settled Work or
-Step or execution would settle again or differently, when a child's
-settlement would redirect its answer to another step than the one it was
-admitted from, and when a Step would complete with members still
-outstanding. Results are read back by Work identity.
+**Every transition has its basis.** A Work settles `done` only on a
+current attempt that recorded `done`; it settles `failed` only on a failed
+attempt with no allowance left, or once its Step has failed or its Task is
+cancelled, under which a member records its outcome and stops (the drain
+policy); it settles `cancelled` only under a cancelled Task (the fence).
+A retry is the next attempt, admitted only after the last one recorded a
+failure and only within the allowance. A Step activates only after the
+step before it completed, completes only when every member it registered
+has settled `done`, and fails only on a member that failed. A Task
+settles `done` only when every Step the recipe binds for it completed,
+and `failed` only after a Step failed and every responsibility it admitted
+has settled: the root settles last. Cancellation stops further admission;
+what was admitted still records its outcome.
+
+**A fact is one row.** The row's entity is the fact's own identity, and a
+`step.completed` row carries a completion. A fact whose identity is
+already recorded is a replay when it is the same bytes and a conflict
+otherwise, checked before the state, so a row from history is recognized
+as such after the state has moved past it. The join is by identity, never
+by counting: two answers from one member are one member. A Work's result
+is the output of the attempt it settled on, readable only once it has
+settled; what an outstanding or superseded attempt said is never the
+Work's result.
 
 Nothing yet admits, records or executes a workflow; these are the
 durable shapes it is written in, and the state they add up to.

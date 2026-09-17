@@ -1,40 +1,66 @@
 // dna/core/workflow_projection.hl — the state an execution is in, read
 // from its facts and nothing else (DNA workflow card 06;
-// dna/WORKFLOW-CONTRACT.md §5, §6, §8).
+// dna/WORKFLOW-CONTRACT.md §4, §5, §6, §7, §8).
 //
 // Every fact card 05 writes is applied here to plain rows. Applying one
 // asks nothing of the world: no journal, no bus, no performer, no clock.
-// `@no_syscall` says so where the compiler can check it, and the locus
-// holds no journal, no gateway and no model to call — a replay of a
-// thousand facts reaches nothing outside this arena.
+// `replay` carries `@no_syscall`, which the compiler checks through every
+// method it reaches, and the locus holds no journal, no gateway and no
+// model to call — a replay of a thousand facts reaches nothing outside
+// this arena. (The contract guards syscall-class effects; the absence of
+// anything to call is what rules out the rest.)
 //
-// The join is by identity, not by counting (§6). A Step names its whole
-// required set before anything is dispatched; a Work settles under the
-// key it was registered as; the Step completes when every key in its
-// required set has settled `done`, and never because the right NUMBER of
-// members answered. Two answers from one member are one member.
+// The admitted recipe is the authority. An admission carries the whole
+// bound tree under its Task, and every later fact is checked against it:
+// a Step is one the recipe binds for that Task, a registration names
+// exactly the members the recipe bound under that Step (key, kind and
+// entity), a Work's allowance is the one bound for it, and a child answers
+// only as the Task the recipe bound under that key. A fact the recipe does
+// not know is refused, however well-formed.
 //
-// Applying a fact answers one of three things, which is the whole
-// vocabulary a reader needs:
+// Every transition has its basis (§5, §7). A Work is done only when its
+// current attempt recorded `done`; it fails only after a failed attempt
+// with no allowance left, or once its Step has failed or its Task is
+// cancelled (the drain policy); it is cancelled only under a cancelled
+// Task (the fence). A Step activates only after the one before it
+// completed, completes only when every member it registered has settled
+// `done`, and fails only on a member that failed. A Task is done only when
+// every Step the recipe binds for it completed, and failed only after a
+// Step failed and every responsibility it admitted has settled. A
+// cancelled Task admits nothing further; what it had admitted still
+// records its outcome.
 //
-//   refused  the fact does not belong to this execution, or would undo
-//            what is already settled — an unknown member, another Step's
-//            Work, a superseded attempt, a second disposition
-//   replay   the fact is already in the projection; nothing moved
+// A fact is either the fact already recorded for that identity — the
+// same bytes, a replay — or it is not, and then it is checked against the
+// state: a different body under a recorded identity is a conflict and is
+// refused. That check comes first, so a fact from history is recognized
+// as such even after the state has moved past it.
+//
+// Applying a fact answers one of three things:
+//
+//   refused  the fact does not belong to this execution, contradicts a
+//            recorded one, or has no basis in the state
+//   replay   the fact is already recorded; nothing moved
 //   applied  the projection moved
 //
 // Nothing here dispatches, admits or appends. Card 07 admits.
 
-// One Work, as its facts leave it.
+// One Work, as its facts leave it. What the attempt said and what the
+// Work settled on are kept apart: a retry clears the attempt's fields, and
+// `result` is written only when the Work settles `done`.
 type WorkView {
     work_id: String = "";
     step_id: String = "";
+    task_id: String = "";
     member_key: String = "";
+    allowance: Int = 0; // attempts the recipe bound for it
     attempt_id: String = ""; // the attempt admitted last: the current one
     attempt_no: Int = -1; // -1 until one is admitted (§4 numbers from 0)
-    attempt_disposition: String = "";
+    attempt_disposition: String = ""; // "" while the current attempt is outstanding
+    attempt_result: String = "";
+    attempt_result_ref: String = "";
     disposition: String = ""; // "" until the Work itself settles
-    result: String = "";
+    result: String = ""; // the accepted output, once settled done
     result_ref: String = "";
 }
 
@@ -46,6 +72,7 @@ type StepView {
     step_index: Int = 0;
     required: String = ""; // every member key, space-separated
     kinds: String = ""; // `<key>:<leaf|child>` per member, as registered
+    entities: String = ""; // `<key>=<work id | task id>` per member
     settled: String = ""; // the keys that have settled `done`
     activated: Bool = false;
     disposition: String = "";
@@ -60,8 +87,16 @@ type TaskView {
     parent_task: String = "";
     spawning_step: String = "";
     member_key: String = "";
-    disposition: String = ""; // "" while it runs
+    disposition: String = ""; // "" while it runs; `cancelled` stops it
     reason: String = "";
+}
+
+// One accepted fact, by identity, as it was recorded: the bytes a later
+// row under the same identity is compared against.
+type Fact {
+    kind: String = "";
+    id: String = "";
+    body: String = "";
 }
 
 @form(vec)
@@ -77,6 +112,11 @@ locus StepViewRows {
 @form(vec)
 locus TaskViewRows {
     capacity { heap rows of TaskView; }
+}
+
+@form(vec)
+locus FactRows {
+    capacity { heap rows of Fact; }
 }
 
 // What applying one fact did. `ok` is false only when the fact does not
@@ -112,69 +152,15 @@ fn set_add(set: String, key: String) -> String {
     return set + " " + key;
 }
 
-@unbounded
-fn set_count(set: String) -> Int {
-    let mut n = 0;
-    let mut rest = set;
-    while len(rest) > 0 {
-        let sp = std::str::index_of(rest + " ", " ");
-        if sp > 0 { n = n + 1; }
-        rest = if sp + 1 >= len(rest) { "" } else { rest[(sp + 1)..len(rest)] };
-    }
-    return n;
-}
-
-// The kind of one member of a registered set (`a:leaf b:child`), "" when
-// the set does not name it. A leaf is answered by its Work settling; a
-// child is answered by the execution it invoked settling (§6). One is
-// never the other.
-fn member_kind(kinds: String, key: String) -> String {
-    let mut rest = " " + kinds + " ";
-    let at = std::str::index_of(rest, " " + key + ":");
+// The value after `<key><sep>` in a space-separated map, "" when the map
+// does not name the key.
+fn map_get(map: String, key: String, sep: String) -> String {
+    let rest = " " + map + " ";
+    let at = std::str::index_of(rest, " " + key + sep);
     if at < 0 { return ""; }
-    let tail = rest[(at + len(key) + 2)..len(rest)];
+    let tail = rest[(at + len(key) + len(sep) + 1)..len(rest)];
     let sp = std::str::index_of(tail, " ");
     return if sp < 0 { tail } else { tail[0..sp] };
-}
-
-// `<key>:<kind>` per member, from a registered set (`a:leaf:<id> …`).
-@unbounded
-fn member_kinds(members: String) -> String {
-    let mut out = "";
-    let mut rest = members;
-    while len(rest) > 0 {
-        let sp = std::str::index_of(rest + " ", " ");
-        let one = rest[0..sp];
-        rest = if sp + 1 >= len(rest) { "" } else { rest[(sp + 1)..len(rest)] };
-        if len(one) > 0 {
-            let colon = std::str::index_of(one, ":");
-            if colon < 0 { return ""; }
-            let after = one[(colon + 1)..len(one)];
-            let next = std::str::index_of(after, ":");
-            let kind = if next < 0 { after } else { after[0..next] };
-            if kind != "leaf" && kind != "child" { return ""; }
-            out = set_add(out, one[0..colon] + ":" + kind);
-        }
-    }
-    return out;
-}
-
-// The keys of a registered member set (`a:leaf:<id> b:child:<id>`), in
-// the order they were registered.
-@unbounded
-fn member_keys(members: String) -> String {
-    let mut out = "";
-    let mut rest = members;
-    while len(rest) > 0 {
-        let sp = std::str::index_of(rest + " ", " ");
-        let one = rest[0..sp];
-        rest = if sp + 1 >= len(rest) { "" } else { rest[(sp + 1)..len(rest)] };
-        if len(one) > 0 {
-            let colon = std::str::index_of(one, ":");
-            out = set_add(out, if colon < 0 { one } else { one[0..colon] });
-        }
-    }
-    return out;
 }
 
 // The member key a Work id carries under its Step: a Work is
@@ -191,9 +177,7 @@ fn work_key_under(step_id: String, work_id: String) -> String {
 // Applying a fact reaches nothing outside this arena. The contract is on
 // this one entry point and the checker follows it through every method it
 // reaches: a journal append, a performer, a clock or a print anywhere
-// under `apply` fails the build here rather than in a review. The locus
-// holds no journal, no gateway and no model to call either, so there is
-// nothing for a replay to reach even before the contract is read.
+// under `apply` fails the build here rather than in a review.
 @no_syscall
 fn replay(p: WorkflowProjection, kind: String, entity: String, body: String) -> Applied {
     return p.apply(kind, entity, body);
@@ -207,6 +191,11 @@ locus WorkflowProjection {
         works: WorkViewRows = WorkViewRows { };
         steps: StepViewRows = StepViewRows { };
         tasks: TaskViewRows = TaskViewRows { };
+        facts: FactRows = FactRows { };
+        // every node every admission bound, by id: the authority
+        tree: BoundNodeRows = BoundNodeRows { };
+        // reads one recipe at a time, on its way into `tree`
+        reader: WorkflowCatalog = WorkflowCatalog { };
     }
 
     // ---- what it knows ------------------------------------------------
@@ -214,9 +203,8 @@ locus WorkflowProjection {
     fn work_count() -> Int { return self.works.len(); }
     fn step_count() -> Int { return self.steps.len(); }
     fn task_count() -> Int { return self.tasks.len(); }
-
-    @unbounded
-    fn work_at(i: Int) -> WorkView { return self.works.get(i) or WorkView { }; }
+    fn fact_count() -> Int { return self.facts.len(); }
+    fn node_count() -> Int { return self.tree.len(); }
 
     @unbounded
     fn work(work_id: String) -> WorkView {
@@ -251,14 +239,30 @@ locus WorkflowProjection {
         return TaskView { };
     }
 
-    // The result of one Work, by its id: what the attempt it settled on
-    // produced. "" when it has not settled.
+    @unbounded
+    fn node(id: String) -> BoundNode {
+        let mut i = 0;
+        while i < self.tree.len() {
+            let n = self.tree.get(i) or BoundNode { };
+            if n.id == id { return n; }
+            i = i + 1;
+        }
+        return BoundNode { };
+    }
+
+    // The accepted output of one Work, by its id: what the attempt it
+    // settled on produced. "" until the Work has settled `done`; what an
+    // outstanding or superseded attempt said is never the Work's result.
     fn result_of(work_id: String) -> String {
-        return self.work(work_id).result;
+        let w = self.work(work_id);
+        if w.disposition != "done" { return ""; }
+        return w.result;
     }
 
     fn result_ref_of(work_id: String) -> String {
-        return self.work(work_id).result_ref;
+        let w = self.work(work_id);
+        if w.disposition != "done" { return ""; }
+        return w.result_ref;
     }
 
     // The members a Step is still waiting for, in registration order.
@@ -284,49 +288,171 @@ locus WorkflowProjection {
         return len(self.pending(step_id)) == 0;
     }
 
+    // Whether a Task has stopped admitting: settled, or cancelled.
+    fn stopped(task_id: String) -> Bool {
+        return len(self.task(task_id).disposition) > 0;
+    }
+
+    // One line per row, in order: what two projections of one history
+    // must agree on, and what an invalid fact must leave as it was.
+    @unbounded
+    fn digest() -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.tasks.len() {
+            let t = self.tasks.get(i) or TaskView { };
+            out = out + "task " + t.task_id + " " + t.definition + "@" + to_string(t.revision) + " <" + t.parent_task + " " + t.spawning_step + " " + t.member_key + "> " + t.disposition + " " + t.reason + "\n";
+            i = i + 1;
+        }
+        i = 0;
+        while i < self.steps.len() {
+            let s = self.steps.get(i) or StepView { };
+            out = out + "step " + s.step_id + " [" + s.required + "] {" + s.entities + "} settled [" + s.settled + "] " + (if s.activated { "active " } else { "" }) + s.disposition + " " + s.failed_member + "\n";
+            i = i + 1;
+        }
+        i = 0;
+        while i < self.works.len() {
+            let w = self.works.get(i) or WorkView { };
+            out = out + "work " + w.work_id + " " + w.attempt_id + " " + w.attempt_disposition + " " + w.attempt_result + " | " + w.disposition + " " + w.result + " " + w.result_ref + "\n";
+            i = i + 1;
+        }
+        return out + "facts " + to_string(self.facts.len()) + " nodes " + to_string(self.tree.len()) + "\n";
+    }
+
+    // ---- the fact already recorded under an identity ----------------------
+
+    @unbounded
+    fn recorded(kind: String, id: String) -> String {
+        let mut i = 0;
+        while i < self.facts.len() {
+            let f = self.facts.get(i) or Fact { };
+            if f.kind == kind && f.id == id { return f.body; }
+            i = i + 1;
+        }
+        return "";
+    }
+
+    // "" when this fact is new; a replay or a refusal when its identity is
+    // already recorded. Checked before the state, so a fact from history
+    // is recognized as such after the state has moved past it.
+    fn known(kind: String, id: String, body: String) -> Applied {
+        let before = self.recorded(kind, id);
+        if len(before) == 0 { return Applied { }; }
+        if before == body { return replayed(kind + " " + id + " is already recorded"); }
+        return refused(kind + " " + id + " is already recorded, and this row says something else");
+    }
+
+    fn record(kind: String, id: String, body: String) {
+        self.facts.push(Fact { kind: kind, id: id, body: body });
+    }
+
+    // Why a row's envelope does not carry this fact, "" when it does: the
+    // row's entity is the fact's own identity.
+    fn envelope(entity: String, id: String, what: String) -> String {
+        if entity == id { return ""; }
+        return "the row is about `" + entity + "`; the " + what + " it carries is about `" + id + "`";
+    }
+
     // ---- applying one fact ---------------------------------------------
 
     @unbounded
     fn apply(kind: String, entity: String, body: String) -> Applied {
-        if kind == "workflow.admitted" { return self.admitted(body); }
-        if kind == "workflow.refused" { return self.refusal(body); }
-        if kind == "step.registered" { return self.registered(body); }
-        if kind == "step.activated" { return self.activated(body); }
-        if kind == "attempt.admitted" { return self.attempt(body); }
-        if kind == "attempt.outcome" { return self.attempt_outcome(body); }
-        if kind == "work.settled" { return self.work_settled(body); }
-        if kind == "step.completed" || kind == "step.failed" { return self.step_settled(body); }
-        if kind == "workflow.settled" { return self.workflow_settled(body); }
+        if kind == "workflow.admitted" { return self.admitted(entity, body); }
+        if kind == "workflow.refused" { return self.refusal(entity, body); }
+        if kind == "step.registered" { return self.registered(entity, body); }
+        if kind == "step.activated" { return self.activated(entity, body); }
+        if kind == "attempt.admitted" { return self.attempt(entity, body); }
+        if kind == "attempt.outcome" { return self.attempt_outcome(entity, body); }
+        if kind == "work.settled" { return self.work_settled(entity, body); }
+        if kind == "step.completed" || kind == "step.failed" { return self.step_settled(kind, entity, body); }
+        if kind == "workflow.settled" { return self.workflow_settled(entity, body); }
         return refused("`" + kind + "` is no fact of a workflow execution");
     }
 
+    // ---- admission: the recipe becomes the authority ------------------
+
     @unbounded
-    fn admitted(body: String) -> Applied {
+    fn admitted(entity: String, body: String) -> Applied {
         let read = decode_admission(body);
         if !read.ok { return refused(read.why); }
         let a = read.value;
-        let known = self.task(a.task_id);
-        if len(known.task_id) > 0 {
-            if known.definition != a.definition || known.revision != a.revision {
-                return refused("task " + a.task_id + " was admitted for " + definition_name(known.definition, known.revision) + ", not " + definition_name(a.definition, a.revision));
+        let bad = self.envelope(entity, a.task_id, "admission");
+        if len(bad) > 0 { return refused(bad); }
+        let seen = self.known("workflow.admitted", a.task_id, body);
+        if len(seen.why) > 0 { return seen; }
+        if len(self.task(a.task_id).task_id) > 0 {
+            return refused("task " + a.task_id + " was already admitted, and this row says something else");
+        }
+        // the recipe has to be readable whole, and has to bind this Task
+        // as the admission describes it
+        let gap = self.reader.decode_bound(a.recipe);
+        if len(gap) > 0 { return refused("the admission of " + a.task_id + " carries a recipe that cannot be read: " + gap); }
+        let root = self.reader.bound_node(a.task_id);
+        if root.kind != "task" { return refused("the recipe an admission of " + a.task_id + " carries does not bind that task"); }
+        if root.definition != a.definition || root.revision != a.revision {
+            return refused("task " + a.task_id + " is bound to " + definition_name(root.definition, root.revision) + ", not " + definition_name(a.definition, a.revision));
+        }
+        if root.parent != a.parent_task || root.spawning_step != a.spawning_step || root.member_key != a.member_key {
+            return refused("task " + a.task_id + " is bound under <" + root.parent + " " + root.spawning_step + " " + root.member_key + ">, not <" + a.parent_task + " " + a.spawning_step + " " + a.member_key + ">");
+        }
+        // a child is admitted for what its parent bound under it, from a
+        // step that is registered and active
+        if len(a.parent_task) > 0 {
+            if len(self.task(a.parent_task).task_id) == 0 {
+                return refused("task " + a.task_id + " names parent " + a.parent_task + ", which was never admitted");
             }
-            return replayed("task " + a.task_id + " was already admitted");
+            if self.stopped(a.parent_task) {
+                return refused("task " + a.task_id + " names parent " + a.parent_task + ", which " + self.task(a.parent_task).disposition + "; it admits nothing further");
+            }
+            let bound = self.node(a.task_id);
+            if bound.kind != "task" {
+                return refused("task " + a.task_id + " is not a task the recipe of " + a.parent_task + " binds");
+            }
+            if bound.spawning_step != a.spawning_step || bound.member_key != a.member_key || bound.definition != a.definition || bound.revision != a.revision {
+                return refused("task " + a.task_id + " is bound by its parent as " + definition_name(bound.definition, bound.revision) + " under <" + bound.spawning_step + " " + bound.member_key + ">");
+            }
+            let up = self.step(a.spawning_step);
+            if len(up.step_id) == 0 { return refused("task " + a.task_id + " is spawned by step " + a.spawning_step + ", which was never registered"); }
+            if !up.activated { return refused("task " + a.task_id + " is spawned by step " + a.spawning_step + ", which was never activated"); }
+            if len(up.disposition) > 0 { return refused("task " + a.task_id + " is spawned by step " + a.spawning_step + ", which " + up.disposition); }
+        }
+        // the recipe's nodes join the tree; a node already bound has to be
+        // the same node
+        let mut i = 0;
+        while i < self.reader.bound_count() {
+            let n = self.reader.bound_at(i);
+            let have = self.node(n.id);
+            if len(have.id) > 0 {
+                if have.kind != n.kind || have.parent != n.parent || have.member_key != n.member_key || have.definition != n.definition || have.revision != n.revision || have.attempts != n.attempts {
+                    return refused("the recipe an admission of " + a.task_id + " carries binds " + n.id + " differently from the tree already admitted");
+                }
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while i < self.reader.bound_count() {
+            let n = self.reader.bound_at(i);
+            if len(self.node(n.id).id) == 0 { self.tree.push(n); }
+            i = i + 1;
         }
         self.tasks.push(TaskView {
             task_id: a.task_id, definition: a.definition, revision: a.revision,
             parent_task: a.parent_task, spawning_step: a.spawning_step, member_key: a.member_key
         });
+        self.record("workflow.admitted", a.task_id, body);
         return applied();
     }
 
     @unbounded
-    fn refusal(body: String) -> Applied {
+    fn refusal(entity: String, body: String) -> Applied {
         let read = decode_refusal(body);
         if !read.ok { return refused(read.why); }
         let r = read.value;
-        let known = self.task(r.task_id);
-        if len(known.task_id) > 0 {
-            if known.disposition == "refused" { return replayed("task " + r.task_id + " was already refused"); }
+        let bad = self.envelope(entity, r.task_id, "refusal");
+        if len(bad) > 0 { return refused(bad); }
+        let seen = self.known("workflow.refused", r.task_id, body);
+        if len(seen.why) > 0 { return seen; }
+        if len(self.task(r.task_id).task_id) > 0 {
             return refused("task " + r.task_id + " was admitted; a refusal does not undo that");
         }
         self.tasks.push(TaskView {
@@ -334,47 +460,146 @@ locus WorkflowProjection {
             parent_task: r.parent_task, spawning_step: r.spawning_step, member_key: r.member_key,
             disposition: "refused", reason: r.why
         });
+        self.record("workflow.refused", r.task_id, body);
         return applied();
     }
 
+    // ---- a step: registered against the recipe, activated in order ----
+
+    // The members the recipe bound under one Step, as `<key>:<kind>=<id>`:
+    // the Works whose parent it is, and the child Tasks it spawns.
     @unbounded
-    fn registered(body: String) -> Applied {
+    fn bound_members(step_id: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.tree.len() {
+            let n = self.tree.get(i) or BoundNode { };
+            if n.kind == "work" && n.parent == step_id { out = set_add(out, n.member_key + ":leaf=" + n.id); }
+            if n.kind == "task" && n.spawning_step == step_id { out = set_add(out, n.member_key + ":child=" + n.id); }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    @unbounded
+    fn registered(entity: String, body: String) -> Applied {
         let read = decode_members(body);
         if !read.ok { return refused(read.why); }
         let m = read.value;
+        let bad = self.envelope(entity, m.step_id, "registration");
+        if len(bad) > 0 { return refused(bad); }
+        let seen = self.known("step.registered", m.step_id, body);
+        if len(seen.why) > 0 { return seen; }
         if len(self.task(m.task_id).task_id) == 0 {
             return refused("step " + m.step_id + " belongs to task " + m.task_id + ", which was never admitted");
         }
-        let keys = member_keys(m.members);
-        if len(keys) == 0 { return refused("step " + m.step_id + " registers no member"); }
-        let kinds = member_kinds(m.members);
-        if len(kinds) == 0 { return refused("step " + m.step_id + " registers a member that is neither a leaf nor a child"); }
-        let known = self.step(m.step_id);
-        if len(known.step_id) > 0 {
-            if known.required != keys {
-                return refused("step " + m.step_id + " required `" + known.required + "`; a step's required set is registered once, not `" + keys + "`");
+        if self.stopped(m.task_id) {
+            return refused("step " + m.step_id + " belongs to task " + m.task_id + ", which " + self.task(m.task_id).disposition + "; it admits nothing further");
+        }
+        let bound = self.node(m.step_id);
+        if bound.kind != "step" || bound.parent != m.task_id {
+            return refused("step " + m.step_id + " is not a step the recipe binds for task " + m.task_id);
+        }
+        if bound.step_index != m.step_index || bound.workflow_id != m.workflow_id {
+            return refused("step " + m.step_id + " is bound as step " + to_string(bound.step_index) + " of " + bound.workflow_id + ", not step " + to_string(m.step_index) + " of " + m.workflow_id);
+        }
+        if len(self.step(m.step_id).step_id) > 0 {
+            return refused("step " + m.step_id + " was already registered, and this row says something else");
+        }
+        // the registration names exactly the members the recipe bound
+        // under this step: each by key, kind and entity, none missing,
+        // none invented
+        let bound_set = self.bound_members(m.step_id);
+        let mut required = "";
+        let mut kinds = "";
+        let mut entities = "";
+        let mut rest = m.members;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest + " ", " ");
+            let one = rest[0..sp];
+            rest = if sp + 1 >= len(rest) { "" } else { rest[(sp + 1)..len(rest)] };
+            if len(one) == 0 { continue; }
+            let c1 = std::str::index_of(one, ":");
+            if c1 < 0 { return refused("step " + m.step_id + " registers `" + one + "`, which names no kind and no entity"); }
+            let key = one[0..c1];
+            let after = one[(c1 + 1)..len(one)];
+            let c2 = std::str::index_of(after, ":");
+            if c2 < 0 { return refused("step " + m.step_id + " registers `" + one + "`, which names no entity"); }
+            let kind = after[0..c2];
+            let id = after[(c2 + 1)..len(after)];
+            if set_has(required, key) { return refused("step " + m.step_id + " registers `" + key + "` twice"); }
+            let want = map_get(bound_set, key + ":" + kind, "=");
+            if len(want) == 0 {
+                return refused("step " + m.step_id + " registers `" + key + "` as a " + kind + ", which the recipe does not bind under it (it bound `" + bound_set + "`)");
             }
-            return replayed("step " + m.step_id + " was already registered");
+            if want != id {
+                return refused("step " + m.step_id + " registers `" + key + "` as " + id + "; the recipe bound " + want);
+            }
+            required = set_add(required, key);
+            kinds = set_add(kinds, key + ":" + kind);
+            entities = set_add(entities, key + "=" + id);
+        }
+        if len(required) == 0 { return refused("step " + m.step_id + " registers no member"); }
+        // nothing the recipe bound may be left out
+        let mut rest2 = bound_set;
+        while len(rest2) > 0 {
+            let sp = std::str::index_of(rest2 + " ", " ");
+            let one = rest2[0..sp];
+            rest2 = if sp + 1 >= len(rest2) { "" } else { rest2[(sp + 1)..len(rest2)] };
+            if len(one) == 0 { continue; }
+            let key = one[0..std::str::index_of(one, ":")];
+            if !set_has(required, key) {
+                return refused("step " + m.step_id + " registers `" + required + "` and leaves out `" + key + "`, which the recipe bound under it; a required set is whole");
+            }
         }
         self.steps.push(StepView {
             step_id: m.step_id, task_id: m.task_id, workflow_id: m.workflow_id,
-            step_index: m.step_index, required: keys, kinds: kinds
+            step_index: m.step_index, required: required, kinds: kinds, entities: entities
         });
+        self.record("step.registered", m.step_id, body);
         return applied();
     }
 
+    // Whether every step the recipe binds before this one, in this
+    // workflow, has completed. "" when it has; else the step still ahead.
     @unbounded
-    fn activated(body: String) -> Applied {
+    fn step_ahead(task_id: String, index: Int) -> String {
+        let mut i = 0;
+        while i < self.tree.len() {
+            let n = self.tree.get(i) or BoundNode { };
+            if n.kind == "step" && n.parent == task_id && n.step_index < index {
+                if self.step(n.id).disposition != "completed" { return n.id; }
+            }
+            i = i + 1;
+        }
+        return "";
+    }
+
+    @unbounded
+    fn activated(entity: String, body: String) -> Applied {
         let read = decode_activation(body);
         if !read.ok { return refused(read.why); }
         let a = read.value;
+        let bad = self.envelope(entity, a.step_id, "activation");
+        if len(bad) > 0 { return refused(bad); }
+        let seen = self.known("step.activated", a.step_id, body);
+        if len(seen.why) > 0 { return seen; }
         let mut i = 0;
         while i < self.steps.len() {
             let s = self.steps.get(i) or StepView { };
             if s.step_id == a.step_id {
-                if s.activated { return replayed("step " + a.step_id + " was already activated"); }
+                if s.activated { return refused("step " + a.step_id + " was already activated, and this row says something else"); }
+                if len(s.disposition) > 0 { return refused("step " + a.step_id + " " + s.disposition + "; it does not activate"); }
+                if self.stopped(s.task_id) {
+                    return refused("step " + a.step_id + " belongs to task " + s.task_id + ", which " + self.task(s.task_id).disposition + "; nothing further activates");
+                }
+                let ahead = self.step_ahead(s.task_id, s.step_index);
+                if len(ahead) > 0 {
+                    return refused("step " + a.step_id + " cannot activate while step " + ahead + " has not completed");
+                }
                 s.activated = true;
                 self.steps.set(i, s) or discard;
+                self.record("step.activated", a.step_id, body);
                 return applied();
             }
             i = i + 1;
@@ -382,13 +607,30 @@ locus WorkflowProjection {
         return refused("step " + a.step_id + " was activated before its members were registered");
     }
 
+    // ---- attempts: first, current, next ---------------------------------
+
     @unbounded
-    fn attempt(body: String) -> Applied {
+    fn attempt(entity: String, body: String) -> Applied {
         let read = decode_attempt(body);
         if !read.ok { return refused(read.why); }
         let a = read.value;
+        let bad = self.envelope(entity, a.attempt_id, "attempt admission");
+        if len(bad) > 0 { return refused(bad); }
+        let seen = self.known("attempt.admitted", a.attempt_id, body);
+        if len(seen.why) > 0 { return seen; }
         let gap = self.member_gap(a.step_id, a.work_id);
         if len(gap) > 0 { return refused(gap); }
+        let s = self.step(a.step_id);
+        if s.task_id != a.task_id { return refused("work " + a.work_id + " belongs to task " + s.task_id + ", not " + a.task_id); }
+        if self.stopped(s.task_id) {
+            return refused("task " + s.task_id + " " + self.task(s.task_id).disposition + "; it admits no attempt");
+        }
+        if !s.activated { return refused("work " + a.work_id + " cannot be attempted before step " + a.step_id + " is activated"); }
+        if len(s.disposition) > 0 { return refused("work " + a.work_id + " cannot be attempted after step " + a.step_id + " " + s.disposition); }
+        let bound = self.node(a.work_id);
+        if a.attempt_no >= bound.attempts {
+            return refused("attempt " + a.attempt_id + " exhausts the allowance of " + to_string(bound.attempts) + " the recipe bound for " + a.work_id);
+        }
         let mut i = 0;
         while i < self.works.len() {
             let w = self.works.get(i) or WorkView { };
@@ -396,30 +638,52 @@ locus WorkflowProjection {
                 if len(w.disposition) > 0 {
                     return refused("work " + a.work_id + " settled " + w.disposition + "; a settled Work is not attempted again");
                 }
-                if w.attempt_no == a.attempt_no { return replayed("attempt " + a.attempt_id + " was already admitted"); }
-                if a.attempt_no < w.attempt_no {
+                if a.attempt_no <= w.attempt_no {
                     return refused("attempt " + a.attempt_id + " was superseded by " + w.attempt_id);
+                }
+                if a.attempt_no != w.attempt_no + 1 {
+                    return refused("attempt " + a.attempt_id + " skips attempt " + to_string(w.attempt_no + 1) + " of " + a.work_id);
+                }
+                if len(w.attempt_disposition) == 0 {
+                    return refused("attempt " + w.attempt_id + " is still outstanding; " + a.work_id + " is not retried until its outcome is recorded");
+                }
+                if w.attempt_disposition == "done" {
+                    return refused("attempt " + w.attempt_id + " was done; a Work that succeeded is not retried");
                 }
                 w.attempt_id = std::str::clone(a.attempt_id);
                 w.attempt_no = a.attempt_no;
                 w.attempt_disposition = "";
+                w.attempt_result = "";
+                w.attempt_result_ref = "";
                 self.works.set(i, w) or discard;
+                self.record("attempt.admitted", a.attempt_id, body);
                 return applied();
             }
             i = i + 1;
         }
+        if a.attempt_no != 0 {
+            return refused("attempt " + a.attempt_id + " is not the first attempt of " + a.work_id + "; that is " + attempt_id_of(a.work_id, 0));
+        }
         self.works.push(WorkView {
-            work_id: a.work_id, step_id: a.step_id, member_key: work_key_under(a.step_id, a.work_id),
+            work_id: a.work_id, step_id: a.step_id, task_id: a.task_id,
+            member_key: work_key_under(a.step_id, a.work_id), allowance: bound.attempts,
             attempt_id: a.attempt_id, attempt_no: a.attempt_no
         });
+        self.record("attempt.admitted", a.attempt_id, body);
         return applied();
     }
 
+    // An outcome is recorded for the current attempt, once — under a
+    // cancelled Task too: what was admitted still says how it ended.
     @unbounded
-    fn attempt_outcome(body: String) -> Applied {
+    fn attempt_outcome(entity: String, body: String) -> Applied {
         let read = decode_attempt_outcome(body);
         if !read.ok { return refused(read.why); }
         let o = read.value;
+        let bad = self.envelope(entity, o.attempt_id, "attempt outcome");
+        if len(bad) > 0 { return refused(bad); }
+        let seen = self.known("attempt.outcome", o.attempt_id, body);
+        if len(seen.why) > 0 { return seen; }
         let mut i = 0;
         while i < self.works.len() {
             let w = self.works.get(i) or WorkView { };
@@ -427,14 +691,14 @@ locus WorkflowProjection {
                 if w.attempt_id != o.attempt_id {
                     return refused("attempt " + o.attempt_id + " was superseded by " + w.attempt_id + "; its outcome decides nothing");
                 }
-                if w.attempt_disposition == o.disposition { return replayed("attempt " + o.attempt_id + " already " + o.disposition); }
                 if len(w.attempt_disposition) > 0 {
                     return refused("attempt " + o.attempt_id + " was " + w.attempt_disposition + "; an attempt has one outcome");
                 }
                 w.attempt_disposition = std::str::clone(o.disposition);
-                w.result = std::str::clone(o.result);
-                w.result_ref = std::str::clone(o.result_ref);
+                w.attempt_result = std::str::clone(o.result);
+                w.attempt_result_ref = std::str::clone(o.result_ref);
                 self.works.set(i, w) or discard;
+                self.record("attempt.outcome", o.attempt_id, body);
                 return applied();
             }
             i = i + 1;
@@ -442,11 +706,17 @@ locus WorkflowProjection {
         return refused("work " + o.work_id + " was never attempted");
     }
 
+    // ---- a Work settles on its basis --------------------------------------
+
     @unbounded
-    fn work_settled(body: String) -> Applied {
+    fn work_settled(entity: String, body: String) -> Applied {
         let read = decode_work_outcome(body);
         if !read.ok { return refused(read.why); }
         let o = read.value;
+        let bad = self.envelope(entity, o.work_id, "work outcome");
+        if len(bad) > 0 { return refused(bad); }
+        let seen = self.known("work.settled", o.work_id, body);
+        if len(seen.why) > 0 { return seen; }
         let gap = self.member_gap(o.step_id, o.work_id);
         if len(gap) > 0 { return refused(gap); }
         let mut i = 0;
@@ -459,13 +729,18 @@ locus WorkflowProjection {
                 if w.attempt_id != o.attempt_id {
                     return refused("work " + o.work_id + " ran attempt " + w.attempt_id + "; it cannot settle on " + o.attempt_id);
                 }
-                if w.disposition == o.disposition { return replayed("work " + o.work_id + " already settled " + o.disposition); }
                 if len(w.disposition) > 0 {
                     return refused("work " + o.work_id + " settled " + w.disposition + "; a settled Work does not settle again");
                 }
+                let basis = self.settlement_basis(w, o.disposition);
+                if len(basis) > 0 { return refused(basis); }
                 w.disposition = std::str::clone(o.disposition);
-                if len(o.result_ref) > 0 { w.result_ref = std::str::clone(o.result_ref); }
+                if o.disposition == "done" {
+                    w.result = std::str::clone(w.attempt_result);
+                    w.result_ref = if len(o.result_ref) > 0 { std::str::clone(o.result_ref) } else { std::str::clone(w.attempt_result_ref) };
+                }
                 self.works.set(i, w) or discard;
+                self.record("work.settled", o.work_id, body);
                 if o.disposition == "done" {
                     let j = self.join(o.step_id, w.member_key);
                     if !j.ok { return j; }
@@ -476,6 +751,38 @@ locus WorkflowProjection {
             i = i + 1;
         }
         return refused("work " + o.work_id + " was never attempted");
+    }
+
+    // Why a Work may not settle this way on its current attempt, "" when it
+    // may (§5, §7). Done needs the attempt's `done`. Failed needs a failed
+    // attempt and no allowance left — or a Step already failed or a Task
+    // already cancelled, under which a member records its outcome and
+    // stops (the drain). Cancelled needs the cancelled Task (the fence).
+    fn settlement_basis(w: WorkView, disposition: String) -> String {
+        if disposition == "done" {
+            if w.attempt_disposition != "done" {
+                if len(w.attempt_disposition) == 0 { return "work " + w.work_id + " cannot settle done: attempt " + w.attempt_id + " is still outstanding"; }
+                return "work " + w.work_id + " cannot settle done: attempt " + w.attempt_id + " " + w.attempt_disposition;
+            }
+            return "";
+        }
+        let task = self.task(w.task_id);
+        let step = self.step(w.step_id);
+        if disposition == "cancelled" {
+            if task.disposition != "cancelled" { return "work " + w.work_id + " cannot settle cancelled: task " + w.task_id + " was not cancelled"; }
+            return "";
+        }
+        if disposition == "failed" {
+            if len(w.attempt_disposition) == 0 { return "work " + w.work_id + " cannot settle failed: attempt " + w.attempt_id + " is still outstanding"; }
+            if w.attempt_disposition == "done" { return "work " + w.work_id + " cannot settle failed: attempt " + w.attempt_id + " was done"; }
+            let exhausted = w.attempt_no + 1 >= w.allowance;
+            let draining = step.disposition == "failed" || task.disposition == "cancelled";
+            if !exhausted && !draining {
+                return "work " + w.work_id + " cannot settle failed with " + to_string(w.allowance - w.attempt_no - 1) + " attempt(s) of its allowance left";
+            }
+            return "";
+        }
+        return "a work is done, failed or cancelled, not `" + disposition + "`";
     }
 
     // A member that settled `done` joins its Step's settled set, once, by
@@ -496,28 +803,43 @@ locus WorkflowProjection {
         return refused("step " + step_id + " was never registered");
     }
 
+    // ---- a Step settles on its members ----------------------------------
+
     @unbounded
-    fn step_settled(body: String) -> Applied {
+    fn step_settled(kind: String, entity: String, body: String) -> Applied {
         let read = decode_step_outcome(body);
         if !read.ok { return refused(read.why); }
         let o = read.value;
+        let bad = self.envelope(entity, o.step_id, "step outcome");
+        if len(bad) > 0 { return refused(bad); }
+        // the row's kind and the fact's disposition are one statement
+        if (kind == "step.completed" && o.disposition != "completed") || (kind == "step.failed" && o.disposition != "failed") {
+            return refused("a `" + kind + "` row carries a step that " + o.disposition);
+        }
+        let seen = self.known(kind, o.step_id, body);
+        if len(seen.why) > 0 { return seen; }
         let mut i = 0;
         while i < self.steps.len() {
             let s = self.steps.get(i) or StepView { };
             if s.step_id == o.step_id {
-                if s.disposition == o.disposition { return replayed("step " + o.step_id + " already " + o.disposition); }
                 if len(s.disposition) > 0 {
                     return refused("step " + o.step_id + " " + s.disposition + "; a settled Step does not settle again");
                 }
+                if !s.activated { return refused("step " + o.step_id + " was never activated; it does not settle"); }
                 if o.disposition == "completed" && !self.joined(o.step_id) {
                     return refused("step " + o.step_id + " still waits for `" + self.pending(o.step_id) + "`");
                 }
-                if o.disposition == "failed" && !set_has(s.required, o.failed_member) {
-                    return refused("step " + o.step_id + " has no member `" + o.failed_member + "`");
+                if o.disposition == "failed" {
+                    if !set_has(s.required, o.failed_member) {
+                        return refused("step " + o.step_id + " has no member `" + o.failed_member + "`");
+                    }
+                    let why = self.failure_basis(s, o.failed_member);
+                    if len(why) > 0 { return refused(why); }
                 }
                 s.disposition = std::str::clone(o.disposition);
                 s.failed_member = std::str::clone(o.failed_member);
                 self.steps.set(i, s) or discard;
+                self.record(kind, o.step_id, body);
                 return applied();
             }
             i = i + 1;
@@ -525,22 +847,41 @@ locus WorkflowProjection {
         return refused("step " + o.step_id + " was never registered");
     }
 
+    // Why this member has not failed its Step, "" when it has: a leaf's
+    // Work settled failed, or a child's Task settled failed.
+    fn failure_basis(s: StepView, key: String) -> String {
+        let id = map_get(s.entities, key, "=");
+        let kind = map_get(s.kinds, key, ":");
+        if kind == "leaf" {
+            let w = self.work(id);
+            if w.disposition == "failed" { return ""; }
+            if len(w.disposition) == 0 { return "step " + s.step_id + " cannot fail on `" + key + "`: work " + id + " has not settled"; }
+            return "step " + s.step_id + " cannot fail on `" + key + "`: work " + id + " settled " + w.disposition;
+        }
+        let t = self.task(id);
+        if t.disposition == "failed" { return ""; }
+        if len(t.disposition) == 0 { return "step " + s.step_id + " cannot fail on `" + key + "`: task " + id + " has not settled"; }
+        return "step " + s.step_id + " cannot fail on `" + key + "`: task " + id + " " + t.disposition;
+    }
+
+    // ---- an execution settles on its steps ---------------------------------
+
     @unbounded
-    fn workflow_settled(body: String) -> Applied {
+    fn workflow_settled(entity: String, body: String) -> Applied {
         let read = decode_workflow_outcome(body);
         if !read.ok { return refused(read.why); }
         let o = read.value;
+        let bad = self.envelope(entity, o.task_id, "workflow outcome");
+        if len(bad) > 0 { return refused(bad); }
+        let seen = self.known("workflow.settled", o.task_id, body);
+        if len(seen.why) > 0 { return seen; }
         let mut i = 0;
         while i < self.tasks.len() {
             let t = self.tasks.get(i) or TaskView { };
             if t.task_id == o.task_id {
-                if t.disposition == o.disposition { return replayed("task " + o.task_id + " already " + o.disposition); }
                 if len(t.disposition) > 0 {
                     return refused("task " + o.task_id + " " + t.disposition + "; a settled execution does not settle again");
                 }
-                // §6: a child answers the step that invoked it by settling.
-                // Whether its parent can receive that is decided before the
-                // child moves, so a refusal leaves nothing half-applied.
                 // the settlement may not redirect the answer: where a
                 // child answers is where it was admitted from
                 if len(o.parent_task) > 0 && o.parent_task != t.parent_task {
@@ -549,9 +890,15 @@ locus WorkflowProjection {
                 if len(o.spawning_step) > 0 && o.spawning_step != t.spawning_step {
                     return refused("task " + o.task_id + " answers step " + t.spawning_step + ", not " + o.spawning_step);
                 }
+                let basis = self.task_basis(t, o.disposition);
+                if len(basis) > 0 { return refused(basis); }
+                // §6: a child answers the step that invoked it by settling
+                // done. Whether its parent can receive that is decided
+                // before the child moves, so a refusal leaves nothing
+                // half-applied.
                 let answers = o.disposition == "done" && len(t.spawning_step) > 0 && len(t.member_key) > 0;
                 if answers {
-                    let gap = self.child_gap(t.spawning_step, t.member_key);
+                    let gap = self.child_gap(t.spawning_step, t.member_key, t.task_id);
                     if len(gap) > 0 { return refused(gap); }
                 }
                 let up = std::str::clone(t.spawning_step);
@@ -559,6 +906,7 @@ locus WorkflowProjection {
                 t.disposition = std::str::clone(o.disposition);
                 t.reason = std::str::clone(o.reason);
                 self.tasks.set(i, t) or discard;
+                self.record("workflow.settled", o.task_id, body);
                 if answers {
                     let j = self.join(up, key);
                     if !j.ok { return j; }
@@ -571,10 +919,64 @@ locus WorkflowProjection {
         return refused("task " + o.task_id + " was never admitted");
     }
 
-    // Why this Work is not a member of that Step, "" when it is. The Step
-    // has to be registered, the Work has to live under it (§4), and its
-    // key has to be one the Step named.
+    // Why a Task may not settle this way, "" when it may (§5, §6). Done
+    // needs every step the recipe binds for it completed. Failed needs a
+    // step that failed, and every responsibility it admitted — every Work
+    // attempted, every child admitted — settled: the root settles last.
+    // Cancelled is the stop, and needs nothing: it fences what is
+    // outstanding, which then records its own outcome.
     @unbounded
+    fn task_basis(t: TaskView, disposition: String) -> String {
+        if disposition == "cancelled" { return ""; }
+        if disposition != "done" && disposition != "failed" {
+            return "a workflow is done, failed or cancelled, not `" + disposition + "`";
+        }
+        let mut steps_bound = 0;
+        let mut failed = "";
+        let mut incomplete = "";
+        let mut i = 0;
+        while i < self.tree.len() {
+            let n = self.tree.get(i) or BoundNode { };
+            if n.kind == "step" && n.parent == t.task_id {
+                steps_bound = steps_bound + 1;
+                let s = self.step(n.id);
+                if s.disposition == "failed" && len(failed) == 0 { failed = std::str::clone(n.id); }
+                if s.disposition != "completed" && len(incomplete) == 0 { incomplete = std::str::clone(n.id); }
+            }
+            i = i + 1;
+        }
+        if steps_bound == 0 { return "task " + t.task_id + " has no step bound; it cannot settle"; }
+        if disposition == "done" {
+            if len(incomplete) > 0 { return "task " + t.task_id + " cannot settle done: step " + incomplete + " has not completed"; }
+            return "";
+        }
+        if len(failed) == 0 { return "task " + t.task_id + " cannot settle failed: no step of it failed"; }
+        // the drain: what was admitted has said how it ended
+        i = 0;
+        while i < self.works.len() {
+            let w = self.works.get(i) or WorkView { };
+            if w.task_id == t.task_id && len(w.disposition) == 0 {
+                return "task " + t.task_id + " cannot settle failed while work " + w.work_id + " is outstanding";
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while i < self.tasks.len() {
+            let c = self.tasks.get(i) or TaskView { };
+            if c.parent_task == t.task_id && len(c.disposition) == 0 {
+                return "task " + t.task_id + " cannot settle failed while child " + c.task_id + " is outstanding";
+            }
+            i = i + 1;
+        }
+        return "";
+    }
+
+    // ---- who may answer for a member --------------------------------------
+
+    // Why this Work is not a leaf member of that Step, "" when it is. The
+    // Step has to be registered, the Work has to live directly under it
+    // (§4), its key has to be one the Step registered, as a leaf, and as
+    // this very Work.
     fn member_gap(step_id: String, work_id: String) -> String {
         let s = self.step(step_id);
         if len(s.step_id) == 0 { return "step " + step_id + " was never registered"; }
@@ -583,23 +985,29 @@ locus WorkflowProjection {
         if !set_has(s.required, key) {
             return "step " + step_id + " has no member `" + key + "` (it required `" + s.required + "`)";
         }
-        if member_kind(s.kinds, key) != "leaf" {
+        if map_get(s.kinds, key, ":") != "leaf" {
             return "member `" + key + "` of step " + step_id + " is a child workflow; it answers by settling, not as a Work";
+        }
+        if map_get(s.entities, key, "=") != work_id {
+            return "member `" + key + "` of step " + step_id + " is " + map_get(s.entities, key, "=") + ", not " + work_id;
         }
         return "";
     }
 
-    // Why this child's key is not a member its spawning Step waits for,
-    // "" when it is.
-    @unbounded
-    fn child_gap(step_id: String, key: String) -> String {
+    // Why this Task is not the child member its spawning Step waits for
+    // under this key, "" when it is: registered, a child, and this very
+    // Task — not another one claiming the same parent, step and key.
+    fn child_gap(step_id: String, key: String, task_id: String) -> String {
         let s = self.step(step_id);
         if len(s.step_id) == 0 { return "step " + step_id + " was never registered"; }
         if !set_has(s.required, key) {
             return "step " + step_id + " has no member `" + key + "` (it required `" + s.required + "`)";
         }
-        if member_kind(s.kinds, key) != "child" {
+        if map_get(s.kinds, key, ":") != "child" {
             return "member `" + key + "` of step " + step_id + " is a Work; it answers when it settles, not as a child workflow";
+        }
+        if map_get(s.entities, key, "=") != task_id {
+            return "member `" + key + "` of step " + step_id + " is task " + map_get(s.entities, key, "=") + "; " + task_id + " does not answer for it";
         }
         return "";
     }

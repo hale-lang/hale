@@ -187,7 +187,17 @@ settles into the step that spawned it. Neither answers for the other,
 and a step completes only when every key in its required set has
 settled — never because the right *number* of answers arrived.
 `dna/core/workflow_projection.hl` reads this from the facts alone and
-reaches nothing outside itself (`@no_syscall` on its entry point).
+reaches nothing outside itself (`@no_syscall` on its entry point). The
+admitted recipe is its authority: a registration names exactly what the
+recipe bound under that step, by key, kind and entity; a child is
+admitted and answers only as the Task the recipe bound under its key.
+Every transition has its basis in the rows before it — a Work is done on
+a done attempt, failed on a failed attempt with no allowance left or
+under a failed step or cancelled Task, cancelled only under a cancelled
+Task; a step activates after the one before it completed; a Task is done
+when every bound step completed and failed only after a step failed and
+everything it admitted settled — and a row is either the fact recorded
+under its identity or a conflict.
 **[decided; proven: `workflow_projection_test.hl`, card 06]**
 
 **When D may start.** Only after all of the following are committed,
