@@ -43,7 +43,11 @@ The names and their ownership meanings are kept. **[existing]**
 
 A child workflow is a child `Task`, owned by `Metabolism` like every
 Task, and correlated to its spawning Step by data (`parent_task`,
-`spawning_step`, member key). **[existing]**
+`spawning_step`, member key). **[existing]** In the resident runtime the
+Step asks for the child over the bus and the Task owner creates it from
+its own handler: a subscriber born in a handler must be that handler's
+own child, and a Step accepts only its Work (§9, F.19).
+**[proven: `workflow_lifetime_test.hl` case 4b]**
 
 Journal facts are the durable authority. The live loci are a
 projection of those facts and are rebuilt from them on restart; a
@@ -263,37 +267,81 @@ the merged journal. **[proven for the legacy path:
 ## 9. Lifetime and persistence wiring
 
 **Lifetime.** Execution loci are resident and event-driven. A waiting
-instance is an `accept`ed child whose type no parent `release`s, so it
-stays alive after its `run()` and its creating handler return. It
-advances from its own bus handlers, keyed by its id, and ends with
-`terminate;` from a handler once its responsibility is finished. No
-sleeping handler or polling loop stands in for continuation. Its owner
-learns the outcome over the bus, not through `release`. **[needs proof]**
+instance is an `accept`ed child whose type no parent `release`s. Born
+from a bus handler, it stays alive after that handler and its own
+`run()` return; it advances from its own bus handlers, keyed by its id;
+it publishes its outcome and ends with `terminate;` from a handler; its
+owner's dissolve reclaims one that is still waiting. No sleeping handler
+or polling loop stands in for continuation. Its owner learns the
+outcome over the bus, not through `release`.
+**[proven: `workflow_lifetime_test.hl`, `workflow_lifetime_dna_test.hl`]**
 
-The trap: `release(c: T)` anywhere makes every `T` a flow, program-wide.
-Today `Attempt`, `Work`, `Step`, `Workflow` and `Task` each have a
-`release` hook, so they dissolve at the end of their `run()` (F.5,
-F.15). Card 03 proves the resident shape on isolated types and records
-the migration those five types need. **[existing]**
+The rules the proof pinned down, natively (hale 0.20.0, this tree):
+
+- **`release(c: T)` anywhere makes every `T` a flow**, even on a parent
+  type that is never instantiated; a flow child is reclaimed when its
+  `run()` ends and a later reply reaches nobody.
+  **[proven: `workflow_release_type_wide_test.hl`]**
+- **A keyed subscription reads its key when it is registered, before
+  `birth()` runs.** Every key a resident subscribes on is a constructor
+  argument. **[proven: the lifetime fixtures construct child keys]**
+- **A subscriber born in a handler must be that handler's own child**
+  (`hale check` refuses otherwise; bubbling is not considered). A parent
+  accepts one child type. So a Step owns its Work, and a child workflow
+  is requested from the Task owner over the bus. **[proven: F.19
+  reproducer; `workflow_lifetime_test.hl` case 4b]**
+- A publish from `main`'s `run()` is queued and dispatched while `main`
+  sleeps; a publish from a child's `run()` is dispatched in place. The
+  fixtures drive each asynchronous step from `main` so no reply is
+  answered inside the handler that asked. **[observed]**
+- A flow-typed child that declares no `run()` was not reclaimed at
+  birth. Nothing may rely on this. **[observed]**
+
+**Migration of the existing process types.** `Attempt` (released by
+`Work` and `WorkSystem`), `Work` (by `Step`), `Step` (by `Workflow`),
+`Workflow` (by `Task`) and `Task` (by `Metabolism`) are flows. Making any
+of them resident means removing every `release` of that type and moving
+every reader of a settled child from `release` to the bus, which ends
+the synchronous in-tower shape (F.5) the legacy callers and fixtures use.
+**Decision:** the runtime uses new resident types beside the legacy flow
+types, with the same ownership meanings; the legacy types stay for the
+legacy path until card 18 retires it. Names, fixed here for cards 09 on,
+in `dna/core/workflow_runtime.hl`:
+
+| Resident type | Accepts | Accepted by | Meaning |
+|---|---|---|---|
+| `TaskRun` | `WorkflowRun` | the Task owner (`Metabolism`'s runtime half) | one admitted execution (root or child) |
+| `WorkflowRun` | `StepRun` | `TaskRun` | its ordered steps; activates each once |
+| `StepRun` | `WorkRun` | `WorkflowRun` | its registered members and barrier; requests child workflows over the bus |
+| `WorkRun` | — | `StepRun` | one leaf across its attempts; admits each attempt |
+
+Attempts are facts (`attempt.admitted`, `attempt.outcome`) and executor
+calls, not a resident locus.
 
 **Persistence wiring.** An execution locus does not hold a journal: an
 interface-typed value cannot flow into a child's field (F.3). It
 proposes each transition to the one committer over the bus, keyed by
-its own id, and acts only on the committer's answer:
+its own id, and acts only on the committer's answer. Frozen for card 05:
 
 ```
-child  --TransitionProposed{key, kind, entity, body}-->  committer
-committer: validate, exact append
-committer  --TransitionCommitted{key, revision}-->  child  -> dispatch
-committer  --TransitionRefused{key, why}-->        child  -> no dispatch
+topic TransitionProposed  { payload: TransitionProposal; keyed_by scope; }
+type  TransitionProposal  { scope; key; kind; entity; body }
+topic TransitionAnswered  { payload: TransitionAnswer;   keyed_by key; }
+type  TransitionAnswer    { key; ok; revision; why }
 ```
 
-The committer is the journal's owner: `Dna` in an assembled organism.
-A standalone `Metabolism` is its own committer over a default memory
-journal. Exactly one committer answers in a program; which one is
-chosen at construction. The memory-backed assembly gives process-local
-guarantees only; durable restart needs a persistent journal.
-**[needs proof]**
+The committer validates, appends with exact compare-and-append (on a
+stale revision it refreshes and evaluates again), and answers. The
+proposer dispatches or announces only on `ok`; on a refusal it
+dispatches nothing. `scope` names the one committer that answers: `Dna`
+in an assembled organism (its journal), or a standalone `Metabolism`
+over its own memory journal, chosen at construction. The memory-backed
+assembly gives process-local guarantees only; durable restart needs a
+persistent journal. **[proven: both lifetime fixtures, including a
+journal refusal that dispatches nothing]**
+
+Not yet exercised: delivery across an off-thread binding (a bound
+organism's sockets), and restart. Cards 12–13 and 19 cover them.
 
 ## 10. Compatibility
 
@@ -317,9 +365,15 @@ equivalent definition.
 |---|---|
 | routed attempt identity | proven, card 01 (#685) |
 | Mutation association by id across memories | proven, card 02 (#686) |
-| a handler-born child survives its `run()` and its handler | needs proof, card 03 |
-| a delayed keyed reply reaches it and it advances to nested work | needs proof, card 03 |
-| completion and parent shutdown reclaim it, without leaks | needs proof, card 03 |
-| a duplicate terminal message cannot advance it twice | needs proof, card 03 |
-| child → committer → acknowledgement → dispatch, and refusal | needs proof, card 03 |
-| the shape works in a program that imports the DNA core | needs proof, card 03 |
+| a handler-born child survives its `run()` and its handler | proven, card 03 |
+| a delayed keyed reply reaches it; it advances to nested and delegated work | proven, card 03 |
+| completion and parent shutdown reclaim it; births equal dissolves at volume | proven, card 03 |
+| a duplicate terminal message cannot advance it twice | proven, card 03 |
+| child → committer → acknowledgement → dispatch, and refusal → no dispatch | proven, card 03 |
+| the shape works in a program that imports the DNA core, beside DNA's flow types | proven, card 03 |
+| `release` is type-wide | proven, card 03 |
+| delivery across off-thread bindings; restart | not yet, cards 12–13, 19 |
+
+Card 03 native runs: `HALE_BIN=target/release/hale HALE_DNA_SOURCE=$PWD
+target/release/hale test dna/tests/<fixture>` with hale 0.20.0 built from
+this tree.

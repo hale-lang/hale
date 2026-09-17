@@ -1,0 +1,343 @@
+// dna/tests/workflow_lifetime_dna_test.hl — the waiting-instance lifetime
+// and the committer wiring inside a program that imports the DNA core
+// (DNA workflow card 03, integration case).
+//
+// Same shape as workflow_lifetime_test.hl, now against DNA itself:
+//
+// - the committer owns a real `dna::Journal` and commits with exact
+//   compare-and-append; a refusal is the journal's own answer;
+// - requests and replies are DNA's `WorkRequested` / `WorkDone`, keyed by
+//   `work_id`, so the resident types share topics with DNA's flow types;
+// - a standalone `dna::Metabolism` runs routed and in-tower Tasks in the
+//   same program, answered by the same responder.
+//
+// The resident types are test-local: DNA's Task, Workflow, Step, Work and
+// Attempt are flows program-wide because each has a `release` hook.
+
+import "../core" as dna;
+
+type Life { key: String = ""; what: String = ""; }
+topic Lives { payload: Life; subject: "wfd.life"; }
+
+type Offer { scope: String = ""; key: String = ""; nested: Bool = false; }
+topic Offers { payload: Offer; subject: "wfd.offer"; keyed_by scope; }
+
+type Proposal { scope: String = ""; key: String = ""; kind: String = ""; entity: String = ""; body: String = ""; }
+topic Proposals { payload: Proposal; subject: "wfd.proposal"; keyed_by scope; }
+type Ack { key: String = ""; ok: Bool = false; revision: Int = 0; why: String = ""; }
+topic Acks { payload: Ack; subject: "wfd.ack"; keyed_by key; }
+
+type Done { key: String = ""; disposition: String = ""; }
+topic Completions { payload: Done; subject: "wfd.done"; keyed_by key; }
+
+type Flush { work_id: String = ""; times: Int = 1; }
+topic Flushes { payload: Flush; subject: "wfd.flush"; }
+
+// A real journal that refuses what the test marks: the refusal is the
+// journal's answer, as a store's would be.
+locus RefuseMarked {
+    params { inner: dna::MemJournal = dna::MemJournal { }; refusals: Int = 0; }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if std::str::contains(entity, "refuse") {
+            self.refusals = self.refusals + 1;
+            return dna::AppendResult { error: "refused", expected: expected, actual: self.inner.revision() };
+        }
+        return self.inner.append(expected, kind, entity, body);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if std::str::contains(entity, "refuse") {
+            self.refusals = self.refusals + 1;
+            return dna::AppendResult { error: "refused", expected: expected, actual: self.inner.revision() };
+        }
+        return self.inner.append_exact(expected, kind, entity, body);
+    }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+}
+
+// The one journal owner.
+locus Committer {
+    params {
+        scope: String = "";
+        journal: dna::Journal = dna::MemJournal { };
+        refused: Int = 0;
+    }
+    bus {
+        subscribe Proposals as on_proposal where key == self.scope;
+        publish Acks;
+    }
+    fn on_proposal(p: Proposal) {
+        // exact compare-and-append; a stale revision is read again, once
+        let mut r = self.journal.append_exact(self.journal.revision(), p.kind, p.entity, p.body);
+        if !r.ok && r.error == "stale_revision" {
+            let moved = self.journal.refresh();
+            r = self.journal.append_exact(self.journal.revision(), p.kind, p.entity, p.body);
+        }
+        if !r.ok {
+            self.refused = self.refused + 1;
+            Acks <- Ack { key: p.key, ok: false, why: r.error };
+            return;
+        }
+        Acks <- Ack { key: p.key, ok: true, revision: r.revision };
+    }
+}
+
+// DNA's work topics, answered at once, or held for work ids starting "h-".
+locus Responder {
+    params { held: String = ""; requests: String = ""; }
+    bus {
+        subscribe dna::WorkRequested as on_request;
+        subscribe Flushes as on_flush;
+        publish dna::WorkDone;
+    }
+    @unbounded
+    fn on_request(r: dna::WorkRequest) {
+        self.requests = self.requests + r.work_id + " ";
+        if std::str::starts_with(r.work_id, "h-") {
+            self.held = self.held + r.work_id + "\n";
+            return;
+        }
+        dna::WorkDone <- dna::WorkSettlement { work_id: r.work_id, disposition: "done", result: "ok:" + r.objective, attempts: 1, history: "a0:responder:done " };
+    }
+    @unbounded
+    fn on_flush(f: Flush) {
+        if !std::str::contains(self.held, f.work_id + "\n") { return; }
+        let mut i = 0;
+        while i < f.times {
+            dna::WorkDone <- dna::WorkSettlement { work_id: f.work_id, disposition: "done", result: "late", attempts: 1, history: "a0:responder:done " };
+            i = i + 1;
+        }
+    }
+}
+
+locus Inner {
+    params { scope: String = ""; key: String = ""; settled: Bool = false; }
+    bus {
+        subscribe Acks as on_ack where key == self.key;
+        subscribe dna::WorkDone as on_done where key == self.key;
+        publish Lives;
+        publish Proposals;
+        publish dna::WorkRequested;
+        publish Completions;
+    }
+    birth() { Lives <- Life { key: self.key, what: "born" }; }
+    run() {
+        Proposals <- Proposal { scope: self.scope, key: self.key, kind: "wfprobe.dispatched", entity: self.key, body: "stage 0" };
+    }
+    fn on_ack(a: Ack) {
+        if !a.ok {
+            Completions <- Done { key: self.key, disposition: "refused" };
+            terminate;
+        }
+        dna::WorkRequested <- dna::WorkRequest { work_id: self.key, objective: "nested work" };
+    }
+    fn on_done(s: dna::WorkSettlement) {
+        if self.settled { return; }
+        self.settled = true;
+        Completions <- Done { key: self.key, disposition: s.disposition };
+        terminate;
+    }
+    dissolve() { Lives <- Life { key: self.key, what: "dissolved" }; }
+}
+
+locus Waiter {
+    params {
+        scope: String = "";
+        key: String = "";
+        nested: Bool = false;
+        child_key: String = ""; // given at construction: a keyed subscription reads it at registration
+        stage: Int = 0;
+        settled: Bool = false;
+    }
+    bus {
+        subscribe Acks as on_ack where key == self.key;
+        subscribe dna::WorkDone as on_done where key == self.key;
+        subscribe Completions as on_child where key == self.child_key;
+        publish Lives;
+        publish Proposals;
+        publish dna::WorkRequested;
+        publish Completions;
+    }
+    accept(c: Inner) { }
+    birth() { Lives <- Life { key: self.key, what: "born" }; }
+    run() {
+        Proposals <- Proposal { scope: self.scope, key: self.key, kind: "wfprobe.dispatched", entity: self.key, body: "stage 0" };
+    }
+    fn on_ack(a: Ack) {
+        if !a.ok {
+            self.settled = true;
+            Completions <- Done { key: self.key, disposition: "refused" };
+            terminate;
+        }
+        dna::WorkRequested <- dna::WorkRequest { work_id: self.key, objective: "stage " + to_string(self.stage), attempt_no: self.stage };
+    }
+    fn on_done(s: dna::WorkSettlement) {
+        if self.settled { return; }
+        if self.nested && self.stage == 0 {
+            self.stage = 1;
+            Inner { scope: self.scope, key: self.child_key };
+            return;
+        }
+        if self.nested && self.stage == 1 { return; } // a late stage-0 duplicate while the child runs
+        self.settled = true;
+        Completions <- Done { key: self.key, disposition: s.disposition };
+        terminate;
+    }
+    fn on_child(d: Done) {
+        if self.settled || self.stage != 1 { return; }
+        if d.disposition != "done" {
+            self.settled = true;
+            Completions <- Done { key: self.key, disposition: "failed" };
+            terminate;
+        }
+        self.stage = 2;
+        Proposals <- Proposal { scope: self.scope, key: self.key, kind: "wfprobe.dispatched", entity: self.key, body: "stage 2" };
+    }
+    dissolve() { Lives <- Life { key: self.key, what: "dissolved" }; }
+}
+
+locus Manager {
+    params { scope: String = ""; offers: Int = 0; }
+    bus { subscribe Offers as on_offer where key == self.scope; }
+    accept(w: Waiter) { }
+    @unbounded
+    fn on_offer(o: Offer) {
+        self.offers = self.offers + 1;
+        Waiter { scope: self.scope, key: o.key, nested: o.nested, child_key: o.key + ".c" };
+    }
+}
+
+locus Session {
+    params { scope: String = "short"; }
+    bus { publish Offers; }
+    run() {
+        let m = Manager { scope: self.scope };
+        let c = Committer { scope: self.scope };
+        Offers <- Offer { scope: self.scope, key: "h-short" };
+        std::time::sleep(50ms);
+    }
+}
+
+main locus App {
+    params {
+        committer: Committer = Committer { scope: "main", journal: RefuseMarked { } };
+        responder: Responder = Responder { };
+        manager: Manager = Manager { scope: "main" };
+        metabolism: dna::Metabolism = dna::Metabolism { };
+        lives: String = "";
+        done: String = "";
+    }
+    bus {
+        subscribe Lives as on_life;
+        subscribe Completions as on_completion;
+        publish Offers;
+        publish Flushes;
+        publish dna::WorkDone;
+    }
+    @unbounded
+    fn on_life(l: Life) { self.lives = self.lives + l.key + ":" + l.what + " "; }
+    @unbounded
+    fn on_completion(d: Done) { self.done = self.done + d.key + ":" + d.disposition + " "; }
+    @unbounded
+    fn count(list: String, item: String) -> Int {
+        let mut n = 0;
+        let mut rest = list;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            if rest[0..sp] == item { n = n + 1; }
+            rest = rest[(sp + 1)..len(rest)];
+        }
+        return n;
+    }
+    @unbounded
+    fn committed(entity: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.committer.journal.revision() {
+            let e = self.committer.journal.read(i);
+            if e.kind == "wfprobe.dispatched" && e.entity == entity { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    fn settle() {
+        let mut i = 0;
+        while i < 6 {
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    run() {
+        // DNA's own flow types in the same program: in-tower and routed Tasks
+        let t_in = self.metabolism.offer(dna::Intent { outcome: "in tower", from: "test" }, dna::Knobs { });
+        std::test::assert_eq_str(self.metabolism.find(t_in).disposition, "done", "an in-tower Task still settles");
+        let t_routed = self.metabolism.offer(dna::Intent { outcome: "routed", from: "test" }, dna::Knobs { routed: true });
+        std::test::assert_eq_str(self.metabolism.find(t_routed).disposition, "done", "a routed Task is answered by the same responder: " + self.metabolism.find(t_routed).detail);
+
+        // immediate
+        Offers <- Offer { scope: "main", key: "k-now" };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.done, "k-now:done"), 1, "immediate: completed once: " + self.done);
+        std::test::assert_eq_int(self.committed("k-now"), 1, "immediate: the dispatch was committed in the journal");
+        std::test::assert_eq_int(self.count(self.lives, "k-now:dissolved"), 1, "immediate: reclaimed: " + self.lives);
+
+        // delayed, with duplicates
+        Offers <- Offer { scope: "main", key: "h-late" };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.responder.requests, "h-late"), 1, "delayed: one request: " + self.responder.requests);
+        std::test::assert_eq_int(self.count(self.lives, "h-late:dissolved"), 0, "delayed: alive after its handler and run(): " + self.lives);
+        dna::WorkDone <- dna::WorkSettlement { work_id: "h-unrelated", disposition: "done" };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.done, "h-late:done"), 0, "delayed: an unrelated WorkDone does not reach it");
+        Flushes <- Flush { work_id: "h-late", times: 2 };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.done, "h-late:done"), 1, "delayed: two replies, one completion: " + self.done);
+        std::test::assert_eq_int(self.count(self.lives, "h-late:dissolved"), 1, "delayed: reclaimed once: " + self.lives);
+
+        // nested
+        Offers <- Offer { scope: "main", key: "h-nest", nested: true };
+        self.settle();
+        Flushes <- Flush { work_id: "h-nest" };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.lives, "h-nest.c:born"), 1, "nested: the child was born: " + self.lives);
+        Flushes <- Flush { work_id: "h-nest.c" };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.done, "h-nest.c:done"), 1, "nested: the child completed: " + self.done);
+        std::test::assert_eq_int(self.count(self.lives, "h-nest.c:dissolved"), 1, "nested: and was reclaimed");
+        std::test::assert_eq_int(self.committed("h-nest"), 2, "nested: stage 0 and stage 2 were committed");
+        std::test::assert_eq_int(self.count(self.responder.requests, "h-nest"), 2, "nested: and requested, once each: " + self.responder.requests);
+        std::test::assert_eq_int(self.count(self.done, "h-nest:done"), 0, "nested: the parent waits for stage 2");
+        Flushes <- Flush { work_id: "h-nest" };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.done, "h-nest:done"), 1, "nested: completed once: " + self.done);
+        std::test::assert_eq_int(self.count(self.lives, "h-nest:dissolved"), 1, "nested: reclaimed");
+
+        // a journal refusal: nothing dispatched
+        Offers <- Offer { scope: "main", key: "k-refuse" };
+        self.settle();
+        std::test::assert_eq_int(self.committer.refused, 1, "refusal: the journal refused the append");
+        std::test::assert_eq_int(self.count(self.responder.requests, "k-refuse"), 0, "refusal: no request: " + self.responder.requests);
+        std::test::assert_eq_int(self.committed("k-refuse"), 0, "refusal: nothing in the journal");
+        std::test::assert_eq_int(self.count(self.done, "k-refuse:refused"), 1, "refusal: reported once: " + self.done);
+        std::test::assert_eq_int(self.count(self.lives, "k-refuse:dissolved"), 1, "refusal: reclaimed");
+
+        // parent shutdown
+        Session { };
+        self.settle();
+        std::test::assert(self.count(self.lives, "h-short:born") == 1 && self.count(self.lives, "h-short:dissolved") == 1, "shutdown: born, and reclaimed with its manager: " + self.lives);
+        Flushes <- Flush { work_id: "h-short" };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.done, "h-short:done"), 0, "shutdown: its late reply reaches nobody");
+
+        // the flow Tasks are unaffected, and nothing leaked
+        let t_after = self.metabolism.offer(dna::Intent { outcome: "after", from: "test" }, dna::Knobs { routed: true });
+        std::test::assert_eq_str(self.metabolism.find(t_after).disposition, "done", "a routed Task still settles after the residents came and went");
+        std::test::assert_eq_int(self.count(self.lives, "k-now:born") + self.count(self.lives, "h-late:born") + self.count(self.lives, "h-nest:born") + self.count(self.lives, "h-nest.c:born") + self.count(self.lives, "k-refuse:born"), 5, "five residents were born in main's scope");
+        std::test::assert_eq_int(self.count(self.lives, "k-now:dissolved") + self.count(self.lives, "h-late:dissolved") + self.count(self.lives, "h-nest:dissolved") + self.count(self.lives, "h-nest.c:dissolved") + self.count(self.lives, "k-refuse:dissolved"), 5, "and all five were reclaimed");
+    }
+}
+
+fn main() { App { }; }
