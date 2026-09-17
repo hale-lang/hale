@@ -45,8 +45,9 @@ fn transition_id(entity: String, what: String) -> String {
     return entity + "@" + what;
 }
 
-// The id of one attempt of a Work. A retry is a new number; a transmission
-// of an admitted attempt keeps its id (§7).
+// The id of one attempt of a Work, numbered from 0 (§4): the first is a0.
+// A retry is a new number; a transmission of an admitted attempt keeps its
+// id (§7).
 fn attempt_id_of(work_id: String, attempt_no: Int) -> String {
     return work_id + "/a" + to_string(attempt_no);
 }
@@ -259,7 +260,9 @@ fn id_below(parent: String, child: String) -> Bool {
 
 // Why an attempt id is not this Work's nth attempt, "" when it is.
 fn attempt_id_gap(attempt_id: String, work_id: String, attempt_no: Int) -> String {
-    if attempt_no < 1 { return "an attempt is numbered from 1, not " + to_string(attempt_no); }
+    // §4: `<work>/a<n>`, n from 0. The first attempt is a0 and a retry is
+    // a1; only a negative number names no attempt.
+    if attempt_no < 0 { return "an attempt is numbered from 0, not " + to_string(attempt_no); }
     let want = attempt_id_of(work_id, attempt_no);
     if attempt_id != want {
         return "attempt " + attempt_id + " is not attempt " + to_string(attempt_no) + " of " + work_id + " (" + want + ")";
@@ -457,7 +460,8 @@ fn decode_members(text: String) -> DecodedMembers {
             task_id: std::json::find_string_field(text, "task_id"),
             workflow_id: std::json::find_string_field(text, "workflow_id"),
             step_index: std::json::find_int_field(text, "step_index"),
-            members: std::json::find_string_field(text, "members")
+            members: std::json::find_string_field(text, "members"),
+            transition: transition_of(text)
         }
     };
 }

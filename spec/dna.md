@@ -877,7 +877,10 @@ dna.workflow-recipe/1`) carrying the node count it was written with, and
 `decode_bound(text)` reads one back. It refuses another format, a missing
 node array, a count that disagrees with what the document carries, a node
 without an identity or of no known kind, a node whose number was written
-as text, and a document that ends mid-write. Every refusal binds nothing:
+as text or whose text was written as a number, and a document that is not
+one complete JSON value: every object, array and string closed, and
+nothing after it. A whole final node also ends in `}`, so the last
+character says nothing about the document. Every refusal binds nothing:
 half a recipe is not a smaller execution. Nothing yet executes a bound
 expansion.
 
@@ -917,8 +920,9 @@ that id.
 These kinds are the ledger's under split routing and the record's on
 routing 0, like every other operational kind.
 
-An attempt's id is its Work and its number (`<work>/a<n>`), so a retry
-is a new id and a re-sent admission is the same one. A transition's
+An attempt's id is its Work and its number (`<work>/a<n>`, numbered from
+0 as §4 has it: the first attempt is `a0` and a retry is `a1`), so a
+retry is a new id and a re-sent admission is the same one. A transition's
 proposal id (§9 of `dna/WORKFLOW-CONTRACT.md`) is what the transition
 does, not a counter or a clock: the same id carrying the same scope,
 key, kind, entity and body is that transition proposed again, which the

@@ -193,18 +193,44 @@ fn bound_request(n: BoundNode, task_id: String, step_id: String) -> WorkRequest 
     };
 }
 
-// Whether a JSON document or element closes: its last character, ignoring
-// trailing space, is `}`. A document cut off mid-write does not.
-fn whole_document(text: String) -> Bool {
-    let mut i = len(text);
-    while i > 0 {
-        let c = text[(i - 1)..i];
-        if c != " " && c != "\n" && c != "\t" && c != "\r" {
-            return c == "}";
+// Whether `text` is one complete JSON value and nothing else: every
+// object and array closed by its own delimiter, every string closed, and
+// only space after the value ends. A document cut off mid-write fails
+// wherever it was cut — inside a node, before the array's `]`, or before
+// the document's own `}` — which a last-character check cannot tell apart
+// from a whole one, because a complete final node also ends in `}`.
+@unbounded
+fn json_whole(text: String) -> Bool {
+    let mut open = ""; // the containers still open, innermost last
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut started = false;
+    let mut closed = false;
+    let mut i = 0;
+    while i < len(text) {
+        let b = std::str::byte_at_unchecked(text, i);
+        i = i + 1;
+        if in_string {
+            if escaped { escaped = false; }
+            else if b == 92 { escaped = true; }
+            else if b == 34 { in_string = false; if len(open) == 0 { closed = true; } }
+            continue;
         }
-        i = i - 1;
+        if b == 32 || b == 10 || b == 9 || b == 13 { continue; }
+        // a value has ended at the top level; nothing may follow it
+        if closed { return false; }
+        if b == 34 { in_string = true; started = true; continue; }
+        started = true;
+        if b == 123 { open = open + "o"; }
+        else if b == 91 { open = open + "a"; }
+        else if b == 125 || b == 93 {
+            let want = if b == 125 { "o" } else { "a" };
+            if len(open) == 0 || open[(len(open) - 1)..len(open)] != want { return false; }
+            open = open[0..(len(open) - 1)];
+            if len(open) == 0 { closed = true; }
+        }
     }
-    return false;
+    return started && !in_string && len(open) == 0;
 }
 
 // Whether a raw JSON value is a number, rather than absent, a string or
@@ -216,6 +242,13 @@ fn is_number(raw: String) -> Bool {
     return is_digit(first);
 }
 
+// Whether a raw JSON value is a string. `find_string_field` renders a
+// number as its digits, so a document that wrote 42 where text belongs
+// would otherwise read back as "42".
+fn is_text(raw: String) -> Bool {
+    return len(raw) >= 2 && raw[0..1] == "\"";
+}
+
 fn is_digit(c: String) -> Bool {
     return c >= "0" && c <= "9";
 }
@@ -225,7 +258,7 @@ fn is_digit(c: String) -> Bool {
 @unbounded
 fn node_gap(e: String, at: Int) -> String {
     let at_node = " (node " + to_string(at) + ")";
-    if !whole_document(e) { return "a node ends mid-document" + at_node; }
+    if !json_whole(e) { return "a node ends mid-document" + at_node; }
     // every node carries every field; the last one written is `attempts`,
     // so a node missing it was cut short whatever else parsed
     let mut nums = "revision step_index depth cost_ceiling attempts";
@@ -235,6 +268,15 @@ fn node_gap(e: String, at: Int) -> String {
         nums = if sp + 1 >= len(nums) { "" } else { nums[(sp + 1)..len(nums)] };
         if !is_number(std::json::find_field_raw(e, name)) {
             return "a node's " + name + " is not a number" + at_node;
+        }
+    }
+    let mut texts = "kind id parent spawning_step member_key definition workflow_id path objective context_digest knowledge_bindings output_contract data_class requires target";
+    while len(texts) > 0 {
+        let sp = std::str::index_of(texts + " ", " ");
+        let name = texts[0..sp];
+        texts = if sp + 1 >= len(texts) { "" } else { texts[(sp + 1)..len(texts)] };
+        if !is_text(std::json::find_field_raw(e, name)) {
+            return "a node's " + name + " is not text" + at_node;
         }
     }
     let kind = std::json::find_string_field(e, "kind");
@@ -600,11 +642,12 @@ locus WorkflowCatalog {
         if std::json::find_string_field(text, "format") != "dna.workflow-recipe/1" {
             return "not a workflow recipe (format " + std::json::find_string_field(text, "format") + ")";
         }
-        if !whole_document(text) { return "the recipe ends mid-document"; }
+        if !json_whole(text) { return "the recipe ends mid-document"; }
+        if !is_text(std::json::find_field_raw(text, "format")) { return "a recipe names its format"; }
         if !is_number(std::json::find_field_raw(text, "count")) { return "a recipe says how many nodes it carries"; }
         let said = std::json::find_int_field(text, "count");
         let nodes = std::json::find_field_raw(text, "nodes");
-        if len(nodes) == 0 { return "a recipe carries its nodes"; }
+        if len(nodes) < 2 || nodes[0..1] != "[" { return "a recipe carries its nodes"; }
         let mut seen = 0;
         let mut it = std::json::array_first(nodes);
         while !it.done {
