@@ -8,9 +8,9 @@ behavior.
 
 ## Unreleased
 
-### DNA: each request in the record gets its own relay (GH #689)
+### DNA: each request in the record is answered by its own answer (GH #689)
 
-- The host relayed an `intent.requested`, `review.verdict`, `concern.requested` or `practice.requested` row and treated it as answered when any answer for the same entity appeared after it. A concern's entity is its source, so three concerns from one worker shared one entity and the answer to the second counted as the third's: the third was never relayed, and #684's relay-again rule never fired for it. Each request is now matched to its own answer by occurrence (the k-th request of a (kind, entity) needs k answers since the first of them). `relay_repeated_request_test.hl` runs an organism, puts two concerns in its record, waits for the first to be raised, adds a third, and expects three raised; it sees two without the fix. This is what failed the trio and knowledge fixtures under load.
+- The host relayed an `intent.requested`, `review.verdict`, `concern.requested` or `practice.requested` row and treated it as answered when any answer for the same entity appeared after it. A concern's entity is its source, so concerns from one worker shared one entity: the answer to one counted as another's, a concern was never relayed, and #684's relay-again rule never fired for it. This is what failed the trio and knowledge fixtures under load. A concern now carries its own `request` id, written by whoever puts it in the record (`hale dna concern raise`, `hale node`), and the organization names that id in the `concern.raised` it answers with, so the host matches a request to its own answer. Requests with an entity of their own are matched by it as before; rows written before this rule carry no id and are matched by counting. `relay_repeated_request_test.hl` loses the delivery of one concern, has a second answered, and requires the lost one to be delivered again and answered; matching any answer for the source leaves it undelivered.
 
 ### DNA: a publish the membrane loses is not a lost fact (GH #682)
 

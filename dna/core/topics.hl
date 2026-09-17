@@ -26,7 +26,11 @@ topic TaskSettled { payload: TaskSettlement; subject: "dna.task.settled"; keyed_
 type Pressure { source: String = ""; what: String = ""; count: Int = 0; }
 topic PressureRaised { payload: Pressure; subject: "dna.pressure.raised"; }
 
-type Concern { source: String = ""; what: String = ""; severity: Int = 0; }
+// GH #689: `request` is the id of the `concern.requested` row this came
+// from, "" when it was raised live. A concern's entity is its source, so
+// several concerns share one entity and only this id tells the host which
+// request an answer answered.
+type Concern { source: String = ""; what: String = ""; severity: Int = 0; request: String = ""; }
 topic ConcernRaised { payload: Concern; subject: "dna.concern.raised"; }
 
 // A person proposes a practice for the whole organization (GH #602): a

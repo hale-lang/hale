@@ -36,6 +36,23 @@ fn rows(repo: String, kind: String, needle: String) -> Int {
     return n;
 }
 
+fn record(app: String) -> String {
+    let j = dna::GitJournal { repo: app };
+    return journal_text(j);
+}
+
+@unbounded
+fn journal_text(j: dna::GitJournal) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        out = out + e.kind + " " + e.entity + " " + e.body + "\n";
+        i = i + 1;
+    }
+    return out;
+}
+
 main locus App {
     run() {
         let scratch = "/tmp/dna-relayrepeat-" + to_string(std::process::pid());
@@ -59,7 +76,13 @@ main locus App {
         std::test::assert(len(host) > 0 && len(membrane) > 0, "the host and the membrane client are built: " + built.stdout + built.stderr);
         let version = dna::trim_nl(in_dir(scratch, cache, toolchain() + "\n--version").stdout);
 
-        let started = in_dir(a, cache, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_MEMBRANE=\"$2\" HALE_DNA_TOOLCHAIN=\"$3\" HALE_DNA_GENOME=\"$4\" nohup timeout 300 \"$5\" run \"$4\" . \"\" \"\" --no-iris >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + membrane + "\n" + version + "\n" + a + "\n" + host);
+        // a membrane client that loses the first concern it is handed: it
+        // exits 0 as the real one does, having published nothing
+        let lossy = scratch + "/lossy-membrane";
+        std::io::fs::write_file(lossy, "#!/bin/sh\nif [ \"$1\" = concern ] && [ ! -f \"" + scratch + "/dropped\" ]; then touch \"" + scratch + "/dropped\"; echo 'membrane: published concern'; exit 0; fi\nexec \"" + membrane + "\" \"$@\"\n") or discard;
+        let chmod = dna::run_tool("chmod\n+x\n" + lossy);
+
+        let started = in_dir(a, cache, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_MEMBRANE=\"$2\" HALE_DNA_TOOLCHAIN=\"$3\" HALE_DNA_GENOME=\"$4\" nohup timeout 300 \"$5\" run \"$4\" . \"\" \"\" --no-iris >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + lossy + "\n" + version + "\n" + a + "\n" + host);
         let host_pid = dna::trim_nl(started.stdout);
         let mut up = false;
         let mut tries = 0;
@@ -69,35 +92,46 @@ main locus App {
         }
         std::test::assert(up, "the organization came up: " + (std::io::fs::read_file(a + "/host.log") or ""));
 
-        // Two concerns from one source, then a third once the first answer is
-        // in the record. A concern's entity is its source, so the third
-        // request's "answer" is the answer to the second unless each request
-        // is matched to its own (GH #689).
+        // Two concerns from one source. The first delivery is lost, the
+        // second is answered. The lost one must still be delivered: its
+        // answer is named by its own id, not by any answer for its source
+        // (GH #689). Each concern says something of its own, so the answers
+        // can be told apart.
         let j = dna::GitJournal { repo: a, author: "edge" };
-        let concern = "{\"source\": \"org/repeated/worker\", \"what\": \"mail backlog behind fulfilment\", \"severity\": 2}";
-        let w1 = j.append(j.revision(), "concern.requested", "org/repeated/worker", concern);
-        let w2 = j.append(j.revision(), "concern.requested", "org/repeated/worker", concern);
-        std::test::assert(w1.ok && w2.ok, "two concerns are in the record");
-        let mut answered = 0;
+        let first = "{\"request\": \"c-first\", \"source\": \"org/repeated/worker\", \"what\": \"mail backlog behind fulfilment\", \"severity\": 2}";
+        let second = "{\"request\": \"c-second\", \"source\": \"org/repeated/worker\", \"what\": \"the printer is out of paper\", \"severity\": 1}";
+        let w1 = j.append(j.revision(), "concern.requested", "org/repeated/worker", first);
+        std::test::assert(w1.ok, "the first concern is in the record: " + w1.error);
         let mut tries = 0;
-        while answered < 1 && tries < 240 {
-            answered = rows(a, "concern.raised", "org/repeated/worker");
-            if answered < 1 { std::time::sleep(500ms); }
+        while !std::io::fs::file_exists(scratch + "/dropped") && tries < 240 {
+            std::time::sleep(500ms);
             tries = tries + 1;
         }
-        std::test::assert(answered >= 1, "the first concern was raised: " + (std::io::fs::read_file(a + "/host.log") or ""));
-        let w3 = j.append(j.revision(), "concern.requested", "org/repeated/worker", concern);
-        std::test::assert(w3.ok, "and a third concern after it");
-
-        let mut raised = 0;
+        std::test::assert(std::io::fs::file_exists(scratch + "/dropped"), "its delivery was lost: " + (std::io::fs::read_file(a + "/host.log") or ""));
+        let w2 = j.append(j.revision(), "concern.requested", "org/repeated/worker", second);
+        std::test::assert(w2.ok, "a second concern follows it");
+        let mut answered_second = false;
         tries = 0;
-        while raised < 3 && tries < 240 {
-            raised = rows(a, "concern.raised", "org/repeated/worker");
-            if raised < 3 { std::time::sleep(500ms); }
+        while !answered_second && tries < 240 {
+            answered_second = std::str::contains(record(a), "request:c-second");
+            if !answered_second { std::time::sleep(500ms); }
             tries = tries + 1;
         }
-        std::test::assert_eq_int(rows(a, "concern.requested", "org/repeated/worker"), 3, "three requests");
-        std::test::assert_eq_int(raised, 3, "and three answers: every request was relayed, not only those before the first answer: " + (std::io::fs::read_file(a + "/host.log") or ""));
+        std::test::assert(answered_second, "the second concern was raised: " + (std::io::fs::read_file(a + "/host.log") or ""));
+        std::test::assert(!std::str::contains(record(a), "request:c-first"), "and the lost one is still unanswered");
+
+        // the host relays an unanswered request again; the answer to the
+        // second must not pass for the first's
+        let mut answered_first = false;
+        tries = 0;
+        while !answered_first && tries < 300 {
+            answered_first = std::str::contains(record(a), "request:c-first");
+            if !answered_first { std::time::sleep(500ms); }
+            tries = tries + 1;
+        }
+        std::test::assert(answered_first, "the lost concern was delivered again and answered: " + (std::io::fs::read_file(a + "/host.log") or ""));
+        std::test::assert_eq_int(rows(a, "concern.raised", "org/repeated/worker"), 2, "two concerns, two answers, neither doubled");
+        std::test::assert_eq_int(rows(a, "concern.requested", "org/repeated/worker"), 2, "and two requests");
 
         let k1 = dna::run_tool("kill\n" + host_pid);
         let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; done; true\nsh\n" + a);

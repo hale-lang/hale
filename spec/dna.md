@@ -691,6 +691,12 @@ repository:
   the socket membrane carries it), each in the appender's git identity;
   the host beside the organism relays unanswered rows onto the
   membrane, admitting each under `dna.trust` (GH #604 rule 6). **A
+  request is answered by its own answer** (GH #689): an intent, a
+  verdict's review and a practice request have an entity of their own,
+  and a concern — whose entity is its source, shared by every concern
+  from it — carries a `request` id that the organization writes into
+  the `concern.raised` answering it. A row written before that rule
+  carries no id and is matched by counting, as this host did before. **A
   membrane publish is confirmed by its answer in the record, never by
   the client's exit** (GH #682): the client hands the fact to its
   binding and exits, and under load the organism may never see it, so
@@ -806,7 +812,7 @@ record's.
 | `receipt.read` / `receipt.read_refused` | ledger | a read in the reader's name, or its refusal |
 | `receipt.held` / `receipt.hold_released` | ledger | a hold that refuses redaction, and its release |
 | `receipt.redacted` | ledger | the body removed, the digest kept |
-| `concern.requested` / `concern.raised` | ledger | a concern from a part about the part above it |
+| `concern.requested` / `concern.raised` | ledger | a concern from a part about the part above it; the request carries its own `request` id and the answer names it (`… request:<id>`) |
 | `concern.refused` | ledger | one the organization would not admit |
 | `concern.proposed` | record | three raises became a proposal |
 | `pressure.raised` | ledger | a signal from a source, counted |

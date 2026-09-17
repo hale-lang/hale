@@ -42,21 +42,40 @@ fn keys_has(list: String, key: String) -> Bool {
 fn keys_add(list: String, key: String) -> String {
     return (if len(list) == 0 { "\n" } else { list }) + key + "\n";
 }
-// GH #689: whether the request at row `i` has its own answer. A concern's
-// entity is its source, so several requests share one entity and the first
-// answer is not every request's: the k-th request of a (kind, entity) is
-// answered when at least k answers for that entity have been journaled
-// since the first of them. An entity with one request (an intent, a
-// verdict's review, a practice request) reduces to "is there an answer".
+// GH #689: whether the request at row `i` has ITS OWN answer.
+//
+// An intent, a verdict's review and a practice request each have an entity
+// of their own, so an answer naming that entity is that request's. Several
+// concerns from one source share an entity, so a concern carries its own
+// id (`request` in its body) and the organization writes that id into the
+// `concern.raised` it answers with: the answer is matched by identity, and
+// a repeated or a later answer can neither answer an earlier request nor
+// hide one that was never delivered.
+//
+// A request written before this rule carries no id. Those fall back to
+// counting: the k-th such request of a (kind, entity) is answered when k
+// answers for that entity exist, which is what this host did before —
+// enough while a record holds only pre-rule rows, and never applied to a
+// request that has an id.
 @unbounded
 fn request_answered(p: Projection, i: Int, kinds: String) -> Bool {
     let r = p.row(i);
+    let id = std::json::find_string_field(r.body, "request");
+    if len(id) > 0 {
+        let mut j = i + 1;
+        while j < p.rows() {
+            let o = p.row(j);
+            if o.entity == r.entity && std::str::contains(kinds, " " + o.kind + " ") && std::str::contains(o.body, "request:" + id) { return true; }
+            j = j + 1;
+        }
+        return false;
+    }
     let mut occurrence = 0;
     let mut first = -1;
     let mut j = 0;
     while j <= i {
         let o = p.row(j);
-        if o.kind == r.kind && o.entity == r.entity {
+        if o.kind == r.kind && o.entity == r.entity && len(std::json::find_string_field(o.body, "request")) == 0 {
             occurrence = occurrence + 1;
             if first < 0 { first = j; }
         }
@@ -66,7 +85,7 @@ fn request_answered(p: Projection, i: Int, kinds: String) -> Bool {
     j = first + 1;
     while j < p.rows() {
         let o = p.row(j);
-        if o.entity == r.entity && std::str::contains(kinds, " " + o.kind + " ") { answers = answers + 1; }
+        if o.entity == r.entity && std::str::contains(kinds, " " + o.kind + " ") && !std::str::contains(o.body, "request:") { answers = answers + 1; }
         j = j + 1;
     }
     return answers >= occurrence;
