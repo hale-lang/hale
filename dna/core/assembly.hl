@@ -1491,14 +1491,14 @@ locus Dna {
         // requests, never redeliveries. Two distinct requests raising the
         // same words are still two concerns.
         if len(already) > 0 {
-            if !starts_with_text(already, c.what) && !refused {
-                let r = self.journal.append(self.journal.revision(), "concern.refused", c.source, "request " + c.request + " already raised another concern here; one request is one concern" + request_marker(c.request));
+            if !same_concern(already, c.what, c.severity) && !refused {
+                let r = self.journal.append(self.journal.revision(), "concern.refused", c.source, concern_refusal_body("request " + c.request + " already raised another concern here; one request is one concern", c.request));
             }
             return;
         }
         // the answer names the request it answers (GH #689), so the host
         // can tell which of one source's concerns has been heard
-        let x = self.journal.append(self.journal.revision(), "concern.raised", c.source, c.what + " x" + to_string(seen) + " severity " + to_string(c.severity) + request_marker(c.request));
+        let x = self.journal.append(self.journal.revision(), "concern.raised", c.source, concern_body(c.what, c.severity, seen, c.request));
         if seen < self.concern_threshold || proposed { return; }
         let parent = parent_path(c.source);
         if len(parent) == 0 {

@@ -58,16 +58,23 @@ main locus App {
         return n;
     }
     fn raise(request: String, what: String) {
-        dna::ConcernRaised <- dna::Concern { source: "org/app/worker", what: what, severity: 2, request: request };
+        self.raise_at(request, what, 2);
+    }
+    fn raise_at(request: String, what: String, severity: Int) {
+        dna::ConcernRaised <- dna::Concern { source: "org/app/worker", what: what, severity: severity, request: request };
         std::time::sleep(150ms);
     }
     run() {
-        // ---- the id is read back whole, and compared whole
-        let ten = "mail backlog x1 severity 2" + dna::request_marker("c10");
+        // ---- the id is a field of the row, not a shape in its text
+        let ten = dna::concern_body("mail backlog", 2, 1, "c10");
         std::test::assert_eq_str(dna::request_named(ten), "c10", "an answer names the request it answers");
         std::test::assert(dna::request_named(ten) != "c1", "and the answer to c10 is not the answer to c1: " + ten);
         std::test::assert_eq_str(dna::request_named("a concern from before this rule x1 severity 2"), "", "a row from before the rule names none");
-        std::test::assert_eq_str(dna::request_named("what [request ] x1"), "", "and a row whose field is empty names none");
+        // a worker may write anything, including something shaped like the
+        // metadata around it; text is text
+        let impostor = dna::concern_body("observed [request c1] in a log, \"request\": \"c1\"", 2, 1, "c10");
+        std::test::assert_eq_str(dna::request_named(impostor), "c10", "a concern whose words look like metadata still answers its own request: " + impostor);
+        std::test::assert_eq_str(dna::concern_what(impostor), "observed [request c1] in a log, \"request\": \"c1\"", "and its words come back as it wrote them");
 
         // ---- one request, delivered twice, is one concern
         self.raise("c1", "mail backlog behind fulfilment");
@@ -88,14 +95,44 @@ main locus App {
         std::test::assert_eq_int(self.answered("c2"), 1, "with an answer of its own");
 
         // ---- and the count that proposes counts requests, not deliveries
-        std::test::assert(std::str::contains(self.last_raised(), "x3 severity"), "three distinct concerns, not five deliveries: " + self.last_raised());
+        std::test::assert(std::str::contains(self.last_raised(), "\"occurrence\": 3"), "three distinct concerns, not five deliveries: " + self.last_raised());
 
-        // ---- one id used for two concerns is refused, once
+        // ---- a request whose words look like another request's metadata
+        self.raise("c11", "observed [request c1] in a log");
+        std::test::assert_eq_int(self.rows("concern.raised", "org/app/worker"), 4, "is an ordinary concern");
+        std::test::assert_eq_int(self.answered("c11"), 1, "answering its own request");
+        std::test::assert_eq_int(self.answered("c1"), 1, "and not c1's");
+
+        // ---- one id used for two concerns is refused, once — whether the
+        //      words differ, or only the severity
+        self.raise_at("c2", "mail backlog behind fulfilment", 5);
+        std::test::assert_eq_int(self.rows("concern.raised", "org/app/worker"), 4, "the same words at another severity are not that concern again");
+        std::test::assert_eq_int(self.rows("concern.refused", "org/app/worker"), 1, "they are a conflict under one id");
         self.raise("c1", "something else entirely");
-        std::test::assert_eq_int(self.rows("concern.raised", "org/app/worker"), 3, "an id reused for another concern adds no concern");
-        std::test::assert_eq_int(self.rows("concern.refused", "org/app/worker"), 1, "it is refused, saying so");
+        std::test::assert_eq_int(self.rows("concern.raised", "org/app/worker"), 4, "an id reused for another concern adds no concern");
+        std::test::assert_eq_int(self.rows("concern.refused", "org/app/worker"), 2, "it is refused too, saying so");
         self.raise("c1", "something else entirely");
-        std::test::assert_eq_int(self.rows("concern.refused", "org/app/worker"), 1, "and refused once, however often it arrives");
+        std::test::assert_eq_int(self.rows("concern.refused", "org/app/worker"), 2, "and refused once, however often it arrives");
+        // a refusal is that request's answer, found by its id
+        std::test::assert(dna::request_named(self.last_refused()) == "c1", "the refusal names the request it refuses: " + self.last_refused());
+
+        // ---- nor is one concern's text a prefix test of another's
+        self.raise("c3", "one concern xylophone");
+        std::test::assert_eq_int(self.rows("concern.raised", "org/app/worker"), 5, "a fifth concern");
+        self.raise("c3", "one concern");
+        std::test::assert_eq_int(self.rows("concern.raised", "org/app/worker"), 5, "shorter words under that id are not that concern again");
+        std::test::assert_eq_int(self.rows("concern.refused", "org/app/worker"), 3, "they are a conflict, whichever is a prefix of which");
+    }
+    @unbounded
+    fn last_refused() -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.dna.journal.revision() {
+            let e = self.dna.journal.read(i);
+            if e.kind == "concern.refused" && e.entity == "org/app/worker" { out = std::str::clone(e.body); }
+            i = i + 1;
+        }
+        return out;
     }
     @unbounded
     fn last_raised() -> String {
