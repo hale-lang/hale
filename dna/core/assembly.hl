@@ -1495,6 +1495,8 @@ locus Dna {
     // approves it.
     @unbounded
     fn on_practice_requested(r: PracticeRequest) {
+        // GH #682: a request relayed again after a lost publish is answered once
+        if self.answered_request(r.request_id) { return; }
         if len(r.name) == 0 || len(r.text) == 0 {
             let x = self.journal.append(self.journal.revision(), "practice.refused", r.request_id, "a practice has a name and a text");
             return;
@@ -1520,6 +1522,11 @@ locus Dna {
     // its birth and its settlement are Journal events (the causal
     // authority), the live locus is the expression.
     fn ask(i: Intent, k: Knobs) -> String {
+        // GH #682: an intent offered twice — a head's publish and the host's
+        // relay of the same durable row, or a re-delivery after a publish
+        // that was lost — is admitted once: the Task born for it answers again
+        let again = self.task_of_intent(i.id);
+        if len(again) > 0 { return again; }
         let gate = self.membrane.offer(i);
         if gate != "accepted" {
             let x = self.journal.append(self.journal.revision(), "intent.refused", i.id, gate);
@@ -1671,6 +1678,34 @@ locus Dna {
             tries = tries + 1;
         }
         return self.refuse_spend(child, s, "contention: the record moved under twenty attempts to reserve");
+    }
+    // GH #682: whether a practice request already has its answer.
+    @unbounded
+    fn answered_request(request_id: String) -> Bool {
+        if len(request_id) == 0 { return false; }
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.entity == request_id && (e.kind == "practice.proposed" || e.kind == "practice.refused") { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    // GH #682: the Task already born for an intent, "" when none. A refusal
+    // is not remembered: a schedule offers its pending intent again once the
+    // reason (a budget, a grant) has passed.
+    @unbounded
+    fn task_of_intent(intent_id: String) -> String {
+        if len(intent_id) == 0 { return ""; }
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "task.born" && std::str::starts_with(e.body, intent_id + ": ") { return e.entity; }
+            i = i + 1;
+        }
+        return "";
     }
     // GH #667: every `task.transfer_requested` naming this owner that a
     // member of this owner accepted (`task.transfer_accepted`) and this

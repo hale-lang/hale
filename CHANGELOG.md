@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: a publish the membrane loses is not a lost fact (GH #682)
+
+- The membrane client exits once it has handed a fact to its binding; under load the organism could miss it, and nothing noticed: an ask beside a live organism left no durable row, the host relayed each record row exactly once, and an `expression.observed` report that went missing left a mutation applied and never retained. Delivery is now confirmed by the answer in the record. `hale dna ask`, `review`, `concern raise` and `practice propose` beside a live organism write their row before publishing; the host relays a row again while it stays unanswered (every 30s); the organism admits an intent once by its id and answers a practice request once; the host reports an observation again until the organism records it. `membrane_loss_test.hl` drops the first relay and shows the intent admitted once; it fails without the relay-again rule. The books fixture's state check now prints every row about the task when it fails.
+
 ### DNA: who hosts the shared record's service, and how each owner's heads are identified to it (GH #669, stage B2)
 
 - The owners map names the host (`host = acme`); changing it affects every owner. The host gives each owner a key (`HALE_DNA_OWNER_KEYS="<owner>=<key> …"` on the service); a head names its owner and key (`git config dna.owner`, `dna.owner.key`, carried on every append), and the service admits a write in a person's name only from a head of the owner that person belongs to. A service given no keys serves as before.

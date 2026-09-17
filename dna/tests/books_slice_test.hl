@@ -68,6 +68,21 @@ fn count(app: String, kind: String, entity: String, needle: String) -> Int {
 }
 
 // The body of the last row of `kind` about `entity`.
+// Every row about `entity`, with its sequence: what a failed state check
+// needs to say (GH #682).
+@unbounded
+fn rows_about(app: String, entity: String) -> String {
+    let mut out = "";
+    let mut rest = journal(app);
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if std::str::contains(line, "\"entity\": \"" + entity + "\"") { out = out + line[0..(if len(line) > 220 { 220 } else { len(line) })] + "\n"; }
+    }
+    return out;
+}
+
 @unbounded
 fn body(app: String, kind: String, entity: String) -> String {
     let mut out = "";
@@ -297,7 +312,7 @@ main locus App {
         std::test::assert(std::json::find_string_field(handed5, "acceptance") == v2 && std::str::contains(handed5, "\"evidence_required\": true"), "handed under the adopted practice: " + handed5);
 
         // ---- 6. the older case keeps its contract
-        std::test::assert(std::json::find_string_field(body(app, "task.handed", "t3"), "acceptance") == v1 && std::str::contains(dna_cli(app, "status"), "t3 [handed]"), "B-1004 still waits on mara, under the first version");
+        std::test::assert(std::json::find_string_field(body(app, "task.handed", "t3"), "acceptance") == v1 && std::str::contains(dna_cli(app, "status"), "t3 [handed]"), "B-1004 still waits on mara, under the first version (v1 " + v1 + "):\n" + rows_about(app, "t3") + dna_cli(app, "status"));
         let r1004 = digest_in(dna_cli(app, "receipt\nfile\n" + fixture + "/receipts/r1004.txt\n--as\nmara"));
         let closed3 = dna_cli(app, "task\ndone\nt3\n--as\nmara\n--evidence\n" + r1004);
         std::test::assert(std::str::contains(closed3, "task t3 done by mara — evidence " + r1004 + " linked") && std::json::find_string_field(body(app, "completion.linked", "t3"), "practice") == v1, "closed under the contract it was handed with: " + closed3);

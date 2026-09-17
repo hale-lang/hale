@@ -690,7 +690,24 @@ repository:
   to) and a verdict appends `review.verdict` (the body: the verdict as
   the socket membrane carries it), each in the appender's git identity;
   the host beside the organism relays unanswered rows onto the
-  membrane once, admitting each under `dna.trust` (GH #604 rule 6): `local`,
+  membrane, admitting each under `dna.trust` (GH #604 rule 6). **A
+  membrane publish is confirmed by its answer in the record, never by
+  the client's exit** (GH #682): the client hands the fact to its
+  binding and exits, and under load the organism may never see it, so
+  a row still unanswered 30s after it was relayed is relayed again.
+  The organism admits an intent once by its id — an intent offered
+  again after its Task was born answers with that Task and journals
+  nothing — and a repeated verdict at a settled Review is answered as
+  already settled. `hale dna ask`, `review`, `concern raise` and
+  `practice propose` beside a live organism write their row first
+  (`intent.requested`, `review.verdict`, `concern.requested`,
+  `practice.requested`, marked `via: membrane`) and then publish, so
+  the durable fact precedes the act on that path too, and a practice
+  request is answered once by its id; a
+  lost publish is relayed by the host once the row has waited unanswered,
+  and a failed publish is a note, not a failure. The host's own
+  `expression.observed` report is sent again until the organism records
+  it, three times at most. `local`,
   the default, trusts every writer to the record — the operator's
   profile; `signed` admits a row only when its commit carries a
   signature git verifies (`git verify-commit`; git's keyring or

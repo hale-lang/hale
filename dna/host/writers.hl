@@ -447,10 +447,17 @@ fn ask_verb(root: String, outcome: String, to: String, no_wait: Bool, as_flag: S
     b.string_field("outcome", outcome);
     b.string_field("from", who);
     b.string_field("to", to);
+    // GH #682: published by this head as well; the host relays it only if
+    // it stays unanswered
+    if local { b.string_field("via", "membrane"); }
     b.end_object();
     if local {
+        // GH #682: the durable fact precedes the act, on this path too — the
+        // row lands first, so a publish the membrane loses is relayed by the
+        // host beside the organism, which admits an intent once by its id
+        if !append_as(root, "intent.requested", intent_id, b.result(), if len(as_flag) > 0 { as_flag } else { "" }) { return fail("the record refused the append"); }
         let e = publish_on_membrane(root, "intent", b.result());
-        if len(e) > 0 { return fail(e); }
+        if len(e) > 0 { eprintln("hale dna ask: ", e, "; the intent is in the record, and the host beside the organism relays it"); }
     } else {
         // no organism here: the intent goes into the record, and the host
         // beside the organism relays it (GH #566 F1)
@@ -538,10 +545,14 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     b.string_field("reviewer", reviewer);
     b.string_field("authority", authority);
     b.string_field("comment", comment);
+    // GH #682: the row first, then the publish; the host relays it only if
+    // it stays unanswered
+    if local { b.string_field("via", "membrane"); }
     b.end_object();
     if local {
+        if !append_as(root, "review.verdict", id, b.result(), if len(reviewer_flag) > 0 { reviewer_flag } else { "" }) { return fail("the record refused the append"); }
         let e = publish_on_membrane(root, "verdict", b.result());
-        if len(e) > 0 { return fail(e); }
+        if len(e) > 0 { eprintln("hale dna review: ", e, "; the verdict is in the record, and the host beside the organism relays it"); }
     } else {
         // a row in the record, in the reviewer's name; the host beside the
         // organism relays it, and the Review answers in the record
@@ -590,12 +601,16 @@ fn concern_raise(root: String, source: String, what: String, severity: Int) -> A
     b.string_field("source", source);
     b.string_field("what", what);
     b.int_field("severity", severity);
-    b.end_object();
     if membrane_up(root) {
+        // GH #682: the row first, then the publish
+        b.string_field("via", "membrane");
+        b.end_object();
+        if !append_as(root, "concern.requested", source, b.result(), "") { return fail("the record refused the append"); }
         let e = publish_on_membrane(root, "concern", b.result());
-        if len(e) > 0 { return fail(e); }
+        if len(e) > 0 { eprintln("hale dna concern: ", e, "; the concern is in the record, and the host beside the organization relays it"); }
         return answer("concern raised by " + source + ": " + what + "\n");
     }
+    b.end_object();
     // no organization here: into the record, and the host beside the
     // organization relays it (GH #583 K4)
     if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
@@ -628,11 +643,15 @@ fn practice_verb(root: String, seed: String, sub: String, name: String, text: St
         b.string_field("by", who);
         b.string_field("because", because);
         b.string_field("supersedes", supersedes);
-        b.end_object();
         if membrane_up(root) {
+            // GH #682: the row first, then the publish; the organization
+            // answers a request once, however often it is delivered
+            b.string_field("via", "membrane");
+            b.end_object();
             let before = open_projection(root, seed, "").rows();
+            if !append_as(root, "practice.requested", request_id, b.result(), who) { return fail("the record refused the append"); }
             let e = publish_on_membrane(root, "practice", b.result());
-            if len(e) > 0 { return fail(e); }
+            if len(e) > 0 { eprintln("hale dna practice: ", e, "; the proposal is in the record, and the host beside the organization relays it"); }
             // the organization answers from its bus; give a busy one a minute
             let deadline = std::time::now() + 60;
             while std::time::now() <= deadline {
@@ -647,6 +666,7 @@ fn practice_verb(root: String, seed: String, sub: String, name: String, text: St
             }
             return fail("published the proposal, but the organization journaled no answer for " + request_id + " in time");
         }
+        b.end_object();
         if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
         if !append_as(root, "practice.requested", request_id, b.result(), who) { return fail("the record refused the append"); }
         let s = sync_record(root);
