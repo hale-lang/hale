@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: each request in the record gets its own relay (GH #689)
+
+- The host relayed an `intent.requested`, `review.verdict`, `concern.requested` or `practice.requested` row and treated it as answered when any answer for the same entity appeared after it. A concern's entity is its source, so three concerns from one worker shared one entity and the answer to the second counted as the third's: the third was never relayed, and #684's relay-again rule never fired for it. Each request is now matched to its own answer by occurrence (the k-th request of a (kind, entity) needs k answers since the first of them). `relay_repeated_request_test.hl` runs an organism, puts two concerns in its record, waits for the first to be raised, adds a third, and expects three raised; it sees two without the fix. This is what failed the trio and knowledge fixtures under load.
+
 ### DNA: a publish the membrane loses is not a lost fact (GH #682)
 
 - The membrane client exits once it has handed a fact to its binding; under load the organism could miss it, and nothing noticed: an ask beside a live organism left no durable row, the host relayed each record row exactly once, and an `expression.observed` report that went missing left a mutation applied and never retained. Delivery is now confirmed by the answer in the record. `hale dna ask`, `review`, `concern raise` and `practice propose` beside a live organism write their row before publishing; the host relays a row again while it stays unanswered (every 30s); the organism admits an intent once by its id and answers a practice request once; the host reports an observation again until the organism records it. `membrane_loss_test.hl` drops the first relay and shows the intent admitted once; it fails without the relay-again rule. The books fixture's state check now prints every row about the task when it fails.

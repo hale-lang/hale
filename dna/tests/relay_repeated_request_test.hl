@@ -1,0 +1,108 @@
+// dna/tests/relay_repeated_request_test.hl — each request in the record
+// gets its own relay, even when several share one entity (GH #689).
+//
+// A concern's entity is its source, so three concerns from one worker are
+// three `concern.requested` rows with one entity. The host relays each row
+// once and treats it as answered when its own answer is journaled; with
+// the answer matched by entity alone, the first `concern.raised` answered
+// every later request and the third concern was never relayed (the trio
+// and knowledge fixtures failed on it under load). Here three identical
+// concerns go into the record of a running organism, and all three must
+// become `concern.raised`.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// Run `argv` (newline-separated) in `dir`: discovery and hosted models off,
+// a cache of this fixture's own so the host binary is found in one place.
+fn in_dir(dir: String, cache: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off XDG_CACHE_HOME=\"$1\" && shift && exec \"$@\"\nsh\n" + dir + "\n" + cache + "\n" + argv);
+}
+
+@unbounded
+fn rows(repo: String, kind: String, needle: String) -> Int {
+    let j = dna::GitJournal { repo: repo };
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind && (std::str::contains(e.entity, needle) || std::str::contains(e.body, needle)) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+main locus App {
+    run() {
+        let scratch = "/tmp/dna-relayrepeat-" + to_string(std::process::pid());
+        std::io::fs::mkdir(scratch) or discard;
+        // whatever this fixture starts under its scratch stops when it does (#637)
+        dna::reap_on_exit(scratch);
+        let cache = scratch + "/cache";
+        std::io::fs::mkdir(cache) or discard;
+        let made = in_dir(scratch, cache, toolchain() + "\ndna\nnew\nrepeated");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let a = scratch + "/repeated";
+        let g1 = in_dir(a, cache, "git\nconfig\nuser.name\norganism-host");
+        let g2 = in_dir(a, cache, "git\nconfig\nuser.email\nhost@dna");
+        let g3 = in_dir(a, cache, "git\nadd\n-A");
+        let g4 = in_dir(a, cache, "git\ncommit\n-q\n-m\nthe app");
+
+        // the host and membrane binaries, built into this fixture's cache
+        let built = in_dir(a, cache, toolchain() + "\ndna\nprofile\n.");
+        let host = dna::trim_nl(in_dir(scratch, cache, "sh\n-c\nfind \"$1\" -path '*/dna/host/host' -type f | head -1\nsh\n" + cache).stdout);
+        let membrane = dna::trim_nl(in_dir(scratch, cache, "sh\n-c\nfind \"$1\" -path '*/dna/membrane/membrane' -type f | head -1\nsh\n" + cache).stdout);
+        std::test::assert(len(host) > 0 && len(membrane) > 0, "the host and the membrane client are built: " + built.stdout + built.stderr);
+        let version = dna::trim_nl(in_dir(scratch, cache, toolchain() + "\n--version").stdout);
+
+        let started = in_dir(a, cache, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_MEMBRANE=\"$2\" HALE_DNA_TOOLCHAIN=\"$3\" HALE_DNA_GENOME=\"$4\" nohup timeout 300 \"$5\" run \"$4\" . \"\" \"\" --no-iris >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + membrane + "\n" + version + "\n" + a + "\n" + host);
+        let host_pid = dna::trim_nl(started.stdout);
+        let mut up = false;
+        let mut tries = 0;
+        while !up && tries < 600 {
+            if std::io::fs::file_exists(a + "/.hale/dna/hale-dna.concern.raised.sock") && std::io::fs::file_exists(a + "/.hale/dna/org.pid") { up = true; } else { std::time::sleep(500ms); }
+            tries = tries + 1;
+        }
+        std::test::assert(up, "the organization came up: " + (std::io::fs::read_file(a + "/host.log") or ""));
+
+        // Two concerns from one source, then a third once the first answer is
+        // in the record. A concern's entity is its source, so the third
+        // request's "answer" is the answer to the second unless each request
+        // is matched to its own (GH #689).
+        let j = dna::GitJournal { repo: a, author: "edge" };
+        let concern = "{\"source\": \"org/repeated/worker\", \"what\": \"mail backlog behind fulfilment\", \"severity\": 2}";
+        let w1 = j.append(j.revision(), "concern.requested", "org/repeated/worker", concern);
+        let w2 = j.append(j.revision(), "concern.requested", "org/repeated/worker", concern);
+        std::test::assert(w1.ok && w2.ok, "two concerns are in the record");
+        let mut answered = 0;
+        let mut tries = 0;
+        while answered < 1 && tries < 240 {
+            answered = rows(a, "concern.raised", "org/repeated/worker");
+            if answered < 1 { std::time::sleep(500ms); }
+            tries = tries + 1;
+        }
+        std::test::assert(answered >= 1, "the first concern was raised: " + (std::io::fs::read_file(a + "/host.log") or ""));
+        let w3 = j.append(j.revision(), "concern.requested", "org/repeated/worker", concern);
+        std::test::assert(w3.ok, "and a third concern after it");
+
+        let mut raised = 0;
+        tries = 0;
+        while raised < 3 && tries < 240 {
+            raised = rows(a, "concern.raised", "org/repeated/worker");
+            if raised < 3 { std::time::sleep(500ms); }
+            tries = tries + 1;
+        }
+        std::test::assert_eq_int(rows(a, "concern.requested", "org/repeated/worker"), 3, "three requests");
+        std::test::assert_eq_int(raised, 3, "and three answers: every request was relayed, not only those before the first answer: " + (std::io::fs::read_file(a + "/host.log") or ""));
+
+        let k1 = dna::run_tool("kill\n" + host_pid);
+        let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; done; true\nsh\n" + a);
+        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+    }
+}
+
+fn main() { App { }; }

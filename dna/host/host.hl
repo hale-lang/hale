@@ -42,6 +42,36 @@ fn keys_has(list: String, key: String) -> Bool {
 fn keys_add(list: String, key: String) -> String {
     return (if len(list) == 0 { "\n" } else { list }) + key + "\n";
 }
+// GH #689: whether the request at row `i` has its own answer. A concern's
+// entity is its source, so several requests share one entity and the first
+// answer is not every request's: the k-th request of a (kind, entity) is
+// answered when at least k answers for that entity have been journaled
+// since the first of them. An entity with one request (an intent, a
+// verdict's review, a practice request) reduces to "is there an answer".
+@unbounded
+fn request_answered(p: Projection, i: Int, kinds: String) -> Bool {
+    let r = p.row(i);
+    let mut occurrence = 0;
+    let mut first = -1;
+    let mut j = 0;
+    while j <= i {
+        let o = p.row(j);
+        if o.kind == r.kind && o.entity == r.entity {
+            occurrence = occurrence + 1;
+            if first < 0 { first = j; }
+        }
+        j = j + 1;
+    }
+    let mut answers = 0;
+    j = first + 1;
+    while j < p.rows() {
+        let o = p.row(j);
+        if o.entity == r.entity && std::str::contains(kinds, " " + o.kind + " ") { answers = answers + 1; }
+        j = j + 1;
+    }
+    return answers >= occurrence;
+}
+
 // GH #682: when a row was last relayed (`<key>@<unix>` lines), -1 never.
 @unbounded
 fn relayed_at(list: String, key: String) -> Int {
@@ -437,7 +467,7 @@ locus Host {
                 self.say("refused an unverified " + r.kind + " (" + r.entity + ") from the record");
             } else if (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") {
                 let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else { " review.settled review.refused " };
-                let answered = find_after(p, i + 1, answers, r.entity).seq >= 0;
+                let answered = request_answered(p, i, answers);
                 // GH #664: an intent for a position another owner holds is
                 // theirs to admit; it stays in the record, unanswered here
                 let ours = r.kind != "intent.requested" || admits_here(self.root, std::json::find_string_field(r.body, "to"));
