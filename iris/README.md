@@ -13,6 +13,13 @@ contract lives in [`PROTOCOL.md`](./PROTOCOL.md); the
 post-observer editor vision in
 [`VISION-FORWARD.md`](./VISION-FORWARD.md).
 
+The human cockpit proposal is tracked in
+[#690](https://github.com/hale-lang/hale/issues/690). Its proposed browser/API
+boundary is in [`COCKPIT-CONTRACT.md`](./COCKPIT-CONTRACT.md), with current DNA
+readiness and the first live slice in
+[`COCKPIT-READINESS.md`](./COCKPIT-READINESS.md). These are design drafts, not
+claims that the cockpit API is implemented.
+
 The previous spike (modeling-cockpit framing, May 2026) lives
 on `main` — it remains the artifact archive (raylib bindings,
 lotus_viz, heron, pane system, MCP server). Pieces get pulled
