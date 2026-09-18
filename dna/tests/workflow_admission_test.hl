@@ -175,6 +175,25 @@ main locus App {
         self.dna.rehydrate();
         std::test::assert_eq_int(self.rows("task.pending", "t7") + self.rows("task.resumed", "t7"), 0, "with its summary, t7 is still an admitted execution, not edit work");
         std::test::assert_eq_int(self.dna.work.requests, 0, "and still nothing was requested");
+
+        // ---- the record is far ahead of this body's count: every id it
+        //      would mint is taken, and the ask is refused on the record,
+        //      under the ask itself, claiming no Task
+        let mut k = 9;
+        while k < 80 {
+            let taken = self.dna.journal.append(self.dna.journal.revision(), "task.born", "t" + to_string(k), "i" + to_string(k) + ": another body's");
+            k = k + 1;
+        }
+        let refusals = self.rows("workflow.refused", "");
+        let admitted = self.rows("workflow.admitted", "");
+        let full = self.dna.admit_workflow(dna::WorkflowAsk { id: "w-full", definition: "close-month", revision: 1 });
+        std::test::assert(std::str::contains(full, "no free id within 64"), "an ask that finds every id taken is refused: " + full);
+        std::test::assert_eq_int(self.rows("workflow.refused", ""), refusals + 1, "and the refusal is in the record");
+        std::test::assert_eq_int(self.rows("workflow.refused", "ask:w-full"), 1, "under the ask, claiming no Task");
+        let r = dna::decode_refusal(self.body_of("workflow.refused", "ask:w-full"));
+        std::test::assert(r.ok && std::str::contains(r.value.why, "no free id"), "as the versioned refusal: " + r.why + r.value.why);
+        std::test::assert_eq_int(self.rows("workflow.admitted", ""), admitted, "no admission was written for it");
+        std::test::assert_eq_int(self.dna.work.requests, 0, "and nothing was dispatched");
     }
 }
 

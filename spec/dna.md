@@ -1030,7 +1030,15 @@ writes nothing, the ask being the owner's to admit. A refusal, whether
 the catalog's or the store's, is written as the versioned
 `workflow.refused` and the write is checked: when the record will not
 take even that, the answer says the refusal went unrecorded rather than
-presenting it as recorded. A restart counts admitted and refused
+presenting it as recorded. A refusal bound to a Task id carries the
+admission's own guarantee — it is appended exactly at the revision that
+found the id free, and when the record has moved it is read again: the
+ask may have landed from another body, in which case that execution is
+the answer, and the id may be another execution's now, in which case the
+refusal is written under the ask instead (`ask:<id>`), which can claim
+nothing. A refusal never attaches to an execution another body admitted.
+An ask that finds every id it would mint already taken is refused under
+the ask the same way, on the record. A restart counts admitted and refused
 ids among those minted, so an id is never minted twice, and an admitted
 Task is never resumed as legacy edit work, with or without its summary
 row: the admission is the one positive discriminator, and its recovery

@@ -492,7 +492,7 @@ equivalent definition.
 | definitions bind whole or refuse; capacity is checked before a node is built | proven, card 04 (#691) |
 | every fact is read whole or not at all; a recipe binds whole or not at all | proven, card 05 (#693) |
 | the join is by identity and kind against the admitted recipe; every transition has its basis; a cancelled ancestor fences all below it | proven, card 06 (#694) |
-| the admission precedes the summary; a refusal requests nothing and is recorded (or reported unrecorded); one ask id is one execution, decided and appended at one revision; a taken id is skipped and a contended one re-minted; only the position's owner admits; an admitted Task is never legacy edit work after a restart | proven, card 07 |
+| the admission precedes the summary; a refusal requests nothing and is recorded (or reported unrecorded), a Task-bound one exactly at the decision's revision and never on another body's execution; one ask id is one execution, decided and appended at one revision; a taken id is skipped and a contended one re-minted; only the position's owner admits; an admitted Task is never legacy edit work after a restart | proven, card 07 |
 | delivery across off-thread bindings; restart | not yet, cards 12–13, 19 |
 
 Card 03 native runs: `HALE_BIN=target/release/hale HALE_DNA_SOURCE=$PWD

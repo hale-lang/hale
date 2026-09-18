@@ -1625,6 +1625,7 @@ locus Dna {
             return "refused: not this organization's to admit — " + self.ownership.why_not(a.to);
         }
         let mut tries = 0;
+        let mut id = "";
         while tries < 6 {
             tries = tries + 1;
             let moved = self.journal.refresh();
@@ -1632,16 +1633,19 @@ locus Dna {
             let had = self.workflow_admission_of(a.id, rev);
             if len(had) > 0 { return had; }
             // the candidate: the next id of this owner's that the record,
-            // as read, does not already hold as an execution or a refusal
-            let mut id = self.metabolism.next_id();
+            // as read, does not already hold as an execution or a refusal.
+            // A candidate from an earlier reading that is still free is
+            // kept; one that was taken meanwhile is skipped.
             let mut skipped = 0;
-            while self.task_id_taken(id, rev) && skipped < 64 {
+            while (len(id) == 0 || self.task_id_taken(id, rev)) && skipped < 64 {
                 id = self.metabolism.next_id();
                 skipped = skipped + 1;
             }
-            if self.task_id_taken(id, rev) { return "refused: no free id within 64 of this owner's count"; }
+            if self.task_id_taken(id, rev) {
+                return self.refuse_ask(a, "no free id within 64 of this owner's count");
+            }
             let x = self.catalog.expand(id, a.definition, a.revision, self.admission_limits);
-            if !x.ok { return self.refuse_workflow(id, a, x.why); }
+            if !x.ok { return self.refuse_task(id, rev, a, x.why); }
             let body = encode_admission(AdmittedWorkflow {
                 task_id: id, definition: a.definition, revision: a.revision,
                 inputs: a.inputs, inputs_ref: a.inputs_ref, request: a.id,
@@ -1659,27 +1663,57 @@ locus Dna {
             }
             if r.error != "stale_revision" && r.error != "claimed" {
                 self.membrane.notify("journal", "append failed; workflow " + a.id + " not admitted");
-                return self.refuse_workflow(id, a, "the record refused the admission: " + r.error);
+                return self.refuse_task(id, rev, a, "the record refused the admission: " + r.error);
             }
             // the record moved under the decision: it is taken again
         }
-        return self.refuse_workflow("", a, "the record moved under the admission " + to_string(tries) + " times");
+        return self.refuse_ask(a, "the record moved under the admission " + to_string(tries) + " times");
     }
 
-    // A refusal is a fact of its own, written and checked: the versioned
-    // `workflow.refused` under the id the ask minted (or none, when no
-    // id was reached), with why and the limits applied. When the record
-    // will not take even that, the answer says so — an unrecorded
-    // refusal is not presented as a recorded one.
-    fn refuse_workflow(id: String, a: WorkflowAsk, why: String) -> String {
-        let entity = if len(id) > 0 { id } else { "ask:" + a.id };
-        let r = self.journal.append(self.journal.revision(), "workflow.refused", entity, encode_refusal(RefusedWorkflow {
+    // A refusal bound to a Task id carries the admission's own guarantee:
+    // it is appended exactly at the revision that found the id free. When
+    // the record has moved, it is read again — the ask may have landed
+    // from another body, in which case that execution is the answer, and
+    // the id may be another execution's now, in which case the refusal is
+    // written under the ask instead. A refusal never attaches to an
+    // execution another body admitted.
+    @unbounded
+    fn refuse_task(id: String, rev: Int, a: WorkflowAsk, why: String) -> String {
+        let mut at = rev;
+        let mut tries = 0;
+        while tries < 6 {
+            tries = tries + 1;
+            let r = self.journal.append_exact(at, "workflow.refused", id, self.refusal_body(id, a, why));
+            if r.ok { return "refused: " + why; }
+            if r.error != "stale_revision" && r.error != "claimed" {
+                return "refused: " + why + "; and the record would not take the refusal either: " + r.error;
+            }
+            let moved = self.journal.refresh();
+            at = self.journal.revision();
+            let landed = self.workflow_admission_of(a.id, at);
+            if len(landed) > 0 { return landed; }
+            if self.task_id_taken(id, at) { return self.refuse_ask(a, why); }
+        }
+        return self.refuse_ask(a, why);
+    }
+
+    // A refusal bound to no Task — no id was reached, or the one reached
+    // is another execution's now — under the ask's own identity, which can
+    // claim nothing. Written and checked: when the record will not take
+    // even that, the answer says so.
+    fn refuse_ask(a: WorkflowAsk, why: String) -> String {
+        let entity = "ask:" + a.id;
+        let r = self.journal.append(self.journal.revision(), "workflow.refused", entity, self.refusal_body(entity, a, why));
+        if !r.ok { return "refused: " + why + "; and the record would not take the refusal either: " + r.error; }
+        return "refused: " + why;
+    }
+
+    fn refusal_body(entity: String, a: WorkflowAsk, why: String) -> String {
+        return encode_refusal(RefusedWorkflow {
             task_id: entity, definition: a.definition, revision: a.revision, why: why,
             limits: self.admission_limits,
             transition: TransitionRef { scope: self.org_id, key: entity, proposal_id: transition_id(entity, "refused") }
-        }));
-        if !r.ok { return "refused: " + why + "; and the record would not take the refusal either: " + r.error; }
-        return "refused: " + why;
+        });
     }
 
     // The Task an admission under this request id created, "" when none

@@ -30,6 +30,7 @@ locus Contended {
         armed: Bool = false;
         looks: Int = 0;
         landed_second: Bool = false;
+        defined: Bool = false;
     }
     fn refresh() -> Bool { self.looks = 0; return self.inner.refresh(); }
     fn revision() -> Int {
@@ -46,7 +47,7 @@ locus Contended {
     fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
         // the store that refused the fourth ask's admission refuses its
         // refusal too
-        if kind == "workflow.refused" && self.contended == 4 {
+        if kind == "workflow.refused" && self.contended == 4 && !std::str::contains(entity, "ask:") {
             return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() };
         }
         // the fixture arms the second ask's competitor right before that
@@ -56,8 +57,11 @@ locus Contended {
         return self.inner.append(expected, kind, entity, body);
     }
     fn competitor(entity: String, request: String) -> String {
-        let d = self.theirs.define("one-step", 1, 1, "");
-        let l = self.theirs.leaf("one-step", 1, 0, "a", dna::WorkRequest { objective: "the one thing" }, 1);
+        if !self.defined {
+            self.defined = true;
+            let d = self.theirs.define("one-step", 1, 1, "");
+            let l = self.theirs.leaf("one-step", 1, 0, "a", dna::WorkRequest { objective: "the one thing" }, 1);
+        }
         let x = self.theirs.expand(entity, "one-step", 1, dna::AdmissionLimits { });
         return dna::encode_admission(dna::AdmittedWorkflow {
             task_id: entity, definition: "one-step", revision: 1, request: request,
@@ -91,6 +95,18 @@ locus Contended {
             self.contended = 4;
             return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() };
         }
+        if kind == "workflow.refused" && self.contended == 4 && std::str::contains(body, "\"definition\": \"one-step\"") && !std::str::contains(entity, "ask:") {
+            return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() };
+        }
+        // the fifth ask names no definition and is refused by the catalog;
+        // between this body's reading and its refusal, the other body
+        // admits its own ask under the very id the refusal is bound to
+        if kind == "workflow.refused" && std::str::contains(body, "\"definition\": \"nope\"") && self.contended == 4 && !std::str::contains(entity, "ask:") {
+            self.contended = 5;
+            let landed = self.inner.append(self.inner.revision(), "workflow.admitted", entity, self.competitor(entity, "elsewhere"));
+            let mark = self.inner.append(self.inner.revision(), "test.contended", entity, "the other body admitted its ask under the id this refusal is bound to");
+            return self.inner.append_exact(expected, kind, entity, body);
+        }
         return self.inner.append_exact(expected, kind, entity, body);
     }
     fn read(i: Int) -> dna::Event { return self.inner.read(i); }
@@ -99,6 +115,7 @@ locus Contended {
 
 main locus App {
     params {
+        p: dna::WorkflowProjection = dna::WorkflowProjection { };
         dna: dna::Dna = dna::Dna {
             journal: Contended { },
             work: dna::WorkSystem {
@@ -120,6 +137,18 @@ main locus App {
             i = i + 1;
         }
         return n;
+    }
+    // the entity the last contention mark names
+    @unbounded
+    fn contended_entity() -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.dna.journal.revision() {
+            let e = self.dna.journal.read(i);
+            if e.kind == "test.contended" { out = std::str::clone(e.entity); }
+            i = i + 1;
+        }
+        return out;
     }
     @unbounded
     fn body_of(kind: String) -> String {
@@ -182,6 +211,25 @@ main locus App {
         std::test::assert(std::str::contains(unrecorded, "would not take the refusal either: io"), "a refusal the record would not take is reported as unrecorded, not as recorded: " + unrecorded);
         std::test::assert_eq_int(self.rows("workflow.refused", ""), 1, "still one refusal in the record, the third ask's");
         std::test::assert_eq_int(self.rows("workflow.admitted", ""), 3, "and no admission");
+
+        // ---- a refusal bound to an id the other body takes meanwhile
+        //      claims nothing: it is written under the ask instead, and
+        //      the whole record replays into the reducer
+        let nope = self.dna.admit_workflow(dna::WorkflowAsk { id: "fifth", definition: "nope", revision: 1 });
+        std::test::assert(std::str::starts_with(nope, "refused: "), "an undefined workflow is refused: " + nope);
+        std::test::assert_eq_int(self.rows("test.contended", ""), 4, "the other body moved in under the refusal's id");
+        std::test::assert_eq_int(self.rows("workflow.refused", "ask:fifth"), 1, "the refusal is under the ask");
+        std::test::assert_eq_int(self.rows("workflow.refused", ""), 2, "one more refusal, and no other");
+        std::test::assert_eq_str(self.request_of(self.contended_entity()), "elsewhere", "the id the refusal was bound to is the other body's execution, untouched");
+        let mut i = 0;
+        while i < self.dna.journal.revision() {
+            let e = self.dna.journal.read(i);
+            if std::str::starts_with(e.kind, "workflow.") {
+                let applied = dna::replay(self.p, e.kind, e.entity, e.body);
+                std::test::assert(applied.ok, "the record replays into the reducer: " + e.kind + " " + e.entity + ": " + applied.why);
+            }
+            i = i + 1;
+        }
     }
 }
 
