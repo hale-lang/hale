@@ -1042,9 +1042,15 @@ under the ask's own identity and a decision ordinal (`<ask>#<n>`), which
 can share no identity with any Task under any owner's name; the
 projection holds it beside the executions, never as one. The same ask
 refused again for the same reason is the same decision, answered without
-another row; refused for another reason, it is the next ordinal. Nothing
-is appended as a changed body under a recorded identity, and a refusal
-never attaches to an execution another body admitted. A restart counts admitted and refused
+another row; refused for another reason, it is the next ordinal. That
+decision, too, is one reading of the record: the decisions already taken
+on the ask are counted at a captured revision, the ordinal chosen against
+that count, and the append is exact at that revision, so another body
+deciding on the same ask meanwhile moves the record and the decision is
+taken again — its decision for the same reason becomes this body's
+answer, and for another reason takes the ordinal ahead of this body's.
+Nothing is appended as a changed body under a recorded identity, and a
+refusal never attaches to an execution another body admitted. A restart counts admitted and refused
 ids among those minted, so an id is never minted twice, and an admitted
 Task is never resumed as legacy edit work, with or without its summary
 row: the admission is the one positive discriminator, and its recovery

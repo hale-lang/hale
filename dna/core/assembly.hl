@@ -1704,32 +1704,50 @@ locus Dna {
     // for the same reason is the same decision, answered without another
     // row; refused for another reason, it is the next decision under the
     // next ordinal — never a changed body under a recorded identity.
-    // Written and checked: when the record will not take even that, the
-    // answer says so.
+    //
+    // The decision is one reading of the record: the decisions already
+    // taken on this ask are counted at a revision this body captures,
+    // the ordinal is chosen against that count, and the append is exact
+    // at that same revision. Another body deciding on the same ask
+    // between this body's reading and its append moves the record, the
+    // append is refused, and the decision is taken again from a fresh
+    // reading — a competing decision for the same reason becomes this
+    // body's answer with no row of its own; one for another reason takes
+    // the ordinal, and this body's takes the next. Written and checked:
+    // when the record will not take even that, the answer says so.
     @unbounded
     fn refuse_ask(a: WorkflowAsk, why: String) -> String {
-        let mut decisions = 0;
-        let mut last = "";
-        let n = self.journal.revision();
-        let mut i = 0;
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "workflow.ask_refused" && std::json::find_string_field(e.body, "request") == a.id {
-                decisions = decisions + 1;
-                last = std::json::find_string_field(e.body, "why");
+        let mut tries = 0;
+        while tries < 6 {
+            tries = tries + 1;
+            let moved = self.journal.refresh();
+            let rev = self.journal.revision();
+            let mut decisions = 0;
+            let mut last = "";
+            let mut i = 0;
+            while i < rev {
+                let e = self.journal.read(i);
+                if e.kind == "workflow.ask_refused" && std::json::find_string_field(e.body, "request") == a.id {
+                    decisions = decisions + 1;
+                    last = std::json::find_string_field(e.body, "why");
+                }
+                i = i + 1;
             }
-            i = i + 1;
+            if decisions > 0 && last == why { return "refused: " + why; }
+            let decision = decisions + 1;
+            let entity = ask_refusal_id(a.id, decision);
+            let r = self.journal.append_exact(rev, "workflow.ask_refused", entity, encode_ask_refusal(RefusedAsk {
+                request: a.id, decision: decision, definition: a.definition, revision: a.revision, why: why,
+                limits: self.admission_limits,
+                transition: TransitionRef { scope: self.org_id, key: entity, proposal_id: transition_id(entity, "refused") }
+            }));
+            if r.ok { return "refused: " + why; }
+            if r.error != "stale_revision" && r.error != "claimed" {
+                return "refused: " + why + "; and the record would not take the refusal either: " + r.error;
+            }
+            // the record moved under the decision: it is taken again
         }
-        if decisions > 0 && last == why { return "refused: " + why; }
-        let decision = decisions + 1;
-        let entity = ask_refusal_id(a.id, decision);
-        let r = self.journal.append(self.journal.revision(), "workflow.ask_refused", entity, encode_ask_refusal(RefusedAsk {
-            request: a.id, decision: decision, definition: a.definition, revision: a.revision, why: why,
-            limits: self.admission_limits,
-            transition: TransitionRef { scope: self.org_id, key: entity, proposal_id: transition_id(entity, "refused") }
-        }));
-        if !r.ok { return "refused: " + why + "; and the record would not take the refusal either: " + r.error; }
-        return "refused: " + why;
+        return "refused: " + why + "; and the record moved under the refusal " + to_string(tries) + " times, so it went unrecorded";
     }
 
     fn refusal_body(entity: String, a: WorkflowAsk, why: String) -> String {
