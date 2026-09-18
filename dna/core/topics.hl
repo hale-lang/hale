@@ -402,6 +402,12 @@ type OrgReview {
     package: String = "";
     by: String = "";
 }
+// The parent supplies a clock; the organism processes it on the same
+// owner queue as incoming work. A tick may refresh the journal, whose
+// cached view must be complete before another handler reads or appends.
+type TickRequest { org: String = "org"; now: Int = 0; }
+topic TickRequested { payload: TickRequest; subject: "dna.tick.requested"; keyed_by org; }
+
 topic OptimizeRequested { payload: OptimizeRequest; subject: "dna.optimize.requested"; keyed_by org; }
 topic OrgReviewed { payload: OrgReview; subject: "dna.org.reviewed"; keyed_by org; }
 topic TaskPlanned { payload: Plan; subject: "dna.task.planned"; keyed_by org; }

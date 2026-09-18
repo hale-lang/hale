@@ -7,9 +7,12 @@
 // again in the minute it fired nor admits an occurrence twice.
 
 import "../core" as dna;
+import "./schedule_tick" as cadence;
 
 main locus App {
     params {
+        cadence_root: String = "";
+        cadence_publisher: cadence::Publisher = cadence::Publisher { };
         // planned by a fake leader that hands every ask to a person, so
         // each Task stays open (handed) until someone reports it done
         one: dna::Dna = dna::Dna { planned: true, org_id: "sched" };
@@ -31,6 +34,7 @@ main locus App {
         unborn: dna::Dna = dna::Dna { planned: true, org_id: "sched-unborn" };
         born: dna::Dna = dna::Dna { planned: true, org_id: "sched-born" };
     }
+    placement { cadence_publisher: pinned; }
     @unbounded
     fn rows(kind: String, entity: String) -> Int {
         let mut n = 0;
@@ -54,6 +58,7 @@ main locus App {
         return out;
     }
     run() {
+        cadence::check(self.cadence_root);
         // ---- cron: validation at declaration, matching by the minute
         std::test::assert_eq_str(dna::cron_check("0 2 * * *"), "", "a nightly cron is well-formed");
         std::test::assert_eq_str(dna::cron_check("*/15 9-17 * * 1-5"), "", "steps, ranges and lists are well-formed");
@@ -193,4 +198,9 @@ main locus App {
     }
 }
 
-fn main() { App { }; }
+fn main() {
+    let made = dna::run_tool("mktemp\n-d\n/tmp/hale-dna-schedule-tick.XXXXXX");
+    std::test::assert_eq_int(made.code, 0, "cadence fixture scratch: " + made.stderr);
+    let root = dna::trim_nl(made.stdout);
+    App { cadence_root: root, cadence_publisher: cadence::Publisher { root: root } };
+}

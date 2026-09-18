@@ -328,7 +328,7 @@ locus Dna {
         // GH #596 O: the optimize pass. `org_id` keys the exchange with
         // this organism's leader; `optimize_every_ms` is the cadence
         // the Board sets on the org chart (0 = never); the org program's
-        // loop calls `tick`.
+        // loop calls `request_tick`.
         org_id: String = "org";
         optimize_every_ms: Int = 0;
         last_optimized: Int = 0;
@@ -411,6 +411,8 @@ locus Dna {
         publish AttemptReported;
         subscribe OrgReviewed as on_org_reviewed where key == self.org_id;
         publish OptimizeRequested;
+        subscribe TickRequested as on_tick where key == self.org_id;
+        publish TickRequested;
         subscribe TaskSettled as on_task_settled;
         subscribe PressureRaised as on_pressure;
         subscribe ConcernRaised as on_concern;
@@ -1103,7 +1105,15 @@ locus Dna {
         self.optimizations = self.optimizations + 1;
         OptimizeRequested <- OptimizeRequest { org: self.org_id, signals: self.last_signals };
     }
-    // The org program's loop calls this with a millisecond clock (the
+    // Enter through the owner's queue, so work arriving during a
+    // journal refresh waits for its cached view to be complete. Calling
+    // tick directly from the parent's loop allowed a queued handler to
+    // re-enter a partially loaded journal at a subprocess drain point.
+    fn request_tick(now: Int) { TickRequested <- TickRequest { org: self.org_id, now: now }; }
+    fn on_tick(ev: TickRequest) { self.tick(ev.now); }
+    // Synchronous cadence processing, for this owner's handler or an
+    // isolated caller with no incoming bus work. Live org loops use
+    // request_tick with a millisecond clock (the
     // scaffold passes `std::time::monotonic_ns() / 1000000`; `now()` is
     // seconds and would make a 60s cadence an hour's); the cadence is
     // the Board's.

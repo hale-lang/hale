@@ -887,6 +887,12 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         out.push(format!("created {}", owners.display()));
     }
     let main_text = fs::read_to_string(org_dir.join("main.hl")).unwrap_or_default();
+    if main_text.contains("self.core.tick(") {
+        out.push(format!(
+            "note    {}/main.hl calls self.core.tick directly; use self.core.request_tick with the same millisecond clock in the live loop so journal refresh and incoming work run on the owner's queue",
+            ORG_SEED
+        ));
+    }
     if main_text.contains("main locus Org") && !main_text.contains("ownership: dna::Ownership") {
         out.push(format!(
             "note    {}/main.hl names no owners map; a shared record needs one (GH #664): `ownership: dna::Ownership {{ path: \"dna/org/owners\" }}`",
@@ -1666,8 +1672,10 @@ main locus Org {{
     run() {{
         if std::env::var_exists("HALE_DNA_ONESHOT") {{ return; }}
         // GH #596 O: the substrate's cadence — the optimize pass fires
-        // every `optimize_every_ms` on the substrate above (0 = never)
-        while true {{ std::time::sleep(100ms); self.core.tick(std::time::monotonic_ns() / 1000000); }}
+        // every `optimize_every_ms` on the substrate above (0 = never).
+        // Queue it with incoming work so a journal refresh completes
+        // before a task handler can read or append its cached view.
+        while true {{ std::time::sleep(100ms); self.core.request_tick(std::time::monotonic_ns() / 1000000); }}
     }}
 }}
 
