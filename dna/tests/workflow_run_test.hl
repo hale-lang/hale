@@ -83,7 +83,7 @@ locus Refusing {
 
 // What an execution is asked to run: which leaf runs on which performer
 // kind ("<key>=<kind>", the same key across steps runs the same kind).
-type WorkflowAsk { scope: String = ""; task_id: String = ""; kinds: String = ""; }
+type WorkflowAsk { scope: String = ""; task_id: String = ""; kinds: String = ""; tamper: String = ""; }
 topic WorkflowAsks { payload: WorkflowAsk; subject: "wf.run.ask"; keyed_by scope; }
 
 // The owner births a WorkflowRun in its handler from the bound recipe
@@ -104,7 +104,10 @@ locus Owner {
             if n.kind == "task" && n.id == a.task_id { workflow_id = n.workflow_id; }
             if n.kind == "step" && n.parent == a.task_id { steps = steps + 1; }
             if n.kind == "work" && std::str::starts_with(n.id, a.task_id + "/") {
-                leaves.push(dna::leaf_of(n, a.task_id, dna::map_get(a.kinds, n.member_key, "=")));
+                let mut leaf = dna::leaf_of(n, a.task_id, dna::map_get(a.kinds, n.member_key, "="));
+                // a leaf the owner misbinds: its request is not the bound one
+                if a.tamper == n.member_key { leaf.request.objective = "something else"; }
+                leaves.push(leaf);
             }
             i = i + 1;
         }
@@ -404,9 +407,29 @@ main locus App {
         std::test::assert_eq_int(self.rows("attempt.outcome", "t10/wf1/s1/b/a0"), 1, "as its attempt's outcome");
         std::test::assert_eq_int(self.rows("step.registered", "t10/wf1/s2"), 0, "and D was never born");
 
+        // ---- cancelling a step with a leaf the state refused: A is out,
+        //      B was refused (misbound) and stays resident; the
+        //      cancellation fences A, retires B, reclaims everything
+        self.admit("t11", "two-steps");
+        WorkflowAsks <- WorkflowAsk { scope: "main", task_id: "t11", kinds: "a=agent b=service c=service d=service", tamper: "b" };
+        self.until(true, "t11/wf1/s0/b:born", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("attempt.admitted", "t11/wf1/s0/a/a0"), 1, "A admitted and out");
+        std::test::assert_eq_int(self.rows("attempt.admitted", "t11/wf1/s0/b/a0"), 0, "B refused by the state");
+        std::test::assert_eq_int(self.count(self.lives, "t11/wf1/s0/b:dissolved"), 0, "and resident");
+        dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: "t11", reason: "cancel with a refused leaf" };
+        self.until(false, "t11:cancelled", 1);
+        self.until(true, "t11:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("work.settled", "t11/wf1/s0/a"), 1, "A settled under the fence");
+        std::test::assert_eq_int(self.rows("work.settled", "t11/wf1/s0/b"), 0, "B, never admitted, settled nothing");
+        std::test::assert_eq_int(self.count(self.lives, "t11/wf1/s0/b:dissolved"), 1, "B retired");
+        std::test::assert_eq_int(self.count(self.lives, "t11/wf1/s0/a:dissolved") + self.count(self.lives, "t11/wf1/s0:dissolved") + self.count(self.lives, "t11:dissolved"), 3, "A, the step and the workflow reclaimed themselves");
+        std::test::assert_eq_int(self.rows("step.registered", "t11/wf1/s1"), 0, "step 1 was never born");
+
         std::test::assert(self.rt.journal.verify_chain(), "the record's chain holds");
         std::test::assert_eq_int(self.rt.conflicts, 0, "no conflict");
-        std::test::assert_eq_int(self.owner.asked, 10, "ten executions were asked");
+        std::test::assert_eq_int(self.owner.asked, 11, "eleven executions were asked");
     }
 }
 

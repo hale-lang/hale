@@ -1212,7 +1212,10 @@ task) and births nothing further; its active step hears it and fences
 what it dispatched (`StepFenced`, keyed by the step) — a step with no
 outcome yet is `cancelled` (no row of its own; the task's row is its
 basis), and a step that had failed and is draining keeps its failure:
-the fence is not a second outcome. Its Works hear the fence: an
+the fence is not a second outcome. The fence is the one message a Work
+acts on for a cancellation (a cancelled step settlement is for the
+owner; a Work ignores it), so a Work that retires or settles on it
+acts, and ends, exactly once. Its Works hear the fence: an
 admitted attempt still awaiting its reply settles cancelled (the
 projection allows that settlement only under a cancelled task); a first
 admission the record refused is proposed again and, refused by the

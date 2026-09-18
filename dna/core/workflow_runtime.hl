@@ -354,8 +354,11 @@ locus WorkRun {
     // Step (its Task settled cancelled: the fence, §5) an admitted
     // attempt still awaiting its reply settles cancelled: nothing more
     // is waited for, and nothing external is undone.
+    // A cancellation is not acted on here: the Step says it with one
+    // message, `StepFenced`, so a Work that retires or settles on it
+    // acts, and ends, exactly once.
     fn on_step(s: StepSettlement) {
-        if s.disposition != "completed" && s.disposition != "failed" && s.disposition != "cancelled" { return; }
+        if s.disposition != "completed" && s.disposition != "failed" { return; }
         self.step_settled = std::str::clone(s.disposition);
         if self.settled || len(self.outstanding) > 0 { return; }
         if self.held && self.proposing == "admit" && self.attempt_no == 0 { self.propose_admission(); return; }
@@ -373,6 +376,7 @@ locus WorkRun {
     // comes later is recorded as the attempt's outcome by the runtime.
     fn on_fenced(f: StepFence) {
         self.fenced = true;
+        if len(self.step_settled) == 0 { self.step_settled = "cancelled"; }
         if self.settled || len(self.outstanding) > 0 { return; }
         if self.held && self.proposing == "admit" && self.attempt_no == 0 { self.propose_admission(); return; }
         if self.unadmitted {
@@ -793,7 +797,9 @@ locus StepRun {
         if self.stage == "settled" && self.disposition == "cancelled" { return; }
         // a step with no outcome yet is cancelled; one that had failed and
         // is draining keeps its failure — either way what it dispatched
-        // and still waits for is fenced
+        // and still waits for is fenced, with the one message its Works
+        // act on (the settlement is for the owner; a Work ignores a
+        // cancelled one, so it never has a second message to end on)
         if self.stage != "settled" { self.finish("cancelled", w.reason); }
         if self.dispatched && !self.drained() {
             StepFenced <- StepFence { step_id: self.step_id, task_id: self.task_id, reason: "task " + self.task_id + " was cancelled: " + w.reason };

@@ -156,7 +156,10 @@ its history and model evidence one attempt number.
    and one claimed before still records its outcome. A step that had
    failed and is draining when the cancellation lands keeps its
    failure and forwards the fence to its live members; the fence is
-   never a second step outcome. **[proven for one execution, card 10:
+   never a second step outcome, and it is the one message a member acts
+   on for a cancellation, so a member that retires or settles on it
+   ends exactly once (a resident that ends with a second message queued
+   for it is #703). **[proven for one execution, card 10:
    a cancellation while step 0's leaf is out settles the execution
    cancelled, the leaf cancelled, births no step 1, and the leaf's late
    reply is recorded and reopens nothing; a cancellation that lands
