@@ -684,3 +684,31 @@ seed rewrote `dna::url_encode` as a path through the mangled helper name:
 did not catch the build error. The supported working shape is distinct
 names: the CLI-rendering helper is now `run_dna`; the core alias remains
 `dna`. This mechanical rename changes no UI route or authentication behavior.
+
+## F.20 — a direct cadence call can dispatch work during journal refresh
+
+**Status:** resolved in the DNA assembly and scaffold; no compiler change.
+
+The generated org loop called `core.tick` directly. At a native subprocess
+drain point inside `GitJournal.load`, a queued work handler could run after
+the cache was cleared but before it was rebuilt. Its durable append succeeded,
+but `GitJournal.landed` and `RoutedJournal.take_new` used the partial local
+row count. `effect_request` then failed to recognize its own sole claim and
+the mutation stopped at `worktree: open in flight`.
+
+A native reproducer held the record's `git show` until a pinned publisher
+queued a claim: direct refresh returned `fresh=false` despite a successful
+append and one durable request. Refresh through the owner's bus handler
+returned `fresh=true` under the same forced timing. This is application
+reentrancy at a drain point, not evidence of simultaneous foreign-thread
+journal access.
+
+The working shape is `Dna.request_tick`: a keyed `TickRequested` message
+enters the same owner queue as work, and its handler calls synchronous `tick`.
+The runtime's nested-handler drain guard keeps refresh complete before
+another handler runs. The topic is keyed by `org`, as plan routing is;
+distinct organisms in one process need distinct `org_id` values. The
+`schedule_test.hl` regression forces a claim into a journal's reload window
+and checks the cache, append revision and first-claim ownership. Existing
+projects get an upgrade advisory to change their live loop; direct `tick`
+is only for isolated callers or calls already inside the owner's handler.

@@ -8,6 +8,15 @@ behavior.
 
 ## Unreleased
 
+### DNA: cadence refresh runs on the organism's owner queue
+
+- Generated organizations use `Dna.request_tick` so journal refresh finishes
+  before queued work reads or appends. A task arriving during a direct tick
+  could otherwise append an effect claim successfully, then reject its own
+  claim as already in flight because the journal's cached view was incomplete.
+  `hale dna upgrade` explains the one-line change for existing organizations;
+  their project-owned source stays intact.
+
 ### DNA: first typed read API for the Iris cockpit (GH #690)
 
 - A source-built `dna/api` service exposes versioned application discovery,
