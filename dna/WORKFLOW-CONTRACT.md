@@ -248,10 +248,12 @@ admitted attempt per request and never retries on its own. The current
 `WorkSystem` loop, which retries internally, stays for legacy callers
 until card 18. **[decided; proven: `workflow_attempt_test.hl`, card 08 —
 `AttemptExecutor` runs nothing before a durable admission, reuses a
-recorded outcome, claims the execution before the performer is called so
-a duplicate request attaches, checks the reply's attempt and performer
-identity, persists the outcome exactly before answering, and reports an
-outcome the record refused as unrecorded]**
+recorded outcome, decides and claims the execution at one refreshed
+reading of the record — an outcome durable before the claim is the
+answer, never a second run — so a duplicate request attaches, judges
+every reply by one rule (this attempt, the selected performer, a
+disposition the contract carries), persists the outcome exactly before
+answering, and reports an outcome the record refused as unrecorded]**
 
 A settled attempt is never executed again. Durable dispatch may be
 redelivered; a duplicate request for a running attempt attaches to its

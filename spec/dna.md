@@ -1065,16 +1065,24 @@ runs before the admission is in the record as admitted: the attempt's
 identity, its performer kind and every field of its request are checked
 against the recorded admission. An attempt whose outcome is recorded is
 not run again; the recorded outcome is the answer, claim or no claim.
-The execution is claimed in the record before the performer is called
-— the effect claim of the existing effect records, keyed by the attempt
-— so a request that arrives while the attempt is running attaches to its
-pending outcome instead of starting a second performer, and a claim the
-record refuses runs nothing. The performer the admission names runs
-once; its reply must be about this attempt (a reply that echoes an
-`attempt_id` must echo this one) and from that performer (the identity
-the kind selects). A reply that is not terminal leaves the attempt
-outstanding and records nothing; its later reply is settled through the
-same path. An accepted outcome is persisted as `attempt.outcome` with an
+The decision to run is one reading of the record: refreshed, read at a
+captured revision — the admission, whether the attempt is settled,
+whether its execution is claimed — and the claim appended exactly at that
+revision, with the effect claim of the existing effect records, keyed by
+the attempt. When the record has moved the decision is taken again: an
+outcome recorded meanwhile is the answer and the performer is not
+called; a claim taken meanwhile is attached to; only a claim that lands
+is followed by a performer call. A request that arrives while the
+attempt is running attaches to its pending outcome instead of starting a
+second performer, and a claim the record refuses runs nothing. The performer the admission names runs
+once. One rule judges every reply, the one that comes back from the call
+and the one that comes later: it must be about this attempt (a reply
+that echoes an `attempt_id` must echo this one), from that performer
+(the identity the kind selects), and say something the outcome contract
+carries — `done`, `failed`, `declined` or `timeout`; anything else is
+refused without a row and without closing the claim. A reply that is not
+terminal leaves the attempt outstanding and records nothing; its later
+reply is settled through the same path, under the same rule. An accepted outcome is persisted as `attempt.outcome` with an
 exact append before anything is answered, and a reply for an attempt
 whose outcome is already recorded changes nothing; an outcome the
 record will not take is reported unrecorded, never as done, and nothing
