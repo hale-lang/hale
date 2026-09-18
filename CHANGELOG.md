@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: a routed retry carries its own attempt number (workflow card 01)
+
+- `WorkSystem` numbered each retry (`<work>/a1`, `a2`) but handed every performer the original request, still `attempt_no: 0`, so the performer, the Attempt's request and an agent's model evidence disagreed with the recorded attempt. Each try now gets `request_for_attempt(req, n)`, the same request with only `attempt_no` replaced, and the performer, the Attempt record, the history and the evidence all name that attempt. Numbering continues from the request's own `attempt_no`; the selection policy still sees the try index. `routed_attempt_identity_test.hl` covers the probe (attempts 0 then 1, the second succeeding) and every request field surviving the copy.
+
 ### DNA: a publish the membrane loses is not a lost fact (GH #682)
 
 - The membrane client exits once it has handed a fact to its binding; under load the organism could miss it, and nothing noticed: an ask beside a live organism left no durable row, the host relayed each record row exactly once, and an `expression.observed` report that went missing left a mutation applied and never retained. Delivery is now confirmed by the answer in the record. `hale dna ask`, `review`, `concern raise` and `practice propose` beside a live organism write their row before publishing; the host relays a row again while it stays unanswered (every 30s); the organism admits an intent once by its id and answers a practice request once; the host reports an observation again until the organism records it. `membrane_loss_test.hl` drops the first relay and shows the intent admitted once; it fails without the relay-again rule. The books fixture's state check now prints every row about the task when it fails.

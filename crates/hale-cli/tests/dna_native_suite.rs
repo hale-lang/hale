@@ -147,6 +147,7 @@ fn dna_fixture_set_is_complete() {
             "rehydrate_work_test.hl",
             "retired_admission_test.hl",
             "review_authority_test.hl",
+            "routed_attempt_identity_test.hl",
             "routing_test.hl",
             "schedule_cli_test.hl",
             "schedule_test.hl",
