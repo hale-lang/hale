@@ -164,6 +164,19 @@ fn set_add(set: String, key: String) -> String {
     return set + " " + key;
 }
 
+// How many keys a space-separated set names.
+@unbounded
+fn set_count(set: String) -> Int {
+    if len(set) == 0 { return 0; }
+    let mut n = 1;
+    let mut i = 0;
+    while i < len(set) {
+        if std::str::byte_at_unchecked(set, i) == 32 { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
 // The value after `<key><sep>` in a space-separated map, "" when the map
 // does not name the key.
 fn map_get(map: String, key: String, sep: String) -> String {
@@ -258,6 +271,10 @@ locus WorkflowProjection {
         tree: BoundNodeRows = BoundNodeRows { };
         // reads one recipe at a time, on its way into `tree`
         reader: WorkflowCatalog = WorkflowCatalog { };
+        // a dry run answers what applying would do and changes nothing: a
+        // committer validates a transition this way before its exact
+        // append, and applies it for real once the append has landed
+        dry: Bool = false;
     }
 
     // ---- what it knows ------------------------------------------------
@@ -449,6 +466,8 @@ locus WorkflowProjection {
         return refused(kind + " " + id + " is already recorded, and this row says something else");
     }
 
+    // one row per committed fact: the projection is the record's size
+    @unbounded
     fn record(kind: String, id: String, body: String) {
         self.facts.push(Fact { kind: kind, id: id, body: body });
     }
@@ -539,6 +558,7 @@ locus WorkflowProjection {
                 }
                 i = i + 1;
             }
+            if self.dry { return applied(); }
             i = 0;
             while i < self.reader.bound_count() {
                 self.tree.push(self.reader.bound_at(i));
@@ -547,6 +567,7 @@ locus WorkflowProjection {
         } else {
             let gap = self.subtree_gap(a.task_id);
             if len(gap) > 0 { return refused("the recipe an admission of " + a.task_id + " carries " + gap); }
+            if self.dry { return applied(); }
         }
         self.tasks.push(TaskView {
             task_id: a.task_id, definition: a.definition, revision: a.revision,
@@ -568,6 +589,7 @@ locus WorkflowProjection {
         if len(self.task(r.task_id).task_id) > 0 {
             return refused("task " + r.task_id + " was admitted; a refusal does not undo that");
         }
+        if self.dry { return applied(); }
         self.tasks.push(TaskView {
             task_id: r.task_id, definition: r.definition, revision: r.revision,
             parent_task: r.parent_task, spawning_step: r.spawning_step, member_key: r.member_key,
@@ -626,6 +648,7 @@ locus WorkflowProjection {
             }
             i = i + 1;
         }
+        if self.dry { return applied(); }
         self.asks.push(AskView { request: r.request, decision: r.decision, why: r.why });
         self.record("workflow.ask_refused", entity, body);
         return applied();
@@ -732,6 +755,7 @@ locus WorkflowProjection {
                 return refused("step " + m.step_id + " registers `" + required + "` and leaves out `" + key + "`, which the recipe bound under it; a required set is whole");
             }
         }
+        if self.dry { return applied(); }
         self.steps.push(StepView {
             step_id: m.step_id, task_id: m.task_id, workflow_id: m.workflow_id,
             step_index: m.step_index, required: required, kinds: kinds, entities: entities
@@ -777,6 +801,7 @@ locus WorkflowProjection {
                 if len(ahead) > 0 {
                     return refused("step " + a.step_id + " cannot activate while step " + ahead + " has not completed");
                 }
+                if self.dry { return applied(); }
                 s.activated = true;
                 self.steps.set(i, s) or discard;
                 self.record("step.activated", a.step_id, body);
@@ -834,6 +859,7 @@ locus WorkflowProjection {
                 if w.attempt_disposition == "done" {
                     return refused("attempt " + w.attempt_id + " was done; a Work that succeeded is not retried");
                 }
+                if self.dry { return applied(); }
                 w.attempt_id = std::str::clone(a.attempt_id);
                 w.attempt_no = a.attempt_no;
                 w.attempt_disposition = "";
@@ -848,6 +874,7 @@ locus WorkflowProjection {
         if a.attempt_no != 0 {
             return refused("attempt " + a.attempt_id + " is not the first attempt of " + a.work_id + "; that is " + attempt_id_of(a.work_id, 0));
         }
+        if self.dry { return applied(); }
         self.works.push(WorkView {
             work_id: a.work_id, step_id: a.step_id, task_id: a.task_id,
             member_key: work_key_under(a.step_id, a.work_id), allowance: bound.attempts,
@@ -878,6 +905,7 @@ locus WorkflowProjection {
                 if len(w.attempt_disposition) > 0 {
                     return refused("attempt " + o.attempt_id + " was " + w.attempt_disposition + "; an attempt has one outcome");
                 }
+                if self.dry { return applied(); }
                 w.attempt_disposition = std::str::clone(o.disposition);
                 w.attempt_result = std::str::clone(o.result);
                 w.attempt_result_ref = std::str::clone(o.result_ref);
@@ -918,6 +946,7 @@ locus WorkflowProjection {
                 }
                 let basis = self.settlement_basis(w, o.disposition);
                 if len(basis) > 0 { return refused(basis); }
+                if self.dry { return applied(); }
                 w.disposition = std::str::clone(o.disposition);
                 if o.disposition == "done" {
                     w.result = std::str::clone(w.attempt_result);
@@ -1019,6 +1048,7 @@ locus WorkflowProjection {
                     let why = self.failure_basis(s, o.failed_member);
                     if len(why) > 0 { return refused(why); }
                 }
+                if self.dry { return applied(); }
                 s.disposition = std::str::clone(o.disposition);
                 s.failed_member = std::str::clone(o.failed_member);
                 self.steps.set(i, s) or discard;
@@ -1084,6 +1114,7 @@ locus WorkflowProjection {
                     let gap = self.child_gap(t.spawning_step, t.member_key, t.task_id);
                     if len(gap) > 0 { return refused(gap); }
                 }
+                if self.dry { return applied(); }
                 let up = std::str::clone(t.spawning_step);
                 let key = std::str::clone(t.member_key);
                 t.disposition = std::str::clone(o.disposition);

@@ -55,6 +55,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "workflow_definition",
     "workflow_events",
     "workflow_execution",
+    "workflow_runtime",
     "workflow_projection",
     "workspace",
 ];
