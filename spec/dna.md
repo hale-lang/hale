@@ -1011,10 +1011,26 @@ execute.
 
 The ask's id is the admission's identity. Asked again — relayed after a
 lost answer, retried — it is one execution, found in the record by that
-id. Two bodies contending for one Task id cannot both take it: the
-append is exact, the loser reads the record again, finds the id taken
-and mints the next one; the ledger's unique claim on the id (`claimed`)
-is the same signal from the store. A restart counts admitted and refused
+id. One decision, one revision: the record is read once, at a revision
+the body captures; whether the ask already landed and whether a candidate
+id is already an execution's or a refusal's are decided against that
+reading; and the append is exact at that same revision. An exact append
+protects the revision it was given, not a decision taken at an older
+one, so when the record has moved — stale, or the store's unique claim on
+the id — the whole decision is taken again from a fresh reading. A taken
+id is skipped before any append. Two bodies contending for one Task id
+cannot both take it, and one ask admitted by another body between this
+body's reading and its append is found on the next reading, not
+admitted twice.
+
+Only the owner of the position admits (GH #664): the same rule `ask`
+applies, applied before an id is minted, so a body over a shared record
+that names no owner admits no workflow either — it answers the asker and
+writes nothing, the ask being the owner's to admit. A refusal, whether
+the catalog's or the store's, is written as the versioned
+`workflow.refused` and the write is checked: when the record will not
+take even that, the answer says the refusal went unrecorded rather than
+presenting it as recorded. A restart counts admitted and refused
 ids among those minted, so an id is never minted twice, and an admitted
 Task is never resumed as legacy edit work, with or without its summary
 row: the admission is the one positive discriminator, and its recovery

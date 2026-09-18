@@ -30,6 +30,19 @@ main locus App {
         };
         back: dna::WorkflowCatalog = dna::WorkflowCatalog { };
         seed: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        other: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        // a body over a shared record that names no owner: it admits
+        // nothing (GH #664), workflows included
+        nobody: dna::Dna = dna::Dna {
+            work: dna::WorkSystem {
+                human: dna::HumanWorkGateway { operator: "alice", answer: "done" },
+                selection: dna::HumanFirstSelection { }
+            },
+            review_policy: dna::PostReviewRefactors { },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
+            deployment: dna::NoDeployment { },
+            ownership: dna::Ownership { text: "org = acme\n", me: "", me_env: "" }
+        };
     }
     @unbounded
     fn rows(kind: String, entity: String) -> Int {
@@ -115,6 +128,29 @@ main locus App {
         std::test::assert_eq_int(self.rows("task.born", ""), 1, "and one summary");
         std::test::assert_eq_str(self.dna.admit_workflow(dna::WorkflowAsk { id: "w2", definition: "close-month", revision: 1 }), "t3", "another ask is another execution");
         std::test::assert_eq_int(self.rows("workflow.admitted", ""), 2, "two admissions");
+
+        // ---- an id another body took is skipped before any append
+        //      (the record is read once and the candidate decided against
+        //      that reading; no stale report is needed to know it is gone)
+        self.define_all(self.other);
+        let xo = self.other.expand("t4", "close-month", 1, dna::AdmissionLimits { });
+        std::test::assert(xo.ok, "t4 expands for the other body: " + xo.why);
+        let theirs = self.dna.journal.append(self.dna.journal.revision(), "workflow.admitted", "t4", dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: "t4", definition: "close-month", revision: 1, request: "theirs",
+            recipe: self.other.encode_bound(), limits: dna::AdmissionLimits { },
+            works: xo.works, tasks: xo.tasks, steps: xo.steps, depth: xo.depth
+        }));
+        std::test::assert(theirs.ok, "another body's admission under t4 is in the record");
+        std::test::assert_eq_str(self.dna.admit_workflow(dna::WorkflowAsk { id: "w4", definition: "close-month", revision: 1 }), "t5", "the next ask skips t4 and takes t5");
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t4"), 1, "one admission under t4, the other body's");
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t5"), 1, "and one under t5");
+        std::test::assert_eq_str(self.dna.admit_workflow(dna::WorkflowAsk { id: "theirs", definition: "close-month", revision: 1 }), "t4", "the other body's ask, asked here, is its execution");
+
+        // ---- a body that names no owner admits nothing
+        self.define_all(self.nobody.catalog);
+        let none = self.nobody.admit_workflow(dna::WorkflowAsk { id: "w-nobody", definition: "close-month", revision: 1 });
+        std::test::assert(std::str::contains(none, "not this organization's to admit"), "an unnamed body over a shared record admits no workflow: " + none);
+        std::test::assert_eq_int(self.nobody.journal.revision(), 0, "and writes nothing: no id was minted for it");
 
         // ---- the crash window: admitted, and stopped before the summary
         self.define_all(self.seed);

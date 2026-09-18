@@ -1601,31 +1601,47 @@ locus Dna {
     // record, is a `workflow.refused` row and nothing else: no summary,
     // no child, no work request.
     //
-    // The ask's id is the admission's identity. Asked again — a relay
-    // after a lost answer, a retry — it is one execution, found in the
-    // record by that id. Two bodies contending for one Task id cannot
-    // both take it: the append is exact, the loser reads the record
-    // again, finds the id taken and mints the next one (the store's
-    // unique claim on the id, `claimed`, is the same signal from the
-    // ledger). Nothing here dispatches; later cards execute.
+    // One decision, one revision. The record is read once, at a revision
+    // this body captures; whether this ask already landed and whether a
+    // candidate id is already an execution's are both decided against
+    // that reading; and the append is exact at that same revision. An
+    // exact append protects the revision it was given — it does not make
+    // a decision taken at an older reading valid at a newer one — so when
+    // the record has moved (stale, or the store's unique claim on the id)
+    // the whole decision is taken again, from a fresh reading. An id that
+    // is taken is skipped before any append, not after a refusal.
+    //
+    // Over a shared record only the owner of the position admits (GH
+    // #664), and a body that names no owner admits nothing; that rule is
+    // the same one `ask` applies, and it is applied before an id is
+    // minted. Nothing here dispatches; later cards execute.
     @unbounded
     fn admit_workflow(a: WorkflowAsk) -> String {
         if len(a.id) == 0 { return "refused: an admission names its request id"; }
-        let had = self.workflow_admission_of(a.id);
-        if len(had) > 0 { return had; }
-        let mut id = self.metabolism.next_id();
-        let mut x = self.catalog.expand(id, a.definition, a.revision, self.admission_limits);
-        if !x.ok {
-            let r = self.journal.append(self.journal.revision(), "workflow.refused", id, encode_refusal(RefusedWorkflow {
-                task_id: id, definition: a.definition, revision: a.revision, why: x.why,
-                limits: self.admission_limits,
-                transition: TransitionRef { scope: self.org_id, key: id, proposal_id: transition_id(id, "refused") }
-            }));
-            return "refused: " + x.why;
+        self.bind_owner();
+        if !self.ownership.admits(a.to) {
+            // not this body's to answer: no id, no row — the asker takes
+            // it to the record, where the owner admits it
+            return "refused: not this organization's to admit — " + self.ownership.why_not(a.to);
         }
         let mut tries = 0;
         while tries < 6 {
             tries = tries + 1;
+            let moved = self.journal.refresh();
+            let rev = self.journal.revision();
+            let had = self.workflow_admission_of(a.id, rev);
+            if len(had) > 0 { return had; }
+            // the candidate: the next id of this owner's that the record,
+            // as read, does not already hold as an execution or a refusal
+            let mut id = self.metabolism.next_id();
+            let mut skipped = 0;
+            while self.task_id_taken(id, rev) && skipped < 64 {
+                id = self.metabolism.next_id();
+                skipped = skipped + 1;
+            }
+            if self.task_id_taken(id, rev) { return "refused: no free id within 64 of this owner's count"; }
+            let x = self.catalog.expand(id, a.definition, a.revision, self.admission_limits);
+            if !x.ok { return self.refuse_workflow(id, a, x.why); }
             let body = encode_admission(AdmittedWorkflow {
                 task_id: id, definition: a.definition, revision: a.revision,
                 inputs: a.inputs, inputs_ref: a.inputs_ref, request: a.id,
@@ -1633,7 +1649,7 @@ locus Dna {
                 works: x.works, tasks: x.tasks, steps: x.steps, depth: x.depth,
                 transition: TransitionRef { scope: self.org_id, key: id, proposal_id: transition_id(id, "admitted") }
             });
-            let r = self.journal.append_exact(self.journal.revision(), "workflow.admitted", id, body);
+            let r = self.journal.append_exact(rev, "workflow.admitted", id, body);
             if r.ok {
                 // the compatibility summary, after the authoritative row: a
                 // crash between the two leaves an admitted execution the
@@ -1643,30 +1659,36 @@ locus Dna {
             }
             if r.error != "stale_revision" && r.error != "claimed" {
                 self.membrane.notify("journal", "append failed; workflow " + a.id + " not admitted");
-                return "refused: journal " + r.error;
+                return self.refuse_workflow(id, a, "the record refused the admission: " + r.error);
             }
-            // the record moved, or the id was claimed: re-evaluate against
-            // what is there now — the same ask may have landed from
-            // another body, and the id may be another execution's
-            let moved = self.journal.refresh();
-            let landed = self.workflow_admission_of(a.id);
-            if len(landed) > 0 { return landed; }
-            if r.error == "claimed" || self.task_id_taken(id) {
-                id = self.metabolism.next_id();
-                x = self.catalog.expand(id, a.definition, a.revision, self.admission_limits);
-                if !x.ok { return "refused: " + x.why; }
-            }
+            // the record moved under the decision: it is taken again
         }
-        return "refused: the record would not take the admission after " + to_string(tries) + " tries";
+        return self.refuse_workflow("", a, "the record moved under the admission " + to_string(tries) + " times");
+    }
+
+    // A refusal is a fact of its own, written and checked: the versioned
+    // `workflow.refused` under the id the ask minted (or none, when no
+    // id was reached), with why and the limits applied. When the record
+    // will not take even that, the answer says so — an unrecorded
+    // refusal is not presented as a recorded one.
+    fn refuse_workflow(id: String, a: WorkflowAsk, why: String) -> String {
+        let entity = if len(id) > 0 { id } else { "ask:" + a.id };
+        let r = self.journal.append(self.journal.revision(), "workflow.refused", entity, encode_refusal(RefusedWorkflow {
+            task_id: entity, definition: a.definition, revision: a.revision, why: why,
+            limits: self.admission_limits,
+            transition: TransitionRef { scope: self.org_id, key: entity, proposal_id: transition_id(entity, "refused") }
+        }));
+        if !r.ok { return "refused: " + why + "; and the record would not take the refusal either: " + r.error; }
+        return "refused: " + why;
     }
 
     // The Task an admission under this request id created, "" when none
-    // did: the record is the memory of what was asked.
+    // did — as the record read at `rev`, so the decision and the append
+    // that follows it are about one reading.
     @unbounded
-    fn workflow_admission_of(request: String) -> String {
-        let n = self.journal.revision();
+    fn workflow_admission_of(request: String, rev: Int) -> String {
         let mut i = 0;
-        while i < n {
+        while i < rev {
             let e = self.journal.read(i);
             if e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "request") == request { return e.entity; }
             i = i + 1;
@@ -1674,15 +1696,15 @@ locus Dna {
         return "";
     }
 
-    // Whether a Task id is already an execution's: admitted as a
-    // workflow, or born the legacy way.
+    // Whether a Task id is already spoken for as the record read at
+    // `rev`: admitted as a workflow, refused as one (the id was minted
+    // for it, as the restart's count also has it), or born the legacy way.
     @unbounded
-    fn task_id_taken(id: String) -> Bool {
-        let n = self.journal.revision();
+    fn task_id_taken(id: String, rev: Int) -> Bool {
         let mut i = 0;
-        while i < n {
+        while i < rev {
             let e = self.journal.read(i);
-            if (e.kind == "workflow.admitted" || e.kind == "task.born") && e.entity == id { return true; }
+            if (e.kind == "workflow.admitted" || e.kind == "workflow.refused" || e.kind == "task.born") && e.entity == id { return true; }
             i = i + 1;
         }
         return false;

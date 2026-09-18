@@ -81,6 +81,7 @@ type WorkflowAsk {
     inputs: String = "";
     inputs_ref: String = "";
     from: String = "";
+    to: String = ""; // the position it is for ("" = the organization); its owner admits it (GH #664)
 }
 
 // ---- the facts --------------------------------------------------------

@@ -11,31 +11,85 @@
 
 import "../core" as dna;
 
-// A journal that, once, lets another body's admission land first: on the
-// first admission it slips the competitor's row in ahead — the other
-// body's own ask, under the same id — and answers stale, as a record
-// that moved does.
+// A journal that plays the other body, once per ask, three ways: on the
+// first ask's admission it lands the competitor's own ask under the same id and
+// answers stale; on the second it lands THIS ask under another id and
+// answers stale — the same ask, admitted elsewhere between this body's
+// reading and its append; on the third it refuses the admission with an
+// io error while still taking a refusal.
 locus Contended {
-    params { inner: dna::MemJournal = dna::MemJournal { }; contended: Int = 0; theirs: dna::WorkflowCatalog = dna::WorkflowCatalog { }; }
-    fn refresh() -> Bool { return self.inner.refresh(); }
-    fn revision() -> Int { return self.inner.revision(); }
+    params {
+        inner: dna::MemJournal = dna::MemJournal { };
+        contended: Int = 0;
+        theirs: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        // the second ask's competitor lands between this body's reading of
+        // the record and its append: on a second look at the revision
+        // after one refresh (a decision that re-reads the revision for its
+        // append, instead of using the one it decided at) or, failing
+        // that, inside the append itself
+        armed: Bool = false;
+        looks: Int = 0;
+        landed_second: Bool = false;
+    }
+    fn refresh() -> Bool { self.looks = 0; return self.inner.refresh(); }
+    fn revision() -> Int {
+        self.looks = self.looks + 1;
+        if self.armed && !self.landed_second && self.looks == 2 { self.land_second(); }
+        return self.inner.revision();
+    }
+    fn land_second() {
+        self.landed_second = true;
+        let landed = self.inner.append(self.inner.revision(), "workflow.admitted", "t9", self.competitor("t9", "second"));
+        let mark = self.inner.append(self.inner.revision(), "test.contended", "t9", "the other body landed the second ask first, under t9");
+    }
     fn head() -> String { return self.inner.head(); }
-    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.inner.append(expected, kind, entity, body); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        // the store that refused the fourth ask's admission refuses its
+        // refusal too
+        if kind == "workflow.refused" && self.contended == 4 {
+            return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() };
+        }
+        // the fixture arms the second ask's competitor right before that
+        // ask, with a row of its own, so nothing the fixture reads in
+        // between can trip it
+        if kind == "test.arm" { self.armed = true; self.looks = 0; }
+        return self.inner.append(expected, kind, entity, body);
+    }
+    fn competitor(entity: String, request: String) -> String {
+        let d = self.theirs.define("one-step", 1, 1, "");
+        let l = self.theirs.leaf("one-step", 1, 0, "a", dna::WorkRequest { objective: "the one thing" }, 1);
+        let x = self.theirs.expand(entity, "one-step", 1, dna::AdmissionLimits { });
+        return dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: entity, definition: "one-step", revision: 1, request: request,
+            recipe: self.theirs.encode_bound(), limits: dna::AdmissionLimits { },
+            works: x.works, tasks: x.tasks, steps: x.steps, depth: x.depth
+        });
+    }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
-        if kind == "workflow.admitted" && self.contended == 0 {
+        let ask = std::json::find_string_field(body, "request");
+        if kind == "workflow.admitted" && ask == "mine" && self.contended == 0 {
             self.contended = 1;
-            let d = self.theirs.define("one-step", 1, 1, "");
-            let l = self.theirs.leaf("one-step", 1, 0, "a", dna::WorkRequest { objective: "the one thing" }, 1);
-            let x = self.theirs.expand(entity, "one-step", 1, dna::AdmissionLimits { });
-            let competitor = dna::encode_admission(dna::AdmittedWorkflow {
-                task_id: entity, definition: "one-step", revision: 1, request: "theirs",
-                recipe: self.theirs.encode_bound(), limits: dna::AdmissionLimits { },
-                works: x.works, tasks: x.tasks, steps: x.steps, depth: x.depth
-            });
-            let landed = self.inner.append(self.inner.revision(), "workflow.admitted", entity, competitor);
-            // a mark the fixture can read back through the interface
-            let mark = self.inner.append(self.inner.revision(), "test.contended", entity, "the other body landed first");
+            let landed = self.inner.append(self.inner.revision(), "workflow.admitted", entity, self.competitor(entity, "theirs"));
+            let mark = self.inner.append(self.inner.revision(), "test.contended", entity, "the other body landed its own ask first, under this id");
             return dna::AppendResult { error: "stale_revision", expected: expected, actual: self.inner.revision() };
+        }
+        if kind == "workflow.admitted" && ask == "second" && self.contended == 1 {
+            self.contended = 2;
+            if !self.landed_second { self.land_second(); }
+            // the record moved; whether this append lands is the record's
+            // answer to the revision the caller supplied — an exact append
+            // at the decision's revision is refused, one at a fresh
+            // revision is accepted, and the ask admitted twice
+            return self.inner.append_exact(expected, kind, entity, body);
+        }
+        if kind == "workflow.admitted" && ask == "third" && self.contended == 2 {
+            self.contended = 3;
+            let mark = self.inner.append(self.inner.revision(), "test.contended", entity, "the store refused the admission");
+            return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() };
+        }
+        if kind == "workflow.admitted" && ask == "fourth" && self.contended == 3 {
+            self.contended = 4;
+            return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() };
         }
         return self.inner.append_exact(expected, kind, entity, body);
     }
@@ -68,6 +122,17 @@ main locus App {
         return n;
     }
     @unbounded
+    fn body_of(kind: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.dna.journal.revision() {
+            let e = self.dna.journal.read(i);
+            if e.kind == kind { out = std::str::clone(e.body); }
+            i = i + 1;
+        }
+        return out;
+    }
+    @unbounded
     fn request_of(entity: String) -> String {
         let mut i = 0;
         while i < self.dna.journal.revision() {
@@ -93,6 +158,30 @@ main locus App {
         std::test::assert_eq_str(self.dna.admit_workflow(dna::WorkflowAsk { id: "mine", definition: "one-step", revision: 1 }), "t2", "asked again, it is still t2");
         std::test::assert_eq_str(self.dna.admit_workflow(dna::WorkflowAsk { id: "theirs", definition: "one-step", revision: 1 }), "t1", "and the other body's ask, asked here, is its execution");
         std::test::assert_eq_int(self.rows("workflow.admitted", ""), 2, "two executions, two admissions");
+
+        // ---- the same ask lands elsewhere between the reading and the append
+        let arm = self.dna.journal.append(self.dna.journal.revision(), "test.arm", "t9", "the other body is about to admit the second ask");
+        let again = self.dna.admit_workflow(dna::WorkflowAsk { id: "second", definition: "one-step", revision: 1 });
+        std::test::assert_eq_str(again, "t9", "an ask the other body admitted under t9 while this one decided is that execution: " + again);
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t3"), 0, "and not a second one under the id this body had minted");
+        std::test::assert_eq_int(self.rows("workflow.admitted", ""), 3, "three executions, one per ask");
+        std::test::assert_eq_int(self.rows("task.born", "t9"), 0, "no summary for what another body admitted");
+
+        // ---- the store refuses the admission: the refusal is recorded
+        let refused = self.dna.admit_workflow(dna::WorkflowAsk { id: "third", definition: "one-step", revision: 1 });
+        std::test::assert_eq_str(refused, "refused: the record refused the admission: io", "the ask is refused, naming the store's answer: " + refused);
+        std::test::assert_eq_int(self.rows("workflow.admitted", ""), 3, "no admission was written");
+        std::test::assert_eq_int(self.rows("task.born", ""), 1, "and no summary (the one there is t2's)");
+        std::test::assert_eq_int(self.rows("workflow.refused", ""), 1, "the refusal is in the record");
+        let why = dna::decode_refusal(self.body_of("workflow.refused"));
+        std::test::assert(why.ok && std::str::contains(why.value.why, "io") && why.value.definition == "one-step", "as the versioned refusal, saying why: " + why.why + why.value.why);
+        std::test::assert_eq_int(self.dna.work.requests, 0, "and nothing was dispatched");
+
+        // ---- the store refuses the admission and the refusal: the answer says so
+        let unrecorded = self.dna.admit_workflow(dna::WorkflowAsk { id: "fourth", definition: "one-step", revision: 1 });
+        std::test::assert(std::str::contains(unrecorded, "would not take the refusal either: io"), "a refusal the record would not take is reported as unrecorded, not as recorded: " + unrecorded);
+        std::test::assert_eq_int(self.rows("workflow.refused", ""), 1, "still one refusal in the record, the third ask's");
+        std::test::assert_eq_int(self.rows("workflow.admitted", ""), 3, "and no admission");
     }
 }
 
