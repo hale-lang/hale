@@ -3,6 +3,9 @@
 Source assessment, 2026-09-17. This records implementation readiness for the four
 core cockpit workspaces; it is not a new runtime acceptance audit. Existing test
 sources were inspected, but no native tests were run for this assessment.
+The subsequent [service development plan](../dna/SERVICE-DEVELOPMENT-PLAN.md)
+extends this audit with deployment and command-recovery findings, implementation
+cards and the results of two targeted native tests.
 
 Two revisions are distinguished throughout:
 
@@ -78,11 +81,15 @@ contract. Do not present a scope selector as a capability the backend lacks.
 Practice text is guidance unless a specific mechanism enforces it; ratification
 does not by itself make arbitrary prose a compiler rule.
 
-Required additions are narrow: typed practice projections, authenticated command
+The first API surface is bounded: typed practice projections, authenticated command
 submission, a request/result lookup, exact-subject verdicts, and context links.
 The CLI currently [mints a time-based request ID][practice-cli]; rerunning the
 command after a lost HTTP response is not request recovery. Reuse the durable
 proposal/relay semantics while making identity and reconciliation explicit.
+This also requires domain work: concurrent request admission, interrupted
+proposal/ratification recovery and per-command verdict correlation. Review approval
+and successful practice adoption are separate results. The service plan makes
+those gaps explicit; a typed HTTP wrapper alone does not close them.
 
 Acceptance must cover inadequate authority, wrong subject, duplicate delivery,
 reconnect and competing supersessions. The existing [knowledge tests][review-tests]

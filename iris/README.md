@@ -17,7 +17,10 @@ The human cockpit proposal is tracked in
 [#690](https://github.com/hale-lang/hale/issues/690). Its proposed browser/API
 boundary is in [`COCKPIT-CONTRACT.md`](./COCKPIT-CONTRACT.md), with current DNA
 readiness and the first live slice in
-[`COCKPIT-READINESS.md`](./COCKPIT-READINESS.md). These are design drafts, not
+[`COCKPIT-READINESS.md`](./COCKPIT-READINESS.md). The shared service API, Compose
+deployment and staged implementation cards are in
+[`SERVICE-DEVELOPMENT-PLAN.md`](../dna/SERVICE-DEVELOPMENT-PLAN.md).
+These are design drafts, not
 claims that the cockpit API is implemented.
 
 The previous spike (modeling-cockpit framing, May 2026) lives
