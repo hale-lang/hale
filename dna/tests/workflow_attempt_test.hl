@@ -1,0 +1,211 @@
+// dna/tests/workflow_attempt_test.hl — exactly one admitted attempt (DNA
+// workflow card 08).
+//
+// A performer that answers at once settles the attempt; one that answers
+// later leaves it outstanding, and its later reply settles it. Nothing
+// runs before the admission is in the record, a settled attempt is not
+// run again, a request that arrives while the attempt runs attaches to
+// it instead of starting a second performer, a reply that is not this
+// attempt's or not this performer's is not recorded, and an append the
+// record refuses — the claim, the outcome — stops the path: no performer
+// runs on a claim that did not land, and an outcome the record would not
+// take is reported unrecorded. Every accepted outcome is one row, and a
+// reply for a settled attempt changes nothing.
+
+import "../core" as dna;
+
+// A performer that counts its invocations, answers at once, and echoes
+// the attempt it answered.
+locus Counting {
+    params { name: String = "counter"; calls: Int = 0; }
+    fn kind() -> String { return "service"; }
+    fn identity() -> String { return self.name; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        return dna::WorkResult { disposition: "done", result: "counted:" + req.objective, narrative: "call " + to_string(self.calls), evidence: "sha256:ev" + to_string(self.calls), performer: self.name, attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+    }
+}
+
+// A performer that answers later: the reply comes through `settle`.
+locus Delayed {
+    params { calls: Int = 0; }
+    fn kind() -> String { return "agent"; }
+    fn identity() -> String { return "delayed"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        return dna::WorkResult { disposition: "pending", performer: "delayed", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+    }
+}
+
+// A performer that answers for the wrong attempt, and one that answers
+// under another name.
+locus Wrong {
+    params { misname: Bool = false; calls: Int = 0; }
+    fn kind() -> String { return "human"; }
+    fn identity() -> String { return "alice"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        if self.misname { return dna::WorkResult { disposition: "done", result: "x", performer: "bob", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) }; }
+        return dna::WorkResult { disposition: "done", result: "x", performer: "alice", attempt_id: req.work_id + "/a9" };
+    }
+}
+
+// A journal that refuses what the fixture tells it to.
+locus Refusing {
+    params { inner: dna::MemJournal = dna::MemJournal { }; refuse_kind: String = ""; refusals: Int = 0; }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if kind == self.refuse_kind { self.refusals = self.refusals + 1; return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() }; }
+        return self.inner.append(expected, kind, entity, body);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if kind == self.refuse_kind { self.refusals = self.refusals + 1; return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() }; }
+        return self.inner.append_exact(expected, kind, entity, body);
+    }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+}
+
+main locus App {
+    params {
+        counter: Counting = Counting { };
+        delayed: Delayed = Delayed { };
+        wrong: Wrong = Wrong { };
+        x: dna::AttemptExecutor = dna::AttemptExecutor {
+            work: dna::WorkSystem { service: Counting { name: "counter" }, agent: Delayed { }, human: Wrong { }, software: dna::ScriptedPerformer { name: "script", outcome: "done" } }
+        };
+        // the same shape over a journal that refuses the claim, and one
+        // that refuses the outcome
+        noclaim: dna::AttemptExecutor = dna::AttemptExecutor {
+            journal: Refusing { refuse_kind: "effect.requested" },
+            work: dna::WorkSystem { service: Counting { name: "counter" }, software: dna::ScriptedPerformer { name: "script", outcome: "done" } }
+        };
+        nooutcome: dna::AttemptExecutor = dna::AttemptExecutor {
+            journal: Refusing { refuse_kind: "attempt.outcome" },
+            work: dna::WorkSystem { software: dna::ScriptedPerformer { name: "script", outcome: "done" } }
+        };
+    }
+    @unbounded
+    fn rows(j: dna::Journal, kind: String, entity: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    fn admitted(work_id: String, no: Int, kind: String) -> dna::AdmittedAttempt {
+        return dna::AdmittedAttempt {
+            attempt_id: dna::attempt_id_of(work_id, no), work_id: work_id, step_id: "t1/wf1/s0", task_id: "t1",
+            attempt_no: no, performer_kind: kind, request: dna::WorkRequest { objective: "count the receipts", target: "inbox" }
+        };
+    }
+    fn admit(j: dna::Journal, a: dna::AdmittedAttempt) {
+        let r = j.append(j.revision(), "attempt.admitted", a.attempt_id, dna::encode_attempt(a));
+        std::test::assert(r.ok, "the attempt is admitted in the record: " + r.error);
+    }
+    run() {
+        let wa = "t1/wf1/s0/a";
+        let a0 = self.admitted(wa, 0, "service");
+
+        // ---- nothing runs before the admission is in the record
+        let early = self.x.execute(a0);
+        std::test::assert(!early.ok && !early.ran && std::str::contains(early.why, "never admitted"), "an attempt not in the record does not run: " + early.why);
+        std::test::assert_eq_int(self.x.journal.revision(), 0, "and nothing was written");
+
+        // ---- an immediate performer: one call, one recorded outcome
+        self.admit(self.x.journal, a0);
+        let r0 = self.x.execute(a0);
+        std::test::assert(r0.ok && r0.ran && !r0.reused && r0.disposition == "done", "the attempt ran and settled done: " + r0.why);
+        std::test::assert_eq_int(self.rows(self.x.journal, "attempt.outcome", wa + "/a0"), 1, "one outcome row");
+        std::test::assert_eq_int(self.rows(self.x.journal, "effect.requested", "attempt:" + wa + "/a0"), 1, "under one execution claim");
+        std::test::assert_eq_int(self.rows(self.x.journal, "effect.result", "attempt:" + wa + "/a0"), 1, "closed by its result");
+        let o = r0.outcome;
+        std::test::assert(o.attempt_id == wa + "/a0" && o.work_id == wa && o.performer == "counter" && o.result == "counted:count the receipts" && o.evidence_ref == "sha256:ev1" && o.transition.proposal_id == wa + "/a0@outcome", "the outcome names the attempt, the Work, the performer and the evidence, under its transition");
+        let rec = dna::decode_attempt_outcome(self.x.journal.read(self.x.journal.revision() - 2).body);
+        std::test::assert(rec.ok && rec.value.attempt_id == wa + "/a0" && rec.value.result == o.result, "and the row reads back as the outcome that was answered: " + rec.why);
+
+        // ---- a settled attempt is not run again
+        let r0b = self.x.execute(a0);
+        std::test::assert(r0b.ok && !r0b.ran && r0b.reused && r0b.disposition == "done" && r0b.outcome.evidence_ref == "sha256:ev1", "asked again, the recorded outcome is the answer: " + r0b.why);
+        std::test::assert_eq_int(self.rows(self.x.journal, "attempt.outcome", ""), 1, "and no second row");
+        std::test::assert_eq_int(self.rows(self.x.journal, "effect.requested", ""), 1, "and no second claim");
+        // a reply for a settled attempt changes nothing
+        let dup = self.x.settle(wa + "/a0", dna::WorkResult { disposition: "failed", result: "other", performer: "counter", attempt_id: wa + "/a0" });
+        std::test::assert(dup.ok && dup.reused && dup.disposition == "done", "a duplicate reply is a no-op: " + dup.why);
+        std::test::assert_eq_int(self.rows(self.x.journal, "attempt.outcome", ""), 1, "the accepted outcome stands alone");
+
+        // ---- the request has to be the admitted one
+        let mut other = self.admitted(wa, 0, "service");
+        other.request = dna::WorkRequest { objective: "count something else", target: "inbox" };
+        let changed = self.x.execute(other);
+        std::test::assert(!changed.ok && std::str::contains(changed.why, "another objective"), "a request that departs from the admission does not run: " + changed.why);
+        let mut mis = self.admitted(wa, 0, "software");
+        let miskind = self.x.execute(mis);
+        std::test::assert(!miskind.ok && std::str::contains(miskind.why, "was admitted as service"), "nor one naming another performer than admitted: " + miskind.why);
+
+        // ---- a delayed performer stays pending; its reply settles it later
+        let wb = "t1/wf1/s0/b";
+        let b0 = self.admitted(wb, 0, "agent");
+        self.admit(self.x.journal, b0);
+        let p = self.x.execute(b0);
+        std::test::assert(p.ok && p.ran && !p.reused && p.disposition == "" && std::str::contains(p.why, "outstanding"), "the delayed attempt is outstanding: " + p.why);
+        std::test::assert_eq_int(self.rows(self.x.journal, "attempt.outcome", wb + "/a0"), 0, "no outcome yet");
+        std::test::assert_eq_int(self.rows(self.x.journal, "effect.requested", "attempt:" + wb + "/a0"), 1, "but the execution is claimed");
+        // a request while it runs attaches; no second performer
+        let again = self.x.execute(b0);
+        std::test::assert(again.ok && !again.ran && again.attached && again.disposition == "", "a second request attaches to the running attempt: " + again.why);
+        std::test::assert_eq_int(self.rows(self.x.journal, "effect.requested", ""), 2, "and claims nothing new");
+        // the wrong reply is not this attempt's
+        let stray = self.x.settle(wb + "/a0", dna::WorkResult { disposition: "done", result: "x", performer: "delayed", attempt_id: wb + "/a7" });
+        std::test::assert(!stray.ok && std::str::contains(stray.why, "not " + wb + "/a0"), "a reply for another attempt is not recorded: " + stray.why);
+        // the reply arrives
+        let late = self.x.settle(wb + "/a0", dna::WorkResult { disposition: "done", result: "delivered", performer: "delayed", attempt_id: wb + "/a0" });
+        std::test::assert(late.ok && !late.ran && late.disposition == "done" && late.outcome.result == "delivered", "the late reply settles it: " + late.why);
+        std::test::assert_eq_int(self.rows(self.x.journal, "attempt.outcome", wb + "/a0"), 1, "one outcome row");
+        let attached_now = self.x.execute(b0);
+        std::test::assert(attached_now.ok && attached_now.reused && attached_now.disposition == "done", "and a request after that reuses it: " + attached_now.why);
+        let late2 = self.x.settle(wb + "/a0", dna::WorkResult { disposition: "done", result: "delivered", performer: "delayed", attempt_id: wb + "/a0" });
+        std::test::assert(late2.ok && late2.reused, "delivered twice, the second is a no-op");
+        std::test::assert_eq_int(self.rows(self.x.journal, "attempt.outcome", ""), 2, "two attempts, two outcomes");
+
+        // ---- an attempt the record holds as settled, claim or no claim, is
+        //      answered from the record: the outcome is the authority
+        let wd = "t1/wf1/s0/d";
+        let d0 = self.admitted(wd, 0, "service");
+        self.admit(self.x.journal, d0);
+        let seeded = self.x.journal.append(self.x.journal.revision(), "attempt.outcome", wd + "/a0", dna::encode_attempt_outcome(dna::AttemptOutcome { attempt_id: wd + "/a0", work_id: wd, disposition: "done", performer: "counter", result: "settled elsewhere" }));
+        std::test::assert(seeded.ok, "an outcome recorded by another executor is in the record");
+        let calls_before = self.x.journal.revision();
+        let known = self.x.execute(d0);
+        std::test::assert(known.ok && !known.ran && known.reused && known.outcome.result == "settled elsewhere", "a settled attempt is answered from the record, not run: " + known.why);
+        std::test::assert_eq_int(self.x.journal.revision(), calls_before, "and nothing was written for it");
+        std::test::assert_eq_int(self.rows(self.x.journal, "effect.requested", "attempt:" + wd + "/a0"), 0, "no claim was taken on it");
+
+        // ---- a reply that is not this performer's is not recorded
+        let wc = "t1/wf1/s0/c";
+        let c0 = self.admitted(wc, 0, "human");
+        self.admit(self.x.journal, c0);
+        let bad = self.x.execute(c0);
+        std::test::assert(!bad.ok && bad.ran && std::str::contains(bad.why, "not " + wc + "/a0"), "a performer answering for another attempt is not recorded: " + bad.why);
+        std::test::assert_eq_int(self.rows(self.x.journal, "attempt.outcome", wc + "/a0"), 0, "no outcome for it");
+
+        // ---- an append failure stops the path
+        self.admit(self.noclaim.journal, a0);
+        let nc = self.noclaim.execute(a0);
+        std::test::assert(!nc.ok && !nc.ran && std::str::contains(nc.why, "would not take the claim"), "no claim, no performer: " + nc.why);
+        std::test::assert_eq_int(self.rows(self.noclaim.journal, "attempt.outcome", ""), 0, "and no outcome");
+        let s0 = self.admitted(wa, 0, "software");
+        self.admit(self.nooutcome.journal, s0);
+        let no = self.nooutcome.execute(s0);
+        std::test::assert(!no.ok && no.ran && no.disposition == "" && std::str::contains(no.why, "unrecorded, and nothing advances"), "an outcome the record will not take is unrecorded, and nothing advances: " + no.why);
+        std::test::assert_eq_int(self.rows(self.nooutcome.journal, "attempt.outcome", ""), 0, "no outcome row");
+        std::test::assert_eq_int(self.rows(self.nooutcome.journal, "effect.result", ""), 0, "and the claim is not closed either");
+    }
+}
+
+fn main() { App { }; }

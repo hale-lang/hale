@@ -1056,8 +1056,40 @@ Task is never resumed as legacy edit work, with or without its summary
 row: the admission is the one positive discriminator, and its recovery
 belongs to the engine's own cards.
 
-Nothing yet executes a workflow; these are the durable shapes it is
-written in, the state they add up to, and the door it is admitted by.
+## Workflow execution: one attempt
+
+The durable Work owner admits an attempt (`attempt.admitted`) and then
+asks for it to run through `AttemptExecutor` (`dna/core/
+workflow_execution.hl`), which runs one admitted attempt once. Nothing
+runs before the admission is in the record as admitted: the attempt's
+identity, its performer kind and every field of its request are checked
+against the recorded admission. An attempt whose outcome is recorded is
+not run again; the recorded outcome is the answer, claim or no claim.
+The execution is claimed in the record before the performer is called
+— the effect claim of the existing effect records, keyed by the attempt
+— so a request that arrives while the attempt is running attaches to its
+pending outcome instead of starting a second performer, and a claim the
+record refuses runs nothing. The performer the admission names runs
+once; its reply must be about this attempt (a reply that echoes an
+`attempt_id` must echo this one) and from that performer (the identity
+the kind selects). A reply that is not terminal leaves the attempt
+outstanding and records nothing; its later reply is settled through the
+same path. An accepted outcome is persisted as `attempt.outcome` with an
+exact append before anything is answered, and a reply for an attempt
+whose outcome is already recorded changes nothing; an outcome the
+record will not take is reported unrecorded, never as done, and nothing
+advances on it.
+
+The executor retries nothing (one retry owner: the Work's lifecycle) and
+advances nothing (the Work settles on the outcome in a later card). It
+makes no claim that external effects happen once: a performer that
+acted and died before its outcome was saved is a later card's. The
+legacy `WorkSystem` request loop, which retries internally, stays for
+legacy callers.
+
+Nothing yet runs a workflow end to end; these are the durable shapes it
+is written in, the state they add up to, the door it is admitted by, and
+the one step it takes at a time.
 
 ## Storage interfaces
 

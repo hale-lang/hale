@@ -1,0 +1,214 @@
+// dna/core/workflow_execution.hl — exactly one admitted attempt (DNA
+// workflow card 08; dna/WORKFLOW-CONTRACT.md §6, §7, §8).
+//
+// The durable Work owner admits an attempt (`attempt.admitted`, card 05)
+// and then asks for it to run. This is the path it asks through, and it
+// runs one admitted attempt once:
+//
+//   - nothing runs before its admission is in the record, as admitted;
+//   - an attempt whose outcome is recorded is not run again — the
+//     recorded outcome is the answer;
+//   - the execution is claimed in the record before the performer is
+//     called (the effect claim of GH #604 rule 3, keyed by the attempt),
+//     so a request that arrives while the attempt is running attaches
+//     to its pending outcome instead of starting a second performer;
+//   - the performer named by the admission runs once, and its reply has
+//     to be about this attempt, from that performer;
+//   - a reply that is not terminal (`pending`, a performer that answers
+//     later) records nothing and leaves the attempt outstanding;
+//   - an accepted outcome is persisted with an exact append before
+//     anything is answered, and a reply for an attempt whose outcome is
+//     already recorded changes nothing;
+//   - an append the record refuses — the claim, the outcome — stops here:
+//     no performer runs on a claim that did not land, and an outcome the
+//     record would not take is reported as unrecorded, never as done.
+//
+// It retries nothing (§7: one retry owner, the Work's lifecycle) and it
+// advances nothing (the Work settles on this outcome in a later card).
+// It makes no claim about external effects being once-only: a performer
+// that acted and died before its outcome was saved is cards 12a–12c.
+// The legacy `WorkSystem.on_request` loop, which retries internally,
+// stays for legacy callers.
+
+// What one call to the executor did.
+type Executed {
+    ok: Bool = false; // the call did what it says; false: refused, or the record would not take the outcome
+    ran: Bool = false; // this call invoked the performer
+    attached: Bool = false; // the attempt was already running: attached to its pending outcome
+    reused: Bool = false; // the attempt was already settled: its recorded outcome is the answer
+    disposition: String = ""; // the recorded outcome's, "" while the attempt is outstanding
+    outcome: AttemptOutcome = AttemptOutcome { };
+    why: String = "";
+}
+
+fn execution_key(attempt_id: String) -> String {
+    return "attempt:" + attempt_id;
+}
+
+locus AttemptExecutor {
+    params {
+        journal: Journal = MemJournal { };
+        work: WorkSystem = WorkSystem { };
+        scope: String = "org";
+    }
+
+    // The recorded outcome of an attempt, ok false when there is none.
+    @unbounded
+    fn recorded_outcome(attempt_id: String) -> DecodedAttemptOutcome {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "attempt.outcome" && e.entity == attempt_id { return decode_attempt_outcome(e.body); }
+            i = i + 1;
+        }
+        return DecodedAttemptOutcome { };
+    }
+
+    // The admission of an attempt as the record has it, ok false when
+    // there is none.
+    @unbounded
+    fn recorded_admission(attempt_id: String) -> DecodedAttempt {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "attempt.admitted" && e.entity == attempt_id { return decode_attempt(e.body); }
+            i = i + 1;
+        }
+        return DecodedAttempt { };
+    }
+
+    // Run one admitted attempt, once.
+    @unbounded
+    fn execute(a: AdmittedAttempt) -> Executed {
+        // ---- the attempt has to be what it says it is, and admitted so
+        let id = a.attempt_id;
+        if id != attempt_id_of(a.work_id, a.attempt_no) {
+            return Executed { why: "attempt " + id + " is not attempt " + to_string(a.attempt_no) + " of " + a.work_id };
+        }
+        let admitted = self.recorded_admission(id);
+        if !admitted.ok {
+            return Executed { why: "attempt " + id + " was never admitted; nothing runs before its admission is in the record" };
+        }
+        let v = admitted.value;
+        if v.work_id != a.work_id || v.step_id != a.step_id || v.task_id != a.task_id || v.performer_kind != a.performer_kind {
+            return Executed { why: "attempt " + id + " was admitted as " + v.performer_kind + " work on " + v.work_id + " of step " + v.step_id + ", not as this request says" };
+        }
+        let departs = request_difference_of(v.request, a.request);
+        if len(departs) > 0 {
+            return Executed { why: "attempt " + id + " was admitted with another " + departs + " than this request carries" };
+        }
+        // ---- a settled attempt is not run again
+        let settled = self.recorded_outcome(id);
+        if settled.ok {
+            return Executed { ok: true, reused: true, disposition: settled.value.disposition, outcome: settled.value };
+        }
+        // ---- the execution is claimed before the performer is called
+        let key = execution_key(id);
+        let before = effect_status(self.journal, key);
+        if before.requested {
+            return self.attach(id, "attempt " + id + " is already running; attached to its outcome");
+        }
+        if !effect_request(self.journal, key, "attempt " + id + " by " + a.performer_kind) {
+            // either the record refused the claim, or another invocation
+            // claimed it first: the record says which
+            let again = effect_status(self.journal, key);
+            if again.requested { return self.attach(id, "attempt " + id + " was claimed by another invocation; attached to its outcome"); }
+            return Executed { why: "the record would not take the claim on attempt " + id + "; nothing ran" };
+        }
+        // ---- the admitted performer runs, once
+        let req = attempt_request(v);
+        let r = self.work.perform_as(v.performer_kind, req);
+        let expected = self.work.identity_of(v.performer_kind);
+        if len(r.attempt_id) > 0 && r.attempt_id != id {
+            return Executed { ran: true, why: "the performer answered for attempt " + r.attempt_id + ", not " + id + "; the reply is not this attempt's and is not recorded" };
+        }
+        if len(r.performer) > 0 && len(expected) > 0 && r.performer != expected {
+            return Executed { ran: true, why: "the reply names performer " + r.performer + ", not the " + v.performer_kind + " performer " + expected + " that was selected; not recorded" };
+        }
+        if r.disposition == "pending" || len(r.disposition) == 0 {
+            return Executed { ok: true, ran: true, why: "attempt " + id + " is outstanding: the performer will answer later" };
+        }
+        // ---- the outcome is persisted before anything is answered
+        return self.record(v, r, true);
+    }
+
+    // A reply that arrives later, for an attempt that ran and was left
+    // outstanding: persisted the same way. A reply for an attempt whose
+    // outcome is recorded changes nothing.
+    @unbounded
+    fn settle(attempt_id: String, r: WorkResult) -> Executed {
+        let admitted = self.recorded_admission(attempt_id);
+        if !admitted.ok { return Executed { why: "attempt " + attempt_id + " was never admitted; its reply is nobody's" }; }
+        if len(r.attempt_id) > 0 && r.attempt_id != attempt_id {
+            return Executed { why: "the reply is for attempt " + r.attempt_id + ", not " + attempt_id + "; not recorded" };
+        }
+        if !effect_status(self.journal, execution_key(attempt_id)).requested {
+            return Executed { why: "attempt " + attempt_id + " never ran; a reply for it is nobody's" };
+        }
+        if r.disposition == "pending" || len(r.disposition) == 0 {
+            return Executed { ok: true, why: "attempt " + attempt_id + " is still outstanding" };
+        }
+        return self.record(admitted.value, r, false);
+    }
+
+    // The attempt is running under another invocation's claim: its
+    // outcome, if recorded by now, else pending.
+    fn attach(attempt_id: String, why: String) -> Executed {
+        let settled = self.recorded_outcome(attempt_id);
+        if settled.ok {
+            return Executed { ok: true, attached: true, reused: true, disposition: settled.value.disposition, outcome: settled.value };
+        }
+        return Executed { ok: true, attached: true, why: why };
+    }
+
+    // Persist the outcome with an exact append at the revision read now.
+    // When the record moved, read again: an outcome recorded meanwhile —
+    // the same reply delivered twice, or another invocation's — is the
+    // accepted one, and this reply changes nothing.
+    @unbounded
+    fn record(v: AdmittedAttempt, r: WorkResult, ran: Bool) -> Executed {
+        let outcome = AttemptOutcome {
+            attempt_id: v.attempt_id, work_id: v.work_id, disposition: r.disposition,
+            performer: r.performer, result: r.result, result_ref: "", evidence_ref: r.evidence,
+            narrative: r.narrative,
+            transition: TransitionRef { scope: self.scope, key: v.attempt_id, proposal_id: transition_id(v.attempt_id, "outcome") }
+        };
+        let body = encode_attempt_outcome(outcome);
+        let mut tries = 0;
+        while tries < 6 {
+            tries = tries + 1;
+            let moved = self.journal.refresh();
+            let rev = self.journal.revision();
+            let already = self.recorded_outcome(v.attempt_id);
+            if already.ok {
+                return Executed { ok: true, ran: ran, reused: true, disposition: already.value.disposition, outcome: already.value, why: "attempt " + v.attempt_id + " was already settled; this reply changes nothing" };
+            }
+            let w = self.journal.append_exact(rev, "attempt.outcome", v.attempt_id, body);
+            if w.ok {
+                let closed = effect_result(self.journal, execution_key(v.attempt_id), r.disposition == "done");
+                return Executed { ok: true, ran: ran, disposition: r.disposition, outcome: outcome };
+            }
+            if w.error != "stale_revision" && w.error != "claimed" {
+                return Executed { ran: ran, why: "the record would not take the outcome of attempt " + v.attempt_id + " (" + w.error + "); it is unrecorded, and nothing advances" };
+            }
+        }
+        return Executed { ran: ran, why: "the record moved under the outcome of attempt " + v.attempt_id + " " + to_string(tries) + " times; it is unrecorded, and nothing advances" };
+    }
+}
+
+// The first field in which two requests for one Work differ in content,
+// "" when none does (ids and the attempt number are compared by the
+// caller).
+fn request_difference_of(a: WorkRequest, b: WorkRequest) -> String {
+    if a.objective != b.objective { return "objective"; }
+    if a.context_digest != b.context_digest { return "context digest"; }
+    if a.knowledge_bindings != b.knowledge_bindings { return "knowledge bindings"; }
+    if a.output_contract != b.output_contract { return "output contract"; }
+    if a.data_class != b.data_class { return "data class"; }
+    if a.requires != b.requires { return "requires"; }
+    if a.target != b.target { return "target"; }
+    if a.cost_ceiling != b.cost_ceiling { return "cost ceiling"; }
+    return "";
+}

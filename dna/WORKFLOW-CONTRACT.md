@@ -246,7 +246,12 @@ One retry owner: the durable Work lifecycle admits each attempt under
 the bound routing/retry policy. The new executor path runs exactly one
 admitted attempt per request and never retries on its own. The current
 `WorkSystem` loop, which retries internally, stays for legacy callers
-until card 18. **[decided]**
+until card 18. **[decided; proven: `workflow_attempt_test.hl`, card 08 —
+`AttemptExecutor` runs nothing before a durable admission, reuses a
+recorded outcome, claims the execution before the performer is called so
+a duplicate request attaches, checks the reply's attempt and performer
+identity, persists the outcome exactly before answering, and reports an
+outcome the record refused as unrecorded]**
 
 A settled attempt is never executed again. Durable dispatch may be
 redelivered; a duplicate request for a running attempt attaches to its
@@ -493,6 +498,7 @@ equivalent definition.
 | definitions bind whole or refuse; capacity is checked before a node is built | proven, card 04 (#691) |
 | every fact is read whole or not at all; a recipe binds whole or not at all | proven, card 05 (#693) |
 | the join is by identity and kind against the admitted recipe; every transition has its basis; a cancelled ancestor fences all below it | proven, card 06 (#694) |
+| one admitted attempt runs once: nothing before its durable admission, a settled one reused, a running one attached to, the reply's identity checked, the outcome persisted exactly before answering, a refused append stopping the path | proven, card 08 |
 | the admission precedes the summary; a refusal requests nothing and is recorded (or reported unrecorded), a Task-bound one exactly at the decision's revision and never on another body's execution, one that reached no Task as `workflow.ask_refused` under `<ask>#<n>`, decided and appended at one revision, the same decision replayed and a new one ordinal-numbered; one ask id is one execution, decided and appended at one revision; a taken id is skipped and a contended one re-minted; only the position's owner admits; an admitted Task is never legacy edit work after a restart | proven, card 07 |
 | delivery across off-thread bindings; restart | not yet, cards 12–13, 19 |
 
