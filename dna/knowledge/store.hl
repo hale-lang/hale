@@ -156,12 +156,12 @@ locus Mem {
     fn upsert(i: dna::Idea, ratified_seq: Int) -> Bool {
         let at = self.index_of(i.id);
         if at < 0 {
-            self.ideas.push(dna::Idea { id: i.id, kind: i.kind, text: i.text, author: i.author, provenance: i.provenance, revision: i.revision, accepted: i.accepted });
+            self.ideas.push(dna::Idea { id: i.id, kind: i.kind, text: i.text, author: i.author, provenance: i.provenance, revision: i.revision, accepted: i.accepted, name: i.name, supersedes: i.supersedes });
             self.seqs.push(ratified_seq);
             self.embeds.push(embed_text(i.text));
             return true;
         }
-        self.ideas.set(at, dna::Idea { id: i.id, kind: i.kind, text: i.text, author: i.author, provenance: i.provenance, revision: i.revision, accepted: i.accepted }) or discard;
+        self.ideas.set(at, dna::Idea { id: i.id, kind: i.kind, text: i.text, author: i.author, provenance: i.provenance, revision: i.revision, accepted: i.accepted, name: i.name, supersedes: i.supersedes }) or discard;
         self.seqs.set(at, ratified_seq) or discard;
         self.embeds.set(at, embed_text(i.text)) or discard;
         return true;
@@ -171,7 +171,10 @@ locus Mem {
         let mut i = 0;
         while i < self.bindings.len() {
             let x = self.bindings.get(i) or dna::KnowledgeBinding { };
-            if x.idea == b.idea && x.target == b.target && x.author == b.author { return true; }
+            if x.idea == b.idea && x.target == b.target && x.author == b.author {
+                self.bindings.set(i, dna::KnowledgeBinding { idea: b.idea, target: b.target, author: b.author, class: b.class }) or discard;
+                return true;
+            }
             i = i + 1;
         }
         self.bindings.push(dna::KnowledgeBinding { idea: b.idea, target: b.target, author: b.author, class: b.class });
@@ -416,6 +419,8 @@ locus Pq {
         let ddl = "CREATE TABLE IF NOT EXISTS knowledge_meta (key text PRIMARY KEY, value text NOT NULL);"
             + "CREATE TABLE IF NOT EXISTS knowledge_ideas (id text PRIMARY KEY, kind text NOT NULL, text text NOT NULL, author text NOT NULL, provenance text NOT NULL, revision bigint NOT NULL DEFAULT 0, accepted boolean NOT NULL DEFAULT false, ratified_seq bigint NOT NULL DEFAULT 0, embedding vector(" + to_string(DIM) + "));"
             + "ALTER TABLE knowledge_ideas ADD COLUMN IF NOT EXISTS embedding vector(" + to_string(DIM) + ");"
+            + "ALTER TABLE knowledge_ideas ADD COLUMN IF NOT EXISTS name text NOT NULL DEFAULT '';"
+            + "ALTER TABLE knowledge_ideas ADD COLUMN IF NOT EXISTS supersedes text NOT NULL DEFAULT '';"
             + "CREATE TABLE IF NOT EXISTS knowledge_bindings (idea text NOT NULL, target text NOT NULL, author text NOT NULL, class text NOT NULL, PRIMARY KEY (idea, target, author));"
             + "CREATE TABLE IF NOT EXISTS knowledge_edges (src text NOT NULL, dst text NOT NULL, rel text NOT NULL, PRIMARY KEY (src, dst, rel));"
             + "CREATE TABLE IF NOT EXISTS knowledge_structure (kind text NOT NULL, name text NOT NULL, seq bigint NOT NULL, body text NOT NULL, PRIMARY KEY (kind, name));"
@@ -482,7 +487,9 @@ locus Pq {
         a.add(if i.accepted { "true" } else { "false" });
         a.add(to_string(ratified_seq));
         a.add(embed_text(i.text));
-        let r = self.conn.exec_params("INSERT INTO knowledge_ideas (id, kind, text, author, provenance, revision, accepted, ratified_seq, embedding) VALUES ($1, $2, $3, $4, $5, $6::bigint, $7::boolean, $8::bigint, $9::vector) ON CONFLICT (id) DO UPDATE SET kind = EXCLUDED.kind, text = EXCLUDED.text, author = EXCLUDED.author, provenance = EXCLUDED.provenance, revision = EXCLUDED.revision, accepted = EXCLUDED.accepted, ratified_seq = EXCLUDED.ratified_seq, embedding = EXCLUDED.embedding", a);
+        a.add(i.name);
+        a.add(i.supersedes);
+        let r = self.conn.exec_params("INSERT INTO knowledge_ideas (id, kind, text, author, provenance, revision, accepted, ratified_seq, embedding, name, supersedes) VALUES ($1, $2, $3, $4, $5, $6::bigint, $7::boolean, $8::bigint, $9::vector, $10, $11) ON CONFLICT (id) DO UPDATE SET kind = EXCLUDED.kind, text = EXCLUDED.text, author = EXCLUDED.author, provenance = EXCLUDED.provenance, revision = EXCLUDED.revision, accepted = EXCLUDED.accepted, ratified_seq = EXCLUDED.ratified_seq, embedding = EXCLUDED.embedding, name = EXCLUDED.name, supersedes = EXCLUDED.supersedes", a);
         if !r.ok { return self.fail("upsert", r.err); }
         return true;
     }
@@ -522,7 +529,7 @@ locus Pq {
     fn idea(id: String) -> Stored {
         let a = db::Args { };
         a.add(id);
-        let rows = self.conn.query_params("SELECT row_to_json(t) FROM (SELECT id, kind, text, author, provenance, revision, accepted, ratified_seq FROM knowledge_ideas WHERE id = $1) t", a);
+        let rows = self.conn.query_params("SELECT row_to_json(t) FROM (SELECT id, kind, text, author, provenance, revision, accepted, ratified_seq, name, supersedes FROM knowledge_ideas WHERE id = $1) t", a);
         if !rows.ok { self.note("idea", rows.err); return Stored { }; }
         if rows.n == 0 { return Stored { }; }
         let row = dna::trim_nl(first_line(rows.csv));
@@ -536,7 +543,9 @@ locus Pq {
                 author: std::json::find_string_field(row, "author"),
                 provenance: std::json::find_string_field(row, "provenance"),
                 revision: std::json::find_int_field(row, "revision"),
-                accepted: std::json::find_bool_field(row, "accepted")
+                accepted: std::json::find_bool_field(row, "accepted"),
+                name: std::json::find_string_field(row, "name"),
+                supersedes: std::json::find_string_field(row, "supersedes")
             },
             ratified_seq: std::json::find_int_field(row, "ratified_seq")
         };
