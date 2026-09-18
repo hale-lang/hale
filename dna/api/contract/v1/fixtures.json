@@ -1,0 +1,298 @@
+[
+  {
+    "name": "application-discovery",
+    "schema": "ApplicationsResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "record-opaque-identity",
+        "record_head": "head-opaque-identity",
+        "record_revision": "12"
+      },
+      "data": {
+        "items": [
+          {
+            "id": "record-opaque-identity",
+            "kind": "dna",
+            "name": "Example",
+            "capabilities_url": "/api/hale/v1/applications/record-opaque-identity/capabilities"
+          }
+        ],
+        "page": {
+          "limit": 1,
+          "offset": 0,
+          "total": 1,
+          "next_offset": -1,
+          "snapshot": "head-opaque-identity"
+        }
+      }
+    }
+  },
+  {
+    "name": "read-only-capabilities",
+    "schema": "CapabilitiesResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "record-opaque-identity",
+        "record_head": "head-opaque-identity",
+        "record_revision": "12"
+      },
+      "data": {
+        "application_id": "record-opaque-identity",
+        "read_only": true,
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "reads": {
+          "practices": true,
+          "reviews": true
+        },
+        "writes": {
+          "practice_propose": false,
+          "review_verdict": false
+        },
+        "runtime_observation": false,
+        "recursive_workflows": false,
+        "receipt_text": "record_visibility_only"
+      }
+    }
+  },
+  {
+    "name": "approved-is-not-ratified",
+    "schema": "PracticesResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "record-opaque-identity",
+        "record_head": "head-opaque-identity",
+        "record_revision": "12"
+      },
+      "data": {
+        "items": [
+          {
+            "id": "sha256:opaque-document",
+            "digest": "sha256:opaque-document",
+            "name": "acceptance/receipt",
+            "kind": "practice",
+            "text": "Keep the receipt.\nInclude café details.",
+            "text_status": "available",
+            "author": "org",
+            "target": "org",
+            "binding_class": "goal",
+            "provenance": "proposed by riley",
+            "supersedes": "",
+            "request_id": "request-1",
+            "review_id": "k:opaque-document",
+            "review_state": "settled",
+            "review_settled": "approve by riley",
+            "state": "pending",
+            "text_available": true,
+            "ratified": false,
+            "retired": false,
+            "declined": false,
+            "requester": "riley",
+            "rationale": "Explain this revision.\nKeep evidence.",
+            "review_outcome": "approve"
+          }
+        ],
+        "page": {
+          "limit": 25,
+          "offset": 0,
+          "total": 1,
+          "next_offset": -1,
+          "snapshot": "head-opaque-identity"
+        }
+      }
+    }
+  },
+  {
+    "name": "review-settlement",
+    "schema": "ReviewsResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "record-opaque-identity",
+        "record_head": "head-opaque-identity",
+        "record_revision": "12"
+      },
+      "data": {
+        "items": [
+          {
+            "id": "k:opaque-document",
+            "state": "settled",
+            "subject_digest": "sha256:opaque-document",
+            "required_authority": "board",
+            "settled": "approve by riley",
+            "knowledge_digest": "sha256:opaque-document",
+            "text_status": "available",
+            "question": "Ratify this practice?",
+            "text_available": true,
+            "outcome": "approve"
+          }
+        ],
+        "page": {
+          "limit": 25,
+          "offset": 0,
+          "total": 1,
+          "next_offset": -1,
+          "snapshot": "head-opaque-identity"
+        }
+      }
+    }
+  },
+  {
+    "name": "source-unavailable",
+    "schema": "ErrorResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "error": {
+        "code": "source_unavailable",
+        "message": "The Record is unavailable.",
+        "retryable": true
+      }
+    }
+  },
+  {
+    "name": "unknown-field",
+    "schema": "PracticesResponse",
+    "valid": false,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "record-opaque-identity",
+        "record_head": "head-opaque-identity",
+        "record_revision": "12"
+      },
+      "data": {
+        "items": [
+          {
+            "id": "sha256:opaque-document",
+            "digest": "sha256:opaque-document",
+            "name": "acceptance/receipt",
+            "kind": "practice",
+            "text": "Keep the receipt.\nInclude café details.",
+            "text_status": "available",
+            "author": "org",
+            "target": "org",
+            "binding_class": "goal",
+            "provenance": "proposed by riley",
+            "supersedes": "",
+            "request_id": "request-1",
+            "review_id": "k:opaque-document",
+            "review_state": "settled",
+            "review_settled": "approve by riley",
+            "state": "pending",
+            "text_available": true,
+            "ratified": false,
+            "retired": false,
+            "declined": false,
+            "actor": "spoofed",
+            "requester": "riley",
+            "rationale": "Explain this revision.\nKeep evidence.",
+            "review_outcome": "approve"
+          }
+        ],
+        "page": {
+          "limit": 25,
+          "offset": 0,
+          "total": 1,
+          "next_offset": -1,
+          "snapshot": "head-opaque-identity"
+        }
+      }
+    }
+  },
+  {
+    "name": "unsafe-numeric-revision",
+    "schema": "ApplicationsResponse",
+    "valid": false,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "record-opaque-identity",
+        "record_head": "head-opaque-identity",
+        "record_revision": 9007199254740992
+      },
+      "data": {
+        "items": [],
+        "page": {
+          "limit": 25,
+          "offset": 0,
+          "total": 0,
+          "next_offset": -1,
+          "snapshot": "head-opaque-identity"
+        }
+      }
+    }
+  },
+  {
+    "name": "mutation-not-supported",
+    "schema": "CapabilitiesResponse",
+    "valid": false,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "record-opaque-identity",
+        "record_head": "head-opaque-identity",
+        "record_revision": "12"
+      },
+      "data": {
+        "application_id": "record-opaque-identity",
+        "read_only": true,
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "reads": {
+          "practices": true,
+          "reviews": true
+        },
+        "writes": {
+          "practice_propose": true,
+          "review_verdict": false
+        },
+        "runtime_observation": false,
+        "recursive_workflows": false,
+        "receipt_text": "record_visibility_only"
+      }
+    }
+  },
+  {
+    "name": "missing-provenance-basis",
+    "schema": "ReviewsResponse",
+    "valid": false,
+    "value": {
+      "api_version": "hale.v1",
+      "data": {
+        "items": [
+          {
+            "id": "k:opaque-document",
+            "state": "settled",
+            "subject_digest": "sha256:opaque-document",
+            "required_authority": "board",
+            "settled": "approve by riley",
+            "knowledge_digest": "sha256:opaque-document",
+            "text_status": "available",
+            "question": "Ratify this practice?",
+            "text_available": true,
+            "outcome": "approve"
+          }
+        ],
+        "page": {
+          "limit": 25,
+          "offset": 0,
+          "total": 1,
+          "next_offset": -1,
+          "snapshot": "head-opaque-identity"
+        }
+      }
+    }
+  }
+]

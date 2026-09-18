@@ -738,3 +738,14 @@ a `hale run` program prints nothing, not even that it died by signal.
 **FIXED** (GH #577): a vec form owns its elements — `get` returns the
 caller's copy and `set` / `push` store the vec's copy, whatever arena
 the value came from — and `hale run` reports a death by signal.
+
+## F.19 — imported helper name collides with its seed's import alias
+
+Found while the read-only API reused `dna/ui`'s OIDC session methods.
+`ui/main.hl` imported the core as `dna` and also declared a free helper
+`fn dna(args: String)`. Building the UI directly worked, but importing its
+seed rewrote `dna::url_encode` as a path through the mangled helper name:
+`__lib_dna_ui_main_dna::url_encode`, which codegen refused. `hale check`
+did not catch the build error. The supported working shape is distinct
+names: the CLI-rendering helper is now `run_dna`; the core alias remains
+`dna`. This mechanical rename changes no UI route or authentication behavior.

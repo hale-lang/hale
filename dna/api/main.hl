@@ -1,0 +1,221 @@
+// Build: hale build dna/api
+// Run: dna/api/api <project-root> <port>
+// A single-Record read surface, always loopback. This does not implement the
+// proposed remote command/token contract or proxy any legacy UI mutation route.
+
+import "../core" as dna;
+import "../operations" as ops;
+import "../ui" as ui;
+
+locus Wire {
+    params { }
+    fn practice(p: ops::PracticeRow) -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("id", p.id);
+        b.string_field("digest", p.digest);
+        b.string_field("name", p.name);
+        b.string_field("kind", p.kind);
+        b.string_field("text", p.text);
+        b.string_field("text_status", p.text_status);
+        b.bool_field("text_available", p.text_available);
+        b.string_field("author", p.author);
+        b.string_field("target", p.target);
+        b.string_field("binding_class", p.binding_class);
+        b.string_field("provenance", p.provenance);
+        b.string_field("requester", p.requester);
+        b.string_field("rationale", p.because);
+        b.string_field("supersedes", p.supersedes);
+        b.string_field("request_id", p.request_id);
+        b.string_field("review_id", p.review_id);
+        b.string_field("review_state", p.review_state);
+        b.string_field("review_settled", p.review_settled);
+        b.string_field("review_outcome", p.review_outcome);
+        b.string_field("state", p.state);
+        b.bool_field("ratified", p.ratified);
+        b.bool_field("retired", p.retired);
+        b.bool_field("declined", p.declined);
+        b.end_object();
+        return b.result();
+    }
+    fn review(r: ops::ReviewRow) -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("id", r.id);
+        b.string_field("state", r.state);
+        b.string_field("subject_digest", r.subject_digest);
+        b.string_field("required_authority", r.required_authority);
+        b.string_field("settled", r.settled);
+        b.string_field("outcome", r.outcome);
+        b.string_field("knowledge_digest", r.knowledge_digest);
+        b.string_field("text_status", r.text_status);
+        b.bool_field("text_available", r.text_available);
+        // For an ordinary Review the question is declared in Record itself;
+        // no canonical practice receipt is involved. Restricted subjects have
+        // already received a different status from the shared query layer.
+        b.string_field("question", if r.text_available || r.text_status == "not_applicable" { r.question } else { "" });
+        b.end_object();
+        return b.result();
+    }
+    fn applications(source: Source) -> String {
+        let http = Http { };
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.begin_array_field("items");
+        b.begin_object();
+        b.string_field("id", source.identity);
+        b.string_field("kind", "dna");
+        b.string_field("name", source.name);
+        b.string_field("capabilities_url", API_PREFIX + "/" + source.identity + "/capabilities");
+        b.end_object();
+        b.end_array();
+        b.field("page", http.page(1, 0, 1, source.head));
+        b.end_object();
+        return b.result();
+    }
+    fn capabilities(source: Source, mode: String, name: String) -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("application_id", source.identity);
+        b.bool_field("read_only", true);
+        b.begin_object_field("principal");
+        b.string_field("mode", mode);
+        b.string_field("name", name);
+        b.end_object();
+        b.begin_object_field("reads");
+        b.bool_field("practices", true);
+        b.bool_field("reviews", true);
+        b.end_object();
+        b.begin_object_field("writes");
+        b.bool_field("practice_propose", false);
+        b.bool_field("review_verdict", false);
+        b.end_object();
+        b.bool_field("runtime_observation", false);
+        b.bool_field("recursive_workflows", false);
+        b.string_field("receipt_text", "record_visibility_only");
+        b.end_object();
+        return b.result();
+    }
+}
+
+locus Api {
+    params {
+        root: String = ".";
+        mode: String = "local";
+        local_name: String = "local";
+        // Reuse only the established session/authentication methods. Never
+        // dispatch Ui.handle, whose legacy routes include domain mutations.
+        auth: ui::Ui = ui::Ui { };
+    }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        let http = Http { };
+        let cut = std::str::index_of(req.path, "?");
+        let path = if cut < 0 { req.path } else { req.path[0..cut] };
+        let raw_query = if cut < 0 { "" } else { req.path[(cut + 1)..len(req.path)] };
+        if req.method != "GET" { return http.error(405, "method_not_allowed", "this API implements reads only", false); }
+        let mut actor = self.local_name;
+        if self.mode == "oidc" {
+            if path == "/auth/login" { return self.auth.begin_sign_in(); }
+            if path == "/auth/callback" {
+                let ctx = std::http::build_context(req);
+                let code = http.decode(std::http::query_param(ctx.params, "code"));
+                let state = http.decode(std::http::query_param(ctx.params, "state"));
+                if !code.ok || !state.ok { return http.error(400, "invalid_query", "invalid authentication query encoding", false); }
+                return self.auth.finish_sign_in(code.text, state.text, dna::cookie_value(std::http::header(req, "Cookie"), "dna_signin"));
+            }
+            if path == "/auth/logout" {
+                self.auth.end_session(req);
+                return ui::redirect("/auth/login", "dna_session=; Max-Age=0; Path=/");
+            }
+            actor = self.auth.session_name(req);
+            if len(actor) == 0 { return http.error(401, "unauthenticated", "sign in at /auth/login", false); }
+        }
+        if !std::str::starts_with(path, API_PREFIX) { return http.error(404, "not_found", "no such read endpoint", false); }
+        let query = http.query(raw_query);
+        if !query.ok { return http.error(400, "invalid_query", query.error, false); }
+        let reader = SourceReader { root: self.root };
+        let source = reader.read();
+        if !source.ok { return http.error(if source.code == "snapshot_changed" { 409 } else { 503 }, source.code, source.error, source.code != "record_malformed"); }
+        if len(query.snapshot) > 0 && query.snapshot != source.head { return http.error(409, "snapshot_changed", "the Record changed; begin a new page sequence", true); }
+        let wire = Wire { };
+        if path == API_PREFIX {
+            if len(raw_query) > 0 { return http.error(400, "invalid_query", "application discovery takes no query fields", false); }
+            return http.success(source, wire.applications(source));
+        }
+        let prefix = API_PREFIX + "/" + source.identity;
+        if !std::str::starts_with(path, prefix + "/") { return http.error(404, "application_not_found", "this server does not serve that application", false); }
+        if path == prefix + "/capabilities" {
+            if len(raw_query) > 0 { return http.error(400, "invalid_query", "capabilities takes no query fields", false); }
+            return http.success(source, wire.capabilities(source, self.mode, actor));
+        }
+        let practices = path == prefix + "/dna/practices";
+        let reviews = path == prefix + "/dna/reviews";
+        if !practices && !reviews { return http.error(404, "not_found", "no such read endpoint", false); }
+        let q = ops::Queries { j: dna::GitJournal { repo: self.root }, receipts: dna::GitReceipts { repo: self.root } };
+        if q.head() != source.head || q.revision() != source.revision { return http.error(409, "snapshot_changed", "the Record changed while loading the query", true); }
+        let total = if len(query.id) > 0 { 1 } else if practices { q.practice_count() } else { q.review_count() };
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.begin_array_field("items");
+        let mut index = query.offset;
+        let end = if query.offset + query.limit < total { query.offset + query.limit } else { total };
+        while index < end {
+            if practices {
+                let p = if len(query.id) > 0 { q.practice_of(query.id) } else { q.practice_at(index) };
+                if len(p.id) == 0 { return http.error(404, "practice_not_found", "no such practice", false); }
+                b.value(wire.practice(p));
+            } else {
+                let r = if len(query.id) > 0 { q.review_of(query.id) } else { q.review_at(index) };
+                if len(r.id) == 0 { return http.error(404, "review_not_found", "no such review", false); }
+                b.value(wire.review(r));
+            }
+            index = index + 1;
+        }
+        b.end_array();
+        b.field("page", http.page(query.limit, query.offset, total, source.head));
+        b.end_object();
+        // A redaction appended while receipt text was read invalidates the
+        // entire response. The next request loads its suppression marker.
+        let record = dna::GitRecord { repo: self.root };
+        if record.head("journal") != source.head { return http.error(409, "snapshot_changed", "the Record changed while the response was being built", true); }
+        return http.success(source, b.result());
+    }
+}
+
+fn main() {
+    let root = std::env::arg_or(1, ".");
+    let raw_port = std::env::arg_or(2, "8792");
+    let http = Http { };
+    let port = http.integer(raw_port, 65535);
+    if port < 1 || std::str::contains(root, "\n") || std::str::contains(root, "\r") {
+        eprintln("hale dna api: expected <project-root> <port 1..65535>");
+        std::process::exit(2);
+    }
+    let record = dna::GitRecord { repo: root };
+    let configured = record.git("config\n--get\ndna.principal");
+    if configured.code != 0 && configured.code != 1 {
+        eprintln("hale dna api: cannot read project authentication configuration");
+        std::process::exit(2);
+    }
+    let mode = dna::trim_nl(configured.stdout);
+    if mode == "oidc" {
+        let issuer = record.setting("oidc.issuer");
+        let client = record.setting("oidc.client");
+        let redirect_uri = record.setting("oidc.redirect");
+        if len(issuer) == 0 || len(client) == 0 || len(redirect_uri) == 0 || !dna::issuer_allowed(issuer) {
+            eprintln("hale dna api: configured OIDC requires an allowed issuer, client and redirect; refusing local fallback");
+            std::process::exit(2);
+        }
+        let members = record.git("config\n--get-all\ndna.oidc.member");
+        println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (OIDC session reads; no writes)");
+        std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, mode: "oidc", auth: ui::Ui { principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: members.stdout } } };
+        return;
+    }
+    if len(mode) > 0 && mode != "local" {
+        eprintln("hale dna api: unsupported principal source; refusing local fallback");
+        std::process::exit(2);
+    }
+    let user = std::env::var("USER");
+    println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (trusted local reads; no writes)");
+    std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, local_name: if len(user) > 0 { user } else { "local" } } };
+}
