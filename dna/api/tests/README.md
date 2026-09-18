@@ -1,6 +1,6 @@
 # Read-only API integration tests
 
-The native Hale runner exercises 25 scenarios against the real HTTP service and
+The native Hale runner exercises 33 scenarios against the real HTTP service and
 temporary Git Records. Fixtures use the native journal and receipt writers to
 construct exact projection states, including approval before activation and
 redaction with a stale local blob. They do not test domain admission or execution.
@@ -10,16 +10,18 @@ From the repository root, build the API once and run the suite:
 ```sh
 hale build dna/api
 HALE_API_BIN="$PWD/dna/api/api" \
+HALE_BIN="$(command -v hale)" \
 HALE_API_CONTRACT_ROOT="$PWD/dna/api/contract/v1" \
 hale test dna/api/tests
 ```
 
-Both paths must be absolute; `HALE_API_BIN` can select a binary built elsewhere.
+The paths must be absolute; `HALE_API_BIN` can select a binary built elsewhere.
 The suite does not rebuild the service. Every success/error API response is
 checked against the checked-in JSON Schema using the native contract validator.
 Its supported schema profile is documented in the [contract README](../contract/v1/README.md).
-Missing schema or service binary fails the suite. `hale test` reports one test
-program; that program executes all 25 named cases and remains silent on success.
+Missing schema or service binary fails the suite. `read_api_test.hl` executes
+all 33 named HTTP cases and remains silent on success. A second native test
+program exercises the Organization source loader directly.
 
 Requirements are Hale, Git, curl, standard POSIX tools, and loopback sockets. Each
 case owns its temporary Record and API process; the suite hosts a native local
@@ -36,6 +38,16 @@ or model runs.
 
 Coverage includes:
 
+- Real compiler-derived organization instances, contracts and explicit position
+  groups, separate owner maps, exact node lookup and source provenance. Dirty
+  source is ignored; source commits and Record changes invalidate the combined
+  snapshot. Invalid committed source never returns cached structure. OIDC
+  authentication applies before organization inspection and after logout.
+- Actual local vendor snapshots and dependency edits at unchanged source HEAD;
+  committed vendor takes precedence over dirty local files. Unsupported source
+  and dependency links, imports outside the snapshot, archive attributes that
+  omit or substitute committed bytes, and subprocess deadlines exercise the
+  loader's unavailable/error and cleanup paths.
 - Stable Record/application identity, source head/revision and honest read-only
   capabilities; typed application/object/query/method failures without ref writes.
 - Unicode, multiline text and opaque slash-bearing ids; approved Review versus
@@ -49,6 +61,11 @@ Coverage includes:
 - A local authorization-code issuer, unauthenticated/forged/unmapped refusal,
   mapped session identity, logout, session loss on restart and configuration
   failure without a trusted-local fallback.
+- Optional static shell serving: exact asset whitelist, media types and CSP,
+  traversal and source-path refusal, unsupported methods, incomplete or empty
+  webroot rejection, startup-loaded assets and unchanged API-only behavior.
+  The shell is public without Record data; OIDC still gates API reads, and the
+  successful sign-in callback lands on the served shell.
 
 The identity-provider fixture follows the existing principal OIDC test's direct
 token-endpoint trust model. It does not test a production provider, TLS or token

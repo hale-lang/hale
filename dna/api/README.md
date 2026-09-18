@@ -1,13 +1,17 @@
 # DNA read API
 
-The first service API slice reads practices and reviews from an existing local
-DNA Record. It runs independently of the organization body, Postgres and Iris.
+The service API reads practices and reviews from an existing local DNA Record
+and inspects the project's committed organization source. It runs independently
+of the organization body, Postgres and Iris.
 Typed projections in `dna/operations` are shared with the native CLI. The API
-does not execute CLI commands or parse terminal output.
+does not invoke CLI operational commands or parse terminal rendering. Organization
+inspection uses the native compiler's machine-readable topology export.
 
-This is an experimental source-built service. There is no `hale dna api` launcher,
-Compose service profile or browser cockpit in this slice. The remaining work is
-tracked in [SERVICE-DEVELOPMENT-PLAN.md](../SERVICE-DEVELOPMENT-PLAN.md).
+This is an experimental source-built service. An optional
+[Iris cockpit](../../iris/cockpit/README.md) browses these reads from the same
+origin. There is no `hale dna api` launcher or Compose service profile yet.
+The remaining work is tracked in
+[SERVICE-DEVELOPMENT-PLAN.md](../SERVICE-DEVELOPMENT-PLAN.md).
 
 ## Run
 
@@ -25,6 +29,19 @@ binds only `127.0.0.1`. Stop it with Ctrl-C. Discover the native application id:
 curl http://127.0.0.1:8792/api/hale/v1/applications
 ```
 
+To serve the cockpit as well, pass its static directory as the third argument:
+
+```sh
+./dna/api/api /absolute/path/to/a/dna-project 8792 "$PWD/iris/cockpit/web"
+```
+
+Open <http://127.0.0.1:8792/>. Only `/`, `/app.js` and `/styles.css` are served;
+URLs never become filesystem paths. All three assets must exist and be nonempty
+at startup. They are loaded once, so restart after changing them. API-only mode
+retains its existing routes. No legacy mutation routes are enabled in either
+mode. Browser assets and authentication share the API origin; there is no
+cross-origin API contract.
+
 Use the returned id in the following routes:
 
 | GET route | Result |
@@ -32,11 +49,12 @@ Use the returned id in the following routes:
 | `/api/hale/v1/applications/{id}/capabilities` | Principal mode, implemented reads and unavailable mutations |
 | `/api/hale/v1/applications/{id}/dna/practices` | Named practice proposals, lifecycle, attribution and available canonical text |
 | `/api/hale/v1/applications/{id}/dna/reviews` | Review identity, exact subject, required authority and recorded decision |
+| `/api/hale/v1/applications/{id}/dna/organization` | Checked declared structure, explicit position groups, contracts and separate ownership map |
 
 Collections accept `id`, `limit`, `offset` and `snapshot`. Pass opaque ids through
 URL query encoding, for example `curl --get --data-urlencode 'id=org/reviews/one'`.
 The default page is 25 items, maximum 100. Later pages require the preceding
-Record-head snapshot; 409 means restart pagination. Errors have structured JSON
+collection snapshot; 409 means restart pagination. Errors have structured JSON
 codes and HTTP status. A missing/corrupt Record is unavailable, not an empty
 successful catalog. This first implementation bounds snapshots to 10,000 rows
 and 16 MiB; exceeding the bound returns an explicit 503.
@@ -45,6 +63,42 @@ Each response states its local Record identity, head and revision. Reads do not
 fetch a remote or claim remote freshness. A settled approval does not imply
 practice activation. An unprocessed practice request is not listed as a practice
 until the organization creates its actual document/proposal.
+
+## Organization source
+
+Organization reads require a current Hale compiler on `PATH`, or an absolute
+`HALE_BIN` path supplied to the API. The reader checks `dna/org` from an owned
+temporary snapshot of committed `HEAD`. It does not build or execute the
+organization, check out source in the operator's project, or change its Record.
+Uncommitted organization edits are excluded. Available dependency bytes have a
+separate fingerprint; an ignored local vendor directory is not covered by the
+source commit alone. Missing or unsupported dependencies return an explicit
+unavailable-source error instead of an empty organization. Replace the compiler
+by restarting the API.
+
+A committed `vendor` tree is inspected from that commit. Otherwise the reader
+captures the project's existing local `vendor` directory, without fetching or
+upgrading it. It fingerprints all captured dependency files, including unused
+ones, so a vendor change can invalidate more than one seed. Hale's native input
+resolver must place every consumed input inside the captured source and
+dependencies. Symlinks, submodules, special files, unsupported path characters
+and imports outside the snapshot are unavailable in this inspection profile.
+Captured files must match their committed Git blob identities; archive attributes
+that omit or substitute source bytes produce an unavailable-source error.
+
+Committed source is bounded to 16,384 files, 16 MiB per file and 128 MiB total.
+Dependencies are bounded to 8,192 files, 8 MiB per file and 64 MiB total. Each
+inspection subprocess has a 30-second deadline and its captured output is limited
+to 2 MiB per stream. The topology artifact is limited to 8 MiB and the ownership
+map to 64 KiB. These are inspection bounds, not a sandbox for untrusted projects.
+
+The response's `basis` names the source commit, dependency origin/digest,
+compiler artifact digest and schema, and static coverage. Its page snapshot binds
+that basis and the Record head. Static instances and explicit `groups.positions`
+membership establish declared structure. They do not establish runtime liveness,
+occupancy, effective grants or authority. Source-declared ownership paths remain
+separate from compiler instance paths until the application provides that join.
+Capacity and retry values travel as decimal strings (or null when unspecified).
 
 ## Identity and content
 
@@ -60,6 +114,12 @@ Sessions are in memory. Restart requires another login; Record identities and
 read results persist. The existing UI's legacy command routes are never routed
 through this server. A mapped member has the existing Record-reading scope;
 position-scoped permissions and remote CLI tokens are future work.
+
+The optional cockpit shell and assets are public static content with no Record
+data. They can show the sign-in state and independent Runtime connection before
+authentication. Record reads still require a valid session in OIDC mode. After
+successful sign-in the existing callback redirects to `/`, where the cockpit
+loads the authenticated API data.
 
 Practice documents must match their content digest, proposal metadata and a
 supported native canonical encoding. Redacted/protected text is suppressed even
@@ -84,7 +144,7 @@ export HALE_API_CONTRACT_ROOT="$PWD/dna/api/contract/v1"
 hale test dna/api/contract/v1/tests
 hale check dna/api
 hale build dna/api
-HALE_API_BIN="$PWD/dna/api/api" hale test dna/api/tests
+HALE_BIN="$(command -v hale)" HALE_API_BIN="$PWD/dna/api/api" hale test dna/api/tests
 hale test dna/operations/tests
 cargo test -p hale-dna -p hale-iris
 ```

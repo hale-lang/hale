@@ -80,7 +80,7 @@ locus ContractSchema {
                 let error = self.profile(self.definition(name), at, depth + 1);
                 if len(error) > 0 { return error; }
             } else if key == "type" {
-                if raw != "\"object\"" && raw != "\"array\"" && raw != "\"string\"" && raw != "\"integer\"" && raw != "\"boolean\"" { return at + ": unsupported type"; }
+                if raw != "\"object\"" && raw != "\"array\"" && raw != "\"string\"" && raw != "\"integer\"" && raw != "\"boolean\"" && raw != "\"null\"" { return at + ": unsupported type"; }
             } else if key == "additionalProperties" {
                 if raw != "false" { return at + ": only false is supported"; }
             } else if key == "required" {
@@ -122,10 +122,10 @@ locus ContractSchema {
             } else if key == "items" || key == "if" || key == "then" {
                 let error = self.profile(raw, at, depth + 1);
                 if len(error) > 0 { return error; }
-            } else if key == "allOf" {
+            } else if key == "allOf" || key == "anyOf" {
                 if self.kind(raw) != "array" { return at + ": expected array"; }
                 let mut children = std::json::array_first(raw);
-                if children.done { return at + ": empty allOf"; }
+                if children.done { return at + ": empty " + key; }
                 while !children.done {
                     let error = self.profile(children.element, at, depth + 1);
                     if len(error) > 0 { return error; }
@@ -234,6 +234,18 @@ locus ContractSchema {
             let error = self.check(children.element, raw, path, depth + 1);
             if len(error) > 0 { return error; }
             children = std::json::array_next(children);
+        }
+        let alternatives = std::json::find_field_raw(spec, "anyOf");
+        if len(alternatives) > 0 {
+            let mut choices = std::json::array_first(alternatives);
+            let mut matched = false;
+            while !choices.done {
+                let error = self.check(choices.element, raw, path, depth + 1);
+                if std::str::starts_with(error, "unsupported evaluation:") { return error; }
+                if len(error) == 0 { matched = true; }
+                choices = std::json::array_next(choices);
+            }
+            if !matched { return path + ": no anyOf alternative matched"; }
         }
         let condition = std::json::find_field_raw(spec, "if");
         if len(condition) > 0 {

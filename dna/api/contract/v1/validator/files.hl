@@ -13,7 +13,7 @@ locus ContractFiles {
         let mut routes = std::json::object_first(paths);
         while !routes.done {
             let path = std::json::obj_key_string(routes, paths);
-            let response_name = if path == "/api/hale/v1/applications" { "ApplicationsResponse" } else if path == "/api/hale/v1/applications/{application_id}/capabilities" { "CapabilitiesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/practices" { "PracticesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/reviews" { "ReviewsResponse" } else { "" };
+            let response_name = if path == "/api/hale/v1/applications" { "ApplicationsResponse" } else if path == "/api/hale/v1/applications/{application_id}/capabilities" { "CapabilitiesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/practices" { "PracticesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/reviews" { "ReviewsResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/organization" { "OrganizationResponse" } else { "" };
             if len(response_name) == 0 { return ValidationResult { error: "OpenAPI: unexpected route " + path }; }
             count = count + 1;
             let route = std::json::obj_value_raw(routes, paths);
@@ -40,7 +40,7 @@ locus ContractFiles {
             }
             routes = std::json::object_next(routes, paths);
         }
-        if count != 4 { return ValidationResult { error: "OpenAPI: expected exactly four read routes" }; }
+        if count != 5 { return ValidationResult { error: "OpenAPI: expected exactly five read routes" }; }
         return ValidationResult { ok: true };
     }
     fn fixtures(fixtures: String, schema: String) -> ValidationResult {
@@ -51,6 +51,7 @@ locus ContractFiles {
         let mut examples = std::json::array_first(fixtures);
         let mut positive = 0;
         let mut negative = 0;
+        let mut organization = false;
         while !examples.done {
             let example = examples.element;
             let name = std::json::find_string_field(example, "name");
@@ -62,6 +63,7 @@ locus ContractFiles {
             if result.ok != (expected == "true") { return ValidationResult { error: "fixture " + name + ": unexpected validity: " + result.error }; }
             if result.ok {
                 positive = positive + 1;
+                if definition == "OrganizationResponse" { organization = true; }
                 if rules.kind(value) != "object" { return ValidationResult { error: "fixture " + name + ": response must be an object" }; }
                 let injected = value[0..(len(value) - 1)] + ",\"actor\":\"caller-selected\"}";
                 let reject = validator.validate_schema(schema, definition, injected);
@@ -70,6 +72,7 @@ locus ContractFiles {
             examples = std::json::array_next(examples);
         }
         if positive < 5 || negative < 4 { return ValidationResult { error: "fixtures: preserve all five positive and four negative baseline examples" }; }
+        if !organization { return ValidationResult { error: "fixtures: the declared organization response needs a positive fixture" }; }
         return ValidationResult { ok: true };
     }
     fn check() -> ValidationResult {

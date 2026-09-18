@@ -1,0 +1,33 @@
+// The optional browser shell is three static files, loaded before listening.
+// It carries no project data or credentials. A URL never becomes a file path.
+locus WebAssets {
+    params {
+        enabled: Bool = false;
+        index: String = "";
+        app: String = "";
+        styles: String = "";
+    }
+    fn load(root: String) -> Bool {
+        if len(root) == 0 || std::str::contains(root, "\n") || std::str::contains(root, "\r") { return false; }
+        // No fallback to the project root or the process's working directory.
+        // Requiring the whole bundle also catches a mistyped asset directory.
+        self.index = std::io::fs::read_file(root + "/index.html") or "";
+        self.app = std::io::fs::read_file(root + "/app.js") or "";
+        self.styles = std::io::fs::read_file(root + "/styles.css") or "";
+        self.enabled = len(self.index) > 0 && len(self.app) > 0 && len(self.styles) > 0;
+        return self.enabled;
+    }
+    fn serves(path: String) -> Bool {
+        return self.enabled && (path == "/" || path == "/app.js" || path == "/styles.css");
+    }
+    fn response(path: String) -> std::http::Response {
+        let content_type = if path == "/" { "text/html; charset=utf-8" } else if path == "/app.js" { "text/javascript; charset=utf-8" } else { "text/css; charset=utf-8" };
+        let body = if path == "/" { self.index } else if path == "/app.js" { self.app } else { self.styles };
+        return std::http::Response {
+            status: 200,
+            content_type: content_type,
+            headers: "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+            body: body
+        };
+    }
+}

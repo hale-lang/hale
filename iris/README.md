@@ -20,12 +20,17 @@ readiness and the first live slice in
 [`COCKPIT-READINESS.md`](./COCKPIT-READINESS.md). The shared service API, Compose
 deployment and staged implementation cards are in
 [`SERVICE-DEVELOPMENT-PLAN.md`](../dna/SERVICE-DEVELOPMENT-PLAN.md).
-These are design drafts, not
-claims that the cockpit API is implemented.
+These describe the broader product and its remaining implementation work.
 
-The first [DNA read API](../dna/api/README.md) implements discovery and typed
-practice/review reads. The browser cockpit and administrative commands remain
-under development.
+The [browser cockpit](cockpit/README.md) reads declared Organization structure,
+real Practices and Reviews through
+the [DNA read API](../dna/api/README.md). It serves from the same origin as the
+Hale API, shows source revisions and content availability, and links to the
+existing Runtime observer. Knowledge and Definitions remain core workspaces
+awaiting their typed read adapters; semantic position bindings and administrative commands are not
+yet available. Runtime observation itself continues to work independently of DNA.
+The [delivery checklist](cockpit/DELIVERY.md) retains the full product scope and
+its outstanding end-to-end gates.
 
 The previous spike (modeling-cockpit framing, May 2026) lives
 on `main` — it remains the artifact archive (raylib bindings,

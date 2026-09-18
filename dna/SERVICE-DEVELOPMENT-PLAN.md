@@ -1,6 +1,6 @@
 # DNA services, shared API and Iris — development plan
 
-Status: proposed implementation plan, 2026-09-17. Parent product issue:
+Status: staged implementation plan, updated 2026-09-18. Parent product issue:
 [#690](https://github.com/hale-lang/hale/issues/690). No API or container stack
 is implemented by this document. Suggested paths, commands and card names below
 are implementation targets, not claims about commands that already ship.
@@ -10,6 +10,20 @@ the read subset of 00, typed query extraction from 01, and a loopback/OIDC
 read-only head from 04. This does not complete those cards: mutation contracts,
 durable command recovery, position context and deployable service composition
 remain pending. The experimental wire schemas live under `dna/api/contract/v1`.
+
+The [first Iris browser slice](../iris/cockpit/README.md) implements the read-only
+part of 08: same-origin serving, capability-based navigation, practice/review
+browsing and a connection to the independent Runtime observer. It does not
+complete 08 or milestone A. The next administrative slice still requires
+02–03 and the command portion of 04. Organization, Knowledge and Definitions
+remain first-class deliverables in 10–12.
+
+The cockpit branch additionally implements the declared-structure read portion
+of 10: native compiler artifact/ownership projections, captured dependency basis,
+and a browser outline/inspector. Source-governed semantic position bindings,
+purpose, performers, effective context and administration still remain. The
+[delivery checklist](../iris/cockpit/DELIVERY.md) preserves both full milestones
+and all four product proof loops; a read-only workspace does not complete them.
 
 ## 1. Decision and deliverables
 
@@ -48,17 +62,21 @@ entry points, so validation and mutation semantics do not fork.
 
 ## 2. Evidence baseline
 
-The audit compared main [`2f202c90`][main] with pending workflow stack
-[`cd8dcc43`][pending]. GitHub main was still `2f202c90` at the review. The
-workflow additions are not treated as merged or live-host integration.
+The original audit compared main [`2f202c90`][main] with pending workflow stack
+[`cd8dcc43`][pending]. On September 18, main `9a3136ca` was integrated: workflow
+cards 00–06 and the request-relay fix #692 are merged. Definitions, durable codecs
+and pure execution projection are now native foundations. There is still no
+live `wf1` executor or catalog HTTP exposure at that revision; admission #696
+was open at the update and itself adds no dispatch. The table below separates
+these foundations from the service and browser contracts still required.
 
-Source and existing test bodies were inspected. Two targeted native tests were
+At the original audit, source and existing test bodies were inspected. Two targeted native tests were
 run with the supplied Hale 0.20.0 binary against the isolated main source:
 `principal_test.hl` and `knowledge_events_test.hl`; both passed. The latter uses
 temporary Git fixtures. The compiler was not rebuilt or proven to correspond
 exactly to the inspected source revision.
-No new full-suite, Docker, Postgres, browser-authentication or distributed-runtime
-acceptance run was performed. Passing those two tests does not establish the
+That audit performed no new full-suite, Docker, Postgres, browser-authentication
+or distributed-runtime acceptance run. Passing those two tests does not establish the
 new service/API contract.
 
 ### What is already there
@@ -70,11 +88,11 @@ new service/API contract.
 | State service | `dna/knowledge/service` owns Postgres-backed knowledge, Ledger, leases and protected bodies. Domain interfaces have memory implementations. | Internal routes are not a complete authenticated public API; no full graph/admin query surface. [S3] |
 | Durable memories | Record is Git-backed; routing 0 keeps events there, adopted routing 1 moves operational event families to Ledger. Each kind has one home. | Deployment must preserve both stores, identity, adoption and protected-body keys; Postgres alone is not a full backup. [S4] |
 | Messaging | Typed local membrane, native Unix sockets, append-before-publish request paths and host relay. Record sync and service calls support existing remote configurations. | No mandatory broker adapter. Command-level correlation/recovery still needs work; generic Iris publish acknowledgements are not durable command results. [S5] |
-| Browser head | `dna/ui` provides OIDC sessions and a few HTTP routes. | Most routes run CLI subprocesses and return text; failures can become HTTP 200, slash-bearing targets are sanitized destructively, and verdict requests omit the displayed digest. [S6] |
+| Browser head | `dna/ui` supplies existing OIDC sessions; `dna/api` shares typed practice/review queries with the CLI and serves the read-only cockpit. | Legacy `dna/ui` command routes still run CLI subprocesses and omit exact-subject preconditions. The new API does not expose those routes; durable commands and position context remain work. [S6] |
 | Domain administration | Practices have proposal/review/ratification/supersession; organization changes have governed source paths; knowledge has ideas, bindings and provenance. | Browser model catalogs and deterministic domain edit operations are incomplete. [S7] |
-| Recursive workflows | Pending cards supply definitions, bound recipes, event codecs and pure projection. | They do not yet connect a live admitted `wf1` execution to the host/API. Iris must not implement the missing executor. [S8] |
+| Recursive workflows | Merged cards 04–06 supply definitions, bound recipes, event codecs and pure projection. | Expose an application-declared catalog and read facts from their routed memories; connect live executions only after admission/runtime integration. Iris must not implement the missing executor. [S8] |
 | Observation | Native collector provides `/snapshot` and SSE over shared-memory observations. | Container placement, authenticated publication and joining application identities need work. Observation is lossy and is not durable command history. [S9] |
-| Packaging/tests | A compiler/toolchain Docker image, release packaging, native test suites and Postgres CI service exist. | There is no DNA service image/stack acceptance gate or browser interaction runner. Existing `fleet_compose.rs` tests topology composition, not Docker Compose. [S10] |
+| Packaging/tests | A compiler/toolchain Docker image, release packaging, native test suites and Postgres CI service exist; the cockpit adds browser interaction coverage. | There is no complete DNA service image/stack acceptance gate. Existing `fleet_compose.rs` tests topology composition, not Docker Compose. [S10] |
 
 The detailed four-workspace matrix remains in
 [COCKPIT-READINESS.md](../iris/COCKPIT-READINESS.md).
@@ -353,7 +371,8 @@ the same native request identity. Touch `dna/core/assembly.hl`, knowledge events
 and host correlation where necessary. Retain deterministic document/Review
 identities and explicit refusal. Project Review decision independently from
 ratification/supersession; a stale predecessor can refuse adoption after approval.
-Coordinate relay correlation with pending #692 rather than duplicating its fix.
+Reuse the concern request-correlation fix merged in #692; it does not complete
+the practice/verdict command-identity contract described here.
 Carry each verdict's command identity through relay, decision and durable
 accepted/refused result. The existing paths correlate verdicts by Review id,
 which cannot distinguish two clients deciding the same Review. Explicitly
@@ -480,6 +499,13 @@ fact instead of running locally. Credentials do not appear in process arguments,
 logs or repository configuration.
 
 ### 08 — Build the Iris shell and complete the first live slice
+
+**Implemented subset:** the source-built cockpit serves with the Hale API and
+browses Practices and Reviews, with source revisions, authenticated data,
+pagination and failure states. Runtime links to the existing independent
+observer. The three other core model workspaces remain unavailable until their
+adapters exist. Browser tests exercise the real Record/API path and controlled
+failure responses. This is read-only progress, not completion of this card.
 
 **Depends:** fixture work after 00; live completion after 03–04. **Owner:** Iris.
 Build an independently produced browser bundle with generic runtime support and
@@ -698,13 +724,13 @@ branch based on main; import reviewed workflow changes through normal merges,
 not by cherry-picking partial executor state. Keep compatibility fixtures for
 both engines until the workflow team's migration retires legacy execution.
 
-Pending dependencies at the audit:
+Workflow dependencies, updated September 18:
 
 | Existing work | Relationship |
 | --- | --- |
-| #685 retry-attempt identity; #686 legacy recovery association | Independent correctness fixes. Preserve their tests; do not duplicate them in Iris. |
-| #687 → #688 → #691 → #693 → #694 | Contract/lifetime → definitions → facts → pure projection stack. Reuse in 12/13. |
-| #692, addressing issue #689 | Repeated-request/answer relay correction. Coordinate 03's correlation tests. |
+| #685 retry-attempt identity; #686 legacy recovery association | Merged correctness fixes. Preserve their tests; do not duplicate them in Iris. |
+| #687 → #688 → #691 → #693 → #694 | Merged contract/lifetime → definitions → facts → pure projection stack. Reuse in 12/13. |
+| #692, addressing issue #689 | Merged concern request/answer relay correction. Reuse it; practice/verdict command recovery in 03 remains separate. |
 | Later workflow cards 07–19 | Admission, resident execution, transport/recovery and migration remain the workflow team's responsibility. Card 13 waits for the relevant native capabilities. |
 
 Do not merge speculative public DTOs tied to unmerged row layouts as a frozen
@@ -777,7 +803,7 @@ operation. The notes distinguish implementation findings from proposed cards.
 - **S5:** [durable request before publish](https://github.com/hale-lang/hale/blob/2f202c9094fff5f4219bd9ede6a1af0a4ba27ae3/dna/host/writers.hl#L454), [relay](https://github.com/hale-lang/hale/blob/2f202c9094fff5f4219bd9ede6a1af0a4ba27ae3/dna/host/host.hl#L439), [Iris direct publication](https://github.com/hale-lang/hale/blob/2f202c9094fff5f4219bd9ede6a1af0a4ba27ae3/iris/consumer/fuse-hl/main.hl#L186).
 - **S6:** [CLI-backed HTTP](https://github.com/hale-lang/hale/blob/2f202c9094fff5f4219bd9ede6a1af0a4ba27ae3/dna/ui/main.hl#L34), [sanitizer](https://github.com/hale-lang/hale/blob/2f202c9094fff5f4219bd9ede6a1af0a4ba27ae3/dna/ui/main.hl#L60), [routes and identity](https://github.com/hale-lang/hale/blob/2f202c9094fff5f4219bd9ede6a1af0a4ba27ae3/dna/ui/main.hl#L229).
 - **S7:** [practice commands](https://github.com/hale-lang/hale/blob/2f202c9094fff5f4219bd9ede6a1af0a4ba27ae3/dna/host/writers.hl#L631), [knowledge model](https://github.com/hale-lang/hale/blob/2f202c9094fff5f4219bd9ede6a1af0a4ba27ae3/dna/core/knowledge.hl#L15), [organization](https://github.com/hale-lang/hale/blob/2f202c9094fff5f4219bd9ede6a1af0a4ba27ae3/dna/core/org.hl#L1).
-- **S8, pending:** [workflow contract](https://github.com/hale-lang/hale/blob/cd8dcc43de744f28ec5f93b1a900f166bed2defd/dna/WORKFLOW-CONTRACT.md), [definition catalog](https://github.com/hale-lang/hale/blob/cd8dcc43de744f28ec5f93b1a900f166bed2defd/dna/core/workflow_definition.hl#L1), [pure projection](https://github.com/hale-lang/hale/blob/cd8dcc43de744f28ec5f93b1a900f166bed2defd/dna/core/workflow_projection.hl#L1).
+- **S8, merged September 18:** [workflow contract](https://github.com/hale-lang/hale/blob/9a3136ca801d1f84282614b9eb5529554f94308b/dna/WORKFLOW-CONTRACT.md), [definition catalog](https://github.com/hale-lang/hale/blob/9a3136ca801d1f84282614b9eb5529554f94308b/dna/core/workflow_definition.hl#L1), [pure projection](https://github.com/hale-lang/hale/blob/9a3136ca801d1f84282614b9eb5529554f94308b/dna/core/workflow_projection.hl#L1).
 - **S9:** [observer HTTP and SSE](https://github.com/hale-lang/hale/blob/2f202c9094fff5f4219bd9ede6a1af0a4ba27ae3/iris/consumer/fuse-hl/README.md), [shared-memory/PID attachment](https://github.com/hale-lang/hale/blob/2f202c9094fff5f4219bd9ede6a1af0a4ba27ae3/iris/consumer/obs_attach.c#L88).
 - **S10:** [toolchain image](https://github.com/hale-lang/hale/blob/2f202c9094fff5f4219bd9ede6a1af0a4ba27ae3/Dockerfile), [CI/Postgres](https://github.com/hale-lang/hale/blob/2f202c9094fff5f4219bd9ede6a1af0a4ba27ae3/.github/workflows/tests.yml#L126), [topology composition tests](https://github.com/hale-lang/hale/blob/2f202c9094fff5f4219bd9ede6a1af0a4ba27ae3/crates/hale-cli/tests/fleet_compose.rs#L1).
 - **S11:** [Ledger HTTP submission](https://github.com/hale-lang/hale/blob/2f202c9094fff5f4219bd9ede6a1af0a4ba27ae3/dna/knowledge/service/main.hl#L388), [request lookup/mark](https://github.com/hale-lang/hale/blob/2f202c9094fff5f4219bd9ede6a1af0a4ba27ae3/dna/knowledge/ledger.hl#L473).

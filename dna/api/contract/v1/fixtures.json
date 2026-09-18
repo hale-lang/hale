@@ -294,5 +294,293 @@
         }
       }
     }
+  },
+  {
+    "name": "organization-declared-structure",
+    "schema": "OrganizationResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "record-fixture",
+        "record_head": "record-head",
+        "record_revision": "7"
+      },
+      "data": {
+        "items": [
+          {
+            "id": "Org.review",
+            "declaration": "Reviewer",
+            "parent_id": "Org",
+            "thread_domain": "",
+            "role": "position",
+            "in_position_outline": true,
+            "source_file": "dna/org/main.hl",
+            "sealed": false,
+            "parameters": [
+              {
+                "name": "seen",
+                "type": "Int"
+              }
+            ],
+            "methods": [
+              "Reviewer::review"
+            ],
+            "publishes": [],
+            "subscribes": [
+              {
+                "topic": "Requests",
+                "handler": "review",
+                "capacity": "9007199254740993",
+                "shed": "oldest"
+              }
+            ],
+            "supervises": [
+              {
+                "child": "Worker",
+                "error": "Failure",
+                "ops": [
+                  "restart"
+                ],
+                "retry": null
+              }
+            ]
+          }
+        ],
+        "page": {
+          "limit": 25,
+          "offset": 0,
+          "total": 1,
+          "next_offset": -1,
+          "snapshot": "source-head:record-head:sha256:dependency-fixture:artifact-digest"
+        },
+        "basis": {
+          "source_head": "source-head",
+          "seed": "dna/org",
+          "artifact_digest": "artifact-digest",
+          "shape_hash": "shape-hash",
+          "schema": "1.19",
+          "semantics": 2,
+          "position_group_declared": true,
+          "exact_ownership": true,
+          "coverage": "static_instances",
+          "declaration_count": 2,
+          "uninstantiated_declaration_count": 0,
+          "dependency_digest": "sha256:dependency-fixture",
+          "dependency_source": "none"
+        },
+        "ownership": {
+          "mode": "shared",
+          "host_owner": "example",
+          "positions": [
+            {
+              "position": "org/review",
+              "owner": "example"
+            }
+          ],
+          "memberships": [
+            {
+              "owner": "example",
+              "members": [
+                "alice"
+              ]
+            }
+          ],
+          "instance_binding": "unavailable"
+        }
+      }
+    }
+  },
+  {
+    "name": "organization-numeric-capacity",
+    "schema": "OrganizationResponse",
+    "valid": false,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "record-fixture",
+        "record_head": "record-head",
+        "record_revision": "7"
+      },
+      "data": {
+        "items": [
+          {
+            "id": "Org.review",
+            "declaration": "Reviewer",
+            "parent_id": "Org",
+            "thread_domain": "",
+            "role": "position",
+            "in_position_outline": true,
+            "source_file": "dna/org/main.hl",
+            "sealed": false,
+            "parameters": [
+              {
+                "name": "seen",
+                "type": "Int"
+              }
+            ],
+            "methods": [
+              "Reviewer::review"
+            ],
+            "publishes": [],
+            "subscribes": [
+              {
+                "topic": "Requests",
+                "handler": "review",
+                "capacity": 9007199254740992,
+                "shed": "oldest"
+              }
+            ],
+            "supervises": [
+              {
+                "child": "Worker",
+                "error": "Failure",
+                "ops": [
+                  "restart"
+                ],
+                "retry": null
+              }
+            ]
+          }
+        ],
+        "page": {
+          "limit": 25,
+          "offset": 0,
+          "total": 1,
+          "next_offset": -1,
+          "snapshot": "source-head:record-head:sha256:dependency-fixture:artifact-digest"
+        },
+        "basis": {
+          "source_head": "source-head",
+          "seed": "dna/org",
+          "artifact_digest": "artifact-digest",
+          "shape_hash": "shape-hash",
+          "schema": "1.19",
+          "semantics": 2,
+          "position_group_declared": true,
+          "exact_ownership": true,
+          "coverage": "static_instances",
+          "declaration_count": 2,
+          "uninstantiated_declaration_count": 0,
+          "dependency_digest": "sha256:dependency-fixture",
+          "dependency_source": "none"
+        },
+        "ownership": {
+          "mode": "shared",
+          "host_owner": "example",
+          "positions": [
+            {
+              "position": "org/review",
+              "owner": "example"
+            }
+          ],
+          "memberships": [
+            {
+              "owner": "example",
+              "members": [
+                "alice"
+              ]
+            }
+          ],
+          "instance_binding": "unavailable"
+        }
+      }
+    }
+  },
+  {
+    "name": "organization-invented-ownership",
+    "schema": "OrganizationResponse",
+    "valid": false,
+    "value": {
+      "api_version": "hale.v1",
+      "source": {
+        "record_id": "record-fixture",
+        "record_head": "record-head",
+        "record_revision": "7"
+      },
+      "data": {
+        "items": [
+          {
+            "id": "Org.review",
+            "declaration": "Reviewer",
+            "parent_id": "Org",
+            "thread_domain": "",
+            "role": "position",
+            "in_position_outline": true,
+            "source_file": "dna/org/main.hl",
+            "sealed": false,
+            "parameters": [
+              {
+                "name": "seen",
+                "type": "Int"
+              }
+            ],
+            "methods": [
+              "Reviewer::review"
+            ],
+            "publishes": [],
+            "subscribes": [
+              {
+                "topic": "Requests",
+                "handler": "review",
+                "capacity": "9007199254740993",
+                "shed": "oldest"
+              }
+            ],
+            "supervises": [
+              {
+                "child": "Worker",
+                "error": "Failure",
+                "ops": [
+                  "restart"
+                ],
+                "retry": null
+              }
+            ]
+          }
+        ],
+        "page": {
+          "limit": 25,
+          "offset": 0,
+          "total": 1,
+          "next_offset": -1,
+          "snapshot": "source-head:record-head:sha256:dependency-fixture:artifact-digest"
+        },
+        "basis": {
+          "source_head": "source-head",
+          "seed": "dna/org",
+          "artifact_digest": "artifact-digest",
+          "shape_hash": "shape-hash",
+          "schema": "1.19",
+          "semantics": 2,
+          "position_group_declared": true,
+          "exact_ownership": true,
+          "coverage": "static_instances",
+          "declaration_count": 2,
+          "uninstantiated_declaration_count": 0,
+          "dependency_digest": "sha256:dependency-fixture",
+          "dependency_source": "none"
+        },
+        "ownership": {
+          "mode": "shared",
+          "host_owner": "example",
+          "positions": [
+            {
+              "position": "org/review",
+              "owner": "example"
+            }
+          ],
+          "memberships": [
+            {
+              "owner": "example",
+              "members": [
+                "alice"
+              ]
+            }
+          ],
+          "instance_binding": "inferred-from-path"
+        }
+      }
+    }
   }
 ]

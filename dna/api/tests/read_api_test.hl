@@ -1,4 +1,4 @@
-// Twenty-five named, live HTTP integration cases. This is an ordinary native
+// Thirty-three named, live HTTP integration cases. This is an ordinary native
 // Hale test program; no interpreter, database, model or external issuer is used.
 import "../../core" as dna;
 import "./fixture" as fixture;
@@ -20,6 +20,7 @@ locus Cases {
         self.json.is_bool(data, "read_only", true);
         self.json.is_bool(self.json.raw(data, "reads"), "practices", true);
         self.json.is_bool(self.json.raw(data, "reads"), "reviews", true);
+        self.json.is_bool(self.json.raw(data, "reads"), "organization", false);
         self.json.is_bool(self.json.raw(data, "writes"), "practice_propose", false);
         self.json.is_bool(self.json.raw(data, "writes"), "review_verdict", false);
         self.json.is_bool(data, "runtime_observation", false); self.json.is_bool(data, "recursive_workflows", false);
@@ -263,6 +264,175 @@ locus Cases {
         f.validate(f.http("GET", fixture::APPLICATIONS, old_session, ""), "ApplicationsResponse", 200);
         f.stop(); f.start(); f.error("GET", fixture::APPLICATIONS, 401, old_session, "");
     }
+    fn web_assets() {
+        let f = fixture::Fixture { root: self.root + "/26" };
+        let p = f.practice("PRIVATE-RECORD-NAME", "PRIVATE-RECORD-TEXT", "org", "", false);
+        f.prepare_web();
+        std::io::fs::write_file(f.webroot + "/secret.txt", "PRIVATE-ASSET-CANARY") or discard;
+        let before = f.refs(); f.start();
+        let paths = "/\n/app.js\n/styles.css";
+        let types = "text/html; charset=utf-8\ntext/javascript; charset=utf-8\ntext/css; charset=utf-8";
+        let mut i = 0;
+        while i < 3 {
+            let response = f.http("GET", dna::line_at(paths, i), "", "");
+            std::test::assert_eq_int(response.status, 200, response.body);
+            std::test::assert_eq_str(dna::response_header(response.headers, "Content-Type"), dna::line_at(types, i), "asset media type");
+            std::test::assert_eq_str(dna::response_header(response.headers, "Cache-Control"), "no-store", "assets are not cached");
+            std::test::assert_eq_str(dna::response_header(response.headers, "X-Content-Type-Options"), "nosniff", "assets are not sniffed");
+            let policy = dna::response_header(response.headers, "Content-Security-Policy");
+            std::test::assert(std::str::contains(policy, "default-src 'none'") && std::str::contains(policy, "script-src 'self'") && std::str::contains(policy, "style-src 'self'") && std::str::contains(policy, "connect-src 'self'") && std::str::contains(policy, "frame-ancestors 'none'") && !std::str::contains(policy, "unsafe-inline"), "same-origin external asset policy");
+            std::test::assert_eq_str(response.body, if i == 0 { fixture::SHELL_HTML } else if i == 1 { fixture::SHELL_JS } else { fixture::SHELL_CSS }, "exact static asset");
+            std::test::assert(!std::str::contains(response.body, p.text) && !std::str::contains(response.body, p.digest) && !std::str::contains(response.body, "PRIVATE-RECORD-NAME"), "static assets have no Record data");
+            f.error("POST", dna::line_at(paths, i), 405, "", "{}");
+            f.error("HEAD", dna::line_at(paths, i), 405, "", "");
+            i = i + 1;
+        }
+        let absent = "/index.html\n/secret.txt\n/main.hl\n/.git/config\n/../secret.txt\n/%2e%2e/secret.txt\n/app.js/../secret.txt\n/app.js.map\n/missing.css\n/nested/app.js\n//app.js\n/%61pp.js";
+        i = 0;
+        while i < dna::count_lines(absent) { f.error("GET", dna::line_at(absent, i), 404, "", ""); i = i + 1; }
+        // The configured bundle is fixed at startup; deleting a source file
+        // cannot fall through to another directory or change what is served.
+        let removed = dna::run_tool("rm\n" + f.webroot + "/app.js");
+        std::test::assert_eq_int(removed.code, 0, "remove loaded asset");
+        std::test::assert_eq_str(f.http("GET", "/app.js", "", "").body, fixture::SHELL_JS, "loaded bundle remains coherent");
+        f.read("practices", "", "");
+        std::test::assert_eq_str(f.refs(), before, "web requests preserve domain refs");
+    }
+    fn web_startup() {
+        let mut i = 0;
+        while i < 6 {
+            let f = fixture::Fixture { root: self.root + "/27-" + to_string(i) };
+            f.prepare_web();
+            if i < 3 {
+                let filename = if i == 0 { "index.html" } else if i == 1 { "app.js" } else { "styles.css" };
+                let removed = dna::run_tool("rm\n" + f.webroot + "/" + filename);
+                std::test::assert_eq_int(removed.code, 0, "remove required asset");
+            } else if i == 3 { f.webroot = f.root + "/absent"; }
+            else if i == 4 { f.webroot = ""; }
+            else { std::io::fs::write_file(f.webroot + "/index.html", "") or discard; }
+            let before = f.refs(); f.startup_refused("iris-webroot");
+            std::test::assert_eq_str(f.refs(), before, "invalid webroot preserves refs");
+            i = i + 1;
+        }
+    }
+    fn api_only() {
+        let f = fixture::Fixture { root: self.root + "/28" };
+        // Even if a bundle happens to be in the process's working directory,
+        // omitting argv 3 keeps the established API-only surface.
+        std::io::fs::write_file(f.root + "/index.html", fixture::SHELL_HTML) or discard;
+        std::io::fs::write_file(f.root + "/app.js", fixture::SHELL_JS) or discard;
+        std::io::fs::write_file(f.root + "/styles.css", fixture::SHELL_CSS) or discard;
+        f.start();
+        f.error("GET", "/", 404, "", ""); f.error("GET", "/app.js", 404, "", ""); f.error("GET", "/styles.css", 404, "", "");
+        f.validate(f.http("GET", fixture::APPLICATIONS, "", ""), "ApplicationsResponse", 200);
+    }
+    fn web_oidc() {
+        let f = fixture::Fixture { root: self.root + "/29" }; let p = f.standard();
+        f.prepare_web(); f.configure_oidc(self.issuer_url);
+        let shell = f.http("GET", "/", "", "");
+        std::test::assert_eq_int(shell.status, 200, "the public Runtime shell needs no DNA session");
+        std::test::assert_eq_str(shell.body, fixture::SHELL_HTML, "unauthenticated shell is static");
+        std::test::assert(!std::str::contains(shell.body, p.text), "no practice body in public shell");
+        std::test::assert_eq_int(f.http("GET", "/app.js", "", "").status, 200, "public script");
+        std::test::assert_eq_int(f.http("GET", "/styles.css", "", "").status, 200, "public styles");
+        f.error("GET", fixture::APPLICATIONS, 401, "", "");
+        f.error("GET", f.prefix + "/dna/practices", 401, "dna_session=forged", "");
+        let login = f.sign_in("");
+        std::test::assert_eq_int(login.status, 302, login.body);
+        std::test::assert_eq_str(dna::response_header(login.headers, "Location"), "/", "callback returns to served shell");
+        let session = fixture::cookie(login);
+        let landing = f.http("GET", dna::response_header(login.headers, "Location"), session, "");
+        std::test::assert_eq_int(landing.status, 200, "authenticated callback landing works");
+        std::test::assert_eq_str(landing.body, fixture::SHELL_HTML, "session changes no shell bytes");
+        self.json.eq(self.json.first(f.read("practices", "", session)), "digest", p.digest);
+        f.http("GET", "/auth/logout", session, "");
+        f.error("GET", fixture::APPLICATIONS, 401, session, "");
+        std::test::assert_eq_int(f.http("GET", "/", "", "").status, 200, "Runtime shell survives logout");
+    }
+    fn organization_seed(f: fixture::Fixture, extra: Bool) {
+        std::io::fs::mkdir(f.root + "/dna") or discard;
+        std::io::fs::mkdir(f.root + "/dna/org") or discard;
+        let code = "locus Reviewer { params { count: Int = 0; } fn total() -> Int { return self.count; } }\n"
+            + "locus Team { params { first: Reviewer = Reviewer { }; second: Reviewer = Reviewer { }; } }\n"
+            + "locus Metrics { params { count: Int = 0; } }\ngroup positions = { Reviewer };\n"
+            + "main locus Org { params { team: Team = Team { }; metrics: Metrics = Metrics { }; "
+            + (if extra { "audit: Reviewer = Reviewer { }; " } else { "" }) + "} }\nfn main() { Org { }; }\n";
+        std::io::fs::write_file(f.root + "/dna/org/main.hl", code) or raise;
+        std::io::fs::write_file(f.root + "/dna/org/owners", "org = acme\norg/team = north\nacme: alice\nnorth: bob\nhost = acme\n") or raise;
+        f.git("add\n--\ndna/org"); f.git("commit\n-q\n-m\norganization fixture");
+    }
+    fn organization_reads() {
+        let f = fixture::Fixture { root: self.root + "/30" };
+        self.organization_seed(f, false);
+        let before = f.refs(); f.start();
+        let caps = f.validate(f.http("GET", f.prefix + "/capabilities", "", ""), "CapabilitiesResponse", 200);
+        self.json.is_bool(self.json.raw(self.json.data(caps), "reads"), "organization", true);
+        let path = f.prefix + "/dna/organization";
+        let payload = f.validate(f.http("GET", path + "?limit=2", "", ""), "OrganizationResponse", 200);
+        f.source(payload);
+        self.json.is_int(self.json.page(payload), "total", 5);
+        let data = self.json.data(payload);
+        let basis = self.json.raw(data, "basis");
+        self.json.eq(basis, "source_head", f.git("rev-parse\nHEAD"));
+        self.json.eq(basis, "coverage", "static_instances");
+        self.json.is_bool(basis, "position_group_declared", true);
+        self.json.eq(self.json.raw(data, "ownership"), "instance_binding", "unavailable");
+        let snapshot = self.json.string(self.json.page(payload), "snapshot");
+        let second = f.validate(f.http("GET", path + "?limit=2&offset=2&snapshot=" + dna::url_encode(snapshot), "", ""), "OrganizationResponse", 200);
+        std::test::assert_eq_int(self.json.count(second), 2, "second organization page");
+        let detail = f.validate(f.http("GET", path + "?id=Org.team.first&snapshot=" + dna::url_encode(snapshot), "", ""), "OrganizationResponse", 200);
+        let node = self.json.first(detail);
+        self.json.eq(node, "id", "Org.team.first"); self.json.eq(node, "parent_id", "Org.team");
+        self.json.eq(node, "role", "position"); self.json.eq(node, "declaration", "Reviewer");
+        self.json.is_bool(node, "in_position_outline", true);
+        f.error("GET", path + "?id=org%2Fteam", 404, "", "");
+        std::test::assert_eq_str(f.refs(), before, "organization reads change no source or Record refs");
+    }
+    fn organization_snapshots() {
+        let f = fixture::Fixture { root: self.root + "/31" };
+        self.organization_seed(f, false); f.start();
+        let path = f.prefix + "/dna/organization";
+        let first = f.validate(f.http("GET", path, "", ""), "OrganizationResponse", 200);
+        let snapshot = self.json.string(self.json.page(first), "snapshot");
+        std::io::fs::write_file(f.root + "/dna/org/main.hl", "INVALID DIRTY SOURCE") or raise;
+        let clean = f.validate(f.http("GET", path + "?snapshot=" + dna::url_encode(snapshot), "", ""), "OrganizationResponse", 200);
+        std::test::assert_eq_str(first, clean, "dirty source is not presented as committed structure");
+        self.organization_seed(f, true);
+        f.error("GET", path + "?snapshot=" + dna::url_encode(snapshot), 409, "", "");
+        let changed = f.validate(f.http("GET", path, "", ""), "OrganizationResponse", 200);
+        self.json.is_int(self.json.page(changed), "total", 6);
+        let next_snapshot = self.json.string(self.json.page(changed), "snapshot");
+        std::test::assert(next_snapshot != snapshot, "source commit changes organization snapshot");
+        f.append("organization.fixture", "org", "advance Record without changing Structure");
+        f.error("GET", path + "?snapshot=" + dna::url_encode(next_snapshot), 409, "", "");
+        let latest = f.validate(f.http("GET", path, "", ""), "OrganizationResponse", 200);
+        self.json.is_int(self.json.page(latest), "total", 6);
+    }
+    fn organization_failure() {
+        let f = fixture::Fixture { root: self.root + "/32" };
+        f.start(); f.error("GET", f.prefix + "/dna/organization", 503, "", "");
+        self.organization_seed(f, false);
+        f.validate(f.http("GET", f.prefix + "/dna/organization", "", ""), "OrganizationResponse", 200);
+        std::io::fs::write_file(f.root + "/dna/org/main.hl", "PRIVATE INVALID SOURCE") or raise;
+        f.git("add\n--\ndna/org/main.hl"); f.git("commit\n-q\n-m\ninvalid declared source");
+        let response = f.http("GET", f.prefix + "/dna/organization", "", "");
+        f.validate(response, "ErrorResponse", 503);
+        self.json.eq(self.json.raw(response.body, "error"), "code", "organization_check_failed");
+        std::test::assert(!std::str::contains(response.body, "PRIVATE INVALID SOURCE") && !std::str::contains(response.body, "Org.team"), "failed refresh returns neither compiler internals nor old structure");
+    }
+    fn organization_identity() {
+        let f = fixture::Fixture { root: self.root + "/33" };
+        self.organization_seed(f, false); f.configure_oidc(self.issuer_url);
+        let path = f.prefix + "/dna/organization?id=Org.team.first";
+        f.error("GET", path, 401, "", "");
+        let session = fixture::cookie(f.sign_in(""));
+        let payload = f.validate(f.http("GET", path, session, ""), "OrganizationResponse", 200);
+        self.json.eq(self.json.first(payload), "id", "Org.team.first");
+        let capability = f.validate(f.http("GET", f.prefix + "/capabilities", session, ""), "CapabilitiesResponse", 200);
+        self.json.eq(self.json.raw(self.json.data(capability), "principal"), "name", "alice");
+        f.http("GET", "/auth/logout", session, "");
+        f.error("GET", path, 401, session, "");
+    }
     fn all() {
         // Each named method owns one isolated Record; a passing Hale test is silent.
         self.application_identity();
@@ -290,6 +460,14 @@ locus Cases {
         self.oidc_refusals();
         self.oidc_incomplete();
         self.oidc_session();
+        self.web_assets();
+        self.web_startup();
+        self.api_only();
+        self.web_oidc();
+        self.organization_reads();
+        self.organization_snapshots();
+        self.organization_failure();
+        self.organization_identity();
     }
 }
 
@@ -314,7 +492,9 @@ fn main() {
     // redirect a temporary Record into another checkout or object directory.
     if std::env::var("HALE_API_TEST_CLEAN") != "1" {
         let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_KNOWLEDGE_DSN\n-u\nHALE_DNA_KNOWLEDGE_URL\n-u\nHALE_DNA_EVIDENCE_KEY\n-u\nHALE_DNA_OIDC_SECRET\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_API_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
-        print(clean.stdout); eprint(clean.stderr); std::process::exit(if clean.code < 0 { 1 } else { clean.code });
+        print(clean.stdout);
+        if len(clean.stderr) > 0 { eprintln(clean.stderr); }
+        std::process::exit(if clean.code < 0 { 1 } else { clean.code });
     }
     let forbidden = "GIT_DIR\nGIT_COMMON_DIR\nGIT_CONFIG\nGIT_NAMESPACE\nGIT_WORK_TREE\nGIT_INDEX_FILE\nGIT_OBJECT_DIRECTORY\nGIT_ALTERNATE_OBJECT_DIRECTORIES\nGIT_CONFIG_COUNT\nGIT_CONFIG_PARAMETERS\nHALE_DNA_KNOWLEDGE_DSN\nHALE_DNA_KNOWLEDGE_URL\nHALE_DNA_EVIDENCE_KEY\nHALE_DNA_OIDC_SECRET";
     let mut i = 0;

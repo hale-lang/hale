@@ -11,6 +11,7 @@
 
 import "../core" as dna;
 import "../knowledge" as know;
+import "./ledger_read_health" as read_health_cases;
 
 fn ledger_contract(l: know::Ledger, label: String) {
     std::test::assert(l.open(), label + ": opens: " + l.last_error());
@@ -72,6 +73,7 @@ fn lease_contract(ls: know::LeaseStore, label: String) {
 main locus App {
     params { pg: know::PqLedger = know::PqLedger { }; pgl: know::PqLeaseStore = know::PqLeaseStore { }; }
     run() {
+        read_health_cases::run_cases();
         let mem = know::MemLedger { };
         ledger_contract(mem, "memory");
         let ml = know::MemLeaseStore { };

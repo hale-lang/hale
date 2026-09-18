@@ -1,0 +1,185 @@
+// Strict syntax before the stdlib's deliberately permissive JSON cursors.
+// Carry one byte length through the parser: len(String) is a native strlen,
+// so calling it or making checked one-byte slices in the scan is quadratic.
+// Keys are literal/unescaped; values accept Unicode and paired surrogates.
+locus OrganizationJson {
+    params { }
+    fn utf8(text: String, size: Int) -> Bool {
+        let mut i = 0;
+        while i < size {
+            let c = std::str::byte_at_unchecked(text, i);
+            if c < 128 { i = i + 1; continue; }
+            let n = if c >= 194 && c <= 223 { 2 } else if c >= 224 && c <= 239 { 3 } else if c >= 240 && c <= 244 { 4 } else { 0 };
+            if n == 0 || i + n > size { return false; }
+            let second = std::str::byte_at_unchecked(text, i + 1);
+            if (c == 224 && second < 160) || (c == 237 && second > 159) || (c == 240 && second < 144) || (c == 244 && second > 143) { return false; }
+            let mut k = 1;
+            while k < n {
+                let part = std::str::byte_at_unchecked(text, i + k);
+                if part < 128 || part > 191 { return false; }
+                k = k + 1;
+            }
+            i = i + n;
+        }
+        return true;
+    }
+    fn hex(c: Int) -> Bool { return (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102); }
+    fn hex_value(c: Int) -> Int {
+        if c >= 48 && c <= 57 { return c - 48; }
+        if c >= 65 && c <= 70 { return c - 55; }
+        return c - 87;
+    }
+    fn codepoint(text: String, start: Int) -> Int {
+        let mut cp = 0;
+        let mut i = start;
+        while i < start + 4 {
+            cp = cp * 16 + self.hex_value(std::str::byte_at_unchecked(text, i));
+            i = i + 1;
+        }
+        return cp;
+    }
+    fn space(text: String, start: Int, size: Int) -> Int {
+        let mut p = start;
+        while p < size {
+            let c = std::str::byte_at_unchecked(text, p);
+            if c != 32 && c != 9 && c != 10 && c != 13 { return p; }
+            p = p + 1;
+        }
+        return p;
+    }
+    fn string_end(text: String, start: Int, size: Int) -> Int {
+        if start >= size || std::str::byte_at_unchecked(text, start) != 34 { return -1; }
+        let mut p = start + 1;
+        while p < size {
+            let c = std::str::byte_at_unchecked(text, p);
+            if c == 34 { return p + 1; }
+            if c < 32 { return -1; }
+            if c == 92 {
+                p = p + 1;
+                if p >= size { return -1; }
+                let e = std::str::byte_at_unchecked(text, p);
+                if e == 117 {
+                    if p + 4 >= size { return -1; }
+                    let mut h = p + 1;
+                    while h <= p + 4 {
+                        if !self.hex(std::str::byte_at_unchecked(text, h)) { return -1; }
+                        h = h + 1;
+                    }
+                    let cp = self.codepoint(text, p + 1);
+                    // Native strings are NUL-terminated; a decoded NUL is not
+                    // an admissible value. Low surrogates require a high one.
+                    if cp == 0 || (cp >= 56320 && cp <= 57343) { return -1; }
+                    if cp >= 55296 && cp <= 56319 {
+                        if p + 10 >= size || std::str::byte_at_unchecked(text, p + 5) != 92 || std::str::byte_at_unchecked(text, p + 6) != 117 { return -1; }
+                        h = p + 7;
+                        while h <= p + 10 {
+                            if !self.hex(std::str::byte_at_unchecked(text, h)) { return -1; }
+                            h = h + 1;
+                        }
+                        let low = self.codepoint(text, p + 7);
+                        if low < 56320 || low > 57343 { return -1; }
+                        p = p + 6;
+                    }
+                    p = p + 4;
+                } else if e != 34 && e != 92 && e != 47 && e != 98 && e != 102 && e != 110 && e != 114 && e != 116 { return -1; }
+            }
+            p = p + 1;
+        }
+        return -1;
+    }
+    fn number_end(text: String, start: Int, size: Int) -> Int {
+        let mut p = start;
+        if p < size && std::str::byte_at_unchecked(text, p) == 45 { p = p + 1; }
+        if p >= size { return -1; }
+        if std::str::byte_at_unchecked(text, p) == 48 { p = p + 1; } else {
+            let first = std::str::byte_at_unchecked(text, p);
+            if first < 49 || first > 57 { return -1; }
+            while p < size {
+                let c = std::str::byte_at_unchecked(text, p);
+                if c < 48 || c > 57 { break; }
+                p = p + 1;
+            }
+        }
+        if p < size && std::str::byte_at_unchecked(text, p) == 46 {
+            p = p + 1;
+            let begin = p;
+            while p < size {
+                let c = std::str::byte_at_unchecked(text, p);
+                if c < 48 || c > 57 { break; }
+                p = p + 1;
+            }
+            if p == begin { return -1; }
+        }
+        if p < size && (std::str::byte_at_unchecked(text, p) == 101 || std::str::byte_at_unchecked(text, p) == 69) {
+            p = p + 1;
+            if p < size && (std::str::byte_at_unchecked(text, p) == 43 || std::str::byte_at_unchecked(text, p) == 45) { p = p + 1; }
+            let begin = p;
+            while p < size {
+                let c = std::str::byte_at_unchecked(text, p);
+                if c < 48 || c > 57 { break; }
+                p = p + 1;
+            }
+            if p == begin { return -1; }
+        }
+        return p;
+    }
+    fn key(text: String, start: Int, end: Int) -> String {
+        let bytes = std::bytes::BytesBuilder { };
+        let mut i = start;
+        while i < end { bytes.append_u8(std::str::byte_at_unchecked(text, i)); i = i + 1; }
+        return std::str::from_bytes(bytes.snapshot());
+    }
+    fn keyword(text: String, start: Int, size: Int, word: String) -> Int {
+        let width = len(word);
+        if start + width > size { return -1; }
+        let mut i = 0;
+        while i < width {
+            if std::str::byte_at_unchecked(text, start + i) != std::str::byte_at_unchecked(word, i) { return -1; }
+            i = i + 1;
+        }
+        return start + width;
+    }
+    fn value_end(text: String, start: Int, depth: Int, size: Int) -> Int {
+        if depth > 64 { return -1; }
+        let mut p = self.space(text, start, size);
+        if p >= size { return -1; }
+        let c = std::str::byte_at_unchecked(text, p);
+        if c == 34 { return self.string_end(text, p, size); }
+        if c == 123 || c == 91 {
+            let end = if c == 123 { 125 } else { 93 };
+            p = self.space(text, p + 1, size);
+            if p < size && std::str::byte_at_unchecked(text, p) == end { return p + 1; }
+            let mut keys = "|";
+            while p < size {
+                if c == 123 {
+                    let k = self.string_end(text, p, size);
+                    if k < 0 { return -1; }
+                    let key = self.key(text, p + 1, k - 1);
+                    if std::str::contains(key, "\\") || std::str::contains(key, "|") || std::str::contains(keys, "|" + key + "|") { return -1; }
+                    keys = keys + key + "|";
+                    p = self.space(text, k, size);
+                    if p >= size || std::str::byte_at_unchecked(text, p) != 58 { return -1; }
+                    p = self.space(text, p + 1, size);
+                }
+                p = self.value_end(text, p, depth + 1, size);
+                if p < 0 { return -1; }
+                p = self.space(text, p, size);
+                if p >= size { return -1; }
+                if std::str::byte_at_unchecked(text, p) == end { return p + 1; }
+                if std::str::byte_at_unchecked(text, p) != 44 { return -1; }
+                p = self.space(text, p + 1, size);
+            }
+            return -1;
+        }
+        if c == 116 { return self.keyword(text, p, size, "true"); }
+        if c == 110 { return self.keyword(text, p, size, "null"); }
+        if c == 102 { return self.keyword(text, p, size, "false"); }
+        return self.number_end(text, p, size);
+    }
+    fn valid(text: String) -> Bool {
+        let size = len(text);
+        if !self.utf8(text, size) { return false; }
+        let p = self.value_end(text, 0, 0, size);
+        return p >= 0 && self.space(text, p, size) == size;
+    }
+}

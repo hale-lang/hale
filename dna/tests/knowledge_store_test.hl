@@ -16,6 +16,8 @@
 
 import "../core" as dna;
 import "../knowledge" as know;
+import "./knowledge_projection_fidelity" as fidelity_cases;
+import "./knowledge_visibility" as visibility_cases;
 
 // Postgres builds its JSON server-side and Hale's builder spaces its
 // separators; both are the same document, so compare without them.
@@ -132,6 +134,8 @@ main locus App {
         std::test::assert(store.set_watermark(2) && store.watermark() == self.j.revision(), label + ": a lower watermark does not move it back");
     }
     run() {
+        fidelity_cases::run_cases();
+        visibility_cases::run_cases();
         std::io::fs::mkdir("/tmp/dna-know-receipts") or discard;
         self.exercise(self.mem, "mem");
         // a second store over the same record, from zero, reaches the same state

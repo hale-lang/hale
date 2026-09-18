@@ -27,7 +27,9 @@ fn idea_of(digest: String, doc: String, provenance: String, accepted: Bool, revi
         kind: std::json::find_string_field(doc, "kind"),
         text: std::json::find_string_field(doc, "text"),
         author: std::json::find_string_field(doc, "author"),
-        provenance: provenance, revision: revision, accepted: accepted
+        provenance: provenance, revision: revision, accepted: accepted,
+        name: std::json::find_string_field(doc, "name"),
+        supersedes: std::json::find_string_field(doc, "supersedes")
     };
 }
 
@@ -131,4 +133,161 @@ fn redacted_in(j: dna::Journal, digest: String) -> Bool {
         i = i + 1;
     }
     return false;
+}
+
+// A graph read never discloses a protected body implicitly. Build this index
+// once per read, in the service that owns both memories, before filtering nodes,
+// edges, labels or counts. The caller must check unchanged() before publishing
+// the result. This is receipt visibility, not authentication or position grants.
+type KnowledgeVisibilityBasis {
+    available: Bool = false;
+    record_head: String = "";
+    record_revision: Int = 0;
+    ledger_head: String = "";
+    ledger_revision: Int = 0;
+    checkpoint: String = "";
+    routing: Int = 0;
+    error: String = "knowledge_visibility_unavailable";
+}
+
+type KnowledgeRestriction { id: String = ""; }
+
+// Supplied by the service composition (operations::OrganizationJson satisfies
+// this contract): complete JSON syntax, unique literal keys, valid UTF-8, and
+// bounded nesting. Permissive stdlib field lookup alone cannot establish policy.
+interface KnowledgePolicySyntax { fn valid(text: String) -> Bool; }
+locus NoKnowledgePolicySyntax {
+    params { }
+    fn valid(text: String) -> Bool { return false; }
+}
+
+@form(hashmap)
+locus KnowledgeRestrictions {
+    capacity { pool rows of KnowledgeRestriction indexed_by id; }
+}
+
+fn knowledge_receipt_id(id: String) -> String {
+    if len(id) != 64 && len(id) != 71 { return ""; }
+    let canonical = if len(id) == 64 { "sha256:" + id } else { id };
+    return if dna::digest_well_formed(canonical) { canonical } else { "" };
+}
+
+locus KnowledgeVisibility {
+    params {
+        record: dna::Journal = dna::MemJournal { };
+        ledger: Ledger = MemLedger { };
+        syntax: KnowledgePolicySyntax = NoKnowledgePolicySyntax { };
+        restrictions: KnowledgeRestrictions = KnowledgeRestrictions { };
+        basis: KnowledgeVisibilityBasis = KnowledgeVisibilityBasis { };
+        captured: Bool = false;
+        max_rows: Int = 10000;
+        max_bytes: Int = 8388608;
+        scanned_bytes: Int = 0;
+    }
+    fn refuse(code: String) -> KnowledgeVisibilityBasis {
+        self.basis.available = false;
+        self.basis.error = code;
+        return self.basis;
+    }
+    fn inspect(e: dna::Event) -> Bool {
+        let size = len(e.kind) + len(e.entity) + len(e.body);
+        if size > self.max_bytes - self.scanned_bytes { return false; }
+        self.scanned_bytes = self.scanned_bytes + size;
+        if e.kind != "receipt.redacted" && e.kind != "receipt.classified" && e.kind != "receipt.withheld" && e.kind != "receipt.filed" { return true; }
+        let id = knowledge_receipt_id(e.entity);
+        if len(id) == 0 { self.basis.error = "knowledge_visibility_unavailable"; return false; }
+        if !self.syntax.valid(e.body) || !std::str::starts_with(std::str::trim(e.body), "{") { self.basis.error = "knowledge_visibility_unavailable"; return false; }
+        let class = std::json::find_field_raw(e.body, "class");
+        // Restriction is sticky within a captured view: a later public label
+        // does not undo a redaction, return a withheld body or grant disclosure.
+        if e.kind == "receipt.redacted" || e.kind == "receipt.withheld" || (class != "\"public\"" && class != "\"internal\"") {
+            self.restrictions.set(KnowledgeRestriction { id: id });
+        }
+        return true;
+    }
+    fn load() -> KnowledgeVisibilityBasis {
+        // The index is a request child. Reusing it would mix policy snapshots.
+        if self.captured { return self.refuse("knowledge_visibility_unavailable"); }
+        self.captured = true;
+        if self.max_rows < 1 || self.max_bytes < 1 { return self.refuse("knowledge_read_limit"); }
+        let moved = self.record.refresh();
+        self.basis.record_head = self.record.head();
+        self.basis.record_revision = self.record.revision();
+        // GitJournal's legacy refresh has no error channel and may represent a
+        // failed read as empty genesis. That cannot authorize cached graph rows.
+        if self.basis.record_revision == 0 || self.basis.record_head == "genesis" || len(self.basis.record_head) == 0 { return self.refuse("knowledge_visibility_unavailable"); }
+        if self.basis.record_revision < 0 || self.basis.record_revision > self.max_rows { return self.refuse("knowledge_read_limit"); }
+        let mut i = 0;
+        while i < self.basis.record_revision {
+            let e = self.record.read(i);
+            self.basis.error = "knowledge_read_limit";
+            if e.seq != i { return self.refuse("knowledge_visibility_unavailable"); }
+            if !self.inspect(e) { return self.refuse(self.basis.error); }
+            if e.kind == "ledger.abandoned" {
+                // Abandonment destroys old Ledger restrictions; switching back
+                // to Record does not establish their absence.
+                return self.refuse("knowledge_visibility_unavailable");
+            }
+            if e.kind == "ledger.adopted" {
+                if !self.syntax.valid(e.body) || !std::str::starts_with(std::str::trim(e.body), "{") || std::json::find_field_raw(e.body, "routing") != to_string(dna::ROUTING_VERSION) { return self.refuse("knowledge_visibility_unavailable"); }
+                let raw_checkpoint = std::json::find_field_raw(e.body, "checkpoint");
+                if len(raw_checkpoint) < 2 || !std::str::starts_with(raw_checkpoint, "\"") { return self.refuse("knowledge_visibility_unavailable"); }
+                self.basis.routing = std::json::find_int_field(e.body, "routing");
+                self.basis.checkpoint = std::json::find_string_field(e.body, "checkpoint");
+                if self.basis.routing != dna::ROUTING_VERSION || len(self.basis.checkpoint) == 0 { return self.refuse("knowledge_visibility_unavailable"); }
+            }
+            i = i + 1;
+        }
+        if !self.record.verify_chain() { return self.refuse("knowledge_visibility_unavailable"); }
+        if self.basis.routing > 0 {
+            let refreshed = self.ledger.refresh();
+            let cut = self.ledger.checkpoint();
+            if len(self.ledger.last_error()) > 0 || !cut.adopted || cut.routing != self.basis.routing || cut.checkpoint != self.basis.checkpoint { return self.refuse("knowledge_visibility_unavailable"); }
+            self.basis.ledger_head = self.ledger.head();
+            self.basis.ledger_revision = self.ledger.revision();
+            if self.basis.ledger_revision < 0 || self.basis.ledger_revision > self.max_rows - self.basis.record_revision { return self.refuse("knowledge_read_limit"); }
+            if cut.copied < 0 || cut.copied > self.basis.ledger_revision { return self.refuse("knowledge_visibility_unavailable"); }
+            i = 0;
+            while i < self.basis.ledger_revision {
+                let e = self.ledger.read(i);
+                self.basis.error = "knowledge_read_limit";
+                if e.seq != i { return self.refuse("knowledge_visibility_unavailable"); }
+                if !self.inspect(e) { return self.refuse(self.basis.error); }
+                i = i + 1;
+            }
+            if !self.ledger.verify_chain() { return self.refuse("knowledge_visibility_unavailable"); }
+        }
+        self.basis.available = true;
+        self.basis.error = "";
+        if !self.unchanged() { return self.basis; }
+        return self.basis;
+    }
+    fn visible(digest: String) -> Bool {
+        if !self.basis.available { return false; }
+        let id = knowledge_receipt_id(digest);
+        if len(id) == 0 { return false; }
+        let restricted = self.restrictions.get(id) or KnowledgeRestriction { };
+        return len(restricted.id) == 0;
+    }
+    fn unchanged() -> Bool {
+        if !self.basis.available { return false; }
+        let moved = self.record.refresh();
+        if self.record.head() != self.basis.record_head || self.record.revision() != self.basis.record_revision {
+            let refused = self.refuse("snapshot_changed");
+            return false;
+        }
+        if self.basis.routing > 0 {
+            let refreshed = self.ledger.refresh();
+            let cut = self.ledger.checkpoint();
+            if len(self.ledger.last_error()) > 0 {
+                let refused = self.refuse("knowledge_visibility_unavailable");
+                return false;
+            }
+            if !cut.adopted || cut.routing != self.basis.routing || cut.checkpoint != self.basis.checkpoint || self.ledger.head() != self.basis.ledger_head || self.ledger.revision() != self.basis.ledger_revision {
+                let refused = self.refuse("snapshot_changed");
+                return false;
+            }
+        }
+        return true;
+    }
 }
