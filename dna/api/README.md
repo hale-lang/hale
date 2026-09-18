@@ -5,9 +5,11 @@ DNA Record. It runs independently of the organization body, Postgres and Iris.
 Typed projections in `dna/operations` are shared with the native CLI. The API
 does not execute CLI commands or parse terminal output.
 
-This is an experimental source-built service. There is no `hale dna api` launcher,
-Compose service profile or browser cockpit in this slice. The remaining work is
-tracked in [SERVICE-DEVELOPMENT-PLAN.md](../SERVICE-DEVELOPMENT-PLAN.md).
+This is an experimental source-built service. An optional
+[Iris cockpit](../../iris/cockpit/README.md) browses these reads from the same
+origin. There is no `hale dna api` launcher or Compose service profile yet.
+The remaining work is tracked in
+[SERVICE-DEVELOPMENT-PLAN.md](../SERVICE-DEVELOPMENT-PLAN.md).
 
 ## Run
 
@@ -24,6 +26,19 @@ binds only `127.0.0.1`. Stop it with Ctrl-C. Discover the native application id:
 ```sh
 curl http://127.0.0.1:8792/api/hale/v1/applications
 ```
+
+To serve the cockpit as well, pass its static directory as the third argument:
+
+```sh
+./dna/api/api /absolute/path/to/a/dna-project 8792 "$PWD/iris/cockpit/web"
+```
+
+Open <http://127.0.0.1:8792/>. Only `/`, `/app.js` and `/styles.css` are served;
+URLs never become filesystem paths. All three assets must exist and be nonempty
+at startup. They are loaded once, so restart after changing them. API-only mode
+retains its existing routes. No legacy mutation routes are enabled in either
+mode. Browser assets and authentication share the API origin; there is no
+cross-origin API contract.
 
 Use the returned id in the following routes:
 
@@ -60,6 +75,12 @@ Sessions are in memory. Restart requires another login; Record identities and
 read results persist. The existing UI's legacy command routes are never routed
 through this server. A mapped member has the existing Record-reading scope;
 position-scoped permissions and remote CLI tokens are future work.
+
+The optional cockpit shell and assets are public static content with no Record
+data. They can show the sign-in state and independent Runtime connection before
+authentication. Record reads still require a valid session in OIDC mode. After
+successful sign-in the existing callback redirects to `/`, where the cockpit
+loads the authenticated API data.
 
 Practice documents must match their content digest, proposal metadata and a
 supported native canonical encoding. Redacted/protected text is suppressed even

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Iris · Hale cockpit</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to workspace</a>
+  <div class="shell">
+    <aside class="sidebar" aria-label="Cockpit navigation">
+      <a class="brand" href="#/practices" aria-label="Iris home">
+        <span class="brand-symbol" aria-hidden="true"><span></span></span>
+        <span class="brand-name">iris<span class="brand-caption">The Hale cockpit</span></span>
+      </a>
+      <div class="application-control">
+        <label class="eyebrow" for="application">Application</label>
+        <select id="application" disabled><option>Connecting…</option></select>
+        <p id="connection-caption" class="quiet">Reading the local service</p>
+      </div>
+      <nav aria-label="Workspaces">
+        <p class="nav-label">Workspace</p>
+        <a id="nav-practices" class="nav-item" href="#/practices"><span class="nav-glyph" aria-hidden="true">▤</span><span>Practices</span><span class="nav-chevron" aria-hidden="true">›</span></a>
+        <a id="nav-reviews" class="nav-item" href="#/reviews"><span class="nav-glyph" aria-hidden="true">◇</span><span>Reviews</span><span class="nav-chevron" aria-hidden="true">›</span></a>
+        <a id="nav-runtime" class="nav-item" href="#/runtime"><span class="nav-glyph" aria-hidden="true">◉</span><span>Runtime</span><span class="nav-chevron" aria-hidden="true">›</span></a>
+        <p class="nav-label models-label">Model</p>
+        <button class="nav-item unavailable-nav" type="button" disabled aria-describedby="model-note"><span class="nav-glyph" aria-hidden="true">⌘</span><span>Organization</span><small>Unavailable</small></button>
+        <button class="nav-item unavailable-nav" type="button" disabled aria-describedby="model-note"><span class="nav-glyph" aria-hidden="true">⊞</span><span>Knowledge</span><small>Unavailable</small></button>
+        <button class="nav-item unavailable-nav" type="button" disabled aria-describedby="model-note"><span class="nav-glyph" aria-hidden="true">⌑</span><span>Definitions</span><small>Unavailable</small></button>
+        <p id="model-note" class="nav-note">This connection does not provide these workspaces yet.</p>
+      </nav>
+      <div class="sidebar-footer"><span class="small-mark" aria-hidden="true">h.</span><div>Built on Hale<span>Inspect the system. Understand the work.</span></div></div>
+    </aside>
+    <main id="main" tabindex="-1">
+      <header class="topbar">
+        <div class="breadcrumb"><span>Workspace</span><span aria-hidden="true">/</span><span id="breadcrumb-current">Practices</span></div>
+        <div class="topbar-actions"><span id="principal" class="principal">Connecting</span><a id="sign-out" class="text-link" href="/auth/logout" hidden>Sign out</a><span class="read-only"><span aria-hidden="true">◌</span> Read only</span></div>
+      </header>
+      <div class="workspace">
+        <div class="workspace-heading">
+          <div><p id="workspace-kicker" class="eyebrow accent">ORGANIZATIONAL MEMORY</p><h1 id="workspace-title">Practices</h1><p id="workspace-description" class="workspace-description">The agreements that guide this application, and the decisions behind them.</p></div>
+          <button id="refresh" class="button secondary" type="button"><span aria-hidden="true">↻</span> Refresh</button>
+        </div>
+        <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+        <section id="source" class="source-strip" aria-label="Inspected Record snapshot" hidden></section>
+        <div id="content" aria-busy="true"><section class="state-card"><span class="state-symbol" aria-hidden="true">◌</span><h2>Connecting to the application</h2><p>Reading the service and its available capabilities.</p></section></div>
+        <footer id="workspace-footer" class="workspace-footer"><span>Hale API · v1</span><span>State is read from the Record. No changes are made here.</span></footer>
+      </div>
+    </main>
+  </div>
+  <div id="announcement" class="sr-only" role="status" aria-live="polite"></div>
+  <noscript><p class="noscript">Iris needs JavaScript to read the service. The native Hale CLI remains available.</p></noscript>
+</body>
+</html>

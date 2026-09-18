@@ -1,4 +1,4 @@
-// Twenty-five named, live HTTP integration cases. This is an ordinary native
+// Twenty-nine named, live HTTP integration cases. This is an ordinary native
 // Hale test program; no interpreter, database, model or external issuer is used.
 import "../../core" as dna;
 import "./fixture" as fixture;
@@ -263,6 +263,91 @@ locus Cases {
         f.validate(f.http("GET", fixture::APPLICATIONS, old_session, ""), "ApplicationsResponse", 200);
         f.stop(); f.start(); f.error("GET", fixture::APPLICATIONS, 401, old_session, "");
     }
+    fn web_assets() {
+        let f = fixture::Fixture { root: self.root + "/26" };
+        let p = f.practice("PRIVATE-RECORD-NAME", "PRIVATE-RECORD-TEXT", "org", "", false);
+        f.prepare_web();
+        std::io::fs::write_file(f.webroot + "/secret.txt", "PRIVATE-ASSET-CANARY") or discard;
+        let before = f.refs(); f.start();
+        let paths = "/\n/app.js\n/styles.css";
+        let types = "text/html; charset=utf-8\ntext/javascript; charset=utf-8\ntext/css; charset=utf-8";
+        let mut i = 0;
+        while i < 3 {
+            let response = f.http("GET", dna::line_at(paths, i), "", "");
+            std::test::assert_eq_int(response.status, 200, response.body);
+            std::test::assert_eq_str(dna::response_header(response.headers, "Content-Type"), dna::line_at(types, i), "asset media type");
+            std::test::assert_eq_str(dna::response_header(response.headers, "Cache-Control"), "no-store", "assets are not cached");
+            std::test::assert_eq_str(dna::response_header(response.headers, "X-Content-Type-Options"), "nosniff", "assets are not sniffed");
+            let policy = dna::response_header(response.headers, "Content-Security-Policy");
+            std::test::assert(std::str::contains(policy, "default-src 'none'") && std::str::contains(policy, "script-src 'self'") && std::str::contains(policy, "style-src 'self'") && std::str::contains(policy, "connect-src 'self'") && std::str::contains(policy, "frame-ancestors 'none'") && !std::str::contains(policy, "unsafe-inline"), "same-origin external asset policy");
+            std::test::assert_eq_str(response.body, if i == 0 { fixture::SHELL_HTML } else if i == 1 { fixture::SHELL_JS } else { fixture::SHELL_CSS }, "exact static asset");
+            std::test::assert(!std::str::contains(response.body, p.text) && !std::str::contains(response.body, p.digest) && !std::str::contains(response.body, "PRIVATE-RECORD-NAME"), "static assets have no Record data");
+            f.error("POST", dna::line_at(paths, i), 405, "", "{}");
+            f.error("HEAD", dna::line_at(paths, i), 405, "", "");
+            i = i + 1;
+        }
+        let absent = "/index.html\n/secret.txt\n/main.hl\n/.git/config\n/../secret.txt\n/%2e%2e/secret.txt\n/app.js/../secret.txt\n/app.js.map\n/missing.css\n/nested/app.js\n//app.js\n/%61pp.js";
+        i = 0;
+        while i < dna::count_lines(absent) { f.error("GET", dna::line_at(absent, i), 404, "", ""); i = i + 1; }
+        // The configured bundle is fixed at startup; deleting a source file
+        // cannot fall through to another directory or change what is served.
+        let removed = dna::run_tool("rm\n" + f.webroot + "/app.js");
+        std::test::assert_eq_int(removed.code, 0, "remove loaded asset");
+        std::test::assert_eq_str(f.http("GET", "/app.js", "", "").body, fixture::SHELL_JS, "loaded bundle remains coherent");
+        f.read("practices", "", "");
+        std::test::assert_eq_str(f.refs(), before, "web requests preserve domain refs");
+    }
+    fn web_startup() {
+        let mut i = 0;
+        while i < 6 {
+            let f = fixture::Fixture { root: self.root + "/27-" + to_string(i) };
+            f.prepare_web();
+            if i < 3 {
+                let filename = if i == 0 { "index.html" } else if i == 1 { "app.js" } else { "styles.css" };
+                let removed = dna::run_tool("rm\n" + f.webroot + "/" + filename);
+                std::test::assert_eq_int(removed.code, 0, "remove required asset");
+            } else if i == 3 { f.webroot = f.root + "/absent"; }
+            else if i == 4 { f.webroot = ""; }
+            else { std::io::fs::write_file(f.webroot + "/index.html", "") or discard; }
+            let before = f.refs(); f.startup_refused("iris-webroot");
+            std::test::assert_eq_str(f.refs(), before, "invalid webroot preserves refs");
+            i = i + 1;
+        }
+    }
+    fn api_only() {
+        let f = fixture::Fixture { root: self.root + "/28" };
+        // Even if a bundle happens to be in the process's working directory,
+        // omitting argv 3 keeps the established API-only surface.
+        std::io::fs::write_file(f.root + "/index.html", fixture::SHELL_HTML) or discard;
+        std::io::fs::write_file(f.root + "/app.js", fixture::SHELL_JS) or discard;
+        std::io::fs::write_file(f.root + "/styles.css", fixture::SHELL_CSS) or discard;
+        f.start();
+        f.error("GET", "/", 404, "", ""); f.error("GET", "/app.js", 404, "", ""); f.error("GET", "/styles.css", 404, "", "");
+        f.validate(f.http("GET", fixture::APPLICATIONS, "", ""), "ApplicationsResponse", 200);
+    }
+    fn web_oidc() {
+        let f = fixture::Fixture { root: self.root + "/29" }; let p = f.standard();
+        f.prepare_web(); f.configure_oidc(self.issuer_url);
+        let shell = f.http("GET", "/", "", "");
+        std::test::assert_eq_int(shell.status, 200, "the public Runtime shell needs no DNA session");
+        std::test::assert_eq_str(shell.body, fixture::SHELL_HTML, "unauthenticated shell is static");
+        std::test::assert(!std::str::contains(shell.body, p.text), "no practice body in public shell");
+        std::test::assert_eq_int(f.http("GET", "/app.js", "", "").status, 200, "public script");
+        std::test::assert_eq_int(f.http("GET", "/styles.css", "", "").status, 200, "public styles");
+        f.error("GET", fixture::APPLICATIONS, 401, "", "");
+        f.error("GET", f.prefix + "/dna/practices", 401, "dna_session=forged", "");
+        let login = f.sign_in("");
+        std::test::assert_eq_int(login.status, 302, login.body);
+        std::test::assert_eq_str(dna::response_header(login.headers, "Location"), "/", "callback returns to served shell");
+        let session = fixture::cookie(login);
+        let landing = f.http("GET", dna::response_header(login.headers, "Location"), session, "");
+        std::test::assert_eq_int(landing.status, 200, "authenticated callback landing works");
+        std::test::assert_eq_str(landing.body, fixture::SHELL_HTML, "session changes no shell bytes");
+        self.json.eq(self.json.first(f.read("practices", "", session)), "digest", p.digest);
+        f.http("GET", "/auth/logout", session, "");
+        f.error("GET", fixture::APPLICATIONS, 401, session, "");
+        std::test::assert_eq_int(f.http("GET", "/", "", "").status, 200, "Runtime shell survives logout");
+    }
     fn all() {
         // Each named method owns one isolated Record; a passing Hale test is silent.
         self.application_identity();
@@ -290,6 +375,10 @@ locus Cases {
         self.oidc_refusals();
         self.oidc_incomplete();
         self.oidc_session();
+        self.web_assets();
+        self.web_startup();
+        self.api_only();
+        self.web_oidc();
     }
 }
 
