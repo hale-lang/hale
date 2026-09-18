@@ -64,6 +64,7 @@ type WorkResult {
     evidence: String = ""; // content digests, space-separated
     concerns: String = "";
     performer: String = ""; // performer identity, recorded not hidden
+    attempt_id: String = ""; // the attempt this reply answers, echoed (card 08); "" from a performer that does not
 }
 
 // Autonomy is a property of the parent -> child relationship. The

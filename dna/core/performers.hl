@@ -32,14 +32,16 @@ locus ScriptedPerformer {
             return WorkResult {
                 disposition: "failed",
                 narrative: "scripted failure on attempt " + to_string(req.attempt_no),
-                performer: self.name
+                performer: self.name,
+                attempt_id: req.work_id + "/a" + to_string(req.attempt_no)
             };
         }
         return WorkResult {
             disposition: self.outcome,
             result: "ok:" + req.objective,
             narrative: "scripted " + self.outcome,
-            performer: self.name
+            performer: self.name,
+            attempt_id: req.work_id + "/a" + to_string(req.attempt_no)
         };
     }
 }
