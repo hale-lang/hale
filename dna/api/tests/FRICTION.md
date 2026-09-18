@@ -15,3 +15,6 @@ The port was checked and built with this worktree's `target/release/hale`.
   API; its child was gone and its scratch directory removed afterward.
 - Immediately after the first native journal append, cached journal genesis was
   empty. Fixtures read authoritative identity through `GitRecord.identity()`.
+- Direct `hale check dna/api/tests` with the September 18 local compiler rejects
+  `eprint` as an unknown free function. The cleanup re-exec prints nonempty child
+  stderr with `eprintln` instead; success remains silent for the test runner.

@@ -73,7 +73,7 @@ locus Wire {
         b.end_object();
         return b.result();
     }
-    fn capabilities(source: Source, mode: String, name: String) -> String {
+    fn capabilities(source: Source, mode: String, name: String, organization: Bool) -> String {
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("application_id", source.identity);
@@ -85,6 +85,7 @@ locus Wire {
         b.begin_object_field("reads");
         b.bool_field("practices", true);
         b.bool_field("reviews", true);
+        b.bool_field("organization", organization);
         b.end_object();
         b.begin_object_field("writes");
         b.bool_field("practice_propose", false);
@@ -104,6 +105,7 @@ locus Api {
         mode: String = "local";
         local_name: String = "local";
         web: WebAssets = WebAssets { };
+        organization: OrganizationSource = OrganizationSource { };
         // Reuse only the established session/authentication methods. Never
         // dispatch Ui.handle, whose legacy routes include domain mutations.
         auth: ui::Ui = ui::Ui { };
@@ -140,18 +142,20 @@ locus Api {
         let reader = SourceReader { root: self.root };
         let source = reader.read();
         if !source.ok { return http.error(if source.code == "snapshot_changed" { 409 } else { 503 }, source.code, source.error, source.code != "record_malformed"); }
-        if len(query.snapshot) > 0 && query.snapshot != source.head { return http.error(409, "snapshot_changed", "the Record changed; begin a new page sequence", true); }
+        let prefix = API_PREFIX + "/" + source.identity;
+        let organization = path == prefix + "/dna/organization";
+        if !organization && len(query.snapshot) > 0 && query.snapshot != source.head { return http.error(409, "snapshot_changed", "the Record changed; begin a new page sequence", true); }
         let wire = Wire { };
         if path == API_PREFIX {
             if len(raw_query) > 0 { return http.error(400, "invalid_query", "application discovery takes no query fields", false); }
             return http.success(source, wire.applications(source));
         }
-        let prefix = API_PREFIX + "/" + source.identity;
         if !std::str::starts_with(path, prefix + "/") { return http.error(404, "application_not_found", "this server does not serve that application", false); }
         if path == prefix + "/capabilities" {
             if len(raw_query) > 0 { return http.error(400, "invalid_query", "capabilities takes no query fields", false); }
-            return http.success(source, wire.capabilities(source, self.mode, actor));
+            return http.success(source, wire.capabilities(source, self.mode, actor, self.organization.declared()));
         }
+        if organization { return self.organization_read(source, query); }
         let practices = path == prefix + "/dna/practices";
         let reviews = path == prefix + "/dna/reviews";
         if !practices && !reviews { return http.error(404, "not_found", "no such read endpoint", false); }
@@ -182,6 +186,43 @@ locus Api {
         // entire response. The next request loads its suppression marker.
         let record = dna::GitRecord { repo: self.root };
         if record.head("journal") != source.head { return http.error(409, "snapshot_changed", "the Record changed while the response was being built", true); }
+        return http.success(source, b.result());
+    }
+    fn organization_read(source: Source, query: Query) -> std::http::Response {
+        let http = Http { };
+        let artifact = self.organization.read();
+        if !artifact.ok {
+            return http.error(if artifact.code == "snapshot_changed" { 409 } else { 503 }, artifact.code, artifact.error, artifact.available);
+        }
+        // The pure projection validates strict JSON and artifact integrity
+        // before reading fields; do not scan the same large artifact twice.
+        let q = ops::Organization { artifact: artifact.artifact, owners: artifact.owners, source_head: artifact.source_head, source_root: artifact.source_root, dependency_digest: artifact.dependency_digest, dependency_source: artifact.dependency_source, record_head: source.head };
+        if !q.load() { return http.error(503, "organization_malformed", q.error(), false); }
+        let snapshot = q.snapshot();
+        if len(query.snapshot) > 0 && query.snapshot != snapshot {
+            return http.error(409, "snapshot_changed", "the organization or Record changed; begin a new page sequence", true);
+        }
+        let total = if len(query.id) > 0 { 1 } else { q.count() };
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.begin_array_field("items");
+        let mut i = query.offset;
+        let end = if query.offset + query.limit < total { query.offset + query.limit } else { total };
+        while i < end {
+            let row = if len(query.id) > 0 { q.position_of(query.id) } else { q.at(i) };
+            if len(row.id) == 0 { return http.error(404, "organization_node_not_found", "no such declared organization node", false); }
+            b.value(q.row_json(row));
+            i = i + 1;
+        }
+        b.end_array();
+        b.field("page", http.page(query.limit, query.offset, total, snapshot));
+        b.field("basis", q.basis_json());
+        b.field("ownership", q.ownership_json());
+        b.end_object();
+        let record = dna::GitRecord { repo: self.root };
+        if !self.organization.unchanged(artifact) || record.head("journal") != source.head {
+            return http.error(409, "snapshot_changed", "the organization or Record changed while the response was built", true);
+        }
         return http.success(source, b.result());
     }
 }
@@ -217,7 +258,7 @@ fn main() {
         }
         let members = record.git("config\n--get-all\ndna.oidc.member");
         println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (OIDC session reads; no writes)");
-        std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, mode: "oidc", auth: ui::Ui { principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: members.stdout } } };
+        std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, organization: OrganizationSource { root: root }, mode: "oidc", auth: ui::Ui { principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: members.stdout } } };
         return;
     }
     if len(mode) > 0 && mode != "local" {
@@ -226,5 +267,5 @@ fn main() {
     }
     let user = std::env::var("USER");
     println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (trusted local reads; no writes)");
-    std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, local_name: if len(user) > 0 { user } else { "local" } } };
+    std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, organization: OrganizationSource { root: root }, local_name: if len(user) > 0 { user } else { "local" } } };
 }

@@ -10,6 +10,10 @@ The first implemented read subset is documented in [dna/api](../dna/api/README.m
 with executable schemas in `dna/api/contract/v1`. Broader routes and commands
 below remain proposals until their adapters and acceptance gates are delivered.
 
+The branch's `/dna/organization` read endpoint projects checked static Structure
+with its own source/dependency/artifact basis. It does not implement the broader
+semantic `/dna/positions` or viewing/acting permission contract proposed below.
+
 The initial audit used main `2f202c90`. The September 18 integration includes
 main `9a3136ca`, where workflow definition, event and projection cards 04–06
 have merged. They supply native models; they do not yet supply a live workflow

@@ -35,7 +35,7 @@ try {
   await run(hale, ['build', entry]);
   await run(process.execPath, [path.join(cockpit, 'node_modules/@playwright/test/cli.js'),
     'test', '--config', 'tests/playwright.config.mjs', ...process.argv.slice(2)], {
-    HALE_API_BIN: api, HALE_COCKPIT_RECORD_BIN: path.join(scratch, 'record'),
+    HALE_BIN: hale, HALE_API_BIN: api, HALE_COCKPIT_RECORD_BIN: path.join(scratch, 'record'),
     HALE_API_CONTRACT_ROOT: path.join(repo, 'dna/api/contract/v1'),
   });
 } catch (error) {

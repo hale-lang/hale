@@ -1,0 +1,354 @@
+// A disposable projection of the compiler's topology artifact, never an org
+// registry. The caller supplies one checked, pinned source snapshot. No source,
+// filesystem, journal, process, authority or running-body access lives here.
+
+type OrganizationRow {
+    id: String = "";
+    declaration: String = "";
+    parent_id: String = "";
+    parent_index: Int = -1; // resolved once, never serialized
+    thread_domain: String = "";
+    role: String = "structure";
+    in_position_outline: Bool = false;
+    source_file: String = "";
+    sealed: Bool = false;
+    contract_index: Int = -1;
+}
+type OrganizationDeclaration { name: String = ""; body: String = ""; }
+@form(vec)
+locus OrganizationRows { capacity { heap rows of OrganizationRow; } }
+@form(vec)
+locus OrganizationDeclarations { capacity { heap rows of OrganizationDeclaration; } }
+
+locus Organization {
+    params {
+        artifact: String = "";
+        owners: String = "";
+        source_head: String = "";
+        record_head: String = "";
+        dependency_digest: String = "";
+        dependency_source: String = "none";
+        source_root: String = ""; // caller-owned archive root; never serialized
+        seed: String = "dna/org";
+        rows: OrganizationRows = OrganizationRows { };
+        declarations: OrganizationDeclarations = OrganizationDeclarations { };
+        loaded: Bool = false;
+        valid: Bool = false;
+        problem: String = "organization has not been loaded";
+        digest: String = "";
+        shape: String = "";
+        has_positions: Bool = false;
+        exact_ownership: Bool = false;
+        unused: Int = 0;
+    }
+    fn error() -> String { return self.problem; }
+    fn count() -> Int { return if self.valid { self.rows.len() } else { 0 }; }
+    fn at(i: Int) -> OrganizationRow { return if self.valid { self.rows.get(i) or OrganizationRow { } } else { OrganizationRow { } }; }
+    fn index(id: String) -> Int {
+        let mut i = 0;
+        while i < self.rows.len() {
+            if (self.rows.get(i) or OrganizationRow { }).id == id { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+    fn position_of(id: String) -> OrganizationRow { return self.at(self.index(id)); }
+    fn refuse(why: String) -> Bool { self.problem = why; return false; }
+    fn text(raw: String) -> Bool { return len(raw) >= 2 && raw[0..1] == "\"" && raw[(len(raw) - 1)..len(raw)] == "\""; }
+    fn array(raw: String) -> Bool { return len(raw) >= 2 && raw[0..1] == "[" && raw[(len(raw) - 1)..len(raw)] == "]"; }
+    fn strings(raw: String) -> Bool {
+        if !self.array(raw) { return false; }
+        let mut it = std::json::array_first(raw);
+        while !it.done {
+            if !self.text(it.element) { return false; }
+            it = std::json::array_next(it);
+        }
+        return true;
+    }
+    fn contains_name(raw: String, name: String) -> Bool {
+        let mut it = std::json::array_first(raw);
+        while !it.done {
+            let s = std::json::find_string_field("{\"value\":" + it.element + "}", "value");
+            if s == name { return true; }
+            it = std::json::array_next(it);
+        }
+        return false;
+    }
+    fn nullable_count(raw: String) -> Bool {
+        if raw == "null" { return true; }
+        if len(raw) == 0 || (len(raw) > 1 && raw[0..1] == "0") { return false; }
+        let mut i = 0;
+        while i < len(raw) {
+            let b = std::str::byte_at_unchecked(raw, i);
+            if b < 48 || b > 57 { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn fields_only(raw: String, allowed: String) -> Bool {
+        if !std::str::starts_with(raw, "{") { return false; }
+        let mut it = std::json::object_first(raw);
+        while !it.done {
+            if !std::str::contains(allowed, "|" + std::json::obj_key_string(it, raw) + "|") { return false; }
+            it = std::json::object_next(it, raw);
+        }
+        return true;
+    }
+    fn contract_ok(c: String) -> Bool {
+        if !self.text(std::json::find_field_raw(c, "locus")) || len(std::json::find_string_field(c, "locus")) == 0 { return false; }
+        let sealed = std::json::find_field_raw(c, "sealed");
+        if sealed != "true" && sealed != "false" { return false; }
+        if !self.strings(std::json::find_field_raw(c, "methods")) || !self.strings(std::json::find_field_raw(c, "publishes")) { return false; }
+        let parameters = std::json::find_field_raw(c, "params");
+        let subs = std::json::find_field_raw(c, "subscribes");
+        let supers = std::json::find_field_raw(c, "supervises");
+        let instances = std::json::find_field_raw(c, "instances");
+        if !self.array(parameters) || !self.array(subs) || !self.array(supers) || !self.array(instances) { return false; }
+        let file = std::json::find_field_raw(c, "file");
+        if len(file) > 0 && !self.text(file) { return false; }
+        let mut p = std::json::array_first(parameters);
+        while !p.done {
+            if !self.fields_only(p.element, "|name|type|") { return false; }
+            if !self.text(std::json::find_field_raw(p.element, "name")) || !self.text(std::json::find_field_raw(p.element, "type")) { return false; }
+            p = std::json::array_next(p);
+        }
+        let mut s = std::json::array_first(subs);
+        while !s.done {
+            if !self.fields_only(s.element, "|topic|handler|capacity|shed|") { return false; }
+            if !self.text(std::json::find_field_raw(s.element, "topic")) || !self.text(std::json::find_field_raw(s.element, "handler")) || !self.text(std::json::find_field_raw(s.element, "shed")) || !self.nullable_count(std::json::find_field_raw(s.element, "capacity")) { return false; }
+            s = std::json::array_next(s);
+        }
+        let mut v = std::json::array_first(supers);
+        while !v.done {
+            if !self.fields_only(v.element, "|child|error|ops|retry|") { return false; }
+            if !self.text(std::json::find_field_raw(v.element, "child")) || !self.text(std::json::find_field_raw(v.element, "error")) || !self.strings(std::json::find_field_raw(v.element, "ops")) || !self.nullable_count(std::json::find_field_raw(v.element, "retry")) { return false; }
+            v = std::json::array_next(v);
+        }
+        return true;
+    }
+    fn hex16(value: Int) -> String {
+        let digits = "0123456789abcdef";
+        let mut out = "";
+        let mut shift = 60;
+        while shift >= 0 {
+            let nibble = (value >> shift) & 15;
+            out = out + digits[nibble..(nibble + 1)];
+            shift = shift - 4;
+        }
+        return out;
+    }
+    fn artifact_digest_ok() -> Bool {
+        // Topology's whole-body FNV digest is its final key; do not reserialize.
+        let marker = ",\n  \"artifact_digest\": \"";
+        let mut at = -1;
+        let mut from = 0;
+        while from < len(self.artifact) {
+            let next = std::str::index_of(self.artifact[from..len(self.artifact)], marker);
+            if next < 0 { break; }
+            at = from + next;
+            from = at + 1;
+        }
+        if at < 0 { return false; }
+        let mut hash = -3750763034362895579;
+        let mut i = 0;
+        while i < at {
+            hash = (hash ^ std::str::byte_at_unchecked(self.artifact, i)) * 1099511628211;
+            i = i + 1;
+        }
+        self.digest = self.hex16(hash);
+        return self.artifact[(at + len(marker))..len(self.artifact)] == self.digest + "\"\n}\n";
+    }
+    fn file_name(c: String) -> String {
+        let file = std::json::find_string_field(c, "file");
+        // Some native exports carry absolute archive paths. Strip only the
+        // caller's exact verified snapshot root, after artifact validation.
+        if len(self.source_root) > 0 && std::str::starts_with(file, self.source_root + "/") {
+            return file[(len(self.source_root) + 1)..len(file)];
+        }
+        // Unrelated absolute host paths never leave the head.
+        if std::str::starts_with(file, "/") || std::str::contains(file, "\\") { return ""; }
+        return file;
+    }
+    @unbounded
+    fn load() -> Bool {
+        if self.loaded { return self.valid; }
+        self.loaded = true;
+        if len(self.artifact) > 8388608 || len(self.owners) > 65536 { return self.refuse("organization input exceeds the read bound"); }
+        if len(self.source_head) == 0 || len(self.record_head) == 0 { return self.refuse("organization needs pinned source and Record identities"); }
+        let syntax = OrganizationJson { };
+        if !syntax.valid(self.artifact) { return self.refuse("organization artifact is malformed JSON"); }
+        if std::json::find_field_raw(self.artifact, "schema") != "\"1.19\"" || std::json::find_field_raw(self.artifact, "semantics") != "2" { return self.refuse("unsupported organization artifact schema or semantics"); }
+        if !self.artifact_digest_ok() { return self.refuse("organization artifact digest does not match"); }
+        self.shape = std::json::find_string_field(self.artifact, "shape_hash");
+        if len(self.shape) != 16 { return self.refuse("organization artifact has no shape identity"); }
+        let groups = std::json::find_field_raw(self.artifact, "groups");
+        let positions = std::json::find_field_raw(groups, "positions");
+        self.has_positions = len(positions) > 0;
+        if self.has_positions && !self.strings(positions) { return self.refuse("organization positions group is malformed"); }
+        let caps = std::json::find_field_raw(self.artifact, "capabilities");
+        let ownership = std::json::find_field_raw(caps, "exact_ownership");
+        if ownership != "true" && ownership != "false" { return self.refuse("organization artifact lacks containment coverage"); }
+        self.exact_ownership = ownership == "true";
+        let contracts = std::json::find_field_raw(self.artifact, "contracts");
+        if !self.array(contracts) { return self.refuse("organization artifact lacks declaration contracts"); }
+        let mut decls = std::json::array_first(contracts);
+        while !decls.done {
+            let c = decls.element;
+            if self.declarations.len() >= 4096 || !self.contract_ok(c) { return self.refuse("organization declaration contracts exceed the bound or are malformed"); }
+            let name = std::json::find_string_field(c, "locus");
+            let mut existing = 0;
+            while existing < self.declarations.len() {
+                if (self.declarations.get(existing) or OrganizationDeclaration { }).name == name { return self.refuse("duplicate organization declaration"); }
+                existing = existing + 1;
+            }
+            let index = self.declarations.len();
+            self.declarations.push(OrganizationDeclaration { name: name, body: c });
+            let mut instances = std::json::array_first(std::json::find_field_raw(c, "instances"));
+            if instances.done { self.unused = self.unused + 1; }
+            while !instances.done {
+                if self.rows.len() >= 4096 { return self.refuse("organization instances exceed the read bound"); }
+                let one = instances.element;
+                let id = std::json::find_string_field(one, "path");
+                let parent = std::json::find_field_raw(one, "owner");
+                let domain = std::json::find_field_raw(one, "domain");
+                if !self.text(std::json::find_field_raw(one, "path")) || len(id) == 0 || self.index(id) >= 0 || (parent != "null" && !self.text(parent)) || (domain != "null" && !self.text(domain)) { return self.refuse("organization instance identity or containment is malformed"); }
+                let position = self.contains_name(positions, name);
+                self.rows.push(OrganizationRow {
+                    id: id, declaration: name, parent_id: if parent == "null" { "" } else { std::json::find_string_field(one, "owner") }, thread_domain: if domain == "null" { "" } else { std::json::find_string_field(one, "domain") },
+                    role: if position { "position" } else { "structure" }, in_position_outline: position || !self.has_positions,
+                    source_file: self.file_name(c), sealed: std::json::find_bool_field(c, "sealed"), contract_index: index
+                });
+                instances = std::json::array_next(instances);
+            }
+            decls = std::json::array_next(decls);
+        }
+        // Validate every exported owner and reject cycles. Mark outline ancestry
+        // through those exact edges only; path spelling never creates an edge.
+        let mut i = 0;
+        while i < self.rows.len() {
+            let mut row = self.rows.get(i) or OrganizationRow { };
+            if len(row.parent_id) > 0 {
+                row.parent_index = self.index(row.parent_id);
+                if row.parent_index < 0 { return self.refuse("organization containment is dangling or cyclic"); }
+                self.rows.set(i, row) or discard;
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while i < self.rows.len() {
+            let row = self.rows.get(i) or OrganizationRow { };
+            let mut parent = row.parent_index;
+            let mut hops = 0;
+            while parent >= 0 {
+                if parent == i || hops >= self.rows.len() { return self.refuse("organization containment is dangling or cyclic"); }
+                let mut ancestor = self.rows.get(parent) or OrganizationRow { };
+                if row.role == "position" { ancestor.in_position_outline = true; self.rows.set(parent, ancestor) or discard; }
+                parent = ancestor.parent_index;
+                hops = hops + 1;
+            }
+            i = i + 1;
+        }
+        self.valid = true;
+        self.problem = "";
+        return true;
+    }
+    fn snapshot() -> String { return self.source_head + ":" + self.record_head + ":" + self.dependency_digest + ":" + self.digest; }
+    fn basis_json() -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("source_head", self.source_head);
+        b.string_field("dependency_digest", self.dependency_digest);
+        b.string_field("dependency_source", self.dependency_source);
+        b.string_field("seed", self.seed);
+        b.string_field("artifact_digest", self.digest);
+        b.string_field("shape_hash", self.shape);
+        b.string_field("schema", "1.19");
+        b.int_field("semantics", 2);
+        b.bool_field("position_group_declared", self.has_positions);
+        b.bool_field("exact_ownership", self.exact_ownership);
+        b.string_field("coverage", "static_instances");
+        b.int_field("declaration_count", self.declarations.len());
+        b.int_field("uninstantiated_declaration_count", self.unused);
+        b.end_object();
+        return b.result();
+    }
+    fn row_json(row: OrganizationRow) -> String {
+        let c = (self.declarations.get(row.contract_index) or OrganizationDeclaration { }).body;
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("id", row.id);
+        b.string_field("declaration", row.declaration);
+        b.string_field("parent_id", row.parent_id);
+        b.string_field("thread_domain", row.thread_domain);
+        b.string_field("role", row.role);
+        b.bool_field("in_position_outline", row.in_position_outline);
+        b.string_field("source_file", row.source_file);
+        b.bool_field("sealed", row.sealed);
+        b.field("parameters", std::json::find_field_raw(c, "params"));
+        b.field("methods", std::json::find_field_raw(c, "methods"));
+        b.field("publishes", std::json::find_field_raw(c, "publishes"));
+        b.begin_array_field("subscribes");
+        let mut sub = std::json::array_first(std::json::find_field_raw(c, "subscribes"));
+        while !sub.done {
+            b.begin_object();
+            b.string_field("topic", std::json::find_string_field(sub.element, "topic"));
+            b.string_field("handler", std::json::find_string_field(sub.element, "handler"));
+            b.string_field("shed", std::json::find_string_field(sub.element, "shed"));
+            let raw_capacity = std::json::find_field_raw(sub.element, "capacity");
+            if raw_capacity == "null" { b.field("capacity", "null"); } else { b.string_field("capacity", raw_capacity); }
+            b.end_object();
+            sub = std::json::array_next(sub);
+        }
+        b.end_array();
+        b.begin_array_field("supervises");
+        let mut sup = std::json::array_first(std::json::find_field_raw(c, "supervises"));
+        while !sup.done {
+            b.begin_object();
+            b.string_field("child", std::json::find_string_field(sup.element, "child"));
+            b.string_field("error", std::json::find_string_field(sup.element, "error"));
+            b.field("ops", std::json::find_field_raw(sup.element, "ops"));
+            let retry = std::json::find_field_raw(sup.element, "retry");
+            if retry == "null" { b.field("retry", "null"); } else { b.string_field("retry", retry); }
+            b.end_object();
+            sup = std::json::array_next(sup);
+        }
+        b.end_array();
+        b.end_object();
+        return b.result();
+    }
+    fn ownership_json() -> String {
+        // Reuse the domain's source-map parser and vocabulary. Static instance
+        // paths and these domain paths have no exported identity join today.
+        let map = dna::Ownership { text: self.owners, me_env: "" };
+        map.load();
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("mode", if map.shared() { "shared" } else { "single_owner" });
+        b.string_field("host_owner", map.host());
+        b.string_field("instance_binding", "unavailable");
+        b.begin_array_field("positions");
+        let mut i = 0;
+        while i < map.positions.len() {
+            let row = map.positions.get(i) or dna::Owned { };
+            b.begin_object(); b.string_field("position", row.position); b.string_field("owner", row.owner); b.end_object();
+            i = i + 1;
+        }
+        b.end_array();
+        b.begin_array_field("memberships");
+        i = 0;
+        while i < map.memberships.len() {
+            let row = map.memberships.get(i) or dna::Membership { };
+            b.begin_object(); b.string_field("owner", row.owner); b.begin_array_field("members");
+            let mut words = row.members + " ";
+            while len(words) > 1 {
+                let cut = std::str::index_of(words, " ");
+                b.string_value(words[0..cut]);
+                words = words[(cut + 1)..len(words)];
+            }
+            b.end_array(); b.end_object();
+            i = i + 1;
+        }
+        b.end_array(); b.end_object();
+        return b.result();
+    }
+}

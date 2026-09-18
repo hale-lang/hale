@@ -106,6 +106,17 @@ locus Cases {
         self.expect("ErrorResponse", "{\"api_\\u0076ersion\":\"hale.v1\"}", false, "escaped keys fail closed");
     }
     fn profile_cases() {
+        let nullable = "{\"anyOf\":[{\"type\":\"integer\",\"minimum\":0},{\"type\":\"null\"}]}";
+        self.custom(nullable, "null", true, "absent native capacity stays null");
+        self.custom(nullable, "0", true, "zero native capacity is distinct from null");
+        self.custom(nullable, "999999999999999999999", true, "nullable integer has no machine truncation");
+        self.custom(nullable, "-1", false, "bounds apply inside anyOf");
+        self.custom(nullable, "\"unknown\"", false, "nullable capacity refuses another type");
+        self.custom(nullable, "true", false, "boolean is not an integer alternative");
+        self.custom("{\"anyOf\":[{}, {\"type\":\"null\"}]}", "null", true, "anyOf permits overlapping matches");
+        self.unsupported("{\"$defs\":{\"X\":{\"anyOf\":[]}}}", "empty alternative list refused");
+        self.unsupported("{\"$defs\":{\"X\":{\"anyOf\":[{}, {\"format\":\"email\"}]}}}", "unsupported alternate cannot hide behind a matching branch");
+        self.unsupported("{\"$defs\":{\"X\":{\"anyOf\":[{}, {\"$ref\":\"#/$defs/X\"}]}}}", "reference cycles cannot hide behind a matching alternate");
         self.unsupported("{\"$defs\":{\"X\":{\"type\":\"string\",\"format\":\"email\"}}}", "unsupported keyword cannot silently pass");
         self.unsupported("{\"$defs\":{\"X\":{\"pattern\":\".*\"}}}", "unsupported regex cannot silently pass");
         self.unsupported("{\"$defs\":{\"X\":{\"$ref\":\"#/$defs/Missing\"}}}", "unresolved reference");

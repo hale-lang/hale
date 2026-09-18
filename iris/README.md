@@ -22,12 +22,15 @@ deployment and staged implementation cards are in
 [`SERVICE-DEVELOPMENT-PLAN.md`](../dna/SERVICE-DEVELOPMENT-PLAN.md).
 These describe the broader product and its remaining implementation work.
 
-The [browser cockpit](cockpit/README.md) reads real Practices and Reviews through
+The [browser cockpit](cockpit/README.md) reads declared Organization structure,
+real Practices and Reviews through
 the [DNA read API](../dna/api/README.md). It serves from the same origin as the
 Hale API, shows source revisions and content availability, and links to the
-existing Runtime observer. Organization, Knowledge and Definitions remain core
-workspaces awaiting their typed read adapters; administrative commands are not
+existing Runtime observer. Knowledge and Definitions remain core workspaces
+awaiting their typed read adapters; semantic position bindings and administrative commands are not
 yet available. Runtime observation itself continues to work independently of DNA.
+The [delivery checklist](cockpit/DELIVERY.md) retains the full product scope and
+its outstanding end-to-end gates.
 
 The previous spike (modeling-cockpit framing, May 2026) lives
 on `main` — it remains the artifact archive (raylib bindings,

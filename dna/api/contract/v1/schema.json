@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Hale API v1 \u2014 initial read-only DNA slice",
-  "description": "Implemented read contract. No command or context contract is advertised. Each response is validated using its named $defs entry.",
+  "title": "Hale API v1 — DNA reads and declared organization",
+  "description": "Implemented read contract. Organization is checked committed Structure, with its own source and artifact basis. No acting-context or command contract is advertised.",
   "$defs": {
     "Source": {
       "type": "object",
@@ -367,6 +367,9 @@
             },
             "reviews": {
               "const": true
+            },
+            "organization": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -573,6 +576,350 @@
       "required": [
         "api_version",
         "error"
+      ],
+      "additionalProperties": false
+    },
+    "OrganizationParameter": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "OrganizationSubscription": {
+      "type": "object",
+      "properties": {
+        "topic": {
+          "type": "string"
+        },
+        "handler": {
+          "type": "string"
+        },
+        "capacity": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "shed": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "topic",
+        "handler",
+        "capacity",
+        "shed"
+      ],
+      "additionalProperties": false
+    },
+    "OrganizationSupervision": {
+      "type": "object",
+      "properties": {
+        "child": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "ops": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "child",
+        "error",
+        "ops",
+        "retry"
+      ],
+      "additionalProperties": false
+    },
+    "OrganizationNode": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "declaration": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parent_id": {
+          "type": "string"
+        },
+        "thread_domain": {
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "position",
+            "structure"
+          ]
+        },
+        "in_position_outline": {
+          "type": "boolean"
+        },
+        "source_file": {
+          "type": "string"
+        },
+        "sealed": {
+          "type": "boolean"
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OrganizationParameter"
+          }
+        },
+        "methods": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "publishes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "subscribes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OrganizationSubscription"
+          }
+        },
+        "supervises": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OrganizationSupervision"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "declaration",
+        "parent_id",
+        "thread_domain",
+        "role",
+        "in_position_outline",
+        "source_file",
+        "sealed",
+        "parameters",
+        "methods",
+        "publishes",
+        "subscribes",
+        "supervises"
+      ],
+      "additionalProperties": false
+    },
+    "OrganizationBasis": {
+      "type": "object",
+      "properties": {
+        "source_head": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seed": {
+          "const": "dna/org"
+        },
+        "artifact_digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "shape_hash": {
+          "type": "string"
+        },
+        "schema": {
+          "const": "1.19"
+        },
+        "semantics": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 2
+        },
+        "position_group_declared": {
+          "type": "boolean"
+        },
+        "exact_ownership": {
+          "type": "boolean"
+        },
+        "coverage": {
+          "const": "static_instances"
+        },
+        "declaration_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "uninstantiated_declaration_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dependency_digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dependency_source": {
+          "enum": [
+            "local_vendor_snapshot",
+            "committed_source",
+            "none"
+          ]
+        }
+      },
+      "required": [
+        "source_head",
+        "seed",
+        "artifact_digest",
+        "shape_hash",
+        "schema",
+        "semantics",
+        "position_group_declared",
+        "exact_ownership",
+        "coverage",
+        "declaration_count",
+        "uninstantiated_declaration_count",
+        "dependency_digest",
+        "dependency_source"
+      ],
+      "additionalProperties": false
+    },
+    "OrganizationOwnership": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "enum": [
+            "single_owner",
+            "shared"
+          ]
+        },
+        "host_owner": {
+          "type": "string"
+        },
+        "positions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "position": {
+                "type": "string"
+              },
+              "owner": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "position",
+              "owner"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "memberships": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "owner": {
+                "type": "string"
+              },
+              "members": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "owner",
+              "members"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "instance_binding": {
+          "const": "unavailable"
+        }
+      },
+      "required": [
+        "mode",
+        "host_owner",
+        "positions",
+        "memberships",
+        "instance_binding"
+      ],
+      "additionalProperties": false
+    },
+    "OrganizationResponse": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": "hale.v1"
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/OrganizationNode"
+              }
+            },
+            "page": {
+              "$ref": "#/$defs/Page"
+            },
+            "basis": {
+              "$ref": "#/$defs/OrganizationBasis"
+            },
+            "ownership": {
+              "$ref": "#/$defs/OrganizationOwnership"
+            }
+          },
+          "required": [
+            "items",
+            "page",
+            "basis",
+            "ownership"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "api_version",
+        "source",
+        "data"
       ],
       "additionalProperties": false
     }

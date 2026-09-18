@@ -143,7 +143,11 @@ macro_rules! at {
 
 /// Typed query operations shared by the host and service API. These must
 /// travel with the host: a source-tree import alone would break the installed CLI.
-pub const OPERATION_FILES: &[EmbeddedFile] = at!["dna/operations/queries.hl"];
+pub const OPERATION_FILES: &[EmbeddedFile] = at![
+    "dna/operations/queries.hl",
+    "dna/operations/organization.hl",
+    "dna/operations/organization_json.hl",
+];
 
 /// The knowledge graph as a service (GH #583 K1): the store library
 /// (`dna/knowledge`: the `KnowledgeStore` interface, `Mem`, `Pq`, the

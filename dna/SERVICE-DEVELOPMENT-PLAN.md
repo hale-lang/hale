@@ -18,6 +18,13 @@ complete 08 or milestone A. The next administrative slice still requires
 02–03 and the command portion of 04. Organization, Knowledge and Definitions
 remain first-class deliverables in 10–12.
 
+The cockpit branch additionally implements the declared-structure read portion
+of 10: native compiler artifact/ownership projections, captured dependency basis,
+and a browser outline/inspector. Source-governed semantic position bindings,
+purpose, performers, effective context and administration still remain. The
+[delivery checklist](../iris/cockpit/DELIVERY.md) preserves both full milestones
+and all four product proof loops; a read-only workspace does not complete them.
+
 ## 1. Decision and deliverables
 
 Build a first-class Hale/DNA service API, used by both Iris and remote CLI
