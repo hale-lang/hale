@@ -1,0 +1,101 @@
+// dna/tests/workflow_release_type_wide_test.hl — `release(c: T)` makes
+// every T a flow, whoever declares it (DNA workflow card 03, the trap).
+//
+// Two waiter types, identical but for one thing: nobody releases
+// `ResidentWaiter`; an unrelated parent type that is never instantiated
+// releases `FlowWaiter`. Both are accepted by a manager that declares no
+// release, each from a bus handler, and each is sent a reply after its
+// handler and its run() have returned.
+//
+//   ResidentWaiter  born, hears the late reply, terminates, dissolved
+//   FlowWaiter      born, dissolved when its run() ends; the reply is lost
+//
+// This is why DNA's Task, Workflow, Step, Work and Attempt cannot wait for
+// a delayed reply while any parent releases them (dna/FRICTION.md F.15),
+// and why removing one release hook is not enough: every `release` of the
+// type, anywhere in the program, has to go (dna/WORKFLOW-CONTRACT.md §9).
+
+type Life { key: String = ""; what: String = ""; }
+topic Lives { payload: Life; subject: "rtw.life"; }
+type Rep { key: String = ""; }
+topic Replies { payload: Rep; subject: "rtw.reply"; keyed_by key; }
+type Offer { key: String = ""; }
+topic Offers { payload: Offer; subject: "rtw.offer"; }
+
+locus ResidentWaiter {
+    params { key: String = ""; }
+    bus {
+        subscribe Replies as on_reply where key == self.key;
+        publish Lives;
+    }
+    birth() { Lives <- Life { key: self.key, what: "born" }; }
+    run() { }
+    fn on_reply(r: Rep) {
+        Lives <- Life { key: self.key, what: "replied" };
+        terminate;
+    }
+    dissolve() { Lives <- Life { key: self.key, what: "dissolved" }; }
+}
+
+locus FlowWaiter {
+    params { key: String = ""; }
+    bus {
+        subscribe Replies as on_reply where key == self.key;
+        publish Lives;
+    }
+    birth() { Lives <- Life { key: self.key, what: "born" }; }
+    run() { }
+    fn on_reply(r: Rep) {
+        Lives <- Life { key: self.key, what: "replied" };
+        terminate;
+    }
+    dissolve() { Lives <- Life { key: self.key, what: "dissolved" }; }
+}
+
+// Never instantiated. Its release still makes every FlowWaiter a flow.
+locus Elsewhere {
+    accept(w: FlowWaiter) { }
+    release (w: FlowWaiter) { }
+}
+
+// Each accepts one waiter type (one accept type per parent) and releases
+// neither.
+locus ResidentManager {
+    bus { subscribe Offers as on_offer; }
+    accept(w: ResidentWaiter) { }
+    fn on_offer(o: Offer) {
+        if o.key == "resident" { ResidentWaiter { key: o.key }; }
+    }
+}
+locus FlowManager {
+    bus { subscribe Offers as on_offer; }
+    accept(f: FlowWaiter) { }
+    fn on_offer(o: Offer) {
+        if o.key == "flow" { FlowWaiter { key: o.key }; }
+    }
+}
+
+main locus App {
+    params { residents: ResidentManager = ResidentManager { }; flows: FlowManager = FlowManager { }; lives: String = ""; }
+    bus {
+        subscribe Lives as on_life;
+        publish Offers;
+        publish Replies;
+    }
+    @unbounded
+    fn on_life(l: Life) { self.lives = self.lives + l.key + ":" + l.what + " "; }
+    run() {
+        Offers <- Offer { key: "resident" };
+        Offers <- Offer { key: "flow" };
+        std::time::sleep(80ms);
+        Replies <- Rep { key: "resident" };
+        Replies <- Rep { key: "flow" };
+        std::time::sleep(80ms);
+        std::test::assert(std::str::contains(self.lives, "resident:born") && std::str::contains(self.lives, "resident:replied") && std::str::contains(self.lives, "resident:dissolved"), "the resident outlived its run(), heard the late reply and was reclaimed: " + self.lives);
+        std::test::assert(std::str::index_of(self.lives, "resident:replied") < std::str::index_of(self.lives, "resident:dissolved"), "reclaimed after the reply, not before: " + self.lives);
+        std::test::assert(std::str::contains(self.lives, "flow:born") && std::str::contains(self.lives, "flow:dissolved"), "the flow waiter was born and reclaimed: " + self.lives);
+        std::test::assert(!std::str::contains(self.lives, "flow:replied"), "at the end of its run(), so the late reply reached nobody: " + self.lives);
+    }
+}
+
+fn main() { App { }; }

@@ -160,6 +160,9 @@ fn dna_fixture_set_is_complete() {
             "two_heads_test.hl",
             "two_owners_test.hl",
             "verification_test.hl",
+            "workflow_lifetime_dna_test.hl",
+            "workflow_lifetime_test.hl",
+            "workflow_release_type_wide_test.hl",
             "workspace_test.hl",
         ]
     );
