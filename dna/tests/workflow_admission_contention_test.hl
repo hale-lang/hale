@@ -31,6 +31,7 @@ locus Contended {
         looks: Int = 0;
         landed_second: Bool = false;
         defined: Bool = false;
+        moves: Int = 0;
     }
     fn refresh() -> Bool { self.looks = 0; return self.inner.refresh(); }
     fn revision() -> Int {
@@ -90,6 +91,21 @@ locus Contended {
             self.contended = 3;
             let mark = self.inner.append(self.inner.revision(), "test.contended", entity, "the store refused the admission");
             return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() };
+        }
+        if kind == "workflow.admitted" && ask == "sixth" && self.moves < 6 {
+            self.moves = self.moves + 1;
+            let mark = self.inner.append(self.inner.revision(), "test.contended", entity, "the record moved under the sixth ask, " + to_string(self.moves));
+            if self.moves == 6 {
+                // and by then another body has taken every id this one
+                // could mint: the next decision finds no free id
+                let n = std::str::parse_int(entity[1..len(entity)]) or 0;
+                let mut k = n;
+                while k < n + 70 {
+                    let taken = self.inner.append(self.inner.revision(), "task.born", "t" + to_string(k), "another body's");
+                    k = k + 1;
+                }
+            }
+            return dna::AppendResult { error: "stale_revision", expected: expected, actual: self.inner.revision() };
         }
         if kind == "workflow.admitted" && ask == "fourth" && self.contended == 3 {
             self.contended = 4;
@@ -218,9 +234,30 @@ main locus App {
         let nope = self.dna.admit_workflow(dna::WorkflowAsk { id: "fifth", definition: "nope", revision: 1 });
         std::test::assert(std::str::starts_with(nope, "refused: "), "an undefined workflow is refused: " + nope);
         std::test::assert_eq_int(self.rows("test.contended", ""), 4, "the other body moved in under the refusal's id");
-        std::test::assert_eq_int(self.rows("workflow.refused", "ask:fifth"), 1, "the refusal is under the ask");
-        std::test::assert_eq_int(self.rows("workflow.refused", ""), 2, "one more refusal, and no other");
+        std::test::assert_eq_int(self.rows("workflow.ask_refused", "fifth#1"), 1, "the refusal is the ask's own, its first decision");
+        std::test::assert_eq_int(self.rows("workflow.refused", ""), 1, "and no Task was refused");
         std::test::assert_eq_str(self.request_of(self.contended_entity()), "elsewhere", "the id the refusal was bound to is the other body's execution, untouched");
+        // ---- one ask, two decisions: the record moved six times, then
+        //      every id was taken. Each decision is its own row under its
+        //      own ordinal; neither is a changed body under the other's id.
+        let moved = self.dna.admit_workflow(dna::WorkflowAsk { id: "sixth", definition: "one-step", revision: 1 });
+        std::test::assert(std::str::contains(moved, "moved under the admission 6 times"), "six moves and the ask is refused: " + moved);
+        std::test::assert_eq_int(self.rows("workflow.ask_refused", "sixth#1"), 1, "as the ask's first decision");
+        let full = self.dna.admit_workflow(dna::WorkflowAsk { id: "sixth", definition: "one-step", revision: 1 });
+        std::test::assert(std::str::contains(full, "no free id"), "asked again, every id is taken: " + full);
+        std::test::assert_eq_int(self.rows("workflow.ask_refused", "sixth#2"), 1, "the second decision is the second ordinal");
+        std::test::assert_eq_int(self.rows("workflow.ask_refused", "sixth#1"), 1, "and the first stands as it was");
+        // the other body keeps taking ids: the third ask is refused for the
+        // same reason as the second, and that decision is the answer
+        let mut k = 70;
+        while k < 220 {
+            let taken = self.dna.journal.append(self.dna.journal.revision(), "task.born", "t" + to_string(k), "another body's");
+            k = k + 1;
+        }
+        let same = self.dna.admit_workflow(dna::WorkflowAsk { id: "sixth", definition: "one-step", revision: 1 });
+        std::test::assert_eq_str(same, full, "asked a third time for the same reason, the second decision is the answer");
+        std::test::assert_eq_int(self.rows("workflow.ask_refused", ""), 3, "and no third row: fifth#1, sixth#1, sixth#2");
+        // the whole record replays into the reducer
         let mut i = 0;
         while i < self.dna.journal.revision() {
             let e = self.dna.journal.read(i);
@@ -230,6 +267,7 @@ main locus App {
             }
             i = i + 1;
         }
+        std::test::assert_eq_int(self.p.ask_decisions("sixth"), 2, "the reducer holds both decisions on sixth");
     }
 }
 

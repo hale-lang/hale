@@ -1035,10 +1035,16 @@ admission's own guarantee — it is appended exactly at the revision that
 found the id free, and when the record has moved it is read again: the
 ask may have landed from another body, in which case that execution is
 the answer, and the id may be another execution's now, in which case the
-refusal is written under the ask instead (`ask:<id>`), which can claim
-nothing. A refusal never attaches to an execution another body admitted.
-An ask that finds every id it would mint already taken is refused under
-the ask the same way, on the record. A restart counts admitted and refused
+refusal is not a Task's at all. A refusal that reaches no Task — the id
+taken meanwhile, every id it would mint already taken, the record moved
+under it too often — is a fact of its own kind, `workflow.ask_refused`,
+under the ask's own identity and a decision ordinal (`<ask>#<n>`), which
+can share no identity with any Task under any owner's name; the
+projection holds it beside the executions, never as one. The same ask
+refused again for the same reason is the same decision, answered without
+another row; refused for another reason, it is the next ordinal. Nothing
+is appended as a changed body under a recorded identity, and a refusal
+never attaches to an execution another body admitted. A restart counts admitted and refused
 ids among those minted, so an id is never minted twice, and an admitted
 Task is never resumed as legacy edit work, with or without its summary
 row: the admission is the one positive discriminator, and its recovery

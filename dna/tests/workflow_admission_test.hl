@@ -31,6 +31,18 @@ main locus App {
         back: dna::WorkflowCatalog = dna::WorkflowCatalog { };
         seed: dna::WorkflowCatalog = dna::WorkflowCatalog { };
         other: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        p: dna::WorkflowProjection = dna::WorkflowProjection { };
+        // a body whose owner is called `ask`: it mints `ask:t<n>`
+        asker: dna::Dna = dna::Dna {
+            work: dna::WorkSystem {
+                human: dna::HumanWorkGateway { operator: "alice", answer: "done" },
+                selection: dna::HumanFirstSelection { }
+            },
+            review_policy: dna::PostReviewRefactors { },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
+            deployment: dna::NoDeployment { },
+            ownership: dna::Ownership { text: "org = ask\nask: alice\n", me: "ask", me_env: "" }
+        };
         // a body over a shared record that names no owner: it admits
         // nothing (GH #664), workflows included
         nobody: dna::Dna = dna::Dna {
@@ -51,6 +63,17 @@ main locus App {
         while i < self.dna.journal.revision() {
             let e = self.dna.journal.read(i);
             if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn asker_rows(kind: String, entity: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.asker.journal.revision() {
+            let e = self.asker.journal.read(i);
+            if e.kind == kind && e.entity == entity { n = n + 1; }
             i = i + 1;
         }
         return n;
@@ -188,12 +211,48 @@ main locus App {
         let admitted = self.rows("workflow.admitted", "");
         let full = self.dna.admit_workflow(dna::WorkflowAsk { id: "w-full", definition: "close-month", revision: 1 });
         std::test::assert(std::str::contains(full, "no free id within 64"), "an ask that finds every id taken is refused: " + full);
-        std::test::assert_eq_int(self.rows("workflow.refused", ""), refusals + 1, "and the refusal is in the record");
-        std::test::assert_eq_int(self.rows("workflow.refused", "ask:w-full"), 1, "under the ask, claiming no Task");
-        let r = dna::decode_refusal(self.body_of("workflow.refused", "ask:w-full"));
-        std::test::assert(r.ok && std::str::contains(r.value.why, "no free id"), "as the versioned refusal: " + r.why + r.value.why);
+        std::test::assert_eq_int(self.rows("workflow.refused", ""), refusals, "no Task was refused: none was reached");
+        std::test::assert_eq_int(self.rows("workflow.ask_refused", "w-full#1"), 1, "the ask itself is refused, as its first decision");
+        let r = dna::decode_ask_refusal(self.body_of("workflow.ask_refused", "w-full#1"));
+        std::test::assert(r.ok && r.value.request == "w-full" && r.value.decision == 1 && std::str::contains(r.value.why, "no free id"), "as the versioned ask refusal: " + r.why + r.value.why);
         std::test::assert_eq_int(self.rows("workflow.admitted", ""), admitted, "no admission was written for it");
         std::test::assert_eq_int(self.dna.work.requests, 0, "and nothing was dispatched");
+        // asked again: the scan that was exhausted minted past the taken
+        // block, so the counter now stands beyond it and the ask is admitted
+        // — a decision is a decision on the record as it was
+        let full_again = self.dna.admit_workflow(dna::WorkflowAsk { id: "w-full", definition: "close-month", revision: 1 });
+        std::test::assert_eq_str(full_again, "t80", "asked again past the taken block, it is admitted: " + full_again);
+        std::test::assert_eq_int(self.rows("workflow.ask_refused", ""), 1, "the refusal stands as the first decision on the ask");
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t80"), 1, "and the admission is the second");
+
+        // ---- an owner called `ask`: its Tasks are `ask:t<n>`, and an ask
+        //      refusal can share no identity with them, whatever the ask is
+        //      called — even `t1`
+        self.define_all(self.asker.catalog);
+        let seed = self.asker.admit_workflow(dna::WorkflowAsk { id: "seed", definition: "close-month", revision: 1 });
+        std::test::assert_eq_str(seed, "ask:t1", "the owner called ask mints ask:t1: " + seed);
+        let mut k = 2;
+        while k < 70 {
+            let taken = self.asker.journal.append(self.asker.journal.revision(), "task.born", "ask:t" + to_string(k), "another body's");
+            k = k + 1;
+        }
+        let collide = self.asker.admit_workflow(dna::WorkflowAsk { id: "t1", definition: "close-month", revision: 1 });
+        std::test::assert(std::str::contains(collide, "no free id"), "an ask called t1 finds every id taken: " + collide);
+        std::test::assert_eq_int(self.asker_rows("workflow.refused", "ask:t1"), 0, "and no refusal lands on the Task ask:t1");
+        std::test::assert_eq_int(self.asker_rows("workflow.ask_refused", "t1#1"), 1, "it is refused under the ask, t1#1");
+        // the whole record replays into the reducer: the seed's admission
+        // stands, and the refusal contradicts nothing
+        let mut i = 0;
+        while i < self.asker.journal.revision() {
+            let e = self.asker.journal.read(i);
+            if std::str::starts_with(e.kind, "workflow.") {
+                let applied = dna::replay(self.p, e.kind, e.entity, e.body);
+                std::test::assert(applied.ok, "the record replays into the reducer: " + e.kind + " " + e.entity + ": " + applied.why);
+            }
+            i = i + 1;
+        }
+        std::test::assert_eq_str(self.p.task("ask:t1").disposition, "", "ask:t1 is still running in the reducer's eyes");
+        std::test::assert_eq_int(self.p.ask_decisions("t1"), 1, "and the ask t1 has one decision");
     }
 }
 

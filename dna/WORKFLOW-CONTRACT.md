@@ -268,6 +268,7 @@ are added to `memory_of` explicitly. `task.*` names are not reused.
 |---|---|---|
 | `workflow.admitted` | Task | engine `wf1`, bound recipe, inputs |
 | `workflow.refused` | Task | the violated bound or validation |
+| `workflow.ask_refused` | an ask, by decision (`<ask>#<n>`) | a refusal that reached no Task: the id taken meanwhile, no free id, the record moved too often (card 07) |
 | `step.registered` | Step | the required-member set |
 | `step.activated` | Step | activation id |
 | `attempt.admitted` | Attempt | Work, attempt number, bound request |
@@ -492,7 +493,7 @@ equivalent definition.
 | definitions bind whole or refuse; capacity is checked before a node is built | proven, card 04 (#691) |
 | every fact is read whole or not at all; a recipe binds whole or not at all | proven, card 05 (#693) |
 | the join is by identity and kind against the admitted recipe; every transition has its basis; a cancelled ancestor fences all below it | proven, card 06 (#694) |
-| the admission precedes the summary; a refusal requests nothing and is recorded (or reported unrecorded), a Task-bound one exactly at the decision's revision and never on another body's execution; one ask id is one execution, decided and appended at one revision; a taken id is skipped and a contended one re-minted; only the position's owner admits; an admitted Task is never legacy edit work after a restart | proven, card 07 |
+| the admission precedes the summary; a refusal requests nothing and is recorded (or reported unrecorded), a Task-bound one exactly at the decision's revision and never on another body's execution, one that reached no Task as `workflow.ask_refused` under `<ask>#<n>`, the same decision replayed and a new one ordinal-numbered; one ask id is one execution, decided and appended at one revision; a taken id is skipped and a contended one re-minted; only the position's owner admits; an admitted Task is never legacy edit work after a restart | proven, card 07 |
 | delivery across off-thread bindings; restart | not yet, cards 12–13, 19 |
 
 Card 03 native runs: `HALE_BIN=target/release/hale HALE_DNA_SOURCE=$PWD

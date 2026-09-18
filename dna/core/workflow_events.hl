@@ -803,6 +803,31 @@ type RefusedWorkflow {
     transition: TransitionRef = TransitionRef { };
 }
 
+// A refusal before any Task was reached (card 07): the ask found no free
+// id, or the record moved under it too often. It is a fact of its own
+// kind — not a Task's refusal — identified by the ask and a decision
+// ordinal (`<ask>#<n>`), so it can share no identity with any Task under
+// any owner name, and a later decision on the same ask is either the same
+// row again or the next ordinal, never another body under one id.
+type RefusedAsk {
+    version: Int = 1;
+    engine: String = "wf1";
+    request: String = ""; // the ask's id
+    decision: Int = 0; // 1 for the first decision on this ask
+    definition: String = "";
+    revision: Int = 0;
+    why: String = "";
+    limits: AdmissionLimits = AdmissionLimits { };
+    transition: TransitionRef = TransitionRef { };
+}
+
+// The identity of one decision on one ask.
+fn ask_refusal_id(request: String, decision: Int) -> String {
+    return request + "#" + to_string(decision);
+}
+
+type DecodedAskRefusal { ok: Bool = false; why: String = ""; value: RefusedAsk = RefusedAsk { }; }
+
 type DecodedActivation { ok: Bool = false; why: String = ""; value: ActivatedStep = ActivatedStep { }; }
 type DecodedRefusal { ok: Bool = false; why: String = ""; value: RefusedWorkflow = RefusedWorkflow { }; }
 
@@ -895,6 +920,52 @@ fn decode_refusal(text: String) -> DecodedRefusal {
             parent_task: std::json::find_string_field(text, "parent_task"),
             spawning_step: std::json::find_string_field(text, "spawning_step"),
             member_key: std::json::find_string_field(text, "member_key"),
+            limits: limits_of(text),
+            transition: transition_of(text)
+        }
+    };
+}
+
+fn encode_ask_refusal(r: RefusedAsk) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.int_field("version", WORKFLOW_EVENT_VERSION);
+    b.string_field("engine", WORKFLOW_ENGINE);
+    b.string_field("request", r.request);
+    b.int_field("decision", r.decision);
+    b.string_field("definition", r.definition);
+    b.int_field("revision", r.revision);
+    b.string_field("why", r.why);
+    limits_json(b, r.limits);
+    transition_json(b, r.transition);
+    b.end_object();
+    return b.result();
+}
+
+fn decode_ask_refusal(text: String) -> DecodedAskRefusal {
+    let gap = version_gap(text, "ask refusal");
+    if len(gap) > 0 { return DecodedAskRefusal { why: gap }; }
+    if std::json::find_string_field(text, "engine") != WORKFLOW_ENGINE {
+        return DecodedAskRefusal { why: "another engine's ask refusal (" + std::json::find_string_field(text, "engine") + ")" };
+    }
+    let absent = missing_field(text, "request why");
+    if len(absent) > 0 { return DecodedAskRefusal { why: "an ask refusal names its " + absent }; }
+    let unread = missing_number(text, "decision revision");
+    if len(unread) > 0 { return DecodedAskRefusal { why: "an ask refusal carries its " + unread }; }
+    if std::json::find_int_field(text, "decision") < 1 { return DecodedAskRefusal { why: "an ask refusal is decision 1 or later" }; }
+    let raw = std::json::find_field_raw(text, "limits");
+    if len(raw) == 0 { return DecodedAskRefusal { why: "an ask refusal carries the limits that were applied" }; }
+    let committed = transition_gap(text);
+    if len(committed) > 0 { return DecodedAskRefusal { why: committed }; }
+    return DecodedAskRefusal {
+        ok: true,
+        value: RefusedAsk {
+            engine: WORKFLOW_ENGINE,
+            request: std::json::find_string_field(text, "request"),
+            decision: std::json::find_int_field(text, "decision"),
+            definition: std::json::find_string_field(text, "definition"),
+            revision: std::json::find_int_field(text, "revision"),
+            why: std::json::find_string_field(text, "why"),
             limits: limits_of(text),
             transition: transition_of(text)
         }

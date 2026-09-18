@@ -1698,12 +1698,36 @@ locus Dna {
     }
 
     // A refusal bound to no Task — no id was reached, or the one reached
-    // is another execution's now — under the ask's own identity, which can
-    // claim nothing. Written and checked: when the record will not take
-    // even that, the answer says so.
+    // is another execution's now — is a fact of its own kind under the
+    // ask's own identity and a decision ordinal (`<ask>#<n>`), which can
+    // alias no Task under any owner's name. The same ask refused again
+    // for the same reason is the same decision, answered without another
+    // row; refused for another reason, it is the next decision under the
+    // next ordinal — never a changed body under a recorded identity.
+    // Written and checked: when the record will not take even that, the
+    // answer says so.
+    @unbounded
     fn refuse_ask(a: WorkflowAsk, why: String) -> String {
-        let entity = "ask:" + a.id;
-        let r = self.journal.append(self.journal.revision(), "workflow.refused", entity, self.refusal_body(entity, a, why));
+        let mut decisions = 0;
+        let mut last = "";
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "workflow.ask_refused" && std::json::find_string_field(e.body, "request") == a.id {
+                decisions = decisions + 1;
+                last = std::json::find_string_field(e.body, "why");
+            }
+            i = i + 1;
+        }
+        if decisions > 0 && last == why { return "refused: " + why; }
+        let decision = decisions + 1;
+        let entity = ask_refusal_id(a.id, decision);
+        let r = self.journal.append(self.journal.revision(), "workflow.ask_refused", entity, encode_ask_refusal(RefusedAsk {
+            request: a.id, decision: decision, definition: a.definition, revision: a.revision, why: why,
+            limits: self.admission_limits,
+            transition: TransitionRef { scope: self.org_id, key: entity, proposal_id: transition_id(entity, "refused") }
+        }));
         if !r.ok { return "refused: " + why + "; and the record would not take the refusal either: " + r.error; }
         return "refused: " + why;
     }
