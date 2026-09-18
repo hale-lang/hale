@@ -1,0 +1,136 @@
+// dna/tests/routed_attempt_identity_test.hl — a routed retry carries its
+// own attempt number (DNA workflow card 01).
+//
+// WorkSystem owns the routed retry loop. Each try is a new Attempt with a
+// new number, and the performer, the Attempt record, the history and the
+// model evidence must all name that same attempt. The request each try
+// hands its performer is the original request with only `attempt_no`
+// changed: every other field survives the copy.
+//
+// Capability-first selection places software on attempt 0, agent on
+// attempt 1 (human on attempt 2); judgment work places agent on attempt 0
+// and human on attempt 1.
+
+import "../core" as dna;
+
+// What a performer was handed, as the test's own fact: the performer
+// slots are interface-typed, so the test hears them rather than reading
+// their fields.
+type Handed {
+    who: String = "";
+    req: dna::WorkRequest = dna::WorkRequest { };
+}
+topic PerformerHanded { payload: Handed; subject: "test.performer.handed"; }
+
+// Fails its first attempt.
+locus FailsFirst {
+    bus { publish PerformerHanded; }
+    fn kind() -> String { return "software"; }
+    fn identity() -> String { return "fails-first"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        PerformerHanded <- Handed { who: "software", req: req };
+        return dna::WorkResult {
+            disposition: if req.attempt_no == 0 { "failed" } else { "done" },
+            result: "software:" + req.objective,
+            performer: "fails-first"
+        };
+    }
+}
+
+// Succeeds.
+locus Recorder {
+    bus { publish PerformerHanded; }
+    fn kind() -> String { return "human"; }
+    fn identity() -> String { return "recorder"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        PerformerHanded <- Handed { who: "human", req: req };
+        return dna::WorkResult { disposition: "done", result: "human:" + req.objective, performer: "recorder" };
+    }
+}
+
+// Sends one request from a child's run(), where an in-process publish is
+// dispatched in place (as a routed Work's is), not queued behind main.
+locus Asker {
+    params { req: dna::WorkRequest = dna::WorkRequest { }; }
+    bus { publish dna::WorkRequested; }
+    run() { dna::WorkRequested <- self.req; }
+}
+
+main locus App {
+    params {
+        // The deep model fails on its second call: the first agent attempt
+        // (the plain request's retry) succeeds, the second (the judgment
+        // request's first try) fails and hands the Work to the human.
+        ws: dna::WorkSystem = dna::WorkSystem {
+            software: FailsFirst { },
+            agent: dna::AgentPerformer {
+                name: "agent",
+                models: dna::ModelRouter { deep: dna::FakeModel { name: "deep", model: "deep-1", price_micros: 50, fail_after: 1 } }
+            },
+            human: Recorder { },
+            max_attempts: 3
+        };
+        m: dna::Metabolism = dna::Metabolism { };
+        evidence: String = "";
+        handed: String = ""; // "<who>:<attempt_no> " per performer call
+        last_human: dna::WorkRequest = dna::WorkRequest { };
+    }
+    bus {
+        subscribe dna::ModelCalled as on_model;
+        subscribe PerformerHanded as on_handed;
+    }
+    fn on_handed(h: Handed) {
+        self.handed = self.handed + h.who + ":" + to_string(h.req.attempt_no) + " ";
+        if h.who == "human" { self.last_human = h.req; }
+    }
+    fn on_model(ev: dna::ModelEvidence) {
+        self.evidence = self.evidence + ev.attempt_id + "|" + ev.data_class + "|" + ev.prompt_digest + " ";
+    }
+    run() {
+        // ---- the supplied probe: attempt 0 fails, attempt 1 succeeds
+        let t = self.m.offer(dna::Intent { id: "retry", outcome: "first attempt fails, second succeeds", from: "test" }, dna::Knobs { routed: true });
+        let settled = self.m.find(t);
+        std::test::assert_eq_str(self.handed, "software:0 ", "the software performer was handed attempt 0, and no other performer of the test's ran");
+        std::test::assert_eq_str(settled.disposition, "done", "the retry succeeded: " + settled.detail);
+        std::test::assert_eq_int(self.ws.attempts_made, 2, "one failed attempt and one successful retry");
+        std::test::assert(std::str::contains(settled.detail, "a0:software:failed a1:agent:done"), "the history names attempts 0 and 1: " + settled.detail);
+        // the agent's model calls are evidence of attempt 1, not attempt 0
+        std::test::assert(std::str::contains(self.evidence, "/a1|") && !std::str::contains(self.evidence, "/a0|"), "the model evidence names the attempt that made the calls: " + self.evidence);
+
+        // ---- every other field survives the copy
+        self.evidence = "";
+        self.handed = "";
+        Asker { req: dna::WorkRequest {
+            work_id: "w-judge",
+            task_id: "t-judge",
+            step_id: "t-judge/wf1/s0",
+            objective: "weigh the two quotes",
+            context_digest: "sha256:c0ffee",
+            knowledge_bindings: "package:sha256:beef p1",
+            output_contract: "Assessment",
+            data_class: "public",
+            requires: "judgment",
+            target: "quotes.md",
+            cost_ceiling: 42
+        } };
+        std::test::assert_eq_str(self.ws.last_history, "a0:agent:failed a1:human:done ", "judgment work: the agent failed attempt 0 and the human took attempt 1");
+        std::test::assert_eq_str(self.handed, "human:1 ", "the human performer was handed attempt 1");
+        let seen = self.last_human;
+        std::test::assert_eq_int(seen.attempt_no, 1, "the request carries attempt 1");
+        std::test::assert_eq_str(seen.work_id, "w-judge", "work_id survives");
+        std::test::assert_eq_str(seen.task_id, "t-judge", "task_id survives");
+        std::test::assert_eq_str(seen.step_id, "t-judge/wf1/s0", "step_id survives");
+        std::test::assert_eq_str(seen.objective, "weigh the two quotes", "objective survives");
+        std::test::assert_eq_str(seen.context_digest, "sha256:c0ffee", "context_digest survives");
+        std::test::assert_eq_str(seen.knowledge_bindings, "package:sha256:beef p1", "knowledge_bindings survive");
+        std::test::assert_eq_str(seen.output_contract, "Assessment", "output_contract survives");
+        std::test::assert_eq_str(seen.data_class, "public", "data_class survives");
+        std::test::assert_eq_str(seen.requires, "judgment", "requires survives");
+        std::test::assert_eq_str(seen.target, "quotes.md", "target survives");
+        std::test::assert_eq_int(seen.cost_ceiling, 42, "cost_ceiling survives");
+        // the failed agent attempt's evidence is attempt 0's, with its context
+        std::test::assert(std::str::contains(self.evidence, "w-judge/a0|public|sha256:c0ffee") && !std::str::contains(self.evidence, "w-judge/a1"), "the agent's calls are attempt 0's evidence, carrying the request's context: " + self.evidence);
+    }
+}
+
+fn main() { App { }; }

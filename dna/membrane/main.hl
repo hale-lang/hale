@@ -60,7 +60,8 @@ main locus Client {
             dna::ConcernRaised <- dna::Concern {
                 source: std::json::find_string_field(self.body, "source"),
                 what: std::json::find_string_field(self.body, "what"),
-                severity: std::json::find_int_field(self.body, "severity")
+                severity: std::json::find_int_field(self.body, "severity"),
+                request: std::json::find_string_field(self.body, "request")
             };
         } else if self.kind == "practice" {
             dna::PracticeRequested <- dna::PracticeRequest {

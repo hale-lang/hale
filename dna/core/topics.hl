@@ -52,8 +52,67 @@ topic TransitionAnswered { payload: TransitionAnswer; subject: "dna.transition.a
 type Pressure { source: String = ""; what: String = ""; count: Int = 0; }
 topic PressureRaised { payload: Pressure; subject: "dna.pressure.raised"; }
 
-type Concern { source: String = ""; what: String = ""; severity: Int = 0; }
+// GH #689: `request` is the id of the `concern.requested` row this came
+// from, "" when it was raised live. A concern's entity is its source, so
+// several concerns share one entity and only this id tells the host which
+// request an answer answered.
+type Concern { source: String = ""; what: String = ""; severity: Int = 0; request: String = ""; }
 topic ConcernRaised { payload: Concern; subject: "dna.concern.raised"; }
+
+// What a concern row carries, written as one object rather than as prose
+// with a marker appended (GH #689, second review). A concern's text is
+// whatever a worker wrote, and text that looks like metadata must not be
+// read as metadata: with a marker appended, a concern reading
+// `observed [request c1] in a log` answered request c1. Here the text is
+// one escaped string field among others, and the reader asks for the
+// `request` member of the object — the JSON cursor walks the object's own
+// members and never looks inside a string value, so `[request c1]` in the
+// text is text.
+//
+// Rows written before this rule are prose and carry no object; every
+// reader below answers "" or 0 for them, and the host matches those by
+// counting, as it did before ids existed.
+fn concern_body(what: String, severity: Int, occurrence: Int, request: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("what", what);
+    b.int_field("severity", severity);
+    b.int_field("occurrence", occurrence);
+    b.string_field("request", request);
+    b.end_object();
+    return b.result();
+}
+
+// Why a concern under an id already used was refused, as an object, so
+// the refusal is that request's answer and can be found by its id.
+fn concern_refusal_body(why: String, request: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("why", why);
+    b.string_field("request", request);
+    b.end_object();
+    return b.result();
+}
+
+fn request_named(body: String) -> String {
+    return std::json::find_string_field(body, "request");
+}
+
+fn concern_what(body: String) -> String {
+    return std::json::find_string_field(body, "what");
+}
+
+fn concern_severity(body: String) -> Int {
+    return std::json::find_int_field(body, "severity");
+}
+
+// Whether a recorded concern row carries the same concern as this one:
+// the whole payload a request is allowed to carry, not a prefix of its
+// display text. One id used for a second, different concern — other
+// words, or the same words at another severity — is a conflict.
+fn same_concern(body: String, what: String, severity: Int) -> Bool {
+    return concern_what(body) == what && concern_severity(body) == severity;
+}
 
 // A person proposes a practice for the whole organization (GH #602): a
 // named text the Board ratifies, with who proposed it and what prompted it.
