@@ -1,6 +1,7 @@
-import "../core" as dna;
-import "../knowledge" as know;
-import "../operations" as ops;
+// Explicitly invoked by the registered native knowledge_store_test.hl entrypoint.
+import "../../core" as dna;
+import "../../knowledge" as know;
+import "../../operations" as ops;
 
 fn append(j: dna::Journal, kind: String, entity: String, body: String) {
     let r = j.append(j.revision(), kind, entity, body);
@@ -101,7 +102,7 @@ fn malformed_policy(body: String) {
     std::test::assert(!loaded.available && !p.visible(id), "malformed policy cannot grant visibility: " + body);
 }
 
-fn main() {
+fn run_cases() {
     record_visibility(); ledger_visibility(); refusals();
     malformed_policy("{\"class\":public}");
     malformed_policy("{\"class\":\"public\"");

@@ -1,7 +1,8 @@
+// Explicitly invoked by the registered native ledger_test.hl entrypoint.
 // Read health must describe the current read and prove a complete Ledger.
-import "../core" as dna;
-import "../knowledge" as know;
-import "../pond/db" as db;
+import "../../core" as dna;
+import "../../knowledge" as know;
+import "../../pond/db" as db;
 
 fn claim_recovery(l: know::Ledger, label: String) {
     std::test::assert(l.open(), label + ": opens");
@@ -54,7 +55,7 @@ fn postgres(dsn: know::Dsn) {
     std::test::assert(drop.ok, "remove only this fixture's schema");
 }
 
-fn main() {
+fn run_cases() {
     let mem = know::MemLedger { };
     claim_recovery(mem, "memory");
     let closed = know::PqLedger { };

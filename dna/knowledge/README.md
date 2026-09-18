@@ -52,14 +52,16 @@ enabled by this change.
 
 ## Verification
 
-- `dna/tests/knowledge_projection_fidelity_test.hl`: native document/tail/store
+- `dna/tests/knowledge_projection_fidelity/cases.hl`: native document/tail/store
   metadata, replacement and retirement, binding parity; optional Postgres legacy
   schema migration and persistence through a new connection.
-- `dna/tests/knowledge_visibility_test.hl`: routed restrictions, malformed
+- `dna/tests/knowledge_visibility/cases.hl`: routed restrictions, malformed
   policies, inaccessible Record, adoption/abandonment, stale snapshots and limits.
-- `dna/tests/ledger_read_health_test.hl`: recovery after a command conflict,
+- `dna/tests/ledger_read_health/cases.hl`: recovery after a command conflict,
   unopened reads; optional Postgres gaps, matching-count corruption and recovery.
-- The existing `dna/tests/ledger_test.hl` checks established Ledger behavior.
+- The registered `dna/tests/knowledge_store_test.hl` explicitly runs the fidelity
+  and visibility cases; `dna/tests/ledger_test.hl` runs read health alongside the
+  established Ledger behavior. They participate in the existing native CI suite.
 
 Postgres tests use `HALE_DNA_KNOWLEDGE_DSN` and private per-run schemas. A missing
 DSN is an explicit skip, not Postgres validation. Compile and run native tests
