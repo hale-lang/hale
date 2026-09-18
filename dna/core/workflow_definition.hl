@@ -193,6 +193,112 @@ fn bound_request(n: BoundNode, task_id: String, step_id: String) -> WorkRequest 
     };
 }
 
+// Whether `text` is one complete JSON value and nothing else: every
+// object and array closed by its own delimiter, every string closed, and
+// only space after the value ends. A document cut off mid-write fails
+// wherever it was cut — inside a node, before the array's `]`, or before
+// the document's own `}` — which a last-character check cannot tell apart
+// from a whole one, because a complete final node also ends in `}`.
+@unbounded
+fn json_whole(text: String) -> Bool {
+    let mut open = ""; // the containers still open, innermost last
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut started = false;
+    let mut closed = false;
+    let mut i = 0;
+    while i < len(text) {
+        let b = std::str::byte_at_unchecked(text, i);
+        i = i + 1;
+        if in_string {
+            if escaped { escaped = false; }
+            else if b == 92 { escaped = true; }
+            else if b == 34 { in_string = false; if len(open) == 0 { closed = true; } }
+            continue;
+        }
+        if b == 32 || b == 10 || b == 9 || b == 13 { continue; }
+        // a value has ended at the top level; nothing may follow it
+        if closed { return false; }
+        if b == 34 { in_string = true; started = true; continue; }
+        started = true;
+        if b == 123 { open = open + "o"; }
+        else if b == 91 { open = open + "a"; }
+        else if b == 125 || b == 93 {
+            let want = if b == 125 { "o" } else { "a" };
+            if len(open) == 0 || open[(len(open) - 1)..len(open)] != want { return false; }
+            open = open[0..(len(open) - 1)];
+            if len(open) == 0 { closed = true; }
+        }
+    }
+    return started && !in_string && len(open) == 0;
+}
+
+// Whether a raw JSON value is a number, rather than absent, a string or
+// anything else. `find_int_field` answers 0 for all three.
+fn is_number(raw: String) -> Bool {
+    if len(raw) == 0 { return false; }
+    let first = raw[0..1];
+    if first == "-" { return len(raw) > 1 && is_digit(raw[1..2]); }
+    return is_digit(first);
+}
+
+// Whether a raw JSON value is a string. `find_string_field` renders a
+// number as its digits, so a document that wrote 42 where text belongs
+// would otherwise read back as "42".
+fn is_text(raw: String) -> Bool {
+    return len(raw) >= 2 && raw[0..1] == "\"";
+}
+
+fn is_digit(c: String) -> Bool {
+    return c >= "0" && c <= "9";
+}
+
+// Why one node of a recipe cannot be read, "" when it can. `at` is its
+// position, so a refusal says which node broke without an id to name.
+@unbounded
+fn node_gap(e: String, at: Int) -> String {
+    let at_node = " (node " + to_string(at) + ")";
+    if !json_whole(e) { return "a node ends mid-document" + at_node; }
+    // every node carries every field; the last one written is `attempts`,
+    // so a node missing it was cut short whatever else parsed
+    let mut nums = "revision step_index depth cost_ceiling attempts";
+    while len(nums) > 0 {
+        let sp = std::str::index_of(nums + " ", " ");
+        let name = nums[0..sp];
+        nums = if sp + 1 >= len(nums) { "" } else { nums[(sp + 1)..len(nums)] };
+        if !is_number(std::json::find_field_raw(e, name)) {
+            return "a node's " + name + " is not a number" + at_node;
+        }
+    }
+    let mut texts = "kind id parent spawning_step member_key definition workflow_id path objective context_digest knowledge_bindings output_contract data_class requires target";
+    while len(texts) > 0 {
+        let sp = std::str::index_of(texts + " ", " ");
+        let name = texts[0..sp];
+        texts = if sp + 1 >= len(texts) { "" } else { texts[(sp + 1)..len(texts)] };
+        if !is_text(std::json::find_field_raw(e, name)) {
+            return "a node's " + name + " is not text" + at_node;
+        }
+    }
+    let kind = std::json::find_string_field(e, "kind");
+    if kind != "task" && kind != "step" && kind != "work" {
+        return "a node is a task, a step or a work, not `" + kind + "`" + at_node;
+    }
+    let id = std::json::find_string_field(e, "id");
+    if len(id) == 0 { return "a " + kind + " node carries no id" + at_node; }
+    if kind == "task" {
+        if len(std::json::find_string_field(e, "definition")) == 0 { return "task " + id + " names no definition"; }
+        if std::json::find_int_field(e, "depth") < 1 { return "task " + id + " is at no depth"; }
+        return "";
+    }
+    if len(std::json::find_string_field(e, "parent")) == 0 {
+        return "the " + kind + " " + id + " names no parent";
+    }
+    if kind == "step" && len(std::json::find_string_field(e, "workflow_id")) == 0 {
+        return "step " + id + " names no workflow";
+    }
+    return "";
+}
+
 locus WorkflowCatalog {
     params {
         workflows: WorkflowDefRows = WorkflowDefRows { };
@@ -484,6 +590,118 @@ locus WorkflowCatalog {
         return Expansion { ok: false, why: why, limits: limits };
     }
 
+    // ---- the bound recipe, as one document -------------------------------
+
+    // What `expand` bound, so an admission can carry it (card 05).
+    @unbounded
+    fn encode_bound() -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("format", "dna.workflow-recipe/1");
+        // how many nodes the writer wrote: a reader that decodes a
+        // different number has half a recipe, whatever it parsed
+        b.int_field("count", self.bound.len());
+        b.begin_array_field("nodes");
+        let mut i = 0;
+        while i < self.bound.len() {
+            let n = self.bound.get(i) or BoundNode { };
+            b.begin_object();
+            b.string_field("kind", n.kind);
+            b.string_field("id", n.id);
+            b.string_field("parent", n.parent);
+            b.string_field("spawning_step", n.spawning_step);
+            b.string_field("member_key", n.member_key);
+            b.string_field("definition", n.definition);
+            b.int_field("revision", n.revision);
+            b.string_field("workflow_id", n.workflow_id);
+            b.int_field("step_index", n.step_index);
+            b.int_field("depth", n.depth);
+            b.string_field("path", n.path);
+            b.string_field("objective", n.objective);
+            b.string_field("context_digest", n.context_digest);
+            b.string_field("knowledge_bindings", n.knowledge_bindings);
+            b.string_field("output_contract", n.output_contract);
+            b.string_field("data_class", n.data_class);
+            b.string_field("requires", n.requires);
+            b.string_field("target", n.target);
+            b.int_field("cost_ceiling", n.cost_ceiling);
+            b.int_field("attempts", n.attempts);
+            b.end_object();
+            i = i + 1;
+        }
+        b.end_array();
+        b.end_object();
+        return b.result();
+    }
+    // Why a recipe cannot be read whole, "" when it can. Checked before a
+    // node of it is bound: a document that was cut off, or that carries a
+    // node without an identity or with a field of the wrong type, is not a
+    // smaller recipe, it is half of one.
+    @unbounded
+    fn recipe_gap(text: String) -> String {
+        if std::json::find_string_field(text, "format") != "dna.workflow-recipe/1" {
+            return "not a workflow recipe (format " + std::json::find_string_field(text, "format") + ")";
+        }
+        if !json_whole(text) { return "the recipe ends mid-document"; }
+        if !is_text(std::json::find_field_raw(text, "format")) { return "a recipe names its format"; }
+        if !is_number(std::json::find_field_raw(text, "count")) { return "a recipe says how many nodes it carries"; }
+        let said = std::json::find_int_field(text, "count");
+        let nodes = std::json::find_field_raw(text, "nodes");
+        if len(nodes) < 2 || nodes[0..1] != "[" { return "a recipe carries its nodes"; }
+        let mut seen = 0;
+        let mut it = std::json::array_first(nodes);
+        while !it.done {
+            let e = it.element;
+            seen = seen + 1;
+            let gap = node_gap(e, seen);
+            if len(gap) > 0 { return gap; }
+            it = std::json::array_next(it);
+        }
+        if seen != said {
+            return "a recipe of " + to_string(said) + " node(s) carries " + to_string(seen);
+        }
+        if seen == 0 { return "a recipe of no nodes is no execution"; }
+        return "";
+    }
+
+    // Read a recipe back as this catalog's bound nodes. "" when read, else
+    // why not; nothing is bound when it is refused, whichever rule refused
+    // it, and nothing is bound until the whole document has been read.
+    @unbounded
+    fn decode_bound(text: String) -> String {
+        self.bound = BoundNodeRows { };
+        let gap = self.recipe_gap(text);
+        if len(gap) > 0 { return gap; }
+        let mut it = std::json::array_first(std::json::find_field_raw(text, "nodes"));
+        while !it.done {
+            let e = it.element;
+            self.bound.push(BoundNode {
+                kind: std::json::find_string_field(e, "kind"),
+                id: std::json::find_string_field(e, "id"),
+                parent: std::json::find_string_field(e, "parent"),
+                spawning_step: std::json::find_string_field(e, "spawning_step"),
+                member_key: std::json::find_string_field(e, "member_key"),
+                definition: std::json::find_string_field(e, "definition"),
+                revision: std::json::find_int_field(e, "revision"),
+                workflow_id: std::json::find_string_field(e, "workflow_id"),
+                step_index: std::json::find_int_field(e, "step_index"),
+                depth: std::json::find_int_field(e, "depth"),
+                path: std::json::find_string_field(e, "path"),
+                objective: std::json::find_string_field(e, "objective"),
+                context_digest: std::json::find_string_field(e, "context_digest"),
+                knowledge_bindings: std::json::find_string_field(e, "knowledge_bindings"),
+                output_contract: std::json::find_string_field(e, "output_contract"),
+                data_class: std::json::find_string_field(e, "data_class"),
+                requires: std::json::find_string_field(e, "requires"),
+                target: std::json::find_string_field(e, "target"),
+                cost_ceiling: std::json::find_int_field(e, "cost_ceiling"),
+                attempts: std::json::find_int_field(e, "attempts")
+            });
+            it = std::json::array_next(it);
+        }
+        return "";
+    }
+
     // ---- the machine form ------------------------------------------------
 
     // Every definition and member, as one JSON document.
@@ -537,9 +755,12 @@ locus WorkflowCatalog {
     // when read, else why not; nothing is added when it is refused.
     @unbounded
     fn decode(text: String) -> String {
-        if std::json::find_string_field(text, "format") != "dna.workflow-definitions/1" {
+        if !is_text(std::json::find_field_raw(text, "format")) || std::json::find_string_field(text, "format") != "dna.workflow-definitions/1" {
             return "not a workflow definition document (format " + std::json::find_string_field(text, "format") + ")";
         }
+        // the same rule the recipe reads under: a document that was cut off
+        // is not a shorter catalog (the review of card 05)
+        if !json_whole(text) { return "the document ends mid-write"; }
         // every incoming definition is checked against this catalog AND
         // against the ones before it in the document: a document that
         // defines one revision twice is refused whole, as `define` would

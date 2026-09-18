@@ -1,0 +1,875 @@
+// dna/core/workflow_events.hl — the durable facts of a workflow execution
+// and the envelope its transitions travel in (DNA workflow card 05;
+// dna/WORKFLOW-CONTRACT.md §8, §9).
+//
+// Every fact is versioned and carries the identities that say what it is
+// about (§4). A decoder refuses a version it does not know and a fact that
+// names nothing, so a reader never guesses. The facts are the Ledger's
+// under split routing and the record's on routing 0, like the rest of the
+// day's work (`memory_of` in routing.hl names each kind).
+//
+// One admission is atomic and positive: `workflow.admitted` carries the
+// engine (`wf1`), the bound recipe and the limits that were applied, and
+// is written before anything runs. A Task without it is a legacy Task and
+// keeps the legacy recovery path.
+//
+// Nothing here dispatches, schedules or persists: these are codecs and
+// one envelope. Cards 06 onward project, admit and execute.
+
+const WORKFLOW_ENGINE: String = "wf1";
+const WORKFLOW_EVENT_VERSION: Int = 1;
+
+// ---- the transition envelope (§9) -----------------------------------
+//
+// A resident proposes one transition to the committer and acts only on
+// the answer to that proposal. The id is derived from what the transition
+// does, so a proposal re-sent after a lost answer carries the same id.
+
+// Whether two proposals under one id are the same transition sent again.
+// "" when they are (a replay); else what differs (a conflict: one id was
+// used for two transitions).
+fn transition_conflict(committed: TransitionProposal, again: TransitionProposal) -> String {
+    let mut out = "";
+    if committed.scope != again.scope { out = out + " scope"; }
+    if committed.key != again.key { out = out + " key"; }
+    if committed.kind != again.kind { out = out + " kind"; }
+    if committed.entity != again.entity { out = out + " entity"; }
+    if committed.body != again.body { out = out + " body"; }
+    if len(out) == 0 { return ""; }
+    return "proposal " + again.proposal_id + " was committed with another" + out;
+}
+
+// The id of one transition: what it does, never a counter or a clock, so
+// the same transition proposed again is the same id.
+fn transition_id(entity: String, what: String) -> String {
+    return entity + "@" + what;
+}
+
+// The id of one attempt of a Work, numbered from 0 (§4): the first is a0.
+// A retry is a new number; a transmission of an admitted attempt keeps its
+// id (§7).
+fn attempt_id_of(work_id: String, attempt_no: Int) -> String {
+    return work_id + "/a" + to_string(attempt_no);
+}
+
+// The transition a fact was committed by (§9). The committer appends the
+// fact carrying this reference in one append, so after a restart the
+// committed proposal is reconstructable from the journal alone: the id
+// identifies it, and the fact beside it is the body that was committed
+// under it, which a reused id is compared against. A fact no transition
+// produced carries none, and one that carries a part carries all three.
+type TransitionRef {
+    scope: String = "";
+    key: String = "";
+    proposal_id: String = "";
+}
+
+// The reference a committer writes beside the fact it commits.
+fn committed_by(p: TransitionProposal) -> TransitionRef {
+    return TransitionRef { scope: p.scope, key: p.key, proposal_id: p.proposal_id };
+}
+
+// ---- the facts --------------------------------------------------------
+
+type AdmittedWorkflow {
+    version: Int = 1;
+    engine: String = "wf1";
+    task_id: String = "";
+    definition: String = "";
+    revision: Int = 0;
+    parent_task: String = ""; // "" at the root
+    spawning_step: String = "";
+    member_key: String = "";
+    inputs: String = ""; // what the application bound, as text
+    inputs_ref: String = ""; // or a reference to it, established before admission
+    recipe: String = ""; // the bound expansion (card 04's nodes), encoded
+    limits: AdmissionLimits = AdmissionLimits { };
+    works: Int = 0;
+    tasks: Int = 0;
+    steps: Int = 0;
+    depth: Int = 0;
+    transition: TransitionRef = TransitionRef { };
+}
+
+type RegisteredMembers {
+    version: Int = 1;
+    step_id: String = "";
+    task_id: String = "";
+    workflow_id: String = "";
+    step_index: Int = 0;
+    // the whole required set, before any member can answer: one
+    // "<key>:<leaf|child>:<id>" per member, space-separated
+    members: String = "";
+    transition: TransitionRef = TransitionRef { };
+}
+
+type AdmittedAttempt {
+    version: Int = 1;
+    attempt_id: String = "";
+    work_id: String = "";
+    step_id: String = "";
+    task_id: String = "";
+    attempt_no: Int = 0;
+    performer_kind: String = "";
+    request: WorkRequest = WorkRequest { };
+    transition: TransitionRef = TransitionRef { };
+}
+
+type AttemptOutcome {
+    version: Int = 1;
+    attempt_id: String = "";
+    work_id: String = "";
+    disposition: String = ""; // "done" | "failed" | "declined" | "timeout"
+    performer: String = "";
+    result_ref: String = ""; // where the result is, when it is not the text
+    result: String = "";
+    evidence_ref: String = ""; // the evidence of this attempt (a receipt digest)
+    narrative: String = "";
+    transition: TransitionRef = TransitionRef { };
+}
+
+type WorkOutcome {
+    version: Int = 1;
+    work_id: String = "";
+    step_id: String = "";
+    attempt_id: String = ""; // the attempt whose outcome this is
+    disposition: String = "";
+    result_ref: String = "";
+    transition: TransitionRef = TransitionRef { };
+}
+
+type StepOutcome {
+    version: Int = 1;
+    step_id: String = "";
+    task_id: String = "";
+    disposition: String = ""; // "completed" | "failed"
+    members: String = ""; // the members that decided it
+    failed_member: String = "";
+    transition: TransitionRef = TransitionRef { };
+}
+
+type WorkflowOutcome {
+    version: Int = 1;
+    task_id: String = "";
+    disposition: String = "";
+    reason: String = "";
+    parent_task: String = "";
+    spawning_step: String = "";
+    transition: TransitionRef = TransitionRef { };
+}
+
+// What a decoder answers: the fact, or why it would not read it.
+type DecodedAdmission { ok: Bool = false; why: String = ""; value: AdmittedWorkflow = AdmittedWorkflow { }; }
+type DecodedMembers { ok: Bool = false; why: String = ""; value: RegisteredMembers = RegisteredMembers { }; }
+type DecodedAttempt { ok: Bool = false; why: String = ""; value: AdmittedAttempt = AdmittedAttempt { }; }
+type DecodedAttemptOutcome { ok: Bool = false; why: String = ""; value: AttemptOutcome = AttemptOutcome { }; }
+type DecodedWorkOutcome { ok: Bool = false; why: String = ""; value: WorkOutcome = WorkOutcome { }; }
+type DecodedStepOutcome { ok: Bool = false; why: String = ""; value: StepOutcome = StepOutcome { }; }
+type DecodedWorkflowOutcome { ok: Bool = false; why: String = ""; value: WorkflowOutcome = WorkflowOutcome { }; }
+
+// Why a fact's version cannot be read, "" when it can.
+fn version_gap(text: String, what: String) -> String {
+    let v = std::json::find_int_field(text, "version");
+    if v == WORKFLOW_EVENT_VERSION { return ""; }
+    return "unsupported " + what + " version " + to_string(v) + " (this engine reads version " + to_string(WORKFLOW_EVENT_VERSION) + ")";
+}
+
+// The first of `names` (space-separated) the text does not carry, "" when
+// it carries them all.
+@unbounded
+fn missing_field(text: String, names: String) -> String {
+    let mut rest = names + " ";
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let name = rest[0..sp];
+        rest = rest[(sp + 1)..len(rest)];
+        if len(name) > 0 && len(std::json::find_string_field(text, name)) == 0 { return name; }
+    }
+    return "";
+}
+
+// The first of `names` (space-separated) the text does not carry as a
+// number, "" when it carries them all. An absent field and one written as
+// text both answer 0 through `find_int_field`: a fact that said nothing
+// may not be read as if it had said zero.
+@unbounded
+fn missing_number(text: String, names: String) -> String {
+    let mut rest = names + " ";
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let name = rest[0..sp];
+        rest = rest[(sp + 1)..len(rest)];
+        if len(name) > 0 && !is_number(std::json::find_field_raw(text, name)) { return name; }
+    }
+    return "";
+}
+
+// Whether `id` is an attempt of `work_id`: `<work>/a<n>` with that n.
+fn attempt_of(work_id: String, attempt_no: Int) -> String {
+    return attempt_id_of(work_id, attempt_no);
+}
+
+// Why a fact's transition reference cannot be read, "" when it can (a
+// fact no transition produced carries none, which is not a gap).
+fn transition_gap(text: String) -> String {
+    let raw = std::json::find_field_raw(text, "transition");
+    if len(raw) == 0 { return ""; }
+    let absent = missing_field(raw, "scope key proposal_id");
+    if len(absent) > 0 { return "a committed transition names its " + absent; }
+    return "";
+}
+
+fn transition_of(text: String) -> TransitionRef {
+    let raw = std::json::find_field_raw(text, "transition");
+    return TransitionRef {
+        scope: std::json::find_string_field(raw, "scope"),
+        key: std::json::find_string_field(raw, "key"),
+        proposal_id: std::json::find_string_field(raw, "proposal_id")
+    };
+}
+
+fn transition_json(b: std::json::Builder, t: TransitionRef) {
+    if len(t.proposal_id) == 0 && len(t.scope) == 0 && len(t.key) == 0 { return; }
+    b.begin_object_field("transition");
+    b.string_field("scope", t.scope);
+    b.string_field("key", t.key);
+    b.string_field("proposal_id", t.proposal_id);
+    b.end_object();
+}
+
+// Whether `members` (space-separated keys, or "<key>:<kind>:<id>" rows)
+// names this member key.
+fn member_named(members: String, key: String) -> Bool {
+    let mut rest = " " + members + " ";
+    while len(rest) > 1 {
+        let sp = std::str::index_of(rest[1..len(rest)], " ") + 1;
+        let one = rest[1..sp];
+        let colon = std::str::index_of(one, ":");
+        let name = if colon < 0 { one } else { one[0..colon] };
+        if name == key { return true; }
+        rest = rest[sp..len(rest)];
+    }
+    return false;
+}
+
+// Whether `child` is an id below `parent`: `<parent>/<something>`.
+fn id_below(parent: String, child: String) -> Bool {
+    if len(parent) == 0 || len(child) <= len(parent) + 1 { return false; }
+    return child[0..(len(parent) + 1)] == parent + "/";
+}
+
+// Why an attempt id is not this Work's nth attempt, "" when it is.
+fn attempt_id_gap(attempt_id: String, work_id: String, attempt_no: Int) -> String {
+    // §4: `<work>/a<n>`, n from 0. The first attempt is a0 and a retry is
+    // a1; only a negative number names no attempt.
+    if attempt_no < 0 { return "an attempt is numbered from 0, not " + to_string(attempt_no); }
+    let want = attempt_id_of(work_id, attempt_no);
+    if attempt_id != want {
+        return "attempt " + attempt_id + " is not attempt " + to_string(attempt_no) + " of " + work_id + " (" + want + ")";
+    }
+    return "";
+}
+
+// Whether a set of related ids is either wholly present or wholly absent:
+// a child names its parent, the step that spawned it and its key, or names
+// none of the three and is a root.
+fn some_but_not_all(a: String, b: String, c: String) -> Bool {
+    let n = (if len(a) > 0 { 1 } else { 0 }) + (if len(b) > 0 { 1 } else { 0 }) + (if len(c) > 0 { 1 } else { 0 });
+    return n > 0 && n < 3;
+}
+
+fn limits_json(b: std::json::Builder, limits: AdmissionLimits) {
+    b.begin_object_field("limits");
+    b.int_field("max_depth", limits.max_depth);
+    b.int_field("max_steps", limits.max_steps);
+    b.int_field("max_members", limits.max_members);
+    b.int_field("max_attempts", limits.max_attempts);
+    b.int_field("max_works", limits.max_works);
+    b.end_object();
+}
+
+fn limits_of(text: String) -> AdmissionLimits {
+    let raw = std::json::find_field_raw(text, "limits");
+    return AdmissionLimits {
+        max_depth: std::json::find_int_field(raw, "max_depth"),
+        max_steps: std::json::find_int_field(raw, "max_steps"),
+        max_members: std::json::find_int_field(raw, "max_members"),
+        max_attempts: std::json::find_int_field(raw, "max_attempts"),
+        max_works: std::json::find_int_field(raw, "max_works")
+    };
+}
+
+fn request_json(b: std::json::Builder, req: WorkRequest) {
+    b.begin_object_field("request");
+    b.string_field("work_id", req.work_id);
+    b.string_field("task_id", req.task_id);
+    b.string_field("step_id", req.step_id);
+    b.string_field("objective", req.objective);
+    b.string_field("context_digest", req.context_digest);
+    b.string_field("knowledge_bindings", req.knowledge_bindings);
+    b.string_field("output_contract", req.output_contract);
+    b.string_field("data_class", req.data_class);
+    b.string_field("requires", req.requires);
+    b.string_field("target", req.target);
+    b.int_field("cost_ceiling", req.cost_ceiling);
+    b.int_field("attempt_no", req.attempt_no);
+    b.end_object();
+}
+
+fn request_of(text: String) -> WorkRequest {
+    let raw = std::json::find_field_raw(text, "request");
+    return WorkRequest {
+        work_id: std::json::find_string_field(raw, "work_id"),
+        task_id: std::json::find_string_field(raw, "task_id"),
+        step_id: std::json::find_string_field(raw, "step_id"),
+        objective: std::json::find_string_field(raw, "objective"),
+        context_digest: std::json::find_string_field(raw, "context_digest"),
+        knowledge_bindings: std::json::find_string_field(raw, "knowledge_bindings"),
+        output_contract: std::json::find_string_field(raw, "output_contract"),
+        data_class: std::json::find_string_field(raw, "data_class"),
+        requires: std::json::find_string_field(raw, "requires"),
+        target: std::json::find_string_field(raw, "target"),
+        cost_ceiling: std::json::find_int_field(raw, "cost_ceiling"),
+        attempt_no: std::json::find_int_field(raw, "attempt_no")
+    };
+}
+
+// ---- codecs -----------------------------------------------------------
+
+fn encode_admission(a: AdmittedWorkflow) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.int_field("version", WORKFLOW_EVENT_VERSION);
+    b.string_field("engine", WORKFLOW_ENGINE);
+    b.string_field("task_id", a.task_id);
+    b.string_field("definition", a.definition);
+    b.int_field("revision", a.revision);
+    b.string_field("parent_task", a.parent_task);
+    b.string_field("spawning_step", a.spawning_step);
+    b.string_field("member_key", a.member_key);
+    b.string_field("inputs", a.inputs);
+    b.string_field("inputs_ref", a.inputs_ref);
+    b.string_field("recipe", a.recipe);
+    limits_json(b, a.limits);
+    b.int_field("works", a.works);
+    b.int_field("tasks", a.tasks);
+    b.int_field("steps", a.steps);
+    b.int_field("depth", a.depth);
+    transition_json(b, a.transition);
+    b.end_object();
+    return b.result();
+}
+
+fn decode_admission(text: String) -> DecodedAdmission {
+    let gap = version_gap(text, "admission");
+    if len(gap) > 0 { return DecodedAdmission { why: gap }; }
+    if std::json::find_string_field(text, "engine") != WORKFLOW_ENGINE {
+        return DecodedAdmission { why: "another engine's admission (" + std::json::find_string_field(text, "engine") + ")" };
+    }
+    let absent = missing_field(text, "task_id definition recipe");
+    if len(absent) > 0 { return DecodedAdmission { why: "an admission names its " + absent }; }
+    let unread = missing_number(text, "revision works tasks steps depth");
+    if len(unread) > 0 { return DecodedAdmission { why: "an admission carries the " + unread + " it was admitted with" }; }
+    let raw = std::json::find_field_raw(text, "limits");
+    if len(raw) == 0 { return DecodedAdmission { why: "an admission carries the limits that were applied" }; }
+    let unbounded = missing_number(raw, "max_depth max_steps max_members max_attempts max_works");
+    if len(unbounded) > 0 { return DecodedAdmission { why: "the limits an admission applied name their " + unbounded }; }
+    let committed = transition_gap(text);
+    if len(committed) > 0 { return DecodedAdmission { why: committed }; }
+    let bad = admission_gap(text);
+    if len(bad) > 0 { return DecodedAdmission { why: bad }; }
+    return DecodedAdmission {
+        ok: true,
+        value: AdmittedWorkflow {
+            engine: WORKFLOW_ENGINE,
+            task_id: std::json::find_string_field(text, "task_id"),
+            definition: std::json::find_string_field(text, "definition"),
+            revision: std::json::find_int_field(text, "revision"),
+            parent_task: std::json::find_string_field(text, "parent_task"),
+            spawning_step: std::json::find_string_field(text, "spawning_step"),
+            member_key: std::json::find_string_field(text, "member_key"),
+            inputs: std::json::find_string_field(text, "inputs"),
+            inputs_ref: std::json::find_string_field(text, "inputs_ref"),
+            recipe: std::json::find_string_field(text, "recipe"),
+            limits: limits_of(text),
+            works: std::json::find_int_field(text, "works"),
+            tasks: std::json::find_int_field(text, "tasks"),
+            steps: std::json::find_int_field(text, "steps"),
+            depth: std::json::find_int_field(text, "depth"),
+            transition: transition_of(text)
+        }
+    };
+}
+
+// Why a readable admission does not describe one execution, "" when it
+// does. What it says it expanded to has to fit the limits it says were
+// applied, and a child has to name where it came from, all of it or none.
+fn admission_gap(text: String) -> String {
+    let revision = std::json::find_int_field(text, "revision");
+    if revision < 1 { return "an admission binds a definition revision, not " + to_string(revision); }
+    let limits = limits_of(text);
+    let depth = std::json::find_int_field(text, "depth");
+    let works = std::json::find_int_field(text, "works");
+    let tasks = std::json::find_int_field(text, "tasks");
+    let steps = std::json::find_int_field(text, "steps");
+    if depth < 1 || tasks < 1 || steps < 1 || works < 0 {
+        return "an admission of " + to_string(tasks) + " task(s), " + to_string(steps) + " step(s), " + to_string(works) + " work(s) at depth " + to_string(depth) + " is no execution";
+    }
+    if depth > limits.max_depth {
+        return "an admission of depth " + to_string(depth) + " exceeds the max_depth " + to_string(limits.max_depth) + " it says was applied";
+    }
+    if works > limits.max_works {
+        return "an admission of " + to_string(works) + " work(s) exceeds the max_works " + to_string(limits.max_works) + " it says was applied";
+    }
+    if some_but_not_all(std::json::find_string_field(text, "parent_task"), std::json::find_string_field(text, "spawning_step"), std::json::find_string_field(text, "member_key")) {
+        return "a child's admission names its parent task, the step that spawned it and its member key, or none of the three";
+    }
+    return "";
+}
+
+fn encode_members(m: RegisteredMembers) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.int_field("version", WORKFLOW_EVENT_VERSION);
+    b.string_field("step_id", m.step_id);
+    b.string_field("task_id", m.task_id);
+    b.string_field("workflow_id", m.workflow_id);
+    b.int_field("step_index", m.step_index);
+    b.string_field("members", m.members);
+    transition_json(b, m.transition);
+    b.end_object();
+    return b.result();
+}
+
+fn decode_members(text: String) -> DecodedMembers {
+    let gap = version_gap(text, "member registration");
+    if len(gap) > 0 { return DecodedMembers { why: gap }; }
+    let absent = missing_field(text, "step_id task_id workflow_id members");
+    if len(absent) > 0 { return DecodedMembers { why: "a member registration names its " + absent }; }
+    let unread = missing_number(text, "step_index");
+    if len(unread) > 0 { return DecodedMembers { why: "a member registration carries its " + unread }; }
+    let committed = transition_gap(text);
+    if len(committed) > 0 { return DecodedMembers { why: committed }; }
+    if !id_below(std::json::find_string_field(text, "task_id"), std::json::find_string_field(text, "step_id")) {
+        return DecodedMembers { why: "step " + std::json::find_string_field(text, "step_id") + " is not a step of task " + std::json::find_string_field(text, "task_id") };
+    }
+    return DecodedMembers {
+        ok: true,
+        value: RegisteredMembers {
+            step_id: std::json::find_string_field(text, "step_id"),
+            task_id: std::json::find_string_field(text, "task_id"),
+            workflow_id: std::json::find_string_field(text, "workflow_id"),
+            step_index: std::json::find_int_field(text, "step_index"),
+            members: std::json::find_string_field(text, "members"),
+            transition: transition_of(text)
+        }
+    };
+}
+
+// The request one attempt admission carries. Its Work, Task, Step and
+// attempt number are the admission's own, never a second copy that could
+// disagree with it: one fact, one set of identities (§7).
+fn attempt_request(a: AdmittedAttempt) -> WorkRequest {
+    return WorkRequest {
+        work_id: a.work_id,
+        task_id: a.task_id,
+        step_id: a.step_id,
+        objective: a.request.objective,
+        context_digest: a.request.context_digest,
+        knowledge_bindings: a.request.knowledge_bindings,
+        output_contract: a.request.output_contract,
+        data_class: a.request.data_class,
+        requires: a.request.requires,
+        target: a.request.target,
+        cost_ceiling: a.request.cost_ceiling,
+        attempt_no: a.attempt_no
+    };
+}
+
+fn encode_attempt(a: AdmittedAttempt) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.int_field("version", WORKFLOW_EVENT_VERSION);
+    b.string_field("attempt_id", a.attempt_id);
+    b.string_field("work_id", a.work_id);
+    b.string_field("step_id", a.step_id);
+    b.string_field("task_id", a.task_id);
+    b.int_field("attempt_no", a.attempt_no);
+    b.string_field("performer_kind", a.performer_kind);
+    request_json(b, attempt_request(a));
+    transition_json(b, a.transition);
+    b.end_object();
+    return b.result();
+}
+
+fn decode_attempt(text: String) -> DecodedAttempt {
+    let gap = version_gap(text, "attempt admission");
+    if len(gap) > 0 { return DecodedAttempt { why: gap }; }
+    let absent = missing_field(text, "attempt_id work_id step_id task_id performer_kind");
+    if len(absent) > 0 { return DecodedAttempt { why: "an attempt admission names its " + absent }; }
+    let unread = missing_number(text, "attempt_no");
+    if len(unread) > 0 { return DecodedAttempt { why: "an attempt admission carries its " + unread }; }
+    let raw = std::json::find_field_raw(text, "request");
+    if len(raw) == 0 { return DecodedAttempt { why: "an attempt admission carries the request it was admitted with" }; }
+    let unasked = missing_field(raw, "work_id task_id step_id objective");
+    if len(unasked) > 0 { return DecodedAttempt { why: "the request an attempt carries names its " + unasked }; }
+    let uncounted = missing_number(raw, "attempt_no cost_ceiling");
+    if len(uncounted) > 0 { return DecodedAttempt { why: "the request an attempt carries names its " + uncounted }; }
+    let committed = transition_gap(text);
+    if len(committed) > 0 { return DecodedAttempt { why: committed }; }
+    let bad = attempt_gap(text);
+    if len(bad) > 0 { return DecodedAttempt { why: bad }; }
+    return DecodedAttempt {
+        ok: true,
+        value: AdmittedAttempt {
+            attempt_id: std::json::find_string_field(text, "attempt_id"),
+            work_id: std::json::find_string_field(text, "work_id"),
+            step_id: std::json::find_string_field(text, "step_id"),
+            task_id: std::json::find_string_field(text, "task_id"),
+            attempt_no: std::json::find_int_field(text, "attempt_no"),
+            performer_kind: std::json::find_string_field(text, "performer_kind"),
+            request: request_of(text),
+            transition: transition_of(text)
+        }
+    };
+}
+
+// Why a readable attempt admission does not describe one attempt of one
+// Work, "" when it does. The id, the number and the request it carries all
+// say which attempt of which Work this is; a document where they disagree
+// is not read, because there is no saying which of them is meant.
+fn attempt_gap(text: String) -> String {
+    let work_id = std::json::find_string_field(text, "work_id");
+    let step_id = std::json::find_string_field(text, "step_id");
+    let attempt_no = std::json::find_int_field(text, "attempt_no");
+    let gap = attempt_id_gap(std::json::find_string_field(text, "attempt_id"), work_id, attempt_no);
+    if len(gap) > 0 { return gap; }
+    if !id_below(step_id, work_id) { return "work " + work_id + " is not a work of step " + step_id; }
+    let req = request_of(text);
+    if req.work_id != work_id || req.task_id != std::json::find_string_field(text, "task_id") || req.step_id != step_id {
+        return "an attempt of " + work_id + " carries a request for " + req.work_id + " (task " + req.task_id + ", step " + req.step_id + ")";
+    }
+    if req.attempt_no != attempt_no {
+        return "attempt " + to_string(attempt_no) + " of " + work_id + " carries a request for attempt " + to_string(req.attempt_no);
+    }
+    return "";
+}
+
+fn encode_attempt_outcome(o: AttemptOutcome) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.int_field("version", WORKFLOW_EVENT_VERSION);
+    b.string_field("attempt_id", o.attempt_id);
+    b.string_field("work_id", o.work_id);
+    b.string_field("disposition", o.disposition);
+    b.string_field("performer", o.performer);
+    b.string_field("result_ref", o.result_ref);
+    b.string_field("result", o.result);
+    b.string_field("evidence_ref", o.evidence_ref);
+    b.string_field("narrative", o.narrative);
+    transition_json(b, o.transition);
+    b.end_object();
+    return b.result();
+}
+
+fn decode_attempt_outcome(text: String) -> DecodedAttemptOutcome {
+    let gap = version_gap(text, "attempt outcome");
+    if len(gap) > 0 { return DecodedAttemptOutcome { why: gap }; }
+    let absent = missing_field(text, "attempt_id work_id disposition");
+    if len(absent) > 0 { return DecodedAttemptOutcome { why: "an attempt outcome names its " + absent }; }
+    let committed = transition_gap(text);
+    if len(committed) > 0 { return DecodedAttemptOutcome { why: committed }; }
+    let disposition = std::json::find_string_field(text, "disposition");
+    if disposition != "done" && disposition != "failed" && disposition != "declined" && disposition != "timeout" {
+        return DecodedAttemptOutcome { why: "an attempt is done, failed, declined or timeout, not `" + disposition + "`" };
+    }
+    let attempt_id = std::json::find_string_field(text, "attempt_id");
+    let work_id = std::json::find_string_field(text, "work_id");
+    if !id_below(work_id, attempt_id) || !std::str::contains(attempt_id, "/a") {
+        return DecodedAttemptOutcome { why: "attempt " + attempt_id + " is not an attempt of " + work_id };
+    }
+    return DecodedAttemptOutcome {
+        ok: true,
+        value: AttemptOutcome {
+            attempt_id: std::json::find_string_field(text, "attempt_id"),
+            work_id: std::json::find_string_field(text, "work_id"),
+            disposition: std::json::find_string_field(text, "disposition"),
+            performer: std::json::find_string_field(text, "performer"),
+            result_ref: std::json::find_string_field(text, "result_ref"),
+            result: std::json::find_string_field(text, "result"),
+            evidence_ref: std::json::find_string_field(text, "evidence_ref"),
+            narrative: std::json::find_string_field(text, "narrative"),
+            transition: transition_of(text)
+        }
+    };
+}
+
+fn encode_work_outcome(o: WorkOutcome) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.int_field("version", WORKFLOW_EVENT_VERSION);
+    b.string_field("work_id", o.work_id);
+    b.string_field("step_id", o.step_id);
+    b.string_field("attempt_id", o.attempt_id);
+    b.string_field("disposition", o.disposition);
+    b.string_field("result_ref", o.result_ref);
+    transition_json(b, o.transition);
+    b.end_object();
+    return b.result();
+}
+
+fn decode_work_outcome(text: String) -> DecodedWorkOutcome {
+    let gap = version_gap(text, "work outcome");
+    if len(gap) > 0 { return DecodedWorkOutcome { why: gap }; }
+    let absent = missing_field(text, "work_id step_id attempt_id disposition");
+    if len(absent) > 0 { return DecodedWorkOutcome { why: "a work outcome names its " + absent }; }
+    let committed = transition_gap(text);
+    if len(committed) > 0 { return DecodedWorkOutcome { why: committed }; }
+    let work_id = std::json::find_string_field(text, "work_id");
+    let step_id = std::json::find_string_field(text, "step_id");
+    if !id_below(step_id, work_id) { return DecodedWorkOutcome { why: "work " + work_id + " is not a work of step " + step_id }; }
+    let attempt_id = std::json::find_string_field(text, "attempt_id");
+    if !id_below(work_id, attempt_id) || !std::str::contains(attempt_id, "/a") {
+        return DecodedWorkOutcome { why: "work " + work_id + " did not settle on attempt " + attempt_id };
+    }
+    let disposition = std::json::find_string_field(text, "disposition");
+    if disposition != "done" && disposition != "failed" && disposition != "cancelled" {
+        return DecodedWorkOutcome { why: "a work is done, failed or cancelled, not `" + disposition + "`" };
+    }
+    return DecodedWorkOutcome {
+        ok: true,
+        value: WorkOutcome {
+            work_id: std::json::find_string_field(text, "work_id"),
+            step_id: std::json::find_string_field(text, "step_id"),
+            attempt_id: std::json::find_string_field(text, "attempt_id"),
+            disposition: std::json::find_string_field(text, "disposition"),
+            result_ref: std::json::find_string_field(text, "result_ref"),
+            transition: transition_of(text)
+        }
+    };
+}
+
+fn encode_step_outcome(o: StepOutcome) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.int_field("version", WORKFLOW_EVENT_VERSION);
+    b.string_field("step_id", o.step_id);
+    b.string_field("task_id", o.task_id);
+    b.string_field("disposition", o.disposition);
+    b.string_field("members", o.members);
+    b.string_field("failed_member", o.failed_member);
+    transition_json(b, o.transition);
+    b.end_object();
+    return b.result();
+}
+
+fn decode_step_outcome(text: String) -> DecodedStepOutcome {
+    let gap = version_gap(text, "step outcome");
+    if len(gap) > 0 { return DecodedStepOutcome { why: gap }; }
+    let absent = missing_field(text, "step_id task_id disposition members");
+    if len(absent) > 0 { return DecodedStepOutcome { why: "a step outcome names its " + absent }; }
+    let committed = transition_gap(text);
+    if len(committed) > 0 { return DecodedStepOutcome { why: committed }; }
+    let step_id = std::json::find_string_field(text, "step_id");
+    let task_id = std::json::find_string_field(text, "task_id");
+    if !id_below(task_id, step_id) { return DecodedStepOutcome { why: "step " + step_id + " is not a step of task " + task_id }; }
+    let disposition = std::json::find_string_field(text, "disposition");
+    let failed_member = std::json::find_string_field(text, "failed_member");
+    let members = std::json::find_string_field(text, "members");
+    if disposition == "completed" {
+        if len(failed_member) > 0 { return DecodedStepOutcome { why: "a completed step names no failed member, and this one names " + failed_member }; }
+    } else {
+        if disposition != "failed" { return DecodedStepOutcome { why: "a step is completed or failed, not `" + disposition + "`" }; }
+        if len(failed_member) == 0 { return DecodedStepOutcome { why: "a failed step names the member that failed it" }; }
+        if !member_named(members, failed_member) {
+            return DecodedStepOutcome { why: "step " + step_id + " failed on `" + failed_member + "`, which is not one of its members (" + members + ")" };
+        }
+    }
+    return DecodedStepOutcome {
+        ok: true,
+        value: StepOutcome {
+            step_id: std::json::find_string_field(text, "step_id"),
+            task_id: std::json::find_string_field(text, "task_id"),
+            disposition: std::json::find_string_field(text, "disposition"),
+            members: std::json::find_string_field(text, "members"),
+            failed_member: std::json::find_string_field(text, "failed_member"),
+            transition: transition_of(text)
+        }
+    };
+}
+
+fn encode_workflow_outcome(o: WorkflowOutcome) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.int_field("version", WORKFLOW_EVENT_VERSION);
+    b.string_field("task_id", o.task_id);
+    b.string_field("disposition", o.disposition);
+    b.string_field("reason", o.reason);
+    b.string_field("parent_task", o.parent_task);
+    b.string_field("spawning_step", o.spawning_step);
+    transition_json(b, o.transition);
+    b.end_object();
+    return b.result();
+}
+
+fn decode_workflow_outcome(text: String) -> DecodedWorkflowOutcome {
+    let gap = version_gap(text, "workflow outcome");
+    if len(gap) > 0 { return DecodedWorkflowOutcome { why: gap }; }
+    let absent = missing_field(text, "task_id disposition");
+    if len(absent) > 0 { return DecodedWorkflowOutcome { why: "a workflow outcome names its " + absent }; }
+    let committed = transition_gap(text);
+    if len(committed) > 0 { return DecodedWorkflowOutcome { why: committed }; }
+    let disposition = std::json::find_string_field(text, "disposition");
+    if disposition != "done" && disposition != "failed" && disposition != "cancelled" {
+        return DecodedWorkflowOutcome { why: "a workflow is done, failed or cancelled, not `" + disposition + "`" };
+    }
+    let parent_task = std::json::find_string_field(text, "parent_task");
+    let spawning_step = std::json::find_string_field(text, "spawning_step");
+    if (len(parent_task) > 0) != (len(spawning_step) > 0) {
+        return DecodedWorkflowOutcome { why: "a child workflow settles to its parent task and the step that spawned it, or to neither" };
+    }
+    if disposition == "failed" && len(std::json::find_string_field(text, "reason")) == 0 {
+        return DecodedWorkflowOutcome { why: "a failed workflow says why" };
+    }
+    return DecodedWorkflowOutcome {
+        ok: true,
+        value: WorkflowOutcome {
+            task_id: std::json::find_string_field(text, "task_id"),
+            disposition: std::json::find_string_field(text, "disposition"),
+            reason: std::json::find_string_field(text, "reason"),
+            parent_task: std::json::find_string_field(text, "parent_task"),
+            spawning_step: std::json::find_string_field(text, "spawning_step"),
+            transition: transition_of(text)
+        }
+    };
+}
+
+// ---- the two the contract names and the codecs owed them --------------
+//
+// §8 lists `step.activated` and `workflow.refused` beside the kinds above,
+// and `memory_of` routes both. A routing row is not a durable shape, so
+// each has one here: an activation is the moment a registered step's
+// members were dispatched, and a refusal is the negative twin of an
+// admission, saying what was asked for and why it was not admitted.
+
+type ActivatedStep {
+    version: Int = 1;
+    step_id: String = "";
+    task_id: String = "";
+    workflow_id: String = "";
+    step_index: Int = 0;
+    dispatched: String = ""; // the members dispatched, by key
+    transition: TransitionRef = TransitionRef { };
+}
+
+type RefusedWorkflow {
+    version: Int = 1;
+    engine: String = "wf1";
+    task_id: String = "";
+    definition: String = "";
+    revision: Int = 0;
+    why: String = ""; // what `expand` refused it with
+    parent_task: String = "";
+    spawning_step: String = "";
+    member_key: String = "";
+    limits: AdmissionLimits = AdmissionLimits { };
+    transition: TransitionRef = TransitionRef { };
+}
+
+type DecodedActivation { ok: Bool = false; why: String = ""; value: ActivatedStep = ActivatedStep { }; }
+type DecodedRefusal { ok: Bool = false; why: String = ""; value: RefusedWorkflow = RefusedWorkflow { }; }
+
+fn encode_activation(a: ActivatedStep) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.int_field("version", WORKFLOW_EVENT_VERSION);
+    b.string_field("step_id", a.step_id);
+    b.string_field("task_id", a.task_id);
+    b.string_field("workflow_id", a.workflow_id);
+    b.int_field("step_index", a.step_index);
+    b.string_field("dispatched", a.dispatched);
+    transition_json(b, a.transition);
+    b.end_object();
+    return b.result();
+}
+
+fn decode_activation(text: String) -> DecodedActivation {
+    let gap = version_gap(text, "step activation");
+    if len(gap) > 0 { return DecodedActivation { why: gap }; }
+    let absent = missing_field(text, "step_id task_id workflow_id dispatched");
+    if len(absent) > 0 { return DecodedActivation { why: "a step activation names its " + absent }; }
+    let unread = missing_number(text, "step_index");
+    if len(unread) > 0 { return DecodedActivation { why: "a step activation carries its " + unread }; }
+    let committed = transition_gap(text);
+    if len(committed) > 0 { return DecodedActivation { why: committed }; }
+    let step_id = std::json::find_string_field(text, "step_id");
+    let task_id = std::json::find_string_field(text, "task_id");
+    if !id_below(task_id, step_id) {
+        return DecodedActivation { why: "step " + step_id + " is not a step of task " + task_id };
+    }
+    return DecodedActivation {
+        ok: true,
+        value: ActivatedStep {
+            step_id: step_id,
+            task_id: task_id,
+            workflow_id: std::json::find_string_field(text, "workflow_id"),
+            step_index: std::json::find_int_field(text, "step_index"),
+            dispatched: std::json::find_string_field(text, "dispatched"),
+            transition: transition_of(text)
+        }
+    };
+}
+
+fn encode_refusal(r: RefusedWorkflow) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.int_field("version", WORKFLOW_EVENT_VERSION);
+    b.string_field("engine", WORKFLOW_ENGINE);
+    b.string_field("task_id", r.task_id);
+    b.string_field("definition", r.definition);
+    b.int_field("revision", r.revision);
+    b.string_field("why", r.why);
+    b.string_field("parent_task", r.parent_task);
+    b.string_field("spawning_step", r.spawning_step);
+    b.string_field("member_key", r.member_key);
+    limits_json(b, r.limits);
+    transition_json(b, r.transition);
+    b.end_object();
+    return b.result();
+}
+
+fn decode_refusal(text: String) -> DecodedRefusal {
+    let gap = version_gap(text, "refusal");
+    if len(gap) > 0 { return DecodedRefusal { why: gap }; }
+    if std::json::find_string_field(text, "engine") != WORKFLOW_ENGINE {
+        return DecodedRefusal { why: "another engine's refusal (" + std::json::find_string_field(text, "engine") + ")" };
+    }
+    let absent = missing_field(text, "task_id definition why");
+    if len(absent) > 0 { return DecodedRefusal { why: "a refusal names its " + absent }; }
+    let unread = missing_number(text, "revision");
+    if len(unread) > 0 { return DecodedRefusal { why: "a refusal names the " + unread + " it was asked for" }; }
+    let raw = std::json::find_field_raw(text, "limits");
+    if len(raw) == 0 { return DecodedRefusal { why: "a refusal carries the limits that refused it" }; }
+    let unbounded = missing_number(raw, "max_depth max_steps max_members max_attempts max_works");
+    if len(unbounded) > 0 { return DecodedRefusal { why: "the limits a refusal applied name their " + unbounded }; }
+    let committed = transition_gap(text);
+    if len(committed) > 0 { return DecodedRefusal { why: committed }; }
+    if some_but_not_all(std::json::find_string_field(text, "parent_task"), std::json::find_string_field(text, "spawning_step"), std::json::find_string_field(text, "member_key")) {
+        return DecodedRefusal { why: "a child's refusal names its parent task, the step that spawned it and its member key, or none of the three" };
+    }
+    return DecodedRefusal {
+        ok: true,
+        value: RefusedWorkflow {
+            engine: WORKFLOW_ENGINE,
+            task_id: std::json::find_string_field(text, "task_id"),
+            definition: std::json::find_string_field(text, "definition"),
+            revision: std::json::find_int_field(text, "revision"),
+            why: std::json::find_string_field(text, "why"),
+            parent_task: std::json::find_string_field(text, "parent_task"),
+            spawning_step: std::json::find_string_field(text, "spawning_step"),
+            member_key: std::json::find_string_field(text, "member_key"),
+            limits: limits_of(text),
+            transition: transition_of(text)
+        }
+    };
+}

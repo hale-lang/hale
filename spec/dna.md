@@ -887,10 +887,70 @@ A definition id is `[a-z0-9][a-z0-9-]*`, checked when it is defined and
 when it is read, so an id can never carry the delimiters the definition
 path is written with. `encode()` writes every definition and member as
 one JSON document (`format: dna.workflow-definitions/1`) and
-`decode(text)` reads one back, refusing another format, an id outside
+`decode(text)` reads one back, refusing a document that is not one
+complete JSON value, another format, an id outside
 the grammar, an already defined revision, or a document that defines one
-revision twice, and adding nothing then. Nothing yet admits, records or executes a bound
+revision twice, and adding nothing then.
+
+`encode_bound()` writes one bound execution as a recipe (`format:
+dna.workflow-recipe/1`) carrying the node count it was written with, and
+`decode_bound(text)` reads one back. It refuses another format, a missing
+node array, a count that disagrees with what the document carries, a node
+without an identity or of no known kind, a node whose number was written
+as text or whose text was written as a number, and a document that is not
+one complete JSON value: every object, array and string closed, and
+nothing after it. A whole final node also ends in `}`, so the last
+character says nothing about the document. Every refusal binds nothing:
+half a recipe is not a smaller execution. Nothing yet executes a bound
 expansion.
+
+## Workflow facts
+
+What a workflow execution leaves behind is written as a fact of the day's
+work (`dna/core/workflow_events.hl`). Seven kinds carry an execution:
+`workflow.admitted` names the Task, the definition and revision, the
+inputs and their receipt, the bound recipe, the limits that were applied
+and what the expansion came to; `step.registered` names a step's whole
+required set before any of it is dispatched; `attempt.admitted` carries
+one attempt's id and the `WorkRequest` it was admitted with;
+`attempt.outcome` its disposition, result and evidence; and
+`work.settled`, `step.completed` / `step.failed` and `workflow.settled`
+settle each level to the one above it, a child workflow naming the parent
+Task and spawning step it answers. An admission also names the engine (`wf1`), and every fact a version.
+A decoder refuses a version it does not know, another engine's
+admission or refusal, a fact that does not name the entity it is about,
+a fact that says nothing where a number belongs (an absent revision is
+not revision 0), and a fact whose own identities contradict each other:
+an attempt id that is not its Work and number, an attempt carrying a
+request for another Work or another attempt, a Work settling under a
+Step it is not part of or on another Work's attempt, a step failing on
+a member it never had, a child naming its parent but not the step that
+spawned it, an admission deeper or wider than the limits it says were
+applied. A fact is read whole or not at all. The identities an attempt
+admission carries are written once and derived from the fact, so its id,
+its number and its embedded request cannot disagree.
+
+`step.activated` and `workflow.refused` have codecs of their own, like
+the rest; a routing row is not a durable shape. A fact a transition
+committed carries the scope, key and proposal id it was committed
+under, appended with it, so the committed proposal can be reconstructed
+from the journal after a restart and compared against a later reuse of
+that id.
+
+These kinds are the ledger's under split routing and the record's on
+routing 0, like every other operational kind.
+
+An attempt's id is its Work and its number (`<work>/a<n>`, numbered from
+0 as §4 has it: the first attempt is `a0` and a retry is `a1`), so a
+retry is a new id and a re-sent admission is the same one. A transition's
+proposal id (§9 of `dna/WORKFLOW-CONTRACT.md`) is what the transition
+does, not a counter or a clock: the same id carrying the same scope,
+key, kind, entity and body is that transition proposed again, which the
+committer answers from its journal; the same id carrying anything else
+is a conflict, and `transition_conflict` names which part differs.
+
+Nothing yet admits, records or executes a workflow; these are the
+durable shapes it will be written in.
 
 ## Storage interfaces
 

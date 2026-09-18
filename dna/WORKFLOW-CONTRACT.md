@@ -248,6 +248,26 @@ are added to `memory_of` explicitly. `task.*` names are not reused.
 | `step.completed` / `step.failed` | Step | the deciding members |
 | `workflow.settled` | Task | disposition |
 
+Card 05 fixed these as versioned codecs in
+`dna/core/workflow_events.hl`, one encoder and one decoder per row,
+including `step.activated` and `workflow.refused`: a routing row alone
+is not a durable shape, so every kind named here has one. A decoder
+refuses a version it does not know, another engine's admission or
+refusal, a row missing an identity it is about, a row that says nothing
+where a number belongs (absence is not zero), and a row whose own
+identities contradict each other — an attempt id that is not its Work
+and number, a request for another Work or attempt, a Work settling
+under a Step it is not part of, a step failing on a member it never
+had, an admission deeper or wider than the limits it says were applied.
+A row is read whole or not at all. **[decided]**
+
+A bound recipe travels inside `workflow.admitted` as one document
+(`dna.workflow-recipe/1`) carrying the node count it was written with.
+A reader that cannot read the whole document — the wrong format, a
+missing node array, a different count, a node without an identity or
+with a field of the wrong type, a document that ends mid-write — binds
+nothing at all. Half a recipe is not a smaller execution. **[decided]**
+
 Transition rule: validate against the current projection, append with
 exact compare-and-append, and dispatch or announce only after the
 append is acknowledged. On a stale revision, refresh and evaluate the
@@ -259,6 +279,17 @@ marks a new-engine execution, written atomically with its bound recipe
 before anything runs. A Task without it keeps the legacy recovery path.
 A partial new admission never falls through to legacy `requires: edit`
 recovery. **[decided]**
+
+**The committed proposal is reconstructable from the journal alone.**
+Every row a transition commits carries the scope, key and proposal id
+that committed it, in the same atomic append as the fact (a
+`TransitionRef`; a row no transition produced carries none, and a row
+that carries part of one is refused). After a restart the committer
+needs no memory of its own: for a proposal id it finds the row appended
+under that id, and the fact beside it is the body that was committed,
+which a later proposal reusing that id is compared against by the rule
+in §9. Without this the comparison helper would have nothing to compare
+against across a restart. **[decided; card 07 writes these rows]**
 
 Associations to Mutations and Reviews are by id, never by position in
 the merged journal. **[proven for the legacy path:
@@ -360,7 +391,10 @@ type  TransitionAnswer    { scope; key; proposal_id; ok; revision; why }
   differs, and appends nothing. A proposer never reuses an id for
   another transition, so a conflict is a defect in the proposer or a
   forged proposal, not a race. The lifetime proof's lookup shows the
-  replay half; the refusal is card 05's to implement with the codecs.
+  replay half; card 05 implements the comparison (`transition_conflict`,
+  which names the part that differs) and the durable reference beside
+  each committed fact (§8) that a restart compares against. Card 07
+  wires both into the committer.
 - **The committer validates against current state before appending**,
   and appends with exact compare-and-append. On a stale revision it
   refreshes and evaluates the transition again against the new state;
