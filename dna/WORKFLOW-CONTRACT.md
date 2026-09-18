@@ -190,7 +190,13 @@ settled — never because the right *number* of answers arrived.
 reaches nothing outside itself (`@no_syscall` on its entry point). The
 admitted recipe is its authority: a registration names exactly what the
 recipe bound under that step, by key, kind and entity; a child is
-admitted and answers only as the Task the recipe bound under its key.
+admitted and answers only as the Task the recipe bound under its key,
+and its admission carries that subtree exactly, never a node more, less
+or different; an attempt asks for what its Work is, its request content
+the bound Work's on every attempt. Cancellation fences everything below
+the cancelled Task — nothing further is admitted under a cancelled
+ancestor — while what was admitted records its outcome; a failed
+ancestor fences nothing (the drain policy).
 Every transition has its basis in the rows before it — a Work is done on
 a done attempt, failed on a failed attempt with no allowance left or
 under a failed step or cancelled Task, cancelled only under a cancelled

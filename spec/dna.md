@@ -952,8 +952,15 @@ names exactly the members the recipe bound under that Step, each by key,
 kind and entity, none missing and none invented; a Work's retry allowance
 is the one bound for it; a child is admitted only as the Task its parent
 bound under that key, from a step that is registered and active, and
-answers only as that Task. A fact the recipe does not know is refused,
-however well-formed.
+answers only as that Task. A child's admission carries the subtree its
+parent bound under it, exactly: the same nodes, each the same in every
+field, none added, none left out, none changed. It activates a binding;
+it never redefines the execution its parent admitted. An attempt asks
+for what the Work is: its request's content — objective, context,
+bindings, output contract, data class, requires, target, cost ceiling —
+is the bound Work's, on the first attempt and on every retry; who
+performs it is the application's choice. A fact the recipe does not
+know is refused, however well-formed.
 
 **Every transition has its basis.** A Work settles `done` only on a
 current attempt that recorded `done`; it settles `failed` only on a failed
@@ -966,8 +973,12 @@ step before it completed, completes only when every member it registered
 has settled `done`, and fails only on a member that failed. A Task
 settles `done` only when every Step the recipe binds for it completed,
 and `failed` only after a Step failed and every responsibility it admitted
-has settled: the root settles last. Cancellation stops further admission;
-what was admitted still records its outcome.
+has settled: the root settles last. Cancellation stops further admission
+in the cancelled Task and in everything under it — no attempt, no step,
+no child is admitted below a cancelled ancestor — while what was already
+admitted still records its outcome and settles under the fence. A failed
+ancestor is not a cancelled one: under the drain policy a member keeps
+its responsibility until its own outcome.
 
 **A fact is one row.** The row's entity is the fact's own identity, and a
 `step.completed` row carries a completion. A fact whose identity is

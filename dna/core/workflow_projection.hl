@@ -174,6 +174,55 @@ fn work_key_under(step_id: String, work_id: String) -> String {
     return key;
 }
 
+// Whether a bound node is `task_id` or lies under it (§4).
+fn node_under(id: String, task_id: String) -> Bool {
+    if id == task_id { return true; }
+    return std::str::starts_with(id, task_id + ".") || std::str::starts_with(id, task_id + "/");
+}
+
+// The first field in which two bound nodes differ, "" when none does.
+// Every field is immutable once bound: the content a leaf carries as much
+// as the ids around it.
+fn node_difference(a: BoundNode, b: BoundNode) -> String {
+    if a.kind != b.kind { return "kind"; }
+    if a.parent != b.parent { return "parent"; }
+    if a.spawning_step != b.spawning_step { return "spawning step"; }
+    if a.member_key != b.member_key { return "member key"; }
+    if a.definition != b.definition { return "definition"; }
+    if a.revision != b.revision { return "revision"; }
+    if a.workflow_id != b.workflow_id { return "workflow"; }
+    if a.step_index != b.step_index { return "step index"; }
+    if a.depth != b.depth { return "depth"; }
+    if a.path != b.path { return "path"; }
+    if a.objective != b.objective { return "objective"; }
+    if a.context_digest != b.context_digest { return "context digest"; }
+    if a.knowledge_bindings != b.knowledge_bindings { return "knowledge bindings"; }
+    if a.output_contract != b.output_contract { return "output contract"; }
+    if a.data_class != b.data_class { return "data class"; }
+    if a.requires != b.requires { return "requires"; }
+    if a.target != b.target { return "target"; }
+    if a.cost_ceiling != b.cost_ceiling { return "cost ceiling"; }
+    if a.attempts != b.attempts { return "attempt allowance"; }
+    return "";
+}
+
+// The first field in which an attempt's request departs from the Work
+// the recipe bound, "" when none does. Ids and the attempt number are
+// the attempt's own (§7); who performs it is the application's choice;
+// what the Work IS was bound at admission and is not the attempt's to
+// change.
+fn request_difference(bound: BoundNode, req: WorkRequest) -> String {
+    if bound.objective != req.objective { return "objective"; }
+    if bound.context_digest != req.context_digest { return "context digest"; }
+    if bound.knowledge_bindings != req.knowledge_bindings { return "knowledge bindings"; }
+    if bound.output_contract != req.output_contract { return "output contract"; }
+    if bound.data_class != req.data_class { return "data class"; }
+    if bound.requires != req.requires { return "requires"; }
+    if bound.target != req.target { return "target"; }
+    if bound.cost_ceiling != req.cost_ceiling { return "cost ceiling"; }
+    return "";
+}
+
 // Applying a fact reaches nothing outside this arena. The contract is on
 // this one entry point and the checker follows it through every method it
 // reaches: a journal append, a performer, a clock or a print anywhere
@@ -288,9 +337,36 @@ locus WorkflowProjection {
         return len(self.pending(step_id)) == 0;
     }
 
-    // Whether a Task has stopped admitting: settled, or cancelled.
+    // Why a Task admits nothing further, "" when it still does: it has
+    // settled, or it or an ancestor was cancelled (§5.5: cancellation
+    // fences the whole execution under it). A failed ancestor is not a
+    // stop — under the drain policy a member keeps its responsibility
+    // until its own outcome — and a settled descendant stops nothing above
+    // it.
+    @unbounded
+    fn stop(task_id: String) -> String {
+        let t = self.task(task_id);
+        if len(t.disposition) > 0 { return "task " + task_id + " " + t.disposition; }
+        let mut up = t.parent_task;
+        let mut hops = 0;
+        while len(up) > 0 && hops < 64 {
+            let anc = self.task(up);
+            if anc.disposition == "cancelled" { return "task " + up + ", above " + task_id + ", was cancelled"; }
+            up = anc.parent_task;
+            hops = hops + 1;
+        }
+        return "";
+    }
+
     fn stopped(task_id: String) -> Bool {
-        return len(self.task(task_id).disposition) > 0;
+        return len(self.stop(task_id)) > 0;
+    }
+
+    // Whether a Task or an ancestor of it was cancelled: the fence under
+    // which an outstanding member settles cancelled.
+    fn fenced(task_id: String) -> Bool {
+        let why = self.stop(task_id);
+        return std::str::contains(why, "cancelled");
     }
 
     // One line per row, in order: what two projections of one history
@@ -402,7 +478,7 @@ locus WorkflowProjection {
                 return refused("task " + a.task_id + " names parent " + a.parent_task + ", which was never admitted");
             }
             if self.stopped(a.parent_task) {
-                return refused("task " + a.task_id + " names parent " + a.parent_task + ", which " + self.task(a.parent_task).disposition + "; it admits nothing further");
+                return refused("task " + a.task_id + " names parent " + a.parent_task + ": " + self.stop(a.parent_task) + "; it admits nothing further");
             }
             let bound = self.node(a.task_id);
             if bound.kind != "task" {
@@ -416,24 +492,29 @@ locus WorkflowProjection {
             if !up.activated { return refused("task " + a.task_id + " is spawned by step " + a.spawning_step + ", which was never activated"); }
             if len(up.disposition) > 0 { return refused("task " + a.task_id + " is spawned by step " + a.spawning_step + ", which " + up.disposition); }
         }
-        // the recipe's nodes join the tree; a node already bound has to be
-        // the same node
-        let mut i = 0;
-        while i < self.reader.bound_count() {
-            let n = self.reader.bound_at(i);
-            let have = self.node(n.id);
-            if len(have.id) > 0 {
-                if have.kind != n.kind || have.parent != n.parent || have.member_key != n.member_key || have.definition != n.definition || have.revision != n.revision || have.attempts != n.attempts {
-                    return refused("the recipe an admission of " + a.task_id + " carries binds " + n.id + " differently from the tree already admitted");
+        // A root's recipe binds a fresh execution: nothing in it may already
+        // be bound. A child's recipe is the subtree its parent already
+        // bound, exactly — the same nodes, each the same in every field —
+        // so a child's admission activates a binding and never redefines
+        // the execution its parent admitted, by contradiction or by
+        // addition or by omission.
+        if len(a.parent_task) == 0 {
+            let mut i = 0;
+            while i < self.reader.bound_count() {
+                let n = self.reader.bound_at(i);
+                if len(self.node(n.id).id) > 0 {
+                    return refused("the recipe an admission of " + a.task_id + " carries binds " + n.id + ", which is already bound");
                 }
+                i = i + 1;
             }
-            i = i + 1;
-        }
-        i = 0;
-        while i < self.reader.bound_count() {
-            let n = self.reader.bound_at(i);
-            if len(self.node(n.id).id) == 0 { self.tree.push(n); }
-            i = i + 1;
+            i = 0;
+            while i < self.reader.bound_count() {
+                self.tree.push(self.reader.bound_at(i));
+                i = i + 1;
+            }
+        } else {
+            let gap = self.subtree_gap(a.task_id);
+            if len(gap) > 0 { return refused("the recipe an admission of " + a.task_id + " carries " + gap); }
         }
         self.tasks.push(TaskView {
             task_id: a.task_id, definition: a.definition, revision: a.revision,
@@ -462,6 +543,35 @@ locus WorkflowProjection {
         });
         self.record("workflow.refused", r.task_id, body);
         return applied();
+    }
+
+    // Why the recipe just read is not the subtree already bound under
+    // `task_id`, "" when it is: every node it carries is bound, the same
+    // in every field, and it carries every node bound there.
+    @unbounded
+    fn subtree_gap(task_id: String) -> String {
+        let mut i = 0;
+        while i < self.reader.bound_count() {
+            let n = self.reader.bound_at(i);
+            if !node_under(n.id, task_id) { return "binds " + n.id + ", which is not under " + task_id; }
+            let have = self.node(n.id);
+            if len(have.id) == 0 { return "binds " + n.id + ", which its parent never bound under " + task_id; }
+            let differs = node_difference(have, n);
+            if len(differs) > 0 { return "binds " + n.id + " with another " + differs + " than its parent bound"; }
+            i = i + 1;
+        }
+        let mut bound = 0;
+        i = 0;
+        while i < self.tree.len() {
+            let n = self.tree.get(i) or BoundNode { };
+            if node_under(n.id, task_id) {
+                bound = bound + 1;
+                if self.reader.bound_node(n.id).kind != n.kind { return "leaves out " + n.id + ", which its parent bound under " + task_id; }
+            }
+            i = i + 1;
+        }
+        if bound != self.reader.bound_count() { return "binds " + to_string(self.reader.bound_count()) + " node(s) where its parent bound " + to_string(bound); }
+        return "";
     }
 
     // ---- a step: registered against the recipe, activated in order ----
@@ -494,7 +604,7 @@ locus WorkflowProjection {
             return refused("step " + m.step_id + " belongs to task " + m.task_id + ", which was never admitted");
         }
         if self.stopped(m.task_id) {
-            return refused("step " + m.step_id + " belongs to task " + m.task_id + ", which " + self.task(m.task_id).disposition + "; it admits nothing further");
+            return refused("step " + m.step_id + " belongs to task " + m.task_id + ": " + self.stop(m.task_id) + "; it admits nothing further");
         }
         let bound = self.node(m.step_id);
         if bound.kind != "step" || bound.parent != m.task_id {
@@ -591,7 +701,7 @@ locus WorkflowProjection {
                 if s.activated { return refused("step " + a.step_id + " was already activated, and this row says something else"); }
                 if len(s.disposition) > 0 { return refused("step " + a.step_id + " " + s.disposition + "; it does not activate"); }
                 if self.stopped(s.task_id) {
-                    return refused("step " + a.step_id + " belongs to task " + s.task_id + ", which " + self.task(s.task_id).disposition + "; nothing further activates");
+                    return refused("step " + a.step_id + " belongs to task " + s.task_id + ": " + self.stop(s.task_id) + "; nothing further activates");
                 }
                 let ahead = self.step_ahead(s.task_id, s.step_index);
                 if len(ahead) > 0 {
@@ -623,11 +733,15 @@ locus WorkflowProjection {
         let s = self.step(a.step_id);
         if s.task_id != a.task_id { return refused("work " + a.work_id + " belongs to task " + s.task_id + ", not " + a.task_id); }
         if self.stopped(s.task_id) {
-            return refused("task " + s.task_id + " " + self.task(s.task_id).disposition + "; it admits no attempt");
+            return refused(self.stop(s.task_id) + "; it admits no attempt");
         }
         if !s.activated { return refused("work " + a.work_id + " cannot be attempted before step " + a.step_id + " is activated"); }
         if len(s.disposition) > 0 { return refused("work " + a.work_id + " cannot be attempted after step " + a.step_id + " " + s.disposition); }
         let bound = self.node(a.work_id);
+        let departs = request_difference(bound, a.request);
+        if len(departs) > 0 {
+            return refused("attempt " + a.attempt_id + " asks for another " + departs + " than the recipe bound for " + a.work_id);
+        }
         if a.attempt_no >= bound.attempts {
             return refused("attempt " + a.attempt_id + " exhausts the allowance of " + to_string(bound.attempts) + " the recipe bound for " + a.work_id);
         }
@@ -766,17 +880,16 @@ locus WorkflowProjection {
             }
             return "";
         }
-        let task = self.task(w.task_id);
         let step = self.step(w.step_id);
         if disposition == "cancelled" {
-            if task.disposition != "cancelled" { return "work " + w.work_id + " cannot settle cancelled: task " + w.task_id + " was not cancelled"; }
+            if !self.fenced(w.task_id) { return "work " + w.work_id + " cannot settle cancelled: neither task " + w.task_id + " nor anything above it was cancelled"; }
             return "";
         }
         if disposition == "failed" {
             if len(w.attempt_disposition) == 0 { return "work " + w.work_id + " cannot settle failed: attempt " + w.attempt_id + " is still outstanding"; }
             if w.attempt_disposition == "done" { return "work " + w.work_id + " cannot settle failed: attempt " + w.attempt_id + " was done"; }
             let exhausted = w.attempt_no + 1 >= w.allowance;
-            let draining = step.disposition == "failed" || task.disposition == "cancelled";
+            let draining = step.disposition == "failed" || self.fenced(w.task_id);
             if !exhausted && !draining {
                 return "work " + w.work_id + " cannot settle failed with " + to_string(w.allowance - w.attempt_no - 1) + " attempt(s) of its allowance left";
             }
