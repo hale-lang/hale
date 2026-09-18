@@ -8,7 +8,7 @@ JSON Schema 2020-12 response definitions shared by fixtures and live HTTP tests.
 The application id is the native Record genesis identity. Collection item ids
 are opaque, including any slashes; use URL encoding for query values. A request
 with `id` returns a one-item collection, or 404 when absent. Unknown or repeated
-query fields are rejected. Position selection, commands, remote CLI credentials,
+query fields are rejected. Acting-position context, commands, remote CLI credentials,
 generic runtime observation and recursive execution are not advertised yet.
 
 Every successful response names the local Record identity, head and decimal
@@ -16,6 +16,14 @@ revision. This is the inspected local snapshot, not a claim that a remote clone
 has synchronized or a Ledger projection is current. Pagination after the first
 page requires its snapshot; a changed head returns 409 and the client restarts
 the read. No time or global cross-store ordering is inferred from a revision.
+
+`/dna/organization` additionally names its checked source commit, dependency
+digest/origin, compiler artifact and static coverage in `data.basis`. Its opaque
+snapshot binds those inputs and the Record head. Nodes use exact compiler
+instance paths; only an explicit `positions` declaration group marks a role as
+`position`. Ownership maps are returned separately without inventing an identity
+join or grants. Subscription capacity and supervision retry are decimal strings
+or null, preserving values outside JavaScript's exact integer range.
 
 Practices distinguish proposal, ratification, retirement and decline. A Review
 can be settled while its practice is still unratified. `settled` and
@@ -50,8 +58,8 @@ HALE_API_CONTRACT_ROOT="$PWD/dna/api/contract/v1" \
   hale test dna/api/contract/v1/tests
 ```
 
-The tests preserve all nine checked-in fixtures, reject unexplained actor fields,
-check the four read routes and their response-schema links, and exercise the
+The tests preserve the original nine fixtures plus organization fixtures, reject
+unexplained actor fields, check all five read routes and their response-schema links, and exercise the
 validator's rejection paths. To check a captured response:
 
 ```sh
@@ -76,11 +84,11 @@ schema downloads are needed.
 
 The native validator implements a **bounded contract profile**, not all of
 JSON Schema 2020-12 or OpenAPI. It supports the keywords used here: object,
-array, string, integer and boolean `type`; `properties`, `required`,
+array, string, integer, boolean and null `type`; `properties`, `required`,
 `additionalProperties: false`, `items`; local `#/$defs/Name` references;
 string/boolean `const`, unique string `enum`; `minLength` from 0 to 1,000,000;
 integer `minimum`/`maximum` paired with `type: integer`; the exact unsigned
-decimal-string `pattern`; and `allOf` with paired `if`/`then`. `$schema`,
+decimal-string `pattern`; `allOf`, nonempty `anyOf`, and paired `if`/`then`. `$schema`,
 `$defs`, `title` and `description` are recognized. Unknown keywords,
 unsupported keyword values, unresolved or cyclic references fail before
 response validation. Future schema additions therefore need explicit validator

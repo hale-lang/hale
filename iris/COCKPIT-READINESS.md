@@ -24,11 +24,17 @@ revisions, authenticated reads, unavailable content and snapshot-bound paging.
 The browser serves beside the API and links to the independent Runtime observer.
 It advertises no mutations or position context.
 
+The branch also supplies a compiler-backed Organization inspector: committed
+source, captured dependency bytes, explicit declaration groups, exact static
+containment and typed contracts. Its ownership map remains separate from
+compiler instance identities. This is a declared-structure read foundation,
+not a semantic position/performer catalog or an acting-context contract.
+
 ## Four-workspace matrix
 
 | Workspace | Current foundation | Browser/API gap | Next dependency |
 |---|---|---|---|
-| **Organization** | Positions are loci, routing is the bus, and capabilities are contracts. Ownership/membership has explicit data and affected-owner approval. Organization and process-policy mutations require Board authority under the supplied policy. | No structured organizational catalog, position detail, effective-position capability response, or position-edit routes in the HTTP head. Source-backed changes and operational commands exist; they are not a deterministic field editor. | No relevant change in the inspected pending revision. Build projections and a source-backed editing/change path; preserve person, position, owner and authority as distinct relationships. |
+| **Organization** | Positions are loci, routing is the bus, and capabilities are contracts. The branch projects source-declared static instances/contracts and separate ownership maps through a typed read API and browser inspector. | Semantic position-to-instance/owner/performer bindings, purpose/responsibility metadata, effective-position capabilities and governed edits remain absent. Static declarations do not prove occupancy. | Add source-declared semantic bindings and context, then source-backed editing; preserve person, position, owner and authority as distinct relationships. |
 | **Knowledge** | Ideas, typed edges, bindings, provenance, proposal/ratification, retirement and bounded position-relative context. The service owns a persistent projection. | `/context`, `/idea/:id`, `/structure` counts/names and `/signals` are useful reads, not a complete graph API. No neighborhood/traversal/list or general graph-edit routes; the store interface also lacks edge enumeration. | No relevant change in the inspected pending revision. Graph browsing and administration need service/query additions, not only frontend rendering. |
 | **Practices** | Named proposals with author/rationale, exact-digest Board review, ratification and supersession; typed list/detail API and live browser reads. Historical content remains in receipts. | No proposal/verdict HTTP command contract. The proposal entry binds to **`org`**, without arbitrary position scope. The read adapter withholds receipt bodies after Ledger adoption until authoritative visibility can be established. | Strongest first administrative slice: durable command identity/recovery, exact-subject decisions and authoritative content visibility. |
 | **Definitions** | Merged `WorkflowCatalog` supplies code-authored versioned ordered steps, leaf/child members, validation, bound expansion and JSON round-trip. Facts and pure execution projection have merged too. | No running-app catalog export, browse/edit/publish API or canonical catalog administration lifecycle. The browser must not invent an authoritative workflow model. | Add an application-declared catalog capability. Keep current definitions distinct from immutable execution recipes; read execution facts from their routed Record/Ledger source. Admission and executor integration remain separate. |

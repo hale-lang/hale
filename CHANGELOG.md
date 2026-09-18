@@ -8,13 +8,29 @@ behavior.
 
 ## Unreleased
 
+### Iris: inspect the declared organization (GH #690)
+
+- The Organization workspace browses exact static instances from a checked
+  compiler artifact, with declared position groups, containment, typed contracts
+  and per-node source locations. Source revision, dependency fingerprint and
+  Record basis remain separate from runtime evidence and authenticated identity.
+- The native read adapter checks an owned snapshot of committed `dna/org`
+  source and its available dependencies. It preserves the existing ownership
+  map separately; compiler instance paths do not invent a position-to-owner or
+  person-to-authority mapping. Source changes invalidate paged reads.
+- Organization reads retain the API's authentication boundary and leave project
+  source and Record refs unchanged. Native and browser regression cases cover
+  exact identities, source changes, unavailable dependencies and mobile/history
+  navigation. Semantic position bindings and governed editing remain work in
+  the full [delivery checklist](iris/cockpit/DELIVERY.md).
+
 ### Iris: live read-only cockpit for DNA practices and reviews (GH #690)
 
 - An independently produced browser shell reads the typed DNA API, with paged
   Practice and Review catalogs, exact-document links, source revisions and
   explicit content availability. Review approval and practice activation remain
-  separate. Organization, Knowledge and Definitions are visible core workspaces
-  awaiting their adapters; Runtime links to the independent existing observer.
+  separate. Knowledge and Definitions are visible core workspaces awaiting their
+  adapters; Runtime links to the independent existing observer.
 - The Hale API accepts an optional static asset directory and serves the shell,
   authentication and data on one origin. API-only mode remains available; static
   assets contain no Record data and all data reads retain their authentication.

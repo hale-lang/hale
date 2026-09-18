@@ -1,4 +1,4 @@
-// Twenty-nine named, live HTTP integration cases. This is an ordinary native
+// Thirty-three named, live HTTP integration cases. This is an ordinary native
 // Hale test program; no interpreter, database, model or external issuer is used.
 import "../../core" as dna;
 import "./fixture" as fixture;
@@ -20,6 +20,7 @@ locus Cases {
         self.json.is_bool(data, "read_only", true);
         self.json.is_bool(self.json.raw(data, "reads"), "practices", true);
         self.json.is_bool(self.json.raw(data, "reads"), "reviews", true);
+        self.json.is_bool(self.json.raw(data, "reads"), "organization", false);
         self.json.is_bool(self.json.raw(data, "writes"), "practice_propose", false);
         self.json.is_bool(self.json.raw(data, "writes"), "review_verdict", false);
         self.json.is_bool(data, "runtime_observation", false); self.json.is_bool(data, "recursive_workflows", false);
@@ -348,6 +349,90 @@ locus Cases {
         f.error("GET", fixture::APPLICATIONS, 401, session, "");
         std::test::assert_eq_int(f.http("GET", "/", "", "").status, 200, "Runtime shell survives logout");
     }
+    fn organization_seed(f: fixture::Fixture, extra: Bool) {
+        std::io::fs::mkdir(f.root + "/dna") or discard;
+        std::io::fs::mkdir(f.root + "/dna/org") or discard;
+        let code = "locus Reviewer { params { count: Int = 0; } fn total() -> Int { return self.count; } }\n"
+            + "locus Team { params { first: Reviewer = Reviewer { }; second: Reviewer = Reviewer { }; } }\n"
+            + "locus Metrics { params { count: Int = 0; } }\ngroup positions = { Reviewer };\n"
+            + "main locus Org { params { team: Team = Team { }; metrics: Metrics = Metrics { }; "
+            + (if extra { "audit: Reviewer = Reviewer { }; " } else { "" }) + "} }\nfn main() { Org { }; }\n";
+        std::io::fs::write_file(f.root + "/dna/org/main.hl", code) or raise;
+        std::io::fs::write_file(f.root + "/dna/org/owners", "org = acme\norg/team = north\nacme: alice\nnorth: bob\nhost = acme\n") or raise;
+        f.git("add\n--\ndna/org"); f.git("commit\n-q\n-m\norganization fixture");
+    }
+    fn organization_reads() {
+        let f = fixture::Fixture { root: self.root + "/30" };
+        self.organization_seed(f, false);
+        let before = f.refs(); f.start();
+        let caps = f.validate(f.http("GET", f.prefix + "/capabilities", "", ""), "CapabilitiesResponse", 200);
+        self.json.is_bool(self.json.raw(self.json.data(caps), "reads"), "organization", true);
+        let path = f.prefix + "/dna/organization";
+        let payload = f.validate(f.http("GET", path + "?limit=2", "", ""), "OrganizationResponse", 200);
+        f.source(payload);
+        self.json.is_int(self.json.page(payload), "total", 5);
+        let data = self.json.data(payload);
+        let basis = self.json.raw(data, "basis");
+        self.json.eq(basis, "source_head", f.git("rev-parse\nHEAD"));
+        self.json.eq(basis, "coverage", "static_instances");
+        self.json.is_bool(basis, "position_group_declared", true);
+        self.json.eq(self.json.raw(data, "ownership"), "instance_binding", "unavailable");
+        let snapshot = self.json.string(self.json.page(payload), "snapshot");
+        let second = f.validate(f.http("GET", path + "?limit=2&offset=2&snapshot=" + dna::url_encode(snapshot), "", ""), "OrganizationResponse", 200);
+        std::test::assert_eq_int(self.json.count(second), 2, "second organization page");
+        let detail = f.validate(f.http("GET", path + "?id=Org.team.first&snapshot=" + dna::url_encode(snapshot), "", ""), "OrganizationResponse", 200);
+        let node = self.json.first(detail);
+        self.json.eq(node, "id", "Org.team.first"); self.json.eq(node, "parent_id", "Org.team");
+        self.json.eq(node, "role", "position"); self.json.eq(node, "declaration", "Reviewer");
+        self.json.is_bool(node, "in_position_outline", true);
+        f.error("GET", path + "?id=org%2Fteam", 404, "", "");
+        std::test::assert_eq_str(f.refs(), before, "organization reads change no source or Record refs");
+    }
+    fn organization_snapshots() {
+        let f = fixture::Fixture { root: self.root + "/31" };
+        self.organization_seed(f, false); f.start();
+        let path = f.prefix + "/dna/organization";
+        let first = f.validate(f.http("GET", path, "", ""), "OrganizationResponse", 200);
+        let snapshot = self.json.string(self.json.page(first), "snapshot");
+        std::io::fs::write_file(f.root + "/dna/org/main.hl", "INVALID DIRTY SOURCE") or raise;
+        let clean = f.validate(f.http("GET", path + "?snapshot=" + dna::url_encode(snapshot), "", ""), "OrganizationResponse", 200);
+        std::test::assert_eq_str(first, clean, "dirty source is not presented as committed structure");
+        self.organization_seed(f, true);
+        f.error("GET", path + "?snapshot=" + dna::url_encode(snapshot), 409, "", "");
+        let changed = f.validate(f.http("GET", path, "", ""), "OrganizationResponse", 200);
+        self.json.is_int(self.json.page(changed), "total", 6);
+        let next_snapshot = self.json.string(self.json.page(changed), "snapshot");
+        std::test::assert(next_snapshot != snapshot, "source commit changes organization snapshot");
+        f.append("organization.fixture", "org", "advance Record without changing Structure");
+        f.error("GET", path + "?snapshot=" + dna::url_encode(next_snapshot), 409, "", "");
+        let latest = f.validate(f.http("GET", path, "", ""), "OrganizationResponse", 200);
+        self.json.is_int(self.json.page(latest), "total", 6);
+    }
+    fn organization_failure() {
+        let f = fixture::Fixture { root: self.root + "/32" };
+        f.start(); f.error("GET", f.prefix + "/dna/organization", 503, "", "");
+        self.organization_seed(f, false);
+        f.validate(f.http("GET", f.prefix + "/dna/organization", "", ""), "OrganizationResponse", 200);
+        std::io::fs::write_file(f.root + "/dna/org/main.hl", "PRIVATE INVALID SOURCE") or raise;
+        f.git("add\n--\ndna/org/main.hl"); f.git("commit\n-q\n-m\ninvalid declared source");
+        let response = f.http("GET", f.prefix + "/dna/organization", "", "");
+        f.validate(response, "ErrorResponse", 503);
+        self.json.eq(self.json.raw(response.body, "error"), "code", "organization_check_failed");
+        std::test::assert(!std::str::contains(response.body, "PRIVATE INVALID SOURCE") && !std::str::contains(response.body, "Org.team"), "failed refresh returns neither compiler internals nor old structure");
+    }
+    fn organization_identity() {
+        let f = fixture::Fixture { root: self.root + "/33" };
+        self.organization_seed(f, false); f.configure_oidc(self.issuer_url);
+        let path = f.prefix + "/dna/organization?id=Org.team.first";
+        f.error("GET", path, 401, "", "");
+        let session = fixture::cookie(f.sign_in(""));
+        let payload = f.validate(f.http("GET", path, session, ""), "OrganizationResponse", 200);
+        self.json.eq(self.json.first(payload), "id", "Org.team.first");
+        let capability = f.validate(f.http("GET", f.prefix + "/capabilities", session, ""), "CapabilitiesResponse", 200);
+        self.json.eq(self.json.raw(self.json.data(capability), "principal"), "name", "alice");
+        f.http("GET", "/auth/logout", session, "");
+        f.error("GET", path, 401, session, "");
+    }
     fn all() {
         // Each named method owns one isolated Record; a passing Hale test is silent.
         self.application_identity();
@@ -379,6 +464,10 @@ locus Cases {
         self.web_startup();
         self.api_only();
         self.web_oidc();
+        self.organization_reads();
+        self.organization_snapshots();
+        self.organization_failure();
+        self.organization_identity();
     }
 }
 
@@ -403,7 +492,9 @@ fn main() {
     // redirect a temporary Record into another checkout or object directory.
     if std::env::var("HALE_API_TEST_CLEAN") != "1" {
         let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_KNOWLEDGE_DSN\n-u\nHALE_DNA_KNOWLEDGE_URL\n-u\nHALE_DNA_EVIDENCE_KEY\n-u\nHALE_DNA_OIDC_SECRET\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_API_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
-        print(clean.stdout); eprint(clean.stderr); std::process::exit(if clean.code < 0 { 1 } else { clean.code });
+        print(clean.stdout);
+        if len(clean.stderr) > 0 { eprintln(clean.stderr); }
+        std::process::exit(if clean.code < 0 { 1 } else { clean.code });
     }
     let forbidden = "GIT_DIR\nGIT_COMMON_DIR\nGIT_CONFIG\nGIT_NAMESPACE\nGIT_WORK_TREE\nGIT_INDEX_FILE\nGIT_OBJECT_DIRECTORY\nGIT_ALTERNATE_OBJECT_DIRECTORIES\nGIT_CONFIG_COUNT\nGIT_CONFIG_PARAMETERS\nHALE_DNA_KNOWLEDGE_DSN\nHALE_DNA_KNOWLEDGE_URL\nHALE_DNA_EVIDENCE_KEY\nHALE_DNA_OIDC_SECRET";
     let mut i = 0;

@@ -453,6 +453,143 @@
           }
         }
       }
+    },
+    "/api/hale/v1/applications/{application_id}/dna/organization": {
+      "parameters": [
+        {
+          "name": "application_id",
+          "in": "path",
+          "required": true,
+          "description": "Record genesis identity returned by discovery.",
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "listOrganization",
+        "summary": "Declared organization structure",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": false,
+            "description": "Exact static instance path returned by the collection.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Maximum returned items.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 25
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Offset in this collection; requires snapshot when nonzero.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000000,
+              "default": 0
+            }
+          },
+          {
+            "name": "snapshot",
+            "in": "query",
+            "required": false,
+            "description": "Opaque organization snapshot returned by this collection; required after the first page.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Declared structure from one checked source revision and Record snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/OrganizationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Structured refusal or unavailable source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Structured refusal or unavailable source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Structured refusal or unavailable source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Structured refusal or unavailable source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Structured refusal or unavailable source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Structured refusal or unavailable source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "./schema.json#/$defs/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "description": "Static instance relationships checked from committed dna/org source. The snapshot binds source HEAD, Record HEAD and compiler artifact digest. Dirty source is not included. Ownership keys remain separate from compiler instance paths; this response does not grant acting authority."
+      }
     }
   },
   "components": {

@@ -1,0 +1,165 @@
+// A compiler projection of committed source plus an identified dependency
+// snapshot. Owned inspection storage never checks out or edits the project,
+// installs dependencies, builds a binary, or runs application lifecycle code.
+
+import "../core" as dna;
+
+type OrganizationArtifact {
+    ok: Bool = false;
+    available: Bool = false;
+    source_head: String = "";
+    source_root: String = "";
+    dependency_digest: String = "";
+    dependency_source: String = "none";
+    artifact: String = "";
+    owners: String = "";
+    code: String = "organization_unavailable";
+    error: String = "the committed project has no organization seed at dna/org";
+}
+
+locus OrganizationSource {
+    params {
+        root: String = ".";
+        compiler: String = "";
+        inspection_seconds: Int = 30;
+        cached: OrganizationArtifact = OrganizationArtifact { };
+    }
+    birth() {
+        if len(self.compiler) == 0 { self.compiler = dna::resolve_toolchain(""); }
+        let r = dna::GitRecord { repo: self.root };
+        let absolute = r.git_out("rev-parse\n--show-toplevel");
+        if len(absolute) > 0 { self.root = absolute; }
+        if !std::str::contains(self.compiler, "\n") && !std::str::contains(self.compiler, "\r") {
+            let resolved = dna::run_tool("sh\n-c\ncase \"$1\" in */*) p=$1;; *) p=$(command -v \"$1\") || exit 1;; esac; case \"$p\" in /*) printf '%s' \"$p\";; *) printf '%s/%s' \"$PWD\" \"$p\";; esac\nsh\n" + self.compiler);
+            self.compiler = if resolved.code == 0 { resolved.stdout } else { "" };
+        }
+    }
+    fn head() -> String {
+        let r = dna::GitRecord { repo: self.root };
+        return r.git_out("rev-parse\n--verify\nHEAD^{commit}");
+    }
+    fn declared() -> Bool {
+        let h = self.head();
+        if len(h) == 0 { return false; }
+        let r = dna::GitRecord { repo: self.root };
+        return r.git_out("cat-file\n-t\n" + h + ":dna/org") == "tree";
+    }
+    fn remove_scratch(path: String) {
+        if std::str::starts_with(path, "/tmp/hale-iris-org.") && len(path) > 20 {
+            let removed = dna::run_tool("rm\n-rf\n--\n" + path);
+        }
+    }
+    fn scratch() -> String {
+        let made = dna::run_tool("mktemp\n-d\n/tmp/hale-iris-org.XXXXXXXX");
+        let path = dna::trim_nl(made.stdout);
+        return if made.code == 0 && std::str::starts_with(path, "/tmp/hale-iris-org.") && len(path) > 20 { path } else { "" };
+    }
+    fn local_vendor(inspection: OrganizationInspection) -> Int {
+        return inspection.execute("sh\n-c\nif [ -L vendor ]; then exit 1; elif [ -d vendor ]; then exit 0; elif [ -e vendor ]; then exit 1; else exit 3; fi", self.root, 4096).code;
+    }
+    fn unchanged(snapshot: OrganizationArtifact) -> Bool {
+        if !snapshot.ok || self.head() != snapshot.source_head { return false; }
+        if snapshot.dependency_source == "committed_source" { return true; }
+        let scratch = self.scratch();
+        if len(scratch) == 0 { return false; }
+        let inspection = OrganizationInspection { scratch: scratch, seconds: self.inspection_seconds };
+        let present = self.local_vendor(inspection);
+        let mut same = snapshot.dependency_source == "none" && present == 3;
+        if snapshot.dependency_source == "local_vendor_snapshot" && present == 0 {
+            let tree = inspection.tree(self.root + "/vendor");
+            same = tree.ok && tree.digest == snapshot.dependency_digest;
+        }
+        self.remove_scratch(scratch);
+        return same && self.head() == snapshot.source_head;
+    }
+    fn read() -> OrganizationArtifact {
+        let h = self.head();
+        if len(h) == 0 { return OrganizationArtifact { }; }
+        let r = dna::GitRecord { repo: self.root };
+        if r.git_out("cat-file\n-t\n" + h + ":dna/org") != "tree" { return OrganizationArtifact { source_head: h }; }
+        let scratch = self.scratch();
+        if len(scratch) == 0 {
+            return OrganizationArtifact { available: true, source_head: h, error: "temporary organization inspection storage is unavailable" };
+        }
+        let inspection = OrganizationInspection { scratch: scratch, seconds: self.inspection_seconds };
+        let result = self.inspect(r, h, scratch, inspection);
+        self.remove_scratch(scratch);
+        if self.head() != h || (result.ok && !self.unchanged(result)) {
+            return OrganizationArtifact { available: true, source_head: h, code: "snapshot_changed", error: "organization source or dependencies changed while they were inspected" };
+        }
+        if result.ok { self.cached = result; }
+        return result;
+    }
+    fn inspect(r: dna::GitRecord, h: String, scratch: String, inspection: OrganizationInspection) -> OrganizationArtifact {
+        if !inspection.plain_path(self.root) || !inspection.plain_path(self.compiler) {
+            return OrganizationArtifact { available: true, source_head: h, error: "the configured project or Hale compiler path is invalid" };
+        }
+        if !inspection.source_ok(self.root, h) {
+            return OrganizationArtifact { available: true, source_head: h, code: "organization_snapshot_unsupported", error: "committed source exceeds snapshot bounds or contains unsupported links, submodules, or paths" };
+        }
+        std::io::fs::mkdir(scratch + "/source") or discard;
+        // macOS's /tmp is itself an alias; compiler inputs are canonical paths.
+        let physical = inspection.execute("pwd\n-P", scratch + "/source", 4096);
+        if physical.code != 0 { return OrganizationArtifact { available: true, source_head: h, error: "source snapshot directory is unavailable" }; }
+        let source = dna::trim_nl(physical.stdout);
+        let archived = inspection.execute("git\n-C\n" + self.root + "\narchive\n--format=tar\n--output=" + scratch + "/source.tar\n" + h, "/", 294912);
+        if archived.code != 0 {
+            return OrganizationArtifact { available: true, source_head: h, error: "committed source could not be archived within the inspection bounds" };
+        }
+        let extracted = inspection.execute("tar\n-xf\n" + scratch + "/source.tar\n-C\n" + source, "/", 32768);
+        if extracted.code != 0 {
+            return OrganizationArtifact { available: true, source_head: h, error: "committed source could not be extracted within the inspection bounds" };
+        }
+        if !inspection.archive_ok(source) {
+            return OrganizationArtifact { available: true, source_head: h, code: "organization_snapshot_unsupported", error: "the source archive does not match committed file bytes; archive attributes may exclude or substitute source" };
+        }
+        let committed_vendor = r.git_out("cat-file\n-t\n" + h + ":vendor");
+        let mut dependency_source = "none";
+        let mut dependency_digest = dna::digest_of("hale-organization-no-dependencies-v1");
+        if committed_vendor == "tree" {
+            let dependencies = inspection.tree(source + "/vendor");
+            if !dependencies.ok { return OrganizationArtifact { available: true, source_head: h, code: "organization_dependencies_unavailable", error: dependencies.error }; }
+            dependency_source = "committed_source";
+            dependency_digest = dependencies.digest;
+        } else {
+            if len(committed_vendor) > 0 { return OrganizationArtifact { available: true, source_head: h, code: "organization_snapshot_unsupported", error: "committed vendor is not a directory" }; }
+            let present = self.local_vendor(inspection);
+            if present != 0 && present != 3 { return OrganizationArtifact { available: true, source_head: h, code: "organization_dependencies_unavailable", error: "local vendor dependencies are unavailable or unsupported" }; }
+            if present == 0 {
+                let before = inspection.tree(self.root + "/vendor");
+                if !before.ok { return OrganizationArtifact { available: true, source_head: h, code: "organization_dependencies_unavailable", error: before.error }; }
+                let packed = inspection.execute("tar\n-cf\n" + scratch + "/vendor.tar\n--exclude=.git\n-C\n" + self.root + "\nvendor", "/", 147456);
+                if packed.code != 0 { return OrganizationArtifact { available: true, source_head: h, code: "organization_dependencies_unavailable", error: "local dependencies could not be captured within the inspection bounds" }; }
+                let copied = inspection.execute("tar\n-xf\n" + scratch + "/vendor.tar\n-C\n" + source, "/", 16384);
+                if copied.code != 0 { return OrganizationArtifact { available: true, source_head: h, code: "organization_dependencies_unavailable", error: "local dependency capture could not be read" }; }
+                let captured = inspection.tree(source + "/vendor");
+                if !captured.ok || captured.digest != before.digest { return OrganizationArtifact { available: true, source_head: h, code: "snapshot_changed", error: "local dependencies changed during their capture" }; }
+                dependency_source = "local_vendor_snapshot";
+                dependency_digest = captured.digest;
+            }
+        }
+        if self.cached.ok && self.cached.source_head == h && self.cached.dependency_digest == dependency_digest && self.cached.dependency_source == dependency_source { return self.cached; }
+        // Native import resolution is the boundary: a source import that escapes
+        // this owned snapshot is not represented by our identities and is refused.
+        let input_error = inspection.input_error(source, self.compiler);
+        if len(input_error) > 0 {
+            return OrganizationArtifact { available: true, source_head: h, code: input_error, error: if input_error == "organization_check_failed" { "the organization could not be checked within the inspection bounds; inspect it with the configured Hale compiler" } else { "organization inputs could not be resolved wholly within the captured source and dependencies" } };
+        }
+        let output = scratch + "/organization.topology";
+        let checked = inspection.execute(self.compiler + "\ncheck\ndna/org\n--dump-topology=" + output, source, 16384);
+        if checked.code != 0 {
+            return OrganizationArtifact { available: true, source_head: h, code: "organization_check_failed", error: "the organization could not be checked within the inspection bounds; inspect it with the configured Hale compiler" };
+        }
+        let size = std::io::fs::file_size(output) or - 1;
+        if size < 1 || size > 8388608 {
+            return OrganizationArtifact { available: true, source_head: h, code: "organization_limit_exceeded", error: "the organization artifact is empty or exceeds the 8 MiB read bound" };
+        }
+        let owner_size = std::io::fs::file_size(source + "/dna/org/owners") or - 1;
+        if owner_size > 65536 { return OrganizationArtifact { available: true, source_head: h, code: "organization_limit_exceeded", error: "the organization owner map exceeds the 64 KiB read bound" }; }
+        return OrganizationArtifact {
+            ok: true, available: true, source_head: h, source_root: source,
+            dependency_digest: dependency_digest, dependency_source: dependency_source,
+            artifact: std::io::fs::read_file(output) or "", owners: std::io::fs::read_file(source + "/dna/org/owners") or "", code: "", error: ""
+        };
+    }
+}

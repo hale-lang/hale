@@ -1,6 +1,7 @@
 # Iris cockpit
 
-A browser surface for inspecting a Hale application's DNA practices and reviews.
+A browser surface for inspecting a Hale application's declared organization,
+DNA practices and reviews.
 The frontend is three static files, served beside the native Hale API. It has no
 build step, runtime package dependencies, database connection or domain engine.
 
@@ -35,13 +36,18 @@ This remains an experimental source-built entry point. It does not add a
 - **Reviews:** exact subject, required authority and recorded decision, linked
   back to the practice when one is identified. Approval and activation remain
   separate facts.
+- **Organization:** source-backed static instance outline and inspector,
+  explicit position groups, typed parameters and message/supervision contracts,
+  source files, dependency fingerprints and separate declared ownership maps.
+  Selecting a node changes the inspection context while preserving the signed-in
+  principal. Static declarations do not establish an occupant or effective grant.
 - **Runtime:** an explicit connection link to the existing Iris observer. It
   remains usable without a DNA connection or session. It does not assert that
   the observer and Record refer to the same application, embed the collector,
   or proxy its events.
-- **Organization, Knowledge and Definitions:** visible core workspaces whose
-  read adapters are not yet available. Position selection and administrative
-  actions are not advertised until their service contracts exist.
+- **Knowledge and Definitions:** visible core workspaces whose read adapters
+  are not yet available. Acting-position permissions and administrative actions
+  require their authoritative service contracts.
 
 Practice and Review URLs use browser hash routes and preserve opaque native IDs
 through query encoding. Browser back/forward navigation works without requiring

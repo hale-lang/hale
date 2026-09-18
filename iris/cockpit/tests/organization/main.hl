@@ -1,0 +1,38 @@
+// A source declaration fixture, never a claim about currently running positions.
+// The browser harness checks this seed and uses its actual compiler artifact.
+type Notice { text: String = ""; }
+topic Notices { payload: Notice; subject: "organization.support.équipe"; }
+
+locus Reviewer {
+    params { seen: Int = 0; }
+    bus { subscribe Notices as on_notice; }
+    fn on_notice(notice: Notice) { self.seen = self.seen + 1; }
+}
+
+locus Support {
+    params { reviewer: Reviewer = Reviewer { }; }
+}
+
+locus Metrics {
+    params { observed: Int = 0; }
+}
+
+// Declared but not instantiated: this is not evidence of a vacant position.
+locus Reserve {
+    params { slots: Int = 1; }
+    fn available() -> Int { return self.slots; }
+}
+
+group positions = { Reviewer };
+
+main locus Org {
+    params {
+        support: Support = Support { };
+        assurance: Support = Support { };
+        reviewer: Reviewer = Reviewer { };
+        metrics: Metrics = Metrics { };
+    }
+    bus { publish Notices; }
+}
+
+fn main() { Org { }; }
