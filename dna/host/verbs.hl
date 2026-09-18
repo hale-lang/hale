@@ -130,8 +130,19 @@ fn body_verb(root: String, sub: String, force: Bool, who_flag: String) -> Answer
     let cur = body_lease_read(root);
     if !cur.ok { return fail("body: the record's remote cannot be reached"); }
     if sub == "claim" {
-        if !body_live(cur, now) { return answer("body: " + body_line(root, now) + "\n"); }
-        if !force { return fail("body: live on " + cur.holder + ", ticked " + ago(now - (cur.expires - BODY_TTL)) + "; a record admits one body. `hale dna body claim --force` takes the lease from a body that is gone (it stops itself when it next asserts the lease)"); }
+        // nothing to take: no body ever ran this record, or the last one
+        // released its lease; `hale dna run` takes it
+        if !cur.present { return answer("body: " + body_line(root, now) + "\n"); }
+        // a lease that has expired is a body that is gone. Without
+        // --force the claim says so, as the status line does, and leaves
+        // it to `hale dna run`; with --force it takes the lease the same
+        // way it takes a live one — a body that died a second ago and one
+        // that died a minute ago are the same body, and the operator who
+        // asked for the lease to be taken should not be told to ask again
+        // because the clock crossed the TTL between their reading and
+        // their claim (a CI runner did exactly that).
+        if !body_live(cur, now) && !force { return answer("body: " + body_line(root, now) + "\n"); }
+        if body_live(cur, now) && !force { return fail("body: live on " + cur.holder + ", ticked " + ago(now - (cur.expires - BODY_TTL)) + "; a record admits one body. `hale dna body claim --force` takes the lease from a body that is gone (it stops itself when it next asserts the lease)"); }
         // the body renews its lease every few seconds: a claim that read
         // the lease just before a renewal reads it again and claims the
         // renewed one, a few times, before giving up
