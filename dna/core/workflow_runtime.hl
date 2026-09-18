@@ -90,26 +90,46 @@ locus WorkflowRuntime {
         self.answered = self.answered + 1;
         TransitionAnswered <- TransitionAnswer { scope: self.scope, key: t.key, proposal_id: t.proposal_id, ok: ok, revision: revision, why: why };
     }
+    fn refuse(t: TransitionProposal, basis: String, revision: Int, why: String) {
+        self.refused = self.refused + 1;
+        if basis == "conflict" { self.conflicts = self.conflicts + 1; }
+        self.answered = self.answered + 1;
+        TransitionAnswered <- TransitionAnswer { scope: self.scope, key: t.key, proposal_id: t.proposal_id, ok: false, revision: revision, why: why, basis: basis };
+    }
+    // The proposal a committed row was committed under, rebuilt from the
+    // row: its reference gives the scope, key and id; the row the rest.
+    fn committed_proposal(at: Int) -> TransitionProposal {
+        let e = self.journal.read(at - 1);
+        let r = transition_of(e.body);
+        return TransitionProposal { scope: r.scope, key: r.key, proposal_id: r.proposal_id, kind: e.kind, entity: e.entity, body: e.body };
+    }
     @unbounded
     fn on_proposal(t: TransitionProposal) {
+        // the body carries the reference the row will be committed under
+        // (§8): it must be this proposal's own, whole, or the row would
+        // say it was committed under another proposal than it was
+        let r = transition_of(t.body);
+        if r.scope != t.scope || r.key != t.key || r.proposal_id != t.proposal_id {
+            self.refuse(t, "conflict", self.journal.revision(), "proposal " + t.proposal_id + " carries a transition reference <" + r.scope + " " + r.key + " " + r.proposal_id + "> that is not its own <" + t.scope + " " + t.key + " " + t.proposal_id + ">");
+            return;
+        }
         let mut tries = 0;
         while tries < 6 {
             tries = tries + 1;
             let moved = self.journal.refresh();
             let rev = self.catch_up();
             // a proposal committed before is answered again from what was
-            // committed — if it is the same proposal; another transition
-            // under a committed id is a conflict
+            // committed — if it is the same proposal, in every field the
+            // contract names (§9); another transition under a committed id
+            // is a conflict
             let at = self.committed_at(t.proposal_id);
             if at >= 0 {
-                let before = self.p.recorded(t.kind, t.entity);
-                if before == t.body {
+                let differs = transition_conflict(self.committed_proposal(at), t);
+                if len(differs) == 0 {
                     self.replayed = self.replayed + 1;
                     self.answer(t, true, at, "");
                 } else {
-                    self.conflicts = self.conflicts + 1;
-                    self.refused = self.refused + 1;
-                    self.answer(t, false, at, "proposal " + t.proposal_id + " was committed with another transition");
+                    self.refuse(t, "conflict", at, differs);
                 }
                 return;
             }
@@ -118,8 +138,7 @@ locus WorkflowRuntime {
             let check = replay(self.p, t.kind, t.entity, t.body);
             self.p.dry = false;
             if !check.ok {
-                self.refused = self.refused + 1;
-                self.answer(t, false, rev, check.why);
+                self.refuse(t, "state", rev, check.why);
                 return;
             }
             if !check.changed {
@@ -136,14 +155,12 @@ locus WorkflowRuntime {
                 return;
             }
             if w.error != "stale_revision" && w.error != "claimed" {
-                self.refused = self.refused + 1;
-                self.answer(t, false, rev, "the record refused " + t.kind + " " + t.entity + ": " + w.error);
+                self.refuse(t, "record", rev, "the record refused " + t.kind + " " + t.entity + ": " + w.error);
                 return;
             }
             // the record moved under the decision: it is taken again
         }
-        self.refused = self.refused + 1;
-        self.answer(t, false, self.journal.revision(), "the record moved under " + t.proposal_id + " " + to_string(tries) + " times");
+        self.refuse(t, "record", self.journal.revision(), "the record moved under " + t.proposal_id + " " + to_string(tries) + " times");
     }
     fn reply(x: Executed, work_id: String, attempt_id: String) {
         AttemptReplied <- AttemptReply {
@@ -193,14 +210,17 @@ locus WorkRun {
         attempt_no: Int = -1;
         attempt_id: String = "";
         outstanding: String = ""; // the one proposal awaiting its answer
-        proposing: String = ""; // what the outstanding proposal is: "admit" | "settle"
+        proposing: String = ""; // what the outstanding (or held) proposal is: "admit" | "settle"
         settling: String = ""; // the disposition being proposed
+        held: Bool = false; // the record refused the proposal: it is proposed again when the record resumes
+        unadmitted: Bool = false; // the state refused the first admission: nothing to settle on, reachable until fenced
         settled: Bool = false;
         stale: Int = 0; // replies that were not this attempt's
     }
     bus {
         subscribe TransitionAnswered as on_answer where key == self.work_id;
         subscribe AttemptReplied as on_reply where key == self.work_id;
+        subscribe RecordResumed as on_resumed where key == self.scope;
         publish TransitionProposed;
         publish AttemptRequested;
         publish MemberSettled;
@@ -219,7 +239,11 @@ locus WorkRun {
     fn admit_next() {
         self.attempt_no = self.attempt_no + 1;
         self.attempt_id = attempt_id_of(self.work_id, self.attempt_no);
+        self.propose_admission();
+    }
+    fn propose_admission() {
         self.proposing = "admit";
+        self.held = false;
         self.outstanding = transition_id(self.attempt_id, "admitted");
         TransitionProposed <- TransitionProposal {
             scope: self.scope, key: self.work_id, proposal_id: self.outstanding, kind: "attempt.admitted", entity: self.attempt_id,
@@ -233,6 +257,7 @@ locus WorkRun {
     fn settle_as(disposition: String) {
         self.proposing = "settle";
         self.settling = disposition;
+        self.held = false;
         self.outstanding = transition_id(self.work_id, "settled");
         TransitionProposed <- TransitionProposal {
             scope: self.scope, key: self.work_id, proposal_id: self.outstanding, kind: "work.settled", entity: self.work_id,
@@ -246,8 +271,16 @@ locus WorkRun {
         // only the answer to the one outstanding proposal, and only once
         if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
         self.outstanding = "";
+        if !a.ok && a.basis == "record" {
+            // the record would not take it — an append refused, the record
+            // moved too often: that is not a settlement. The Work keeps its
+            // responsibility and proposes the same transition again when
+            // the record resumes, or when the next reply reaches it
+            self.held = true;
+            return;
+        }
         if !a.ok && self.proposing == "admit" && self.attempt_no > 0 {
-            // a retry the record would not take — the Step failed
+            // a retry the state would not take — the Step failed
             // meanwhile, or the Task was fenced: the Work settles on the
             // attempt that failed (the drain, §5)
             self.attempt_no = self.attempt_no - 1;
@@ -255,23 +288,30 @@ locus WorkRun {
             self.settle_as("failed");
             return;
         }
+        if !a.ok && self.proposing == "admit" {
+            // the state refused the first admission: nothing ran, nothing
+            // can settle. The Work stays, unattempted, reachable until it
+            // is fenced; it publishes no outcome it does not have
+            self.unadmitted = true;
+            return;
+        }
         if !a.ok {
-            // a refusal dispatches nothing: the Work ends, refused, and
-            // its Step hears that
-            self.settled = true;
-            MemberSettled <- MemberSettlement { step_id: self.step_id, key: self.key, work_id: self.work_id, disposition: "refused" };
-            terminate;
+            // the state refused the settlement: this Work's view of its
+            // attempt was wrong. It stays; the next reply decides again
+            return;
         }
         if self.proposing == "admit" {
             AttemptRequested <- AttemptRequest { scope: self.scope, attempt_id: self.attempt_id, work_id: self.work_id };
             return;
         }
+        // the settlement is in the record: now, and only now, the member
+        // has answered
         self.settled = true;
         MemberSettled <- MemberSettlement { step_id: self.step_id, key: self.key, work_id: self.work_id, disposition: self.settling };
         terminate;
     }
     fn on_reply(r: AttemptReply) {
-        if self.settled || r.attempt_id != self.attempt_id || len(self.outstanding) > 0 {
+        if self.settled || self.unadmitted || r.attempt_id != self.attempt_id || len(self.outstanding) > 0 {
             self.stale = self.stale + 1;
             return;
         }
@@ -279,6 +319,12 @@ locus WorkRun {
         if r.disposition == "done" { self.settle_as("done"); return; }
         if self.attempt_no + 1 < self.allowance { self.admit_next(); return; }
         self.settle_as("failed");
+    }
+    // The record is writable again: what it refused is proposed again.
+    fn on_resumed(r: RecordResume) {
+        if !self.held || len(self.outstanding) > 0 || self.settled { return; }
+        if self.proposing == "admit" { self.propose_admission(); return; }
+        self.settle_as(self.settling);
     }
     dissolve() { RunLives <- RunLife { key: self.work_id, what: "dissolved" }; }
 }
@@ -345,14 +391,16 @@ locus StepRun {
         stage: String = ""; // "" | "registering" | "activating" | "running" | "completing" | "failing" | "settled"
         dispatched: Bool = false; // the leaves were born
         outstanding: String = "";
+        held: Bool = false; // the record refused the stage's proposal: proposed again when the record resumes
         disposition: String = ""; // the one terminal outcome, once published
         failed_member: String = "";
         duplicates: Int = 0; // answers from a member that had answered
-        strays: Int = 0; // answers from no member of this step
+        strays: Int = 0; // answers from no member of this step, or from another Work than the one bound under the key
     }
     bus {
         subscribe TransitionAnswered as on_answer where key == self.step_id;
         subscribe MemberSettled as on_member where key == self.step_id;
+        subscribe RecordResumed as on_resumed where key == self.scope;
         publish TransitionProposed;
         publish StepSettled;
         publish RunLives;
@@ -380,9 +428,22 @@ locus StepRun {
         }
         return out;
     }
-    run() {
-        // the whole required set, durably, before anything is dispatched
+    // The Work bound under a member key, "" when the key is no member.
+    @unbounded
+    fn bound_work(key: String) -> String {
+        let mut i = 0;
+        while i < self.mine.len() {
+            let l = self.mine.get(i) or LeafSpec { };
+            if l.key == key { return l.work_id; }
+            i = i + 1;
+        }
+        return "";
+    }
+    run() { self.propose_registration(); }
+    // the whole required set, durably, before anything is dispatched
+    fn propose_registration() {
         self.stage = "registering";
+        self.held = false;
         self.outstanding = transition_id(self.step_id, "registered");
         TransitionProposed <- TransitionProposal {
             scope: self.scope, key: self.step_id, proposal_id: self.outstanding, kind: "step.registered", entity: self.step_id,
@@ -393,7 +454,21 @@ locus StepRun {
             })
         };
     }
+    fn propose_activation() {
+        self.stage = "activating";
+        self.held = false;
+        self.outstanding = transition_id(self.step_id, "activated");
+        TransitionProposed <- TransitionProposal {
+            scope: self.scope, key: self.step_id, proposal_id: self.outstanding, kind: "step.activated", entity: self.step_id,
+            body: encode_activation(ActivatedStep {
+                step_id: self.step_id, task_id: self.task_id, workflow_id: self.workflow_id, step_index: self.step_index,
+                dispatched: self.required,
+                transition: TransitionRef { scope: self.scope, key: self.step_id, proposal_id: self.outstanding }
+            })
+        };
+    }
     fn propose_step(kind: String, disposition: String, failed: String) {
+        self.held = false;
         self.outstanding = transition_id(self.step_id, disposition);
         TransitionProposed <- TransitionProposal {
             scope: self.scope, key: self.step_id, proposal_id: self.outstanding, kind: kind, entity: self.step_id,
@@ -402,6 +477,23 @@ locus StepRun {
                 transition: TransitionRef { scope: self.scope, key: self.step_id, proposal_id: self.outstanding }
             })
         };
+    }
+    // What the members say the step is, once nothing is in flight: failed
+    // on the member that failed, completed once every member settled
+    // done, else still running.
+    fn decide() {
+        if len(self.outstanding) > 0 || self.stage == "settled" { return; }
+        if len(self.failed_member) > 0 {
+            self.stage = "failing";
+            self.propose_step("step.failed", "failed", self.failed_member);
+            return;
+        }
+        if set_count(self.done) >= set_count(self.required) {
+            self.stage = "completing";
+            self.propose_step("step.completed", "completed", "");
+            return;
+        }
+        self.stage = "running";
     }
     fn finish(disposition: String, why: String) {
         self.stage = "settled";
@@ -416,25 +508,26 @@ locus StepRun {
     fn on_answer(a: TransitionAnswer) {
         if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
         self.outstanding = "";
-        if !a.ok {
-            // a refusal dispatches nothing
+        if !a.ok && a.basis == "record" {
+            // the record would not take it: that is no outcome of the
+            // step. The stage's transition is held and proposed again
+            // when the record resumes
+            self.held = true;
+            return;
+        }
+        if !a.ok && !self.dispatched {
+            // the state refused the step before anything was dispatched:
+            // it cannot run. Nothing durable is lost; the owner hears it
             self.finish("refused", a.why);
-            if self.drained() { terminate; }
+            terminate;
+        }
+        if !a.ok {
+            // the state refused the outcome the members added up to: this
+            // step's view was wrong. It stays running; the members decide
+            self.stage = "running";
             return;
         }
-        if self.stage == "registering" {
-            self.stage = "activating";
-            self.outstanding = transition_id(self.step_id, "activated");
-            TransitionProposed <- TransitionProposal {
-                scope: self.scope, key: self.step_id, proposal_id: self.outstanding, kind: "step.activated", entity: self.step_id,
-                body: encode_activation(ActivatedStep {
-                    step_id: self.step_id, task_id: self.task_id, workflow_id: self.workflow_id, step_index: self.step_index,
-                    dispatched: self.required,
-                    transition: TransitionRef { scope: self.scope, key: self.step_id, proposal_id: self.outstanding }
-                })
-            };
-            return;
-        }
+        if self.stage == "registering" { self.propose_activation(); return; }
         if self.stage == "activating" {
             // the activation landed: the leaves are born, this step's own
             // children, from this handler
@@ -456,10 +549,14 @@ locus StepRun {
         if self.stage == "settled" && self.drained() { terminate; }
     }
     fn on_member(m: MemberSettlement) {
-        if !set_has(self.required, m.key) { self.strays = self.strays + 1; return; }
+        // a member is a key AND the Work bound under it: a settlement
+        // naming a required key for another Work is no member's
+        let bound = self.bound_work(m.key);
+        if len(bound) == 0 || bound != m.work_id { self.strays = self.strays + 1; return; }
         if set_has(self.answered, m.key) { self.duplicates = self.duplicates + 1; return; }
         self.answered = set_add(self.answered, m.key);
         if m.disposition == "done" { self.done = set_add(self.done, m.key); }
+        if m.disposition != "done" && len(self.failed_member) == 0 { self.failed_member = std::str::clone(m.key); }
         // the step is settled: a member's later answer is recorded by the
         // member and changes nothing here, except that once every member
         // has answered the step reclaims itself
@@ -467,17 +564,14 @@ locus StepRun {
             if self.drained() { terminate; }
             return;
         }
-        if len(self.outstanding) > 0 { return; } // a proposal is in flight; the answer decides
-        if m.disposition != "done" {
-            self.failed_member = std::str::clone(m.key);
-            self.stage = "failing";
-            self.propose_step("step.failed", "failed", m.key);
-            return;
-        }
-        if set_count(self.done) >= set_count(self.required) {
-            self.stage = "completing";
-            self.propose_step("step.completed", "completed", "");
-        }
+        self.decide();
+    }
+    // The record is writable again: what it refused is proposed again.
+    fn on_resumed(r: RecordResume) {
+        if !self.held || len(self.outstanding) > 0 || self.stage == "settled" { return; }
+        if self.stage == "registering" { self.propose_registration(); return; }
+        if self.stage == "activating" { self.propose_activation(); return; }
+        self.decide();
     }
     dissolve() { RunLives <- RunLife { key: self.step_id, what: "dissolved" }; }
 }

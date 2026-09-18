@@ -45,6 +45,11 @@ type TransitionAnswer {
     ok: Bool = false;
     revision: Int = 0;
     why: String = "";
+    // on a refusal, who refused: "state" (the transition has no basis in
+    // the projection), "record" (the append was refused, or the record
+    // moved too often — the transition may be proposed again), "conflict"
+    // (the proposal disagrees with what its id committed, or with itself)
+    basis: String = "";
 }
 topic TransitionAnswered { payload: TransitionAnswer; subject: "dna.transition.answered"; keyed_by key; }
 
@@ -72,6 +77,11 @@ type MemberSettlement { step_id: String = ""; key: String = ""; work_id: String 
 topic MemberSettled { payload: MemberSettlement; subject: "dna.member.settled"; keyed_by step_id; }
 type StepSettlement { step_id: String = ""; task_id: String = ""; disposition: String = ""; failed_member: String = ""; why: String = ""; }
 topic StepSettled { payload: StepSettlement; subject: "dna.step.settled"; keyed_by step_id; }
+// The record is writable again: a resident holding a transition the
+// record refused proposes it again. Published by whoever knows — the
+// host after a reconnect, a fixture — keyed by the committer's scope.
+type RecordResume { scope: String = ""; why: String = ""; }
+topic RecordResumed { payload: RecordResume; subject: "dna.record.resumed"; keyed_by scope; }
 // what a resident says about its own life, for the owner and the proofs
 type RunLife { key: String = ""; what: String = ""; }
 topic RunLives { payload: RunLife; subject: "dna.run.life"; }

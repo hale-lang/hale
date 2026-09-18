@@ -419,8 +419,17 @@ The envelope, amended after the review of card 03, frozen for card 05:
 topic TransitionProposed  { payload: TransitionProposal; keyed_by scope; }
 type  TransitionProposal  { scope; key; proposal_id; kind; entity; body }
 topic TransitionAnswered  { payload: TransitionAnswer;   keyed_by key; }
-type  TransitionAnswer    { scope; key; proposal_id; ok; revision; why }
+type  TransitionAnswer    { scope; key; proposal_id; ok; revision; why; basis }
+topic RecordResumed       { payload: RecordResume;       keyed_by scope; }
+type  RecordResume        { scope; why }
 ```
+
+`basis` (card 09) says who refused: `state` (the transition has no
+basis in the projection), `record` (the append was refused, or the
+record moved too often — the transition may be proposed again), or
+`conflict` (the proposal disagrees with what its id committed, or with
+itself). `RecordResumed` says the record is writable again; whoever
+knows publishes it — the host after a reconnect, a fixture.
 
 - **`proposal_id` names one logical transition**, stably: it is derived
   from what the transition does (the entity and the step, attempt or
@@ -469,6 +478,34 @@ type  TransitionAnswer    { scope; key; proposal_id; ok; revision; why }
   record refuses moves nothing — `workflow_step_test.hl`]**
 - **Only `ok` dispatches.** On a refusal the proposer dispatches
   nothing.
+- **A refusal by the record is not an outcome.** An append the record
+  refused, or a record that moved too often, leaves the proposer
+  holding its transition: it publishes no settlement it does not have,
+  reclaims nothing, and proposes the same transition again when the
+  record resumes (`RecordResumed`) or, for a Work, when its attempt's
+  reply reaches it again. A member has answered its Step only once its
+  settlement is in the record. A refusal by the state before anything
+  was dispatched ends a Step, refused, with nothing durable lost; a
+  refusal by the state of an outcome the members added up to leaves the
+  Step running for the members to decide again. **[proven, card 09:
+  both settlements and the completion refused once by the record, all
+  three landing afterwards, no `refused` answer in between]**
+- **A member is a key and the Work bound under it.** A settlement that
+  names a required key for another Work is no member's: it changes no
+  answered, done, failed or drain state. **[proven, card 09: a failed
+  `b` of another execution under this step's key fails nothing and the
+  real `b` lives on]**
+- **The body carries the proposal's own reference.** The transition
+  reference inside a proposed body must be the envelope's scope, key
+  and proposal id, whole, or the proposal is refused as a conflict with
+  itself before the state sees it: a row would otherwise say it was
+  committed under a proposal it was not. A committed proposal is
+  rebuilt from its row — the reference gives scope, key and id, the row
+  the kind, entity and body — and compared field by field
+  (`transition_conflict`) with the proposal sent again. **[proven, card
+  09: a body without its reference and one carrying another id are
+  refused; the committed transition re-sent under another key is a
+  conflict; re-sent whole it is a replay]**
 
 `scope` names the one committer that answers: `Dna` in an assembled
 organism (its journal), or a standalone `Metabolism` over its own memory

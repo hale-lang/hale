@@ -1130,7 +1130,15 @@ committed meanwhile is answered from its row, and one row stands. An
 append the record refuses answers a refusal and moves nothing, so the
 same transition proposed again is decided against the state as it is.
 A proposal the state refuses lands nothing: the record is not the place
-a transition is found invalid. A Work asks the runtime to run its
+a transition is found invalid. An answer says who refused (`basis`:
+`state`, `record` or `conflict`), because the residents treat them
+differently. The body of a proposal carries the reference the row will
+be committed under, and it must be the proposal's own scope, key and id,
+whole, or the proposal is refused as a conflict with itself before the
+state sees it; a committed proposal is rebuilt from its row and compared
+field by field with one sent again — the same, whole, is a replay
+answered from the row; anything else under that id, another key
+included, is a conflict. A Work asks the runtime to run its
 admitted attempt by id (`AttemptRequested`); the runtime reads the
 admission from the record and runs it through the one-attempt path
 above, and every reply — the one that came back from the call and the
@@ -1148,7 +1156,9 @@ delayed one leave it waiting, alive, with the outstanding Work
 reachable. A member that failed fails the step at once
 (`step.failed`, naming the member) and a step whose every member settled
 done completes it (`step.completed`); either publishes one terminal
-outcome (`StepSettled`, keyed by the step) and settles the step. After
+outcome (`StepSettled`, keyed by the step) and settles the step. A
+member is its key and the Work bound under it: a settlement naming a
+required key for another Work is no member's and changes nothing. After
 that a sibling's later reply is recorded — its attempt's outcome and its
 Work's settlement land as facts — and reopens nothing; the `StepRun`
 stays until every member it dispatched has settled, then reclaims
@@ -1156,8 +1166,16 @@ itself, and a `WorkRun` reclaims itself once its settlement is answered.
 A leaf with allowance left is retried before it fails: each attempt is
 admitted as a proposal of its own, and a retry the record will not take
 — the step failed meanwhile — settles the Work failed on the attempt
-that failed, the drain. Nothing here orders steps, spawns child
-workflows or survives a restart; those are later cards.
+that failed, the drain. A refusal by the record is no outcome: a Work
+or a Step whose append the record refused holds its transition, tells
+nobody it settled, reclaims nothing, and proposes the same transition
+again when the record resumes (`RecordResumed`, published by whoever
+knows the record is writable again) or, for a Work, when its attempt's
+reply reaches it again; a member has answered its step only once its
+settlement is in the record. A Work whose first admission the state
+refused stays, unattempted and reachable, until it is fenced. Nothing
+here orders steps, spawns child workflows or survives a restart; those
+are later cards.
 
 Nothing yet runs a workflow end to end; these are the durable shapes it
 is written in, the state they add up to, the door it is admitted by,
