@@ -314,6 +314,11 @@ locus WorkRun {
             // attempt was wrong. It stays; the next reply decides again
             return;
         }
+        if self.proposing == "admit" && self.step_settled == "cancelled" {
+            // admitted under the fence, not yet run: it does not run
+            self.settle_as("cancelled");
+            return;
+        }
         if self.proposing == "admit" {
             AttemptRequested <- AttemptRequest { scope: self.scope, attempt_id: self.attempt_id, work_id: self.work_id };
             return;
@@ -343,9 +348,12 @@ locus WorkRun {
     // The Step settled, durably (its outcome is published only after
     // its row landed). A first admission the record refused is proposed
     // again now — the state, not this Work, says whether it can still be
-    // admitted — and one the state refused retires.
+    // admitted — and one the state refused retires. Under a cancelled
+    // Step (its Task settled cancelled: the fence, §5) an admitted
+    // attempt still awaiting its reply settles cancelled: nothing more
+    // is waited for, and nothing external is undone.
     fn on_step(s: StepSettlement) {
-        if s.disposition != "completed" && s.disposition != "failed" { return; }
+        if s.disposition != "completed" && s.disposition != "failed" && s.disposition != "cancelled" { return; }
         self.step_settled = std::str::clone(s.disposition);
         if self.settled || len(self.outstanding) > 0 { return; }
         if self.held && self.proposing == "admit" && self.attempt_no == 0 { self.propose_admission(); return; }
@@ -353,6 +361,7 @@ locus WorkRun {
             MemberRetired <- MemberRetirement { step_id: self.step_id, key: self.key, work_id: self.work_id, why: "never admitted; step " + self.step_id + " " + s.disposition };
             terminate;
         }
+        if s.disposition == "cancelled" && !self.unadmitted && !self.held { self.settle_as("cancelled"); }
     }
     dissolve() { RunLives <- RunLife { key: self.work_id, what: "dissolved" }; }
 }
@@ -368,6 +377,8 @@ locus LeafSpecRows {
 type LeafSpec {
     key: String = "";
     work_id: String = "";
+    step_id: String = ""; // the step it is a member of
+    step_index: Int = 0;
     performer_kind: String = "";
     request: WorkRequest = WorkRequest { };
     allowance: Int = 1;
@@ -378,7 +389,8 @@ type LeafSpec {
 fn own_leaf(l: LeafSpec) -> LeafSpec {
     let r = l.request;
     return LeafSpec {
-        key: std::str::clone(l.key), work_id: std::str::clone(l.work_id), performer_kind: std::str::clone(l.performer_kind), allowance: l.allowance,
+        key: std::str::clone(l.key), work_id: std::str::clone(l.work_id), step_id: std::str::clone(l.step_id), step_index: l.step_index,
+        performer_kind: std::str::clone(l.performer_kind), allowance: l.allowance,
         request: WorkRequest {
             work_id: std::str::clone(r.work_id), task_id: std::str::clone(r.task_id), step_id: std::str::clone(r.step_id),
             objective: std::str::clone(r.objective), context_digest: std::str::clone(r.context_digest),
@@ -391,7 +403,144 @@ fn own_leaf(l: LeafSpec) -> LeafSpec {
 
 // A leaf from its bound node.
 fn leaf_of(n: BoundNode, task_id: String, performer_kind: String) -> LeafSpec {
-    return LeafSpec { key: n.member_key, work_id: n.id, performer_kind: performer_kind, request: bound_request(n, task_id, n.parent), allowance: n.attempts };
+    return LeafSpec { key: n.member_key, work_id: n.id, step_id: n.parent, step_index: n.step_index, performer_kind: performer_kind, request: bound_request(n, task_id, n.parent), allowance: n.attempts };
+}
+
+// One admitted execution: its ordered steps. It births step 0, and
+// births step i+1 only from the handler that hears step i drained behind
+// its committed completion — the projection refuses an activation while
+// the step before has not completed, so no ordering lives here that the
+// record does not enforce. A duplicate of that message names a step the
+// workflow has advanced past and changes nothing; the activation's own
+// identity (`<step>@activated`) is one row at the committer. A failed
+// step drains, then the workflow settles failed; later steps are never
+// born. A cancellation asked of the workflow settles it cancelled — a
+// proposal like any other — and once that landed the active step fences
+// its Works; no further step is born; the workflow leaves once the
+// active step has drained. Nothing external is undone.
+locus WorkflowRun {
+    params {
+        scope: String = "";
+        task_id: String = "";
+        workflow_id: String = "";
+        step_count: Int = 0;
+        leaves: LeafSpecRows = LeafSpecRows { }; // every leaf of the execution, as handed in
+        mine: LeafSpecRows = LeafSpecRows { }; // the workflow's own copy
+        current: Int = -1; // the active step's index
+        active: Bool = false; // a StepRun of `current` is alive
+        stage: String = ""; // "" | "running" | "settling" | "settled"
+        outstanding: String = "";
+        held: Bool = false;
+        proposing: String = ""; // the disposition being proposed
+        reason: String = "";
+        disposition: String = ""; // the durable outcome, once landed
+        cancel_asked: Bool = false;
+        cancel_reason: String = "";
+        duplicates: Int = 0; // drain messages for a step that is not the active one
+    }
+    bus {
+        subscribe TransitionAnswered as on_answer where key == self.task_id;
+        subscribe StepDrained as on_drained where key == self.task_id;
+        subscribe WorkflowCancelRequested as on_cancel where key == self.task_id;
+        subscribe RecordResumed as on_resumed where key == self.scope;
+        publish TransitionProposed;
+        publish WorkflowSettled;
+        publish RunLives;
+    }
+    accept(s: StepRun) { }
+    @unbounded
+    birth() {
+        let mut i = 0;
+        while i < self.leaves.len() {
+            self.mine.push(own_leaf(self.leaves.get(i) or LeafSpec { }));
+            i = i + 1;
+        }
+        RunLives <- RunLife { key: self.task_id, what: "born" };
+    }
+    run() {
+        self.stage = "running";
+        self.start_step(0);
+    }
+    // Step `index` is born, this workflow's own child, with the leaves
+    // bound under it.
+    @unbounded
+    fn start_step(index: Int) {
+        let step_id = self.workflow_id + "/s" + to_string(index);
+        let mut rows = LeafSpecRows { };
+        let mut i = 0;
+        while i < self.mine.len() {
+            let l = self.mine.get(i) or LeafSpec { };
+            if l.step_id == step_id { rows.push(l); }
+            i = i + 1;
+        }
+        self.current = index;
+        self.active = true;
+        StepRun { scope: self.scope, step_id: step_id, task_id: self.task_id, workflow_id: self.workflow_id, step_index: index, leaves: rows };
+    }
+    fn propose_outcome(disposition: String, reason: String) {
+        self.stage = "settling";
+        self.proposing = disposition;
+        self.reason = reason;
+        self.held = false;
+        self.outstanding = transition_id(self.task_id, disposition);
+        TransitionProposed <- TransitionProposal {
+            scope: self.scope, key: self.task_id, proposal_id: self.outstanding, kind: "workflow.settled", entity: self.task_id,
+            body: encode_workflow_outcome(WorkflowOutcome {
+                task_id: self.task_id, disposition: disposition, reason: reason,
+                transition: TransitionRef { scope: self.scope, key: self.task_id, proposal_id: self.outstanding }
+            })
+        };
+    }
+    // A step drained: its committed outcome, and every responsibility it
+    // admitted settled or retired. Only the active step's, once.
+    fn on_drained(d: StepDrain) {
+        if !self.active || d.step_index != self.current || d.step_id != self.workflow_id + "/s" + to_string(self.current) {
+            self.duplicates = self.duplicates + 1;
+            return;
+        }
+        self.active = false;
+        if self.stage == "settled" { terminate; } // cancelled meanwhile: the step fenced and drained
+        if len(self.outstanding) > 0 || self.held { return; } // a settlement is being decided; it decides
+        if self.cancel_asked { self.propose_outcome("cancelled", self.cancel_reason); return; }
+        if d.disposition == "completed" {
+            if self.current + 1 < self.step_count { self.start_step(self.current + 1); return; }
+            self.propose_outcome("done", "");
+            return;
+        }
+        if d.disposition == "failed" { self.propose_outcome("failed", "step " + d.step_id + " failed"); return; }
+        // refused: the step could not run. The execution is neither done
+        // nor failed by the record's rules; it stays, reachable, until
+        // it is cancelled
+    }
+    fn on_answer(a: TransitionAnswer) {
+        if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
+        self.outstanding = "";
+        if !a.ok && a.basis == "record" { self.held = true; return; }
+        if !a.ok {
+            // the state refused this outcome: the workflow is not that yet
+            self.stage = "running";
+            if self.cancel_asked && self.proposing != "cancelled" { self.propose_outcome("cancelled", self.cancel_reason); }
+            return;
+        }
+        self.stage = "settled";
+        self.disposition = std::str::clone(self.proposing);
+        WorkflowSettled <- WorkflowSettlement { task_id: self.task_id, disposition: self.disposition, reason: self.reason };
+        if !self.active { terminate; }
+        // cancelled with a step active: the step fences its Works and
+        // drains; the workflow leaves when it hears that
+    }
+    fn on_cancel(c: WorkflowCancel) {
+        if self.stage == "settled" || self.cancel_asked { return; }
+        self.cancel_asked = true;
+        self.cancel_reason = std::str::clone(c.reason);
+        if len(self.outstanding) > 0 { return; } // decided after the outstanding answer
+        self.propose_outcome("cancelled", self.cancel_reason);
+    }
+    fn on_resumed(r: RecordResume) {
+        if !self.held || len(self.outstanding) > 0 || self.stage == "settled" { return; }
+        self.propose_outcome(self.proposing, self.reason);
+    }
+    dissolve() { RunLives <- RunLife { key: self.task_id, what: "dissolved" }; }
 }
 
 // One active step and its leaf Works. It registers its whole member set
@@ -431,11 +580,18 @@ locus StepRun {
         subscribe MemberSettled as on_member where key == self.step_id;
         subscribe MemberRetired as on_retired where key == self.step_id;
         subscribe RecordResumed as on_resumed where key == self.scope;
+        subscribe WorkflowSettled as on_workflow where key == self.task_id;
         publish TransitionProposed;
         publish StepSettled;
+        publish StepDrained;
         publish RunLives;
     }
     accept(w: WorkRun) { }
+    // The step is leaving: every admitted member settled or retired. Its
+    // workflow hears that, once, before the step is reclaimed.
+    fn leaving() {
+        StepDrained <- StepDrain { task_id: self.task_id, step_id: self.step_id, step_index: self.step_index, disposition: self.disposition };
+    }
     @unbounded
     birth() {
         // the leaves are copied while the owner's arena is still alive
@@ -550,6 +706,7 @@ locus StepRun {
             // the state refused the step before anything was dispatched:
             // it cannot run. Nothing durable is lost; the owner hears it
             self.finish("refused", a.why);
+            self.leaving();
             terminate;
         }
         if !a.ok {
@@ -577,7 +734,7 @@ locus StepRun {
         }
         if self.stage == "completing" { self.finish("completed", ""); }
         if self.stage == "failing" { self.finish("failed", ""); }
-        if self.stage == "settled" && self.drained() { terminate; }
+        if self.stage == "settled" && self.drained() { self.leaving(); terminate; }
     }
     fn on_member(m: MemberSettlement) {
         // a member is a key AND the Work bound under it: a settlement
@@ -592,7 +749,7 @@ locus StepRun {
         // member and changes nothing here, except that once every member
         // has answered the step reclaims itself
         if self.stage == "settled" {
-            if self.drained() { terminate; }
+            if self.drained() { self.leaving(); terminate; }
             return;
         }
         self.decide();
@@ -605,7 +762,17 @@ locus StepRun {
         if len(bound) == 0 || bound != m.work_id || self.stage != "settled" { self.strays = self.strays + 1; return; }
         if set_has(self.answered, m.key) || set_has(self.retired, m.key) { self.duplicates = self.duplicates + 1; return; }
         self.retired = set_add(self.retired, m.key);
-        if self.drained() { terminate; }
+        if self.drained() { self.leaving(); terminate; }
+    }
+    // The workflow settled, durably. Cancelled, it fences this step: the
+    // step's outcome is `cancelled` — no row of its own; the Task's row
+    // is the basis — its Works hear it and settle cancelled or retire,
+    // and the step leaves once they have. A step not yet dispatched
+    // leaves at once; a step already settled changes nothing.
+    fn on_workflow(w: WorkflowSettlement) {
+        if w.disposition != "cancelled" || self.stage == "settled" { return; }
+        self.finish("cancelled", w.reason);
+        if self.drained() { self.leaving(); terminate; }
     }
     // The record is writable again: what it refused is proposed again.
     fn on_resumed(r: RecordResume) {
