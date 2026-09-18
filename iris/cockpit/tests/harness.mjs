@@ -6,9 +6,13 @@ import { createHash } from 'node:crypto';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isolatedEnvironment } from './environment.mjs';
+import { isolatedEnvironment, boundedNative } from './environment.mjs';
 
 const execute = promisify(execFile);
+const executeNative = (command, args, options, limits) => {
+  const bounded = boundedNative(command, args, limits);
+  return execute(bounded.command, bounded.args, options);
+};
 const cockpit = fileURLToPath(new URL('../', import.meta.url));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function availablePort() {
@@ -52,9 +56,9 @@ export const test = base.extend({
     process.once('exit', exitCleanup);
     try {
       if (organization === 'generated') {
-        await execute(env.HALE_BIN, ['dna', 'new', root], { env, timeout: 90_000, maxBuffer: 2_097_152 });
+        await executeNative(env.HALE_BIN, ['dna', 'new', root], { env, timeout: 90_000, maxBuffer: 2_097_152 }, { build: true });
       }
-      await execute(native, [root, 'seed', String(recordCount)], { env, timeout: 30_000 });
+      await executeNative(native, [root, 'seed', String(recordCount)], { env, timeout: 30_000 });
       const data = JSON.parse(await readFile(path.join(root, 'fixture.json'), 'utf8'));
       const git = async args => (await execute('git', ['-C', root, ...args], { env, timeout: 5_000 })).stdout.trim();
       const orgSource = path.join(root, 'dna/org/main.hl');
@@ -90,7 +94,8 @@ export const test = base.extend({
       for (let attempt = 0; attempt < 3 && !origin; attempt++) {
         const port = await availablePort();
         const candidate = `http://127.0.0.1:${port}`;
-        child = spawn(api, [root, String(port), path.join(cockpit, 'web')], {
+        const bounded = boundedNative(api, [root, String(port), path.join(cockpit, 'web')], { lock: false });
+        child = spawn(bounded.command, bounded.args, {
           env, cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
         });
         let spawnError;
@@ -119,7 +124,7 @@ export const test = base.extend({
       const apiPath = `/api/hale/v1/applications/${data.application}`;
       await use({
         ...data, origin, apiPath,
-        mutate: action => execute(native, [root, action], { env, timeout: 15_000 }),
+        mutate: action => executeNative(native, [root, action], { env, timeout: 15_000 }),
         changeOrganization: async ({ valid = true, commit = true } = {}) => {
           if (!organization) throw new Error('This test did not request an organization fixture.');
           await writeFile(orgSource, valid ? originalOrganization.replace('observed: Int = 0', 'observed: Int = 2') : 'main locus Broken { invalid source\n');

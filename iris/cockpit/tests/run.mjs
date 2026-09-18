@@ -2,7 +2,7 @@ import { mkdtemp, readFile, writeFile, rm, access } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { isolatedEnvironment } from './environment.mjs';
+import { isolatedEnvironment, boundedNative } from './environment.mjs';
 
 const cockpit = fileURLToPath(new URL('../', import.meta.url));
 const repo = path.resolve(cockpit, '../..');
@@ -13,7 +13,8 @@ const scratch = await mkdtemp('/tmp/hale-iris-browser-build.');
 let active;
 function run(command, args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
-    active = spawn(command, args, { cwd: cockpit, env: { ...env, ...extraEnv }, stdio: 'inherit' });
+    const bounded = command === hale ? boundedNative(command, args, { build: true }) : { command, args };
+    active = spawn(bounded.command, bounded.args, { cwd: cockpit, env: { ...env, ...extraEnv }, stdio: 'inherit' });
     active.once('error', reject);
     active.once('exit', (code, signal) => {
       active = undefined;
