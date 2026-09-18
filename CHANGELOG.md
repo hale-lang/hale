@@ -11,6 +11,9 @@ behavior.
 ### DNA: recovery finds a Task's Mutation in either memory's order (workflow card 02)
 
 - After a restart, `resume_work` looked for a Task's `mutation.proposed` only after its `task.born`. Read as record + ledger, the record's Mutation rows come before the ledger's births, so a Task awaiting its Mutation's review was resumed and planned again on an adopted organism, while the same facts in one journal waited correctly. The Mutation is now found by the Task it names anywhere in the journal (`mutation_of_task`); the plan, a ledger row like the birth, is still read after it. No global order is invented. `recovery_association_test.hl` seeds the same awaiting-review, in-flight and settled Tasks into one journal and into a split record and ledger, and asserts the same restart for both.
+### DNA: a routed retry carries its own attempt number (workflow card 01)
+
+- `WorkSystem` numbered each retry (`<work>/a1`, `a2`) but handed every performer the original request, still `attempt_no: 0`, so the performer, the Attempt's request and an agent's model evidence disagreed with the recorded attempt. Each try now gets `request_for_attempt(req, n)`, the same request with only `attempt_no` replaced, and the performer, the Attempt record, the history and the evidence all name that attempt. Numbering continues from the request's own `attempt_no`; the selection policy still sees the try index. `routed_attempt_identity_test.hl` covers the probe (attempts 0 then 1, the second succeeding) and every request field surviving the copy.
 
 ### DNA: a publish the membrane loses is not a lost fact (GH #682)
 
