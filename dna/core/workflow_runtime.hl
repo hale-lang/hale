@@ -213,7 +213,8 @@ locus WorkRun {
         proposing: String = ""; // what the outstanding (or held) proposal is: "admit" | "settle"
         settling: String = ""; // the disposition being proposed
         held: Bool = false; // the record refused the proposal: it is proposed again when the record resumes
-        unadmitted: Bool = false; // the state refused the first admission: nothing to settle on, reachable until fenced
+        unadmitted: Bool = false; // the state refused the first admission: nothing to settle on
+        step_settled: String = ""; // the Step's durable disposition, once it published one
         settled: Bool = false;
         stale: Int = 0; // replies that were not this attempt's
     }
@@ -221,13 +222,21 @@ locus WorkRun {
         subscribe TransitionAnswered as on_answer where key == self.work_id;
         subscribe AttemptReplied as on_reply where key == self.work_id;
         subscribe RecordResumed as on_resumed where key == self.scope;
+        subscribe StepSettled as on_step where key == self.step_id;
         publish TransitionProposed;
         publish AttemptRequested;
         publish MemberSettled;
+        publish MemberRetired;
         publish RunLives;
     }
     birth() { RunLives <- RunLife { key: self.work_id, what: "born" }; }
     run() { self.admit_next(); }
+    // Nothing of this Work was ever admitted, and under its settled Step
+    // nothing can be: no attempt, no claim, no effect to await. It
+    // retires — which is not a settlement — and its Step stops waiting.
+    fn retired() -> Bool {
+        return self.unadmitted && len(self.step_settled) > 0;
+    }
     fn request() -> WorkRequest {
         let mut r = self.request;
         r.work_id = std::str::clone(self.work_id);
@@ -290,9 +299,14 @@ locus WorkRun {
         }
         if !a.ok && self.proposing == "admit" {
             // the state refused the first admission: nothing ran, nothing
-            // can settle. The Work stays, unattempted, reachable until it
-            // is fenced; it publishes no outcome it does not have
+            // can settle. Under a Step that has settled the Work retires;
+            // else it stays, unattempted, reachable until it is fenced,
+            // and publishes no outcome it does not have
             self.unadmitted = true;
+            if self.retired() {
+                MemberRetired <- MemberRetirement { step_id: self.step_id, key: self.key, work_id: self.work_id, why: a.why };
+                terminate;
+            }
             return;
         }
         if !a.ok {
@@ -325,6 +339,20 @@ locus WorkRun {
         if !self.held || len(self.outstanding) > 0 || self.settled { return; }
         if self.proposing == "admit" { self.propose_admission(); return; }
         self.settle_as(self.settling);
+    }
+    // The Step settled, durably (its outcome is published only after
+    // its row landed). A first admission the record refused is proposed
+    // again now — the state, not this Work, says whether it can still be
+    // admitted — and one the state refused retires.
+    fn on_step(s: StepSettlement) {
+        if s.disposition != "completed" && s.disposition != "failed" { return; }
+        self.step_settled = std::str::clone(s.disposition);
+        if self.settled || len(self.outstanding) > 0 { return; }
+        if self.held && self.proposing == "admit" && self.attempt_no == 0 { self.propose_admission(); return; }
+        if self.retired() {
+            MemberRetired <- MemberRetirement { step_id: self.step_id, key: self.key, work_id: self.work_id, why: "never admitted; step " + self.step_id + " " + s.disposition };
+            terminate;
+        }
     }
     dissolve() { RunLives <- RunLife { key: self.work_id, what: "dissolved" }; }
 }
@@ -387,6 +415,7 @@ locus StepRun {
         mine: LeafSpecRows = LeafSpecRows { }; // the step's own copy of it
         required: String = ""; // member keys, in order
         answered: String = ""; // keys that have settled, done or not
+        retired: String = ""; // keys of leaves never admitted, retired under the settled step
         done: String = ""; // keys that settled done
         stage: String = ""; // "" | "registering" | "activating" | "running" | "completing" | "failing" | "settled"
         dispatched: Bool = false; // the leaves were born
@@ -400,6 +429,7 @@ locus StepRun {
     bus {
         subscribe TransitionAnswered as on_answer where key == self.step_id;
         subscribe MemberSettled as on_member where key == self.step_id;
+        subscribe MemberRetired as on_retired where key == self.step_id;
         subscribe RecordResumed as on_resumed where key == self.scope;
         publish TransitionProposed;
         publish StepSettled;
@@ -500,9 +530,10 @@ locus StepRun {
         self.disposition = disposition;
         StepSettled <- StepSettlement { step_id: self.step_id, task_id: self.task_id, disposition: disposition, failed_member: self.failed_member, why: why };
     }
-    // every member the step dispatched has settled: nothing outstanding
+    // every member the step dispatched has settled, or retired never
+    // admitted: nothing outstanding
     fn drained() -> Bool {
-        return !self.dispatched || set_count(self.answered) >= set_count(self.required);
+        return !self.dispatched || set_count(self.answered) + set_count(self.retired) >= set_count(self.required);
     }
     @unbounded
     fn on_answer(a: TransitionAnswer) {
@@ -565,6 +596,16 @@ locus StepRun {
             return;
         }
         self.decide();
+    }
+    // A leaf that was never admitted retires under the settled step: it
+    // has not answered — it settled nothing — and the step no longer
+    // waits for it. Only under the settled step, and only a member.
+    fn on_retired(m: MemberRetirement) {
+        let bound = self.bound_work(m.key);
+        if len(bound) == 0 || bound != m.work_id || self.stage != "settled" { self.strays = self.strays + 1; return; }
+        if set_has(self.answered, m.key) || set_has(self.retired, m.key) { self.duplicates = self.duplicates + 1; return; }
+        self.retired = set_add(self.retired, m.key);
+        if self.drained() { terminate; }
     }
     // The record is writable again: what it refused is proposed again.
     fn on_resumed(r: RecordResume) {

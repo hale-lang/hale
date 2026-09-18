@@ -75,6 +75,13 @@ type AttemptReply {
 topic AttemptReplied { payload: AttemptReply; subject: "dna.attempt.replied"; keyed_by work_id; }
 type MemberSettlement { step_id: String = ""; key: String = ""; work_id: String = ""; disposition: String = ""; }
 topic MemberSettled { payload: MemberSettlement; subject: "dna.member.settled"; keyed_by step_id; }
+// A leaf that was never admitted and can no longer be — its first
+// admission refused by the state under a Step that has durably settled
+// — retires: no attempt, no claim, no effect to await. Not a
+// settlement (a member has answered only once its settlement is in the
+// record); its Step stops waiting for it.
+type MemberRetirement { step_id: String = ""; key: String = ""; work_id: String = ""; why: String = ""; }
+topic MemberRetired { payload: MemberRetirement; subject: "dna.member.retired"; keyed_by step_id; }
 type StepSettlement { step_id: String = ""; task_id: String = ""; disposition: String = ""; failed_member: String = ""; why: String = ""; }
 topic StepSettled { payload: StepSettlement; subject: "dna.step.settled"; keyed_by step_id; }
 // The record is writable again: a resident holding a transition the

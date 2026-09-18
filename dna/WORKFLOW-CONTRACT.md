@@ -490,6 +490,25 @@ knows publishes it — the host after a reconnect, a fixture.
   Step running for the members to decide again. **[proven, card 09:
   both settlements and the completion refused once by the record, all
   three landing afterwards, no `refused` answer in between]**
+- **A leaf never admitted retires under its settled Step.** A Work whose
+  first admission the state refused has no attempt, no claim and no
+  effect to await. Under a Step that has durably settled — the Step
+  publishes its outcome only after its row landed, and the Work hears
+  it — it retires (`MemberRetired`, keyed by the Step), which is not a
+  settlement: it answers nothing, and only a durable Work settlement
+  publishes `MemberSettled`. A first admission the record refused is
+  proposed again when the Step settles, so the state — not the Work —
+  says whether it can still be admitted; one it admits runs and settles
+  as the drain has it. The Step counts a retired member toward its
+  drain, only under its settled stage and only for the Work bound under
+  the key, and reclaims itself once every admitted responsibility
+  settled. A leaf the state refuses while its Step runs (misbound) is
+  not retired: it stays, unattempted and reachable, until it is fenced.
+  **[proven, card 09: the record-refused first admission under a Step
+  that failed meanwhile retires and the Step drains; the same under a
+  Step that completes is admitted on resume and settles; a misbound
+  leaf under a running Step stays; a forged retirement while the Step
+  runs, or naming another Work, changes nothing]**
 - **A member is a key and the Work bound under it.** A settlement that
   names a required key for another Work is no member's: it changes no
   answered, done, failed or drain state. **[proven, card 09: a failed

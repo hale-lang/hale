@@ -1173,7 +1173,14 @@ again when the record resumes (`RecordResumed`, published by whoever
 knows the record is writable again) or, for a Work, when its attempt's
 reply reaches it again; a member has answered its step only once its
 settlement is in the record. A Work whose first admission the state
-refused stays, unattempted and reachable, until it is fenced. Nothing
+refused has nothing admitted, no claim and no effect to await: under a
+Step that has durably settled it retires (`MemberRetired`, keyed by the
+step), which is not a settlement — it answers nothing — and the step
+counts it toward its drain and reclaims itself once every admitted
+responsibility settled; a first admission the record refused is
+proposed again when the step settles, so the state says whether it can
+still be admitted. One the state refuses while its step runs stays,
+unattempted and reachable, until it is fenced. Nothing
 here orders steps, spawns child workflows or survives a restart; those
 are later cards.
 

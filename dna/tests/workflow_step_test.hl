@@ -104,7 +104,7 @@ locus Raced {
 // ---- the owner ------------------------------------------------------------
 
 // What a step is asked to run: which leaf runs on which performer kind.
-type StepAsk { scope: String = ""; task_id: String = ""; step_id: String = ""; kinds: String = ""; }
+type StepAsk { scope: String = ""; task_id: String = ""; step_id: String = ""; kinds: String = ""; tamper: String = ""; }
 topic StepAsks { payload: StepAsk; subject: "wf.step.ask"; keyed_by scope; }
 
 // The owner births a StepRun in its handler — the resident shape of card
@@ -122,7 +122,10 @@ locus Owner {
             let n = self.cat.bound_at(i);
             if n.kind == "work" && n.parent == a.step_id {
                 let kind = dna::map_get(a.kinds, n.member_key, "=");
-                leaves.push(dna::leaf_of(n, a.task_id, kind));
+                let mut leaf = dna::leaf_of(n, a.task_id, kind);
+                // a leaf the owner misbinds: its request is not the bound one
+                if a.tamper == n.member_key { leaf.request.objective = "something else"; }
+                leaves.push(leaf);
             }
             i = i + 1;
         }
@@ -140,7 +143,7 @@ main locus App {
         rt: dna::WorkflowRuntime = dna::WorkflowRuntime {
             scope: "main",
             journal: Raced {
-                refuse_once: "work.settled:t5/wf1/s0/a work.settled:t5/wf1/s0/b step.completed:t5/wf1/s0",
+                refuse_once: "work.settled:t5/wf1/s0/a work.settled:t5/wf1/s0/b step.completed:t5/wf1/s0 attempt.admitted:t6/wf1/s0/b/a0 attempt.admitted:t7/wf1/s0/b/a0",
                 arm_entity: "t4/wf1/s0/a", land_kind: "step.completed", land_entity: "t4/wf1/s0",
                 land_body: dna::encode_step_outcome(dna::StepOutcome {
                     step_id: "t4/wf1/s0", task_id: "t4", disposition: "completed", members: "a b",
@@ -158,6 +161,8 @@ main locus App {
         subscribe dna::RunLives as on_life;
         subscribe dna::StepSettled as on_step;
         subscribe dna::MemberSettled as on_member;
+        subscribe dna::MemberRetired as on_retired;
+        publish dna::MemberRetired;
         publish StepAsks;
         publish dna::MemberSettled;
         publish dna::TransitionProposed;
@@ -165,6 +170,7 @@ main locus App {
     }
     fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
     fn on_step(s: dna::StepSettlement) { self.steps = self.steps + s.step_id + ":" + s.disposition + (if len(s.failed_member) > 0 { ":" + s.failed_member } else { "" }) + " "; }
+    fn on_retired(m: dna::MemberRetirement) { self.members = self.members + m.step_id + "/" + m.key + ":retired " + m.work_id + " "; }
     fn on_member(m: dna::MemberSettlement) { self.members = self.members + m.step_id + "/" + m.key + ":" + m.disposition + " "; }
     @unbounded
     fn count(list: String, item: String) -> Int {
@@ -388,6 +394,11 @@ main locus App {
         std::test::assert_eq_int(self.count(self.lives, s2 + ":dissolved"), 0, "the step stays: a is still outstanding");
         std::test::assert_eq_int(self.count(self.lives, s2 + "/a:dissolved"), 0, "and a is reachable");
         std::test::assert_eq_int(self.count(self.lives, s2 + "/b:dissolved"), 1, "b, settled, reclaimed itself");
+        // a retirement under the settled step naming a's key for another
+        // Work is no member's: the outstanding a is not written off
+        dna::MemberRetired <- dna::MemberRetirement { step_id: s2, key: "a", work_id: "elsewhere/wf1/s0/a", why: "forged" };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.lives, s2 + ":dissolved"), 0, "a retirement of another execution's Work under a's key drains nothing: the step still waits for a");
         let a2 = self.reply(s2 + "/a/a0", "done");
         std::test::assert(a2.ok && a2.disposition == "done", "a's late reply is recorded under the failed step: " + a2.why);
         self.until_life(s2 + ":dissolved", 1);
@@ -461,12 +472,85 @@ main locus App {
         std::test::assert_eq_int(self.rows("step.completed", s5), 1, "proposed again when the record resumed, the completion lands");
         std::test::assert_eq_int(self.count(self.steps, s5 + ":completed"), 1, "one terminal outcome, the durable one");
 
+        // ---- t6: a leaf whose first admission the record refused, under a
+        //      step that failed meanwhile: nothing of it was admitted and
+        //      nothing can be. It retires — no settlement — and the step
+        //      stops waiting for it
+        self.admit("t6", "ship");
+        let s6 = "t6/wf1/s0";
+        StepAsks <- StepAsk { scope: "main", task_id: "t6", step_id: s6, kinds: "a=human b=service" };
+        self.until_step(s6 + ":failed:a");
+        self.until_life(s6 + ":dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("step.failed", s6), 1, "a failed the step");
+        std::test::assert_eq_int(self.rows("attempt.admitted", s6 + "/b/a0"), 0, "b was never admitted: the record refused its first admission, and the state refused it again under the failed step");
+        std::test::assert_eq_int(self.rows("effect.requested", "attempt:" + s6 + "/b/a0"), 0, "so nothing of b was claimed");
+        std::test::assert_eq_int(self.rows("work.settled", s6 + "/b"), 0, "and b settled nothing");
+        std::test::assert_eq_int(self.count(self.members, s6 + "/b:done") + self.count(self.members, s6 + "/b:failed") + self.count(self.members, s6 + "/b:refused"), 0, "b answered nothing: it had no settlement to answer with");
+        std::test::assert_eq_int(self.count(self.members, s6 + "/b:retired"), 1, "b retired, once, saying so");
+        std::test::assert_eq_int(self.count(self.lives, s6 + "/b:dissolved"), 1, "and reclaimed itself");
+        std::test::assert_eq_int(self.count(self.lives, s6 + ":dissolved"), 1, "and the failed step, with nothing admitted outstanding, reclaimed itself");
+        std::test::assert_eq_int(self.count(self.steps, s6 + ":failed:a"), 1, "one terminal outcome");
+
+        // ---- t7: the same refused first admission, the sibling succeeding:
+        //      the record resumes, b is admitted, runs, settles, and the
+        //      step completes
+        self.admit("t7", "ship");
+        let s7 = "t7/wf1/s0";
+        StepAsks <- StepAsk { scope: "main", task_id: "t7", step_id: s7, kinds: "a=service b=service" };
+        self.until_life(s7 + "/a:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("attempt.admitted", s7 + "/b/a0"), 0, "b's first admission was refused by the record; b holds it");
+        std::test::assert_eq_int(self.count(self.lives, s7 + "/b:dissolved") + self.count(self.lives, s7 + ":dissolved"), 0, "b and the step are alive");
+        dna::RecordResumed <- dna::RecordResume { scope: "main", why: "writable again" };
+        self.until_step(s7 + ":completed");
+        self.until_life(s7 + ":dissolved", 1);
+        std::test::assert_eq_int(self.rows("attempt.admitted", s7 + "/b/a0"), 1, "resumed, b's admission landed");
+        std::test::assert_eq_int(self.rows("work.settled", s7 + "/b"), 1, "b ran and settled");
+        std::test::assert_eq_int(self.rows("step.completed", s7), 1, "and the step completed");
+        std::test::assert_eq_int(self.count(self.members, s7 + "/b:retired"), 0, "nothing retired");
+
+        // ---- t8: a leaf the state refuses to admit while its step runs
+        //      (misbound: its request is not the one the recipe bound) is
+        //      not retired: it stays, unattempted, reachable, and the step
+        //      waits — until it is fenced, which is a later card's
+        self.admit("t8", "ship");
+        let s8 = "t8/wf1/s0";
+        StepAsks <- StepAsk { scope: "main", task_id: "t8", step_id: s8, kinds: "a=service b=service", tamper: "b" };
+        self.until_life(s8 + "/a:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("attempt.admitted", s8 + "/b/a0"), 0, "the state refused b's first admission");
+        std::test::assert_eq_int(self.count(self.members, s8 + "/b:retired"), 0, "b did not retire: its step has not settled");
+        std::test::assert_eq_int(self.count(self.lives, s8 + "/b:dissolved") + self.count(self.lives, s8 + ":dissolved"), 0, "b and the step stay reachable");
+        std::test::assert_eq_int(self.rows("step.completed", s8), 0, "and the step does not complete on a alone");
+        // a retirement that reaches a running step is no member's: only
+        // under the settled step does a leaf retire
+        dna::MemberRetired <- dna::MemberRetirement { step_id: s8, key: "b", work_id: s8 + "/b", why: "forged" };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.lives, s8 + ":dissolved"), 0, "a retirement while the step runs changes nothing: the step stays");
+        std::test::assert_eq_int(self.count(self.lives, s8 + "/b:dissolved"), 0, "and so does b");
+
+        // ---- t9: the misbound leaf again, its sibling failing: the step
+        //      fails, and the leaf the state had already refused retires
+        //      under it
+        self.admit("t9", "ship");
+        let s9 = "t9/wf1/s0";
+        StepAsks <- StepAsk { scope: "main", task_id: "t9", step_id: s9, kinds: "a=human b=service", tamper: "b" };
+        self.until_step(s9 + ":failed:a");
+        self.until_life(s9 + ":dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("attempt.admitted", s9 + "/b/a0"), 0, "b was never admitted");
+        std::test::assert_eq_int(self.count(self.members, s9 + "/b:done") + self.count(self.members, s9 + "/b:failed") + self.count(self.members, s9 + "/b:refused"), 0, "and answered nothing");
+        std::test::assert_eq_int(self.count(self.members, s9 + "/b:retired"), 1, "it retired once the step had failed");
+        std::test::assert_eq_int(self.count(self.lives, s9 + "/b:dissolved"), 1, "and reclaimed itself");
+        std::test::assert_eq_int(self.count(self.lives, s9 + ":dissolved"), 1, "and the step drained");
+
         // ---- the record: every transition landed exactly, through one hand
         std::test::assert(self.rt.journal.verify_chain(), "the record's chain holds");
         std::test::assert_eq_int(self.rt.conflicts, 4, "the four conflicts were the forged ones");
-        std::test::assert_eq_int(self.rt.refused, 8, "four conflicts, the invalid proposal and the three appends the record refused: nothing else was refused");
-        std::test::assert_eq_int(self.owner.asked, 5, "five steps were asked");
-        std::test::assert_eq_int(self.rt.requests, 10, "ten attempts were admitted and each was asked for once, after its admission was answered");
+        std::test::assert_eq_int(self.rt.refused, 13, "four conflicts, the invalid proposal, five appends the record refused, b's admission under t6's failed step and b's misbound admission under t8 and t9: nothing else was refused");
+        std::test::assert_eq_int(self.owner.asked, 9, "nine steps were asked");
+        std::test::assert_eq_int(self.rt.requests, 15, "fifteen attempts were admitted and each was asked for once, after its admission was answered");
     }
 }
 
