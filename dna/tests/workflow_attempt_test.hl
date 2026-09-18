@@ -26,14 +26,17 @@ locus Counting {
     }
 }
 
-// A performer that answers later: the reply comes through `settle`.
+// A performer that answers later: the reply comes through `settle`. Told
+// to, its pending answer names another performer or another attempt.
 locus Delayed {
-    params { calls: Int = 0; }
+    params { calls: Int = 0; misname: Bool = false; misattempt: Bool = false; }
     fn kind() -> String { return "agent"; }
     fn identity() -> String { return "delayed"; }
     fn perform(req: dna::WorkRequest) -> dna::WorkResult {
         self.calls = self.calls + 1;
-        return dna::WorkResult { disposition: "pending", performer: "delayed", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+        let who = if self.misname { "bob" } else { "delayed" };
+        let which = if self.misattempt { req.work_id + "/a9" } else { req.work_id + "/a" + to_string(req.attempt_no) };
+        return dna::WorkResult { disposition: "pending", performer: who, attempt_id: which };
     }
 }
 
@@ -151,6 +154,10 @@ main locus App {
             journal: Shared { land_outcome_for: "t1/wf1/s0/g/a0" },
             work: dna::WorkSystem { service: Counting { name: "counter" } }
         };
+        // executors whose delayed performer's pending answer is misrouted:
+        // to another performer's name, and to another attempt
+        misnamed: dna::AttemptExecutor = dna::AttemptExecutor { work: dna::WorkSystem { agent: Delayed { misname: true } } };
+        misattempted: dna::AttemptExecutor = dna::AttemptExecutor { work: dna::WorkSystem { agent: Delayed { misattempt: true } } };
         // and one whose performer answers with a disposition the outcome
         // contract does not carry
         odd: dna::AttemptExecutor = dna::AttemptExecutor {
@@ -290,6 +297,32 @@ main locus App {
         std::test::assert(alice.ok && alice.disposition == "done" && alice.outcome.result == "the real answer", "the selected performer's later reply is accepted: " + alice.why);
         let odd_late = self.x.settle(we + "/a0", dna::WorkResult { disposition: "cancelled", result: "x", performer: "delayed", attempt_id: we + "/a0" });
         std::test::assert(odd_late.ok && odd_late.reused, "and a later reply for a settled attempt changes nothing, whatever it says: " + odd_late.why);
+
+        // ---- a pending reply that is not this attempt's is not this
+        //      attempt's pending answer either: judged before it is
+        //      acknowledged, immediate or later, named for another
+        //      performer or for another attempt
+        let wp = "t1/wf1/s0/p";
+        let p0 = self.admitted(wp, 0, "agent");
+        self.admit(self.misnamed.journal, p0);
+        let mn = self.misnamed.execute(p0);
+        std::test::assert(!mn.ok && mn.ran && std::str::contains(mn.why, "names performer bob"), "an immediate pending reply from another performer is not acknowledged: " + mn.why);
+        std::test::assert_eq_int(self.rows(self.misnamed.journal, "attempt.outcome", ""), 0, "and records nothing");
+        self.admit(self.misattempted.journal, p0);
+        let ma = self.misattempted.execute(p0);
+        std::test::assert(!ma.ok && ma.ran && std::str::contains(ma.why, "for attempt " + wp + "/a9"), "nor one for another attempt: " + ma.why);
+        // the claims stand: the attempts ran and are outstanding, whatever
+        // the misrouted answer said; a later reply from the selected
+        // performer, for this attempt, settles them
+        std::test::assert_eq_int(self.rows(self.misnamed.journal, "effect.requested", "attempt:" + wp + "/a0"), 1, "the claim stands");
+        let late_bob = self.misnamed.settle(wp + "/a0", dna::WorkResult { disposition: "pending", performer: "bob", attempt_id: wp + "/a0" });
+        std::test::assert(!late_bob.ok && std::str::contains(late_bob.why, "names performer bob"), "a later pending reply from another performer is not acknowledged: " + late_bob.why);
+        let late_a9 = self.misnamed.settle(wp + "/a0", dna::WorkResult { disposition: "", performer: "delayed", attempt_id: wp + "/a9" });
+        std::test::assert(!late_a9.ok && std::str::contains(late_a9.why, "for attempt " + wp + "/a9"), "nor one for another attempt, with an empty disposition: " + late_a9.why);
+        let still = self.misnamed.settle(wp + "/a0", dna::WorkResult { disposition: "pending", performer: "delayed", attempt_id: wp + "/a0" });
+        std::test::assert(still.ok && still.disposition == "", "the selected performer's own pending reply is acknowledged: " + still.why);
+        let finally = self.misnamed.settle(wp + "/a0", dna::WorkResult { disposition: "done", result: "at last", performer: "delayed", attempt_id: wp + "/a0" });
+        std::test::assert(finally.ok && finally.disposition == "done" && finally.outcome.result == "at last", "and its terminal reply settles the attempt: " + finally.why);
 
         // ---- a disposition the outcome contract does not carry is not written
         let wf = "t1/wf1/s0/f";

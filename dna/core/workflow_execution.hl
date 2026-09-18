@@ -105,19 +105,25 @@ locus AttemptExecutor {
         return "";
     }
 
-    // Why a reply is not this attempt's to record, "" when it is. One
-    // rule for a reply that comes back from the call and one that comes
-    // later: it names this attempt if it names one, it comes from the
-    // performer the admitted kind selects if it names one, and it says
-    // something the outcome contract can carry.
-    fn reply_gap(v: AdmittedAttempt, r: WorkResult) -> String {
+    // Why a reply is not this attempt's at all, "" when it is: it names
+    // this attempt if it names one, and comes from the performer the
+    // admitted kind selects if it names one. Judged before anything else
+    // is made of the reply — a reply that is not this attempt's is not
+    // this attempt's pending answer either.
+    fn identity_gap(v: AdmittedAttempt, r: WorkResult) -> String {
         if len(r.attempt_id) > 0 && r.attempt_id != v.attempt_id {
-            return "the reply is for attempt " + r.attempt_id + ", not " + v.attempt_id + "; not recorded";
+            return "the reply is for attempt " + r.attempt_id + ", not " + v.attempt_id + "; not this attempt's";
         }
         let expected = self.work.identity_of(v.performer_kind);
         if len(r.performer) > 0 && len(expected) > 0 && r.performer != expected {
-            return "the reply names performer " + r.performer + ", not the " + v.performer_kind + " performer " + expected + " that was selected; not recorded";
+            return "the reply names performer " + r.performer + ", not the " + v.performer_kind + " performer " + expected + " that was selected; not this attempt's";
         }
+        return "";
+    }
+
+    // Why a terminal reply cannot be recorded, "" when it can: it says
+    // something the outcome contract carries.
+    fn disposition_gap(r: WorkResult) -> String {
         if r.disposition != "done" && r.disposition != "failed" && r.disposition != "declined" && r.disposition != "timeout" {
             return "an attempt is done, failed, declined or timeout, not `" + r.disposition + "`; not recorded";
         }
@@ -177,10 +183,12 @@ locus AttemptExecutor {
         // ---- the admitted performer runs, once
         let req = attempt_request(v);
         let r = self.work.perform_as(v.performer_kind, req);
+        let whose = self.identity_gap(v, r);
+        if len(whose) > 0 { return Executed { ran: true, why: whose }; }
         if self.outstanding(r) {
             return Executed { ok: true, ran: true, why: "attempt " + id + " is outstanding: the performer will answer later" };
         }
-        let bad = self.reply_gap(v, r);
+        let bad = self.disposition_gap(r);
         if len(bad) > 0 { return Executed { ran: true, why: bad }; }
         return self.record(v, r, true);
     }
@@ -197,6 +205,8 @@ locus AttemptExecutor {
         if !self.claimed(attempt_id, rev) {
             return Executed { why: "attempt " + attempt_id + " never ran; a reply for it is nobody's" };
         }
+        let whose = self.identity_gap(admitted.value, r);
+        if len(whose) > 0 { return Executed { why: whose }; }
         if self.outstanding(r) {
             return Executed { ok: true, why: "attempt " + attempt_id + " is still outstanding" };
         }
@@ -204,7 +214,7 @@ locus AttemptExecutor {
         if settled.ok {
             return Executed { ok: true, reused: true, disposition: settled.value.disposition, outcome: settled.value, why: "attempt " + attempt_id + " was already settled; this reply changes nothing" };
         }
-        let bad = self.reply_gap(admitted.value, r);
+        let bad = self.disposition_gap(r);
         if len(bad) > 0 { return Executed { why: bad }; }
         return self.record(admitted.value, r, false);
     }
