@@ -1,0 +1,109 @@
+// dna/tests/recovery_association_test.hl — recovery finds a Task's
+// Mutation by identity, in either memory's order (DNA workflow card 02).
+//
+// The same facts are seeded twice: into one chronological journal, and
+// into a record and a ledger read through `RoutedJournal`, which places
+// the record's rows before the ledger's. A restart must treat both
+// alike. Three Tasks:
+//
+// - t1 asked for a direct edit and is awaiting the Board's review of its
+//   Mutation (`mutation.review`, `review.requested`), stopped before its
+//   Task settled. The review is restored; the Task is not resumed, not
+//   planned again, and no second Mutation is proposed.
+// - t2's Mutation was only proposed when the organism stopped: it fails
+//   in flight, and the Task settles failed with it.
+// - t3 settled done before the stop: nothing happens to it.
+//
+// Memory-backed journals isolate the merge and the scan; no model, edit
+// or external effect runs (planned: true queues a plan instead of asking
+// a leader, so a wrong re-dispatch shows as a queued plan).
+
+import "../core" as dna;
+
+const REVIEW: String = "{\"mutation_id\":\"m1\",\"task_id\":\"t1\",\"question\":\"apply m1?\",\"subject_digest\":\"candidate-1\",\"required_authority\":\"board\",\"author\":\"editor\"}";
+
+main locus App {
+    params {
+        chronological: dna::MemJournal = dna::MemJournal { };
+        record: dna::MemJournal = dna::MemJournal { };
+        ledger: dna::MemJournal = dna::MemJournal { };
+        one: dna::Dna = dna::Dna { };
+        two: dna::Dna = dna::Dna { };
+    }
+    @unbounded
+    fn count(j: dna::Journal, kind: String, entity: String) -> Int {
+        let mut i = 0;
+        let mut n = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn kinds(j: dna::Journal) -> String {
+        let mut i = 0;
+        let mut s = "";
+        while i < j.revision() {
+            s = s + j.read(i).kind + " ";
+            i = i + 1;
+        }
+        return s;
+    }
+    fn put(kind: String, entity: String, body: String) {
+        let a = self.chronological.append(self.chronological.revision(), kind, entity, body);
+        std::test::assert(a.ok, "one memory seeded: " + kind);
+        let b = if dna::memory_of(kind) == "ledger" {
+            self.ledger.append(self.ledger.revision(), kind, entity, body)
+        } else {
+            self.record.append(self.record.revision(), kind, entity, body)
+        };
+        std::test::assert(b.ok, "split memories seeded: " + kind);
+    }
+    fn check(label: String, d: dna::Dna) {
+        let j = d.journal;
+        std::test::assert_eq_int(d.rehydrated, 1, label + ": t1's review is restored");
+        std::test::assert_eq_int(self.count(j, "task.resumed", "t1"), 0, label + ": t1 waits for its Mutation's review, not resumed: " + self.kinds(j));
+        std::test::assert_eq_int(d.pending_plans.len(), 0, label + ": nothing is planned again");
+        std::test::assert_eq_int(self.count(j, "mutation.proposed", ""), 2, label + ": no Mutation is proposed by the restart");
+        std::test::assert_eq_str(d.task_state("t1"), "pending", label + ": t1 is still pending on its review");
+        std::test::assert_eq_int(self.count(j, "mutation.failed", "m2"), 1, label + ": t2's Mutation, only proposed, failed in flight");
+        std::test::assert_eq_str(d.task_state("t2"), "failed", label + ": and t2 settled failed with it");
+        std::test::assert_eq_int(self.count(j, "task.resumed", "t2"), 0, label + ": t2 is not resumed");
+        std::test::assert_eq_str(d.task_state("t3"), "done", label + ": t3 stays done");
+        std::test::assert_eq_int(self.count(j, "task.resumed", "t3"), 0, label + ": t3 is not resumed");
+    }
+    run() {
+        // t1: a direct edit awaiting review, stopped before the Task settled
+        self.put("intent.offered", "i1", "document app");
+        self.put("task.born", "t1", "i1: document app");
+        self.put("task.pending", "t1", "routed");
+        self.put("mutation.proposed", "m1", "task t1 docs: document app () at base");
+        self.put("mutation.review", "m1", "docs candidate candidate-1");
+        self.put("review.requested", "review:m1", REVIEW);
+        // t2: a Mutation proposed and nothing after it
+        self.put("intent.offered", "i2", "rename the entry");
+        self.put("task.born", "t2", "i2: rename the entry");
+        self.put("task.pending", "t2", "routed");
+        self.put("mutation.proposed", "m2", "task t2 refactor: rename the entry () at base");
+        // t3: settled before the stop
+        self.put("intent.offered", "i3", "format the tree");
+        self.put("task.born", "t3", "i3: format the tree");
+        self.put("task.done", "t3", "formatted");
+        let a = self.record.append(self.record.revision(), "ledger.adopted", "ledger", "{\"routing\":1,\"checkpoint\":\"probe\"}");
+        std::test::assert(a.ok, "routing enabled");
+
+        self.one = dna::Dna { journal: self.chronological, planned: true, org_id: "assoc-one" };
+        self.check("one memory", self.one);
+        self.two = dna::Dna {
+            journal: dna::RoutedJournal { record: self.record, ledger: self.ledger },
+            planned: true, org_id: "assoc-two"
+        };
+        // the merged view puts the record's Mutation rows before the ledger's births
+        let order = self.kinds(self.two.journal);
+        std::test::assert(std::str::index_of(order, "mutation.proposed") < std::str::index_of(order, "task.born"), "the split view reads the record first: " + order);
+        self.check("two memories", self.two);
+    }
+}
+fn main() { App { }; }

@@ -142,6 +142,7 @@ fn dna_fixture_set_is_complete() {
             "receipt_vault_test.hl",
             "record_test.hl",
             "recorded_model_test.hl",
+            "recovery_association_test.hl",
             "recovery_two_memories_test.hl",
             "recursion_settlement_test.hl",
             "rehydrate_work_test.hl",
