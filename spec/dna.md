@@ -1565,7 +1565,10 @@ authority.
   next one. A Task whose Mutation was in flight settles
   `failed` with the Mutation; one whose Mutation is beyond proposal
   waits on that Mutation's outcome, and settles from it when the Work
-  that would have settled it is gone. A handed Task is a person's and
+  that would have settled it is gone. A Task's Mutation is found by the
+  Task it names (`mutation.proposed … task <id> …`) anywhere in the
+  journal, never by position: read as record + ledger, the record's
+  Mutation rows precede the ledger's births. A handed Task is a person's and
   waits. An `intent.offered` with no `task.born` naming it — the shape
   from before this rule — is noted (`intent.unrecovered`) and never
   re-offered: work may already have run.
