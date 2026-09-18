@@ -1,7 +1,8 @@
+// Explicitly invoked by the registered native knowledge_store_test.hl entrypoint.
 // The store preserves native practice identity and supersession metadata.
 // PostgreSQL coverage is opt-in through the existing test DSN convention.
-import "../core" as dna;
-import "../knowledge" as know;
+import "../../core" as dna;
+import "../../knowledge" as know;
 
 locus FidelityCases {
     params { }
@@ -101,7 +102,7 @@ locus FidelityCases {
     }
 }
 
-fn main() {
+fn run_cases() {
     let cases = FidelityCases { };
     cases.memory();
     cases.tail_metadata();
