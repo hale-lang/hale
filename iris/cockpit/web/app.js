@@ -6,6 +6,7 @@
 (() => {
   const API = "/api/hale/v1/applications";
   const LIMIT = 25;
+  const READ_TIMEOUT_MS = 15_000;
   // Resource-specific presentation stays behind this small workspace registry;
   // request lifetime, identity, paging and auth remain shared across all reads.
   const WORKSPACES = {
@@ -189,20 +190,36 @@
     return ["source_head", "seed", "artifact_digest", "dependency_digest", "dependency_source", "shape_hash", "schema", "coverage", "position_group_declared", "exact_ownership", "semantics", "declaration_count", "uninstantiated_declaration_count"].every((key) => left[key] === right[key]);
   }
   async function request(path, signal) {
-    let response;
-    try { response = await fetch(path, { signal, credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" } }); }
-    catch (error) {
-      if (error.name === "AbortError") throw error;
+    // This deadline covers both headers and the complete response body. It is
+    // a browser read deadline, not proof that the service stopped its own work.
+    const pending = new AbortController();
+    let timedOut = false;
+    const cancelRead = () => pending.abort();
+    signal.addEventListener("abort", cancelRead, { once: true });
+    if (signal.aborted) cancelRead();
+    const timeout = setTimeout(() => { timedOut = true; pending.abort(); }, READ_TIMEOUT_MS);
+    try {
+      const response = await fetch(path, { signal: pending.signal, credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" } });
+      if (response.status === 401) throw new ReadError(401, "unauthenticated", "The service needs a valid session before it can return Record data.");
+      let body;
+      try { body = await response.json(); }
+      catch (error) {
+        if (pending.signal.aborted) throw error;
+        throw new ReadError(response.status, "invalid_response", "The service did not return a readable JSON response.");
+      }
+      if (!response.ok) throw new ReadError(response.status, body.error?.code || "request_failed", typeof body.error?.message === "string" ? body.error.message : "The read did not complete.");
+      assert(body && body.api_version === "hale.v1" && body.data);
+      validSource(body.source);
+      return body;
+    } catch (error) {
+      if (signal.aborted) throw new DOMException("Superseded read", "AbortError");
+      if (timedOut) throw new ReadError(0, "read_timeout", "The service did not finish this read within 15 seconds. Application data has been cleared. Retry when the service is ready.");
+      if (error instanceof ReadError) throw error;
       throw new ReadError(0, "connection_failed", "The local service could not be reached. Check that it is running, then retry.");
+    } finally {
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", cancelRead);
     }
-    if (response.status === 401) throw new ReadError(401, "unauthenticated", "The service needs a valid session before it can return Record data.");
-    let body;
-    try { body = await response.json(); }
-    catch { throw new ReadError(response.status, "invalid_response", "The service did not return a readable JSON response."); }
-    if (!response.ok) throw new ReadError(response.status, body.error?.code || "request_failed", typeof body.error?.message === "string" ? body.error.message : "The read did not complete.");
-    assert(body && body.api_version === "hale.v1" && body.data);
-    validSource(body.source);
-    return body;
   }
   function ensureCurrent(token, signal) {
     if (token !== generation || signal.aborted) throw new DOMException("Superseded read", "AbortError");
@@ -670,7 +687,8 @@
     else if (error.status === 409) {
       title = state.route.view === "organization" ? "Organization source is changing" : "Record is changing";
       description = "The snapshot changed again after one automatic restart. Retry when the source settles; no mixed snapshot is displayed.";
-    } else if (error.code === "connection_failed") title = "Service unreachable";
+    } else if (error.code === "read_timeout") title = "Service took too long";
+    else if (error.code === "connection_failed") title = "Service unreachable";
     else if (error.code === "invalid_response") title = "Response could not be verified";
     else if (error.code === "unsupported_capability") title = "Read capability unavailable";
     actions.push(button("Retry", refresh));

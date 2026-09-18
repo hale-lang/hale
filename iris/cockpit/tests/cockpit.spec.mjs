@@ -80,6 +80,46 @@ test('401 clears previously rendered application data and offers sign-in', async
   await expect(page.locator('body')).not.toContainText(service.name);
 });
 
+test('a stalled read clears data, times out, ignores a late response and retries the real service', async ({ page, service }) => {
+  await openPractice(page, service);
+  await page.clock.install();
+  let resume;
+  const paused = new Promise(resolve => { resume = resolve; });
+  let captured;
+  const intercepted = new Promise(resolve => { captured = resolve; });
+  const pattern = '**/dna/practices?**';
+  await page.route(pattern, async route => {
+    // Hold a real response to model an unresponsive connection. Successful
+    // recovery below still reads the native service; no success DTO is mocked.
+    const response = await route.fetch();
+    captured();
+    await paused;
+    await route.fulfill({ response }).catch(() => {}); // timeout may close it
+  });
+  try {
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await intercepted;
+    await expect(page.locator('body')).not.toContainText(service.text);
+    await page.clock.fastForward(15_001);
+    await expect(page.getByRole('heading', { name: 'Service took too long', exact: true })).toBeVisible();
+    await expect(page.locator('#content')).toHaveAttribute('aria-busy', 'false');
+    await expect(page.locator('body')).not.toContainText('No practices yet');
+    resume();
+    await page.unroute(pattern);
+    await expect(page.getByRole('heading', { name: 'Service took too long', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Retry', exact: true }).click();
+    await expect(page.getByRole('heading', { name: service.name, exact: true })).toBeVisible();
+    await expect(page.locator('body')).toContainText(service.text);
+    // Finished reads must remove their timers: an old timer cannot replace
+    // recovered content with an error later.
+    await page.clock.fastForward(15_001);
+    await expect(page.getByRole('heading', { name: service.name, exact: true })).toBeVisible();
+  } finally {
+    resume();
+    await page.unroute(pattern);
+  }
+});
+
 test('missing object and unavailable Record have distinct, recoverable states', async ({ page, service }) => {
   await page.goto(service.url('practices', { id: 'missing/object/決定' }));
   await expect(page.getByRole('heading', { name: 'Practice not found', exact: true })).toBeVisible();
