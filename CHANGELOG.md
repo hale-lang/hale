@@ -8,6 +8,27 @@ behavior.
 
 ## Unreleased
 
+### DNA: cadence refresh runs on the organism's owner queue
+
+- Generated organizations use `Dna.request_tick` so journal refresh finishes
+  before queued work reads or appends. A task arriving during a direct tick
+  could otherwise append an effect claim successfully, then reject its own
+  claim as already in flight because the journal's cached view was incomplete.
+  `hale dna upgrade` explains the one-line change for existing organizations;
+  their project-owned source stays intact.
+
+### DNA: first typed read API for the Iris cockpit (GH #690)
+
+- A source-built `dna/api` service exposes versioned application discovery,
+  capabilities and practice/review reads from a checked local Record snapshot.
+  It shares typed governance queries with the CLI, preserves exact identities
+  and attribution, and distinguishes Review decisions from practice activation.
+- The service uses trusted loopback access or the existing OIDC member sessions.
+  Reads return structured errors, bounded pages and source revisions; unavailable
+  receipt text is explicitly withheld. OpenAPI/JSON Schema fixtures and live
+  Git/HTTP/OIDC tests written in Hale cover the boundary. Commands, Compose
+  packaging and the browser cockpit remain subsequent work; see
+  [`dna/api/README.md`](dna/api/README.md).
 ### DNA: the state of a workflow execution, read from its facts (workflow card 06)
 
 - `dna/core/workflow_projection.hl`: `replay(projection, kind, entity, body)` applies one card 05 row to plain rows and answers whether it was applied, is a replay of what is already held, or is refused. Applying reaches nothing outside the projection: the entry point carries `@no_syscall`, which the compiler checks through every method it reaches, and the locus holds no journal, gateway or model. The admitted recipe is the authority — an admission carries the whole bound tree under its Task, a registration names exactly the members bound under its Step by key, kind and entity, a Work's allowance is the bound one, a child is admitted and answers only as the Task bound under its key and its admission carries exactly the subtree its parent bound (no node more, less or different), and an attempt's request content is the bound Work's on the first attempt and on every retry. Every transition has its basis: a Work is done only on a done attempt, failed only on a failed attempt with no allowance left or under a failed Step or cancelled Task, cancelled only under a cancelled Task; a retry is the next attempt after a recorded failure; a Step activates after the one before it completed, completes when every registered member settled done, fails only on a member that failed; a Task is done when every bound Step completed and failed only after a Step failed and everything it admitted settled; a cancelled Task admits nothing further, below it either — no attempt, step or child under a cancelled ancestor, however deep the caller's `max_depth` let the execution go — while what was admitted still records its outcome; a failed ancestor fences nothing. A row's entity is the fact's identity and its kind matches its body; an identity already recorded is a replay for the same bytes and a conflict for any other, checked before the state. A Work's result is readable only once it settled, and is the attempt it settled on. `workflow_projection_test.hl` runs the contract's canonical example to completion as facts, with the child and grandchild executions, a second execution failing and draining, and two cancelled; every refusal is checked to leave the state as it was, and the whole history replays into a fresh projection to the same state and into the same one to no change. Nothing admits or executes a workflow yet.

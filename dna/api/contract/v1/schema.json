@@ -1,0 +1,580 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hale API v1 \u2014 initial read-only DNA slice",
+  "description": "Implemented read contract. No command or context contract is advertised. Each response is validated using its named $defs entry.",
+  "$defs": {
+    "Source": {
+      "type": "object",
+      "properties": {
+        "record_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "record_head": {
+          "type": "string",
+          "minLength": 1
+        },
+        "record_revision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        }
+      },
+      "required": [
+        "record_id",
+        "record_head",
+        "record_revision"
+      ],
+      "additionalProperties": false
+    },
+    "Page": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "next_offset": {
+          "type": "integer",
+          "minimum": -1,
+          "maximum": 1000000
+        },
+        "snapshot": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "limit",
+        "offset",
+        "total",
+        "next_offset",
+        "snapshot"
+      ],
+      "additionalProperties": false
+    },
+    "Application": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "dna"
+        },
+        "name": {
+          "type": "string"
+        },
+        "capabilities_url": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "name",
+        "capabilities_url"
+      ],
+      "additionalProperties": false
+    },
+    "Practice": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "text_status": {
+          "enum": [
+            "available",
+            "missing",
+            "redacted",
+            "protected",
+            "source_unavailable",
+            "digest_mismatch",
+            "invalid_document"
+          ]
+        },
+        "author": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "binding_class": {
+          "type": "string"
+        },
+        "provenance": {
+          "type": "string"
+        },
+        "supersedes": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "review_id": {
+          "type": "string"
+        },
+        "review_state": {
+          "type": "string"
+        },
+        "review_settled": {
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "pending",
+            "ratified",
+            "declined",
+            "retired",
+            "refused"
+          ]
+        },
+        "text_available": {
+          "type": "boolean"
+        },
+        "ratified": {
+          "type": "boolean"
+        },
+        "retired": {
+          "type": "boolean"
+        },
+        "declined": {
+          "type": "boolean"
+        },
+        "requester": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "review_outcome": {
+          "enum": [
+            "",
+            "approve",
+            "reject",
+            "revise",
+            "abstain"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "digest",
+        "name",
+        "kind",
+        "text",
+        "text_status",
+        "author",
+        "target",
+        "binding_class",
+        "provenance",
+        "supersedes",
+        "request_id",
+        "review_id",
+        "review_state",
+        "review_settled",
+        "state",
+        "text_available",
+        "ratified",
+        "retired",
+        "declined",
+        "requester",
+        "rationale",
+        "review_outcome"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "text_available": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "text": {
+                "const": ""
+              },
+              "rationale": {
+                "const": ""
+              },
+              "review_settled": {
+                "const": ""
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Review": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "type": "string"
+        },
+        "subject_digest": {
+          "type": "string"
+        },
+        "required_authority": {
+          "type": "string"
+        },
+        "settled": {
+          "type": "string"
+        },
+        "knowledge_digest": {
+          "type": "string"
+        },
+        "text_status": {
+          "enum": [
+            "not_applicable",
+            "available",
+            "missing",
+            "redacted",
+            "protected",
+            "source_unavailable",
+            "digest_mismatch",
+            "invalid_document"
+          ]
+        },
+        "question": {
+          "type": "string"
+        },
+        "text_available": {
+          "type": "boolean"
+        },
+        "outcome": {
+          "enum": [
+            "",
+            "approve",
+            "reject",
+            "revise",
+            "abstain"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "state",
+        "subject_digest",
+        "required_authority",
+        "settled",
+        "knowledge_digest",
+        "text_status",
+        "question",
+        "text_available",
+        "outcome"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "text_status": {
+                "enum": [
+                  "missing",
+                  "redacted",
+                  "protected",
+                  "source_unavailable",
+                  "digest_mismatch",
+                  "invalid_document"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "text_available": {
+                "const": false
+              },
+              "question": {
+                "const": ""
+              },
+              "settled": {
+                "const": ""
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Capabilities": {
+      "type": "object",
+      "properties": {
+        "application_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "read_only": {
+          "const": true
+        },
+        "principal": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "enum": [
+                "local",
+                "oidc"
+              ]
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "mode",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        "reads": {
+          "type": "object",
+          "properties": {
+            "practices": {
+              "const": true
+            },
+            "reviews": {
+              "const": true
+            }
+          },
+          "required": [
+            "practices",
+            "reviews"
+          ],
+          "additionalProperties": false
+        },
+        "writes": {
+          "type": "object",
+          "properties": {
+            "practice_propose": {
+              "const": false
+            },
+            "review_verdict": {
+              "const": false
+            }
+          },
+          "required": [
+            "practice_propose",
+            "review_verdict"
+          ],
+          "additionalProperties": false
+        },
+        "runtime_observation": {
+          "const": false
+        },
+        "recursive_workflows": {
+          "const": false
+        },
+        "receipt_text": {
+          "const": "record_visibility_only"
+        }
+      },
+      "required": [
+        "application_id",
+        "read_only",
+        "principal",
+        "reads",
+        "writes",
+        "runtime_observation",
+        "recursive_workflows",
+        "receipt_text"
+      ],
+      "additionalProperties": false
+    },
+    "ApplicationsResponse": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": "hale.v1"
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Application"
+              }
+            },
+            "page": {
+              "$ref": "#/$defs/Page"
+            }
+          },
+          "required": [
+            "items",
+            "page"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "api_version",
+        "source",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "CapabilitiesResponse": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": "hale.v1"
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "data": {
+          "$ref": "#/$defs/Capabilities"
+        }
+      },
+      "required": [
+        "api_version",
+        "source",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "PracticesResponse": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": "hale.v1"
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Practice"
+              }
+            },
+            "page": {
+              "$ref": "#/$defs/Page"
+            }
+          },
+          "required": [
+            "items",
+            "page"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "api_version",
+        "source",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "ReviewsResponse": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": "hale.v1"
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Review"
+              }
+            },
+            "page": {
+              "$ref": "#/$defs/Page"
+            }
+          },
+          "required": [
+            "items",
+            "page"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "api_version",
+        "source",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "ErrorResponse": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": "hale.v1"
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "minLength": 1
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "api_version",
+        "error"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

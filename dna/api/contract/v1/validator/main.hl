@@ -1,0 +1,275 @@
+// Executable contract profile, deliberately smaller than JSON Schema 2020-12.
+// Unsupported schema keywords/values fail before any response is accepted.
+type ValidationResult { ok: Bool = false; error: String = ""; }
+
+locus ContractSchema {
+    params { document: String; }
+    fn kind(raw: String) -> String {
+        let text = std::str::trim(raw);
+        if len(text) == 0 { return "missing"; }
+        let first = text[0..1];
+        if first == "{" { return "object"; }
+        if first == "[" { return "array"; }
+        if first == "\"" { return "string"; }
+        if text == "true" || text == "false" { return "boolean"; }
+        if text == "null" { return "null"; }
+        if std::str::contains(text, ".") || std::str::contains(text, "e") || std::str::contains(text, "E") { return "number"; }
+        return "integer";
+    }
+    fn string(raw: String) -> String {
+        let syntax = JsonSyntax { };
+        return syntax.decoded(std::str::trim(raw));
+    }
+    fn definition(name: String) -> String {
+        return std::json::find_field_raw(std::json::find_field_raw(self.document, "$defs"), name);
+    }
+    fn compare_integer(left: String, right: String) -> Int {
+        // Compare integer tokens without machine-integer overflow.
+        let a = if left == "-0" { "0" } else { left };
+        let b = if right == "-0" { "0" } else { right };
+        let an = std::str::starts_with(a, "-");
+        let bn = std::str::starts_with(b, "-");
+        if an && !bn { return -1; }
+        if !an && bn { return 1; }
+        let aa = if an { a[1..len(a)] } else { a };
+        let bb = if bn { b[1..len(b)] } else { b };
+        let sign = if an { -1 } else { 1 };
+        if len(aa) < len(bb) { return -sign; }
+        if len(aa) > len(bb) { return sign; }
+        let mut i = 0;
+        while i < len(aa) {
+            let ac = std::str::byte_at_unchecked(aa, i);
+            let bc = std::str::byte_at_unchecked(bb, i);
+            if ac < bc { return -sign; }
+            if ac > bc { return sign; }
+            i = i + 1;
+        }
+        return 0;
+    }
+    fn profile(spec: String, path: String, depth: Int) -> String {
+        if depth > 64 { return path + ": schema depth exceeds 64"; }
+        if self.kind(spec) != "object" { return path + ": only object schemas are supported"; }
+        let mut it = std::json::object_first(spec);
+        while !it.done {
+            let key = std::json::obj_key_string(it, spec);
+            let raw = std::str::trim(std::json::obj_value_raw(it, spec));
+            let at = path + "/" + key;
+            if key == "$schema" {
+                if raw != "\"https://json-schema.org/draft/2020-12/schema\"" { return at + ": unsupported dialect"; }
+            } else if key == "title" || key == "description" {
+                if self.kind(raw) != "string" { return at + ": expected string annotation"; }
+            } else if key == "$defs" || key == "properties" {
+                if self.kind(raw) != "object" { return at + ": expected object"; }
+                let mut children = std::json::object_first(raw);
+                while !children.done {
+                    let name = std::json::obj_key_string(children, raw);
+                    if key == "$defs" && (len(name) == 0 || std::str::contains(name, "/") || std::str::contains(name, "~")) { return at + ": definition names must be plain local names"; }
+                    let error = self.profile(std::json::obj_value_raw(children, raw), at + "/" + name, depth + 1);
+                    if len(error) > 0 { return error; }
+                    children = std::json::object_next(children, raw);
+                }
+            } else if key == "$ref" {
+                if self.kind(raw) != "string" { return at + ": expected string reference"; }
+                let reference = self.string(raw);
+                let prefix = "#/$defs/";
+                if !std::str::starts_with(reference, prefix) { return at + ": only local definition references are supported"; }
+                let name = reference[len(prefix)..len(reference)];
+                if len(name) == 0 || std::str::contains(name, "/") || std::str::contains(name, "~") || len(self.definition(name)) == 0 { return at + ": unresolved local definition"; }
+                // Follow references during profile validation as well. A cycle
+                // must fail here, never masquerade as a false `if` condition.
+                let error = self.profile(self.definition(name), at, depth + 1);
+                if len(error) > 0 { return error; }
+            } else if key == "type" {
+                if raw != "\"object\"" && raw != "\"array\"" && raw != "\"string\"" && raw != "\"integer\"" && raw != "\"boolean\"" { return at + ": unsupported type"; }
+            } else if key == "additionalProperties" {
+                if raw != "false" { return at + ": only false is supported"; }
+            } else if key == "required" {
+                if self.kind(raw) != "array" { return at + ": expected array"; }
+                let mut names = "|";
+                let mut required = std::json::array_first(raw);
+                while !required.done {
+                    if self.kind(required.element) != "string" { return at + ": expected property names"; }
+                    let name = self.string(required.element);
+                    if std::str::contains(name, "|") || std::str::contains(names, "|" + name + "|") { return at + ": duplicate or unsupported property name"; }
+                    names = names + name + "|";
+                    if len(std::json::find_field_raw(std::json::find_field_raw(spec, "properties"), name)) == 0 { return at + ": required property has no declared schema"; }
+                    required = std::json::array_next(required);
+                }
+            } else if key == "const" {
+                if self.kind(raw) != "string" && self.kind(raw) != "boolean" { return at + ": only string and boolean constants are supported"; }
+            } else if key == "enum" {
+                if self.kind(raw) != "array" { return at + ": expected array"; }
+                let mut values = std::json::array_first(raw);
+                if values.done { return at + ": empty enumeration"; }
+                while !values.done {
+                    if self.kind(values.element) != "string" { return at + ": only string enumerations are supported"; }
+                    let mut duplicates = 0;
+                    let mut other = std::json::array_first(raw);
+                    while !other.done {
+                        if self.kind(other.element) == "string" && self.string(other.element) == self.string(values.element) { duplicates = duplicates + 1; }
+                        other = std::json::array_next(other);
+                    }
+                    if duplicates > 1 { return at + ": duplicate enumeration value"; }
+                    values = std::json::array_next(values);
+                }
+            } else if key == "minLength" {
+                if self.kind(raw) != "integer" || self.compare_integer(raw, "0") < 0 || self.compare_integer(raw, "1000000") > 0 { return at + ": supported length range is 0..1000000"; }
+            } else if key == "minimum" || key == "maximum" {
+                if self.kind(raw) != "integer" { return at + ": only integer bounds are supported"; }
+                if std::json::find_string_field(spec, "type") != "integer" { return at + ": numeric bounds require type integer in this profile"; }
+            } else if key == "pattern" {
+                if raw != "\"^(0|[1-9][0-9]*)$\"" { return at + ": unsupported pattern"; }
+            } else if key == "items" || key == "if" || key == "then" {
+                let error = self.profile(raw, at, depth + 1);
+                if len(error) > 0 { return error; }
+            } else if key == "allOf" {
+                if self.kind(raw) != "array" { return at + ": expected array"; }
+                let mut children = std::json::array_first(raw);
+                if children.done { return at + ": empty allOf"; }
+                while !children.done {
+                    let error = self.profile(children.element, at, depth + 1);
+                    if len(error) > 0 { return error; }
+                    children = std::json::array_next(children);
+                }
+            } else { return at + ": unsupported schema keyword"; }
+            it = std::json::object_next(it, spec);
+        }
+        let condition = std::json::find_field_raw(spec, "if");
+        let consequent = std::json::find_field_raw(spec, "then");
+        if (len(condition) > 0) != (len(consequent) > 0) { return path + ": if and then must be paired"; }
+        return "";
+    }
+    fn decimal(text: String) -> Bool {
+        if len(text) == 0 { return false; }
+        if len(text) > 1 && text[0..1] == "0" { return false; }
+        let mut i = 0;
+        while i < len(text) {
+            let c = std::str::byte_at_unchecked(text, i);
+            if c < 48 || c > 57 { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn check(spec: String, value: String, path: String, depth: Int) -> String {
+        if depth > 64 { return "unsupported evaluation: depth exceeds 64 at " + path; }
+        let raw = std::str::trim(value);
+        let kind = self.kind(raw);
+        let expected = std::json::find_string_field(spec, "type");
+        if len(expected) > 0 && kind != expected { return path + ": expected " + expected + ", got " + kind; }
+        let reference_raw = std::json::find_field_raw(spec, "$ref");
+        if len(reference_raw) > 0 {
+            let reference = self.string(reference_raw);
+            let error = self.check(self.definition(reference[8..len(reference)]), raw, path, depth + 1);
+            if len(error) > 0 { return error; }
+        }
+        let constant = std::json::find_field_raw(spec, "const");
+        if len(constant) > 0 {
+            if kind != self.kind(constant) { return path + ": constant type mismatch"; }
+            if kind == "string" {
+                if self.string(raw) != self.string(constant) { return path + ": constant mismatch"; }
+            } else if raw != constant { return path + ": constant mismatch"; }
+        }
+        let enumeration = std::json::find_field_raw(spec, "enum");
+        if len(enumeration) > 0 {
+            if kind != "string" { return path + ": enumeration requires a string"; }
+            let mut found = false;
+            let mut choices = std::json::array_first(enumeration);
+            while !choices.done {
+                if self.string(choices.element) == self.string(raw) { found = true; }
+                choices = std::json::array_next(choices);
+            }
+            if !found { return path + ": unknown enumeration value"; }
+        }
+        if kind == "object" {
+            let properties = std::json::find_field_raw(spec, "properties");
+            let required = std::json::find_field_raw(spec, "required");
+            let mut names = std::json::array_first(required);
+            while !names.done {
+                let name = self.string(names.element);
+                if len(std::json::find_field_raw(raw, name)) == 0 { return path + "/" + name + ": required property is missing"; }
+                names = std::json::array_next(names);
+            }
+            let closed = std::json::find_field_raw(spec, "additionalProperties") == "false";
+            let mut fields = std::json::object_first(raw);
+            while !fields.done {
+                let name = std::json::obj_key_string(fields, raw);
+                let child = std::json::find_field_raw(properties, name);
+                if len(child) == 0 {
+                    if closed { return path + "/" + name + ": unexpected property"; }
+                } else {
+                    let error = self.check(child, std::json::obj_value_raw(fields, raw), path + "/" + name, depth + 1);
+                    if len(error) > 0 { return error; }
+                }
+                fields = std::json::object_next(fields, raw);
+            }
+        }
+        if kind == "array" {
+            let item_schema = std::json::find_field_raw(spec, "items");
+            if len(item_schema) > 0 {
+                let mut items = std::json::array_first(raw);
+                let mut index = 0;
+                while !items.done {
+                    let error = self.check(item_schema, items.element, path + "/" + to_string(index), depth + 1);
+                    if len(error) > 0 { return error; }
+                    index = index + 1;
+                    items = std::json::array_next(items);
+                }
+            }
+        }
+        if kind == "string" {
+            let minimum = std::json::find_field_raw(spec, "minLength");
+            let syntax = JsonSyntax { };
+            if len(minimum) > 0 && syntax.codepoints(raw) < (std::str::parse_int(minimum) or 0) { return path + ": string too short"; }
+            if len(std::json::find_field_raw(spec, "pattern")) > 0 && !self.decimal(self.string(raw)) { return path + ": expected canonical unsigned decimal string"; }
+        }
+        if kind == "integer" {
+            let minimum = std::json::find_field_raw(spec, "minimum");
+            let maximum = std::json::find_field_raw(spec, "maximum");
+            if len(minimum) > 0 && self.compare_integer(raw, minimum) < 0 { return path + ": below minimum"; }
+            if len(maximum) > 0 && self.compare_integer(raw, maximum) > 0 { return path + ": above maximum"; }
+        }
+        let conjunction = std::json::find_field_raw(spec, "allOf");
+        let mut children = std::json::array_first(conjunction);
+        while !children.done {
+            let error = self.check(children.element, raw, path, depth + 1);
+            if len(error) > 0 { return error; }
+            children = std::json::array_next(children);
+        }
+        let condition = std::json::find_field_raw(spec, "if");
+        if len(condition) > 0 {
+            let condition_error = self.check(condition, raw, path, depth + 1);
+            if std::str::starts_with(condition_error, "unsupported evaluation:") { return condition_error; }
+            if len(condition_error) == 0 {
+                let error = self.check(std::json::find_field_raw(spec, "then"), raw, path, depth + 1);
+                if len(error) > 0 { return error; }
+            }
+        }
+        return "";
+    }
+}
+
+locus Validator {
+    params { root: String = "dna/api/contract/v1"; }
+    fn schema_profile(schema: String) -> ValidationResult {
+        let syntax = JsonSyntax { };
+        if !syntax.valid(schema) { return ValidationResult { error: "schema: invalid JSON or unsupported object key encoding" }; }
+        let rules = ContractSchema { document: schema };
+        let error = rules.profile(schema, "$", 0);
+        return ValidationResult { ok: len(error) == 0, error: error };
+    }
+    fn validate_schema(schema: String, name: String, json: String) -> ValidationResult {
+        let profile = self.schema_profile(schema);
+        if !profile.ok { return profile; }
+        let syntax = JsonSyntax { };
+        if !syntax.valid(json) { return ValidationResult { error: "response: invalid JSON or unsupported object key encoding" }; }
+        let rules = ContractSchema { document: schema };
+        let definition = rules.definition(name);
+        if len(definition) == 0 { return ValidationResult { error: "unknown contract definition: " + name }; }
+        let error = rules.check(definition, json, "$", 0);
+        return ValidationResult { ok: len(error) == 0, error: error };
+    }
+    fn validate(name: String, json: String) -> ValidationResult {
+        let schema = std::io::fs::read_file(self.root + "/schema.json") or "";
+        return self.validate_schema(schema, name, json);
+    }
+}
