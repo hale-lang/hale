@@ -456,6 +456,32 @@ the shape a model invents.
 
 ---
 
+## F.19 — a subscriber born in a bus handler must be the handler's own child
+
+**Tag:** `handler-born-subscriber-must-be-owned`
+**Severity:** informational; it fixes where child workflows are created.
+**Status:** by design (a check, with a clear diagnostic).
+
+A resident step that wants a child workflow cannot create it from its
+reply handler unless the step itself accepts that type. Interest-based
+ownership — the literal bubbling to the nearest ancestor that accepts it,
+which is how today's `Step` hands a delegated `Task` to `Metabolism` —
+is not considered for a subscribing locus born in a handler:
+
+```
+type error: locus `Run` declares `bus subscribe` but is instantiated
+unowned inside `Part`'s bus handler `on_poke`.
+```
+
+A parent accepts one child type, so a step that owns its Work cannot
+also accept child Tasks. The answer is supersystem mediation: the step
+publishes a request, and the owner of Tasks creates the child from its
+own handler and owns it; the child's settlement comes back over the bus,
+keyed by the parent. `dna/tests/workflow_lifetime_test.hl` case 4b does
+exactly that.
+
+**Reproducer:** `dna/friction/f19-handler-born-subscriber/`.
+
 ## Requests and bugs, summarized (2026-09-05)
 
 Eleven entries. What the fixtures established, against #521's prediction
@@ -593,6 +619,31 @@ done — settles the durable Task in the Journal (`task.done` /
 the expression of one synchronous pass; the Journal is the Task. In
 process, where the reply arrives at drain, the Task still settles
 `done` in its own pass and nothing is journaled twice.
+
+**The shape that answers it (DNA workflow card 03, 2026-09-17):** an
+`accept`ed child whose type no parent `release`s is a resident. Born
+from a bus handler, it outlives that handler and its own `run()`, hears
+a delayed keyed reply, advances from its own handlers, and ends with
+`terminate;` from a handler; its owner's dissolve reclaims one that is
+still waiting. Proven natively, with births and dissolves counted, by
+`dna/tests/workflow_lifetime_test.hl` (isolated types) and
+`workflow_lifetime_dna_test.hl` (the same shape importing the DNA core,
+committing through a real `dna::Journal`). Three rules the proof pinned
+down:
+
+- `release(c: T)` anywhere makes every `T` a flow, even on a parent type
+  that is never instantiated (`workflow_release_type_wide_test.hl`).
+  DNA's `Task`, `Workflow`, `Step`, `Work` and `Attempt` are all released
+  today, so they cannot become residents by removing one hook: every
+  `release` of each type would have to go, and every caller that reads a
+  settled child through `release` (the synchronous in-tower shape, F.5)
+  would have to read it from the bus instead. The workflow runtime uses
+  new resident types beside them (dna/WORKFLOW-CONTRACT.md §9).
+- A keyed subscription reads its key field when it is registered, before
+  `birth()` runs: a key must be given at construction.
+- A subscriber born in a handler must be that handler's own child
+  (F.19): a child workflow is created by the owner of Tasks on a request
+  over the bus, not by the step that wants it.
 
 **Compiler bugs fixed in this track:** F.2 (`@unbounded` ignored by the
 hot-path lint), F.6 (release dispatch by child type alone — memory

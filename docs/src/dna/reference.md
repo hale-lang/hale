@@ -176,7 +176,7 @@ sequence either way — see [The record](./record.md).
 | `receipt.held` / `receipt.hold_released` | ledger | a digest | a hold that refuses redaction, and its release: by, why |
 | `receipt.redacted` | ledger | a digest | the body removed, the digest kept: by, why, policy, class, store |
 | `grant.revoked` | record | a child | the parent revoked the grant, recorded before it takes effect and restored at birth: by, parent, epoch |
-| `concern.requested` / `concern.raised` | ledger | a source | a concern raised from a locus path about the part above it: what, severity, by |
+| `concern.requested` / `concern.raised` | ledger | a source | a concern raised from a locus path about the part above it: what, severity, by; several concerns share one source, so a request carries its own `request` id and its answer is one object (`what`, `severity`, `occurrence`, `request`) — a concern's words are never read as the metadata around them — and one request is one concern, however often it is delivered |
 | `concern.refused` | ledger | a source | one the organization would not admit, and why |
 | `concern.proposed` | record | a source | three raises became a proposal: the practice's digest, or `refused`, after `<n>` raise(s) |
 | `body.claimed` / `body.released` | ledger | the holder | who is running this record, by the lease's token: token, forced, from, by |
@@ -236,6 +236,9 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `forge.hl` | `Forge` (a code-review host), `MemForge`, `NoForge`; the host's `forge_github.hl` is `GitHubForge` over `gh` and the `FileForge` fixtures use |
 | `process.hl` | `Task`, `Workflow`, `Step`, `Work`, `Attempt`, `Metabolism` |
 | `work_system.hl` | `WorkSystem`, routing perspectives, the performers |
+| `workflow_definition.hl` | `WorkflowCatalog` (code-authored workflow definitions: `define`, `leaf`, `child`, `expand`, `encode` / `decode`), `AdmissionLimits`, `bound_request`, `encode_bound` / `decode_bound` (one execution as a recipe, refused whole when it cannot be read whole) — definitions and their bound expansion only; nothing executes them yet |
+| `workflow_events.hl` | the durable facts of one workflow execution: `AdmittedWorkflow`, `RefusedWorkflow`, `RegisteredMembers`, `ActivatedStep`, `AdmittedAttempt`, `AttemptOutcome`, `WorkOutcome`, `StepOutcome`, `WorkflowOutcome` with their `encode_*` / `decode_*` (each read whole or not at all: version, identities, numbers that are numbers, and identities that agree with each other), `TransitionRef` and `committed_by` (the scope, key and proposal id a fact was committed under, appended with it), plus `attempt_id_of`, `transition_id` and `transition_conflict` (a repeated proposal id is a replay only if it repeats the proposal) |
+| `workflow_projection.hl` | `WorkflowProjection` and `replay` (`@no_syscall`): the state of one execution, read from its facts alone, with the admitted recipe as authority — `WorkView`, `StepView`, `TaskView`, `joined`, `pending`, `result_of`, `digest`. Every transition needs its basis in the rows before it; a row is a replay for the same bytes under a recorded identity and a conflict otherwise; the member join is by identity and by kind, each member once |
 | `review.hl` | `Review`, `AutonomyBoundary`, authority ranks |
 | `models.hl` | `ModelRouter`, `OpenAiChat`, `AnthropicMessages`, `HarnessModel`, `LocalModel`, `FakeModel`, `HostedCredential` (with its `scheme`), `Confinement` (`Bubblewrap`, `NoConfinement`), `probe` |
 | `budget.hl` | `BudgetPolicy`, `Budget` (the substrate's one counter) |

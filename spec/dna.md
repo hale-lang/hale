@@ -691,6 +691,25 @@ repository:
   the socket membrane carries it), each in the appender's git identity;
   the host beside the organism relays unanswered rows onto the
   membrane, admitting each under `dna.trust` (GH #604 rule 6). **A
+  request is answered by its own answer** (GH #689): an intent, a
+  verdict's review and a practice request have an entity of their own,
+  and a concern — whose entity is its source, shared by every concern
+  from it — carries a `request` id that the organization writes into
+  the `concern.raised` answering it. That row is one object — the concern's
+  words, its severity, which occurrence it is, and the request it answers
+  — so the id is a member of the row rather than a shape inside its text:
+  a worker who writes `observed [request c1] in a log` has written text,
+  not metadata, and the host compares the whole id, so an answer to `c10`
+  is not an answer to `c1`. A row written before that
+  rule carries no such field and is matched by counting, as this host did
+  before. **One request is one concern**: a request delivered twice — the
+  host relays a row again while it looks unanswered — writes one
+  `concern.raised`, and the count that turns concerns into a knowledge
+  proposal counts distinct requests, never redeliveries. Two requests
+  raising the same words are two concerns; one id used for a second,
+  different concern — other words, or the same words at another severity
+  — is refused once, in `concern.refused`, which is that request's answer
+  and carries its id. **A
   membrane publish is confirmed by its answer in the record, never by
   the client's exit** (GH #682): the client hands the fact to its
   binding and exits, and under load the organism may never see it, so
@@ -806,7 +825,7 @@ record's.
 | `receipt.read` / `receipt.read_refused` | ledger | a read in the reader's name, or its refusal |
 | `receipt.held` / `receipt.hold_released` | ledger | a hold that refuses redaction, and its release |
 | `receipt.redacted` | ledger | the body removed, the digest kept |
-| `concern.requested` / `concern.raised` | ledger | a concern from a part about the part above it |
+| `concern.requested` / `concern.raised` | ledger | a concern from a part about the part above it; the request carries its own `request` id; the answer is one object (`what`, `severity`, `occurrence`, `request`), so a concern's words are never read as metadata, and one request is one concern, however often it is delivered |
 | `concern.refused` | ledger | one the organization would not admit |
 | `concern.proposed` | record | three raises became a proposal |
 | `pressure.raised` | ledger | a signal from a source, counted |
@@ -823,6 +842,179 @@ record's.
 Their bodies are documented in the guide's reference chapter; the set
 grows by ordinary change, and a reader that meets an unknown kind must
 keep walking.
+
+## Workflow definitions
+
+A recursive workflow can be written as data (`dna/core/workflow_definition.hl`;
+the execution contract it serves is `dna/WORKFLOW-CONTRACT.md`). A
+`WorkflowCatalog` holds definitions: `define(id, revision, steps, title)`
+declares a workflow with that many ordered steps; `leaf(workflow,
+revision, step, key, work, attempts)` adds a required member carrying
+the content of one Work request and its retry allowance; `child(workflow,
+revision, step, key, child, child_revision)` adds a required member that
+invokes another definition. Each returns `""` or why it was refused (a
+revision defined twice, a member for an undefined workflow).
+Definitions refer to each other by id and revision, in two flat
+collections.
+
+Before anything is built, `expand` checks every definition reachable
+from the root once, counting each one's Works and nesting height from
+its children's and saturating at the limits: a catalog whose expansion
+would be enormous is refused from those counts, in one pass over the
+definitions, without materializing a node of it. The check also holds
+for the root, which is depth 1, and for the limits themselves (a limit
+below 1 admits nothing and is refused).
+
+`expand(root_task, id, revision, limits)` binds one execution: the whole
+finite tree as `BoundNode`s (tasks, steps, works) with their ids — a
+child Task is `<parent>.s<i>.<key>`, a Workflow `<task>/wf<revision>`,
+a Step `<workflow>/s<i>`, a Work `<step>/<key>` — each Work carrying its
+authored request content and allowance (`bound_request` makes its
+`WorkRequest`), and each Task its definition, parent, spawning step,
+depth and definition path. It refuses the whole expansion, binding
+nothing and naming what broke, when a definition is missing (by id and
+revision), a workflow has no steps, a step has no members, a member
+names a step outside its workflow's steps, a member key is not
+`[a-z0-9-]+` or repeats in its step, a member is neither a leaf nor a
+child, a workflow invokes itself directly or through its children, or
+an `AdmissionLimits` value is exceeded: `max_depth` (8),
+`max_steps` (32), `max_members` (32), `max_attempts` (8, the largest
+allowance a leaf may bind) and `max_works` (256), the defaults in
+parentheses, supplied by the caller and returned with the `Expansion`.
+Two invocations of one definition are two executions with their own ids;
+a later revision changes nothing an earlier revision expands to.
+A definition id is `[a-z0-9][a-z0-9-]*`, checked when it is defined and
+when it is read, so an id can never carry the delimiters the definition
+path is written with. `encode()` writes every definition and member as
+one JSON document (`format: dna.workflow-definitions/1`) and
+`decode(text)` reads one back, refusing a document that does not close,
+another format, an id outside
+the grammar, an already defined revision, or a document that defines one
+revision twice, and adding nothing then.
+
+`encode_bound()` writes one bound execution as a recipe (`format:
+dna.workflow-recipe/1`; an admission nests it as an object of its own,
+never escaped into a string) carrying the node count it was written with, and
+`decode_bound(text)` reads one back. It refuses another format, a missing
+node array, a count that disagrees with what the document carries, a node
+without an identity or of no known kind, a node whose number was written
+as text or whose text was written as a number, and a document that does not close: every object,
+array and string closed by its own delimiter, with nothing after the
+value. That is a closure scan rather than a JSON grammar validator — it
+does not check escape sequences or number syntax — which is what reading
+back one encoder's own output needs; a document from outside the system
+wants a real parser in front of it. A whole final node also ends in `}`, so the last
+character says nothing about the document. Every refusal binds nothing:
+half a recipe is not a smaller execution. Nothing yet executes a bound
+expansion.
+
+## Workflow facts
+
+What a workflow execution leaves behind is written as a fact of the day's
+work (`dna/core/workflow_events.hl`). Seven kinds carry an execution:
+`workflow.admitted` names the Task, the definition and revision, the
+inputs and their receipt, the bound recipe, the limits that were applied
+and what the expansion came to; `step.registered` names a step's whole
+required set before any of it is dispatched; `attempt.admitted` carries
+one attempt's id and the `WorkRequest` it was admitted with;
+`attempt.outcome` its disposition, result and evidence; and
+`work.settled`, `step.completed` / `step.failed` and `workflow.settled`
+settle each level to the one above it, a child workflow naming the parent
+Task and spawning step it answers. An admission also names the engine (`wf1`), and every fact a version.
+A decoder refuses a version it does not know, another engine's
+admission or refusal, a fact that does not name the entity it is about,
+a fact that says nothing where a number belongs (an absent revision is
+not revision 0), and a fact whose own identities contradict each other:
+an attempt id that is not its Work and number, an attempt carrying a
+request for another Work or another attempt, a Work settling under a
+Step it is not part of or on another Work's attempt, a step failing on
+a member it never had, a child naming its parent but not the step that
+spawned it, an admission deeper or wider than the limits it says were
+applied. A fact is read whole or not at all. The identities an attempt
+admission carries are written once and derived from the fact, so its id,
+its number and its embedded request cannot disagree.
+
+`step.activated` and `workflow.refused` have codecs of their own, like
+the rest; a routing row is not a durable shape. A fact a transition
+committed carries the scope, key and proposal id it was committed
+under, appended with it, so the committed proposal can be reconstructed
+from the journal after a restart and compared against a later reuse of
+that id.
+
+These kinds are the ledger's under split routing and the record's on
+routing 0, like every other operational kind.
+
+An attempt's id is its Work and its number (`<work>/a<n>`, numbered from
+0 as §4 has it: the first attempt is `a0` and a retry is `a1`), so a
+retry is a new id and a re-sent admission is the same one. A transition's
+proposal id (§9 of `dna/WORKFLOW-CONTRACT.md`) is what the transition
+does, not a counter or a clock: the same id carrying the same scope,
+key, kind, entity and body is that transition proposed again, which the
+committer answers from its journal; the same id carrying anything else
+is a conflict, and `transition_conflict` names which part differs.
+
+## Workflow state
+
+The state an execution is in is read from those facts and nothing else
+(`dna/core/workflow_projection.hl`). `replay(projection, kind, entity,
+body)` applies one row and answers one of three things: the fact was
+**applied**, it is a **replay** of what the projection already holds, or
+it is **refused**. Applying a fact asks nothing of the world: the entry
+point carries `@no_syscall`, which the compiler checks through everything
+it reaches, and the projection holds no journal, gateway or model to
+call. The contract guards syscall-class effects; having nothing to call
+is what rules out the rest.
+
+**The admitted recipe is the authority.** An admission carries the whole
+bound tree under its Task, and every later fact is checked against it: a
+Step is one the recipe binds for that Task at that index; a registration
+names exactly the members the recipe bound under that Step, each by key,
+kind and entity, none missing and none invented; a Work's retry allowance
+is the one bound for it; a child is admitted only as the Task its parent
+bound under that key, from a step that is registered and active, and
+answers only as that Task. A child's admission carries the subtree its
+parent bound under it, exactly: the same nodes, each the same in every
+field, none added, none left out, none changed. It activates a binding;
+it never redefines the execution its parent admitted. An attempt asks
+for what the Work is: its request's content — objective, context,
+bindings, output contract, data class, requires, target, cost ceiling —
+is the bound Work's, on the first attempt and on every retry; who
+performs it is the application's choice. A fact the recipe does not
+know is refused, however well-formed.
+
+**Every transition has its basis.** A Work settles `done` only on a
+current attempt that recorded `done`; it settles `failed` only on a failed
+attempt with no allowance left, or once its Step has failed or its Task is
+cancelled, under which a member records its outcome and stops (the drain
+policy); it settles `cancelled` only under a cancelled Task (the fence).
+A retry is the next attempt, admitted only after the last one recorded a
+failure and only within the allowance. A Step activates only after the
+step before it completed, completes only when every member it registered
+has settled `done`, and fails only on a member that failed. A Task
+settles `done` only when every Step the recipe binds for it completed,
+and `failed` only after a Step failed and every responsibility it admitted
+has settled: the root settles last. Cancellation stops further admission
+in the cancelled Task and in everything under it — no attempt, no step,
+no child is admitted below a cancelled ancestor — while what was already
+admitted still records its outcome and settles under the fence. The walk
+to the root goes as deep as the caller's `max_depth` admitted — nothing
+here has a ceiling of its own — and an ancestry that does not resolve
+refuses admission rather than permitting it. A failed ancestor is not a
+cancelled one: under the drain policy a member keeps its responsibility
+until its own outcome.
+
+**A fact is one row.** The row's entity is the fact's own identity, and a
+`step.completed` row carries a completion. A fact whose identity is
+already recorded is a replay when it is the same bytes and a conflict
+otherwise, checked before the state, so a row from history is recognized
+as such after the state has moved past it. The join is by identity, never
+by counting: two answers from one member are one member. A Work's result
+is the output of the attempt it settled on, readable only once it has
+settled; what an outstanding or superseded attempt said is never the
+Work's result.
+
+Nothing yet admits, records or executes a workflow; these are the
+durable shapes it is written in, and the state they add up to.
 
 ## Storage interfaces
 
@@ -1546,7 +1738,10 @@ authority.
   next one. A Task whose Mutation was in flight settles
   `failed` with the Mutation; one whose Mutation is beyond proposal
   waits on that Mutation's outcome, and settles from it when the Work
-  that would have settled it is gone. A handed Task is a person's and
+  that would have settled it is gone. A Task's Mutation is found by the
+  Task it names (`mutation.proposed … task <id> …`) anywhere in the
+  journal, never by position: read as record + ledger, the record's
+  Mutation rows precede the ledger's births. A handed Task is a person's and
   waits. An `intent.offered` with no `task.born` naming it — the shape
   from before this rule — is noted (`intent.unrecovered`) and never
   re-offered: work may already have run.
@@ -1587,7 +1782,8 @@ authority.
   a child's live signal about the part above it: an application or
   `hale dna concern raise <source> <what…> [--severity N]` publishes
   it on the membrane (`hale-dna.concern.raised.sock`), the substrate
-  journals `concern.raised <source>` (`<what> x<n> severity <s>`), and
+  journals `concern.raised <source>` (an object: `what`, `severity`,
+  `occurrence`, `request`), and
   when one source has raised it `concern_threshold` times (3) it
   becomes a knowledge proposal by that source bound to its parent
   path — a concern by the tower rule — through `propose_knowledge`,

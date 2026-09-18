@@ -1480,13 +1480,35 @@ locus Dna {
         let n = self.journal.revision();
         let mut i = 0;
         let mut proposed = false;
+        // the row this request already wrote, if it was delivered before
+        let mut already = "";
+        let mut refused = false;
         while i < n {
             let e = self.journal.read(i);
-            if e.kind == "concern.raised" && e.entity == c.source { seen = seen + 1; }
+            if e.kind == "concern.raised" && e.entity == c.source {
+                if len(c.request) > 0 && request_named(e.body) == c.request { already = std::str::clone(e.body); }
+                else { seen = seen + 1; }
+            }
+            if e.kind == "concern.refused" && e.entity == c.source && request_named(e.body) == c.request { refused = true; }
             if e.kind == "concern.proposed" && e.entity == c.source { proposed = true; }
             i = i + 1;
         }
-        let x = self.journal.append(self.journal.revision(), "concern.raised", c.source, c.what + " x" + to_string(seen) + " severity " + to_string(c.severity));
+        // GH #689: a transport may deliver one request twice — the host
+        // relays a row again while it stays unanswered, and an answer it
+        // has not seen yet is enough to make that happen. One request is
+        // one concern: the row it already wrote is its answer, and the
+        // count that turns concerns into a proposal counts distinct
+        // requests, never redeliveries. Two distinct requests raising the
+        // same words are still two concerns.
+        if len(already) > 0 {
+            if !same_concern(already, c.what, c.severity) && !refused {
+                let r = self.journal.append(self.journal.revision(), "concern.refused", c.source, concern_refusal_body("request " + c.request + " already raised another concern here; one request is one concern", c.request));
+            }
+            return;
+        }
+        // the answer names the request it answers (GH #689), so the host
+        // can tell which of one source's concerns has been heard
+        let x = self.journal.append(self.journal.revision(), "concern.raised", c.source, concern_body(c.what, c.severity, seen, c.request));
         if seen < self.concern_threshold || proposed { return; }
         let parent = parent_path(c.source);
         if len(parent) == 0 {
@@ -2446,12 +2468,17 @@ locus Dna {
                 let id = e.entity;
                 let state = self.task_state(id);
                 if state == "pending" || state == "" {
-                    let mut proposed = false;
+                    // The Task's Mutation is found by the Task it names,
+                    // anywhere in the journal: read as record + ledger, a
+                    // Mutation (the record's) comes before the birth it
+                    // answers (the ledger's), and a scan forward from the
+                    // birth missed it (DNA workflow card 02). The plan is
+                    // the ledger's, like the birth, and follows it.
+                    let proposed = self.mutation_of_task(id) != "";
                     let mut plan = "";
                     let mut k = i + 1;
                     while k < n {
                         let s = self.journal.read(k);
-                        if s.kind == "mutation.proposed" && std::str::starts_with(s.body, "task " + id + " ") { proposed = true; }
                         if s.kind == "task.planned" && s.entity == id { plan = s.body; }
                         k = k + 1;
                     }
@@ -2485,6 +2512,18 @@ locus Dna {
             }
             i = i + 1;
         }
+    }
+    // The Mutation proposed for a Task, by the Task it names; "" when none.
+    @unbounded
+    fn mutation_of_task(task_id: String) -> String {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "mutation.proposed" && std::str::starts_with(e.body, "task " + task_id + " ") { return e.entity; }
+            i = i + 1;
+        }
+        return "";
     }
     // A Mutation whose last word in the record is `proposed`, `worktree`
     // or `located` was in flight — an editor mid-attempt — when the

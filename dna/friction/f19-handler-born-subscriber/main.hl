@@ -1,0 +1,48 @@
+// F.19 — a subscriber born in a bus handler must be the handler's own
+// child. `hale check` refuses this program: Part does not accept Run, and
+// interest-based ownership (bubbling to Manager, which does) is not
+// considered for a subscribing locus born in a handler.
+//
+//   type error: locus `Run` declares `bus subscribe` but is instantiated
+//   unowned inside `Part`'s bus handler `on_poke`.
+//
+// The shape that works (dna/tests/workflow_lifetime_test.hl, case 4b):
+// Part asks Manager over the bus, and Manager's handler creates the Run.
+
+type Poke { key: String = ""; }
+topic Pokes { payload: Poke; subject: "f19.poke"; keyed_by key; }
+type Offer { key: String = ""; }
+topic Offers { payload: Offer; subject: "f19.offer"; }
+
+locus Part {
+    params { key: String = ""; }
+    bus { subscribe Pokes as on_poke where key == self.key; }
+    run() { }
+    fn on_poke(p: Poke) {
+        Run { key: self.key + ".child" };
+        terminate;
+    }
+}
+locus Run {
+    params { key: String = ""; }
+    bus { subscribe Pokes as on_poke where key == self.key; }
+    accept(p: Part) { }
+    run() { Part { key: self.key + ".p" }; }
+    fn on_poke(p: Poke) { terminate; }
+}
+locus Manager {
+    bus { subscribe Offers as on_offer; }
+    accept(r: Run) { }
+    fn on_offer(o: Offer) { Run { key: o.key }; }
+}
+main locus App {
+    params { m: Manager = Manager { }; }
+    bus { publish Offers; publish Pokes; }
+    run() {
+        Offers <- Offer { key: "r" };
+        std::time::sleep(50ms);
+        Pokes <- Poke { key: "r.p" };
+        std::time::sleep(50ms);
+    }
+}
+fn main() { App { }; }
