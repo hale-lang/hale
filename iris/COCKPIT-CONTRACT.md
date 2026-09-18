@@ -4,6 +4,8 @@ Design draft for [#690](https://github.com/hale-lang/hale/issues/690).
 This document proposes the browser/service boundary; it does **not** describe
 implemented HTTP routes or freeze DNA's internal types. The source assessment
 and first implementation slice are in [COCKPIT-READINESS.md](COCKPIT-READINESS.md).
+The service architecture, command-recovery requirements and implementation cards
+are in [SERVICE-DEVELOPMENT-PLAN.md](../dna/SERVICE-DEVELOPMENT-PLAN.md).
 
 The branch starts at main `2f202c90`. The pending workflow stack was inspected
 at `cd8dcc43`, through definition, event and projection cards 04–06. Its
@@ -11,14 +13,15 @@ semantics inform this draft; it is not a runtime dependency of this branch.
 
 ## 1. Ownership
 
-Iris is an independently built browser application. Its API may be served by
-an evolved DNA head and reverse-proxied alongside the native Iris collector.
+Iris is an independently built browser application. The public API belongs to
+Hale/DNA services and is shared with remote CLI clients. Its DNA adapter may be
+served by an evolved head and composed with the native Iris collector.
 Separate deployment does not require a new database or message broker.
 
 | Component | Owns |
 | --- | --- |
 | Browser | Navigation, active viewing position, visual layout, unsent drafts, presentation |
-| Iris API/head | Authenticated sessions, scoped projections, typed operation dispatch, request recovery |
+| Hale/DNA API head | Authenticated sessions, scoped projections, typed operation dispatch, request recovery |
 | Domain services | Canonical definitions, admission, policy, execution, durable facts, command outcomes |
 | Native observer | Attachment to running Hale processes and observation snapshots/events |
 
@@ -33,7 +36,7 @@ independent of command availability and cannot backpressure the application.
 
 ## 2. Generic surface and DNA adapter
 
-Proposed prefix: `/api/iris/v1`. Existing `/snapshot`, `/events` and DNA
+Proposed prefix: `/api/hale/v1`. Existing `/snapshot`, `/events` and DNA
 `/api/*` routes remain legacy surfaces until an adapter explicitly supports
 this contract. Their existence does not advertise v1 support.
 
@@ -50,7 +53,7 @@ domain effect unless the person deliberately issues a supported command.
 
 ### Proposed resource families
 
-Paths below are relative to `/api/iris/v1`. They are the initial design
+Paths below are relative to `/api/hale/v1`. They are the initial design
 inventory; exact operation schemas are introduced with their adapter and
 conformance fixtures, before a UI advertises them.
 
@@ -137,6 +140,13 @@ target kinds, required subject preconditions, and a documented meaning of
 success. Schemas and enums are versioned contract artifacts, not inferred
 from a CLI help string. Domain arguments remain operation-specific; Iris
 does not prescribe an organization's procedures.
+
+The durable command profile below is required for DNA administration. A generic
+Hale capability provider supplies its own authoritative state and recovery;
+it need not use Record or Ledger. A provider offering only transient controls
+advertises a separate, explicitly limited profile and cannot claim durable
+`recorded` receipts or restart recovery. Iris shows that declared limit rather
+than treating a successful publish as completion.
 
 Illustrative envelope (the operation name is proposed, not shipped):
 
