@@ -349,7 +349,11 @@ fn encode_admission(a: AdmittedWorkflow) -> String {
     b.string_field("member_key", a.member_key);
     b.string_field("inputs", a.inputs);
     b.string_field("inputs_ref", a.inputs_ref);
-    b.string_field("recipe", a.recipe);
+    // the recipe is a document of its own, nested as one: written as an
+    // escaped string it would be escaped and unescaped character by
+    // character, which is quadratic in its size, and a bound tree of a few
+    // hundred nodes took whole seconds to admit
+    b.field("recipe", if len(a.recipe) > 0 { a.recipe } else { "null" });
     limits_json(b, a.limits);
     b.int_field("works", a.works);
     b.int_field("tasks", a.tasks);
@@ -366,8 +370,10 @@ fn decode_admission(text: String) -> DecodedAdmission {
     if std::json::find_string_field(text, "engine") != WORKFLOW_ENGINE {
         return DecodedAdmission { why: "another engine's admission (" + std::json::find_string_field(text, "engine") + ")" };
     }
-    let absent = missing_field(text, "task_id definition recipe");
+    let absent = missing_field(text, "task_id definition");
     if len(absent) > 0 { return DecodedAdmission { why: "an admission names its " + absent }; }
+    let recipe = std::json::find_field_raw(text, "recipe");
+    if len(recipe) < 2 || recipe[0..1] != "{" { return DecodedAdmission { why: "an admission names its recipe" }; }
     let unread = missing_number(text, "revision works tasks steps depth");
     if len(unread) > 0 { return DecodedAdmission { why: "an admission carries the " + unread + " it was admitted with" }; }
     let raw = std::json::find_field_raw(text, "limits");
@@ -390,7 +396,7 @@ fn decode_admission(text: String) -> DecodedAdmission {
             member_key: std::json::find_string_field(text, "member_key"),
             inputs: std::json::find_string_field(text, "inputs"),
             inputs_ref: std::json::find_string_field(text, "inputs_ref"),
-            recipe: std::json::find_string_field(text, "recipe"),
+            recipe: recipe,
             limits: limits_of(text),
             works: std::json::find_int_field(text, "works"),
             tasks: std::json::find_int_field(text, "tasks"),

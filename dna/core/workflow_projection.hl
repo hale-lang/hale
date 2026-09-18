@@ -343,14 +343,25 @@ locus WorkflowProjection {
     // stop — under the drain policy a member keeps its responsibility
     // until its own outcome — and a settled descendant stops nothing above
     // it.
+    //
+    // The walk goes to the root, however deep the execution is:
+    // `max_depth` is the caller's, not a ceiling here. The only bound on
+    // it is the admitted Task set itself — a chain longer than that is a
+    // chain that loops — and a chain that does not resolve refuses, it
+    // never permits: reaching a guard is not the same as reaching the
+    // root and finding it running.
     @unbounded
     fn stop(task_id: String) -> String {
         let t = self.task(task_id);
         if len(t.disposition) > 0 { return "task " + task_id + " " + t.disposition; }
         let mut up = t.parent_task;
         let mut hops = 0;
-        while len(up) > 0 && hops < 64 {
+        while len(up) > 0 {
+            if hops >= self.tasks.len() {
+                return "task " + task_id + " sits under an ancestry that does not resolve (it loops above " + up + ")";
+            }
             let anc = self.task(up);
+            if len(anc.task_id) == 0 { return "task " + task_id + " sits under " + up + ", which was never admitted"; }
             if anc.disposition == "cancelled" { return "task " + up + ", above " + task_id + ", was cancelled"; }
             up = anc.parent_task;
             hops = hops + 1;
@@ -363,10 +374,11 @@ locus WorkflowProjection {
     }
 
     // Whether a Task or an ancestor of it was cancelled: the fence under
-    // which an outstanding member settles cancelled.
+    // which an outstanding member settles cancelled. An ancestry that does
+    // not resolve is no fence: it stops admission, and settles nothing.
     fn fenced(task_id: String) -> Bool {
         let why = self.stop(task_id);
-        return std::str::contains(why, "cancelled");
+        return std::str::contains(why, "was cancelled") || std::str::contains(why, " cancelled");
     }
 
     // One line per row, in order: what two projections of one history

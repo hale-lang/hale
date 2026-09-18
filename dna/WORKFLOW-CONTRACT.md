@@ -195,8 +195,9 @@ and its admission carries that subtree exactly, never a node more, less
 or different; an attempt asks for what its Work is, its request content
 the bound Work's on every attempt. Cancellation fences everything below
 the cancelled Task — nothing further is admitted under a cancelled
-ancestor — while what was admitted records its outcome; a failed
-ancestor fences nothing (the drain policy).
+ancestor, at any depth the caller's limits admitted — while what was
+admitted records its outcome; a failed ancestor fences nothing (the
+drain policy).
 Every transition has its basis in the rows before it — a Work is done on
 a done attempt, failed on a failed attempt with no allowance left or
 under a failed step or cancelled Task, cancelled only under a cancelled
@@ -289,7 +290,9 @@ had, an admission deeper or wider than the limits it says were applied.
 A row is read whole or not at all. **[decided]**
 
 A bound recipe travels inside `workflow.admitted` as one document
-(`dna.workflow-recipe/1`) carrying the node count it was written with.
+(`dna.workflow-recipe/1`) carrying the node count it was written with,
+nested as an object of its own: escaped into a string it is escaped and
+unescaped character by character, which is quadratic in its size.
 A reader that cannot read the whole document — the wrong format, a
 missing node array, a different count, a node without an identity or
 with a field of the wrong type, a document that ends mid-write — binds

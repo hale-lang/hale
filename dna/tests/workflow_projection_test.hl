@@ -38,6 +38,9 @@ main locus App {
         alt: dna::WorkflowCatalog = dna::WorkflowCatalog { };
         wider: dna::WorkflowCatalog = dna::WorkflowCatalog { };
         narrow: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        // a chain of definitions deeper than any fixed guess: what a
+        // caller's own max_depth admits, the fence has to reach
+        deep: dna::WorkflowCatalog = dna::WorkflowCatalog { };
         log: Rows = Rows { };
         limits: dna::AdmissionLimits = dna::AdmissionLimits { };
     }
@@ -379,6 +382,48 @@ main locus App {
         self.must_refuse("step.registered", ybs1, self.registration(ybs1, yb, 1, "c:child:" + yb + ".s1.c"), "above " + yb + ", was cancelled", "the child registers no further step");
         self.must_refuse("workflow.admitted", yb + ".s1.c", self.admission(yb + ".s1.c", "chase-supplier", yb, ybs1, "c", recipe4_c, ""), "was cancelled", "and admits no grandchild");
         self.must("workflow.settled", yb, self.task_outcome(yb, "cancelled", "t4", y0), "the child settles cancelled under the fence");
+
+        // ---- the fence reaches the root at any depth the caller admits
+        //      (§3: max_depth is the caller's; nothing here has a ceiling
+        //      of its own). Sixty-six levels, each a workflow of one step
+        //      whose one member is the next; the last holds the leaf.
+        let levels = 66;
+        let mut k = 0;
+        while k < levels {
+            std::test::assert_eq_str(self.deep.define("d" + to_string(k), 1, 1, ""), "", "d" + to_string(k));
+            if k + 1 < levels {
+                std::test::assert_eq_str(self.deep.child("d" + to_string(k), 1, 0, "n", "d" + to_string(k + 1), 1), "", "n" + to_string(k));
+            } else {
+                std::test::assert_eq_str(self.deep.leaf("d" + to_string(k), 1, 0, "leaf", dna::WorkRequest { objective: "the bottom" }, 1), "", "leaf");
+            }
+            k = k + 1;
+        }
+        let deep_limits = dna::AdmissionLimits { max_depth: 70, max_steps: 4, max_members: 4, max_attempts: 4, max_works: 8 };
+        let xd = self.deep.expand("t9", "d0", 1, deep_limits);
+        std::test::assert(xd.ok && xd.depth == levels, "the chain expands to depth " + to_string(levels) + ": " + xd.why);
+        let deep_recipe = self.deep.encode_bound();
+        self.must("workflow.admitted", "t9", dna::encode_admission(dna::AdmittedWorkflow { task_id: "t9", definition: "d0", revision: 1, recipe: deep_recipe, limits: deep_limits, works: 1, tasks: levels, steps: levels, depth: levels }), "the deep root is admitted");
+        let mut task = "t9";
+        k = 0;
+        while k + 1 < levels {
+            let step = task + "/wf1/s0";
+            let child = task + ".s0.n";
+            self.must("step.registered", step, self.registration(step, task, 0, "n:child:" + child), "level " + to_string(k) + " registers");
+            self.must("step.activated", step, self.activation(step, task, 0, "n"), "level " + to_string(k) + " activates");
+            self.must("workflow.admitted", child, dna::encode_admission(dna::AdmittedWorkflow { task_id: child, definition: "d" + to_string(k + 1), revision: 1, parent_task: task, spawning_step: step, member_key: "n", recipe: self.deep.encode_bound_under(child), limits: deep_limits, works: 1, tasks: levels - k - 1, steps: levels - k - 1, depth: levels }), "level " + to_string(k + 1) + " is admitted");
+            task = child;
+            k = k + 1;
+        }
+        let bottom_step = task + "/wf1/s0";
+        let bottom = bottom_step + "/leaf";
+        self.must("step.registered", bottom_step, self.registration(bottom_step, task, 0, "leaf:leaf:" + bottom), "the bottom step registers");
+        self.must("step.activated", bottom_step, self.activation(bottom_step, task, 0, "leaf"), "and activates");
+        std::test::assert(!self.p.stopped(task), "at depth " + to_string(levels) + " nothing has stopped: " + self.p.stop(task));
+        self.must("workflow.settled", "t9", self.task_outcome("t9", "cancelled", "", ""), "the root is cancelled");
+        std::test::assert(self.p.stopped(task), "and the bottom task is stopped by it, " + to_string(levels - 1) + " ancestors up: " + self.p.stop(task));
+        std::test::assert(std::str::contains(self.p.stop(task), "task t9, above"), "by name: " + self.p.stop(task));
+        self.must_refuse("attempt.admitted", bottom + "/a0", self.attempt(bottom, bottom_step, task, 0, "the bottom"), "task t9, above", "a first attempt at the bottom is refused under the cancelled root");
+        std::test::assert(self.p.fenced(task), "and the bottom is fenced");
 
         // ---- one history, two projections
         let mut i = 0;

@@ -874,7 +874,8 @@ the grammar, an already defined revision, or a document that defines one
 revision twice, and adding nothing then.
 
 `encode_bound()` writes one bound execution as a recipe (`format:
-dna.workflow-recipe/1`) carrying the node count it was written with, and
+dna.workflow-recipe/1`; an admission nests it as an object of its own,
+never escaped into a string) carrying the node count it was written with, and
 `decode_bound(text)` reads one back. It refuses another format, a missing
 node array, a count that disagrees with what the document carries, a node
 without an identity or of no known kind, a node whose number was written
@@ -976,9 +977,12 @@ and `failed` only after a Step failed and every responsibility it admitted
 has settled: the root settles last. Cancellation stops further admission
 in the cancelled Task and in everything under it — no attempt, no step,
 no child is admitted below a cancelled ancestor — while what was already
-admitted still records its outcome and settles under the fence. A failed
-ancestor is not a cancelled one: under the drain policy a member keeps
-its responsibility until its own outcome.
+admitted still records its outcome and settles under the fence. The walk
+to the root goes as deep as the caller's `max_depth` admitted — nothing
+here has a ceiling of its own — and an ancestry that does not resolve
+refuses admission rather than permitting it. A failed ancestor is not a
+cancelled one: under the drain policy a member keeps its responsibility
+until its own outcome.
 
 **A fact is one row.** The row's entity is the fact's own identity, and a
 `step.completed` row carries a completion. A fact whose identity is
