@@ -1,0 +1,99 @@
+// dna/tests/workflow_admission_contention_test.hl — two contending
+// admissions cannot both take one id (DNA workflow card 07).
+//
+// Two bodies over one record mint the same next id. The append is
+// exact: the first lands, the second is refused as stale, reads the
+// record again, finds the id taken and mints the next one. Here the
+// record itself plays the other body: on the first admission it slips
+// the competitor's row in ahead and answers stale, as a moved record
+// does. The result is two executions under two ids, one admission each,
+// and the ask that was refused first is not asked twice.
+
+import "../core" as dna;
+
+// A journal that, once, lets another body's admission land first: on the
+// first admission it slips the competitor's row in ahead — the other
+// body's own ask, under the same id — and answers stale, as a record
+// that moved does.
+locus Contended {
+    params { inner: dna::MemJournal = dna::MemJournal { }; contended: Int = 0; theirs: dna::WorkflowCatalog = dna::WorkflowCatalog { }; }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.inner.append(expected, kind, entity, body); }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if kind == "workflow.admitted" && self.contended == 0 {
+            self.contended = 1;
+            let d = self.theirs.define("one-step", 1, 1, "");
+            let l = self.theirs.leaf("one-step", 1, 0, "a", dna::WorkRequest { objective: "the one thing" }, 1);
+            let x = self.theirs.expand(entity, "one-step", 1, dna::AdmissionLimits { });
+            let competitor = dna::encode_admission(dna::AdmittedWorkflow {
+                task_id: entity, definition: "one-step", revision: 1, request: "theirs",
+                recipe: self.theirs.encode_bound(), limits: dna::AdmissionLimits { },
+                works: x.works, tasks: x.tasks, steps: x.steps, depth: x.depth
+            });
+            let landed = self.inner.append(self.inner.revision(), "workflow.admitted", entity, competitor);
+            // a mark the fixture can read back through the interface
+            let mark = self.inner.append(self.inner.revision(), "test.contended", entity, "the other body landed first");
+            return dna::AppendResult { error: "stale_revision", expected: expected, actual: self.inner.revision() };
+        }
+        return self.inner.append_exact(expected, kind, entity, body);
+    }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+}
+
+main locus App {
+    params {
+        dna: dna::Dna = dna::Dna {
+            journal: Contended { },
+            work: dna::WorkSystem {
+                human: dna::HumanWorkGateway { operator: "alice", answer: "done" },
+                selection: dna::HumanFirstSelection { }
+            },
+            review_policy: dna::PostReviewRefactors { },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
+            deployment: dna::NoDeployment { }
+        };
+    }
+    @unbounded
+    fn rows(kind: String, entity: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.dna.journal.revision() {
+            let e = self.dna.journal.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn request_of(entity: String) -> String {
+        let mut i = 0;
+        while i < self.dna.journal.revision() {
+            let e = self.dna.journal.read(i);
+            if e.kind == "workflow.admitted" && e.entity == entity { return std::json::find_string_field(e.body, "request"); }
+            i = i + 1;
+        }
+        return "";
+    }
+    run() {
+        std::test::assert_eq_str(self.dna.catalog.define("one-step", 1, 1, ""), "", "one-step");
+        std::test::assert_eq_str(self.dna.catalog.leaf("one-step", 1, 0, "a", dna::WorkRequest { objective: "the one thing" }, 1), "", "a");
+        let id = self.dna.admit_workflow(dna::WorkflowAsk { id: "mine", definition: "one-step", revision: 1 });
+        std::test::assert_eq_str(id, "t2", "the ask that lost t1 took t2: " + id);
+        std::test::assert_eq_int(self.rows("test.contended", "t1"), 1, "the record moved under it once, at t1");
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t1"), 1, "one admission under t1");
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t2"), 1, "one under t2");
+        std::test::assert_eq_str(self.request_of("t1"), "theirs", "t1 is the other body's");
+        std::test::assert_eq_str(self.request_of("t2"), "mine", "t2 is this one's");
+        std::test::assert_eq_int(self.rows("task.born", "t2"), 1, "with its summary");
+        std::test::assert_eq_int(self.rows("task.born", "t1"), 0, "and none written for the other body's");
+        std::test::assert_eq_int(self.dna.work.requests, 0, "nothing was dispatched");
+        std::test::assert_eq_str(self.dna.admit_workflow(dna::WorkflowAsk { id: "mine", definition: "one-step", revision: 1 }), "t2", "asked again, it is still t2");
+        std::test::assert_eq_str(self.dna.admit_workflow(dna::WorkflowAsk { id: "theirs", definition: "one-step", revision: 1 }), "t1", "and the other body's ask, asked here, is its execution");
+        std::test::assert_eq_int(self.rows("workflow.admitted", ""), 2, "two executions, two admissions");
+    }
+}
+
+fn main() { App { }; }

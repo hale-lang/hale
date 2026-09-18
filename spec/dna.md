@@ -994,8 +994,34 @@ is the output of the attempt it settled on, readable only once it has
 settled; what an outstanding or superseded attempt said is never the
 Work's result.
 
-Nothing yet admits, records or executes a workflow; these are the
-durable shapes it is written in, and the state they add up to.
+## Workflow admission
+
+An application admits a defined workflow through the assembly
+(`Dna.admit_workflow(WorkflowAsk)`): which definition and revision, with
+what inputs, under an identity of the caller's. The durable fact precedes
+everything. The id is minted, the definition expanded under the
+assembly's `admission_limits` (its `catalog` holds what the application
+defined), and the admission — engine, bound recipe, limits, counts, the
+ask's identity — appended with exact compare-and-append before anything
+could run; only then the legacy `task.born` summary, so the tooling of
+the day lists the Task. A refusal, by the catalog or by the record, is a
+`workflow.refused` row under the id it minted and nothing else: no
+summary, no child, no work request. Nothing dispatches here; later cards
+execute.
+
+The ask's id is the admission's identity. Asked again — relayed after a
+lost answer, retried — it is one execution, found in the record by that
+id. Two bodies contending for one Task id cannot both take it: the
+append is exact, the loser reads the record again, finds the id taken
+and mints the next one; the ledger's unique claim on the id (`claimed`)
+is the same signal from the store. A restart counts admitted and refused
+ids among those minted, so an id is never minted twice, and an admitted
+Task is never resumed as legacy edit work, with or without its summary
+row: the admission is the one positive discriminator, and its recovery
+belongs to the engine's own cards.
+
+Nothing yet executes a workflow; these are the durable shapes it is
+written in, the state they add up to, and the door it is admitted by.
 
 ## Storage interfaces
 
