@@ -1,0 +1,191 @@
+// Validate the Record before its deliberately permissive native projection is
+// used. This reads plumbing through GitRecord; it never invokes CLI rendering.
+
+import "../core" as dna;
+
+type Source {
+    ok: Bool = false;
+    identity: String = "";
+    head: String = "";
+    revision: Int = 0;
+    name: String = "";
+    code: String = "record_unavailable";
+    error: String = "the Record is unavailable";
+}
+
+// The stdlib's find_field helpers intentionally do not validate JSON. A small
+// bounded syntax checker makes corrupt journals an error, not an empty catalog.
+locus JsonShape {
+    params { }
+    fn space(text: String, start: Int) -> Int {
+        let mut p = start;
+        while p < len(text) {
+            let c = std::str::byte_at_unchecked(text, p);
+            if c != 32 && c != 9 && c != 10 && c != 13 { return p; }
+            p = p + 1;
+        }
+        return p;
+    }
+    fn hex(c: Int) -> Bool {
+        return (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102);
+    }
+    fn string_end(text: String, start: Int) -> Int {
+        if start >= len(text) || std::str::byte_at_unchecked(text, start) != 34 { return -1; }
+        let mut p = start + 1;
+        while p < len(text) {
+            let c = std::str::byte_at_unchecked(text, p);
+            if c == 34 { return p + 1; }
+            if c < 32 { return -1; }
+            if c == 92 {
+                p = p + 1;
+                if p >= len(text) { return -1; }
+                let e = std::str::byte_at_unchecked(text, p);
+                if e == 117 {
+                    if p + 4 >= len(text) { return -1; }
+                    let mut h = p + 1;
+                    while h <= p + 4 {
+                        if !self.hex(std::str::byte_at_unchecked(text, h)) { return -1; }
+                        h = h + 1;
+                    }
+                    p = p + 4;
+                } else if e != 34 && e != 92 && e != 47 && e != 98 && e != 102 && e != 110 && e != 114 && e != 116 { return -1; }
+            }
+            p = p + 1;
+        }
+        return -1;
+    }
+    fn number_end(text: String, start: Int) -> Int {
+        let mut p = start;
+        if p < len(text) && text[p..(p + 1)] == "-" { p = p + 1; }
+        if p >= len(text) { return -1; }
+        if text[p..(p + 1)] == "0" { p = p + 1; } else {
+            let first = std::str::byte_at_unchecked(text, p);
+            if first < 49 || first > 57 { return -1; }
+            while p < len(text) {
+                let c = std::str::byte_at_unchecked(text, p);
+                if c < 48 || c > 57 { break; }
+                p = p + 1;
+            }
+        }
+        if p < len(text) && text[p..(p + 1)] == "." {
+            p = p + 1;
+            let begin = p;
+            while p < len(text) {
+                let c = std::str::byte_at_unchecked(text, p);
+                if c < 48 || c > 57 { break; }
+                p = p + 1;
+            }
+            if p == begin { return -1; }
+        }
+        if p < len(text) && (text[p..(p + 1)] == "e" || text[p..(p + 1)] == "E") {
+            p = p + 1;
+            if p < len(text) && (text[p..(p + 1)] == "+" || text[p..(p + 1)] == "-") { p = p + 1; }
+            let begin = p;
+            while p < len(text) {
+                let c = std::str::byte_at_unchecked(text, p);
+                if c < 48 || c > 57 { break; }
+                p = p + 1;
+            }
+            if p == begin { return -1; }
+        }
+        return p;
+    }
+    fn value_end(text: String, start: Int, depth: Int) -> Int {
+        if depth > 64 { return -1; }
+        let mut p = self.space(text, start);
+        if p >= len(text) { return -1; }
+        let c = text[p..(p + 1)];
+        if c == "\"" { return self.string_end(text, p); }
+        if c == "{" || c == "[" {
+            let end = if c == "{" { "}" } else { "]" };
+            p = self.space(text, p + 1);
+            if p < len(text) && text[p..(p + 1)] == end { return p + 1; }
+            let mut keys = "|";
+            while p < len(text) {
+                if c == "{" {
+                    let k = self.string_end(text, p);
+                    if k < 0 { return -1; }
+                    // Domain schemas use ordinary unescaped keys. Reject
+                    // escaped/duplicate keys rather than reinterpret them.
+                    let key = text[(p + 1)..(k - 1)];
+                    if std::str::contains(key, "\\") || std::str::contains(key, "|") || std::str::contains(keys, "|" + key + "|") { return -1; }
+                    keys = keys + key + "|";
+                    p = self.space(text, k);
+                    if p >= len(text) || text[p..(p + 1)] != ":" { return -1; }
+                    p = self.space(text, p + 1);
+                }
+                p = self.value_end(text, p, depth + 1);
+                if p < 0 { return -1; }
+                p = self.space(text, p);
+                if p >= len(text) { return -1; }
+                if text[p..(p + 1)] == end { return p + 1; }
+                if text[p..(p + 1)] != "," { return -1; }
+                p = self.space(text, p + 1);
+            }
+            return -1;
+        }
+        if p + 4 <= len(text) && (text[p..(p + 4)] == "true" || text[p..(p + 4)] == "null") { return p + 4; }
+        if p + 5 <= len(text) && text[p..(p + 5)] == "false" { return p + 5; }
+        return self.number_end(text, p);
+    }
+    fn valid(text: String) -> Bool {
+        let http = Http { };
+        if !http.utf8(text) { return false; }
+        let p = self.value_end(text, 0, 0);
+        return p >= 0 && self.space(text, p) == len(text);
+    }
+    fn string_field(text: String, key: String) -> Bool {
+        let raw = std::json::find_field_raw(text, key);
+        return len(raw) >= 2 && self.string_end(raw, 0) == len(raw);
+    }
+    fn row(text: String, seq: Int) -> Bool {
+        if !self.valid(text) || !std::str::starts_with(std::str::trim(text), "{") { return false; }
+        if std::json::find_field_raw(text, "seq") != to_string(seq) { return false; }
+        if !self.string_field(text, "kind") || !self.string_field(text, "entity") || !self.string_field(text, "body") || !self.string_field(text, "author") { return false; }
+        let kind = std::json::find_string_field(text, "kind");
+        if len(kind) == 0 { return false; }
+        // These are the event families this read surface interprets. Unknown
+        // families retain the Record's opaque-body contract.
+        if kind == "knowledge.proposed" || kind == "review.requested" || kind == "receipt.classified" || kind == "receipt.withheld" || kind == "receipt.redacted" || kind == "ledger.adopted" || kind == "ledger.abandoned" {
+            let body = std::json::find_string_field(text, "body");
+            if !std::str::starts_with(std::str::trim(body), "{") || !self.valid(body) { return false; }
+        }
+        return true;
+    }
+}
+
+locus SourceReader {
+    params { root: String = "."; }
+    fn read() -> Source {
+        let r = dna::GitRecord { repo: self.root };
+        if !r.is_repository() { return Source { error: "the configured project is not an accessible Git repository" }; }
+        let head = r.head("journal");
+        if len(head) == 0 { return Source { error: "the project has no readable DNA Record" }; }
+        let rows = r.git("show\n" + head + ":journal.jsonl");
+        let ids = r.git("rev-list\n--reverse\n" + head);
+        if rows.code != 0 || ids.code != 0 { return Source { error: "the Record snapshot could not be read" }; }
+        let count = dna::count_lines(ids.stdout);
+        if count == 0 || len(rows.stdout) == 0 { return Source { code: "record_malformed", error: "the Record contains no readable rows" }; }
+        if count > 10000 || len(rows.stdout) > 16777216 { return Source { code: "record_limit_exceeded", error: "the Record exceeds this read surface's snapshot bound" }; }
+        let check = JsonShape { };
+        let mut rest = rows.stdout;
+        let mut seq = 0;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            if !check.row(line, seq) { return Source { code: "record_malformed", error: "the Record contains a malformed row" }; }
+            seq = seq + 1;
+            if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+        }
+        if seq != count { return Source { code: "record_malformed", error: "Record rows and commits disagree" }; }
+        if r.head("journal") != head { return Source { code: "snapshot_changed", error: "the Record changed while it was being read" }; }
+        let root = r.root();
+        let mut name = root;
+        let mut i = 0;
+        while i < len(root) {
+            if root[i..(i + 1)] == "/" { name = root[(i + 1)..len(root)]; }
+            i = i + 1;
+        }
+        return Source { ok: true, identity: dna::line_at(ids.stdout, 0), head: head, revision: seq, name: name, code: "", error: "" };
+    }
+}

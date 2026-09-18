@@ -8,6 +8,18 @@ behavior.
 
 ## Unreleased
 
+### DNA: first typed read API for the Iris cockpit (GH #690)
+
+- A source-built `dna/api` service exposes versioned application discovery,
+  capabilities and practice/review reads from a checked local Record snapshot.
+  It shares typed governance queries with the CLI, preserves exact identities
+  and attribution, and distinguishes Review decisions from practice activation.
+- The service uses trusted loopback access or the existing OIDC member sessions.
+  Reads return structured errors, bounded pages and source revisions; unavailable
+  receipt text is explicitly withheld. OpenAPI/JSON Schema fixtures and live
+  Git/HTTP/OIDC tests cover the boundary. Commands, Compose packaging and the
+  browser cockpit remain subsequent work; see [`dna/api/README.md`](dna/api/README.md).
+
 ### DNA: a publish the membrane loses is not a lost fact (GH #682)
 
 - The membrane client exits once it has handed a fact to its binding; under load the organism could miss it, and nothing noticed: an ask beside a live organism left no durable row, the host relayed each record row exactly once, and an `expression.observed` report that went missing left a mutation applied and never retained. Delivery is now confirmed by the answer in the record. `hale dna ask`, `review`, `concern raise` and `practice propose` beside a live organism write their row before publishing; the host relays a row again while it stays unanswered (every 30s); the organism admits an intent once by its id and answers a practice request once; the host reports an observation again until the organism records it. `membrane_loss_test.hl` drops the first relay and shows the intent admitted once; it fails without the relay-again rule. The books fixture's state check now prints every row about the task when it fails.

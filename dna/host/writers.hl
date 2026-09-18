@@ -675,32 +675,28 @@ fn practice_verb(root: String, seed: String, sub: String, name: String, text: St
     }
     if len(sub) > 0 { return fail(usage); }
     let s = sync_record(root);
-    let p = open_projection(root, seed, "");
+    // Governance reads need only Record. The shared projection supplies native
+    // identities/state; this legacy CLI retains its existing receipt renderer.
+    // Hosted readers use Queries.practice_of's fail-closed visibility instead.
+    let q = ops::Queries { j: dna::GitJournal { repo: root } };
     let mut out = "";
     let mut n = 0;
     let mut i = 0;
-    while i < p.rows() {
-        let e = p.row(i);
-        let pname = std::json::find_string_field(e.body, "name");
-        if e.kind == "knowledge.proposed" && len(pname) > 0 {
-            let d = e.entity;
-            let review = dna::knowledge_review_id(d);
-            let state = if p.has_row("knowledge.retired", d) { "retired" } else if p.has_row("knowledge.ratified", d) { "in force" } else if p.has_row("knowledge.declined", d) { "declined" } else { "awaiting the Board (" + review + ")" };
-            let doc = receipt_read(root, if std::str::starts_with(d, "sha256:") { d[7..len(d)] } else { d });
+    while i < q.revision() {
+        let e = q.event_at(i);
+        if q.practice_event(e) {
+            let p = q.practice_metadata(e.entity);
+            let state = if p.retired { "retired" } else if p.ratified { "in force" } else if p.declined { "declined" } else { "awaiting the Board (" + p.review_id + ")" };
+            let doc = receipt_read(root, ops::raw_digest(p.digest));
             let body = std::json::find_string_field(doc.text, "text");
             let nl = std::str::index_of(body, "\n");
-            let mut by = "";
-            let mut k = 0;
-            while k < p.rows() {
-                let q = p.row(k);
-                if q.kind == "practice.proposed" && std::json::find_string_field(q.body, "digest") == d { by = " · proposed by " + std::json::find_string_field(q.body, "by") + (if len(std::json::find_string_field(q.body, "because")) > 0 { " because " + std::json::find_string_field(q.body, "because") } else { "" }); }
-                k = k + 1;
-            }
-            out = out + "  " + pname + " " + short(d) + " [" + state + "] " + (if nl < 0 { body } else { body[0..nl] }) + by + "\n";
+            let by = if len(p.request_id) > 0 { " · proposed by " + p.requester + (if len(p.because) > 0 { " because " + p.because } else { "" }) } else { "" };
+            out = out + "  " + p.name + " " + short(p.digest) + " [" + state + "] " + (if nl < 0 { body } else { body[0..nl] }) + by + "\n";
             n = n + 1;
         }
-        if e.kind == "practice.requested" && find_after(p, i + 1, " practice.proposed practice.refused ", e.entity).seq < 0 {
-            out = out + "  " + pname + " [requested by " + std::json::find_string_field(e.body, "by") + ", not yet heard by the organization] " + e.entity + "\n";
+        let pending = q.request_at_seq(i);
+        if len(pending.id) > 0 {
+            out = out + "  " + pending.name + " [requested by " + pending.requester + ", not yet heard by the organization] " + pending.id + "\n";
             n = n + 1;
         }
         i = i + 1;

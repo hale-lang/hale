@@ -109,6 +109,10 @@ macro_rules! at {
     };
 }
 
+/// Typed query operations shared by the host and service API. These must
+/// travel with the host: a source-tree import alone would break the installed CLI.
+pub const OPERATION_FILES: &[EmbeddedFile] = at!["dna/operations/queries.hl"];
+
 /// The knowledge graph as a service (GH #583 K1): the store library
 /// (`dna/knowledge`: the `KnowledgeStore` interface, `Mem`, `Pq`, the
 /// record's tail), the service program (`dna/knowledge/service`), and
@@ -163,6 +167,12 @@ mod tests {
         let mut host_embedded: Vec<String> = HOST_FILES.iter().map(|f| f.path.rsplit('/').next().unwrap().to_string()).collect();
         host_embedded.sort();
         assert_eq!(host_embedded, host_on_disk, "a dna/host file was added or removed without updating hale-dna");
+        let operations_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dna/operations");
+        let mut operations_on_disk: Vec<String> = std::fs::read_dir(&operations_dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.ends_with(".hl")).collect();
+        operations_on_disk.sort();
+        let mut operations_embedded: Vec<String> = OPERATION_FILES.iter().map(|f| f.path.rsplit('/').next().unwrap().to_string()).collect();
+        operations_embedded.sort();
+        assert_eq!(operations_embedded, operations_on_disk, "a dna/operations file was added or removed without updating hale-dna");
         // the knowledge set: every .hl under dna/knowledge and dna/pond
         let mut know_on_disk: Vec<String> = Vec::new();
         for d in ["dna/knowledge", "dna/knowledge/service", "dna/pond/db", "dna/pond/pq"] {

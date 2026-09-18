@@ -5,6 +5,12 @@ Status: proposed implementation plan, 2026-09-17. Parent product issue:
 is implemented by this document. Suggested paths, commands and card names below
 are implementation targets, not claims about commands that already ship.
 
+Implementation has begun with the [source-built read API](api/README.md):
+the read subset of 00, typed query extraction from 01, and a loopback/OIDC
+read-only head from 04. This does not complete those cards: mutation contracts,
+durable command recovery, position context and deployable service composition
+remain pending. The experimental wire schemas live under `dna/api/contract/v1`.
+
 ## 1. Decision and deliverables
 
 Build a first-class Hale/DNA service API, used by both Iris and remote CLI

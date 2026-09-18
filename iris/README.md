@@ -23,6 +23,10 @@ deployment and staged implementation cards are in
 These are design drafts, not
 claims that the cockpit API is implemented.
 
+The first [DNA read API](../dna/api/README.md) implements discovery and typed
+practice/review reads. The browser cockpit and administrative commands remain
+under development.
+
 The previous spike (modeling-cockpit framing, May 2026) lives
 on `main` — it remains the artifact archive (raylib bindings,
 lotus_viz, heron, pane system, MCP server). Pieces get pulled

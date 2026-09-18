@@ -6,6 +6,9 @@ implemented HTTP routes or freeze DNA's internal types. The source assessment
 and first implementation slice are in [COCKPIT-READINESS.md](COCKPIT-READINESS.md).
 The service architecture, command-recovery requirements and implementation cards
 are in [SERVICE-DEVELOPMENT-PLAN.md](../dna/SERVICE-DEVELOPMENT-PLAN.md).
+The first implemented read subset is documented in [dna/api](../dna/api/README.md),
+with executable schemas in `dna/api/contract/v1`. Broader routes and commands
+below remain proposals until their adapters and acceptance gates are delivered.
 
 The branch starts at main `2f202c90`. The pending workflow stack was inspected
 at `cd8dcc43`, through definition, event and projection cards 04–06. Its

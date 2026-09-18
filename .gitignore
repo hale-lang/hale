@@ -89,3 +89,6 @@ UPSTREAM*.md
 
 # the built host (`hale dna` builds it into the toolchain cache; a local `hale build dna/host` lands here)
 dna/host/host
+
+# Source-built service API; the read-contract files are tracked.
+dna/api/api
