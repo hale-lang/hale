@@ -1,0 +1,132 @@
+// Native, local-only OIDC issuer fixture. The integration test owns its HTTP
+// server, dynamically chosen port and lifetime. It authenticates no real users.
+
+type IssuedCode {
+    code: String = "";
+    nonce: String = "";
+    subject: String = "";
+}
+
+@form(vec)
+locus IssuedCodes { capacity { heap rows of IssuedCode; } }
+
+fn hex_digit(c: Int) -> Int {
+    if c >= 48 && c <= 57 { return c - 48; }
+    if c >= 65 && c <= 70 { return c - 55; }
+    if c >= 97 && c <= 102 { return c - 87; }
+    return -1;
+}
+
+// Decode the fixture's URL/form values once. The native HTTP query helpers
+// return raw encoded values; importing the knowledge service only to decode
+// them would add unrelated database/FFI dependencies to this issuer.
+fn decode(raw: String) -> String {
+    let bytes = std::bytes::BytesBuilder { };
+    let mut i = 0;
+    while i < len(raw) {
+        let c = std::str::byte_at_unchecked(raw, i);
+        if c == 37 {
+            if i + 2 >= len(raw) { return ""; }
+            let a = hex_digit(std::str::byte_at_unchecked(raw, i + 1));
+            let b = hex_digit(std::str::byte_at_unchecked(raw, i + 2));
+            if a < 0 || b < 0 { return ""; }
+            let value = a * 16 + b;
+            if value < 32 || value == 127 { return ""; }
+            bytes.append_u8(value);
+            i = i + 3;
+        } else {
+            if c < 32 || c == 127 { return ""; }
+            bytes.append_u8(if c == 43 { 32 } else { c });
+            i = i + 1;
+        }
+    }
+    return std::str::from_bytes(bytes.snapshot());
+}
+
+fn form_field(body: String, name: String) -> String {
+    let mut rest = body + "&";
+    while len(rest) > 0 {
+        let amp = std::str::index_of(rest, "&");
+        let part = rest[0..amp];
+        rest = rest[(amp + 1)..len(rest)];
+        if std::str::starts_with(part, name + "=") { return decode(part[(len(name) + 1)..len(part)]); }
+    }
+    return "";
+}
+
+fn b64(text: String) -> String { return std::text::base64::url_encode(std::bytes::from_string(text)); }
+
+locus FakeIssuer {
+    params {
+        base: String = "";
+        codes: IssuedCodes = IssuedCodes { };
+        exchanges: Int = 0;
+        refused_secrets: Int = 0;
+    }
+    @unbounded
+    fn handle(req: std::http::Request) -> std::http::Response {
+        let ctx = std::http::build_context(req);
+        let b = std::json::Builder { };
+        if std::http::is_route(ctx, "GET", "/.well-known/openid-configuration") {
+            b.begin_object();
+            b.string_field("issuer", self.base);
+            b.string_field("authorization_endpoint", self.base + "/authorize");
+            b.string_field("token_endpoint", self.base + "/token");
+            b.end_object();
+            return std::http::Response { status: 200, content_type: "application/json", body: b.result() };
+        }
+        if std::http::is_route(ctx, "GET", "/test/exchanges") {
+            b.begin_object();
+            b.int_field("exchanges", self.exchanges);
+            b.end_object();
+            return std::http::Response { status: 200, content_type: "application/json", body: b.result() };
+        }
+        if std::http::is_route(ctx, "GET", "/authorize") {
+            let redirect = decode(std::http::query_param(ctx.params, "redirect_uri"));
+            let nonce = decode(std::http::query_param(ctx.params, "nonce"));
+            let hint = decode(std::http::query_param(ctx.params, "login_hint"));
+            let state = std::http::query_param(ctx.params, "state");
+            if len(redirect) == 0 || len(nonce) == 0 || len(state) == 0 {
+                return std::http::Response { status: 400, body: "incomplete authorization request" };
+            }
+            let code = "code-" + to_string(self.codes.len() + 1);
+            self.codes.push(IssuedCode { code: code, nonce: nonce, subject: if len(hint) > 0 { hint } else { "alice-sub" } });
+            return std::http::Response { status: 302, content_type: "text/plain", headers: "Location: " + redirect + "?code=" + code + "&state=" + state, body: "" };
+        }
+        if std::http::is_route(ctx, "POST", "/token") {
+            if form_field(req.body, "client_secret") != "fake-secret" || form_field(req.body, "client_id") != "dna-api-tests" {
+                self.refused_secrets = self.refused_secrets + 1;
+                return std::http::Response { status: 401, content_type: "application/json", body: "{\"error\":\"invalid_client\"}" };
+            }
+            let code = form_field(req.body, "code");
+            let mut i = 0;
+            while i < self.codes.len() {
+                let issued = self.codes.get(i) or IssuedCode { };
+                if issued.code == code && len(code) > 0 {
+                    self.codes.set(i, IssuedCode { }) or discard;
+                    self.exchanges = self.exchanges + 1;
+                    let claims = std::json::Builder { };
+                    claims.begin_object();
+                    claims.string_field("iss", self.base);
+                    claims.string_field("aud", "dna-api-tests");
+                    claims.string_field("sub", issued.subject);
+                    claims.string_field("nonce", issued.nonce);
+                    claims.int_field("exp", std::time::now() + 600);
+                    claims.end_object();
+                    // Like principal_oidc_test: the head authenticates this ID
+                    // token by its direct token-endpoint exchange. No production
+                    // signing key or external identity service participates.
+                    let token = b64("{\"alg\":\"RS256\"}") + "." + b64(claims.result()) + ".fixture";
+                    b.begin_object();
+                    b.string_field("id_token", token);
+                    b.string_field("token_type", "Bearer");
+                    b.end_object();
+                    return std::http::Response { status: 200, content_type: "application/json", body: b.result() };
+                }
+                i = i + 1;
+            }
+            return std::http::Response { status: 400, content_type: "application/json", body: "{\"error\":\"invalid_grant\"}" };
+        }
+        return std::http::Response { status: 404, body: "not found" };
+    }
+}

@@ -43,14 +43,56 @@ The OpenAPI security alternatives describe these deployment modes; a caller
 cannot switch an OIDC service to local mode through a request. This is not a
 position-scoped authorization API or a deployment-ready public ingress.
 
-Install `requirements.txt` into a virtual environment, then run:
+Run the native Hale contract tests from the repository root:
 
 ```sh
-python dna/api/contract/v1/validate.py
+HALE_API_CONTRACT_ROOT="$PWD/dna/api/contract/v1" \
+  hale test dna/api/contract/v1/tests
 ```
 
-To check a captured response, add `--schema PracticesResponse --response result.json`.
-The live integration suite uses these same validators; schema validation is a
-required dependency, not a silently skipped check. There is no schema download
-at test time. The validator checks schema/example conformance and the OpenAPI
-references; it is not a full OpenAPI-specification validator.
+The tests preserve all nine checked-in fixtures, reject unexplained actor fields,
+check the four read routes and their response-schema links, and exercise the
+validator's rejection paths. To check a captured response:
+
+```sh
+hale build dna/api/contract/v1/check
+HALE_API_CONTRACT_ROOT="$PWD/dna/api/contract/v1" \
+  dna/api/contract/v1/check/check PracticesResponse result.json
+```
+
+Running `check/check` without arguments checks the files and fixtures alone.
+The live HTTP suite imports `validator` and uses a let-bound instance:
+
+```hale
+import "../contract/v1/validator" as wire_contract;
+
+let validator = wire_contract::Validator { root: contract_root };
+let result = validator.validate(schema_name, response_json);
+```
+
+The result is `ValidationResult { ok, error }`. Missing or malformed schema files
+fail the check. No Python packages, other language runtime, network access or
+schema downloads are needed.
+
+The native validator implements a **bounded contract profile**, not all of
+JSON Schema 2020-12 or OpenAPI. It supports the keywords used here: object,
+array, string, integer and boolean `type`; `properties`, `required`,
+`additionalProperties: false`, `items`; local `#/$defs/Name` references;
+string/boolean `const`, unique string `enum`; `minLength` from 0 to 1,000,000;
+integer `minimum`/`maximum` paired with `type: integer`; the exact unsigned
+decimal-string `pattern`; and `allOf` with paired `if`/`then`. `$schema`,
+`$defs`, `title` and `description` are recognized. Unknown keywords,
+unsupported keyword values, unresolved or cyclic references fail before
+response validation. Future schema additions therefore need explicit validator
+support and tests.
+
+Wire integers use JSON integer tokens (`1`, not `1.0` or `1e0`); comparisons
+do not truncate to machine integers. Object keys must be literal, unique and
+unescaped, and cannot contain `|`. JSON nesting and schema/evaluation depth
+are bounded at 64. String values support UTF-8 and paired Unicode escapes;
+`minLength` counts decoded Unicode scalar values. Invalid UTF-8, unpaired
+surrogates and escaped U+0000 are rejected; the latter avoids native
+NUL-terminated string truncation during constant and enum comparisons.
+These narrower wire/profile rules are intentional and do not claim general
+JSON Schema conformance. OpenAPI checks cover this release's routes and local
+response references, not full specification validation.

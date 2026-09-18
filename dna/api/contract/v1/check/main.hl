@@ -1,0 +1,16 @@
+import "../validator" as wire_contract;
+
+fn main() {
+    let root = if std::env::var_exists("HALE_API_CONTRACT_ROOT") { std::env::var("HALE_API_CONTRACT_ROOT") } else { "dna/api/contract/v1" };
+    let files = wire_contract::ContractFiles { root: root };
+    let result = files.check();
+    std::test::assert(result.ok, result.error);
+    println("contract: fixtures passed; OpenAPI response references resolved");
+    if std::env::args_count() == 3 {
+        let validator = wire_contract::Validator { root: root };
+        let body = std::io::fs::read_file(std::env::arg(2)) or raise;
+        let response = validator.validate(std::env::arg(1), body);
+        std::test::assert(response.ok, response.error);
+        println("response: ", std::env::arg(1), " passed");
+    } else { std::test::assert(std::env::args_count() == 1, "usage: check [SchemaName response.json]"); }
+}

@@ -1,0 +1,85 @@
+// File-level checks deliberately cover this contract's routes and local schema
+// links, not the whole OpenAPI specification.
+locus ContractFiles {
+    params { root: String = "dna/api/contract/v1"; }
+    fn openapi(spec: String, schema: String) -> ValidationResult {
+        let syntax = JsonSyntax { };
+        if !syntax.valid(spec) { return ValidationResult { error: "OpenAPI: invalid JSON" }; }
+        if std::json::find_string_field(spec, "openapi") != "3.1.0" { return ValidationResult { error: "OpenAPI: expected 3.1.0" }; }
+        let paths = std::json::find_field_raw(spec, "paths");
+        let rules = ContractSchema { document: schema };
+        if rules.kind(paths) != "object" { return ValidationResult { error: "OpenAPI: missing paths object" }; }
+        let mut count = 0;
+        let mut routes = std::json::object_first(paths);
+        while !routes.done {
+            let path = std::json::obj_key_string(routes, paths);
+            let response_name = if path == "/api/hale/v1/applications" { "ApplicationsResponse" } else if path == "/api/hale/v1/applications/{application_id}/capabilities" { "CapabilitiesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/practices" { "PracticesResponse" } else if path == "/api/hale/v1/applications/{application_id}/dna/reviews" { "ReviewsResponse" } else { "" };
+            if len(response_name) == 0 { return ValidationResult { error: "OpenAPI: unexpected route " + path }; }
+            count = count + 1;
+            let route = std::json::obj_value_raw(routes, paths);
+            if rules.kind(route) != "object" { return ValidationResult { error: "OpenAPI: path item must be an object" }; }
+            let mut fields = std::json::object_first(route);
+            while !fields.done {
+                let field = std::json::obj_key_string(fields, route);
+                if field != "get" && field != "parameters" { return ValidationResult { error: "OpenAPI: only GET and path parameters are advertised" }; }
+                fields = std::json::object_next(fields, route);
+            }
+            let operation = std::json::find_field_raw(route, "get");
+            let responses = std::json::find_field_raw(operation, "responses");
+            if rules.kind(operation) != "object" || rules.kind(responses) != "object" || len(std::json::find_field_raw(responses, "200")) == 0 { return ValidationResult { error: "OpenAPI: GET must declare its 200 response" }; }
+            let mut entries = std::json::object_first(responses);
+            while !entries.done {
+                let status = std::json::obj_key_string(entries, responses);
+                let response = std::json::obj_value_raw(entries, responses);
+                let content = std::json::find_field_raw(response, "content");
+                let media = std::json::find_field_raw(content, "application/json");
+                let target = std::json::find_string_field(std::json::find_field_raw(media, "schema"), "$ref");
+                let wanted = if status == "200" { response_name } else { "ErrorResponse" };
+                if target != "./schema.json#/$defs/" + wanted || len(rules.definition(wanted)) == 0 { return ValidationResult { error: "OpenAPI: unresolved or incorrect response reference at " + path + " " + status }; }
+                entries = std::json::object_next(entries, responses);
+            }
+            routes = std::json::object_next(routes, paths);
+        }
+        if count != 4 { return ValidationResult { error: "OpenAPI: expected exactly four read routes" }; }
+        return ValidationResult { ok: true };
+    }
+    fn fixtures(fixtures: String, schema: String) -> ValidationResult {
+        let syntax = JsonSyntax { };
+        let rules = ContractSchema { document: schema };
+        if !syntax.valid(fixtures) || rules.kind(fixtures) != "array" { return ValidationResult { error: "fixtures: invalid JSON array" }; }
+        let validator = Validator { root: self.root };
+        let mut examples = std::json::array_first(fixtures);
+        let mut positive = 0;
+        let mut negative = 0;
+        while !examples.done {
+            let example = examples.element;
+            let name = std::json::find_string_field(example, "name");
+            let definition = std::json::find_string_field(example, "schema");
+            let expected = std::json::find_field_raw(example, "valid");
+            let value = std::str::trim(std::json::find_field_raw(example, "value"));
+            if len(name) == 0 || len(rules.definition(definition)) == 0 || (expected != "true" && expected != "false") || len(value) == 0 { return ValidationResult { error: "fixtures: malformed example " + name }; }
+            let result = validator.validate_schema(schema, definition, value);
+            if result.ok != (expected == "true") { return ValidationResult { error: "fixture " + name + ": unexpected validity: " + result.error }; }
+            if result.ok {
+                positive = positive + 1;
+                if rules.kind(value) != "object" { return ValidationResult { error: "fixture " + name + ": response must be an object" }; }
+                let injected = value[0..(len(value) - 1)] + ",\"actor\":\"caller-selected\"}";
+                let reject = validator.validate_schema(schema, definition, injected);
+                if reject.ok { return ValidationResult { error: "fixture " + name + ": response accepted an unexplained actor" }; }
+            } else { negative = negative + 1; }
+            examples = std::json::array_next(examples);
+        }
+        if positive < 5 || negative < 4 { return ValidationResult { error: "fixtures: preserve all five positive and four negative baseline examples" }; }
+        return ValidationResult { ok: true };
+    }
+    fn check() -> ValidationResult {
+        let schema = std::io::fs::read_file(self.root + "/schema.json") or "";
+        let validator = Validator { root: self.root };
+        let profile = validator.schema_profile(schema);
+        if !profile.ok { return profile; }
+        let spec = std::io::fs::read_file(self.root + "/openapi.json") or "";
+        let links = self.openapi(spec, schema);
+        if !links.ok { return links; }
+        return self.fixtures(std::io::fs::read_file(self.root + "/fixtures.json") or "", schema);
+    }
+}
