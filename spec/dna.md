@@ -843,6 +843,55 @@ Their bodies are documented in the guide's reference chapter; the set
 grows by ordinary change, and a reader that meets an unknown kind must
 keep walking.
 
+## Workflow definitions
+
+A recursive workflow can be written as data (`dna/core/workflow_definition.hl`;
+the execution contract it serves is `dna/WORKFLOW-CONTRACT.md`). A
+`WorkflowCatalog` holds definitions: `define(id, revision, steps, title)`
+declares a workflow with that many ordered steps; `leaf(workflow,
+revision, step, key, work, attempts)` adds a required member carrying
+the content of one Work request and its retry allowance; `child(workflow,
+revision, step, key, child, child_revision)` adds a required member that
+invokes another definition. Each returns `""` or why it was refused (a
+revision defined twice, a member for an undefined workflow).
+Definitions refer to each other by id and revision, in two flat
+collections.
+
+Before anything is built, `expand` checks every definition reachable
+from the root once, counting each one's Works and nesting height from
+its children's and saturating at the limits: a catalog whose expansion
+would be enormous is refused from those counts, in one pass over the
+definitions, without materializing a node of it. The check also holds
+for the root, which is depth 1, and for the limits themselves (a limit
+below 1 admits nothing and is refused).
+
+`expand(root_task, id, revision, limits)` binds one execution: the whole
+finite tree as `BoundNode`s (tasks, steps, works) with their ids — a
+child Task is `<parent>.s<i>.<key>`, a Workflow `<task>/wf<revision>`,
+a Step `<workflow>/s<i>`, a Work `<step>/<key>` — each Work carrying its
+authored request content and allowance (`bound_request` makes its
+`WorkRequest`), and each Task its definition, parent, spawning step,
+depth and definition path. It refuses the whole expansion, binding
+nothing and naming what broke, when a definition is missing (by id and
+revision), a workflow has no steps, a step has no members, a member
+names a step outside its workflow's steps, a member key is not
+`[a-z0-9-]+` or repeats in its step, a member is neither a leaf nor a
+child, a workflow invokes itself directly or through its children, or
+an `AdmissionLimits` value is exceeded: `max_depth` (8),
+`max_steps` (32), `max_members` (32), `max_attempts` (8, the largest
+allowance a leaf may bind) and `max_works` (256), the defaults in
+parentheses, supplied by the caller and returned with the `Expansion`.
+Two invocations of one definition are two executions with their own ids;
+a later revision changes nothing an earlier revision expands to.
+A definition id is `[a-z0-9][a-z0-9-]*`, checked when it is defined and
+when it is read, so an id can never carry the delimiters the definition
+path is written with. `encode()` writes every definition and member as
+one JSON document (`format: dna.workflow-definitions/1`) and
+`decode(text)` reads one back, refusing another format, an id outside
+the grammar, an already defined revision, or a document that defines one
+revision twice, and adding nothing then. Nothing yet admits, records or executes a bound
+expansion.
+
 ## Storage interfaces
 
 `Journal` (ordered append with an expected revision, read by index,

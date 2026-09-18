@@ -1,0 +1,595 @@
+// dna/core/workflow_definition.hl — code-authored workflow definitions
+// (DNA workflow card 04; dna/WORKFLOW-CONTRACT.md §3, §4, §6).
+//
+// A definition is plain data. A workflow definition has an id, a revision
+// and a number of ordered steps; each step has one or more required
+// members; a member is a leaf (the content of one Work request) or a child
+// (another definition, by id and revision). Definitions refer to each
+// other by id, never by nesting, so they live in two flat collections.
+//
+// An application builds them in ordinary Hale through `WorkflowCatalog`
+// (`define`, `leaf`, `child`), and `expand` binds one execution: the whole
+// finite tree, with every Task, Step and Work id, checked against the
+// `AdmissionLimits` the assembly supplies. Expansion either binds the
+// whole tree or refuses, naming what exceeded or broke which rule, and
+// binds nothing. Nothing here dispatches, persists or runs anything; cards
+// 05 onward record and execute a bound expansion.
+//
+// Ids (contract §4): the root Task is the caller's; a child Task is
+// `<parent task>.s<i>.<member key>`; a Workflow is `<task>/wf<revision>`;
+// a Step is `<workflow>/s<i>`; a Work is `<step>/<member key>`. Member
+// keys are `[a-z0-9-]+`, unique within their step.
+
+// The capacity one admission may use (contract §3). Defaults, not
+// language limits; the assembly or application supplies its own, and the
+// limits applied are bound with the execution.
+type AdmissionLimits {
+    max_depth: Int = 8; // root = 1
+    max_steps: Int = 32; // steps in one workflow
+    max_members: Int = 32; // members in one step
+    max_attempts: Int = 8; // the largest retry allowance a leaf may bind
+    max_works: Int = 256; // leaf Works in one bound recipe, all levels
+}
+
+type WorkflowDef {
+    id: String = "";
+    revision: Int = 1;
+    steps: Int = 0;
+    title: String = "";
+}
+
+type MemberDef {
+    workflow: String = "";
+    revision: Int = 1;
+    step: Int = 0;
+    key: String = "";
+    kind: String = ""; // "leaf" | "child"
+    // a leaf: the content of its Work request (ids are the execution's)
+    objective: String = "";
+    context_digest: String = "";
+    knowledge_bindings: String = "";
+    output_contract: String = "";
+    data_class: String = "internal";
+    requires: String = "";
+    target: String = "";
+    cost_ceiling: Int = 0;
+    attempts: Int = 1; // the retry allowance the leaf binds
+    // a child: the definition it invokes
+    child: String = "";
+    child_revision: Int = 0;
+}
+
+@form(vec)
+locus WorkflowDefRows {
+    capacity { heap rows of WorkflowDef; }
+}
+
+@form(vec)
+locus MemberDefRows {
+    capacity { heap rows of MemberDef; }
+}
+
+// One node of a bound execution: a Task, a Step or a Work.
+type BoundNode {
+    kind: String = ""; // "task" | "step" | "work"
+    id: String = "";
+    // a task: its parent Task ("" at the root); a step: its Task;
+    // a work: its Step
+    parent: String = "";
+    spawning_step: String = ""; // a child task: the step that invokes it
+    member_key: String = ""; // a child task or a work: its key in its step
+    definition: String = ""; // a task: the definition it runs
+    revision: Int = 0;
+    workflow_id: String = ""; // a task or a step: the workflow execution
+    step_index: Int = 0; // a step or a work: its step's position
+    depth: Int = 0; // a task: root = 1
+    path: String = ""; // a task: "|<definition>@<revision>|…" from the root
+    // a work: the bound request content
+    objective: String = "";
+    context_digest: String = "";
+    knowledge_bindings: String = "";
+    output_contract: String = "";
+    data_class: String = "internal";
+    requires: String = "";
+    target: String = "";
+    cost_ceiling: Int = 0;
+    attempts: Int = 1;
+}
+
+@form(vec)
+locus BoundNodeRows {
+    capacity { heap rows of BoundNode; }
+}
+
+// What the preflight learned about one definition: whether it is being
+// checked (a cycle if met again), the Works its subtree contributes and
+// how deep it nests. Saturating, so a fan-out that would expand past the
+// Work limit is refused from the counts, never materialized.
+type DefStat {
+    id: String = "";
+    revision: Int = 0;
+    state: Int = 0; // 0 unchecked, 1 checking, 2 checked
+    works: Int = 0;
+    height: Int = 1; // levels this definition nests, itself included
+}
+
+@form(vec)
+locus DefStatRows {
+    capacity { heap rows of DefStat; }
+}
+
+// The outcome of an expansion: bound, or refused with the reason.
+type Expansion {
+    ok: Bool = false;
+    why: String = "";
+    tasks: Int = 0;
+    steps: Int = 0;
+    works: Int = 0;
+    depth: Int = 0;
+    limits: AdmissionLimits = AdmissionLimits { };
+}
+
+// Whether a member key is `[a-z0-9-]+`.
+fn member_key_ok(key: String) -> Bool {
+    if len(key) == 0 { return false; }
+    let mut i = 0;
+    while i < len(key) {
+        let b = std::str::byte_at_unchecked(key, i);
+        let ok = (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || b == 45;
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// Whether a definition id is `[a-z0-9][a-z0-9-]*`. Ids name each other in
+// paths and messages, so a delimiter inside one would read as structure.
+fn definition_id_ok(id: String) -> Bool {
+    if len(id) == 0 { return false; }
+    let mut i = 0;
+    while i < len(id) {
+        let b = std::str::byte_at_unchecked(id, i);
+        let ok = (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || (b == 45 && i > 0);
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// Why these limits admit nothing, "" when they admit something.
+fn limits_gap(limits: AdmissionLimits) -> String {
+    if limits.max_depth < 1 { return "max_depth " + to_string(limits.max_depth) + " admits no workflow at all (the root is depth 1)"; }
+    if limits.max_steps < 1 { return "max_steps " + to_string(limits.max_steps) + " admits no workflow at all"; }
+    if limits.max_members < 1 { return "max_members " + to_string(limits.max_members) + " admits no step at all"; }
+    if limits.max_attempts < 1 { return "max_attempts " + to_string(limits.max_attempts) + " admits no leaf at all"; }
+    if limits.max_works < 1 { return "max_works " + to_string(limits.max_works) + " admits no work at all"; }
+    return "";
+}
+
+// Whether `path` ("|a@1|b@2|") already names this definition.
+fn path_has(path: String, name: String) -> Bool {
+    return std::str::contains(path, "|" + name + "|");
+}
+
+fn definition_name(id: String, revision: Int) -> String {
+    return id + "@" + to_string(revision);
+}
+
+// The request a bound Work carries: its content, and its ids.
+fn bound_request(n: BoundNode, task_id: String, step_id: String) -> WorkRequest {
+    return WorkRequest {
+        work_id: n.id,
+        task_id: task_id,
+        step_id: step_id,
+        objective: n.objective,
+        context_digest: n.context_digest,
+        knowledge_bindings: n.knowledge_bindings,
+        output_contract: n.output_contract,
+        data_class: n.data_class,
+        requires: n.requires,
+        target: n.target,
+        cost_ceiling: n.cost_ceiling,
+        attempt_no: 0
+    };
+}
+
+locus WorkflowCatalog {
+    params {
+        workflows: WorkflowDefRows = WorkflowDefRows { };
+        members: MemberDefRows = MemberDefRows { };
+        bound: BoundNodeRows = BoundNodeRows { };
+        stats: DefStatRows = DefStatRows { }; // the preflight's memo
+        gap: String = ""; // why the preflight refused
+    }
+
+    // ---- construction --------------------------------------------------
+
+    // A workflow definition with `steps` ordered steps. "" when defined,
+    // else why not (the same id and revision defined twice).
+    fn define(id: String, revision: Int, steps: Int, title: String) -> String {
+        if !definition_id_ok(id) { return "a workflow definition id is [a-z0-9][a-z0-9-]*, not `" + id + "`"; }
+        if self.has(id, revision) { return "workflow " + definition_name(id, revision) + " is already defined"; }
+        self.workflows.push(WorkflowDef { id: id, revision: revision, steps: steps, title: title });
+        return "";
+    }
+    // A leaf member: `work` is the content of its Work request; its ids
+    // are assigned at expansion. `attempts` is the retry allowance it binds.
+    fn leaf(workflow: String, revision: Int, step: Int, key: String, work: WorkRequest, attempts: Int) -> String {
+        if !self.has(workflow, revision) { return "no workflow " + definition_name(workflow, revision) + " to add `" + key + "` to"; }
+        self.members.push(MemberDef {
+            workflow: workflow, revision: revision, step: step, key: key, kind: "leaf",
+            objective: work.objective, context_digest: work.context_digest,
+            knowledge_bindings: work.knowledge_bindings, output_contract: work.output_contract,
+            data_class: work.data_class, requires: work.requires, target: work.target,
+            cost_ceiling: work.cost_ceiling, attempts: attempts
+        });
+        return "";
+    }
+    // A child member: the step invokes definition `child` at `child_revision`.
+    fn child(workflow: String, revision: Int, step: Int, key: String, child: String, child_revision: Int) -> String {
+        if !self.has(workflow, revision) { return "no workflow " + definition_name(workflow, revision) + " to add `" + key + "` to"; }
+        self.members.push(MemberDef {
+            workflow: workflow, revision: revision, step: step, key: key, kind: "child",
+            child: child, child_revision: child_revision
+        });
+        return "";
+    }
+
+    // ---- reading -------------------------------------------------------
+
+    @unbounded
+    fn has(id: String, revision: Int) -> Bool {
+        let mut i = 0;
+        while i < self.workflows.len() {
+            let w = self.workflows.get(i) or WorkflowDef { };
+            if w.id == id && w.revision == revision { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+    @unbounded
+    fn definition(id: String, revision: Int) -> WorkflowDef {
+        let mut i = 0;
+        while i < self.workflows.len() {
+            let w = self.workflows.get(i) or WorkflowDef { };
+            if w.id == id && w.revision == revision { return w; }
+            i = i + 1;
+        }
+        return WorkflowDef { steps: -1 };
+    }
+    fn workflow_count() -> Int { return self.workflows.len(); }
+    fn workflow_at(i: Int) -> WorkflowDef { return self.workflows.get(i) or WorkflowDef { }; }
+    fn member_count() -> Int { return self.members.len(); }
+    fn member_at(i: Int) -> MemberDef { return self.members.get(i) or MemberDef { }; }
+    fn bound_count() -> Int { return self.bound.len(); }
+    fn bound_at(i: Int) -> BoundNode { return self.bound.get(i) or BoundNode { }; }
+    // The bound node with this id, or an empty one.
+    @unbounded
+    fn bound_node(id: String) -> BoundNode {
+        let mut i = 0;
+        while i < self.bound.len() {
+            let n = self.bound.get(i) or BoundNode { };
+            if n.id == id { return n; }
+            i = i + 1;
+        }
+        return BoundNode { };
+    }
+    // The ids of the bound nodes of `kind` whose parent is `parent`, in
+    // order, space-separated.
+    @unbounded
+    fn bound_children(kind: String, parent: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.bound.len() {
+            let n = self.bound.get(i) or BoundNode { };
+            if n.kind == kind && n.parent == parent { out = out + (if len(out) > 0 { " " } else { "" }) + n.id; }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    // ---- the preflight -------------------------------------------------
+    //
+    // Every reachable definition is checked once, and its Works and height
+    // are counted from its children's, saturating at the limit. A catalog
+    // whose expansion would be enormous is refused from those counts, in
+    // one pass over the definitions, without materializing a node of it.
+
+    @unbounded
+    fn stat_at(id: String, revision: Int) -> Int {
+        let mut i = 0;
+        while i < self.stats.len() {
+            let st = self.stats.get(i) or DefStat { };
+            if st.id == id && st.revision == revision { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+    fn stat_set(i: Int, st: DefStat) { self.stats.set(i, st) or discard; }
+    // A member of this definition whose step is outside its steps, "" when
+    // every member is inside.
+    @unbounded
+    fn stray_member(id: String, revision: Int, steps: Int) -> String {
+        let mut i = 0;
+        while i < self.members.len() {
+            let m = self.members.get(i) or MemberDef { };
+            if m.workflow == id && m.revision == revision && (m.step < 0 || m.step >= steps) {
+                return "workflow " + definition_name(id, revision) + " member `" + m.key + "` names step " + to_string(m.step) + ", outside its " + to_string(steps) + " step(s)";
+            }
+            i = i + 1;
+        }
+        return "";
+    }
+    // Check one definition and everything it invokes. Returns its index in
+    // `stats`, or -1 with `self.gap` saying why it was refused.
+    @unbounded
+    fn preflight(id: String, revision: Int, path: String, at: String, limits: AdmissionLimits) -> Int {
+        let name = definition_name(id, revision);
+        let seen = self.stat_at(id, revision);
+        if seen >= 0 {
+            let st = self.stats.get(seen) or DefStat { };
+            if st.state == 1 {
+                self.gap = at + "invokes " + name + ", which is already on its own path " + path + " (a workflow cannot contain itself)";
+                return -1;
+            }
+            if st.state == 2 { return seen; }
+        }
+        let d = self.definition(id, revision);
+        if d.steps < 0 { self.gap = at + "no workflow " + name + " is defined"; return -1; }
+        if d.steps == 0 { self.gap = "workflow " + name + " has no steps"; return -1; }
+        if d.steps > limits.max_steps { self.gap = "workflow " + name + " has " + to_string(d.steps) + " steps; max_steps is " + to_string(limits.max_steps); return -1; }
+        let stray = self.stray_member(id, revision, d.steps);
+        if len(stray) > 0 { self.gap = stray; return -1; }
+        self.stats.push(DefStat { id: id, revision: revision, state: 1 });
+        let me = self.stats.len() - 1;
+        let here = path + name + "|";
+        let cap = limits.max_works + 1;
+        let mut works = 0;
+        let mut height = 1;
+        let mut s = 0;
+        while s < d.steps {
+            let mut count = 0;
+            let mut keys = "\n";
+            let mut m = 0;
+            while m < self.members.len() {
+                let md = self.members.get(m) or MemberDef { };
+                m = m + 1;
+                if md.workflow != id || md.revision != revision || md.step != s { continue; }
+                count = count + 1;
+                let mat = "workflow " + name + " step " + to_string(s) + " member `" + md.key + "`: ";
+                if !member_key_ok(md.key) { self.gap = mat + "a member key is [a-z0-9-]+"; return -1; }
+                if std::str::contains(keys, "\n" + md.key + "\n") { self.gap = mat + "the key is used twice in the step"; return -1; }
+                keys = keys + md.key + "\n";
+                if md.kind == "leaf" {
+                    if md.attempts < 1 || md.attempts > limits.max_attempts { self.gap = mat + "an allowance of " + to_string(md.attempts) + " attempts is outside 1..max_attempts " + to_string(limits.max_attempts); return -1; }
+                    if works < cap { works = works + 1; }
+                } else if md.kind == "child" {
+                    if !definition_id_ok(md.child) { self.gap = mat + "a workflow definition id is [a-z0-9][a-z0-9-]*, not `" + md.child + "`"; return -1; }
+                    let ci = self.preflight(md.child, md.child_revision, here, mat, limits);
+                    if ci < 0 { return -1; }
+                    let cs = self.stats.get(ci) or DefStat { };
+                    works = works + cs.works;
+                    if works > cap { works = cap; }
+                    if cs.height + 1 > height { height = cs.height + 1; }
+                } else {
+                    self.gap = mat + "a member is a leaf or a child, not `" + md.kind + "`";
+                    return -1;
+                }
+                if works > limits.max_works { self.gap = mat + "the recipe would have more than max_works " + to_string(limits.max_works) + " Works"; return -1; }
+            }
+            if count == 0 { self.gap = "workflow " + name + " step " + to_string(s) + " has no required members"; return -1; }
+            if count > limits.max_members { self.gap = "workflow " + name + " step " + to_string(s) + " has " + to_string(count) + " members; max_members is " + to_string(limits.max_members); return -1; }
+            s = s + 1;
+        }
+        self.stat_set(me, DefStat { id: id, revision: revision, state: 2, works: works, height: height });
+        return me;
+    }
+
+    // ---- expansion -----------------------------------------------------
+
+    // Bind one execution of definition `id`@`revision` under root Task
+    // `root_task`: the whole finite tree, or nothing.
+    @unbounded
+    fn expand(root_task: String, id: String, revision: Int, limits: AdmissionLimits) -> Expansion {
+        self.bound = BoundNodeRows { };
+        self.stats = DefStatRows { };
+        self.gap = "";
+        if len(root_task) == 0 { return self.refuse("an execution needs a root task id", limits); }
+        let bad = limits_gap(limits);
+        if len(bad) > 0 { return self.refuse(bad, limits); }
+        // the whole catalog reachable from here is checked, and counted,
+        // before one node of the execution exists
+        let root = self.preflight(id, revision, "|", "", limits);
+        if root < 0 { return self.refuse(self.gap, limits); }
+        let rs = self.stats.get(root) or DefStat { };
+        if rs.works > limits.max_works { return self.refuse("workflow " + definition_name(id, revision) + " expands to more than max_works " + to_string(limits.max_works) + " Works", limits); }
+        if rs.height > limits.max_depth { return self.refuse("workflow " + definition_name(id, revision) + " nests " + to_string(rs.height) + " levels; max_depth is " + to_string(limits.max_depth), limits); }
+        self.bound.push(BoundNode {
+            kind: "task", id: root_task, definition: id, revision: revision,
+            workflow_id: root_task + "/wf" + to_string(revision), depth: 1,
+            path: "|" + definition_name(id, revision) + "|"
+        });
+        let mut tasks = 1;
+        let mut steps = 0;
+        let mut works = 0;
+        let mut deepest = 1;
+        let mut cursor = 0;
+        while cursor < self.bound.len() {
+            let t = self.bound.get(cursor) or BoundNode { };
+            cursor = cursor + 1;
+            if t.kind != "task" { continue; }
+            let d = self.definition(t.definition, t.revision);
+            let name = definition_name(t.definition, t.revision);
+            if d.steps < 0 { return self.refuse("task " + t.id + ": no workflow " + name + " is defined", limits); }
+            if d.steps == 0 { return self.refuse("workflow " + name + " has no steps", limits); }
+            if d.steps > limits.max_steps { return self.refuse("workflow " + name + " has " + to_string(d.steps) + " steps; max_steps is " + to_string(limits.max_steps), limits); }
+            let mut s = 0;
+            while s < d.steps {
+                let step_id = t.workflow_id + "/s" + to_string(s);
+                self.bound.push(BoundNode { kind: "step", id: step_id, parent: t.id, workflow_id: t.workflow_id, step_index: s });
+                steps = steps + 1;
+                let mut count = 0;
+                let mut keys = "\n";
+                let mut m = 0;
+                while m < self.members.len() {
+                    let md = self.members.get(m) or MemberDef { };
+                    m = m + 1;
+                    if md.workflow != t.definition || md.revision != t.revision || md.step != s { continue; }
+                    count = count + 1;
+                    let at = "workflow " + name + " step " + to_string(s) + " member `" + md.key + "`";
+                    if !member_key_ok(md.key) { return self.refuse(at + ": a member key is [a-z0-9-]+", limits); }
+                    if std::str::contains(keys, "\n" + md.key + "\n") { return self.refuse(at + ": the key is used twice in the step", limits); }
+                    keys = keys + md.key + "\n";
+                    if md.kind == "leaf" {
+                        works = works + 1;
+                        if works > limits.max_works { return self.refuse(at + ": the recipe would have more than max_works " + to_string(limits.max_works) + " Works", limits); }
+                        if md.attempts < 1 || md.attempts > limits.max_attempts { return self.refuse(at + ": an allowance of " + to_string(md.attempts) + " attempts is outside 1..max_attempts " + to_string(limits.max_attempts), limits); }
+                        self.bound.push(BoundNode {
+                            kind: "work", id: step_id + "/" + md.key, parent: step_id, member_key: md.key,
+                            step_index: s, objective: md.objective, context_digest: md.context_digest,
+                            knowledge_bindings: md.knowledge_bindings, output_contract: md.output_contract,
+                            data_class: md.data_class, requires: md.requires, target: md.target,
+                            cost_ceiling: md.cost_ceiling, attempts: md.attempts
+                        });
+                    } else if md.kind == "child" {
+                        let child_name = definition_name(md.child, md.child_revision);
+                        if !self.has(md.child, md.child_revision) { return self.refuse(at + ": no workflow " + child_name + " is defined", limits); }
+                        if path_has(t.path, child_name) { return self.refuse(at + ": invokes " + child_name + ", which is already on its own path " + t.path + " (a workflow cannot contain itself)", limits); }
+                        if t.depth + 1 > limits.max_depth { return self.refuse(at + ": a child at depth " + to_string(t.depth + 1) + " exceeds max_depth " + to_string(limits.max_depth), limits); }
+                        let child_task = t.id + ".s" + to_string(s) + "." + md.key;
+                        self.bound.push(BoundNode {
+                            kind: "task", id: child_task, parent: t.id, spawning_step: step_id,
+                            member_key: md.key, definition: md.child, revision: md.child_revision,
+                            workflow_id: child_task + "/wf" + to_string(md.child_revision),
+                            step_index: s, depth: t.depth + 1, path: t.path + child_name + "|"
+                        });
+                        tasks = tasks + 1;
+                        if t.depth + 1 > deepest { deepest = t.depth + 1; }
+                    } else {
+                        return self.refuse(at + ": a member is a leaf or a child, not `" + md.kind + "`", limits);
+                    }
+                }
+                if count == 0 { return self.refuse("workflow " + name + " step " + to_string(s) + " has no required members", limits); }
+                if count > limits.max_members { return self.refuse("workflow " + name + " step " + to_string(s) + " has " + to_string(count) + " members; max_members is " + to_string(limits.max_members), limits); }
+                s = s + 1;
+            }
+        }
+        return Expansion { ok: true, tasks: tasks, steps: steps, works: works, depth: deepest, limits: limits };
+    }
+    // Refuse the whole admission: nothing stays bound.
+    // `why` may be `self.gap`, which a local would follow: it is cleared at
+    // the start of the next expansion, never here.
+    fn refuse(why: String, limits: AdmissionLimits) -> Expansion {
+        self.bound = BoundNodeRows { };
+        return Expansion { ok: false, why: why, limits: limits };
+    }
+
+    // ---- the machine form ------------------------------------------------
+
+    // Every definition and member, as one JSON document.
+    @unbounded
+    fn encode() -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("format", "dna.workflow-definitions/1");
+        b.begin_array_field("workflows");
+        let mut i = 0;
+        while i < self.workflows.len() {
+            let w = self.workflows.get(i) or WorkflowDef { };
+            b.begin_object();
+            b.string_field("id", w.id);
+            b.int_field("revision", w.revision);
+            b.int_field("steps", w.steps);
+            b.string_field("title", w.title);
+            b.end_object();
+            i = i + 1;
+        }
+        b.end_array();
+        b.begin_array_field("members");
+        i = 0;
+        while i < self.members.len() {
+            let m = self.members.get(i) or MemberDef { };
+            b.begin_object();
+            b.string_field("workflow", m.workflow);
+            b.int_field("revision", m.revision);
+            b.int_field("step", m.step);
+            b.string_field("key", m.key);
+            b.string_field("kind", m.kind);
+            b.string_field("objective", m.objective);
+            b.string_field("context_digest", m.context_digest);
+            b.string_field("knowledge_bindings", m.knowledge_bindings);
+            b.string_field("output_contract", m.output_contract);
+            b.string_field("data_class", m.data_class);
+            b.string_field("requires", m.requires);
+            b.string_field("target", m.target);
+            b.int_field("cost_ceiling", m.cost_ceiling);
+            b.int_field("attempts", m.attempts);
+            b.string_field("child", m.child);
+            b.int_field("child_revision", m.child_revision);
+            b.end_object();
+            i = i + 1;
+        }
+        b.end_array();
+        b.end_object();
+        return b.result();
+    }
+    // Add every definition and member in `text` (what `encode` wrote). ""
+    // when read, else why not; nothing is added when it is refused.
+    @unbounded
+    fn decode(text: String) -> String {
+        if std::json::find_string_field(text, "format") != "dna.workflow-definitions/1" {
+            return "not a workflow definition document (format " + std::json::find_string_field(text, "format") + ")";
+        }
+        // every incoming definition is checked against this catalog AND
+        // against the ones before it in the document: a document that
+        // defines one revision twice is refused whole, as `define` would
+        let mut incoming = "\n";
+        let mut it = std::json::array_first(std::json::find_field_raw(text, "workflows"));
+        while !it.done {
+            let e = it.element;
+            let did = std::json::find_string_field(e, "id");
+            let drev = std::json::find_int_field(e, "revision");
+            let dname = definition_name(did, drev);
+            if !definition_id_ok(did) { return "a workflow definition id is [a-z0-9][a-z0-9-]*, not `" + did + "`"; }
+            if self.has(did, drev) { return "workflow " + dname + " is already defined"; }
+            if std::str::contains(incoming, "\n" + dname + "\n") { return "the document defines workflow " + dname + " twice"; }
+            incoming = incoming + dname + "\n";
+            it = std::json::array_next(it);
+        }
+        it = std::json::array_first(std::json::find_field_raw(text, "workflows"));
+        while !it.done {
+            let e = it.element;
+            self.workflows.push(WorkflowDef {
+                id: std::json::find_string_field(e, "id"),
+                revision: std::json::find_int_field(e, "revision"),
+                steps: std::json::find_int_field(e, "steps"),
+                title: std::json::find_string_field(e, "title")
+            });
+            it = std::json::array_next(it);
+        }
+        it = std::json::array_first(std::json::find_field_raw(text, "members"));
+        while !it.done {
+            let e = it.element;
+            self.members.push(MemberDef {
+                workflow: std::json::find_string_field(e, "workflow"),
+                revision: std::json::find_int_field(e, "revision"),
+                step: std::json::find_int_field(e, "step"),
+                key: std::json::find_string_field(e, "key"),
+                kind: std::json::find_string_field(e, "kind"),
+                objective: std::json::find_string_field(e, "objective"),
+                context_digest: std::json::find_string_field(e, "context_digest"),
+                knowledge_bindings: std::json::find_string_field(e, "knowledge_bindings"),
+                output_contract: std::json::find_string_field(e, "output_contract"),
+                data_class: std::json::find_string_field(e, "data_class"),
+                requires: std::json::find_string_field(e, "requires"),
+                target: std::json::find_string_field(e, "target"),
+                cost_ceiling: std::json::find_int_field(e, "cost_ceiling"),
+                attempts: std::json::find_int_field(e, "attempts"),
+                child: std::json::find_string_field(e, "child"),
+                child_revision: std::json::find_int_field(e, "child_revision")
+            });
+            it = std::json::array_next(it);
+        }
+        return "";
+    }
+}
