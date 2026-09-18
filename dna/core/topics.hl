@@ -48,6 +48,34 @@ type TransitionAnswer {
 }
 topic TransitionAnswered { payload: TransitionAnswer; subject: "dna.transition.answered"; keyed_by key; }
 
+// GH #646 workflow card 09: what the residents and the runtime say to
+// each other. A Work asks the runtime to run an admitted attempt, by id
+// (the runtime reads the admission from the record); the runtime answers
+// every reply — the one that came back from the call and the one that
+// came later — keyed by the Work; a Work that settled tells its Step,
+// keyed by the Step; a Step that settled tells its owner.
+type AttemptRequest { scope: String = ""; attempt_id: String = ""; work_id: String = ""; }
+topic AttemptRequested { payload: AttemptRequest; subject: "dna.attempt.requested"; keyed_by scope; }
+type AttemptReply {
+    work_id: String = "";
+    attempt_id: String = "";
+    ok: Bool = false;
+    ran: Bool = false;
+    attached: Bool = false;
+    reused: Bool = false;
+    disposition: String = ""; // "" while the attempt is outstanding
+    result: String = "";
+    why: String = "";
+}
+topic AttemptReplied { payload: AttemptReply; subject: "dna.attempt.replied"; keyed_by work_id; }
+type MemberSettlement { step_id: String = ""; key: String = ""; work_id: String = ""; disposition: String = ""; }
+topic MemberSettled { payload: MemberSettlement; subject: "dna.member.settled"; keyed_by step_id; }
+type StepSettlement { step_id: String = ""; task_id: String = ""; disposition: String = ""; failed_member: String = ""; why: String = ""; }
+topic StepSettled { payload: StepSettlement; subject: "dna.step.settled"; keyed_by step_id; }
+// what a resident says about its own life, for the owner and the proofs
+type RunLife { key: String = ""; what: String = ""; }
+topic RunLives { payload: RunLife; subject: "dna.run.life"; }
+
 // Upward-only signals (child -> supersystem).
 type Pressure { source: String = ""; what: String = ""; count: Int = 0; }
 topic PressureRaised { payload: Pressure; subject: "dna.pressure.raised"; }

@@ -153,7 +153,13 @@ its history and model evidence one attempt number.
    outstanding responsibility stays reachable until its outcome or an
    explicit fence. There is no invented timeout.
 
-**[decided]**
+**[decided; 1, 2, 4 and 6 proven for one step and its leaves:
+`workflow_step_test.hl`, card 09 — the set registered and activated
+before a leaf is born; completion in either order; waiting on a delayed
+member; a failed member failing the step at once, its sibling's later
+reply recorded and reopening nothing, the `StepRun` alive until that
+member settled; a leaf retried within its allowance. 5 is card 06's
+projection so far; 3 is card 08's.]**
 
 The current `Step` counts child settlements without checking their
 disposition or spawning step. The new execution path replaces that
@@ -394,6 +400,12 @@ in `dna/core/workflow_runtime.hl`:
 | `StepRun` | `WorkRun` | `WorkflowRun` | its registered members and barrier; requests child workflows over the bus |
 | `WorkRun` | — | `StepRun` | one leaf across its attempts; admits each attempt |
 
+`StepRun` and `WorkRun` exist (card 09), beside `WorkflowRuntime`, the
+committer and executor they propose to; `TaskRun` and `WorkflowRun` are
+cards 10 and 11. A `StepRun` copies the leaves it is handed into its own
+rows at birth: what an owner builds in its handler dies with the
+handler.
+
 Attempts are facts (`attempt.admitted`, `attempt.outcome`) and executor
 calls, not a resident locus.
 
@@ -436,14 +448,25 @@ type  TransitionAnswer    { scope; key; proposal_id; ok; revision; why }
   forged proposal, not a race. The lifetime proof's lookup shows the
   replay half; card 05 implements the comparison (`transition_conflict`,
   which names the part that differs) and the durable reference beside
-  each committed fact (§8) that a restart compares against. Card 07
-  wires both into the committer.
+  each committed fact (§8) that a restart compares against. Card 09's
+  runtime rebuilds the committed ids from those references as it
+  catches up, and answers a repeated id from the committed row and a
+  conflicting one with a refusal. **[proven, card 09]**
 - **The committer validates against current state before appending**,
   and appends with exact compare-and-append. On a stale revision it
   refreshes and evaluates the transition again against the new state;
   it does not simply retry the append. The proof's committer has no
   domain state and only retries; cards 06 and 07 implement the
-  re-evaluation.
+  re-evaluation, and card 09's `WorkflowRuntime` is the committer for
+  the residents: it catches its projection up from the record and
+  takes that reading's revision as the one it decides and appends at —
+  never a second look, which a row landing between two looks would
+  slip past — validates with a dry run of the projection, appends
+  exactly, applies once the append landed, and on a stale append
+  decides again. **[proven: the same transition committed by another
+  runtime under the decision stands as one row; a conflicting id is
+  refused; a proposal the state refuses lands nothing; an append the
+  record refuses moves nothing — `workflow_step_test.hl`]**
 - **Only `ok` dispatches.** On a refusal the proposer dispatches
   nothing.
 
@@ -460,7 +483,7 @@ journal and dispatched once. Each case fails with the proposer's
 identity check or the committer's lookup removed.]**
 
 What the fixtures do not establish, left to the cards that own it:
-domain re-evaluation on a stale revision (06, 07); every stale and
+domain re-evaluation on a stale revision (06, 07, 09); every stale and
 duplicate child or attempt case (05, 06, 09–11); delivery across an
 off-thread binding (a bound organism's sockets) and restart (12–13, 19).
 The two supplied diagnostic probes print, so `hale test` reports them
@@ -502,6 +525,7 @@ equivalent definition.
 | the join is by identity and kind against the admitted recipe; every transition has its basis; a cancelled ancestor fences all below it | proven, card 06 (#694) |
 | one admitted attempt runs once: nothing before its durable admission, a settled one reused, a running one attached to, the reply's identity checked, the outcome persisted exactly before answering, a refused append stopping the path | proven, card 08 |
 | the admission precedes the summary; a refusal requests nothing and is recorded (or reported unrecorded), a Task-bound one exactly at the decision's revision and never on another body's execution, one that reached no Task as `workflow.ask_refused` under `<ask>#<n>`, decided and appended at one revision, the same decision replayed and a new one ordinal-numbered; one ask id is one execution, decided and appended at one revision; a taken id is skipped and a contended one re-minted; only the position's owner admits; an admitted Task is never legacy edit work after a restart | proven, card 07 |
+| one step alive across delayed replies: the member set registered and activated before a leaf is born; two leaves completing in either order; an immediate and a delayed reply leaving it waiting and reachable; a repeated answer and a stray one changing nothing; a failed member failing it at once and a sibling's later reply recorded without reopening it; reclaimed only once every member settled; a leaf retried within its allowance; every transition a proposal decided at one reading, the same row committed meanwhile standing once, a conflict refused, an invalid or refused append moving nothing | proven, card 09 |
 | delivery across off-thread bindings; restart | not yet, cards 12–13, 19 |
 
 Card 03 native runs: `HALE_BIN=target/release/hale HALE_DNA_SOURCE=$PWD

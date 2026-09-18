@@ -1,0 +1,415 @@
+// dna/tests/workflow_step_test.hl — one step alive across delayed replies
+// (DNA workflow card 09).
+//
+// A StepRun registers its whole member set, activates, births its leaf
+// WorkRuns, and stays alive — after its run() returned, after every
+// handler returned — until its members have answered. Two required
+// leaves complete in either order; one immediate reply plus one delayed
+// reply leaves the step waiting; a duplicate answer, an answer from no
+// member, and a failed member cannot complete it; a failed member fails
+// it at once, once, and a sibling's later reply cannot reopen it; a leaf
+// with allowance left is retried before it fails. Every transition is a
+// proposal to the one runtime, appended exactly, and every settled
+// instance reclaims itself while an outstanding one stays reachable.
+
+import "../core" as dna;
+
+// ---- performers -----------------------------------------------------------
+
+locus Counting {
+    params { calls: Int = 0; }
+    fn kind() -> String { return "service"; }
+    fn identity() -> String { return "counter"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        return dna::WorkResult { disposition: "done", result: "counted:" + req.objective, performer: "counter", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+    }
+}
+
+// Answers later: the reply comes through the runtime's `settle`.
+locus Delayed {
+    params { calls: Int = 0; }
+    fn kind() -> String { return "agent"; }
+    fn identity() -> String { return "delayed"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        return dna::WorkResult { disposition: "pending", performer: "delayed", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+    }
+}
+
+locus Failing {
+    params { calls: Int = 0; }
+    fn kind() -> String { return "human"; }
+    fn identity() -> String { return "alice"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        return dna::WorkResult { disposition: "failed", result: "no", performer: "alice", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+    }
+}
+
+// ---- a record another instance also writes to ---------------------------
+
+// A journal that, once, lands a row between the runtime's reading of the
+// record and its append: the same transition, committed by another
+// runtime over the same record at the same moment. Armed by the row
+// before it (the last member's settlement), it lands on a second look at
+// the revision — where a decision that re-reads the revision for its
+// append would look — or, failing that, inside the append of the row
+// itself, so a decision that reads once meets it as a stale append.
+locus Raced {
+    params {
+        inner: dna::MemJournal = dna::MemJournal { };
+        arm_entity: String = ""; // a `work.settled` row that arms it
+        land_kind: String = "";
+        land_entity: String = "";
+        land_body: String = "";
+        armed: Bool = false;
+        landed: Bool = false;
+        looks: Int = 0;
+        landed_at: Int = -1;
+        // and, once, it refuses one row outright, as a record that could
+        // not be written does
+        refuse_entity: String = "";
+        refusals: Int = 0;
+    }
+    fn land() {
+        self.landed = true;
+        let r = self.inner.append(self.inner.revision(), self.land_kind, self.land_entity, self.land_body);
+        self.landed_at = r.revision;
+    }
+    fn refresh() -> Bool { self.looks = 0; return self.inner.refresh(); }
+    fn revision() -> Int {
+        self.looks = self.looks + 1;
+        if self.armed && !self.landed && self.looks == 2 { self.land(); }
+        return self.inner.revision();
+    }
+    fn head() -> String { return self.inner.head(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.inner.append(expected, kind, entity, body); }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if kind == "step.completed" && entity == self.refuse_entity && self.refusals == 0 {
+            self.refusals = self.refusals + 1;
+            return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() };
+        }
+        if kind == self.land_kind && entity == self.land_entity && self.armed && !self.landed { self.land(); }
+        let r = self.inner.append_exact(expected, kind, entity, body);
+        if r.ok && kind == "work.settled" && entity == self.arm_entity { self.armed = true; }
+        return r;
+    }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+}
+
+// ---- the owner ------------------------------------------------------------
+
+// What a step is asked to run: which leaf runs on which performer kind.
+type StepAsk { scope: String = ""; task_id: String = ""; step_id: String = ""; kinds: String = ""; }
+topic StepAsks { payload: StepAsk; subject: "wf.step.ask"; keyed_by scope; }
+
+// The owner births a StepRun in its handler — the resident shape of card
+// 03 — from the bound recipe it holds, and never releases it.
+locus Owner {
+    params { scope: String = ""; cat: dna::WorkflowCatalog = dna::WorkflowCatalog { }; asked: Int = 0; }
+    bus { subscribe StepAsks as on_ask where key == self.scope; }
+    accept(s: dna::StepRun) { }
+    @unbounded
+    fn on_ask(a: StepAsk) {
+        self.asked = self.asked + 1;
+        let mut leaves = dna::LeafSpecRows { };
+        let mut i = 0;
+        while i < self.cat.bound_count() {
+            let n = self.cat.bound_at(i);
+            if n.kind == "work" && n.parent == a.step_id {
+                let kind = dna::map_get(a.kinds, n.member_key, "=");
+                leaves.push(dna::leaf_of(n, a.task_id, kind));
+            }
+            i = i + 1;
+        }
+        let step = self.cat.bound_node(a.step_id);
+        dna::StepRun { scope: self.scope, step_id: a.step_id, task_id: a.task_id, workflow_id: step.workflow_id, step_index: step.step_index, leaves: leaves };
+    }
+}
+
+// ---- the proof ------------------------------------------------------------
+
+main locus App {
+    params {
+        cat: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        limits: dna::AdmissionLimits = dna::AdmissionLimits { };
+        rt: dna::WorkflowRuntime = dna::WorkflowRuntime {
+            scope: "main",
+            journal: Raced {
+                refuse_entity: "t5/wf1/s0",
+                arm_entity: "t4/wf1/s0/a", land_kind: "step.completed", land_entity: "t4/wf1/s0",
+                land_body: dna::encode_step_outcome(dna::StepOutcome {
+                    step_id: "t4/wf1/s0", task_id: "t4", disposition: "completed", members: "a b",
+                    transition: dna::TransitionRef { scope: "main", key: "t4/wf1/s0", proposal_id: "t4/wf1/s0@completed" }
+                })
+            },
+            work: dna::WorkSystem { service: Counting { }, agent: Delayed { }, human: Failing { } }
+        };
+        owner: Owner = Owner { scope: "main" };
+        lives: String = "";
+        steps: String = ""; // "<step>:<disposition>[:<failed member>] " per StepSettled
+        members: String = ""; // "<step>/<key>:<disposition> " per MemberSettled
+    }
+    bus {
+        subscribe dna::RunLives as on_life;
+        subscribe dna::StepSettled as on_step;
+        subscribe dna::MemberSettled as on_member;
+        publish StepAsks;
+        publish dna::MemberSettled;
+        publish dna::TransitionProposed;
+    }
+    fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
+    fn on_step(s: dna::StepSettlement) { self.steps = self.steps + s.step_id + ":" + s.disposition + (if len(s.failed_member) > 0 { ":" + s.failed_member } else { "" }) + " "; }
+    fn on_member(m: dna::MemberSettlement) { self.members = self.members + m.step_id + "/" + m.key + ":" + m.disposition + " "; }
+    @unbounded
+    fn count(list: String, item: String) -> Int {
+        let mut n = 0;
+        let mut rest = list;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            if rest[0..sp] == item { n = n + 1; }
+            rest = rest[(sp + 1)..len(rest)];
+        }
+        return n;
+    }
+    @unbounded
+    fn rows(kind: String, entity: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.rt.journal.revision() {
+            let e = self.rt.journal.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    // Let the queue dispatch; for checks that expect nothing to happen.
+    fn settle() {
+        let mut i = 0;
+        while i < 10 {
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    // Wait until `item` has been seen `n` times in `lives`, or give up
+    // after twenty seconds and let the assertion say what happened.
+    @unbounded
+    fn until_life(item: String, n: Int) {
+        let mut i = 0;
+        while i < 1000 {
+            if self.count(self.lives, item) >= n { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    @unbounded
+    fn until_step(item: String) {
+        let mut i = 0;
+        while i < 1000 {
+            if self.count(self.steps, item) >= 1 { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    // The workflow is admitted in the record, with its bound recipe, as
+    // card 07 admits it.
+    fn admit(task_id: String, definition: String) {
+        let x = self.cat.expand(task_id, definition, 1, self.limits);
+        std::test::assert(x.ok, task_id + " expands: " + x.why);
+        let body = dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: task_id, definition: definition, revision: 1, request: "ask-" + task_id,
+            recipe: self.cat.encode_bound(), limits: self.limits, works: x.works, tasks: x.tasks, steps: x.steps, depth: x.depth
+        });
+        let r = self.rt.journal.append(self.rt.journal.revision(), "workflow.admitted", task_id, body);
+        std::test::assert(r.ok, task_id + " is admitted in the record: " + r.error);
+        // the owner runs steps from the same recipe
+        let y = self.owner.cat.expand(task_id, definition, 1, self.limits);
+        std::test::assert(y.ok, task_id + " expands for the owner: " + y.why);
+    }
+    fn reply(attempt_id: String, disposition: String) -> dna::Executed {
+        return self.rt.settle(attempt_id, dna::WorkResult { disposition: disposition, result: "later", performer: "delayed", attempt_id: attempt_id });
+    }
+    run() {
+        std::test::assert_eq_str(self.cat.define("ship", 1, 1, "ship it"), "", "ship");
+        std::test::assert_eq_str(self.cat.leaf("ship", 1, 0, "a", dna::WorkRequest { objective: "build", target: "tree" }, 1), "", "a");
+        std::test::assert_eq_str(self.cat.leaf("ship", 1, 0, "b", dna::WorkRequest { objective: "test", target: "tree" }, 1), "", "b");
+        std::test::assert_eq_str(self.cat.define("retry", 1, 1, "try twice"), "", "retry");
+        std::test::assert_eq_str(self.cat.leaf("retry", 1, 0, "r", dna::WorkRequest { objective: "ask alice" }, 2), "", "r");
+        std::test::assert_eq_str(self.owner.cat.define("ship", 1, 1, "ship it"), "", "ship (owner)");
+        std::test::assert_eq_str(self.owner.cat.leaf("ship", 1, 0, "a", dna::WorkRequest { objective: "build", target: "tree" }, 1), "", "a (owner)");
+        std::test::assert_eq_str(self.owner.cat.leaf("ship", 1, 0, "b", dna::WorkRequest { objective: "test", target: "tree" }, 1), "", "b (owner)");
+        std::test::assert_eq_str(self.owner.cat.define("retry", 1, 1, "try twice"), "", "retry (owner)");
+        std::test::assert_eq_str(self.owner.cat.leaf("retry", 1, 0, "r", dna::WorkRequest { objective: "ask alice" }, 2), "", "r (owner)");
+
+        // ---- t1: one immediate leaf, one delayed leaf — the step waits
+        self.admit("t1", "ship");
+        let s1 = "t1/wf1/s0";
+        StepAsks <- StepAsk { scope: "main", task_id: "t1", step_id: s1, kinds: "a=service b=agent" };
+        self.until_life(s1 + "/a:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.count(self.lives, s1 + ":born"), 1, "the step was born, in the owner's handler");
+        std::test::assert_eq_int(self.rows("step.registered", s1), 1, "its whole member set is registered, once");
+        std::test::assert_eq_int(self.rows("step.activated", s1), 1, "and it activated, once");
+        std::test::assert_eq_int(self.rows("attempt.admitted", s1 + "/a/a0"), 1, "leaf a admitted its attempt");
+        std::test::assert_eq_int(self.rows("attempt.outcome", s1 + "/a/a0"), 1, "which ran and settled done at once");
+        std::test::assert_eq_int(self.rows("work.settled", s1 + "/a"), 1, "so a settled");
+        std::test::assert_eq_int(self.count(self.members, s1 + "/a:done"), 1, "and told its step, once");
+        std::test::assert_eq_int(self.count(self.lives, s1 + "/a:dissolved"), 1, "a settled WorkRun reclaims itself");
+        std::test::assert_eq_int(self.rows("attempt.admitted", s1 + "/b/a0"), 1, "leaf b admitted its attempt");
+        std::test::assert_eq_int(self.rows("effect.requested", "attempt:" + s1 + "/b/a0"), 1, "and it is running");
+        std::test::assert_eq_int(self.rows("attempt.outcome", s1 + "/b/a0"), 0, "with no outcome yet");
+        std::test::assert_eq_int(self.rows("step.completed", s1), 0, "one immediate reply and one delayed reply leave the step waiting");
+        std::test::assert_eq_int(self.count(self.steps, s1 + ":completed"), 0, "nothing terminal was published");
+        std::test::assert_eq_int(self.count(self.lives, s1 + ":dissolved"), 0, "the StepRun is alive after its run() and its handlers returned");
+        std::test::assert_eq_int(self.count(self.lives, s1 + "/b:dissolved"), 0, "and so is the outstanding WorkRun");
+
+        // a duplicate answer from a member that answered, and an answer
+        // from no member, cannot complete the step
+        dna::MemberSettled <- dna::MemberSettlement { step_id: s1, key: "a", work_id: s1 + "/a", disposition: "done" };
+        dna::MemberSettled <- dna::MemberSettlement { step_id: s1, key: "zzz", work_id: s1 + "/zzz", disposition: "done" };
+        self.settle();
+        std::test::assert_eq_int(self.rows("step.completed", s1), 0, "a duplicate `a` and a stray `zzz` complete nothing");
+        std::test::assert_eq_int(self.count(self.steps, s1 + ":completed"), 0, "and nothing terminal was published");
+        std::test::assert_eq_int(self.count(self.lives, s1 + ":dissolved"), 0, "and the step still waits");
+        // a stray reply for another attempt is not b's
+        let stray = self.reply(s1 + "/b/a7", "done");
+        std::test::assert(!stray.ok, "a reply for an attempt never admitted is not recorded: " + stray.why);
+        self.settle();
+        std::test::assert_eq_int(self.rows("work.settled", s1 + "/b"), 0, "b is still outstanding");
+
+        // the delayed reply arrives: b settles, the step completes, once
+        let late = self.reply(s1 + "/b/a0", "done");
+        std::test::assert(late.ok && late.disposition == "done", "the late reply settles b's attempt: " + late.why);
+        self.until_step(s1 + ":completed");
+        self.until_life(s1 + ":dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("work.settled", s1 + "/b"), 1, "b settled on its late reply");
+        std::test::assert_eq_int(self.rows("step.completed", s1), 1, "and the step completed, one row");
+        std::test::assert_eq_int(self.count(self.steps, s1 + ":completed"), 1, "one terminal outcome published");
+        std::test::assert_eq_int(self.count(self.lives, s1 + ":dissolved"), 1, "the completed StepRun reclaimed itself");
+        std::test::assert_eq_int(self.count(self.lives, s1 + "/b:dissolved"), 1, "and so did b");
+        // delivered again, the reply changes nothing
+        let again = self.reply(s1 + "/b/a0", "done");
+        std::test::assert(again.ok && again.reused, "a second delivery of b's reply is a no-op: " + again.why);
+        self.settle();
+        std::test::assert_eq_int(self.rows("work.settled", s1 + "/b"), 1, "no second settlement");
+        std::test::assert_eq_int(self.count(self.steps, s1 + ":completed"), 1, "no second outcome");
+
+        // the id of a committed proposal, carrying another transition, is a
+        // conflict: answered from what was committed, never re-decided
+        dna::TransitionProposed <- dna::TransitionProposal {
+            scope: "main", key: s1, proposal_id: s1 + "@completed", kind: "step.failed", entity: s1,
+            body: dna::encode_step_outcome(dna::StepOutcome { step_id: s1, task_id: "t1", disposition: "failed", members: "a b", failed_member: "a", transition: dna::TransitionRef { scope: "main", key: s1, proposal_id: s1 + "@completed" } })
+        };
+        self.settle();
+        std::test::assert_eq_int(self.rt.conflicts, 1, "a committed proposal id carrying another transition is a conflict");
+        std::test::assert_eq_int(self.rows("step.failed", s1), 0, "and nothing landed");
+
+        // ---- t4: both delayed, answered in the other order
+        self.admit("t4", "ship");
+        let s4 = "t4/wf1/s0";
+        StepAsks <- StepAsk { scope: "main", task_id: "t4", step_id: s4, kinds: "a=agent b=agent" };
+        self.until_life(s4 + "/b:born", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("effect.requested", ""), 4, "both attempts of t4 are running");
+        let b4 = self.reply(s4 + "/b/a0", "done");
+        std::test::assert(b4.ok, "b answers first: " + b4.why);
+        self.until_life(s4 + "/b:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("step.completed", s4), 0, "one of two is not the step");
+        std::test::assert_eq_int(self.count(self.lives, s4 + ":dissolved"), 0, "the step waits for a");
+        // a's settlement arms the raced record: another runtime commits
+        // the same completion under this one's decision
+        let replayed_before = self.rt.replayed;
+        let a4 = self.reply(s4 + "/a/a0", "done");
+        std::test::assert(a4.ok, "then a: " + a4.why);
+        self.until_step(s4 + ":completed");
+        self.until_life(s4 + ":dissolved", 1);
+        std::test::assert_eq_int(self.rows("step.completed", s4), 1, "b then a completes the step as a then b did — one row, though two runtimes decided it");
+        std::test::assert_eq_int(self.count(self.steps, s4 + ":completed"), 1, "once");
+        std::test::assert_eq_int(self.rt.replayed - replayed_before, 1, "this runtime's append met the other's row, caught up, and answered from what was committed");
+        std::test::assert_eq_int(self.rt.refused, 1, "without refusing the proposal");
+
+        // ---- t2: a failed member fails the step at once; the sibling's
+        //      later reply cannot reopen it, and the step stays until the
+        //      sibling has settled
+        self.admit("t2", "ship");
+        let s2 = "t2/wf1/s0";
+        StepAsks <- StepAsk { scope: "main", task_id: "t2", step_id: s2, kinds: "a=agent b=human" };
+        self.until_step(s2 + ":failed:b");
+        self.settle();
+        std::test::assert_eq_int(self.rows("attempt.outcome", s2 + "/b/a0"), 1, "b's attempt failed");
+        std::test::assert_eq_int(self.rows("work.settled", s2 + "/b"), 1, "b settled failed: no allowance left");
+        std::test::assert_eq_int(self.rows("step.failed", s2), 1, "the step failed at once, one row");
+        std::test::assert_eq_int(self.count(self.steps, s2 + ":failed:b"), 1, "one terminal outcome, naming the member");
+        std::test::assert_eq_int(self.rows("step.completed", s2), 0, "a failed member cannot cause success");
+        std::test::assert_eq_int(self.count(self.lives, s2 + ":dissolved"), 0, "the step stays: a is still outstanding");
+        std::test::assert_eq_int(self.count(self.lives, s2 + "/a:dissolved"), 0, "and a is reachable");
+        std::test::assert_eq_int(self.count(self.lives, s2 + "/b:dissolved"), 1, "b, settled, reclaimed itself");
+        let a2 = self.reply(s2 + "/a/a0", "done");
+        std::test::assert(a2.ok && a2.disposition == "done", "a's late reply is recorded under the failed step: " + a2.why);
+        self.until_life(s2 + ":dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("work.settled", s2 + "/a"), 1, "a settled done, for the record");
+        std::test::assert_eq_int(self.rows("step.completed", s2), 0, "which reopens nothing");
+        std::test::assert_eq_int(self.rows("step.failed", s2), 1, "the one outcome stands");
+        std::test::assert_eq_int(self.count(self.steps, s2 + ":failed:b"), 1, "one outcome");
+        std::test::assert_eq_int(self.count(self.lives, s2 + ":dissolved"), 1, "drained, the StepRun reclaimed itself");
+        std::test::assert_eq_int(self.count(self.lives, s2 + "/a:dissolved"), 1, "and a with it");
+
+        // a proposal the state refuses lands nothing: the record is not
+        // the place a transition is found invalid
+        dna::TransitionProposed <- dna::TransitionProposal {
+            scope: "main", key: s2, proposal_id: s2 + "@completed", kind: "step.completed", entity: s2,
+            body: dna::encode_step_outcome(dna::StepOutcome { step_id: s2, task_id: "t2", disposition: "completed", members: "a b", transition: dna::TransitionRef { scope: "main", key: s2, proposal_id: s2 + "@completed" } })
+        };
+        self.settle();
+        std::test::assert_eq_int(self.rows("step.completed", s2), 0, "a completion proposed for a failed step is refused before it is appended");
+        std::test::assert_eq_int(self.rt.refused, 2, "the conflict and the refusal are the runtime's two refusals so far");
+
+        // ---- t3: a leaf with allowance left is retried before it fails
+        self.admit("t3", "retry");
+        let s3 = "t3/wf1/s0";
+        StepAsks <- StepAsk { scope: "main", task_id: "t3", step_id: s3, kinds: "r=human" };
+        self.until_step(s3 + ":failed:r");
+        self.until_life(s3 + ":dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("attempt.admitted", s3 + "/r/a0"), 1, "the first attempt");
+        std::test::assert_eq_int(self.rows("attempt.admitted", s3 + "/r/a1"), 1, "and the retry");
+        std::test::assert_eq_int(self.rows("attempt.admitted", s3 + "/r/a2"), 0, "and no third: the allowance is two");
+        std::test::assert_eq_int(self.rows("work.settled", s3 + "/r"), 1, "r settled once, after its allowance");
+        std::test::assert_eq_int(self.rows("step.failed", s3), 1, "the step failed once");
+        std::test::assert_eq_int(self.count(self.lives, s3 + ":dissolved"), 1, "and reclaimed itself");
+
+        // ---- t5: an append the record refuses stops the path, and moves
+        //      nothing: the same transition, proposed again, is decided
+        //      against the state as it is, and lands
+        self.admit("t5", "ship");
+        let s5 = "t5/wf1/s0";
+        StepAsks <- StepAsk { scope: "main", task_id: "t5", step_id: s5, kinds: "a=service b=service" };
+        self.until_step(s5 + ":refused");
+        self.until_life(s5 + ":dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("work.settled", s5 + "/a") + self.rows("work.settled", s5 + "/b"), 2, "both leaves settled done");
+        std::test::assert_eq_int(self.rows("step.completed", s5), 0, "the record refused the completion: no row");
+        std::test::assert_eq_int(self.count(self.steps, s5 + ":refused"), 1, "and the step said so, once");
+        std::test::assert_eq_int(self.count(self.lives, s5 + ":dissolved"), 1, "and, drained, reclaimed itself");
+        dna::TransitionProposed <- dna::TransitionProposal {
+            scope: "main", key: s5, proposal_id: s5 + "@completed", kind: "step.completed", entity: s5,
+            body: dna::encode_step_outcome(dna::StepOutcome { step_id: s5, task_id: "t5", disposition: "completed", members: "a b", transition: dna::TransitionRef { scope: "main", key: s5, proposal_id: s5 + "@completed" } })
+        };
+        self.settle();
+        std::test::assert_eq_int(self.rows("step.completed", s5), 1, "proposed again, the completion is decided against a state the refused append did not move, and lands");
+
+        // ---- the record: every transition landed exactly, through one hand
+        std::test::assert(self.rt.journal.verify_chain(), "the record's chain holds");
+        std::test::assert_eq_int(self.rt.conflicts, 1, "the one conflict was the forged one");
+        std::test::assert_eq_int(self.rt.refused, 3, "the conflict, the invalid proposal and the append the record refused: nothing else was refused");
+        std::test::assert_eq_int(self.owner.asked, 5, "five steps were asked");
+        std::test::assert_eq_int(self.rt.requests, 10, "ten attempts were admitted and each was asked for once, after its admission was answered");
+    }
+}
+
+fn main() { App { }; }

@@ -1098,9 +1098,71 @@ acted and died before its outcome was saved is a later card's. The
 legacy `WorkSystem` request loop, which retries internally, stays for
 legacy callers.
 
+## Workflow execution: one step
+
+One active step and its leaf Works are resident loci
+(`dna/core/workflow_runtime.hl`), in the shape the lifetime proof
+established: a `StepRun` is an accepted child no parent releases, born
+from its owner's handler, alive after its `run()` and every handler
+return, advancing from its own handlers keyed by its id, ending with
+`terminate;`. It owns its `WorkRun`s the same way, one per leaf, born
+from the handler that heard the activation land. Neither holds a
+journal: each proposes every transition to the one `WorkflowRuntime`
+over the bus — `TransitionProposed`, keyed by scope — holds one
+proposal at a time, and acts only on that proposal's answer, and only on
+`ok`. A refusal dispatches nothing.
+
+`WorkflowRuntime` is the committer, and the executor, over one journal.
+A proposal is decided at one reading: the runtime refreshes, applies
+what the record holds beyond what its projection has seen and remembers
+each committed proposal's id and revision, and that reading's revision
+is the one the decision is taken at and the one the append is exact at
+— never a second look. A proposal already committed is answered again
+from what was committed, if it is the same proposal; the same id
+carrying another transition is a conflict, refused with nothing
+appended. Otherwise the transition is validated against the projection
+without touching it (a dry run of card 06's rules), appended exactly at
+that revision, and applied for real once the append has landed. When
+the record has moved under the decision — another runtime committed the
+same transition, or anything else — the append is stale and the
+decision is taken again against the new state: the same transition
+committed meanwhile is answered from its row, and one row stands. An
+append the record refuses answers a refusal and moves nothing, so the
+same transition proposed again is decided against the state as it is.
+A proposal the state refuses lands nothing: the record is not the place
+a transition is found invalid. A Work asks the runtime to run its
+admitted attempt by id (`AttemptRequested`); the runtime reads the
+admission from the record and runs it through the one-attempt path
+above, and every reply — the one that came back from the call and the
+one that came later, through `settle` — reaches the Work the same way
+(`AttemptReplied`, keyed by the Work), so an immediate and a delayed
+reply are one reducer and one completion path.
+
+The barrier holds as the contract has it. A `StepRun` registers its
+whole member set (`step.registered`), activates (`step.activated`), and
+only then births its leaves; a member answers once, by its key
+(`MemberSettled`, keyed by the step): a member that answered again and
+an answer from no member of the step change nothing. Two required
+leaves complete the step in either order; one immediate reply and one
+delayed one leave it waiting, alive, with the outstanding Work
+reachable. A member that failed fails the step at once
+(`step.failed`, naming the member) and a step whose every member settled
+done completes it (`step.completed`); either publishes one terminal
+outcome (`StepSettled`, keyed by the step) and settles the step. After
+that a sibling's later reply is recorded — its attempt's outcome and its
+Work's settlement land as facts — and reopens nothing; the `StepRun`
+stays until every member it dispatched has settled, then reclaims
+itself, and a `WorkRun` reclaims itself once its settlement is answered.
+A leaf with allowance left is retried before it fails: each attempt is
+admitted as a proposal of its own, and a retry the record will not take
+— the step failed meanwhile — settles the Work failed on the attempt
+that failed, the drain. Nothing here orders steps, spawns child
+workflows or survives a restart; those are later cards.
+
 Nothing yet runs a workflow end to end; these are the durable shapes it
-is written in, the state they add up to, the door it is admitted by, and
-the one step it takes at a time.
+is written in, the state they add up to, the door it is admitted by,
+the one attempt it takes at a time, and the one step that keeps its
+members alive across delayed replies.
 
 ## Storage interfaces
 
