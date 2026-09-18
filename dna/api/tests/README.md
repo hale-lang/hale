@@ -1,30 +1,38 @@
 # Read-only API integration tests
 
-These tests launch the real Hale HTTP service over a temporary Git Record. They
-write the existing native journal/receipt format directly to construct exact
-projection states, including approval before activation and redaction with a
-stale local blob. They do not claim to test domain admission or execution.
+The native Hale runner exercises 25 scenarios against the real HTTP service and
+temporary Git Records. Fixtures use the native journal and receipt writers to
+construct exact projection states, including approval before activation and
+redaction with a stale local blob. They do not test domain admission or execution.
 
-Build the API once, then run the suite with the contract dependencies installed:
+From the repository root, build the API once and run the suite:
 
 ```sh
 hale build dna/api
-python3 -m venv /tmp/hale-api-tests-venv
-/tmp/hale-api-tests-venv/bin/python -m pip install -r dna/api/contract/v1/requirements.txt
-/tmp/hale-api-tests-venv/bin/python -m unittest discover -s dna/api/tests -v
+HALE_API_BIN="$PWD/dna/api/api" \
+HALE_API_CONTRACT_ROOT="$PWD/dna/api/contract/v1" \
+hale test dna/api/tests
 ```
 
-Set `HALE_API_BIN=/absolute/path/to/api` to test a binary built elsewhere. The
-suite deliberately does not rebuild the service; this avoids concurrent builds
-and makes the tested binary explicit. Every success/error API response is checked
-against the checked-in JSON Schema. Missing `jsonschema`, schema or service binary
-fails the suite rather than silently skipping a gate.
+Both paths must be absolute; `HALE_API_BIN` can select a binary built elsewhere.
+The suite does not rebuild the service. Every success/error API response is
+checked against the checked-in JSON Schema using the native contract validator.
+Its supported schema profile is documented in the [contract README](../contract/v1/README.md).
+Missing schema or service binary fails the suite. `hale test` reports one test
+program; that program executes all 25 named cases and remains silent on success.
 
-The fixtures need Git and loopback sockets. Each test owns a temporary directory,
-ephemeral ports, service process group and optional Python identity provider.
-Cleanup terminates only those processes, with bounded waits. Database/store URL
-and evidence-key environment settings are removed from child environments. No
-Postgres, Docker, organization body, external identity provider or model runs.
+Requirements are Hale, Git, curl, standard POSIX tools, and loopback sockets. Each
+case owns its temporary Record and API process; the suite hosts a native local
+identity provider. Port selection probes available candidates, and startup checks
+the owned child and Record identity. HTTP requests and startup waits are bounded.
+Normal cleanup reaps children; an exit watcher also kills owned children and
+removes scratch files when an assertion terminates the runner abruptly.
+
+Before creating fixtures, the runner re-executes with Git plumbing overrides,
+database/store URLs, evidence keys and inherited OIDC secrets removed. Global Git
+configuration, curl configuration, proxies and model discovery are disabled for
+the fixtures. No Postgres, Docker, organization body, external identity provider
+or model runs.
 
 Coverage includes:
 
@@ -42,7 +50,7 @@ Coverage includes:
   mapped session identity, logout, session loss on restart and configuration
   failure without a trusted-local fallback.
 
-The identity-provider fixture follows the existing native OIDC test's direct
+The identity-provider fixture follows the existing principal OIDC test's direct
 token-endpoint trust model. It does not test a production provider, TLS or token
 signature validation. These tests do not replace the native principal/domain
 tests, storage tests, browser interaction tests or complete service-stack gates.

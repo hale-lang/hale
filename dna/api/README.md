@@ -77,20 +77,23 @@ See the [contract](contract/v1/README.md) for response schemas and the
 
 ## Validate
 
-Create a virtual environment and install `contract/v1/requirements.txt`, then:
+From the source checkout, run the native Hale contract and integration tests:
 
 ```sh
-python dna/api/contract/v1/validate.py
+export HALE_API_CONTRACT_ROOT="$PWD/dna/api/contract/v1"
+hale test dna/api/contract/v1/tests
 hale check dna/api
 hale build dna/api
-python -m unittest discover -s dna/api/tests -p 'test_*.py' -v
+HALE_API_BIN="$PWD/dna/api/api" hale test dna/api/tests
 hale test dna/operations/tests
 cargo test -p hale-dna -p hale-iris
 ```
 
 The integration suite starts only owned loopback processes and temporary Git
-repositories. It validates live responses against the same schemas as the
-contract fixtures, including a local OIDC issuer, restart, pagination, refusal
+repositories. It validates live responses against the same contract as the
+fixtures, including a local OIDC issuer, restart, pagination, refusal
 and content suppression. It requires socket access; no paid model, production
 database or organization body is involved. `HALE_API_BIN` selects an already
 built service. CI builds with the checkout's compiler and runs this suite.
+The native contract checker supports the schema profile used by this API and
+rejects unsupported schema constructs; it is not a general JSON Schema validator.

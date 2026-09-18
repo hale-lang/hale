@@ -225,14 +225,13 @@ jobs:
         env:
           HALE_DNA_DISCOVER: "off"
         run: |
-          python3 -m venv "$RUNNER_TEMP/hale-api-contract"
-          "$RUNNER_TEMP/hale-api-contract/bin/python" -m pip install -r dna/api/contract/v1/requirements.txt
-          "$RUNNER_TEMP/hale-api-contract/bin/python" dna/api/contract/v1/validate.py
+          export HALE_API_CONTRACT_ROOT="$PWD/dna/api/contract/v1"
+          ./target/release/hale test dna/api/contract/v1/tests
           ./target/release/hale check dna/api
           ./target/release/hale build dna/api
           HALE_BIN="$PWD/target/release/hale" \
             HALE_API_BIN="$PWD/dna/api/api" \
-            "$RUNNER_TEMP/hale-api-contract/bin/python" -m unittest discover -s dna/api/tests -p 'test_*.py' -v
+            ./target/release/hale test dna/api/tests
           # Domain fixtures own temporary Git roots and do not need a database.
           (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/target/release/hale" test "$GITHUB_WORKSPACE/dna/operations/tests")
 

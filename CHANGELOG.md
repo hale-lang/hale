@@ -17,8 +17,9 @@ behavior.
 - The service uses trusted loopback access or the existing OIDC member sessions.
   Reads return structured errors, bounded pages and source revisions; unavailable
   receipt text is explicitly withheld. OpenAPI/JSON Schema fixtures and live
-  Git/HTTP/OIDC tests cover the boundary. Commands, Compose packaging and the
-  browser cockpit remain subsequent work; see [`dna/api/README.md`](dna/api/README.md).
+  Git/HTTP/OIDC tests written in Hale cover the boundary. Commands, Compose
+  packaging and the browser cockpit remain subsequent work; see
+  [`dna/api/README.md`](dna/api/README.md).
 
 ### DNA: a publish the membrane loses is not a lost fact (GH #682)
 

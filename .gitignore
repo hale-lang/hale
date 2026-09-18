@@ -92,3 +92,5 @@ dna/host/host
 
 # Source-built service API; the read-contract files are tracked.
 dna/api/api
+dna/api/contract/v1/check/check
+dna/api/tests/read_api_test
