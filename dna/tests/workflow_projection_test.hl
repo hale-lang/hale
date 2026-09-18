@@ -1,0 +1,451 @@
+// dna/tests/workflow_projection_test.hl — the state of an execution, read
+// from its facts and nothing else (DNA workflow card 06).
+//
+// The canonical example of the contract (§6) runs to completion here as
+// facts: the root admitted with its bound recipe, each step registered
+// against it and activated in order, `a` attempted, failed and retried,
+// `b` answered by its whole child execution down to the grandchild, `d`
+// after `s0` completed, and the root settled last. Around it: every way
+// a fact can fail to belong — the wrong entity on the row, a member the
+// recipe never bound, a child claiming another's key, an attempt before
+// the last one's outcome, a Work settling without its basis, a step
+// completing early, a child settling before its own steps, a Task
+// settling while a responsibility is outstanding — and each leaves the
+// state exactly as it was. A second execution fails and drains; a third
+// is cancelled and stops admitting.
+//
+// The whole accepted history is replayed into a fresh projection, which
+// must arrive at the same state, and into the same one again, which must
+// move nothing. `replay` carries `@no_syscall`; the projection holds no
+// journal, gateway or model, so there is nothing for a replay to reach.
+
+import "../core" as dna;
+
+type Row { kind: String = ""; entity: String = ""; body: String = ""; }
+
+@form(vec)
+locus Rows {
+    capacity { heap rows of Row; }
+}
+
+main locus App {
+    params {
+        p: dna::WorkflowProjection = dna::WorkflowProjection { };
+        q: dna::WorkflowProjection = dna::WorkflowProjection { };
+        cat: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        // the same definitions with one leaf's content changed, and with
+        // one leaf added: what a child's admission must not carry
+        alt: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        wider: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        narrow: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        // a chain of definitions deeper than any fixed guess: what a
+        // caller's own max_depth admits, the fence has to reach
+        deep: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        log: Rows = Rows { };
+        limits: dna::AdmissionLimits = dna::AdmissionLimits { };
+    }
+    // ---- the facts, encoded by card 05
+    fn admission(task_id: String, definition: String, parent: String, step_id: String, key: String, recipe: String, inputs: String) -> String {
+        return dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: task_id, definition: definition, revision: 1,
+            parent_task: parent, spawning_step: step_id, member_key: key,
+            inputs: inputs, recipe: recipe, limits: self.limits,
+            works: 4, tasks: 3, steps: 5, depth: 3
+        });
+    }
+    fn registration(step_id: String, task_id: String, index: Int, members: String) -> String {
+        return dna::encode_members(dna::RegisteredMembers {
+            step_id: step_id, task_id: task_id, workflow_id: task_id + "/wf1",
+            step_index: index, members: members
+        });
+    }
+    fn activation(step_id: String, task_id: String, index: Int, keys: String) -> String {
+        return dna::encode_activation(dna::ActivatedStep { step_id: step_id, task_id: task_id, workflow_id: task_id + "/wf1", step_index: index, dispatched: keys });
+    }
+    fn attempt(work_id: String, step_id: String, task_id: String, no: Int, objective: String) -> String {
+        return dna::encode_attempt(dna::AdmittedAttempt {
+            attempt_id: dna::attempt_id_of(work_id, no), work_id: work_id,
+            step_id: step_id, task_id: task_id, attempt_no: no, performer_kind: "agent",
+            request: dna::WorkRequest { objective: objective }
+        });
+    }
+    fn outcome(work_id: String, no: Int, disposition: String, result: String) -> String {
+        return dna::encode_attempt_outcome(dna::AttemptOutcome {
+            attempt_id: dna::attempt_id_of(work_id, no), work_id: work_id,
+            disposition: disposition, performer: "architect", result: result,
+            result_ref: if len(result) > 0 { "sha256:" + result } else { "" }
+        });
+    }
+    fn settle(work_id: String, step_id: String, no: Int, disposition: String) -> String {
+        return dna::encode_work_outcome(dna::WorkOutcome {
+            work_id: work_id, step_id: step_id, attempt_id: dna::attempt_id_of(work_id, no),
+            disposition: disposition
+        });
+    }
+    fn step_outcome(step_id: String, task_id: String, disposition: String, members: String, failed: String) -> String {
+        return dna::encode_step_outcome(dna::StepOutcome { step_id: step_id, task_id: task_id, disposition: disposition, members: members, failed_member: failed });
+    }
+    fn task_outcome(task_id: String, disposition: String, parent: String, step_id: String) -> String {
+        return dna::encode_workflow_outcome(dna::WorkflowOutcome {
+            task_id: task_id, disposition: disposition,
+            reason: if disposition == "done" { "" } else { "it did not" },
+            parent_task: parent, spawning_step: step_id
+        });
+    }
+    // ---- applying them, through the one entry point the compiler checked
+    fn must(kind: String, entity: String, body: String, label: String) {
+        let a = dna::replay(self.p, kind, entity, body);
+        std::test::assert(a.ok && a.changed, label + ": " + a.why);
+        self.log.push(Row { kind: kind, entity: entity, body: body });
+    }
+    fn must_replay(kind: String, entity: String, body: String, label: String) {
+        let before = self.p.digest();
+        let a = dna::replay(self.p, kind, entity, body);
+        std::test::assert(a.ok && !a.changed, label + ": " + a.why);
+        std::test::assert_eq_str(self.p.digest(), before, label + " (a replay moved something)");
+    }
+    fn must_refuse(kind: String, entity: String, body: String, needle: String, label: String) {
+        let before = self.p.digest();
+        let a = dna::replay(self.p, kind, entity, body);
+        std::test::assert(!a.ok, label + " (it was accepted)");
+        std::test::assert(std::str::contains(a.why, needle), label + ": " + a.why);
+        std::test::assert_eq_str(self.p.digest(), before, label + " (a refusal moved something)");
+    }
+    run() {
+        // ---- the canonical example, bound
+        std::test::assert_eq_str(self.cat.define("close-month", 1, 2, "close the month"), "", "close-month");
+        std::test::assert_eq_str(self.cat.define("collect-receipts", 1, 2, ""), "", "collect-receipts");
+        std::test::assert_eq_str(self.cat.define("chase-supplier", 1, 1, ""), "", "chase-supplier");
+        std::test::assert_eq_str(self.cat.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed" }, 3), "", "a");
+        std::test::assert_eq_str(self.cat.child("close-month", 1, 0, "b", "collect-receipts", 1), "", "b");
+        std::test::assert_eq_str(self.cat.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries" }, 1), "", "d");
+        std::test::assert_eq_str(self.cat.leaf("collect-receipts", 1, 0, "b1", dna::WorkRequest { objective: "list missing receipts" }, 1), "", "b1");
+        std::test::assert_eq_str(self.cat.child("collect-receipts", 1, 1, "c", "chase-supplier", 1), "", "c");
+        std::test::assert_eq_str(self.cat.leaf("chase-supplier", 1, 0, "c1", dna::WorkRequest { objective: "email the supplier" }, 2), "", "c1");
+        let x1 = self.cat.expand("t1", "close-month", 1, self.limits);
+        std::test::assert(x1.ok, "t1 expands: " + x1.why);
+        let recipe1 = self.cat.encode_bound();
+        let recipe_b = self.cat.encode_bound_under("t1.s0.b");
+        let recipe_c = self.cat.encode_bound_under("t1.s0.b.s1.c");
+        let x2 = self.cat.expand("t2", "close-month", 1, self.limits);
+        std::test::assert(x2.ok, "t2 expands: " + x2.why);
+        let recipe2 = self.cat.encode_bound();
+        let recipe2_b = self.cat.encode_bound_under("t2.s0.b");
+        let x3 = self.cat.expand("t3", "close-month", 1, self.limits);
+        std::test::assert(x3.ok, "t3 expands: " + x3.why);
+        let recipe3 = self.cat.encode_bound();
+        let recipe3_b = self.cat.encode_bound_under("t3.s0.b");
+        let x4 = self.cat.expand("t4", "close-month", 1, self.limits);
+        std::test::assert(x4.ok, "t4 expands: " + x4.why);
+        let recipe4 = self.cat.encode_bound();
+        let recipe4_b = self.cat.encode_bound_under("t4.s0.b");
+        let recipe4_c = self.cat.encode_bound_under("t4.s0.b.s1.c");
+        // the same execution expanded from a catalog whose child leaf says
+        // something else, and from one with a leaf more
+        std::test::assert_eq_str(self.alt.define("close-month", 1, 2, ""), "", "alt");
+        std::test::assert_eq_str(self.alt.define("collect-receipts", 1, 2, ""), "", "alt");
+        std::test::assert_eq_str(self.alt.define("chase-supplier", 1, 1, ""), "", "alt");
+        std::test::assert_eq_str(self.alt.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed" }, 3), "", "alt a");
+        std::test::assert_eq_str(self.alt.child("close-month", 1, 0, "b", "collect-receipts", 1), "", "alt b");
+        std::test::assert_eq_str(self.alt.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries" }, 1), "", "alt d");
+        std::test::assert_eq_str(self.alt.leaf("collect-receipts", 1, 0, "b1", dna::WorkRequest { objective: "list EVERY receipt" }, 1), "", "alt b1");
+        std::test::assert_eq_str(self.alt.child("collect-receipts", 1, 1, "c", "chase-supplier", 1), "", "alt c");
+        std::test::assert_eq_str(self.alt.leaf("chase-supplier", 1, 0, "c1", dna::WorkRequest { objective: "email the supplier" }, 2), "", "alt c1");
+        let xa = self.alt.expand("t1", "close-month", 1, self.limits);
+        std::test::assert(xa.ok, "the altered catalog expands: " + xa.why);
+        let recipe_b_altered = self.alt.encode_bound_under("t1.s0.b");
+        std::test::assert_eq_str(self.wider.define("close-month", 1, 2, ""), "", "wider");
+        std::test::assert_eq_str(self.wider.define("collect-receipts", 1, 2, ""), "", "wider");
+        std::test::assert_eq_str(self.wider.define("chase-supplier", 1, 1, ""), "", "wider");
+        std::test::assert_eq_str(self.wider.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed" }, 3), "", "wider a");
+        std::test::assert_eq_str(self.wider.child("close-month", 1, 0, "b", "collect-receipts", 1), "", "wider b");
+        std::test::assert_eq_str(self.wider.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries" }, 1), "", "wider d");
+        std::test::assert_eq_str(self.wider.leaf("collect-receipts", 1, 0, "b1", dna::WorkRequest { objective: "list missing receipts" }, 1), "", "wider b1");
+        std::test::assert_eq_str(self.wider.leaf("collect-receipts", 1, 0, "b2", dna::WorkRequest { objective: "list them twice" }, 1), "", "wider b2");
+        std::test::assert_eq_str(self.wider.child("collect-receipts", 1, 1, "c", "chase-supplier", 1), "", "wider c");
+        std::test::assert_eq_str(self.wider.leaf("chase-supplier", 1, 0, "c1", dna::WorkRequest { objective: "email the supplier" }, 2), "", "wider c1");
+        let xw = self.wider.expand("t1", "close-month", 1, self.limits);
+        std::test::assert(xw.ok, "the wider catalog expands: " + xw.why);
+        let recipe_b_wider = self.wider.encode_bound_under("t1.s0.b");
+        // and from one where the child has one step instead of two
+        std::test::assert_eq_str(self.narrow.define("close-month", 1, 2, ""), "", "narrow");
+        std::test::assert_eq_str(self.narrow.define("collect-receipts", 1, 1, ""), "", "narrow");
+        std::test::assert_eq_str(self.narrow.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed" }, 3), "", "narrow a");
+        std::test::assert_eq_str(self.narrow.child("close-month", 1, 0, "b", "collect-receipts", 1), "", "narrow b");
+        std::test::assert_eq_str(self.narrow.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries" }, 1), "", "narrow d");
+        std::test::assert_eq_str(self.narrow.leaf("collect-receipts", 1, 0, "b1", dna::WorkRequest { objective: "list missing receipts" }, 1), "", "narrow b1");
+        let xn = self.narrow.expand("t1", "close-month", 1, self.limits);
+        std::test::assert(xn.ok, "the narrow catalog expands: " + xn.why);
+        let recipe_b_narrow = self.narrow.encode_bound_under("t1.s0.b");
+        // a recipe binding a task nobody's parent bound: the forged child
+        let xf = self.cat.expand("t1.s0.forged", "collect-receipts", 1, self.limits);
+        std::test::assert(xf.ok, "the forgery expands: " + xf.why);
+        let recipe_forged = self.cat.encode_bound();
+
+        let s0 = "t1/wf1/s0";
+        let s1 = "t1/wf1/s1";
+        let wa = s0 + "/a";
+        let wb = s0 + "/b";
+        let wd = s1 + "/d";
+        let tb = "t1.s0.b";
+        let bs0 = tb + "/wf1/s0";
+        let bs1 = tb + "/wf1/s1";
+        let wb1 = bs0 + "/b1";
+        let tc = tb + ".s1.c";
+        let cs0 = tc + "/wf1/s0";
+        let wc1 = cs0 + "/c1";
+        let members0 = "a:leaf:" + wa + " b:child:" + tb;
+
+        // ---- a fact of no execution at all
+        self.must_refuse("task.born", "t1", "{}", "no fact of a workflow execution", "a Task row is not a workflow fact");
+
+        // ---- the admission: the recipe becomes the authority
+        self.must_refuse("step.registered", s0, self.registration(s0, "t1", 0, members0), "never admitted", "a step of a task nobody admitted");
+        self.must_refuse("workflow.admitted", "t999", self.admission("t1", "close-month", "", "", "", recipe1, ""), "the row is about `t999`", "a row whose entity is not the fact's identity");
+        self.must_refuse("workflow.admitted", "t1", self.admission("t1", "close-month", "", "", "", recipe2, ""), "does not bind that task", "an admission carrying another execution's recipe");
+        self.must_refuse("workflow.admitted", "t1", self.admission("t1", "collect-receipts", "", "", "", recipe1, ""), "is bound to close-month@1", "an admission naming another definition than the recipe binds");
+        self.must("workflow.admitted", "t1", self.admission("t1", "close-month", "", "", "", recipe1, "{\"month\": \"2026-08\"}"), "the execution is admitted");
+        std::test::assert_eq_int(self.p.node_count(), 12, "the whole bound tree is held: " + to_string(self.p.node_count()));
+        self.must_replay("workflow.admitted", "t1", self.admission("t1", "close-month", "", "", "", recipe1, "{\"month\": \"2026-08\"}"), "the same admission again is a replay");
+        self.must_refuse("workflow.admitted", "t1", self.admission("t1", "close-month", "", "", "", recipe1, "{\"month\": \"2026-09\"}"), "says something else", "the same identity with other inputs is a conflict, not a replay");
+
+        // ---- the required set, whole, exactly as bound
+        self.must_refuse("step.registered", s0, self.registration(s0, "t1", 0, "a:leaf:" + wa), "leaves out `b`", "a registration that omits a bound member");
+        self.must_refuse("step.registered", s0, self.registration(s0, "t1", 0, "a:leaf:" + wa + " b:child:t1.s0.forged"), "the recipe bound " + tb, "a registration naming another task as the child");
+        self.must_refuse("step.registered", s0, self.registration(s0, "t1", 0, "a:leaf:" + s0 + "/x b:child:" + tb), "the recipe bound " + wa, "a registration naming another Work as the leaf");
+        self.must_refuse("step.registered", s0, self.registration(s0, "t1", 0, members0 + " z:leaf:" + s0 + "/z"), "does not bind under it", "a registration inventing a member");
+        self.must_refuse("step.registered", s0, self.registration(s0, "t1", 1, members0), "not step 1", "a registration at the wrong index");
+        self.must_refuse("step.registered", "t1/wf1/s7", self.registration("t1/wf1/s7", "t1", 7, members0), "not a step the recipe binds", "a step the recipe never bound");
+        self.must("step.registered", s0, self.registration(s0, "t1", 0, members0), "s0 registers a and b");
+        std::test::assert_eq_str(self.p.step(s0).required, "a b", "both members are required");
+        std::test::assert_eq_str(self.p.step(s0).entities, "a=" + wa + " b=" + tb, "each by the entity the recipe bound");
+        self.must_replay("step.registered", s0, self.registration(s0, "t1", 0, members0), "registered again is a replay");
+        self.must_refuse("step.registered", s0, self.registration(s0, "t1", 0, "b:child:" + tb + " a:leaf:" + wa), "says something else", "the same step registered with another body is a conflict");
+
+        // ---- activation, in order
+        self.must_refuse("step.activated", s1, self.activation(s1, "t1", 1, "d"), "before its members were registered", "a step activates only once registered");
+        self.must("step.registered", s1, self.registration(s1, "t1", 1, "d:leaf:" + wd), "s1 registers d");
+        self.must_refuse("step.activated", s1, self.activation(s1, "t1", 1, "d"), "cannot activate while step " + s0, "s1 does not activate before s0 completes");
+        self.must_refuse("attempt.admitted", wa + "/a0", self.attempt(wa, s0, "t1", 0, "reconcile the bank feed"), "before step " + s0 + " is activated", "nothing is attempted before its step activates");
+        self.must("step.activated", s0, self.activation(s0, "t1", 0, "a b"), "s0 activates");
+        self.must_replay("step.activated", s0, self.activation(s0, "t1", 0, "a b"), "activated again is a replay");
+
+        // ---- a: attempted, failed, retried, done
+        self.must_refuse("attempt.admitted", wa + "/a1", self.attempt(wa, s0, "t1", 1, "reconcile the bank feed"), "is not the first attempt", "a Work starts at a0");
+        self.must_refuse("attempt.admitted", s0 + "/zz/a0", self.attempt(s0 + "/zz", s0, "t1", 0, "x"), "has no member `zz`", "a member the step never registered");
+        self.must_refuse("attempt.admitted", s0 + "/x/a/a0", self.attempt(s0 + "/x/a", s0, "t1", 0, "x"), "is not a work of step", "a Work nested below the step is not its member");
+        self.must_refuse("attempt.admitted", wb + "/a0", self.attempt(wb, s0, "t1", 0, "x"), "answers by settling, not as a Work", "a child member is not attempted as a Work");
+        self.must_refuse("attempt.admitted", "wrong", self.attempt(wa, s0, "t1", 0, "reconcile the bank feed"), "the row is about `wrong`", "an attempt row about the wrong entity");
+        self.must_refuse("attempt.admitted", wa + "/a0", self.attempt(wa, s0, "t1", 0, "different work than the admitted recipe bound"), "another objective than the recipe bound", "a first attempt asking for other work than the Work is");
+        self.must("attempt.admitted", wa + "/a0", self.attempt(wa, s0, "t1", 0, "reconcile the bank feed"), "a0 is admitted");
+        self.must_refuse("attempt.admitted", wa + "/a0", self.attempt(wa, s0, "t1", 0, "reconcile the bank feed twice"), "says something else", "the same attempt with another objective is a conflict");
+        self.must_refuse("work.settled", wa, self.settle(wa, s0, 0, "done"), "is still outstanding", "a Work does not settle done on an attempt without an outcome");
+        self.must_refuse("attempt.admitted", wa + "/a1", self.attempt(wa, s0, "t1", 1, "reconcile the bank feed"), "is still outstanding", "no retry while the last attempt is outstanding");
+        self.must("attempt.outcome", wa + "/a0", self.outcome(wa, 0, "failed", "the feed was empty"), "a0 fails");
+        self.must_refuse("attempt.outcome", wa + "/a0", self.outcome(wa, 0, "failed", "another story"), "says something else", "the same outcome with another result is a conflict");
+        self.must_refuse("work.settled", wa, self.settle(wa, s0, 0, "done"), "attempt " + wa + "/a0 failed", "a Work does not settle done on a failed attempt");
+        self.must_refuse("work.settled", wa, self.settle(wa, s0, 0, "failed"), "2 attempt(s) of its allowance left", "nor failed while it has allowance left");
+        self.must_refuse("attempt.admitted", wa + "/a2", self.attempt(wa, s0, "t1", 2, "reconcile the bank feed"), "skips attempt 1", "a retry is the next attempt, not a later one");
+        self.must_refuse("attempt.admitted", wa + "/a1", self.attempt(wa, s0, "t1", 1, "reconcile the bank feed, but differently"), "another objective than the recipe bound", "a retry asking for other work than the Work is");
+        self.must("attempt.admitted", wa + "/a1", self.attempt(wa, s0, "t1", 1, "reconcile the bank feed"), "a1 is admitted on a0's failure, asking for the same work");
+        std::test::assert_eq_str(self.p.result_of(wa), "", "a failed attempt's result is not the Work's while the retry is pending");
+        std::test::assert_eq_str(self.p.work(wa).attempt_result, "", "and the retry starts with nothing said");
+        self.must_refuse("attempt.outcome", wa + "/a0", self.outcome(wa, 0, "done", "late"), "already recorded, and this row says something else", "a superseded attempt cannot be given another outcome");
+        self.must("attempt.outcome", wa + "/a1", self.outcome(wa, 1, "done", "reconciled"), "a1 is done");
+        std::test::assert_eq_str(self.p.result_of(wa), "", "an attempt's result is not the Work's until the Work settles");
+        self.must_refuse("work.settled", wa, self.settle(wa, s0, 0, "done"), "cannot settle on", "a Work does not settle on a superseded attempt");
+        self.must("work.settled", wa, self.settle(wa, s0, 1, "done"), "a settles done");
+        std::test::assert_eq_str(self.p.result_of(wa), "reconciled", "and its result is the attempt it settled on");
+        std::test::assert_eq_str(self.p.step(s0).settled, "a", "a has answered");
+        std::test::assert_eq_str(self.p.pending(s0), "b", "b has not");
+        self.must_refuse("step.completed", s0, self.step_outcome(s0, "t1", "completed", "a b", ""), "still waits for `b`", "a alone does not complete the step");
+        self.must_replay("work.settled", wa, self.settle(wa, s0, 1, "done"), "a settling again is a replay");
+        self.must_refuse("attempt.admitted", wa + "/a2", self.attempt(wa, s0, "t1", 2, "reconcile the bank feed"), "is not attempted again", "a settled Work is not attempted again");
+        self.must_refuse("step.completed", s0, self.step_outcome(s0, "t1", "completed", "a b", ""), "still waits for `b`", "and still does not complete the step");
+        self.must_refuse("step.failed", s0, self.step_outcome(s0, "t1", "completed", "a b", ""), "carries a step that completed", "a `step.failed` row does not carry a completion");
+        self.must_refuse("step.completed", s0, self.step_outcome(s0, "t1", "failed", "a b", "a"), "carries a step that failed", "and a `step.completed` row does not carry a failure");
+        self.must_refuse("step.failed", s0, self.step_outcome(s0, "t1", "failed", "a b", "a"), "work " + wa + " settled done", "a step does not fail on a member that succeeded");
+
+        // ---- b: a child, answered by its whole execution
+        self.must_refuse("workflow.admitted", "t1.s0.forged", self.admission("t1.s0.forged", "collect-receipts", "t1", s0, "b", recipe_forged, ""), "is bound under <  >", "a task claiming the child's key with a recipe of its own");
+        self.must_refuse("workflow.admitted", tb, self.admission(tb, "collect-receipts", "t1", s1, "b", recipe_b, ""), "is bound under <t1 " + s0, "the child admitted from another step than the parent bound");
+        self.must_refuse("workflow.admitted", tb, self.admission(tb, "collect-receipts", "t1", s0, "b", recipe_b_altered, ""), "another objective than its parent bound", "a child whose recipe changes a bound Work's content");
+        self.must_refuse("workflow.admitted", tb, self.admission(tb, "collect-receipts", "t1", s0, "b", recipe_b_wider, ""), "never bound under " + tb, "a child whose recipe adds a member its parent never bound");
+        self.must_refuse("workflow.admitted", tb, self.admission(tb, "collect-receipts", "t1", s0, "b", recipe_b_narrow, ""), "leaves out " + bs1, "a child whose recipe leaves out what its parent bound");
+        self.must_refuse("workflow.admitted", tb, self.admission(tb, "collect-receipts", "t1", s0, "b", recipe_c, ""), "does not bind that task", "a child whose recipe is not its subtree at all");
+        std::test::assert_eq_int(self.p.node_count(), 12, "and none of those touched the tree");
+        self.must("workflow.admitted", tb, self.admission(tb, "collect-receipts", "t1", s0, "b", recipe_b, ""), "the child is admitted for what its parent bound");
+        std::test::assert_eq_int(self.p.node_count(), 12, "its recipe adds nothing the tree did not have");
+        self.must_refuse("workflow.settled", tb, self.task_outcome(tb, "done", "t1", s0), "step " + bs0 + " has not completed", "a child does not settle done before its own steps");
+        self.must("step.registered", bs0, self.registration(bs0, tb, 0, "b1:leaf:" + wb1), "the child's s0 registers b1");
+        self.must("step.activated", bs0, self.activation(bs0, tb, 0, "b1"), "and activates");
+        self.must("attempt.admitted", wb1 + "/a0", self.attempt(wb1, bs0, tb, 0, "list missing receipts"), "b1 a0");
+        self.must("attempt.outcome", wb1 + "/a0", self.outcome(wb1, 0, "done", "listed"), "done");
+        self.must("work.settled", wb1, self.settle(wb1, bs0, 0, "done"), "b1 settles");
+        self.must("step.completed", bs0, self.step_outcome(bs0, tb, "completed", "b1", ""), "the child's s0 completes");
+        self.must("step.registered", bs1, self.registration(bs1, tb, 1, "c:child:" + tc), "the child's s1 registers c");
+        self.must_refuse("workflow.admitted", tc, self.admission(tc, "chase-supplier", tb, bs1, "c", recipe_c, ""), "never activated", "the grandchild is not admitted before its step activates");
+        self.must("step.activated", bs1, self.activation(bs1, tb, 1, "c"), "the child's s1 activates");
+        self.must("workflow.admitted", tc, self.admission(tc, "chase-supplier", tb, bs1, "c", recipe_c, ""), "the grandchild is admitted");
+        self.must("step.registered", cs0, self.registration(cs0, tc, 0, "c1:leaf:" + wc1), "the grandchild's s0 registers c1");
+        self.must("step.activated", cs0, self.activation(cs0, tc, 0, "c1"), "and activates");
+        self.must("attempt.admitted", wc1 + "/a0", self.attempt(wc1, cs0, tc, 0, "email the supplier"), "c1 a0");
+        self.must("attempt.outcome", wc1 + "/a0", self.outcome(wc1, 0, "timeout", ""), "times out");
+        self.must_refuse("work.settled", wc1, self.settle(wc1, cs0, 0, "failed"), "1 attempt(s) of its allowance left", "c1 does not fail with an attempt left");
+        self.must("attempt.admitted", wc1 + "/a1", self.attempt(wc1, cs0, tc, 1, "email the supplier"), "c1 a1");
+        self.must_refuse("attempt.admitted", wc1 + "/a2", self.attempt(wc1, cs0, tc, 2, "email the supplier"), "exhausts the allowance of 2", "a third attempt exceeds what the recipe bound");
+        self.must("attempt.outcome", wc1 + "/a1", self.outcome(wc1, 1, "done", "emailed"), "done");
+        self.must("work.settled", wc1, self.settle(wc1, cs0, 1, "done"), "c1 settles");
+        self.must("step.completed", cs0, self.step_outcome(cs0, tc, "completed", "c1", ""), "the grandchild's s0 completes");
+        self.must_refuse("workflow.settled", tc, self.task_outcome(tc, "done", tb, bs0), "answers step " + bs1, "the grandchild cannot redirect its answer");
+        self.must("workflow.settled", tc, self.task_outcome(tc, "done", tb, bs1), "the grandchild settles done into the child's s1");
+        std::test::assert_eq_str(self.p.step(bs1).settled, "c", "c has answered");
+        self.must("step.completed", bs1, self.step_outcome(bs1, tb, "completed", "c", ""), "the child's s1 completes");
+        self.must("workflow.settled", tb, self.task_outcome(tb, "done", "t1", s0), "the child settles done into t1's s0");
+        self.must_replay("workflow.settled", tb, self.task_outcome(tb, "done", "t1", s0), "and settling again is a replay");
+        std::test::assert(self.p.joined(s0), "both members have answered: " + self.p.step(s0).settled);
+        self.must("step.completed", s0, self.step_outcome(s0, "t1", "completed", "a b", ""), "b completes s0, once");
+        self.must_replay("step.completed", s0, self.step_outcome(s0, "t1", "completed", "a b", ""), "completed again is a replay");
+        self.must_refuse("step.failed", s0, self.step_outcome(s0, "t1", "failed", "a b", "a"), "does not settle again", "a completed step does not fail");
+
+        // ---- d, and the root settles last
+        self.must_refuse("workflow.settled", "t1", self.task_outcome("t1", "done", "", ""), "step " + s1 + " has not completed", "the root does not settle before its last step");
+        self.must("step.activated", s1, self.activation(s1, "t1", 1, "d"), "s1 activates once s0 completed");
+        self.must("attempt.admitted", wd + "/a0", self.attempt(wd, s1, "t1", 0, "post the journal entries"), "d a0");
+        self.must("attempt.outcome", wd + "/a0", self.outcome(wd, 0, "done", "posted"), "done");
+        self.must("work.settled", wd, self.settle(wd, s1, 0, "done"), "d settles");
+        self.must("step.completed", s1, self.step_outcome(s1, "t1", "completed", "d", ""), "s1 completes");
+        self.must("workflow.settled", "t1", self.task_outcome("t1", "done", "", ""), "t1 settles done");
+        self.must_replay("workflow.settled", "t1", self.task_outcome("t1", "done", "", ""), "settled again is a replay");
+        self.must_refuse("workflow.settled", "t1", self.task_outcome("t1", "failed", "", ""), "says something else", "and does not settle another way: that identity is recorded");
+
+        // ---- t2 fails on a, and drains before it settles
+        let u0 = "t2/wf1/s0";
+        let ua = u0 + "/a";
+        let ub = "t2.s0.b";
+        self.must("workflow.admitted", "t2", self.admission("t2", "close-month", "", "", "", recipe2, ""), "t2 is admitted");
+        self.must("step.registered", u0, self.registration(u0, "t2", 0, "a:leaf:" + ua + " b:child:" + ub), "its s0 registers");
+        self.must("step.activated", u0, self.activation(u0, "t2", 0, "a b"), "and activates");
+        self.must("workflow.admitted", ub, self.admission(ub, "collect-receipts", "t2", u0, "b", recipe2_b, ""), "its child is admitted");
+        self.must("attempt.admitted", ua + "/a0", self.attempt(ua, u0, "t2", 0, "reconcile the bank feed"), "a a0");
+        self.must("attempt.outcome", ua + "/a0", self.outcome(ua, 0, "failed", ""), "fails");
+        self.must("attempt.admitted", ua + "/a1", self.attempt(ua, u0, "t2", 1, "reconcile the bank feed"), "a a1");
+        self.must("attempt.outcome", ua + "/a1", self.outcome(ua, 1, "failed", ""), "fails");
+        self.must("attempt.admitted", ua + "/a2", self.attempt(ua, u0, "t2", 2, "reconcile the bank feed"), "a a2");
+        self.must("attempt.outcome", ua + "/a2", self.outcome(ua, 2, "declined", ""), "is declined");
+        self.must_refuse("attempt.admitted", ua + "/a3", self.attempt(ua, u0, "t2", 3, "reconcile the bank feed"), "exhausts the allowance of 3", "no fourth attempt");
+        self.must_refuse("step.failed", u0, self.step_outcome(u0, "t2", "failed", "a b", "a"), "work " + ua + " has not settled", "a step does not fail on a member that has not settled");
+        self.must("work.settled", ua, self.settle(ua, u0, 2, "failed"), "a settles failed with its allowance exhausted");
+        self.must_refuse("step.failed", u0, self.step_outcome(u0, "t2", "failed", "a b", "b"), "task " + ub + " has not settled", "nor on a child that has not settled");
+        self.must_refuse("step.completed", u0, self.step_outcome(u0, "t2", "failed", "a b", "a"), "carries a step that failed", "a failure under a `step.completed` row is not a failure");
+        self.must("step.failed", u0, self.step_outcome(u0, "t2", "failed", "a b", "a"), "s0 fails on a");
+        self.must("step.registered", "t2/wf1/s1", self.registration("t2/wf1/s1", "t2", 1, "d:leaf:t2/wf1/s1/d"), "s1 may still be registered");
+        self.must_refuse("step.activated", "t2/wf1/s1", self.activation("t2/wf1/s1", "t2", 1, "d"), "has not completed", "but never activates after s0 failed");
+        self.must_refuse("workflow.settled", "t2", self.task_outcome("t2", "done", "", ""), "has not completed", "t2 does not settle done");
+        self.must_refuse("workflow.settled", "t2", self.task_outcome("t2", "failed", "", ""), "while child " + ub + " is outstanding", "nor failed while its child is outstanding");
+        self.must("workflow.settled", ub, self.task_outcome(ub, "cancelled", "t2", u0), "the child is cancelled");
+        std::test::assert_eq_str(self.p.step(u0).settled, "", "a cancelled child answers nothing");
+        self.must("workflow.settled", "t2", self.task_outcome("t2", "failed", "", ""), "t2 settles failed, last");
+
+        // ---- t3 is cancelled with an attempt outstanding: the fence
+        let v0 = "t3/wf1/s0";
+        let va = v0 + "/a";
+        self.must("workflow.admitted", "t3", self.admission("t3", "close-month", "", "", "", recipe3, ""), "t3 is admitted");
+        self.must("step.registered", v0, self.registration(v0, "t3", 0, "a:leaf:" + va + " b:child:t3.s0.b"), "its s0 registers");
+        self.must("step.activated", v0, self.activation(v0, "t3", 0, "a b"), "and activates");
+        self.must("attempt.admitted", va + "/a0", self.attempt(va, v0, "t3", 0, "reconcile the bank feed"), "a a0");
+        self.must_refuse("work.settled", va, self.settle(va, v0, 0, "cancelled"), "nor anything above it was cancelled", "a Work is not cancelled under a running task");
+        self.must("workflow.settled", "t3", self.task_outcome("t3", "cancelled", "", ""), "t3 is cancelled");
+        self.must_refuse("attempt.admitted", va + "/a1", self.attempt(va, v0, "t3", 1, "reconcile the bank feed"), "cancelled; it admits no attempt", "nothing further is admitted");
+        self.must_refuse("step.registered", "t3/wf1/s1", self.registration("t3/wf1/s1", "t3", 1, "d:leaf:t3/wf1/s1/d"), "admits nothing further", "no step is registered");
+        self.must_refuse("workflow.admitted", "t3.s0.b", self.admission("t3.s0.b", "collect-receipts", "t3", v0, "b", recipe3_b, ""), "admits nothing further", "no child is admitted");
+        self.must("attempt.outcome", va + "/a0", self.outcome(va, 0, "done", "reconciled anyway"), "the outstanding attempt still records its outcome");
+        self.must("work.settled", va, self.settle(va, v0, 0, "done"), "and the Work settles on it");
+        std::test::assert_eq_str(self.p.result_of(va), "reconciled anyway", "with its result");
+
+        // ---- t4 is cancelled before any attempt: the fence reaches its child
+        let y0 = "t4/wf1/s0";
+        let yb = "t4.s0.b";
+        let ybs0 = yb + "/wf1/s0";
+        let ybs1 = yb + "/wf1/s1";
+        let yb1 = ybs0 + "/b1";
+        self.must("workflow.admitted", "t4", self.admission("t4", "close-month", "", "", "", recipe4, ""), "t4 is admitted");
+        self.must("step.registered", y0, self.registration(y0, "t4", 0, "a:leaf:" + y0 + "/a b:child:" + yb), "its s0 registers");
+        self.must("step.activated", y0, self.activation(y0, "t4", 0, "a b"), "and activates");
+        self.must("workflow.admitted", yb, self.admission(yb, "collect-receipts", "t4", y0, "b", recipe4_b, ""), "its child is admitted");
+        self.must("step.registered", ybs0, self.registration(ybs0, yb, 0, "b1:leaf:" + yb1), "the child's s0 registers");
+        self.must("step.activated", ybs0, self.activation(ybs0, yb, 0, "b1"), "and activates");
+        self.must("workflow.settled", "t4", self.task_outcome("t4", "cancelled", "", ""), "t4 is cancelled");
+        self.must_refuse("attempt.admitted", y0 + "/a/a0", self.attempt(y0 + "/a", y0, "t4", 0, "reconcile the bank feed"), "cancelled; it admits no attempt", "a first attempt after cancellation is refused");
+        self.must_refuse("attempt.admitted", yb1 + "/a0", self.attempt(yb1, ybs0, yb, 0, "list missing receipts"), "task t4, above " + yb + ", was cancelled", "and so is a first attempt inside its child");
+        std::test::assert_eq_str(self.p.work(yb1).work_id, "", "no Work row was created for it");
+        self.must_refuse("step.registered", ybs1, self.registration(ybs1, yb, 1, "c:child:" + yb + ".s1.c"), "above " + yb + ", was cancelled", "the child registers no further step");
+        self.must_refuse("workflow.admitted", yb + ".s1.c", self.admission(yb + ".s1.c", "chase-supplier", yb, ybs1, "c", recipe4_c, ""), "was cancelled", "and admits no grandchild");
+        self.must("workflow.settled", yb, self.task_outcome(yb, "cancelled", "t4", y0), "the child settles cancelled under the fence");
+
+        // ---- the fence reaches the root at any depth the caller admits
+        //      (§3: max_depth is the caller's; nothing here has a ceiling
+        //      of its own). Sixty-six levels, each a workflow of one step
+        //      whose one member is the next; the last holds the leaf.
+        let levels = 66;
+        let mut k = 0;
+        while k < levels {
+            std::test::assert_eq_str(self.deep.define("d" + to_string(k), 1, 1, ""), "", "d" + to_string(k));
+            if k + 1 < levels {
+                std::test::assert_eq_str(self.deep.child("d" + to_string(k), 1, 0, "n", "d" + to_string(k + 1), 1), "", "n" + to_string(k));
+            } else {
+                std::test::assert_eq_str(self.deep.leaf("d" + to_string(k), 1, 0, "leaf", dna::WorkRequest { objective: "the bottom" }, 1), "", "leaf");
+            }
+            k = k + 1;
+        }
+        let deep_limits = dna::AdmissionLimits { max_depth: 70, max_steps: 4, max_members: 4, max_attempts: 4, max_works: 8 };
+        let xd = self.deep.expand("t9", "d0", 1, deep_limits);
+        std::test::assert(xd.ok && xd.depth == levels, "the chain expands to depth " + to_string(levels) + ": " + xd.why);
+        let deep_recipe = self.deep.encode_bound();
+        self.must("workflow.admitted", "t9", dna::encode_admission(dna::AdmittedWorkflow { task_id: "t9", definition: "d0", revision: 1, recipe: deep_recipe, limits: deep_limits, works: 1, tasks: levels, steps: levels, depth: levels }), "the deep root is admitted");
+        let mut task = "t9";
+        k = 0;
+        while k + 1 < levels {
+            let step = task + "/wf1/s0";
+            let child = task + ".s0.n";
+            self.must("step.registered", step, self.registration(step, task, 0, "n:child:" + child), "level " + to_string(k) + " registers");
+            self.must("step.activated", step, self.activation(step, task, 0, "n"), "level " + to_string(k) + " activates");
+            self.must("workflow.admitted", child, dna::encode_admission(dna::AdmittedWorkflow { task_id: child, definition: "d" + to_string(k + 1), revision: 1, parent_task: task, spawning_step: step, member_key: "n", recipe: self.deep.encode_bound_under(child), limits: deep_limits, works: 1, tasks: levels - k - 1, steps: levels - k - 1, depth: levels }), "level " + to_string(k + 1) + " is admitted");
+            task = child;
+            k = k + 1;
+        }
+        let bottom_step = task + "/wf1/s0";
+        let bottom = bottom_step + "/leaf";
+        self.must("step.registered", bottom_step, self.registration(bottom_step, task, 0, "leaf:leaf:" + bottom), "the bottom step registers");
+        self.must("step.activated", bottom_step, self.activation(bottom_step, task, 0, "leaf"), "and activates");
+        std::test::assert(!self.p.stopped(task), "at depth " + to_string(levels) + " nothing has stopped: " + self.p.stop(task));
+        self.must("workflow.settled", "t9", self.task_outcome("t9", "cancelled", "", ""), "the root is cancelled");
+        std::test::assert(self.p.stopped(task), "and the bottom task is stopped by it, " + to_string(levels - 1) + " ancestors up: " + self.p.stop(task));
+        std::test::assert(std::str::contains(self.p.stop(task), "task t9, above"), "by name: " + self.p.stop(task));
+        self.must_refuse("attempt.admitted", bottom + "/a0", self.attempt(bottom, bottom_step, task, 0, "the bottom"), "task t9, above", "a first attempt at the bottom is refused under the cancelled root");
+        std::test::assert(self.p.fenced(task), "and the bottom is fenced");
+
+        // ---- one history, two projections
+        let mut i = 0;
+        while i < self.log.len() {
+            let r = self.log.get(i) or Row { };
+            let a = dna::replay(self.q, r.kind, r.entity, r.body);
+            std::test::assert(a.ok && a.changed, "the same history applies to a fresh projection: " + r.kind + " " + r.entity + ": " + a.why);
+            i = i + 1;
+        }
+        std::test::assert_eq_str(self.q.digest(), self.p.digest(), "and arrives at the same state");
+        // ---- and the same history again moves nothing
+        let before = self.p.digest();
+        i = 0;
+        while i < self.log.len() {
+            let r = self.log.get(i) or Row { };
+            let a = dna::replay(self.p, r.kind, r.entity, r.body);
+            std::test::assert(a.ok && !a.changed, "redelivered, every accepted fact is a replay: " + r.kind + " " + r.entity + ": " + a.why);
+            i = i + 1;
+        }
+        std::test::assert_eq_str(self.p.digest(), before, "and nothing moved");
+        std::test::assert_eq_int(self.p.fact_count(), self.log.len(), "one recorded fact per accepted row");
+    }
+}
+
+fn main() { App { }; }

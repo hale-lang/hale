@@ -179,6 +179,34 @@ root  t1  definition close-month rev 1
       d   leaf   "post the journal entries"         Work t1/wf1/s1/d
 ```
 
+**How a member answers (card 06).** A step registers its whole required
+set with each member's kind before anything is dispatched, and a member
+answers once, under the key it was registered as. A `leaf` answers when
+its Work settles; a `child` answers when the execution it invoked
+settles into the step that spawned it. Neither answers for the other,
+and a step completes only when every key in its required set has
+settled — never because the right *number* of answers arrived.
+`dna/core/workflow_projection.hl` reads this from the facts alone and
+reaches nothing outside itself (`@no_syscall` on its entry point). The
+admitted recipe is its authority: a registration names exactly what the
+recipe bound under that step, by key, kind and entity; a child is
+admitted and answers only as the Task the recipe bound under its key,
+and its admission carries that subtree exactly, never a node more, less
+or different; an attempt asks for what its Work is, its request content
+the bound Work's on every attempt. Cancellation fences everything below
+the cancelled Task — nothing further is admitted under a cancelled
+ancestor, at any depth the caller's limits admitted — while what was
+admitted records its outcome; a failed ancestor fences nothing (the
+drain policy).
+Every transition has its basis in the rows before it — a Work is done on
+a done attempt, failed on a failed attempt with no allowance left or
+under a failed step or cancelled Task, cancelled only under a cancelled
+Task; a step activates after the one before it completed; a Task is done
+when every bound step completed and failed only after a step failed and
+everything it admitted settled — and a row is either the fact recorded
+under its identity or a conflict.
+**[decided; proven: `workflow_projection_test.hl`, card 06]**
+
 **When D may start.** Only after all of the following are committed,
 in this order of dependency: `c1` done; step `t1.s0.b.s1.c/wf1/s0`
 complete; Task `t1.s0.b.s1.c` settled done; step `t1.s0.b/wf1/s1`
@@ -262,7 +290,9 @@ had, an admission deeper or wider than the limits it says were applied.
 A row is read whole or not at all. **[decided]**
 
 A bound recipe travels inside `workflow.admitted` as one document
-(`dna.workflow-recipe/1`) carrying the node count it was written with.
+(`dna.workflow-recipe/1`) carrying the node count it was written with,
+nested as an object of its own: escaped into a string it is escaped and
+unescaped character by character, which is quadratic in its size.
 A reader that cannot read the whole document — the wrong format, a
 missing node array, a different count, a node without an identity or
 with a field of the wrong type, a document that ends mid-write — binds

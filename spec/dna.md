@@ -887,19 +887,23 @@ A definition id is `[a-z0-9][a-z0-9-]*`, checked when it is defined and
 when it is read, so an id can never carry the delimiters the definition
 path is written with. `encode()` writes every definition and member as
 one JSON document (`format: dna.workflow-definitions/1`) and
-`decode(text)` reads one back, refusing a document that is not one
-complete JSON value, another format, an id outside
+`decode(text)` reads one back, refusing a document that does not close,
+another format, an id outside
 the grammar, an already defined revision, or a document that defines one
 revision twice, and adding nothing then.
 
 `encode_bound()` writes one bound execution as a recipe (`format:
-dna.workflow-recipe/1`) carrying the node count it was written with, and
+dna.workflow-recipe/1`; an admission nests it as an object of its own,
+never escaped into a string) carrying the node count it was written with, and
 `decode_bound(text)` reads one back. It refuses another format, a missing
 node array, a count that disagrees with what the document carries, a node
 without an identity or of no known kind, a node whose number was written
-as text or whose text was written as a number, and a document that is not
-one complete JSON value: every object, array and string closed, and
-nothing after it. A whole final node also ends in `}`, so the last
+as text or whose text was written as a number, and a document that does not close: every object,
+array and string closed by its own delimiter, with nothing after the
+value. That is a closure scan rather than a JSON grammar validator — it
+does not check escape sequences or number syntax — which is what reading
+back one encoder's own output needs; a document from outside the system
+wants a real parser in front of it. A whole final node also ends in `}`, so the last
 character says nothing about the document. Every refusal binds nothing:
 half a recipe is not a smaller execution. Nothing yet executes a bound
 expansion.
@@ -949,8 +953,68 @@ key, kind, entity and body is that transition proposed again, which the
 committer answers from its journal; the same id carrying anything else
 is a conflict, and `transition_conflict` names which part differs.
 
+## Workflow state
+
+The state an execution is in is read from those facts and nothing else
+(`dna/core/workflow_projection.hl`). `replay(projection, kind, entity,
+body)` applies one row and answers one of three things: the fact was
+**applied**, it is a **replay** of what the projection already holds, or
+it is **refused**. Applying a fact asks nothing of the world: the entry
+point carries `@no_syscall`, which the compiler checks through everything
+it reaches, and the projection holds no journal, gateway or model to
+call. The contract guards syscall-class effects; having nothing to call
+is what rules out the rest.
+
+**The admitted recipe is the authority.** An admission carries the whole
+bound tree under its Task, and every later fact is checked against it: a
+Step is one the recipe binds for that Task at that index; a registration
+names exactly the members the recipe bound under that Step, each by key,
+kind and entity, none missing and none invented; a Work's retry allowance
+is the one bound for it; a child is admitted only as the Task its parent
+bound under that key, from a step that is registered and active, and
+answers only as that Task. A child's admission carries the subtree its
+parent bound under it, exactly: the same nodes, each the same in every
+field, none added, none left out, none changed. It activates a binding;
+it never redefines the execution its parent admitted. An attempt asks
+for what the Work is: its request's content — objective, context,
+bindings, output contract, data class, requires, target, cost ceiling —
+is the bound Work's, on the first attempt and on every retry; who
+performs it is the application's choice. A fact the recipe does not
+know is refused, however well-formed.
+
+**Every transition has its basis.** A Work settles `done` only on a
+current attempt that recorded `done`; it settles `failed` only on a failed
+attempt with no allowance left, or once its Step has failed or its Task is
+cancelled, under which a member records its outcome and stops (the drain
+policy); it settles `cancelled` only under a cancelled Task (the fence).
+A retry is the next attempt, admitted only after the last one recorded a
+failure and only within the allowance. A Step activates only after the
+step before it completed, completes only when every member it registered
+has settled `done`, and fails only on a member that failed. A Task
+settles `done` only when every Step the recipe binds for it completed,
+and `failed` only after a Step failed and every responsibility it admitted
+has settled: the root settles last. Cancellation stops further admission
+in the cancelled Task and in everything under it — no attempt, no step,
+no child is admitted below a cancelled ancestor — while what was already
+admitted still records its outcome and settles under the fence. The walk
+to the root goes as deep as the caller's `max_depth` admitted — nothing
+here has a ceiling of its own — and an ancestry that does not resolve
+refuses admission rather than permitting it. A failed ancestor is not a
+cancelled one: under the drain policy a member keeps its responsibility
+until its own outcome.
+
+**A fact is one row.** The row's entity is the fact's own identity, and a
+`step.completed` row carries a completion. A fact whose identity is
+already recorded is a replay when it is the same bytes and a conflict
+otherwise, checked before the state, so a row from history is recognized
+as such after the state has moved past it. The join is by identity, never
+by counting: two answers from one member are one member. A Work's result
+is the output of the attempt it settled on, readable only once it has
+settled; what an outstanding or superseded attempt said is never the
+Work's result.
+
 Nothing yet admits, records or executes a workflow; these are the
-durable shapes it will be written in.
+durable shapes it is written in, and the state they add up to.
 
 ## Storage interfaces
 

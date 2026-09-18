@@ -164,6 +164,7 @@ fn dna_fixture_set_is_complete() {
             "workflow_events_test.hl",
             "workflow_lifetime_dna_test.hl",
             "workflow_lifetime_test.hl",
+            "workflow_projection_test.hl",
             "workflow_release_type_wide_test.hl",
             "workspace_test.hl",
         ]

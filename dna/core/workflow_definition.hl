@@ -193,12 +193,19 @@ fn bound_request(n: BoundNode, task_id: String, step_id: String) -> WorkRequest 
     };
 }
 
-// Whether `text` is one complete JSON value and nothing else: every
-// object and array closed by its own delimiter, every string closed, and
-// only space after the value ends. A document cut off mid-write fails
-// wherever it was cut — inside a node, before the array's `]`, or before
-// the document's own `}` — which a last-character check cannot tell apart
-// from a whole one, because a complete final node also ends in `}`.
+// Whether `text` CLOSES: every object and array closed by its own
+// delimiter, every string closed, and only space after the value ends. A
+// document cut off mid-write fails wherever it was cut — inside a node,
+// before the array's `]`, or before the document's own `}` — which a
+// last-character check cannot tell apart from a whole one, because a
+// complete final node also ends in `}`.
+//
+// This is a closure scan, not a JSON grammar validator: it does not
+// check escape sequences, number syntax or the literals, so a document
+// carrying `\q` inside a string closes and is read. That is enough for
+// what this format is — one encoder's own output, read back — and it is
+// not enough to validate a document from somewhere else. Anything read
+// from outside wants a real parser in front of it.
 @unbounded
 fn json_whole(text: String) -> Bool {
     let mut open = ""; // the containers still open, innermost last
@@ -593,18 +600,42 @@ locus WorkflowCatalog {
     // ---- the bound recipe, as one document -------------------------------
 
     // What `expand` bound, so an admission can carry it (card 05).
-    @unbounded
     fn encode_bound() -> String {
+        return self.encode_bound_under("");
+    }
+
+    // Whether a bound node is `task_id` or lies under it: a child Task is
+    // `<task>.s<i>.<key>`, a Step or Work `<task>/…` (§4). "" is the whole
+    // tree.
+    fn under(id: String, task_id: String) -> Bool {
+        if len(task_id) == 0 || id == task_id { return true; }
+        return std::str::starts_with(id, task_id + ".") || std::str::starts_with(id, task_id + "/");
+    }
+
+    // The part of the bound tree at and under one Task, as a recipe: what a
+    // child's admission carries (card 06), so a child is admitted for
+    // exactly what its parent bound under it and nothing it expanded for
+    // itself.
+    @unbounded
+    fn encode_bound_under(task_id: String) -> String {
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("format", "dna.workflow-recipe/1");
         // how many nodes the writer wrote: a reader that decodes a
         // different number has half a recipe, whatever it parsed
-        b.int_field("count", self.bound.len());
+        let mut count = 0;
+        let mut k = 0;
+        while k < self.bound.len() {
+            let n = self.bound.get(k) or BoundNode { };
+            if self.under(n.id, task_id) { count = count + 1; }
+            k = k + 1;
+        }
+        b.int_field("count", count);
         b.begin_array_field("nodes");
         let mut i = 0;
         while i < self.bound.len() {
             let n = self.bound.get(i) or BoundNode { };
+            if !self.under(n.id, task_id) { i = i + 1; continue; }
             b.begin_object();
             b.string_field("kind", n.kind);
             b.string_field("id", n.id);
