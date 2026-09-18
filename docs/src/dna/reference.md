@@ -176,7 +176,7 @@ sequence either way — see [The record](./record.md).
 | `receipt.held` / `receipt.hold_released` | ledger | a digest | a hold that refuses redaction, and its release: by, why |
 | `receipt.redacted` | ledger | a digest | the body removed, the digest kept: by, why, policy, class, store |
 | `grant.revoked` | record | a child | the parent revoked the grant, recorded before it takes effect and restored at birth: by, parent, epoch |
-| `concern.requested` / `concern.raised` | ledger | a source | a concern raised from a locus path about the part above it: what, severity, by |
+| `concern.requested` / `concern.raised` | ledger | a source | a concern raised from a locus path about the part above it: what, severity, by; several concerns share one source, so a request carries its own `request` id and its answer is one object (`what`, `severity`, `occurrence`, `request`) — a concern's words are never read as the metadata around them — and one request is one concern, however often it is delivered |
 | `concern.refused` | ledger | a source | one the organization would not admit, and why |
 | `concern.proposed` | record | a source | three raises became a proposal: the practice's digest, or `refused`, after `<n>` raise(s) |
 | `body.claimed` / `body.released` | ledger | the holder | who is running this record, by the lease's token: token, forced, from, by |
