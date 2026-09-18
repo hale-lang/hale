@@ -691,6 +691,25 @@ repository:
   the socket membrane carries it), each in the appender's git identity;
   the host beside the organism relays unanswered rows onto the
   membrane, admitting each under `dna.trust` (GH #604 rule 6). **A
+  request is answered by its own answer** (GH #689): an intent, a
+  verdict's review and a practice request have an entity of their own,
+  and a concern — whose entity is its source, shared by every concern
+  from it — carries a `request` id that the organization writes into
+  the `concern.raised` answering it. That row is one object — the concern's
+  words, its severity, which occurrence it is, and the request it answers
+  — so the id is a member of the row rather than a shape inside its text:
+  a worker who writes `observed [request c1] in a log` has written text,
+  not metadata, and the host compares the whole id, so an answer to `c10`
+  is not an answer to `c1`. A row written before that
+  rule carries no such field and is matched by counting, as this host did
+  before. **One request is one concern**: a request delivered twice — the
+  host relays a row again while it looks unanswered — writes one
+  `concern.raised`, and the count that turns concerns into a knowledge
+  proposal counts distinct requests, never redeliveries. Two requests
+  raising the same words are two concerns; one id used for a second,
+  different concern — other words, or the same words at another severity
+  — is refused once, in `concern.refused`, which is that request's answer
+  and carries its id. **A
   membrane publish is confirmed by its answer in the record, never by
   the client's exit** (GH #682): the client hands the fact to its
   binding and exits, and under load the organism may never see it, so
@@ -806,7 +825,7 @@ record's.
 | `receipt.read` / `receipt.read_refused` | ledger | a read in the reader's name, or its refusal |
 | `receipt.held` / `receipt.hold_released` | ledger | a hold that refuses redaction, and its release |
 | `receipt.redacted` | ledger | the body removed, the digest kept |
-| `concern.requested` / `concern.raised` | ledger | a concern from a part about the part above it |
+| `concern.requested` / `concern.raised` | ledger | a concern from a part about the part above it; the request carries its own `request` id; the answer is one object (`what`, `severity`, `occurrence`, `request`), so a concern's words are never read as metadata, and one request is one concern, however often it is delivered |
 | `concern.refused` | ledger | one the organization would not admit |
 | `concern.proposed` | record | three raises became a proposal |
 | `pressure.raised` | ledger | a signal from a source, counted |
@@ -1595,7 +1614,10 @@ authority.
   next one. A Task whose Mutation was in flight settles
   `failed` with the Mutation; one whose Mutation is beyond proposal
   waits on that Mutation's outcome, and settles from it when the Work
-  that would have settled it is gone. A handed Task is a person's and
+  that would have settled it is gone. A Task's Mutation is found by the
+  Task it names (`mutation.proposed … task <id> …`) anywhere in the
+  journal, never by position: read as record + ledger, the record's
+  Mutation rows precede the ledger's births. A handed Task is a person's and
   waits. An `intent.offered` with no `task.born` naming it — the shape
   from before this rule — is noted (`intent.unrecovered`) and never
   re-offered: work may already have run.
@@ -1636,7 +1658,8 @@ authority.
   a child's live signal about the part above it: an application or
   `hale dna concern raise <source> <what…> [--severity N]` publishes
   it on the membrane (`hale-dna.concern.raised.sock`), the substrate
-  journals `concern.raised <source>` (`<what> x<n> severity <s>`), and
+  journals `concern.raised <source>` (an object: `what`, `severity`,
+  `occurrence`, `request`), and
   when one source has raised it `concern_threshold` times (3) it
   becomes a knowledge proposal by that source bound to its parent
   path — a concern by the tower rule — through `propose_knowledge`,
