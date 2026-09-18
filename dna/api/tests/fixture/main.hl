@@ -4,6 +4,9 @@ import "../../../core" as dna;
 import "../../contract/v1/validator" as wire_contract;
 
 const APPLICATIONS: String = "/api/hale/v1/applications";
+const SHELL_HTML: String = "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/styles.css\"></head><body><main>Static Iris fixture</main><script src=\"/app.js\" defer></script></body></html>";
+const SHELL_JS: String = "document.querySelector('main').dataset.ready = 'yes';";
+const SHELL_CSS: String = "main { color: navy; }";
 
 type HttpResponse { status: Int = 0; headers: String = ""; body: String = ""; }
 type Practice { digest: String = ""; review_id: String = ""; name: String = ""; text: String = ""; target: String = ""; question: String = ""; }
@@ -79,6 +82,8 @@ locus Fixture {
         identity: String = "";
         prefix: String = "";
         oidc: Bool = false;
+        web_requested: Bool = false;
+        webroot: String = "";
         api: std::process::Child = std::process::Child { };
         journal: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/hale-api-fixture" };
         receipts: dna::GitReceipts = dna::GitReceipts { repo: "/nonexistent/hale-api-fixture" };
@@ -118,16 +123,36 @@ locus Fixture {
     fn refs() -> String { return self.git("show-ref"); }
     fn url() -> String { return "http://127.0.0.1:" + to_string(self.port); }
     fn log() -> String { return std::io::fs::read_file(self.root + "/api.log") or ""; }
+    fn prepare_web() {
+        self.web_requested = true;
+        self.webroot = self.root + "/web";
+        std::io::fs::mkdir(self.webroot) or discard;
+        std::io::fs::write_file(self.webroot + "/index.html", SHELL_HTML) or discard;
+        std::io::fs::write_file(self.webroot + "/app.js", SHELL_JS) or discard;
+        std::io::fs::write_file(self.webroot + "/styles.css", SHELL_CSS) or discard;
+    }
     fn spawn() {
         let binary = std::env::var("HALE_API_BIN");
         std::test::assert(len(binary) > 0 && std::io::fs::file_exists(binary), "build dna/api and set absolute HALE_API_BIN");
-        let argv = "sh\n-c\ncd \"$1\" && unset HALE_DNA_KNOWLEDGE_DSN HALE_DNA_KNOWLEDGE_URL HALE_DNA_EVIDENCE_KEY && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 HALE_DNA_OIDC_SECRET=fake-secret && exec \"$2\" \"$1\" \"$3\" >\"$1/api.log\" 2>&1\nsh\n" + self.root + "\n" + binary + "\n" + to_string(self.port);
+        let argv = "sh\n-c\ncd \"$1\" && unset HALE_DNA_KNOWLEDGE_DSN HALE_DNA_KNOWLEDGE_URL HALE_DNA_EVIDENCE_KEY && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 HALE_DNA_OIDC_SECRET=fake-secret && if [ \"$4\" = web ]; then exec \"$2\" \"$1\" \"$3\" \"$5\" >\"$1/api.log\" 2>&1; else exec \"$2\" \"$1\" \"$3\" >\"$1/api.log\" 2>&1; fi\nsh\n" + self.root + "\n" + binary + "\n" + to_string(self.port) + "\n" + (if self.web_requested { "web" } else { "api" }) + (if len(self.webroot) > 0 { "\n" + self.webroot } else { "" });
         let child = std::process::spawn(argv) or std::process::Child { };
         // Child is structural: transfer its OS handles into a newly constructed
         // field, then disarm the short-lived wrapper before its dissolve.
         self.api = std::process::Child { argv: argv, pid: child.pid, stdin_fd: child.stdin_fd, stdout_fd: child.stdout_fd, stderr_fd: child.stderr_fd };
         child.pid = -1; child.stdin_fd = -1; child.stdout_fd = -1; child.stderr_fd = -1;
         std::test::assert(self.api.pid > 0, "API process spawned");
+    }
+    fn startup_refused(message: String) {
+        self.spawn();
+        let deadline = std::time::now() + 10;
+        let mut code = -2;
+        while code == -2 && std::time::now() < deadline {
+            code = std::process::try_wait(self.api) or - 1;
+            if code == -2 { std::time::sleep(25ms); }
+        }
+        std::test::assert(code != -2 && code != 0, "invalid configuration fails startup: " + self.log());
+        self.api.pid = -1;
+        std::test::assert(std::str::contains(self.log(), message), "startup diagnostic: " + self.log());
     }
     fn start() {
         self.spawn();

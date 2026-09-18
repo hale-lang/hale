@@ -1,6 +1,6 @@
 # Read-only API integration tests
 
-The native Hale runner exercises 25 scenarios against the real HTTP service and
+The native Hale runner exercises 29 scenarios against the real HTTP service and
 temporary Git Records. Fixtures use the native journal and receipt writers to
 construct exact projection states, including approval before activation and
 redaction with a stale local blob. They do not test domain admission or execution.
@@ -19,7 +19,7 @@ The suite does not rebuild the service. Every success/error API response is
 checked against the checked-in JSON Schema using the native contract validator.
 Its supported schema profile is documented in the [contract README](../contract/v1/README.md).
 Missing schema or service binary fails the suite. `hale test` reports one test
-program; that program executes all 25 named cases and remains silent on success.
+program; that program executes all 29 named cases and remains silent on success.
 
 Requirements are Hale, Git, curl, standard POSIX tools, and loopback sockets. Each
 case owns its temporary Record and API process; the suite hosts a native local
@@ -49,6 +49,11 @@ Coverage includes:
 - A local authorization-code issuer, unauthenticated/forged/unmapped refusal,
   mapped session identity, logout, session loss on restart and configuration
   failure without a trusted-local fallback.
+- Optional static shell serving: exact asset whitelist, media types and CSP,
+  traversal and source-path refusal, unsupported methods, incomplete or empty
+  webroot rejection, startup-loaded assets and unchanged API-only behavior.
+  The shell is public without Record data; OIDC still gates API reads, and the
+  successful sign-in callback lands on the served shell.
 
 The identity-provider fixture follows the existing principal OIDC test's direct
 token-endpoint trust model. It does not test a production provider, TLS or token

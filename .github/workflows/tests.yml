@@ -235,6 +235,32 @@ jobs:
           # Domain fixtures own temporary Git roots and do not need a database.
           (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/target/release/hale" test "$GITHUB_WORKSPACE/dna/operations/tests")
 
+      - name: Set up Node for cockpit browser tests
+        if: matrix.partition == 1
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: iris/cockpit/package-lock.json
+
+      - name: Iris cockpit browser integration
+        if: matrix.partition == 1
+        working-directory: iris/cockpit
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium --only-shell
+          HALE_BIN="$GITHUB_WORKSPACE/target/release/hale" \
+            HALE_API_BIN="$GITHUB_WORKSPACE/dna/api/api" npm test
+
+      - name: Preserve cockpit browser failure evidence
+        if: failure() && matrix.partition == 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: iris-cockpit-browser-failures
+          path: iris/cockpit/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: cargo nextest run (partition ${{ matrix.partition }}/4)
         # Build-and-run in one job (no separate archive job + upload/
         # download round-trip): nextest compiles the test binaries

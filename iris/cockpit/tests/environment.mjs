@@ -1,0 +1,15 @@
+export function isolatedEnvironment() {
+  const env = { ...process.env };
+  for (const key of [
+    'GIT_DIR', 'GIT_COMMON_DIR', 'GIT_CONFIG', 'GIT_NAMESPACE', 'GIT_WORK_TREE',
+    'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS', 'HALE_DNA_KNOWLEDGE_DSN',
+    'HALE_DNA_KNOWLEDGE_URL', 'HALE_DNA_EVIDENCE_KEY', 'HALE_DNA_OIDC_SECRET',
+    'HALE_DNA_OWNER', 'HALE_DNA_LEASE', 'HALE_DNA_LEASE_TOKEN', 'HALE_DNA_TAPE',
+    'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
+  ]) delete env[key];
+  return Object.assign(env, {
+    GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_TERMINAL_PROMPT: '0', HALE_DNA_DISCOVER: 'off',
+  });
+}

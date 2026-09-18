@@ -8,6 +8,20 @@ behavior.
 
 ## Unreleased
 
+### Iris: live read-only cockpit for DNA practices and reviews (GH #690)
+
+- An independently produced browser shell reads the typed DNA API, with paged
+  Practice and Review catalogs, exact-document links, source revisions and
+  explicit content availability. Review approval and practice activation remain
+  separate. Organization, Knowledge and Definitions are visible core workspaces
+  awaiting their adapters; Runtime links to the independent existing observer.
+- The Hale API accepts an optional static asset directory and serves the shell,
+  authentication and data on one origin. API-only mode remains available; static
+  assets contain no Record data and all data reads retain their authentication.
+  Native boundary tests and real-browser tests cover serving, navigation,
+  stale snapshots, suppressed content and connection failures. See
+  [`iris/cockpit/README.md`](iris/cockpit/README.md).
+
 ### DNA: cadence refresh runs on the organism's owner queue
 
 - Generated organizations use `Dna.request_tick` so journal refresh finishes

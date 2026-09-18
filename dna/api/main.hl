@@ -1,5 +1,5 @@
 // Build: hale build dna/api
-// Run: dna/api/api <project-root> <port>
+// Run: dna/api/api <project-root> <port> [iris-webroot]
 // A single-Record read surface, always loopback. This does not implement the
 // proposed remote command/token contract or proxy any legacy UI mutation route.
 
@@ -103,6 +103,7 @@ locus Api {
         root: String = ".";
         mode: String = "local";
         local_name: String = "local";
+        web: WebAssets = WebAssets { };
         // Reuse only the established session/authentication methods. Never
         // dispatch Ui.handle, whose legacy routes include domain mutations.
         auth: ui::Ui = ui::Ui { };
@@ -113,6 +114,9 @@ locus Api {
         let path = if cut < 0 { req.path } else { req.path[0..cut] };
         let raw_query = if cut < 0 { "" } else { req.path[(cut + 1)..len(req.path)] };
         if req.method != "GET" { return http.error(405, "method_not_allowed", "this API implements reads only", false); }
+        // The optional shell is public and static, so Runtime inspection can
+        // work without a DNA session. Every Record read still passes auth below.
+        if self.web.serves(path) { return self.web.response(path); }
         let mut actor = self.local_name;
         if self.mode == "oidc" {
             if path == "/auth/login" { return self.auth.begin_sign_in(); }
@@ -187,8 +191,13 @@ fn main() {
     let raw_port = std::env::arg_or(2, "8792");
     let http = Http { };
     let port = http.integer(raw_port, 65535);
-    if port < 1 || std::str::contains(root, "\n") || std::str::contains(root, "\r") {
-        eprintln("hale dna api: expected <project-root> <port 1..65535>");
+    if port < 1 || std::env::args_count() > 4 || std::str::contains(root, "\n") || std::str::contains(root, "\r") {
+        eprintln("hale dna api: expected <project-root> <port 1..65535> [iris-webroot]");
+        std::process::exit(2);
+    }
+    let web = WebAssets { };
+    if std::env::args_count() > 3 && !web.load(std::env::arg(3)) {
+        eprintln("hale dna api: iris-webroot must contain readable, nonempty index.html, app.js and styles.css; refusing to start");
         std::process::exit(2);
     }
     let record = dna::GitRecord { repo: root };
@@ -208,7 +217,7 @@ fn main() {
         }
         let members = record.git("config\n--get-all\ndna.oidc.member");
         println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (OIDC session reads; no writes)");
-        std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, mode: "oidc", auth: ui::Ui { principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: members.stdout } } };
+        std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, mode: "oidc", auth: ui::Ui { principal: "oidc", issuer: issuer, client: client, redirect_uri: redirect_uri, members: members.stdout } } };
         return;
     }
     if len(mode) > 0 && mode != "local" {
@@ -217,5 +226,5 @@ fn main() {
     }
     let user = std::env::var("USER");
     println("hale dna api: http://127.0.0.1:", port, API_PREFIX, " (trusted local reads; no writes)");
-    std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, local_name: if len(user) > 0 { user } else { "local" } } };
+    std::http::Server { host: "127.0.0.1", port: port, handler: Api { root: root, web: web, local_name: if len(user) > 0 { user } else { "local" } } };
 }
