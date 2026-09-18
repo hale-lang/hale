@@ -152,6 +152,39 @@ fn attach_attempt(j: Journal, attempt_id: String, why: String) -> Executed {
 // moved, the decision is taken again: an outcome recorded meanwhile is
 // the answer, a claim taken meanwhile is attached to, and only a claim
 // that lands is followed by a performer call.
+// The durable fence over a task at one reading of the record: the task
+// or an ancestor of it settled cancelled before `rev`. "" when none did.
+// Walked through the admissions (a child's names its parent), bounded
+// by the rows read: an ancestry that does not resolve is reported, and
+// admits nothing.
+@unbounded
+fn recorded_fence(j: Journal, task_id: String, rev: Int) -> String {
+    let mut task = task_id;
+    let mut hops = 0;
+    while len(task) > 0 {
+        hops = hops + 1;
+        if hops > rev + 1 { return "task " + task_id + " sits under an ancestry that does not resolve (it loops above " + task + ")"; }
+        let mut parent = "";
+        let mut admitted = false;
+        let mut i = 0;
+        while i < rev {
+            let e = j.read(i);
+            if e.kind == "workflow.settled" && e.entity == task {
+                let o = decode_workflow_outcome(e.body);
+                if o.ok && o.value.disposition == "cancelled" { return "task " + task + " was cancelled"; }
+            }
+            if e.kind == "workflow.admitted" && e.entity == task {
+                let ad = decode_admission(e.body);
+                if ad.ok { admitted = true; parent = ad.value.parent_task; }
+            }
+            i = i + 1;
+        }
+        if !admitted { return ""; }
+        task = parent;
+    }
+    return "";
+}
+
 @unbounded
 fn execute_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAttempt) -> Executed {
     let id = a.attempt_id;
@@ -179,6 +212,14 @@ fn execute_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAttem
         }
         if attempt_claimed(j, id, rev) {
             return attach_attempt(j, id, "attempt " + id + " is already running; attached to its outcome");
+        }
+        // the fence, at the same reading the claim is exact at (§5): an
+        // attempt not yet claimed under a cancelled execution starts no
+        // new work; one claimed before the cancellation still records
+        // its outcome
+        let fence = recorded_fence(j, v.task_id, rev);
+        if len(fence) > 0 {
+            return Executed { why: fence + " before attempt " + id + " was claimed; it does not run" };
         }
         let w = j.append_exact(rev, "effect.requested", key, "attempt " + id + " by " + v.performer_kind);
         if w.ok { ours = true; }

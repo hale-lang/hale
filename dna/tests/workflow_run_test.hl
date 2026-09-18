@@ -46,9 +46,21 @@ locus Failing {
     }
 }
 
-// A journal that refuses the rows it is told to, once each.
+// A journal that refuses the rows it is told to, once each — and, as
+// one row lands, asks for the execution's cancellation: the cancel
+// request reaches the workflow before the Work that admitted the
+// attempt hears its admission landed, so the cancellation is durable
+// before the attempt is asked to run.
 locus Refusing {
-    params { inner: dna::MemJournal = dna::MemJournal { }; refuse_once: String = ""; refused_yet: String = ""; }
+    params {
+        inner: dna::MemJournal = dna::MemJournal { };
+        refuse_once: String = "";
+        refused_yet: String = "";
+        cancel_on: String = ""; // "<kind>:<entity>" whose landing asks the cancellation
+        cancel_task: String = "";
+        cancelled: Bool = false;
+    }
+    bus { publish dna::WorkflowCancelRequested; }
     fn refresh() -> Bool { return self.inner.refresh(); }
     fn revision() -> Int { return self.inner.revision(); }
     fn head() -> String { return self.inner.head(); }
@@ -58,7 +70,12 @@ locus Refusing {
             self.refused_yet = dna::set_add(self.refused_yet, kind + ":" + entity);
             return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() };
         }
-        return self.inner.append_exact(expected, kind, entity, body);
+        let r = self.inner.append_exact(expected, kind, entity, body);
+        if r.ok && !self.cancelled && kind + ":" + entity == self.cancel_on {
+            self.cancelled = true;
+            dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: self.cancel_task, reason: "cancelled as the admission landed" };
+        }
+        return r;
     }
     fn read(i: Int) -> dna::Event { return self.inner.read(i); }
     fn verify_chain() -> Bool { return self.inner.verify_chain(); }
@@ -101,7 +118,7 @@ main locus App {
         limits: dna::AdmissionLimits = dna::AdmissionLimits { };
         rt: dna::WorkflowRuntime = dna::WorkflowRuntime {
             scope: "main",
-            journal: Refusing { refuse_once: "step.activated:t8/wf1/s1" },
+            journal: Refusing { refuse_once: "step.activated:t8/wf1/s1", cancel_on: "attempt.admitted:t9/wf1/s0/a/a0", cancel_task: "t9" },
             work: dna::WorkSystem { service: Counting { }, agent: Delayed { }, human: Failing { } }
         };
         owner: Owner = Owner { scope: "main" };
@@ -349,9 +366,47 @@ main locus App {
         std::test::assert_eq_int(self.rows("step.activated", "t8/wf1/s1"), 1, "resumed, the activation landed, once");
         std::test::assert_eq_str(self.claims("t8"), "wf1/s0/a/a0 wf1/s1/b/a0 wf1/s1/c/a0 wf1/s2/d/a0 ", "and the execution ran on to D");
 
+        // ---- the fence is in the record, not in a notification: the
+        //      cancellation lands between A's admission and A's request
+        //      to run, and A does not run
+        self.admit("t9", "diamond");
+        WorkflowAsks <- WorkflowAsk { scope: "main", task_id: "t9", kinds: "a=service b=service c=service d=service" };
+        self.until(false, "t9:cancelled", 1);
+        self.until(true, "t9:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("attempt.admitted", "t9/wf1/s0/a/a0"), 1, "A's attempt was admitted");
+        std::test::assert_eq_int(self.rows("workflow.settled", "t9"), 1, "and the cancellation landed");
+        std::test::assert_eq_str(self.claims("t9"), "", "before A was claimed: A does not run");
+        std::test::assert_eq_int(self.rows("attempt.outcome", "t9/wf1/s0/a/a0"), 0, "no performer ran, no outcome");
+        std::test::assert_eq_int(self.rows("work.settled", "t9/wf1/s0/a"), 1, "A settled under the fence");
+        std::test::assert_eq_int(self.count(self.lives, "t9/wf1/s0:dissolved") + self.count(self.lives, "t9/wf1/s0/a:dissolved"), 2, "and the step and A reclaimed themselves");
+
+        // ---- cancellation during a failed step's drain: the failure
+        //      stands, the pending sibling is fenced, everything reclaims
+        self.admit("t10", "diamond");
+        WorkflowAsks <- WorkflowAsk { scope: "main", task_id: "t10", kinds: "a=service b=agent c=human d=service" };
+        self.until(true, "t10/wf1/s1/c:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("step.failed", "t10/wf1/s1"), 1, "C failed step 1; B is out");
+        std::test::assert_eq_int(self.rows("workflow.settled", "t10"), 0, "the execution has not settled: the step drains");
+        dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: "t10", reason: "enough" };
+        self.until(false, "t10:cancelled", 1);
+        self.until(true, "t10:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("workflow.settled", "t10"), 1, "cancelled during the drain: one row");
+        std::test::assert_eq_int(self.rows("work.settled", "t10/wf1/s1/b"), 1, "B, out under the failed step, was fenced and settled");
+        std::test::assert_eq_int(self.count(self.steps, "t10/wf1/s1:failed"), 1, "the step's failure stands");
+        std::test::assert_eq_int(self.count(self.steps, "t10/wf1/s1:cancelled"), 0, "no second, contradicting step outcome was announced");
+        std::test::assert_eq_int(self.count(self.lives, "t10/wf1/s1/b:dissolved") + self.count(self.lives, "t10/wf1/s1:dissolved"), 2, "B and the step reclaimed themselves");
+        let b10 = self.reply("t10/wf1/s1/b/a0", "done");
+        std::test::assert(b10.ok, "B's late reply is recorded: " + b10.why);
+        self.settle();
+        std::test::assert_eq_int(self.rows("attempt.outcome", "t10/wf1/s1/b/a0"), 1, "as its attempt's outcome");
+        std::test::assert_eq_int(self.rows("step.registered", "t10/wf1/s2"), 0, "and D was never born");
+
         std::test::assert(self.rt.journal.verify_chain(), "the record's chain holds");
         std::test::assert_eq_int(self.rt.conflicts, 0, "no conflict");
-        std::test::assert_eq_int(self.owner.asked, 8, "eight executions were asked");
+        std::test::assert_eq_int(self.owner.asked, 10, "ten executions were asked");
     }
 }
 

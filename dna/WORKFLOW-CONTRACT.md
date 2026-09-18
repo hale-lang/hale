@@ -148,10 +148,21 @@ its history and model evidence one attempt number.
    drain policy: by default they keep their responsibility until their
    own outcome, which is recorded and cannot reopen the step.
 5. Cancellation stops further admission and fences outstanding members.
-   It does not undo external effects. **[proven for one execution, card
-   10: a cancellation while step 0's leaf is out settles the execution
+   It does not undo external effects. The fence is durable: the
+   executor reads the execution's cancellation (its own or an
+   ancestor's `workflow.settled`) at the same captured reading its
+   execution claim is exact at, so an attempt not yet claimed under a
+   cancelled execution starts no new work whatever notification lagged,
+   and one claimed before still records its outcome. A step that had
+   failed and is draining when the cancellation lands keeps its
+   failure and forwards the fence to its live members; the fence is
+   never a second step outcome. **[proven for one execution, card 10:
+   a cancellation while step 0's leaf is out settles the execution
    cancelled, the leaf cancelled, births no step 1, and the leaf's late
-   reply is recorded and reopens nothing]**
+   reply is recorded and reopens nothing; a cancellation that lands
+   between an attempt's admission and its request to run leaves it
+   unclaimed and unrun; a cancellation during a failed step's drain
+   fences the pending sibling and the failure stands]**
 6. Logical failure and physical reclamation are separate. An
    outstanding responsibility stays reachable until its outcome or an
    explicit fence. There is no invented timeout.

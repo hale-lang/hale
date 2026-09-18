@@ -93,6 +93,12 @@ type StepDrain { task_id: String = ""; step_id: String = ""; step_index: Int = 0
 topic StepDrained { payload: StepDrain; subject: "dna.step.drained"; keyed_by task_id; }
 type WorkflowCancel { task_id: String = ""; reason: String = ""; }
 topic WorkflowCancelRequested { payload: WorkflowCancel; subject: "dna.workflow.cancel"; keyed_by task_id; }
+// A step fenced by its workflow's cancellation tells the Works it
+// dispatched — whatever the step's own outcome was: a step that had
+// failed and was draining keeps its failure — so an attempt still out
+// settles cancelled and one never admitted retires.
+type StepFence { step_id: String = ""; task_id: String = ""; reason: String = ""; }
+topic StepFenced { payload: StepFence; subject: "dna.step.fenced"; keyed_by step_id; }
 type WorkflowSettlement { task_id: String = ""; disposition: String = ""; reason: String = ""; }
 topic WorkflowSettled { payload: WorkflowSettlement; subject: "dna.workflow.settled"; keyed_by task_id; }
 // The record is writable again: a resident holding a transition the

@@ -1208,16 +1208,24 @@ A cancellation is asked of a workflow by task (`WorkflowCancelRequested`)
 and is a proposal too: `workflow.settled` cancelled, which the state
 takes at any point before the execution settled and refuses after.
 Once it landed the workflow says so (`WorkflowSettled`, keyed by the
-task) and births nothing further; its active step hears it and is
-fenced: the step's outcome is `cancelled` — no row of its own; the
-task's row is its basis — and its Works hear that. An admitted attempt
-still awaiting its reply settles cancelled (the projection allows that
-settlement only under a cancelled task); an attempt admitted under the
-fence but not yet run does not run and settles cancelled; a first
+task) and births nothing further; its active step hears it and fences
+what it dispatched (`StepFenced`, keyed by the step) — a step with no
+outcome yet is `cancelled` (no row of its own; the task's row is its
+basis), and a step that had failed and is draining keeps its failure:
+the fence is not a second outcome. Its Works hear the fence: an
+admitted attempt still awaiting its reply settles cancelled (the
+projection allows that settlement only under a cancelled task); a first
 admission the record refused is proposed again and, refused by the
-state, retires; nothing external is undone — a reply that comes later
-is recorded as the attempt's outcome and reopens nothing. The workflow
-leaves once the fenced step has drained. An activation the record
+state, retires; one the state had refused retires. The fence itself is
+in the record, not in a notification: the executor reads the
+execution's durable cancellation — the task's `workflow.settled`, or an
+ancestor's, walked through the admissions — at the same reading its
+execution claim is exact at, and an attempt not yet claimed under a
+cancelled execution does not run, however the notification lagged,
+while one claimed before the cancellation still records its outcome.
+Nothing external is undone — a reply that comes later is recorded as
+the attempt's outcome and reopens nothing. The workflow leaves once the
+fenced step has drained. An activation the record
 refuses dispatches nothing: the step holds it, no leaf is born, and the
 record's resumption lands it once. Nothing here spawns child workflows
 or survives a restart; those are later cards.

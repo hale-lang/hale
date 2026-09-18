@@ -215,6 +215,7 @@ locus WorkRun {
         held: Bool = false; // the record refused the proposal: it is proposed again when the record resumes
         unadmitted: Bool = false; // the state refused the first admission: nothing to settle on
         step_settled: String = ""; // the Step's durable disposition, once it published one
+        fenced: Bool = false; // the execution was cancelled: nothing new runs
         settled: Bool = false;
         stale: Int = 0; // replies that were not this attempt's
     }
@@ -223,6 +224,7 @@ locus WorkRun {
         subscribe AttemptReplied as on_reply where key == self.work_id;
         subscribe RecordResumed as on_resumed where key == self.scope;
         subscribe StepSettled as on_step where key == self.step_id;
+        subscribe StepFenced as on_fenced where key == self.step_id;
         publish TransitionProposed;
         publish AttemptRequested;
         publish MemberSettled;
@@ -314,7 +316,7 @@ locus WorkRun {
             // attempt was wrong. It stays; the next reply decides again
             return;
         }
-        if self.proposing == "admit" && self.step_settled == "cancelled" {
+        if self.proposing == "admit" && self.fenced {
             // admitted under the fence, not yet run: it does not run
             self.settle_as("cancelled");
             return;
@@ -361,7 +363,23 @@ locus WorkRun {
             MemberRetired <- MemberRetirement { step_id: self.step_id, key: self.key, work_id: self.work_id, why: "never admitted; step " + self.step_id + " " + s.disposition };
             terminate;
         }
-        if s.disposition == "cancelled" && !self.unadmitted && !self.held { self.settle_as("cancelled"); }
+    }
+    // The execution was cancelled, durably, and the Step says so to what
+    // it dispatched — whatever the Step's own outcome was. An admitted
+    // attempt still out settles cancelled (the projection allows that
+    // only under a cancelled task); a first admission the record refused
+    // is proposed again and, refused by the state, retires; one the state
+    // had refused retires now. Nothing external is undone: a reply that
+    // comes later is recorded as the attempt's outcome by the runtime.
+    fn on_fenced(f: StepFence) {
+        self.fenced = true;
+        if self.settled || len(self.outstanding) > 0 { return; }
+        if self.held && self.proposing == "admit" && self.attempt_no == 0 { self.propose_admission(); return; }
+        if self.unadmitted {
+            MemberRetired <- MemberRetirement { step_id: self.step_id, key: self.key, work_id: self.work_id, why: "never admitted; " + f.reason };
+            terminate;
+        }
+        if !self.held { self.settle_as("cancelled"); }
     }
     dissolve() { RunLives <- RunLife { key: self.work_id, what: "dissolved" }; }
 }
@@ -583,6 +601,7 @@ locus StepRun {
         subscribe WorkflowSettled as on_workflow where key == self.task_id;
         publish TransitionProposed;
         publish StepSettled;
+        publish StepFenced;
         publish StepDrained;
         publish RunLives;
     }
@@ -770,9 +789,18 @@ locus StepRun {
     // and the step leaves once they have. A step not yet dispatched
     // leaves at once; a step already settled changes nothing.
     fn on_workflow(w: WorkflowSettlement) {
-        if w.disposition != "cancelled" || self.stage == "settled" { return; }
-        self.finish("cancelled", w.reason);
-        if self.drained() { self.leaving(); terminate; }
+        if w.disposition != "cancelled" { return; }
+        if self.stage == "settled" && self.disposition == "cancelled" { return; }
+        // a step with no outcome yet is cancelled; one that had failed and
+        // is draining keeps its failure — either way what it dispatched
+        // and still waits for is fenced
+        if self.stage != "settled" { self.finish("cancelled", w.reason); }
+        if self.dispatched && !self.drained() {
+            StepFenced <- StepFence { step_id: self.step_id, task_id: self.task_id, reason: "task " + self.task_id + " was cancelled: " + w.reason };
+            return;
+        }
+        self.leaving();
+        terminate;
     }
     // The record is writable again: what it refused is proposed again.
     fn on_resumed(r: RecordResume) {
