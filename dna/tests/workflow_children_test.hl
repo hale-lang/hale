@@ -60,8 +60,15 @@ locus Refusing {
         cancel_on: String = "";
         cancel_task: String = "";
         cancelled: Bool = false;
+        // and, as one row is refused, fails the spawning step by another
+        // hand — the sibling's settlement and the step's failure landed,
+        // the settlement announced — so the step's settlement reaches the
+        // child before the refusal it is answered with
+        fail_on: String = "";
+        fail_task: String = "";
+        failed: Bool = false;
     }
-    bus { publish dna::StepFenced; }
+    bus { publish dna::StepFenced; publish dna::StepSettled; }
     fn refresh() -> Bool { return self.inner.refresh(); }
     fn revision() -> Int { return self.inner.revision(); }
     fn head() -> String { return self.inner.head(); }
@@ -69,6 +76,25 @@ locus Refusing {
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
         if dna::set_has(self.refuse_once, kind + ":" + entity) && !dna::set_has(self.refused_yet, kind + ":" + entity) {
             self.refused_yet = dna::set_add(self.refused_yet, kind + ":" + entity);
+            if kind + ":" + entity == self.fail_on && !self.failed {
+                self.failed = true;
+                let t = self.fail_task;
+                let step = t + "/wf1/s0";
+                let work = step + "/a";
+                let r0 = self.inner.append(self.inner.revision(), "attempt.outcome", work + "/a0", dna::encode_attempt_outcome(dna::AttemptOutcome {
+                    attempt_id: work + "/a0", work_id: work, disposition: "failed", performer: "delayed", result: "no",
+                    transition: dna::TransitionRef { scope: "main", key: work, proposal_id: work + "/a0@outcome" }
+                }));
+                let r1 = self.inner.append(self.inner.revision(), "work.settled", work, dna::encode_work_outcome(dna::WorkOutcome {
+                    work_id: work, step_id: step, attempt_id: work + "/a0", disposition: "failed",
+                    transition: dna::TransitionRef { scope: "main", key: work, proposal_id: work + "@settled" }
+                }));
+                let r2 = self.inner.append(self.inner.revision(), "step.failed", step, dna::encode_step_outcome(dna::StepOutcome {
+                    step_id: step, task_id: t, disposition: "failed", members: "a b", failed_member: "a",
+                    transition: dna::TransitionRef { scope: "main", key: step, proposal_id: step + "@failed" }
+                }));
+                dna::StepSettled <- dna::StepSettlement { step_id: step, task_id: t, disposition: "failed", failed_member: "a", why: "by another hand" };
+            }
             return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() };
         }
         let r = self.inner.append_exact(expected, kind, entity, body);
@@ -94,8 +120,9 @@ main locus App {
         rt: dna::WorkflowRuntime = dna::WorkflowRuntime {
             scope: "main",
             journal: Refusing {
-                refuse_once: "workflow.admitted:t5.s0.b workflow.admitted:t7.s0.b work.settled:t8.s0.b.s1.c/wf1/s0/c1",
-                cancel_on: "workflow.admitted:t6.s0.b", cancel_task: "t6"
+                refuse_once: "workflow.admitted:t5.s0.b workflow.admitted:t7.s0.b work.settled:t8.s0.b.s1.c/wf1/s0/c1 workflow.admitted:t9.s0.b",
+                cancel_on: "workflow.admitted:t6.s0.b", cancel_task: "t6",
+                fail_on: "workflow.admitted:t9.s0.b", fail_task: "t9"
             },
             work: dna::WorkSystem { service: Counting { }, agent: Delayed { }, human: Failing { } }
         };
@@ -232,6 +259,10 @@ main locus App {
         dna::ChildSettled <- dna::ChildSettlement { step_id: "t1/wf1/s0", key: "b", task_id: "t3.s0.b", disposition: "done" };
         dna::ChildSettled <- dna::ChildSettlement { step_id: "t1/wf1/s0", key: "c", task_id: "t1.s0.b.s1.c", disposition: "done" };
         dna::ChildSettled <- dna::ChildSettlement { step_id: "t1.s0.b/wf1/s0", key: "c", task_id: "t1.s0.b.s1.c", disposition: "done" };
+        // and a leave of the exact child before it settled is nobody's:
+        // a leave follows a settlement; banked, it would let the root's
+        // step reclaim ahead of the child (the cleanup order below)
+        dna::ChildLeft <- dna::ChildLeave { step_id: "t1/wf1/s0", key: "b", task_id: "t1.s0.b" };
         self.settle();
         std::test::assert_eq_int(self.rows("step.completed", ""), 2, "only the two children's first steps (B1) have completed; nothing forged completed anything");
         std::test::assert_eq_str(self.claims(), "t1/wf1/s0/a/a0 t1.s0.b/wf1/s0/b1/a0 t1.s0.b.s1.c/wf1/s0/c1/a0 t3/wf1/s0/a/a0 t3.s0.b/wf1/s0/b1/a0 t3.s0.b.s1.c/wf1/s0/c1/a0 ", "and D of neither root was requested");
@@ -382,10 +413,26 @@ main locus App {
         std::test::assert(self.before("task:t8.s0.b.s1.c:dissolved", "task:t8.s0.b:dissolved"), "the grandchild's Task before the child's");
         std::test::assert(self.before("task:t8.s0.b:dissolved", "task:t8:dissolved"), "and the child's before the root's");
 
+        // ---- t9: the inverse of t7 — the spawning step fails by another
+        //      hand (A's attempt, out, recorded failed elsewhere; A's Work
+        //      and the step settled with it) while the child's admission
+        //      answer is out, and that answer is a refusal by the record.
+        //      A's own reply never comes, so that settlement is the only
+        //      one the child ever hears: the re-decision it owed is taken
+        //      on the answer, the state refuses the child under the failed
+        //      step, and it retires
+        self.ask_root("t9", "a=agent b1=service c1=agent d=service");
+        self.until(true, "task:t9.s0.b:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("step.failed", "t9/wf1/s0"), 1, "the step failed, durably, before the child's admission was answered");
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t9.s0.b"), 0, "the child was never admitted: refused by the record, then decided again and refused by the state");
+        std::test::assert_eq_int(self.count(self.lives, "task:t9.s0.b:dissolved"), 1, "and it retired, without the record resuming");
+        std::test::assert_eq_int(self.count(self.lives, "t9.s0.b:born"), 0, "no workflow of it was ever born");
+
         std::test::assert(self.rt.journal.verify_chain(), "the record's chain holds");
         std::test::assert_eq_int(self.rt.conflicts, 0, "no conflict");
-        std::test::assert_eq_int(self.owner.roots, 8, "eight roots");
-        std::test::assert_eq_int(self.owner.child_count, 14, "fourteen children and grandchildren");
+        std::test::assert_eq_int(self.owner.roots, 9, "nine roots");
+        std::test::assert_eq_int(self.owner.child_count, 15, "fifteen children and grandchildren");
     }
 }
 

@@ -495,6 +495,7 @@ locus TaskRun {
         step_settled: Bool = false; // the spawning step settled or was fenced
         fenced: Bool = false; // the spawning step was fenced: this execution is to be cancelled
         fence_reason: String = "";
+        redrive: Bool = false; // the spawning step settled or was fenced while the admission answer was out: one re-decision owed
         disposition: String = "";
         told: Bool = false; // the spawning step heard the settlement
         gap: String = ""; // the recipe could not be read
@@ -565,7 +566,15 @@ locus TaskRun {
     fn on_answer(a: TransitionAnswer) {
         if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
         self.outstanding = "";
-        if !a.ok && a.basis == "record" { self.held = true; return; }
+        if !a.ok && a.basis == "record" {
+            self.held = true;
+            // the spawning step settled or was fenced while this answer
+            // was out: the re-decision that settlement owed is taken now,
+            // once — the state, not the record, says whether the child
+            // can still be admitted
+            if self.redrive { self.redrive = false; self.propose_admission(); }
+            return;
+        }
         if !a.ok {
             // the state refused the admission: nothing runs. Under a
             // spawning step that has settled or was fenced the child
@@ -637,7 +646,7 @@ locus TaskRun {
     fn on_step(s: StepSettlement) {
         if s.disposition != "completed" && s.disposition != "failed" { return; }
         self.step_settled = true;
-        if len(self.outstanding) > 0 { return; }
+        if len(self.outstanding) > 0 { self.redrive = true; return; } // the answer takes it
         if self.unadmitted {
             MemberRetired <- MemberRetirement { step_id: self.spawning_step, key: self.member_key, work_id: self.task_id, why: "never admitted; step " + self.spawning_step + " " + s.disposition };
             terminate;
@@ -651,7 +660,7 @@ locus TaskRun {
         self.step_settled = true;
         self.fenced = true;
         self.fence_reason = std::str::clone(f.reason);
-        if len(self.outstanding) > 0 { return; } // the answer applies it
+        if len(self.outstanding) > 0 { self.redrive = true; return; } // the answer applies it
         if self.unadmitted {
             MemberRetired <- MemberRetirement { step_id: self.spawning_step, key: self.member_key, work_id: self.task_id, why: "never admitted; " + f.reason };
             terminate;
@@ -1054,10 +1063,12 @@ locus StepRun {
         }
         return true;
     }
-    // A child that settled has now left: it drained and reclaimed.
+    // A child that settled has now left: it drained and reclaimed. A
+    // leave from a child that has not answered is nobody's: a leave
+    // follows a settlement, never precedes one.
     fn on_child_left(c: ChildLeave) {
         let bound = self.bound_child(c.key);
-        if len(bound) == 0 || bound != c.task_id { self.strays = self.strays + 1; return; }
+        if len(bound) == 0 || bound != c.task_id || !set_has(self.answered, c.key) { self.strays = self.strays + 1; return; }
         self.left = set_add(self.left, c.key);
         if self.stage == "settled" && self.drained() { self.leaving(); terminate; }
     }

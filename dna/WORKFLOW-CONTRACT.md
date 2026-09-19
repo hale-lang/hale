@@ -433,7 +433,10 @@ that step) and, once its workflow drained and left, tells it so
 that left tells its Task (`WorkflowLeft`). A fence that reaches a child
 while its admission answer is out is applied when the answer comes; a
 record-held child admission is decided again by the state when the
-spawning step settles, as a leaf's is. **[proven, card 11 review: a
+spawning step settles, as a leaf's is — and a step that settles or is
+fenced while the answer is out owes one re-decision, taken on a
+refusal by the record, whichever of the two arrives first. A leave
+from a child that has not answered is nobody's. **[proven, card 11 review: a
 root cancelled by another hand as the child's admission lands, the
 child settling cancelled behind it; a held child admission under a
 step its sibling failed, retiring and the root failing; the tree

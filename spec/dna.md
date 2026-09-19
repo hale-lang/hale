@@ -1262,7 +1262,12 @@ under a failed step it retires on that answer; one the state refused
 retires under the settled or fenced spawning step, as a leaf does. A
 fence that reaches a child while its admission answer is out is kept,
 with its reason, and applied when the answer comes: an admission that
-landed starts and is cancelled at once through its own settlement. A child that settled tells the step that spawned it once
+landed starts and is cancelled at once through its own settlement. A
+spawning step that settles or is fenced while the answer is out owes
+the child one re-decision, taken on that answer if it is a refusal by
+the record: the admission is proposed again once, and the state says —
+neither ordering of the two messages is assumed, and a record that
+keeps refusing is not spun against. A child that settled tells the step that spawned it once
 (`ChildSettled`, keyed by that step) after its row landed, and the step
 counts the exact child bound under the key: a settlement for another
 Task under the key, for a key that is no child of the step, or
@@ -1272,7 +1277,8 @@ once, as a failed leaf does. The Task leaves once its workflow has
 keyed by that step): the step's drain waits for a child that settled
 to have left, not for its settlement, so no ancestor reclaims itself
 ahead of a descendant still holding something — a Work whose
-settlement the record refused, say. A step fenced by its Task's cancellation fences a
+settlement the record refused, say. A leave from a child that has not
+answered is nobody's: a leave follows a settlement. A step fenced by its Task's cancellation fences a
 running child the same way: the child's Task asks its own workflow to
 cancel, which settles cancelled through the same proposal, so the
 fence reaches every level below and each level drains and reclaims
