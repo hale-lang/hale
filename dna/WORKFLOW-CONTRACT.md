@@ -165,7 +165,10 @@ its history and model evidence one attempt number.
    reply is recorded and reopens nothing; a cancellation that lands
    between an attempt's admission and its request to run leaves it
    unclaimed and unrun; a cancellation during a failed step's drain
-   fences the pending sibling and the failure stands]**
+   fences the pending sibling and the failure stands; the fence reaches
+   down: a root cancelled while its grandchild's leaf is out settles
+   the child and the grandchild cancelled and the leaf under them —
+   card 11]**
 6. Logical failure and physical reclamation are separate. An
    outstanding responsibility stays reachable until its outcome or an
    explicit fence. There is no invented timeout.
@@ -417,9 +420,28 @@ in `dna/core/workflow_runtime.hl`:
 | `StepRun` | `WorkRun` | `WorkflowRun` | its registered members and barrier; requests child workflows over the bus |
 | `WorkRun` | — | `StepRun` | one leaf across its attempts; admits each attempt |
 
-`StepRun` and `WorkRun` exist (card 09) and `WorkflowRun` (card 10),
-beside `WorkflowRuntime`, the committer and executor they propose to;
-`TaskRun` is card 11. A `WorkflowRun` births step i+1 only from the
+`StepRun` and `WorkRun` exist (card 09), `WorkflowRun` (card 10) and
+`TaskRun` with the Task owner `Executions` (card 11), beside
+`WorkflowRuntime`, the committer and executor they propose to. A step
+asks its Task for a child member (`ChildRequested`, keyed by the parent
+task); the Task cuts the subtree from its recipe and asks the owner
+(`ChildAdmitRequested`, keyed by scope), which births one `TaskRun` per
+Task id; the child proposes its own admission and runs behind it; a
+child that settled answers its spawning step (`ChildSettled`, keyed by
+that step) and, once its workflow drained and left, tells it so
+(`ChildLeft`), which is what the step's drain waits for; a workflow
+that left tells its Task (`WorkflowLeft`). A fence that reaches a child
+while its admission answer is out is applied when the answer comes; a
+record-held child admission is decided again by the state when the
+spawning step settles, as a leaf's is — and a step that settles or is
+fenced while the answer is out owes one re-decision, taken on a
+refusal by the record, whichever of the two arrives first. A leave
+from a child that has not answered is nobody's. **[proven, card 11 review: a
+root cancelled by another hand as the child's admission lands, the
+child settling cancelled behind it; a held child admission under a
+step its sibling failed, retiring and the root failing; the tree
+cancelled with the deepest Work's settlement refused once, no ancestor
+reclaiming before that Work settled and each level left]** A `WorkflowRun` births step i+1 only from the
 handler that hears step i drained (`StepDrained`, keyed by task, which a
 step publishes as it leaves) behind its committed completion, and a
 cancellation (`WorkflowCancelRequested`) is a `workflow.settled`
@@ -604,6 +626,7 @@ equivalent definition.
 | the admission precedes the summary; a refusal requests nothing and is recorded (or reported unrecorded), a Task-bound one exactly at the decision's revision and never on another body's execution, one that reached no Task as `workflow.ask_refused` under `<ask>#<n>`, decided and appended at one revision, the same decision replayed and a new one ordinal-numbered; one ask id is one execution, decided and appended at one revision; a taken id is skipped and a contended one re-minted; only the position's owner admits; an admitted Task is never legacy edit work after a restart | proven, card 07 |
 | one step alive across delayed replies: the member set registered and activated before a leaf is born; two leaves completing in either order; an immediate and a delayed reply leaving it waiting and reachable; a repeated answer and a stray one changing nothing; a failed member failing it at once and a sibling's later reply recorded without reopening it; reclaimed only once every member settled; a leaf retried within its allowance; every transition a proposal decided at one reading, the same row committed meanwhile standing once, a conflict refused, an invalid or refused append moving nothing | proven, card 09 |
 | ordered steps advance only behind a committed completion: the original delayed two-step reproduction passes through the new engine (four requests then done; six while waiting, eight after the held replies); A → {B,C} → D in exact order under immediate, delayed, out-of-order and mixed replies; a duplicate completion births no second step; a failed member blocks D and the execution fails once its step drained; a cancellation fences the active step, requests nothing further and a late reply reopens nothing; an activation the record refuses dispatches nothing until the record resumes | proven, card 10 |
+| recursive child workflows: the canonical three-level example runs through one engine; a delayed grandchild leaf keeps root D from starting; a failed grandchild fails its step, its execution, the child's step, the child, the root's step and the root, and D never runs; a child settlement for a leaf's key, another root's child, the wrong step, or delivered again changes nothing; two roots at once and two uses of one definition never share an id; a child's admission the record refused runs nothing until the record resumes; a child request naming the wrong step or asked again births nothing; the fence reaches the grandchild's leaf; cleanup from the leaves upward | proven, card 11 |
 | delivery across off-thread bindings; restart | not yet, cards 12–13, 19 |
 
 Card 03 native runs: `HALE_BIN=target/release/hale HALE_DNA_SOURCE=$PWD
