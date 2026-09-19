@@ -14,39 +14,59 @@ fn repo_root() -> PathBuf {
     p
 }
 
-#[test]
-fn dna_fixtures_pass() {
+/// The DNA fixtures, run in slices so CI's hash partition can spread
+/// them: one test over the whole `dna/tests` directory took eleven
+/// minutes on one partition while the others' test phases took three
+/// (2026-09-19), and every workflow card adds a fixture. Each slice
+/// takes every SLICES-th fixture of the sorted listing and runs them in
+/// turn, as `hale test <dir>` did; the slices of one partition run one
+/// at a time (the `dna-fixtures` test group in `.config/nextest.toml`),
+/// because fixtures start live hosts on free ports and share one
+/// knowledge database, and one wedged fixture still ends in a named
+/// failure within the group's timeout.
+const SLICES: usize = 8;
+
+fn fixture_files() -> Vec<PathBuf> {
     let dir = repo_root().join("dna/tests");
-    // The editing fixture runs the toolchain (`hale fmt`, `hale check`)
-    // inside its worktree: hand it this build, not whatever is on PATH.
-    // GH #583 K1: the knowledge store's Postgres half runs when a DSN is
-    // in the environment (CI's service container; a developer's compose)
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_hale"));
-    cmd.arg("test").arg(&dir).env("HALE_BIN", env!("CARGO_BIN_EXE_hale"));
-    // the books slice copies its application from dna/acceptance
-    cmd.env("HALE_DNA_SOURCE", repo_root());
-    // Fixtures run from a directory of their own, never from inside this
-    // repository: an organism's defaults are relative to where it runs
-    // (a gateway's worktrees, a file store's receipts), and a fixture
-    // that trips one must not write into the checkout — a worktree of the
-    // whole repository under crates/hale-cli moved the corpus baseline
-    // for a parallel test.
-    cmd.current_dir(std::env::temp_dir());
-    if let Ok(dsn) = std::env::var("HALE_DNA_KNOWLEDGE_DSN") {
-        cmd.env("HALE_DNA_KNOWLEDGE_DSN", dsn);
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("dna/tests")
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().and_then(|n| n.to_str()).map_or(false, |n| n.ends_with("_test.hl")))
+        .collect();
+    files.sort();
+    files
+}
+
+fn run_fixture_slice(slice: usize) {
+    let files = fixture_files();
+    assert!(!files.is_empty(), "no DNA fixtures under dna/tests");
+    let mine: Vec<&PathBuf> = files.iter().enumerate().filter(|(i, _)| i % SLICES == slice).map(|(_, f)| f).collect();
+    for f in &mine {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_hale"));
+        cmd.arg("test").arg(f).env("HALE_BIN", env!("CARGO_BIN_EXE_hale"));
+        cmd.env("HALE_DNA_SOURCE", repo_root());
+        cmd.current_dir(std::env::temp_dir());
+        if let Ok(dsn) = std::env::var("HALE_DNA_KNOWLEDGE_DSN") {
+            cmd.env("HALE_DNA_KNOWLEDGE_DSN", dsn);
+        }
+        let out = cmd.output().expect("invoke hale test on a DNA fixture");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "the DNA fixture {} failed.\nstdout:\n{}\nstderr:\n{}",
+            f.display(),
+            stdout,
+            stderr
+        );
+        assert!(stdout.contains(", 0 failed"), "expected a passing summary for {}, got:\n{}", f.display(), stdout);
     }
-    let out = cmd.output().expect("invoke hale test dna/tests");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the DNA fixtures failed.\nstdout:\n{}\nstderr:\n{}",
-        stdout,
-        stderr
-    );
-    assert!(stdout.contains(", 0 failed"), "expected a passing summary, got:\n{}", stdout);
-    // #637: every fixture's scratch is reaped when the fixture ends
-    // (`dna::reap_on_exit`); nothing a fixture started outlives the run
+    // Every process a fixture started must be gone once the fixture is:
+    // a host, a body or a service left running is a leak the fixture
+    // did not reclaim. The wait is for a child still tearing down; the
+    // `/tmp/dna-` filter names the fixtures' own roots, so a stranger's
+    // process is not blamed.
     std::thread::sleep(std::time::Duration::from_secs(5));
     let ps = Command::new("ps").args(["-eo", "pid=,args="]).output().expect("ps");
     let me = std::process::id().to_string();
@@ -56,6 +76,24 @@ fn dna_fixtures_pass() {
         .map(str::to_string)
         .collect();
     assert!(left.is_empty(), "processes a DNA fixture started are still running:\n{}", left.join("\n"));
+}
+
+macro_rules! fixture_slices {
+    ($($name:ident => $i:expr),* $(,)?) => { $( #[test] fn $name() { run_fixture_slice($i); } )* };
+}
+fixture_slices! {
+    dna_fixtures_slice_0 => 0, dna_fixtures_slice_1 => 1, dna_fixtures_slice_2 => 2, dna_fixtures_slice_3 => 3,
+    dna_fixtures_slice_4 => 4, dna_fixtures_slice_5 => 5, dna_fixtures_slice_6 => 6, dna_fixtures_slice_7 => 7,
+}
+
+#[test]
+fn the_slices_cover_every_fixture_once() {
+    let files = fixture_files();
+    let mut covered = 0;
+    for slice in 0..SLICES {
+        covered += files.iter().enumerate().filter(|(i, _)| i % SLICES == slice).count();
+    }
+    assert_eq!(covered, files.len(), "every fixture belongs to exactly one slice");
 }
 
 #[test]
