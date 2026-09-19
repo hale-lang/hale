@@ -1,0 +1,272 @@
+// dna/tests/workflow_retry_test.hl — numbered retries under a restart, and
+// the fence (DNA workflow card 12b).
+//
+// A retry is the next numbered attempt, admitted only after the record
+// holds the outcome that permits it and only within the allowance the
+// recipe bound; its request and performer kind are the admission's,
+// durable, so a reboot resumes the attempt the record holds and never
+// mints another. Attempt zero fails; attempt one is admitted; a reboot
+// resumes attempt one — redelivered, the incarnation that claimed it
+// being dead — and never creates attempt two. A late success for
+// attempt zero cannot overwrite its successor. An admission the record
+// refuses invokes no performer and spends no retry: the Work holds it
+// and proposes it again when the record resumes. And the runtime runs
+// under a lease: a holder whose lease expired and was re-acquired by
+// another commits nothing — no transition, no claim, no outcome — until
+// it holds a live token again, and then what was held goes through.
+
+import "../core" as dna;
+
+type Call { work_id: String = ""; attempt_id: String = ""; }
+topic Calls { payload: Call; subject: "wf.retry.call"; }
+
+// Fails its first call at once; every later call is pending, answered
+// through the runtime.
+locus Flaky {
+    params { calls: Int = 0; }
+    bus { publish Calls; }
+    fn kind() -> String { return "human"; }
+    fn identity() -> String { return "alice"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        let id = req.work_id + "/a" + to_string(req.attempt_no);
+        Calls <- Call { work_id: req.work_id, attempt_id: id };
+        if self.calls == 1 { return dna::WorkResult { disposition: "failed", result: "not this time", performer: "alice", attempt_id: id }; }
+        return dna::WorkResult { disposition: "pending", performer: "alice", attempt_id: id };
+    }
+}
+
+// A record that refuses one row, once.
+locus Refusing {
+    params { inner: dna::MemJournal = dna::MemJournal { }; refuse_once: String = ""; refused: Bool = false; }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.inner.append(expected, kind, entity, body); }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if kind + ":" + entity == self.refuse_once && !self.refused { self.refused = true; return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() }; }
+        return self.inner.append_exact(expected, kind, entity, body);
+    }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+}
+
+locus Boot {
+    params {
+        rt: dna::WorkflowRuntime = dna::WorkflowRuntime { };
+        owner: dna::Executions = dna::Executions { };
+    }
+}
+
+main locus App {
+    params {
+        cat: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        limits: dna::AdmissionLimits = dna::AdmissionLimits { };
+        recipe: String = "";
+        boot: Boot = Boot { };
+        full: dna::MemJournal = dna::MemJournal { };
+        lives: String = "";
+        outcomes: String = "";
+        calls: String = "";
+        replies: String = "";
+    }
+    bus {
+        subscribe dna::RunLives as on_life;
+        subscribe dna::WorkflowSettled as on_outcome;
+        subscribe dna::AttemptReplied as on_reply;
+        subscribe Calls as on_call;
+        publish dna::ExecutionAsked;
+        publish dna::AttemptRequested;
+        publish dna::WorkflowCancelRequested;
+        publish dna::RecordResumed;
+    }
+    fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
+    fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
+    fn on_reply(r: dna::AttemptReply) { self.replies = self.replies + r.attempt_id + ":" + (if r.ok { "ok" } else { "refused" }) + ":" + r.disposition + "|" + r.why + "\\n"; }
+    fn on_call(c: Call) { self.calls = self.calls + c.attempt_id + " "; }
+    @unbounded
+    fn count(list: String, item: String) -> Int {
+        let mut n = 0;
+        let mut rest = list;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            if rest[0..sp] == item { n = n + 1; }
+            rest = rest[(sp + 1)..len(rest)];
+        }
+        return n;
+    }
+    @unbounded
+    fn rows(j: dna::Journal, kind: String, entity: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn cut(src: dna::Journal, dst: dna::Journal, n: Int) {
+        let mut i = 0;
+        while i < n {
+            let e = src.read(i);
+            let r = dst.append(dst.revision(), e.kind, e.entity, e.body);
+            std::test::assert(r.ok, "row " + to_string(i) + " copied: " + r.error);
+            i = i + 1;
+        }
+    }
+    fn settle() {
+        let mut i = 0;
+        while i < 10 {
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    @unbounded
+    fn until_outcome(item: String, n: Int) {
+        let mut i = 0;
+        while i < 1000 {
+            if self.count(self.outcomes, item) >= n { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    @unbounded
+    fn until_calls(item: String, n: Int) {
+        let mut i = 0;
+        while i < 1000 {
+            if self.count(self.calls, item) >= n { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    fn admission() -> String {
+        return dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: "t1", definition: "retry", revision: 1, request: "ask-t1", recipe: self.recipe, limits: self.limits, works: 1, tasks: 1, steps: 1, depth: 1
+        });
+    }
+    fn ask() {
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", workflow_id: "t1/wf1", definition: "retry", revision: 1, recipe: self.recipe, kinds: "r=human", limits: self.limits };
+    }
+    fn reply(attempt_id: String, disposition: String) -> dna::Executed {
+        return self.boot.rt.settle(attempt_id, dna::WorkResult { disposition: disposition, result: "later", performer: "alice", attempt_id: attempt_id });
+    }
+    run() {
+        std::test::assert_eq_str(self.cat.define("retry", 1, 1, "try twice"), "", "retry");
+        std::test::assert_eq_str(self.cat.leaf("retry", 1, 0, "r", dna::WorkRequest { objective: "ask alice" }, 2), "", "r");
+        let x = self.cat.expand("t1", "retry", 1, self.limits);
+        std::test::assert(x.ok, "t1 expands: " + x.why);
+        self.recipe = self.cat.encode_bound();
+        let wr = "t1/wf1/s0/r";
+
+        // ---- boot 0: attempt zero fails; attempt one is admitted, claimed
+        //      and pending when the incarnation dies
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
+        let r0 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
+        std::test::assert(r0.ok, "admitted: " + r0.error);
+        self.ask();
+        self.until_calls(wr + "/a1", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", wr + "/a0"), 1, "attempt zero failed, durably");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.admitted", wr + "/a1"), 1, "attempt one is admitted, after that outcome");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.requested", "attempt:" + wr + "/a1"), 1, "and claimed");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", wr + "/a1"), 0, "and pending");
+        // a late success for attempt zero cannot overwrite its successor
+        let late0 = self.reply(wr + "/a0", "done");
+        std::test::assert(late0.ok && late0.reused && late0.disposition == "failed", "attempt zero's late success is answered from its recorded failure: " + late0.why);
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "work.settled", wr), 0, "the Work did not settle on it");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", ""), 1, "one outcome, attempt zero's failure");
+        self.cut(self.boot.rt.journal, self.full, self.boot.rt.journal.revision());
+        let full = self.full;
+        let so_far = full.revision();
+
+        // ---- boot 1: the reboot resumes attempt one — redelivered, its
+        //      claimant dead — and never creates attempt two
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { human: Flaky { calls: 1 } } }, owner: dna::Executions { scope: "main" } };
+        self.cut(full, self.boot.rt.journal, so_far);
+        self.ask();
+        self.until_calls(wr + "/a1", 2);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.admitted", ""), 2, "boot 1: two attempts, the record's — no attempt two");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.redelivered", "attempt:" + wr + "/a1"), 1, "attempt one was redelivered");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.requested", ""), 2, "under its standing claim: no new claim");
+        std::test::assert_eq_int(self.count(self.calls, wr + "/a0"), 1, "attempt zero was not asked again");
+        let late0b = self.reply(wr + "/a0", "done");
+        std::test::assert(late0b.ok && late0b.reused && late0b.disposition == "failed", "and its late success still changes nothing after the reboot");
+        let done1 = self.reply(wr + "/a1", "done");
+        std::test::assert(done1.ok && done1.disposition == "done", "attempt one's reply settles it: " + done1.why);
+        self.until_outcome("t1:done", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "work.settled", wr), 1, "the Work settled on attempt one");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.admitted", ""), 2, "still two attempts");
+
+        // ---- boot 2: a retry's admission the record refuses invokes no
+        //      performer and spends no retry; resumed, it lands and runs
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: Refusing { refuse_once: "attempt.admitted:" + wr + "/a1" }, work: dna::WorkSystem { human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
+        let r2 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
+        self.ask();
+        self.until_calls(wr + "/a0", 2);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", wr + "/a0"), 1, "boot 2: attempt zero failed");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.admitted", wr + "/a1"), 0, "the record refused attempt one's admission");
+        std::test::assert_eq_int(self.count(self.calls, wr + "/a1"), 2, "no performer was asked for it");
+        std::test::assert_eq_int(self.count(self.lives, wr + ":dissolved"), 2, "and the Work holds it: not settled failed, not reclaimed");
+        dna::RecordResumed <- dna::RecordResume { scope: "main", why: "writable again" };
+        self.until_calls(wr + "/a1", 3);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.admitted", wr + "/a1"), 1, "resumed, attempt one landed once");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.admitted", ""), 2, "and no attempt two: the refusal spent nothing");
+        let done2 = self.reply(wr + "/a1", "done");
+        self.until_outcome("t1:done", 2);
+
+        // ---- boot 3: the runtime runs under a lease. Attempt one is out
+        //      when the lease expires and another holder takes it: the
+        //      stale holder commits nothing — a reply is not recorded, a
+        //      cancellation is not committed — until it holds a live token
+        //      again, and then what was held goes through
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", lease_key: "lease/workflow/main", holder: "alpha", work: dna::WorkSystem { human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
+        std::test::assert(self.boot.rt.take_lease(0, 100), "alpha holds the lease at 0");
+        let r3 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
+        self.ask();
+        self.until_calls(wr + "/a1", 4);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.admitted", wr + "/a1"), 1, "boot 3: attempt one admitted under the lease");
+        let rows_before = self.boot.rt.journal.revision();
+        // the lease expires unrenewed: nobody holds it, and an expired
+        // token commits nothing either
+        self.boot.rt.tick(150);
+        let expired = self.reply(wr + "/a1", "done");
+        std::test::assert(!expired.ok && std::str::contains(expired.why, "held by nobody"), "with the lease expired and unclaimed, alpha's reply is fenced: " + expired.why);
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", wr + "/a1"), 0, "and recorded nothing");
+        // then beta takes it
+        let beta = self.boot.rt.leases.acquire("lease/workflow/main", "beta", 200, 100);
+        std::test::assert(beta.present && beta.holder == "beta", "beta holds the lease at 200");
+        self.boot.rt.tick(200);
+        let stale = self.reply(wr + "/a1", "done");
+        std::test::assert(!stale.ok && std::str::contains(stale.why, "fenced"), "alpha's reply for attempt one is fenced: " + stale.why);
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", wr + "/a1"), 0, "and recorded nothing");
+        dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: "t1", reason: "stop" };
+        let replies_before = len(self.replies);
+        dna::AttemptRequested <- dna::AttemptRequest { scope: "main", attempt_id: wr + "/a1", work_id: wr };
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "workflow.settled", "t1"), 0, "alpha's cancellation is fenced: not committed");
+        std::test::assert(std::str::contains(self.replies[replies_before..len(self.replies)], "fenced"), "a request to run under a lost lease is fenced too: " + self.replies[replies_before..len(self.replies)]);
+        std::test::assert_eq_int(self.count(self.calls, wr + "/a1"), 4, "and asks no performer");
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), rows_before, "the stale holder wrote nothing");
+        std::test::assert(self.boot.rt.fenced_off >= 4, "the fence refused each");
+        // beta's lease lapses; alpha takes it again, and the record resumes
+        std::test::assert(self.boot.rt.take_lease(400, 100), "alpha holds the lease again at 400");
+        dna::RecordResumed <- dna::RecordResume { scope: "main", why: "the lease is ours again" };
+        self.until_outcome("t1:cancelled", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "workflow.settled", "t1"), 1, "the held cancellation went through");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "work.settled", wr), 1, "and attempt one's Work settled under the fence");
+        let after = self.reply(wr + "/a1", "done");
+        std::test::assert(after.ok, "a late reply is recorded once the lease is live: " + after.why);
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", wr + "/a1"), 1, "as its outcome");
+        std::test::assert(self.boot.rt.journal.verify_chain(), "the record's chain holds");
+    }
+}
+
+fn main() { App { }; }

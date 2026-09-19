@@ -46,6 +46,20 @@ locus WorkflowRuntime {
         journal: Journal = MemJournal { };
         work: WorkSystem = WorkSystem { };
         p: WorkflowProjection = WorkflowProjection { };
+        // The lease this scope's committer runs under (card 12b): the
+        // existing coordination, a key, this holder's name, the fencing
+        // token it was granted, and the clock it judges the lease by. No
+        // key: unfenced — a standalone runtime over a memory record. With
+        // one, every transition this runtime commits, every claim, every
+        // redelivery and every outcome it records is fenced on the
+        // token: a holder whose lease expired and was re-acquired by
+        // another is stale and commits nothing, however live it feels.
+        leases: Coordination = MemLeases { };
+        lease_key: String = "";
+        holder: String = "";
+        token: Int = 0;
+        now: Int = 0;
+        fenced_off: Int = 0; // what the fence refused
         cursor: Int = 0; // rows applied to the projection
         committed: String = "\n"; // "<proposal id>=<revision>\n" per committed proposal
         answered: Int = 0;
@@ -93,6 +107,29 @@ locus WorkflowRuntime {
     fn answer(t: TransitionProposal, ok: Bool, revision: Int, why: String) {
         self.answered = self.answered + 1;
         TransitionAnswered <- TransitionAnswer { scope: self.scope, key: t.key, proposal_id: t.proposal_id, ok: ok, revision: revision, why: why };
+    }
+    // Take (or renew) the scope's lease at `now`; false when another
+    // holder has it. The token granted is what every commit is fenced on.
+    fn take_lease(now: Int, ttl: Int) -> Bool {
+        self.now = now;
+        if len(self.lease_key) == 0 { return true; }
+        let l = self.leases.acquire(self.lease_key, self.holder, now, ttl);
+        if !l.present { return false; }
+        self.token = l.token;
+        return true;
+    }
+    // The clock moves; the lease is judged at the new time.
+    fn tick(now: Int) { self.now = now; }
+    // Whether this runtime may commit now: unfenced, or holding the live
+    // token. Read fresh every time: a lease is lost between two commits.
+    fn holds() -> Bool {
+        if len(self.lease_key) == 0 { return true; }
+        return lease_fences(self.leases, self.lease_key, self.token, self.now);
+    }
+    fn fence_why(what: String) -> String {
+        let cur = self.leases.current(self.lease_key);
+        let who = if cur.present && cur.expires > self.now { cur.holder } else { "nobody" };
+        return "fenced: " + what + " is not committed by " + self.holder + ", whose lease on " + self.lease_key + " is not live (held by " + who + ")";
     }
     fn refuse(t: TransitionProposal, basis: String, revision: Int, why: String) {
         self.refused = self.refused + 1;
@@ -152,6 +189,12 @@ locus WorkflowRuntime {
                 self.answer(t, true, rev, check.why);
                 return;
             }
+            // the fence, at the decision: a stale holder appends nothing
+            if !self.holds() {
+                self.fenced_off = self.fenced_off + 1;
+                self.refuse(t, "fenced", rev, self.fence_why(t.kind + " " + t.entity));
+                return;
+            }
             let w = self.journal.append_exact(rev, t.kind, t.entity, t.body);
             if w.ok {
                 let seen = self.catch_up();
@@ -188,6 +231,11 @@ locus WorkflowRuntime {
             self.reply(Executed { why: "attempt " + r.attempt_id + " is an attempt of " + admitted.value.work_id + ", not of " + r.work_id + "; not this Work's to ask for" }, r.work_id, r.attempt_id);
             return;
         }
+        if !self.holds() {
+            self.fenced_off = self.fenced_off + 1;
+            self.reply(Executed { why: self.fence_why("attempt " + r.attempt_id) }, r.work_id, r.attempt_id);
+            return;
+        }
         // whether this incarnation claimed or redelivered the attempt is
         // the runtime's own knowledge, never the request's word
         let x = dispatch_attempt(self.journal, self.work, self.scope, admitted.value, set_has(self.claimed, r.attempt_id), set_has(self.redelivered, r.attempt_id));
@@ -207,6 +255,13 @@ locus WorkflowRuntime {
     }
     // A reply that arrives later goes to its Work the same way.
     fn settle(attempt_id: String, r: WorkResult) -> Executed {
+        if !self.holds() {
+            self.fenced_off = self.fenced_off + 1;
+            let x0 = Executed { why: self.fence_why("the reply for attempt " + attempt_id) };
+            let admitted0 = recorded_attempt_admission(self.journal, attempt_id, self.journal.revision());
+            self.reply(x0, if admitted0.ok { admitted0.value.work_id } else { "" }, attempt_id);
+            return x0;
+        }
         let x = settle_attempt(self.journal, self.work, self.scope, attempt_id, r);
         let admitted = recorded_attempt_admission(self.journal, attempt_id, self.journal.revision());
         self.reply(x, if admitted.ok { admitted.value.work_id } else { "" }, attempt_id);
@@ -307,7 +362,7 @@ locus WorkRun {
         // only the answer to the one outstanding proposal, and only once
         if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
         self.outstanding = "";
-        if !a.ok && a.basis == "record" {
+        if !a.ok && (a.basis == "record" || a.basis == "fenced") {
             // the record would not take it — an append refused, the record
             // moved too often: that is not a settlement. The Work keeps its
             // responsibility and proposes the same transition again when
@@ -604,7 +659,7 @@ locus TaskRun {
     fn on_answer(a: TransitionAnswer) {
         if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
         self.outstanding = "";
-        if !a.ok && a.basis == "record" {
+        if !a.ok && (a.basis == "record" || a.basis == "fenced") {
             self.held = true;
             // the spawning step settled or was fenced while this answer
             // was out: the re-decision that settlement owed is taken now,
@@ -934,7 +989,7 @@ locus WorkflowRun {
     fn on_answer(a: TransitionAnswer) {
         if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
         self.outstanding = "";
-        if !a.ok && a.basis == "record" { self.held = true; return; }
+        if !a.ok && (a.basis == "record" || a.basis == "fenced") { self.held = true; return; }
         if !a.ok {
             // the state refused this outcome: the workflow is not that yet
             self.stage = "running";
@@ -1179,7 +1234,7 @@ locus StepRun {
     fn on_answer(a: TransitionAnswer) {
         if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
         self.outstanding = "";
-        if !a.ok && a.basis == "record" {
+        if !a.ok && (a.basis == "record" || a.basis == "fenced") {
             // the record would not take it: that is no outcome of the
             // step. The stage's transition is held and proposed again
             // when the record resumes

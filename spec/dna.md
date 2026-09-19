@@ -1341,8 +1341,35 @@ still-current attempt is accepted and recorded like any reply, and
 whichever reply arrives second changes nothing. The admission's
 performer kind is durable: the restored incarnation runs the attempt on
 that kind. What an invocation that died did before it died is a later
-card's, as are numbered retries under a restart and cross-process
-delivery.
+card's, as is cross-process delivery.
+
+## Workflow execution: retries under a restart, and the fence
+
+A retry is the next numbered attempt of a Work, and it is admitted only
+after the record holds the outcome that permits it — a failed attempt
+with allowance left, the allowance the recipe bound — as card 06's
+rules have it; its request and performer kind are the admission's,
+durable, so nothing is planned again for it. Under a restart the
+retry is the record's: a reboot proposes attempt zero, is answered
+from its recorded failure, proposes attempt one, which the record
+already holds and replays, and asks for it — redelivered if the
+incarnation that claimed it died — and never mints attempt two. A late
+success for attempt zero is answered from its recorded failure and
+changes nothing; the Work's current attempt is attempt one. An
+admission the record refuses invokes no performer and spends no retry:
+the Work holds it, with its number, and proposes it again when the
+record resumes.
+
+The runtime runs under a lease (`Coordination`, the existing leases
+with fencing tokens): a key, a holder, the token the holder was
+granted, and the clock it judges the lease by. Every transition the
+committer commits, every claim, every redelivery and every outcome it
+records is fenced on that token at the decision: a holder whose lease
+expired — unclaimed, or re-acquired by another — commits nothing,
+however live it feels, and answers `fenced`, which a resident holds as
+it holds a refusal by the record and proposes again once the record
+resumes under a live token. A runtime with no lease key is unfenced: a
+standalone runtime over a memory record.
 
 ## Storage interfaces
 
