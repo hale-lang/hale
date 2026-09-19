@@ -1292,6 +1292,7 @@ crates/hale-types/tests/effect_assertions.rs#11 adb66e587e257061
 crates/hale-types/tests/effect_assertions.rs#12 81a9956f48f92449
 crates/hale-types/tests/effect_assertions.rs#18 20ec55af39f1046a
 crates/hale-types/tests/effect_assertions.rs#22 d8579c59299960f3
+crates/hale-types/tests/effect_assertions.rs#27 3144a66fa473a5a5
 crates/hale-types/tests/effect_assertions.rs#3 18ffc12740f4b203
 crates/hale-types/tests/effect_assertions.rs#5 6c25d1df6a64820f
 crates/hale-types/tests/effect_assertions.rs#8 52f5c2d227dbb8b5
