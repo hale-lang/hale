@@ -268,7 +268,11 @@ fn claim_closed(j: Journal, attempt_id: String, disposition: String) -> Bool {
     let key = execution_key(attempt_id);
     let st = effect_status(j, key);
     if !st.requested || st.done { return true; }
-    return effect_result(j, key, disposition == "done");
+    if effect_result(j, key, disposition == "done") { return true; }
+    // refused — or closed by another hand between the two reads: a claim
+    // that is closed is closed, whoever closed it
+    let again = effect_status(j, key);
+    return again.done;
 }
 
 fn close_refused(attempt_id: String) -> Executed {

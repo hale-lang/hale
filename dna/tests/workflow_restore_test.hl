@@ -381,7 +381,7 @@ main locus App {
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.admitted", wa + "/a0"), 1, "boot 2: the admission replayed, no second attempt");
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.requested", "attempt:" + wa + "/a0"), 1, "the request was claimed once");
         std::test::assert_eq_int(self.count(self.calls, wa + "/a0"), 3, "and the performer ran it");
-        std::test::assert_eq_int(self.boot.rt.journal.revision(), total, "the record completed");
+        std::test::assert(self.same_rows(full, self.boot.rt.journal, true), "the record completed, row for row");
 
         // ---- boot 3: crashed after the claim, before the performer
         //      answered: the dispatch is issued again, same id, no new claim
@@ -608,6 +608,7 @@ main locus App {
         //      the Work holds; allowed and resumed, the claim closes and
         //      the outcome is the answer, no performer having run here
         let a_born_before = self.count(self.lives, "t1/wf1/s0/a:born");
+        let replies_before = len(self.replies);
         self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: Landing { arm_on: "attempt.admitted:" + wa + "/a0", land_for: wa + "/a0" }, work: dna::WorkSystem { service: Counting { } } }, owner: dna::Executions { scope: "main" } };
         let r16 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
         std::test::assert(r16.ok, "admitted: " + r16.error);
@@ -619,7 +620,7 @@ main locus App {
         std::test::assert_eq_int(self.count(self.calls, wa + "/a0"), 5, "the performer did not run here");
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.result", ""), 0, "the record refused to close the claim");
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "work.settled", wa), 0, "so the outcome was not the answer: the Work holds");
-        std::test::assert(std::str::contains(self.replies, "would not close its claim"), "and was told so: " + self.replies);
+        std::test::assert(std::str::contains(self.replies[replies_before..len(self.replies)], "would not close its claim"), "and was told so: " + self.replies[replies_before..len(self.replies)]);
         let allow = self.boot.rt.journal.append(0, "test.allow", "", "");
         dna::RecordResumed <- dna::RecordResume { scope: "main", why: "writable again" };
         self.until_outcome("t1:done", 13);
