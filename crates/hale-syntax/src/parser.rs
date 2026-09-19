@@ -280,6 +280,28 @@ impl Parser {
         self.expect_ident(what)
     }
 
+    /// GH #724: a perspective-contract reference that may be
+    /// QUALIFIED by an import alias — `serves lib::Routing`,
+    /// `perspective(lib::Routing)`, `reperspective self.f as
+    /// lib::Impl`. The three positions keep their `Ident` shape with
+    /// the path joined by `::`, exactly as a `bindings { }` entry's
+    /// imported topic does (GH #527 B6); the cross-seed rename pass
+    /// collapses the joined name to the mangled decl before
+    /// typecheck, so the checker and codegen both see the one name
+    /// the imported declaration ends up at.
+    fn expect_qualified_ident(&mut self, what: &str) -> Result<Ident, Diag> {
+        let mut name = self.expect_ident(what)?;
+        while matches!(self.peek(), TokenKind::ColonColon) {
+            self.bump();
+            let seg = self.expect_ident(what)?;
+            name = Ident {
+                name: format!("{}::{}", name.name, seg.name),
+                span: name.span.merge(seg.span),
+            };
+        }
+        Ok(name)
+    }
+
     // === top level ========================================
 
     fn parse_program(&mut self) -> Result<Program, Diag> {
@@ -3084,7 +3106,11 @@ impl Parser {
     ) -> Result<(), Diag> {
         if matches!(self.peek(), TokenKind::Ident(s) if s == "serves") {
             self.bump(); // `serves`
-            serves.push(self.expect_ident("perspective contract name")?);
+            // GH #724: the contract may be an IMPORTED perspective,
+            // named through its alias — `serves lib::Routing`.
+            serves.push(
+                self.expect_qualified_ident("perspective contract name")?,
+            );
             Ok(())
         } else {
             annotations.push(self.parse_locus_annotation()?);
@@ -5678,7 +5704,10 @@ impl Parser {
             TokenKind::Perspective => {
                 let kw = self.bump();
                 self.expect(TokenKind::LParen, "expected `(` after `perspective`")?;
-                let name = self.expect_ident("perspective contract name")?;
+                // GH #724: `perspective(lib::Routing)` — the slot's
+                // contract may live in an imported seed.
+                let name =
+                    self.expect_qualified_ident("perspective contract name")?;
                 let close = self.expect(
                     TokenKind::RParen,
                     "expected `)` after `perspective(P)`",
@@ -6042,7 +6071,10 @@ impl Parser {
                 ));
             }
         }
-        let impl_name = self.expect_ident("implementation locus name")?;
+        // GH #724: the new impl may be an IMPORTED locus,
+        // `reperspective self.f as lib::Impl;`.
+        let impl_name =
+            self.expect_qualified_ident("implementation locus name")?;
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(Stmt::Reperspective {
             field,
@@ -9984,6 +10016,60 @@ fn main() { }
             l.serves.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
             vec!["Router"]
         );
+    }
+
+    #[test]
+    fn parse_qualified_serves_and_perspective_slot() {
+        // GH #724: all three perspective positions accept a path
+        // qualified by an import alias. The path is kept as ONE
+        // `Ident` joined by `::` (the `bindings { }` shape) — the
+        // cross-seed rename pass collapses it to the imported decl's
+        // mangled name before typecheck.
+        let src = r#"
+import "lib" as lib;
+locus RouterV1 : serves lib::Router, tier 2 {
+    fn route(c: Int) -> Int { return c; }
+}
+main locus App {
+    params { r: perspective(lib::Router) = RouterV1 { }; }
+    run() { reperspective self.r as lib::RouterV2; }
+}
+fn main() { App { }; }
+"#;
+        let prog = parse_str(src).expect("parse");
+        let l = prog.items.iter().find_map(|d| match d {
+            TopDecl::Locus(l) if l.name.name == "RouterV1" => Some(l),
+            _ => None,
+        }).expect("locus");
+        assert_eq!(l.serves.len(), 1);
+        assert_eq!(l.serves[0].name, "lib::Router");
+        assert_eq!(l.annotations.len(), 1);
+        let app = prog.items.iter().find_map(|d| match d {
+            TopDecl::Locus(l) if l.name.name == "App" => Some(l),
+            _ => None,
+        }).expect("main locus");
+        let slot = app.members.iter().find_map(|m| match m {
+            LocusMember::Params(pb) => pb.params[0].ty.clone(),
+            _ => None,
+        }).expect("slot type");
+        match slot {
+            TypeExpr::Perspective { name, .. } => {
+                assert_eq!(name.name, "lib::Router")
+            }
+            other => panic!("expected a perspective slot, got {:?}", other),
+        }
+        let swapped = app.members.iter().find_map(|m| match m {
+            LocusMember::Lifecycle(lc) => lc.body.stmts.iter().find_map(|s| {
+                match s {
+                    Stmt::Reperspective { impl_name, .. } => {
+                        Some(impl_name.name.clone())
+                    }
+                    _ => None,
+                }
+            }),
+            _ => None,
+        }).expect("reperspective stmt");
+        assert_eq!(swapped, "lib::RouterV2");
     }
 
     #[test]

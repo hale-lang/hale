@@ -266,10 +266,17 @@ bounded_annotation = "@" , "bounded" ;
    `serves P` conformance clauses, intermixed with annotations —
    `locus RouterV1 : serves Router, tier 2 { ... }`. `serves` is a
    contextual ident recognized only in this position. *)
+(* GH #724 (2026-09-19): the contract may be an IMPORTED perspective,
+   named through its import alias — `serves lib::Routing`. The path
+   resolves through the same cross-seed rename table as a qualified
+   type or `alias::fn()` call; an alias path that resolves to nothing
+   (a nested alias, a typo) is a located resolution error, not a
+   parse error. `perspective_type` and `reperspective_stmt` take the
+   same qualified form. *)
 locus_annotations = ":" , locus_header_item ,
                     { "," , locus_header_item } ;
 locus_header_item = locus_annotation
-                  | "serves" , IDENTIFIER ;
+                  | "serves" , qualified_name ;
 locus_annotation  = "tier" , INT_LIT
                   | "projection" , projection_class
                   ;
@@ -877,8 +884,10 @@ type_expr         = primitive_type
 (* Phase 2a: `perspective(P)` — a live-rebindable handle to the
    perspective contract `P`. A holder programs against `P`'s
    methods and reaches the current impl only through `P`'s
-   program-global slot. *)
-perspective_type  = "perspective" , "(" , IDENTIFIER , ")" ;
+   program-global slot. GH #724: `P` may be qualified by an import
+   alias (`perspective(lib::Routing)`), so a consumer can hold a slot
+   of a contract an imported seed declares. *)
+perspective_type  = "perspective" , "(" , qualified_name , ")" ;
 
 (* bounded[T; N] (2026-07-02): fixed-capacity counted collection,
    laid out inline as { i64 len, [N x T] }. `bounded` is a
@@ -1054,9 +1063,10 @@ statement         = let_stmt
    type at a fresh instance of the given impl locus (which must
    `serve P`). `reperspective` is a contextual keyword — recognized
    only as a statement head immediately followed by `self`; `as` is
-   contextual here too. *)
+   contextual here too. GH #724: the impl may be an imported locus,
+   named through its alias (`reperspective self.r as lib::Double`). *)
 reperspective_stmt = "reperspective" , "self" , "." , IDENTIFIER ,
-                     "as" , IDENTIFIER , ";" ;
+                     "as" , qualified_name , ";" ;
 
 let_stmt          = "let" , [ "mut" ] , IDENTIFIER ,
                     [ ":" , type_expr ] , "=" , expression , ";" ;
