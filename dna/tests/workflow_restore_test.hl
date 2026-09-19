@@ -1,0 +1,275 @@
+// dna/tests/workflow_restore_test.hl — restore one Work and redeliver its
+// admitted request (DNA workflow card 12a).
+//
+// A restored execution proposes its transitions as a fresh one does, and
+// the committer answers what the record already holds as a replay: the
+// identities are the record's, never minted again. The one thing a
+// restart adds is redelivery: an attempt claimed by the incarnation
+// that died and never answered is dispatched again with the same id and
+// no new claim, once per incarnation — a transport redelivery, not a new
+// attempt. A flat one-leaf workflow is run to completion once; its
+// record is cut at each crash point — before the attempt's admission,
+// after it and before the request, after the claim and before the
+// performer answered, after the outcome and before the Work settled —
+// and a fresh owner and runtime are booted over the cut, in a scope of
+// their own. Settled work never reruns; every boot keeps the same Work
+// and Attempt ids; a duplicate dispatch while the redelivered attempt is
+// pending starts no second invocation; a reply from the old process for
+// the still-current attempt is accepted; rebooting a completed record
+// again writes nothing and runs nothing.
+
+import "../core" as dna;
+
+// What a performer was asked to do, for the proof: every invocation.
+type Call { work_id: String = ""; attempt_id: String = ""; }
+topic Calls { payload: Call; subject: "wf.restore.call"; }
+
+locus Counting {
+    params { calls: Int = 0; }
+    bus { publish Calls; }
+    fn kind() -> String { return "service"; }
+    fn identity() -> String { return "counter"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        Calls <- Call { work_id: req.work_id, attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+        return dna::WorkResult { disposition: "done", result: "counted:" + req.objective, performer: "counter", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+    }
+}
+
+// The same service performer, answering later this time: an attempt is
+// admitted for a performer kind, durably, and a restored incarnation
+// runs it on that kind.
+locus Delayed {
+    params { calls: Int = 0; }
+    bus { publish Calls; }
+    fn kind() -> String { return "service"; }
+    fn identity() -> String { return "counter"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        Calls <- Call { work_id: req.work_id, attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+        return dna::WorkResult { disposition: "pending", performer: "counter", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+    }
+}
+
+// One incarnation: its owner and runtime over its own record. The
+// record is filled before anything runs: the prefix of the completed
+// run, up to the crash point. Reassigning the one `boot` dissolves the
+// incarnation before — its owner, runtime and every resident — which is
+// what a crash leaves: a record, and nothing in memory.
+locus Boot {
+    params {
+        scope: String = "";
+        rt: dna::WorkflowRuntime = dna::WorkflowRuntime { };
+        owner: dna::Executions = dna::Executions { };
+    }
+}
+
+main locus App {
+    params {
+        cat: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        limits: dna::AdmissionLimits = dna::AdmissionLimits { };
+        recipe: String = "";
+        boot: Boot = Boot { };
+        full: dna::MemJournal = dna::MemJournal { }; // the completed run's record, kept across boots
+        lives: String = "";
+        outcomes: String = "";
+        calls: String = ""; // "<attempt id> " per performer invocation
+    }
+    bus {
+        subscribe dna::RunLives as on_life;
+        subscribe dna::WorkflowSettled as on_outcome;
+        subscribe Calls as on_call;
+        publish dna::ExecutionAsked;
+        publish dna::AttemptRequested;
+    }
+    fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
+    fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
+    fn on_call(c: Call) { self.calls = self.calls + c.attempt_id + " "; }
+    @unbounded
+    fn count(list: String, item: String) -> Int {
+        let mut n = 0;
+        let mut rest = list;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            if rest[0..sp] == item { n = n + 1; }
+            rest = rest[(sp + 1)..len(rest)];
+        }
+        return n;
+    }
+    @unbounded
+    fn rows(j: dna::Journal, kind: String, entity: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    // The index of the first row of `kind`, -1 when none.
+    @unbounded
+    fn first(j: dna::Journal, kind: String) -> Int {
+        let mut i = 0;
+        while i < j.revision() {
+            if j.read(i).kind == kind { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+    // The first `n` rows of `src`, byte for byte, into `dst`: the record
+    // as the crash left it.
+    @unbounded
+    fn cut(src: dna::Journal, dst: dna::Journal, n: Int) {
+        let mut i = 0;
+        while i < n {
+            let e = src.read(i);
+            let r = dst.append(dst.revision(), e.kind, e.entity, e.body);
+            std::test::assert(r.ok, "row " + to_string(i) + " copied: " + r.error);
+            i = i + 1;
+        }
+    }
+    fn settle() {
+        let mut i = 0;
+        while i < 10 {
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    @unbounded
+    fn until_outcome(item: String, n: Int) {
+        let mut i = 0;
+        while i < 1000 {
+            if self.count(self.outcomes, item) >= n { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    fn ask(restore: Bool) {
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", workflow_id: "t1/wf1", definition: "flat", revision: 1, recipe: self.recipe, kinds: "a=service", limits: self.limits, restore: restore };
+    }
+    fn admission() -> String {
+        return dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: "t1", definition: "flat", revision: 1, request: "ask-t1", recipe: self.recipe, limits: self.limits, works: 1, tasks: 1, steps: 1, depth: 1
+        });
+    }
+    run() {
+        std::test::assert_eq_str(self.cat.define("flat", 1, 1, "one leaf"), "", "flat");
+        std::test::assert_eq_str(self.cat.leaf("flat", 1, 0, "a", dna::WorkRequest { objective: "count the receipts" }, 1), "", "a");
+        let x = self.cat.expand("t1", "flat", 1, self.limits);
+        std::test::assert(x.ok, "t1 expands: " + x.why);
+        self.recipe = self.cat.encode_bound();
+        let wa = "t1/wf1/s0/a";
+
+        // ---- boot 0: the whole run, once, for its record
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Counting { } } }, owner: dna::Executions { scope: "main" } };
+        let r0 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
+        std::test::assert(r0.ok, "admitted: " + r0.error);
+        self.ask(false);
+        self.until_outcome("t1:done", 1);
+        self.settle();
+        self.cut(self.boot.rt.journal, self.full, self.boot.rt.journal.revision());
+        let full = self.full;
+        std::test::assert_eq_int(self.rows(full, "workflow.settled", "t1"), 1, "the run completed");
+        std::test::assert_eq_int(self.count(self.calls, wa + "/a0"), 1, "the performer ran once");
+        let at_admission = self.first(full, "attempt.admitted");
+        let at_claim = self.first(full, "effect.requested");
+        let at_outcome = self.first(full, "attempt.outcome");
+        let at_result = self.first(full, "effect.result");
+        std::test::assert(at_admission > 0 && at_claim > at_admission && at_outcome > at_claim && at_result > at_outcome, "the record holds admission, claim, outcome and result in order");
+        let total = full.revision();
+
+        // ---- boot 1: crashed before the attempt's admission
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Counting { } } }, owner: dna::Executions { scope: "main" } };
+        self.cut(full, self.boot.rt.journal, at_admission);
+        self.ask(true);
+        self.until_outcome("t1:done", 2);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.admitted", wa + "/a0"), 1, "boot 1: the attempt was admitted once, with the same id");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.requested", "attempt:" + wa + "/a0"), 1, "and claimed once");
+        std::test::assert_eq_int(self.count(self.calls, wa + "/a0"), 2, "and the performer ran it: one more invocation");
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), total, "the restored record is the completed one, row for row");
+
+        // ---- boot 2: crashed after the admission, before the request
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Counting { } } }, owner: dna::Executions { scope: "main" } };
+        self.cut(full, self.boot.rt.journal, at_claim);
+        self.ask(true);
+        self.until_outcome("t1:done", 3);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.admitted", wa + "/a0"), 1, "boot 2: the admission replayed, no second attempt");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.requested", "attempt:" + wa + "/a0"), 1, "the request was claimed once");
+        std::test::assert_eq_int(self.count(self.calls, wa + "/a0"), 3, "and the performer ran it");
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), total, "the record completed");
+
+        // ---- boot 3: crashed after the claim, before the performer
+        //      answered: the dispatch is issued again, same id, no new claim
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Counting { } } }, owner: dna::Executions { scope: "main" } };
+        self.cut(full, self.boot.rt.journal, at_outcome);
+        self.ask(true);
+        self.until_outcome("t1:done", 4);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.requested", "attempt:" + wa + "/a0"), 1, "boot 3: the claim the dead incarnation took stands alone — no second claim");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.admitted", ""), 1, "one attempt, the same");
+        std::test::assert_eq_int(self.count(self.calls, wa + "/a0"), 4, "the performer was asked again, for that attempt");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", wa + "/a0"), 1, "and its outcome was recorded under the standing claim");
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), total, "the record completed");
+
+        // ---- boot 4: crashed after the outcome, before the Work settled:
+        //      settled work never reruns
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Counting { } } }, owner: dna::Executions { scope: "main" } };
+        self.cut(full, self.boot.rt.journal, at_result);
+        self.ask(true);
+        self.until_outcome("t1:done", 5);
+        self.settle();
+        std::test::assert_eq_int(self.count(self.calls, wa + "/a0"), 4, "boot 4: the performer was not asked: the outcome is the answer");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", ""), 1, "one outcome");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "work.settled", wa), 1, "the Work settled on it");
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), total, "the record completed");
+
+        // ---- boot 5: the crash after the claim, with a performer that
+        //      answers later: the redelivery is pending; a duplicate
+        //      dispatch attaches and starts no second invocation; the old
+        //      process's reply for the still-current attempt is accepted
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Delayed { } } }, owner: dna::Executions { scope: "main" } };
+        self.cut(full, self.boot.rt.journal, at_outcome);
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", workflow_id: "t1/wf1", definition: "flat", revision: 1, recipe: self.recipe, kinds: "a=service", limits: self.limits, restore: true };
+        self.settle();
+        let pending_calls = self.count(self.calls, wa + "/a0");
+        std::test::assert_eq_int(pending_calls, 5, "boot 5: the redelivered dispatch reached the performer once");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", ""), 0, "and is pending");
+        dna::AttemptRequested <- dna::AttemptRequest { scope: "main", attempt_id: wa + "/a0", work_id: wa, redeliver: true };
+        dna::AttemptRequested <- dna::AttemptRequest { scope: "main", attempt_id: wa + "/a0", work_id: wa, redeliver: false };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.calls, wa + "/a0"), 5, "a duplicate dispatch, redelivery or not, attaches: no second invocation");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.requested", ""), 1, "and no second claim");
+        let old = self.boot.rt.settle(wa + "/a0", dna::WorkResult { disposition: "done", result: "from the old process", performer: "counter", attempt_id: wa + "/a0" });
+        std::test::assert(old.ok && old.disposition == "done", "the old process's reply for the still-current attempt is accepted: " + old.why);
+        self.until_outcome("t1:done", 6);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", wa + "/a0"), 1, "one outcome, that reply's");
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), total, "the record completed");
+        let again = self.boot.rt.settle(wa + "/a0", dna::WorkResult { disposition: "done", result: "late", performer: "counter", attempt_id: wa + "/a0" });
+        std::test::assert(again.ok && again.reused, "the redelivered performer's own reply, arriving after, changes nothing");
+
+        // ---- boot 6 and 7: a completed record rebooted, twice: nothing
+        //      is written, nothing runs, the same ids come back
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Counting { } } }, owner: dna::Executions { scope: "main" } };
+        self.cut(full, self.boot.rt.journal, total);
+        self.ask(true);
+        self.until_outcome("t1:done", 7);
+        self.settle();
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), total, "boot 6: a completed record gains no row");
+        std::test::assert_eq_int(self.count(self.calls, wa + "/a0"), 5, "and runs nothing");
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Counting { } } }, owner: dna::Executions { scope: "main" } };
+        self.cut(full, self.boot.rt.journal, total);
+        self.ask(true);
+        self.until_outcome("t1:done", 8);
+        self.settle();
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), total, "boot 7: and again");
+        std::test::assert_eq_int(self.count(self.calls, wa + "/a0"), 5, "and again nothing runs");
+        std::test::assert_eq_int(self.count(self.lives, "task:t1:dissolved"), 8, "every incarnation's Task reclaimed itself");
+        std::test::assert(self.boot.rt.journal.verify_chain(), "the record's chain holds");
+    }
+}
+
+fn main() { App { }; }

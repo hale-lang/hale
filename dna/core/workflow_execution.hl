@@ -38,6 +38,7 @@ type Executed {
     ran: Bool = false; // this call invoked the performer
     attached: Bool = false; // the attempt was already running: attached to its pending outcome
     reused: Bool = false; // the attempt was already settled: its recorded outcome is the answer
+    redelivered: Bool = false; // the attempt was claimed by an incarnation that died: its dispatch was issued again, same id, no new claim
     disposition: String = ""; // the recorded outcome's, "" while the attempt is outstanding
     outcome: AttemptOutcome = AttemptOutcome { };
     why: String = "";
@@ -232,16 +233,69 @@ fn execute_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAttem
         return Executed { why: "the record moved under the claim on attempt " + id + " " + to_string(tries) + " times; nothing ran" };
     }
     // ---- the admitted performer runs, once
+    return perform_attempt(j, work, scope, v, false);
+}
+
+// The admitted performer runs, and its reply is judged and recorded as
+// card 08 has it. `redelivered` marks a dispatch issued again for a claim
+// an earlier incarnation took and never answered (card 12a).
+fn perform_attempt(j: Journal, work: WorkSystem, scope: String, v: AdmittedAttempt, redelivered: Bool) -> Executed {
+    let id = v.attempt_id;
     let req = attempt_request(v);
     let r = work.perform_as(v.performer_kind, req);
     let whose = reply_identity_gap(work, v, r);
-    if len(whose) > 0 { return Executed { ran: true, why: whose }; }
+    if len(whose) > 0 { return Executed { ran: true, redelivered: redelivered, why: whose }; }
     if reply_outstanding(r) {
-        return Executed { ok: true, ran: true, why: "attempt " + id + " is outstanding: the performer will answer later" };
+        return Executed { ok: true, ran: true, redelivered: redelivered, why: "attempt " + id + " is outstanding: the performer will answer later" };
     }
     let bad = reply_disposition_gap(r);
-    if len(bad) > 0 { return Executed { ran: true, why: bad }; }
-    return record_attempt(j, scope, v, r, true);
+    if len(bad) > 0 { return Executed { ran: true, redelivered: redelivered, why: bad }; }
+    let mut x = record_attempt(j, scope, v, r, true);
+    x.redelivered = redelivered;
+    return x;
+}
+
+// A restored Work asks for its admitted attempt again (card 12a). The
+// record is the authority as always: an attempt whose outcome is
+// recorded is answered from it and never runs again; one never claimed
+// is run through the ordinary path — it claims first; one claimed and
+// never answered was claimed by an incarnation that died — nobody will
+// answer for it — so its dispatch is issued again, with the same
+// attempt id and no new claim: a transport redelivery, not a new
+// attempt. The caller says this is a redelivery, and says it once per
+// incarnation: a second request for the same attempt attaches, as any
+// request for a running attempt does. What the earlier invocation did
+// before it died is card 12c's.
+@unbounded
+fn redeliver_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAttempt) -> Executed {
+    let id = a.attempt_id;
+    if id != attempt_id_of(a.work_id, a.attempt_no) {
+        return Executed { why: "attempt " + id + " is not attempt " + to_string(a.attempt_no) + " of " + a.work_id };
+    }
+    let moved = j.refresh();
+    let rev = j.revision();
+    let admitted = recorded_attempt_admission(j, id, rev);
+    if !admitted.ok {
+        return Executed { why: "attempt " + id + " was never admitted; nothing runs before its admission is in the record" };
+    }
+    let v = admitted.value;
+    let gap = attempt_admission_gap(v, a);
+    if len(gap) > 0 { return Executed { why: gap }; }
+    let settled = recorded_attempt_outcome(j, id, rev);
+    if settled.ok {
+        // the incarnation that died recorded the outcome and not the
+        // claim's close: the outcome is the answer, and the claim it was
+        // recorded under is closed with it (idempotent: a closed claim
+        // stays closed)
+        if attempt_claimed(j, id, rev) {
+            let closed = effect_result(j, execution_key(id), settled.value.disposition == "done");
+        }
+        return Executed { ok: true, reused: true, disposition: settled.value.disposition, outcome: settled.value };
+    }
+    if !attempt_claimed(j, id, rev) { return execute_attempt(j, work, scope, a); }
+    let fence = recorded_fence(j, v.task_id, rev);
+    if len(fence) > 0 { return Executed { why: fence + "; attempt " + id + " is not redelivered" }; }
+    return perform_attempt(j, work, scope, v, true);
 }
 
 // A reply that arrives later, for an attempt that ran and was left

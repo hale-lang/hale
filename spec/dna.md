@@ -1284,8 +1284,32 @@ cancel, which settles cancelled through the same proposal, so the
 fence reaches every level below and each level drains and reclaims
 from the leaves upward.
 
-Nothing yet survives a restart or is reached through the public
-admission; those are later cards.
+## Workflow execution: restore
+
+An execution restored after a restart is asked of the executions owner
+with `restore` set, over the record the crash left, and proposes its
+transitions exactly as a fresh one does: the committer answers what
+the record already holds as a replay, so every Task, Step, Work and
+Attempt id a restored incarnation uses is the record's, never minted
+again — a completed record rebooted gains no row and runs nothing.
+The one thing a restart adds is redelivery. A restored Work's first
+request says so, and the runtime, once per incarnation for each
+attempt, decides it against the record: an attempt whose outcome is
+recorded is answered from it and never runs again — and a claim the
+dead incarnation left open under it is closed with it; one never
+claimed runs through the ordinary path and claims first; one claimed
+and never answered was claimed by an incarnation nobody will hear from
+again, so its dispatch is issued again with the same attempt id and no
+new claim — a transport redelivery, not a new attempt — unless the
+execution was cancelled meanwhile. A second request for the attempt in
+the same incarnation attaches, as any request for a running attempt
+does, so a duplicate dispatch starts no second invocation; a reply from
+the old process for the still-current attempt is accepted and recorded
+like any reply, and whichever reply arrives second changes nothing.
+The restored incarnation's performer of the admitted kind runs the
+attempt; the admission's kind is durable. What an invocation that died
+did before it died is a later card's, as are numbered retries under a
+restart and cross-process delivery.
 
 ## Storage interfaces
 
