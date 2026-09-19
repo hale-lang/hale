@@ -6951,10 +6951,61 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// GH #747: `const` is a TOP-LEVEL declaration. The parser
+    /// accepts one inside a locus body (`LocusMember::Const`) and
+    /// the checker used to typecheck its value, so a locus-level
+    /// const passed `hale check` — and then codegen, which has no
+    /// lowering for the member, refused the whole program with
+    /// `locus L member kind not yet lowered to codegen`: a program
+    /// the gate accepted could not be built, and the message named
+    /// no line.
+    ///
+    /// Rejecting it at the declaration is the fix rather than
+    /// lowering it: a locus-level const has no settled scope or
+    /// spelling (`L::name` from outside, bare `name` inside, and
+    /// `self.name` — which it is NOT, a const being per-type and not
+    /// per-instance state), and lowering would have to answer all
+    /// three in the checker AND in codegen, plus the generic-locus
+    /// monomorph path that already walks a member const's type. The
+    /// two things the author wanted both exist: a top-level `const`
+    /// is in scope inside every locus of the seed, and a `params`
+    /// field with a default gives each instance its own copy.
+    fn check_no_member_consts(&mut self, decl: &LocusDecl) {
+        for member in &decl.members {
+            let LocusMember::Const(c) = member else {
+                continue;
+            };
+            // At the `const` keyword: `ConstDecl::span` runs from
+            // the keyword to the `;`, so the declaration's first
+            // token is the one line that has to change.
+            let kw = Span::new(
+                c.span.start.as_usize(),
+                c.span.start.as_usize() + "const".len(),
+            );
+            self.diags.push(Diag::ty(
+                kw,
+                format!(
+                    "`const {n}` is declared inside locus `{l}`: `const` is \
+                     a top-level declaration, not a locus member. Move it \
+                     above the locus — a top-level `const` is in scope \
+                     inside every locus of the seed — or, if each instance \
+                     should carry its own, make it a params field with a \
+                     default (`params {{ {n}: ... = ...; }}`).",
+                    n = c.name.name,
+                    l = decl.name.name,
+                ),
+            ));
+        }
+    }
+
     fn check_locus(&mut self, decl: &'a LocusDecl) {
         // GH #734 — reserved member names. Runs before the symbol
         // lookup below so it fires for every parsed locus.
         self.check_reserved_member_names(decl);
+
+        // GH #747 — a `const` is not a locus member. Also before the
+        // lookup, for the same reason.
+        self.check_no_member_consts(decl);
 
         let info = match self.top.lookup(&decl.name.name) {
             Some(TopSymbol::Locus(info)) => info,
@@ -9297,20 +9348,13 @@ impl<'a> Checker<'a> {
                 self.check_fn(f, self.current_locus);
                 self.in_lifecycle = false;
             }
-            LocusMember::Const(c) => {
-                let want = resolve_type_expr(&c.ty, self.known);
-                let got = self.check_expr(&c.value);
-                if !want.assignable_from(&got) {
-                    self.diags.push(Diag::ty(
-                        c.value.span(),
-                        format!(
-                            "const `{}`: expected `{}`, got `{}`",
-                            c.name.name,
-                            want.display(),
-                            got.display()
-                        ),
-                    ));
-                }
+            LocusMember::Const(_) => {
+                // GH #747: refused at its declaration by
+                // `check_no_member_consts` before any member is
+                // walked. Typechecking the value here too would
+                // print a second message ("const `x`: expected
+                // Int, got String") about a declaration that has
+                // to move either way — one mistake, one diagnostic.
             }
             LocusMember::Type(_) => {}
             LocusMember::Capacity(cb) => {
