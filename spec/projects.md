@@ -256,6 +256,45 @@ The mangling shape mirrors the existing hand-spelled
 stdlib and moa seeds carry; cross-seed imports extend the same
 discipline automatically.
 
+### An alias and a value may share a name
+
+An import alias lives in its own namespace: it may coincide with
+the name of a fn, const, locus or topic the seed declares.
+
+```hale
+import "../core" as core;
+
+fn core(args: String) -> String { return "[" + args + "]"; }
+
+fn go() -> String {
+    return core::greet("mid") + " " + core("x");
+}
+```
+
+Both references resolve. A **qualified path** (`core::greet`)
+resolves its head against the seed's import aliases — the head of
+a two-segment path is never a value. A **bare name** (`core("x")`,
+`core`) resolves against the seed's own declarations. Locals still
+shadow both, per the scope rules above.
+
+The one head that is not an alias is a **type**: `Color::Red` is
+an enum-variant path, so a seed declaring both `import "…" as
+Color;` and `type Color = enum { … }` resolves `Color::…` against
+its own enum, and the alias is unreachable in path position from
+that seed. Aliases are conventionally lower-case for exactly this
+reason.
+
+This holds identically whether the seed is compiled directly or
+reached through an import: the import rewrite renames a path head
+only when the head names one of the seed's own **type** decls, so
+an alias head survives mangling and the per-build path-rename
+table resolves it as it does at the import site. (GH #714: the
+rewrite used to rename any head that matched a seed decl, so
+`core::greet` became `__lib_<lib_id>_main_core::greet` — a path
+through the free fn's mangled symbol. `hale check` passed, since
+it resolves the alias, and the build failed. A seed that ran on
+its own became unbuildable the moment someone imported it.)
+
 ### Scoped imports (A4)
 
 If library A imports library B, B's decls become reachable
