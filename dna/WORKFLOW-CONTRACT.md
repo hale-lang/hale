@@ -522,9 +522,11 @@ knows publishes it — the host after a reconnect, a fixture.
 - **Only `ok` dispatches.** On a refusal the proposer dispatches
   nothing.
 - **The committer is fenced on its lease, atomically with each write**
-  (card 12b): the lease is rows of the record (`lease.taken`, its row
-  number the token; `lease.renewed`; `lease.released`), read at the
-  revision the write is exact at, so a takeover — a row — makes a
+  (card 12b): the lease is rows of the record (`lease.taken`, carrying
+  a per-key epoch as the token, the holder and the expiry as JSON;
+  `lease.renewed`; `lease.released`), read at the revision the write is
+  exact at — the token the row's own, stable under a routed reader
+  that starts fresh — so a takeover — a row — makes a
   stale holder's append fail and be decided again, and fenced. Every
   write: a commit, a claim, a redelivery, an outcome, a close. A stale
   holder answers `fenced`, which a proposer holds as it holds `record`

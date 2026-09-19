@@ -90,6 +90,9 @@ main locus App {
         limits: dna::AdmissionLimits = dna::AdmissionLimits { };
         recipe: String = "";
         boot: Boot = Boot { };
+        // two memories under one routed reader, for the token's stability
+        record: dna::MemJournal = dna::MemJournal { };
+        ledger: dna::MemJournal = dna::MemJournal { };
         full: dna::MemJournal = dna::MemJournal { };
         lives: String = "";
         outcomes: String = "";
@@ -360,6 +363,40 @@ main locus App {
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "lease.taken", key), 1, "one take landed: beta's");
         std::test::assert_eq_str(dna::lease_at(self.boot.rt.journal, key, self.boot.rt.journal.revision()).holder, "beta", "and the record says beta holds it");
         std::test::assert(self.boot.rt.journal.verify_chain(), "the record's chain holds");
+
+        // ---- the token is the row's own, not its position: under a routed
+        //      record (record rows, then ledger rows, for a reader that
+        //      starts fresh; arrival order for one that was live) a take
+        //      lands in the ledger, an unrelated row in the record, and a
+        //      fresh reader finds them in the other order — the lease it
+        //      reads is still alpha's, token 1, renewed through 150
+        let adopted = self.record.append(0, "ledger.adopted", "ledger", "{\"routing\": 1, \"checkpoint\": \"x\"}");
+        std::test::assert(adopted.ok, "routing 1 adopted");
+        let live = dna::RoutedJournal { record: self.record, ledger: self.ledger };
+        let t1 = dna::lease_take(live, key, "alpha", 0, 100);
+        std::test::assert(t1.present && t1.token == 1, "alpha takes the lease under token 1, a row of the ledger");
+        let note = live.append(live.revision(), "note.kept", "n1", "a row of the record, after the take");
+        std::test::assert(note.ok, "an unrelated record row lands after the take");
+        std::test::assert(dna::lease_renew(live, key, "alpha", 1, 50, 100), "alpha renews through 150 under token 1");
+        std::test::assert_eq_int(dna::lease_at(live, key, live.revision()).expires, 150, "the live reader sees the renewal");
+        let fresh = dna::RoutedJournal { record: self.record, ledger: self.ledger };
+        let seen = dna::lease_at(fresh, key, fresh.revision());
+        std::test::assert(seen.present && seen.holder == "alpha" && seen.token == 1 && seen.expires == 150, "a fresh reader, with the record's rows first, reads the same lease: alpha, token 1, through 150");
+        let beta_early = dna::lease_take(fresh, key, "beta", 120, 100);
+        std::test::assert(!beta_early.present && beta_early.holder == "alpha", "so beta cannot take it at 120: alpha holds it through 150");
+        std::test::assert(dna::lease_release(live, key, "alpha", 1), "alpha releases it");
+        let beta_late = dna::lease_take(fresh, key, "beta", 120, 100);
+        std::test::assert(beta_late.present && beta_late.token == 2, "released, beta takes it under the next epoch");
+
+        // ---- a holder reads back as it was written, whatever it is; an
+        //      empty holder names nobody and is refused
+        let odd = dna::lease_take(self.boot.rt.journal, "lease/odd", "worker alpha \"the first\"", 0, 100);
+        std::test::assert(odd.present, "a holder with spaces and quotes is granted");
+        let odd_read = dna::lease_at(self.boot.rt.journal, "lease/odd", self.boot.rt.journal.revision());
+        std::test::assert_eq_str(odd_read.holder, "worker alpha \"the first\"", "and reads back as written");
+        std::test::assert(dna::lease_renew(self.boot.rt.journal, "lease/odd", "worker alpha \"the first\"", odd.token, 50, 100), "and can use the token it was granted");
+        let nobody = dna::lease_take(self.boot.rt.journal, "lease/odd2", "", 0, 100);
+        std::test::assert(!nobody.present, "an empty holder is refused");
     }
 }
 

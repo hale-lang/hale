@@ -1361,10 +1361,16 @@ the Work holds it, with its number, and proposes it again when the
 record resumes.
 
 The runtime runs under a lease that is rows of its own record
-(`lease.taken`, whose row number is the fencing token; `lease.renewed`,
-which moves the expiry and keeps the token; `lease.released`): a key, a
-holder, the token the holder was granted, and the clock it judges the
-lease by. Ownership is read at the revision a write is exact at, so the
+(`lease.taken`, carrying the fencing token — a per-key epoch allocated
+under the exact append that takes it — the holder and the expiry;
+`lease.renewed`, which moves the expiry and keeps the token;
+`lease.released`; each a JSON body, so a holder reads back as it was
+written and an empty holder is refused): a key, a holder, the token
+the holder was granted, and the clock it judges the lease by. The
+token is the row's own, never its position: a routed reader that
+starts fresh reads the record's rows before the ledger's and finds the
+same lease a reader that was live found, and the lease is the take
+with the highest token, renewed and released by rows that name it. Ownership is read at the revision a write is exact at, so the
 fence is atomic with the write by construction: a takeover is a row, it
 moves the revision, and a stale holder's exact append fails and is
 decided again — at the new revision the record names the new holder,

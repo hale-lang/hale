@@ -217,44 +217,57 @@ fn lease_fences(c: Coordination, key: String, token: Int, now: Int) -> Bool {
 // ---- leases in the record (GH #646 card 12b) -------------------------
 //
 // A lease whose state is rows of the record it fences: `lease.taken`
-// (holder and expiry; the row's own sequence number is the token),
-// `lease.renewed` (holder, token, expiry) and `lease.released` (holder,
-// token). Read at one revision it is the ownership as of that revision,
-// and an exact append at that revision validates ownership atomically
-// with the write: a takeover is a row, it moves the revision, and a
-// stale holder's exact append fails and is decided again. The cell
-// leases above (`MemLeases`, `GitLeases`) stay for what they hold; a
-// committer whose every write must be fenced holds its lease here.
+// (the token, a per-key epoch allocated under the exact append that
+// takes it; the holder; the expiry), `lease.renewed` (token, holder,
+// expiry) and `lease.released` (token, holder), each a JSON body, so a
+// holder reads back as it was written and the token is the row's own,
+// whatever position a reader finds the row at — a routed reader that
+// starts fresh reads the record's rows before the ledger's, and a
+// reader that was live read them as they arrived. Read at one revision
+// it is the ownership as of that revision, and an exact append at that
+// revision validates ownership atomically with the write: a takeover is
+// a row, it moves the revision, and a stale holder's exact append fails
+// and is decided again. The cell leases above (`MemLeases`,
+// `GitLeases`) stay for what they hold; a committer whose every write
+// must be fenced holds its lease here.
 
-// What the record says about `key` as of `rev`.
+fn lease_row(token: Int, holder: String, expires: Int) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.int_field("token", token);
+    b.string_field("holder", holder);
+    if expires >= 0 { b.int_field("expires", expires); }
+    b.end_object();
+    return b.result();
+}
+
+// What the record says about `key` as of `rev`: the take with the
+// highest token is the lease, whatever its position; the renewals and
+// the release that name that token apply to it, whatever theirs.
 @unbounded
 fn lease_at(j: Journal, key: String, rev: Int) -> Lease {
     let mut l = Lease { key: key };
     let mut i = 0;
     while i < rev {
         let e = j.read(i);
-        if e.entity == key {
-            if e.kind == "lease.taken" {
-                let sp = std::str::index_of(e.body, " ");
-                if sp > 0 {
-                    l = Lease { key: key, holder: e.body[0..sp], token: i, expires: std::str::parse_int(e.body[(sp + 1)..len(e.body)]) or 0, present: true };
-                }
+        if e.entity == key && e.kind == "lease.taken" {
+            let token = std::json::find_int_field(e.body, "token");
+            if token > l.token {
+                l = Lease { key: key, holder: std::json::find_string_field(e.body, "holder"), token: token, expires: std::json::find_int_field(e.body, "expires"), present: true };
             }
-            if e.kind == "lease.renewed" && l.present {
-                let sp1 = std::str::index_of(e.body, " ");
-                let rest = e.body[(sp1 + 1)..len(e.body)];
-                let sp2 = std::str::index_of(rest, " ");
-                if sp1 > 0 && sp2 > 0 {
-                    let holder = e.body[0..sp1];
-                    let token = std::str::parse_int(rest[0..sp2]) or - 1;
-                    let expires = std::str::parse_int(rest[(sp2 + 1)..len(rest)]) or 0;
-                    if holder == l.holder && token == l.token { l.expires = expires; }
-                }
+        }
+        i = i + 1;
+    }
+    if !l.present { return l; }
+    i = 0;
+    while i < rev {
+        let e = j.read(i);
+        if e.entity == key && std::json::find_int_field(e.body, "token") == l.token && std::json::find_string_field(e.body, "holder") == l.holder {
+            if e.kind == "lease.renewed" {
+                let expires = std::json::find_int_field(e.body, "expires");
+                if expires > l.expires { l.expires = expires; }
             }
-            if e.kind == "lease.released" && l.present {
-                let sp = std::str::index_of(e.body, " ");
-                if sp > 0 && e.body[0..sp] == l.holder && (std::str::parse_int(e.body[(sp + 1)..len(e.body)]) or - 1) == l.token { l.present = false; }
-            }
+            if e.kind == "lease.released" { l.present = false; }
         }
         i = i + 1;
     }
@@ -269,8 +282,11 @@ fn lease_holds_at(j: Journal, key: String, holder: String, token: Int, rev: Int,
 
 // Take the lease, exactly at the reading that found it free, expired or
 // already this holder's; `present == false` names who holds it instead.
+// The token is the next epoch of the key, allocated under that append.
+// An empty holder names nobody and is refused.
 @unbounded
 fn lease_take(j: Journal, key: String, holder: String, now: Int, ttl: Int) -> Lease {
+    if len(holder) == 0 || len(key) == 0 { return Lease { key: key, present: false }; }
     let mut tries = 0;
     while tries < 6 {
         tries = tries + 1;
@@ -280,8 +296,9 @@ fn lease_take(j: Journal, key: String, holder: String, now: Int, ttl: Int) -> Le
         if cur.present && cur.expires > now && cur.holder != holder {
             return Lease { key: key, holder: cur.holder, token: 0, expires: cur.expires, present: false };
         }
-        let w = j.append_exact(rev, "lease.taken", key, holder + " " + to_string(now + ttl));
-        if w.ok { return Lease { key: key, holder: holder, token: w.revision - 1, expires: now + ttl, present: true }; }
+        let token = cur.token + 1;
+        let w = j.append_exact(rev, "lease.taken", key, lease_row(token, holder, now + ttl));
+        if w.ok { return Lease { key: key, holder: holder, token: token, expires: now + ttl, present: true }; }
         if w.error != "stale_revision" && w.error != "claimed" { return Lease { key: key, holder: cur.holder, present: false }; }
     }
     return Lease { key: key, present: false };
@@ -297,7 +314,24 @@ fn lease_renew(j: Journal, key: String, holder: String, token: Int, now: Int, tt
         let moved = j.refresh();
         let rev = j.revision();
         if !lease_holds_at(j, key, holder, token, rev, now) { return false; }
-        let w = j.append_exact(rev, "lease.renewed", key, holder + " " + to_string(token) + " " + to_string(now + ttl));
+        let w = j.append_exact(rev, "lease.renewed", key, lease_row(token, holder, now + ttl));
+        if w.ok { return true; }
+        if w.error != "stale_revision" && w.error != "claimed" { return false; }
+    }
+    return false;
+}
+
+// Release the lease this holder holds under `token`.
+@unbounded
+fn lease_release(j: Journal, key: String, holder: String, token: Int) -> Bool {
+    let mut tries = 0;
+    while tries < 6 {
+        tries = tries + 1;
+        let moved = j.refresh();
+        let rev = j.revision();
+        let cur = lease_at(j, key, rev);
+        if !cur.present || cur.holder != holder || cur.token != token { return false; }
+        let w = j.append_exact(rev, "lease.released", key, lease_row(token, holder, -1));
         if w.ok { return true; }
         if w.error != "stale_revision" && w.error != "claimed" { return false; }
     }
