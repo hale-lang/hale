@@ -4306,8 +4306,17 @@ fn run_check_impl_labelled(
     // F.18: a whole seed (a directory) is checked to what `build`
     // accepts — a call to a bare name nothing binds is an error here;
     // one file of a seed keeps the permissive reading for a sibling's fn
-    let strict_callees = target.is_dir();
-    let checked = hale_types::check_bundle_opts_scoped(&bundle, allow_unowned, strict_callees);
+    //
+    // GH #721: a bare IDENTIFIER nothing binds follows the same line.
+    // One file of a multi-file seed reads consts its siblings declare,
+    // so the leniency is load-bearing there and only there.
+    let whole_seed = target.is_dir();
+    let checked = hale_types::check_bundle_opts_scoped(
+        &bundle,
+        allow_unowned,
+        whole_seed,
+        whole_seed,
+    );
 
     if dump_topology || dump_topology_to.is_some() {
         // The artifact's EXISTENCE means the model is sound.
@@ -5022,7 +5031,7 @@ fn compile_test_binary(entry: &Path) -> Result<PathBuf, String> {
     // contract the compiler already knows how to evaluate.
     let mut bundle = hale_types::Bundle::new(bundle_programs);
     bundle.import_renames = renames.clone();
-    let diags = hale_types::check_bundle_opts(&bundle, false);
+    let diags = hale_types::check_bundle_opts_whole_program(&bundle, false);
     if diags.iter().any(|d| d.is_error()) {
         let mut msg = String::new();
         for d in diags.iter().filter(|d| d.is_error()) {
@@ -5403,7 +5412,7 @@ fn run_replay(args: &[String]) -> ExitCode {
     bundle_programs.insert(prog.display().to_string(), &program);
     let mut bundle = hale_types::Bundle::new(bundle_programs);
     bundle.import_renames = renames.clone();
-    let diags = hale_types::check_bundle_opts(&bundle, false);
+    let diags = hale_types::check_bundle_opts_whole_program(&bundle, false);
     if !diags.is_empty() {
         for d in &diags {
             eprintln!("{}", render_located(d, &file_bases, &sources));
@@ -5857,7 +5866,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         bundle.import_renames = renames.clone();
         let allow_unowned =
             std::env::args().any(|a| a == "--allow-unowned-subscriber");
-        let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
+        let diags = hale_types::check_bundle_opts_whole_program(&bundle, allow_unowned);
         if !diags.is_empty() {
             for d in &diags {
                 eprintln!("{}", render_located(d, &file_bases, &sources));
@@ -5986,7 +5995,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     bundle.import_renames = renames.clone();
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
-    let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
+    let diags = hale_types::check_bundle_opts_whole_program(&bundle, allow_unowned);
     if !diags.is_empty() {
         for d in &diags {
             eprintln!("{}", render_located(d, &file_bases, &path_sources));
@@ -6214,7 +6223,7 @@ fn run_build(target: &Path) -> ExitCode {
     bundle.import_renames = renames.clone();
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
-    let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
+    let diags = hale_types::check_bundle_opts_whole_program(&bundle, allow_unowned);
     if !diags.is_empty() {
         for d in &diags {
             eprintln!("{}", render_located(d, &file_bases, &sources));
