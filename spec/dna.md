@@ -1341,8 +1341,52 @@ still-current attempt is accepted and recorded like any reply, and
 whichever reply arrives second changes nothing. The admission's
 performer kind is durable: the restored incarnation runs the attempt on
 that kind. What an invocation that died did before it died is a later
-card's, as are numbered retries under a restart and cross-process
-delivery.
+card's, as is cross-process delivery.
+
+## Workflow execution: retries under a restart, and the fence
+
+A retry is the next numbered attempt of a Work, and it is admitted only
+after the record holds the outcome that permits it — a failed attempt
+with allowance left, the allowance the recipe bound — as card 06's
+rules have it; its request and performer kind are the admission's,
+durable, so nothing is planned again for it. Under a restart the
+retry is the record's: a reboot proposes attempt zero, is answered
+from its recorded failure, proposes attempt one, which the record
+already holds and replays, and asks for it — redelivered if the
+incarnation that claimed it died — and never mints attempt two. A late
+success for attempt zero is answered from its recorded failure and
+changes nothing; the Work's current attempt is attempt one. An
+admission the record refuses invokes no performer and spends no retry:
+the Work holds it, with its number, and proposes it again when the
+record resumes.
+
+The runtime runs under a lease that is rows of its own record
+(`lease.taken`, carrying the fencing token — a per-key epoch allocated
+under the exact append that takes it — the holder and the expiry;
+`lease.renewed`, which moves the expiry and keeps the token;
+`lease.released`; each a JSON body, so a holder reads back as it was
+written and an empty holder is refused): a key, a holder, the token
+the holder was granted, and the clock it judges the lease by. The
+token is the row's own, never its position: a routed reader that
+starts fresh reads the record's rows before the ledger's and finds the
+same lease a reader that was live found, and the lease is the take
+with the highest token, renewed and released by rows that name it. Ownership is read at the revision a write is exact at, so the
+fence is atomic with the write by construction: a takeover is a row, it
+moves the revision, and a stale holder's exact append fails and is
+decided again — at the new revision the record names the new holder,
+and the write is fenced. That holds for every write the runtime makes:
+a transition it commits, a claim, a redelivery, an outcome it records,
+a claim it closes. A holder whose lease expired — unclaimed, re-taken
+by another, or re-taken under its own name by a restarted incarnation
+with a new token — commits nothing, however live it feels, and answers
+`fenced`, which a resident holds as it holds a refusal by the record
+and proposes again once the record resumes under a live token; a
+request that only attaches to a running attempt writes nothing and is
+not fenced. Two takes of a free lease at once land one: the other is
+stale, decided again and refused. The cell leases (`MemLeases`,
+`GitLeases`) stay for what they hold — a body, a mutation — where the
+operation they fence is not an append to this record. A runtime with no
+lease key is unfenced: a standalone runtime over a memory record.
 
 ## Storage interfaces
 
