@@ -1343,6 +1343,33 @@ performer kind is durable: the restored incarnation runs the attempt on
 that kind. What an invocation that died did before it died is a later
 card's, as is cross-process delivery.
 
+## Workflow execution: recovering the tree
+
+A restart rebuilds an execution from the record alone. The executions
+owner is asked with nothing but the task's id and which performer kind
+runs each leaf (`ExecutionAsked`); it asks the runtime for the
+admission as the record holds it (`AdmissionAsked`), and the runtime
+answers from the row, read whole, and from its projection's word that
+the row was admitted (`AdmissionAnswered`): the definition and the
+bound revision, the recipe, the limits. The Task is born from that
+answer, so an execution restored after a restart runs what it was
+admitted with — its bound recipe — whatever the catalog offers now; a
+definition changed to a new revision between shutdown and restart
+binds new admissions and touches no old execution. A task the record
+never admitted, one admitted with a recipe that cannot be read, or one
+whose admission the projection refused is not resumed: the owner says
+so (`ExecutionRefused`, with why) and nothing is born or invented for
+it. From there the residents re-propose through the transition code
+live execution uses, and the record decides what replays and what
+runs: a step the record completed is not reborn and the next step
+starts once; a child the record settled announces its settlement and
+leaves, and its parent's step completes on it; a member still waiting
+is recovered where the record left it — its admitted attempt
+redelivered, under card 12c's reconciliation — and completed members
+do not rerun; the grandchild settles, then the child, then the root.
+Only unfinished responsibilities exist in memory after a restart, and
+every id and every required-member set is the record's.
+
 ## Workflow execution: uncertain external effects
 
 An attempt's performer may have acted before the outcome was saved:

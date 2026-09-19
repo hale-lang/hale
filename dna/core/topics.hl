@@ -129,19 +129,40 @@ type ChildAdmission {
 }
 topic ChildAdmitRequested { payload: ChildAdmission; subject: "dna.child.admit"; keyed_by scope; }
 // A root execution asked of the executions owner: its admission is in
-// the record already (card 07); this carries what the owner needs to run
-// it. Card 18 wires this to the public admission.
+// the record already (card 07), and everything the execution is — its
+// definition and bound revision, its recipe, its limits — comes from
+// that row, never from the asker (card 13): an execution restored after
+// a restart runs what it was admitted with, whatever the catalog offers
+// now. The ask names the task and which performer kind runs each leaf.
+// Card 18 wires this to the public admission.
 type ExecutionAsk {
     scope: String = "";
     task_id: String = "";
-    workflow_id: String = "";
-    definition: String = "";
-    revision: Int = 0;
-    recipe: String = "";
     kinds: String = "";
-    limits: AdmissionLimits = AdmissionLimits { };
 }
 topic ExecutionAsked { payload: ExecutionAsk; subject: "dna.execution.asked"; keyed_by scope; }
+// The owner asks the runtime for an execution's admission as the record
+// holds it; the runtime answers from the record and its projection, or
+// says why the execution cannot be resumed: not admitted, or admitted
+// with a recipe that cannot be read — never an invented plan.
+type AdmissionAsk { scope: String = ""; task_id: String = ""; kinds: String = ""; }
+topic AdmissionAsked { payload: AdmissionAsk; subject: "dna.admission.asked"; keyed_by scope; }
+type AdmissionAnswer {
+    scope: String = "";
+    task_id: String = "";
+    kinds: String = "";
+    admitted: Bool = false;
+    definition: String = "";
+    revision: Int = 0;
+    workflow_id: String = "";
+    recipe: String = "";
+    limits: AdmissionLimits = AdmissionLimits { };
+    why: String = "";
+}
+topic AdmissionAnswered { payload: AdmissionAnswer; subject: "dna.admission.answered"; keyed_by scope; }
+// An execution the owner would not run: what it was asked for and why.
+type ExecutionRefusal { scope: String = ""; task_id: String = ""; why: String = ""; }
+topic ExecutionRefused { payload: ExecutionRefusal; subject: "dna.execution.refused"; keyed_by scope; }
 type ChildSettlement { step_id: String = ""; key: String = ""; task_id: String = ""; disposition: String = ""; }
 topic ChildSettled { payload: ChildSettlement; subject: "dna.child.settled"; keyed_by step_id; }
 // A child that left — its workflow drained and reclaimed — tells the

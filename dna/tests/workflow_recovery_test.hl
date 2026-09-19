@@ -1,0 +1,346 @@
+// dna/tests/workflow_recovery_test.hl — barriers, nested workflows and
+// bound revisions recovered from the record (DNA workflow card 13).
+//
+// A restart rebuilds an execution from the record alone: the owner is
+// asked with nothing but the task's id and which performer kind runs
+// each leaf, the runtime answers the admission as the record holds it
+// — definition, bound revision, recipe, limits — and the residents
+// re-propose through the transition code live execution uses; what the
+// record holds replays, what it does not runs. The canonical three-level
+// example is run live with delayed leaves, so its record can be cut at
+// each restart point: after one sibling succeeded while another waits;
+// while a grandchild waits; after the child completed and before the
+// parent's step did; after the parent's step completed and before its
+// next step was dispatched. Completed members do not rerun, each next
+// step starts once, the root settles last. The definition offered
+// changes to revision 2 between shutdown and restart: the old execution
+// runs its bound revision-1 recipe, a new admission runs revision 2. A
+// record that never admitted the task, or admitted it with a recipe
+// that cannot be read, refuses to resume it, out loud, and invents
+// nothing.
+
+import "../core" as dna;
+
+locus Counting {
+    params { calls: Int = 0; }
+    fn kind() -> String { return "service"; }
+    fn identity() -> String { return "counter"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        return dna::WorkResult { disposition: "done", result: "counted:" + req.objective, performer: "counter", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+    }
+}
+
+locus Delayed {
+    params { calls: Int = 0; }
+    fn kind() -> String { return "agent"; }
+    fn identity() -> String { return "delayed"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        return dna::WorkResult { disposition: "pending", performer: "delayed", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+    }
+}
+
+locus Boot {
+    params {
+        rt: dna::WorkflowRuntime = dna::WorkflowRuntime { };
+        owner: dna::Executions = dna::Executions { };
+    }
+}
+
+main locus App {
+    params {
+        cat: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        cat2: dna::WorkflowCatalog = dna::WorkflowCatalog { }; // the catalog offered after the restart: close-month revision 2
+        limits: dna::AdmissionLimits = dna::AdmissionLimits { };
+        boot: Boot = Boot { };
+        full: dna::MemJournal = dna::MemJournal { }; // the completed live run's record
+        lives: String = "";
+        outcomes: String = "";
+        refusals: String = "";
+    }
+    bus {
+        subscribe dna::RunLives as on_life;
+        subscribe dna::WorkflowSettled as on_outcome;
+        subscribe dna::ExecutionRefused as on_refused;
+        publish dna::ExecutionAsked;
+    }
+    fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
+    fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
+    fn on_refused(r: dna::ExecutionRefusal) { self.refusals = self.refusals + r.task_id + "|" + r.why + "\\n"; }
+    @unbounded
+    fn count(list: String, item: String) -> Int {
+        let mut n = 0;
+        let mut rest = list;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            if rest[0..sp] == item { n = n + 1; }
+            rest = rest[(sp + 1)..len(rest)];
+        }
+        return n;
+    }
+    @unbounded
+    fn rows(j: dna::Journal, kind: String, entity: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    // The index just past the first row of `kind` for `entity`, -1 when none.
+    @unbounded
+    fn after(j: dna::Journal, kind: String, entity: String) -> Int {
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && e.entity == entity { return i + 1; }
+            i = i + 1;
+        }
+        return -1;
+    }
+    // Every execution claim in the record, in order.
+    @unbounded
+    fn claims(j: dna::Journal) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "effect.requested" && std::str::starts_with(e.entity, "attempt:") { out = out + e.entity[8..len(e.entity)] + " "; }
+            i = i + 1;
+        }
+        return out;
+    }
+    @unbounded
+    fn cut(src: dna::Journal, dst: dna::Journal, n: Int) {
+        let mut i = 0;
+        while i < n {
+            let e = src.read(i);
+            let r = dst.append(dst.revision(), e.kind, e.entity, e.body);
+            std::test::assert(r.ok, "row " + to_string(i) + " copied: " + r.error);
+            i = i + 1;
+        }
+    }
+    fn settle() {
+        let mut i = 0;
+        while i < 10 {
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    @unbounded
+    fn until(list_is_lives: Bool, item: String, n: Int) {
+        let mut i = 0;
+        while i < 1000 {
+            if self.count(if list_is_lives { self.lives } else { self.outcomes }, item) >= n { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    // The order the last three settlements came in: the tail of the
+    // outcomes.
+    @unbounded
+    fn tail3() -> String {
+        let mut items = "";
+        let mut rest = self.outcomes;
+        let mut a = "";
+        let mut b = "";
+        let mut c = "";
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            a = b;
+            b = c;
+            c = rest[0..sp];
+            rest = rest[(sp + 1)..len(rest)];
+        }
+        return a + " " + b + " " + c;
+    }
+    fn define(c: dna::WorkflowCatalog, revision: Int) {
+        std::test::assert_eq_str(c.define("close-month", revision, 2, "close the month"), "", "close-month");
+        std::test::assert_eq_str(c.define("collect-receipts", 1, 2, ""), "", "collect-receipts");
+        std::test::assert_eq_str(c.define("chase-supplier", 1, 1, ""), "", "chase-supplier");
+        std::test::assert_eq_str(c.leaf("close-month", revision, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed" }, 1), "", "a");
+        std::test::assert_eq_str(c.child("close-month", revision, 0, "b", "collect-receipts", 1), "", "b");
+        std::test::assert_eq_str(c.leaf("close-month", revision, 1, "d", dna::WorkRequest { objective: "post the journal entries" }, 1), "", "d");
+        // revision 2 adds a leaf to the first step
+        if revision == 2 { std::test::assert_eq_str(c.leaf("close-month", 2, 0, "z", dna::WorkRequest { objective: "archive the statements" }, 1), "", "z"); }
+        std::test::assert_eq_str(c.leaf("collect-receipts", 1, 0, "b1", dna::WorkRequest { objective: "list missing receipts" }, 1), "", "b1");
+        std::test::assert_eq_str(c.child("collect-receipts", 1, 1, "c", "chase-supplier", 1), "", "c");
+        std::test::assert_eq_str(c.leaf("chase-supplier", 1, 0, "c1", dna::WorkRequest { objective: "email the supplier" }, 2), "", "c1");
+    }
+    // A root admitted in the record as card 07 admits it, from `c`.
+    fn admit(j: dna::Journal, c: dna::WorkflowCatalog, task_id: String, revision: Int) {
+        let x = c.expand(task_id, "close-month", revision, self.limits);
+        std::test::assert(x.ok, task_id + " expands: " + x.why);
+        let r = j.append(j.revision(), "workflow.admitted", task_id, dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: task_id, definition: "close-month", revision: revision, request: "ask-" + task_id,
+            recipe: c.encode_bound(), limits: self.limits, works: x.works, tasks: x.tasks, steps: x.steps, depth: x.depth
+        }));
+        std::test::assert(r.ok, task_id + " is admitted in the record: " + r.error);
+    }
+    fn ask(task_id: String) {
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: task_id, kinds: "a=agent b1=agent c1=agent d=agent z=service" };
+    }
+    fn reply(attempt_id: String) -> dna::Executed {
+        return self.boot.rt.settle(attempt_id, dna::WorkResult { disposition: "done", result: "later", performer: "delayed", attempt_id: attempt_id });
+    }
+    fn fresh() {
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Counting { }, agent: Delayed { }, agent_reconciler: dna::IdempotentReplay { }, service_reconciler: dna::IdempotentReplay { } } }, owner: dna::Executions { scope: "main" } };
+    }
+    // Every claim of a rerun-free record: each attempt claimed once.
+    @unbounded
+    fn each_once(j: dna::Journal) -> Bool {
+        let cs = self.claims(j);
+        let mut rest = cs;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            if self.count(cs, rest[0..sp]) != 1 { return false; }
+            rest = rest[(sp + 1)..len(rest)];
+        }
+        return true;
+    }
+    run() {
+        self.define(self.cat, 1);
+        let wa = "t1/wf1/s0/a";
+        let wb1 = "t1.s0.b/wf1/s0/b1";
+        let wc1 = "t1.s0.b.s1.c/wf1/s0/c1";
+        let wd = "t1/wf1/s1/d";
+
+        // ---- the live run, every leaf delayed, answered in order; its
+        //      record is kept
+        self.fresh();
+        self.admit(self.boot.rt.journal, self.cat, "t1", 1);
+        self.ask("t1");
+        self.until(true, wb1 + ":born", 1);
+        self.settle();
+        std::test::assert_eq_str(self.claims(self.boot.rt.journal), wa + "/a0 " + wb1 + "/a0 ", "A and B1 out");
+        let a1 = self.reply(wa + "/a0");
+        self.settle();
+        let point_sibling = self.boot.rt.journal.revision(); // A done, B1 waits
+        let b1 = self.reply(wb1 + "/a0");
+        self.until(true, wc1 + ":born", 1);
+        self.settle();
+        let point_grandchild = self.boot.rt.journal.revision(); // C1 waits
+        let c1 = self.reply(wc1 + "/a0");
+        self.until(true, wd + ":born", 1);
+        self.settle();
+        let d1 = self.reply(wd + "/a0");
+        self.until(false, "t1:done", 1);
+        self.until(true, "task:t1:dissolved", 1);
+        self.cut(self.boot.rt.journal, self.full, self.boot.rt.journal.revision());
+        let full = self.full;
+        std::test::assert(self.each_once(full), "the live run claimed each attempt once: " + self.claims(full));
+        std::test::assert_eq_str(self.tail3(), "t1.s0.b.s1.c:done t1.s0.b:done t1:done", "grandchild, child, root, in that order");
+        let point_child_done = self.after(full, "workflow.settled", "t1.s0.b"); // the child settled, the root's step not yet completed
+        let point_step_done = self.after(full, "step.completed", "t1/wf1/s0"); // the root's step completed, its next step not yet registered
+        std::test::assert(point_child_done > 0 && point_step_done > point_child_done, "the cuts are in order");
+
+        // ---- restart 1: after one sibling succeeded while another waits
+        self.fresh();
+        self.cut(full, self.boot.rt.journal, point_sibling);
+        self.ask("t1");
+        self.until(true, wb1 + ":born", 2);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.admitted", ""), 2, "restart 1: A's and B1's attempts, the record's — nothing minted");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.requested", "attempt:" + wa + "/a0"), 1, "A, done, was not rerun");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.redelivered", "attempt:" + wb1 + "/a0"), 1, "B1, waiting, was redelivered");
+        let r1b = self.reply(wb1 + "/a0");
+        self.until(true, wc1 + ":born", 2);
+        let r1c = self.reply(wc1 + "/a0");
+        self.until(true, wd + ":born", 2);
+        let r1d = self.reply(wd + "/a0");
+        self.until(false, "t1:done", 2);
+        self.until(true, "task:t1:dissolved", 2);
+        std::test::assert(self.each_once(self.boot.rt.journal), "each attempt claimed once: " + self.claims(self.boot.rt.journal));
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "step.activated", ""), 5, "each step activated once: the root's two, the child's two and the grandchild's one");
+        std::test::assert_eq_str(self.tail3(), "t1.s0.b.s1.c:done t1.s0.b:done t1:done", "the root settled last");
+
+        // ---- restart 2: while a grandchild waits
+        self.fresh();
+        self.cut(full, self.boot.rt.journal, point_grandchild);
+        self.ask("t1");
+        self.until(true, wc1 + ":born", 3);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "workflow.admitted", ""), 3, "restart 2: the child and the grandchild are the record's admissions");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.redelivered", "attempt:" + wc1 + "/a0"), 1, "C1, waiting, was redelivered");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.requested", "attempt:" + wb1 + "/a0"), 1, "B1, done, was not rerun");
+        let r2c = self.reply(wc1 + "/a0");
+        self.until(true, wd + ":born", 3);
+        let r2d = self.reply(wd + "/a0");
+        self.until(false, "t1:done", 3);
+        self.until(true, "task:t1:dissolved", 3);
+        std::test::assert(self.each_once(self.boot.rt.journal), "each attempt claimed once");
+        std::test::assert_eq_str(self.tail3(), "t1.s0.b.s1.c:done t1.s0.b:done t1:done", "the root settled last");
+
+        // ---- restart 3: after the child completed, before the root's step
+        //      did: the child announces its settlement and leaves, the
+        //      root's step completes on it, D runs once
+        self.fresh();
+        self.cut(full, self.boot.rt.journal, point_child_done);
+        self.ask("t1");
+        self.until(true, wd + ":born", 4);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "step.completed", "t1/wf1/s0"), 1, "restart 3: the root's step completed on the child's recorded settlement");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "step.activated", "t1/wf1/s1"), 1, "and the next step started once");
+        std::test::assert_eq_int(self.count(self.lives, wc1 + ":born"), 3, "the grandchild's leaf was not reborn: its execution was over");
+        let r3d = self.reply(wd + "/a0");
+        self.until(false, "t1:done", 4);
+        self.until(true, "task:t1:dissolved", 4);
+        std::test::assert(self.each_once(self.boot.rt.journal), "each attempt claimed once");
+
+        // ---- restart 4: after the root's step completed, before its next
+        //      step was dispatched: the next step starts once
+        self.fresh();
+        self.cut(full, self.boot.rt.journal, point_step_done);
+        self.ask("t1");
+        self.until(true, wd + ":born", 5);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "step.registered", "t1/wf1/s1") + self.rows(self.boot.rt.journal, "step.activated", "t1/wf1/s1"), 2, "restart 4: the next step registered and activated once");
+        std::test::assert_eq_int(self.count(self.lives, "t1/wf1/s0:born"), 4, "the completed step was not reborn");
+        let r4d = self.reply(wd + "/a0");
+        self.until(false, "t1:done", 5);
+        self.until(true, "task:t1:dissolved", 5);
+        std::test::assert(self.each_once(self.boot.rt.journal), "each attempt claimed once");
+
+        // ---- revision 2 offered between shutdown and restart: t1 restored
+        //      from point 1 runs its bound revision-1 recipe (no `z`); t2,
+        //      admitted now, runs revision 2 (`z` too)
+        self.define(self.cat2, 2);
+        self.fresh();
+        self.cut(full, self.boot.rt.journal, point_sibling);
+        self.admit(self.boot.rt.journal, self.cat2, "t2", 2);
+        self.ask("t1");
+        self.ask("t2");
+        self.until(true, "t2/wf2/s0/z:born", 1);
+        self.settle();
+        std::test::assert_eq_int(self.count(self.lives, "t1/wf1/s0/z:born"), 0, "t1 has no leaf z: it runs the revision-1 recipe it was admitted with");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.requested", "attempt:t2/wf2/s0/z/a0"), 1, "t2 runs revision 2: z ran");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.redelivered", "attempt:" + wb1 + "/a0"), 1, "and t1 resumed where the record left it");
+
+        // ---- a record that never admitted the task, and one that admitted
+        //      it with a recipe that cannot be read: refused to resume, out
+        //      loud; nothing born, nothing invented
+        self.fresh();
+        self.ask("t9");
+        self.settle();
+        std::test::assert(std::str::contains(self.refusals, "t9|task t9 was never admitted"), "a task the record never admitted is refused: " + self.refusals);
+        std::test::assert_eq_int(self.count(self.lives, "task:t9:born"), 0, "and nothing was born for it");
+        self.fresh();
+        let x = self.cat.expand("t8", "close-month", 1, self.limits);
+        let whole = self.cat.encode_bound();
+        let torn = whole[0..(len(whole) / 2)];
+        let bad = self.boot.rt.journal.append(0, "workflow.admitted", "t8", dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: "t8", definition: "close-month", revision: 1, request: "ask-t8", recipe: torn, limits: self.limits, works: x.works, tasks: x.tasks, steps: x.steps, depth: x.depth
+        }));
+        self.ask("t8");
+        self.settle();
+        std::test::assert(std::str::contains(self.refusals, "t8|"), "a task admitted with a torn recipe is refused: " + self.refusals);
+        std::test::assert_eq_int(self.count(self.lives, "task:t8:born"), 0, "and nothing was born for it");
+        std::test::assert_eq_int(self.boot.owner.refused, 1, "the owner refused it");
+        std::test::assert(self.boot.rt.journal.verify_chain(), "the record's chain holds");
+    }
+}
+
+fn main() { App { }; }

@@ -92,10 +92,14 @@ locus Raced {
 // it, so the cancellation reaches the workflow while its question to
 // the record is still being answered.
 locus Refusing {
-    params { inner: dna::MemJournal = dna::MemJournal { }; refuse_once: String = ""; refused: Bool = false; cancel_on_refresh: Bool = false; cancelled: Bool = false; }
+    // `cancel_on_refresh` names WHICH refresh: the runtime's first reading
+    // is the owner's admission query (card 13), its second the workflow's
+    // state query — the one a cancellation must land under
+    params { inner: dna::MemJournal = dna::MemJournal { }; refuse_once: String = ""; refused: Bool = false; cancel_on_refresh: Int = 0; refreshes: Int = 0; cancelled: Bool = false; }
     bus { publish dna::WorkflowCancelRequested; }
     fn refresh() -> Bool {
-        if self.cancel_on_refresh && !self.cancelled {
+        self.refreshes = self.refreshes + 1;
+        if self.cancel_on_refresh > 0 && self.refreshes == self.cancel_on_refresh && !self.cancelled {
             self.cancelled = true;
             dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: "t1", reason: "asked while the record was being read" };
         }
@@ -329,7 +333,7 @@ main locus App {
         }
     }
     fn ask() {
-        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", workflow_id: "t1/wf1", definition: "flat", revision: 1, recipe: self.recipe, kinds: "a=service", limits: self.limits };
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", kinds: "a=service" };
     }
     fn admission() -> String {
         return dna::encode_admission(dna::AdmittedWorkflow {
@@ -523,7 +527,7 @@ main locus App {
         //      is still asking the record (it lands between the question
         //      and the answer): the record's answer comes first — done —
         //      and the cancellation is moot
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: Refusing { cancel_on_refresh: true }, work: dna::WorkSystem { service_reconciler: dna::IdempotentReplay { }, service: Counting { } } }, owner: dna::Executions { scope: "main" } };
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: Refusing { cancel_on_refresh: 2 }, work: dna::WorkSystem { service_reconciler: dna::IdempotentReplay { }, service: Counting { } } }, owner: dna::Executions { scope: "main" } };
         self.cut(full, self.boot.rt.journal, total);
         self.ask();
         self.until_outcome("t1:done", 10);
@@ -590,7 +594,7 @@ main locus App {
         let a_dissolved_before = self.count(self.lives, "t1/wf1/s0/a:dissolved");
         let s_dissolved_before = self.count(self.lives, "t1/wf1/s0:dissolved");
         let t_dissolved_before = self.count(self.lives, "task:t1:dissolved");
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: Refusing { cancel_on_refresh: true }, work: dna::WorkSystem { service_reconciler: dna::IdempotentReplay { }, service: Counting { } } }, owner: dna::Executions { scope: "main" } };
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: Refusing { cancel_on_refresh: 2 }, work: dna::WorkSystem { service_reconciler: dna::IdempotentReplay { }, service: Counting { } } }, owner: dna::Executions { scope: "main" } };
         self.cut(full, self.boot.rt.journal, at_outcome);
         self.ask();
         self.until_outcome("t1:cancelled", 3);

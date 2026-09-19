@@ -222,7 +222,7 @@ main locus App {
         });
     }
     fn ask() {
-        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", workflow_id: "t1/wf1", definition: "post", revision: 1, recipe: self.recipe, kinds: "p=service", limits: self.limits };
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", kinds: "p=service" };
     }
     run() {
         std::test::assert_eq_str(self.cat.define("post", 1, 1, "post one entry"), "", "post");
@@ -372,7 +372,7 @@ main locus App {
         //      and is not invoked again
         self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: Refusing { refuse_once: "attempt.outcome:" + wp + "/a0" }, work: dna::WorkSystem { human: Durable { store: self.human_store, name: "alice" }, service: Durable { store: self.store }, service_reconciler: Durable { store: self.store } } }, owner: dna::Executions { scope: "main" } };
         let r9 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
-        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", workflow_id: "t1/wf1", definition: "post", revision: 1, recipe: self.recipe, kinds: "p=human", limits: self.limits };
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", kinds: "p=human" };
         self.until_life(wp + ":born", 9);
         self.settle();
         std::test::assert_eq_int(self.rows(self.human_store, "invocation", wp + "/a0"), 1, "boot 9: the human adapter was invoked once, and the outcome was never saved");
@@ -381,7 +381,7 @@ main locus App {
         let crashed_human = self.full.revision();
         self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { human: Durable { store: self.human_store, name: "alice" }, service: Durable { store: self.store }, service_reconciler: Durable { store: self.store } } }, owner: dna::Executions { scope: "main" } };
         self.cut(self.full, self.boot.rt.journal, crashed_human);
-        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", workflow_id: "t1/wf1", definition: "post", revision: 1, recipe: self.recipe, kinds: "p=human", limits: self.limits };
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", kinds: "p=human" };
         self.until_life(wp + ":born", 10);
         self.settle();
         std::test::assert_eq_int(self.rows(self.human_store, "invocation", wp + "/a0"), 1, "the human adapter was not invoked again: the service adapter's evidence is not the human performer's");
@@ -391,7 +391,7 @@ main locus App {
         // the restart recognizes the invocation
         self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { human: Durable { store: self.human_store, name: "alice" }, human_reconciler: Durable { store: self.human_store, name: "alice" } } }, owner: dna::Executions { scope: "main" } };
         self.cut(self.full, self.boot.rt.journal, crashed_human);
-        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", workflow_id: "t1/wf1", definition: "post", revision: 1, recipe: self.recipe, kinds: "p=human", limits: self.limits };
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", kinds: "p=human" };
         self.until_outcome("t1:done", 6);
         self.settle();
         std::test::assert_eq_int(self.rows(self.human_store, "invocation", wp + "/a0"), 1, "the human adapter's own record is the outcome: still one invocation");
@@ -402,7 +402,7 @@ main locus App {
         //      evidence about the human attempt: unknown, not redelivered
         self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { human: Durable { store: self.human_store, name: "alice" }, human_reconciler: Misattributed { } } }, owner: dna::Executions { scope: "main" } };
         self.cut(self.full, self.boot.rt.journal, crashed_human);
-        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", workflow_id: "t1/wf1", definition: "post", revision: 1, recipe: self.recipe, kinds: "p=human", limits: self.limits };
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", kinds: "p=human" };
         self.until_life(wp + ":born", 12);
         self.settle();
         std::test::assert_eq_int(self.rows(self.human_store, "invocation", wp + "/a0"), 1, "boot 10: another performer's negative evidence authorizes no replay of the human attempt");
