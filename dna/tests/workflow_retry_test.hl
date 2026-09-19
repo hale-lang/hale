@@ -193,7 +193,7 @@ main locus App {
         // safe, so the adapter says so — card 12c)
         // ---- boot 0: attempt zero fails; attempt one is admitted, claimed
         //      and pending when the incarnation dies
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { reconciler: dna::IdempotentReplay { }, human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { human_reconciler: dna::IdempotentReplay { }, human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
         let r0 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
         std::test::assert(r0.ok, "admitted: " + r0.error);
         self.ask();
@@ -214,7 +214,7 @@ main locus App {
 
         // ---- boot 1: the reboot resumes attempt one — redelivered, its
         //      claimant dead — and never creates attempt two
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { reconciler: dna::IdempotentReplay { }, human: Flaky { calls: 1 } } }, owner: dna::Executions { scope: "main" } };
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { human_reconciler: dna::IdempotentReplay { }, human: Flaky { calls: 1 } } }, owner: dna::Executions { scope: "main" } };
         self.cut(full, self.boot.rt.journal, so_far);
         self.ask();
         self.until_calls(wr + "/a1", 2);
@@ -234,7 +234,7 @@ main locus App {
 
         // ---- boot 2: a retry's admission the record refuses invokes no
         //      performer and spends no retry; resumed, it lands and runs
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: Refusing { refuse_once: "attempt.admitted:" + wr + "/a1" }, work: dna::WorkSystem { reconciler: dna::IdempotentReplay { }, human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: Refusing { refuse_once: "attempt.admitted:" + wr + "/a1" }, work: dna::WorkSystem { human_reconciler: dna::IdempotentReplay { }, human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
         let r2 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
         self.ask();
         self.until_calls(wr + "/a0", 2);
@@ -258,7 +258,7 @@ main locus App {
         //      nothing — until it holds a live token again, and then what
         //      was held goes through
         let key = "lease/workflow/main";
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", lease_key: key, holder: "alpha", work: dna::WorkSystem { reconciler: dna::IdempotentReplay { }, human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", lease_key: key, holder: "alpha", work: dna::WorkSystem { human_reconciler: dna::IdempotentReplay { }, human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
         let r3 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
         std::test::assert(self.boot.rt.take_lease(0, 100), "alpha holds the lease at 0");
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "lease.taken", key), 1, "as a row of the record");
@@ -306,7 +306,7 @@ main locus App {
         //      clock, checks its lease and finds it live, and beta takes the
         //      lease as alpha's transition is appended: the append is
         //      stale, decided again, and fenced; nothing of alpha's lands
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", lease_key: key, holder: "alpha", journal: Takeover { on_kind: "attempt.admitted", key: key }, work: dna::WorkSystem { reconciler: dna::IdempotentReplay { }, human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", lease_key: key, holder: "alpha", journal: Takeover { on_kind: "attempt.admitted", key: key }, work: dna::WorkSystem { human_reconciler: dna::IdempotentReplay { }, human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
         let r4 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
         std::test::assert(self.boot.rt.take_lease(0, 100), "alpha holds the lease at 0");
         self.boot.rt.tick(50);
@@ -328,7 +328,7 @@ main locus App {
         //      checked the lease live at its reading and the claim's
         //      exact append is stale; decided again, it is fenced, and no
         //      performer runs
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", lease_key: key, holder: "alpha", journal: Takeover { on_kind: "effect.requested", key: key }, work: dna::WorkSystem { reconciler: dna::IdempotentReplay { }, human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", lease_key: key, holder: "alpha", journal: Takeover { on_kind: "effect.requested", key: key }, work: dna::WorkSystem { human_reconciler: dna::IdempotentReplay { }, human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
         let r5 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
         std::test::assert(self.boot.rt.take_lease(0, 100), "alpha holds the lease at 0");
         self.boot.rt.tick(50);
@@ -343,7 +343,7 @@ main locus App {
         //      lease again under its own name while the old alpha still
         //      counts itself live: the old token is stale, and the old
         //      alpha's write is fenced
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", lease_key: key, holder: "alpha", work: dna::WorkSystem { reconciler: dna::IdempotentReplay { }, human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", lease_key: key, holder: "alpha", work: dna::WorkSystem { human_reconciler: dna::IdempotentReplay { }, human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
         let r6 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
         std::test::assert(self.boot.rt.take_lease(0, 100), "alpha holds the lease at 0");
         self.ask();
@@ -359,7 +359,7 @@ main locus App {
         // ---- boot 7: two takes of a free lease at once: beta's lands as
         //      alpha's is appended; alpha's take is stale, decided again,
         //      and refused — one holder, never two
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", lease_key: key, holder: "alpha", journal: Takeover { on_kind: "lease.taken", key: key }, work: dna::WorkSystem { reconciler: dna::IdempotentReplay { }, human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", lease_key: key, holder: "alpha", journal: Takeover { on_kind: "lease.taken", key: key }, work: dna::WorkSystem { human_reconciler: dna::IdempotentReplay { }, human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
         let r7 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
         std::test::assert(!self.boot.rt.take_lease(0, 100), "boot 7: alpha's take, appended after beta's landed, is refused");
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "lease.taken", key), 1, "one take landed: beta's");

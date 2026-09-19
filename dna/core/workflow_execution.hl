@@ -387,11 +387,19 @@ fn dispatch_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAtte
         // says it did not, or that acting again is documented safe: the
         // dispatch is issued again. It cannot say: the claim resulted
         // unknown, durably and visibly, and the attempt waits for a person
-        let rc = work.reconcile_as(v.performer_kind, attempt_request(v));
+        let mut rc = work.reconcile_as(v.performer_kind, attempt_request(v));
+        // evidence is the admitted performer's or it is no evidence: an
+        // adapter speaking for another kind or identity can attest
+        // nothing about this attempt, and its documented idempotence is
+        // not this performer's
+        if rc.kind != v.performer_kind || rc.identity != work.identity_of(v.performer_kind) {
+            rc = Reconciliation { why: "the evidence offered is " + rc.kind + " " + rc.identity + "'s, not the " + v.performer_kind + " performer " + work.identity_of(v.performer_kind) + "'s that attempt " + id + " was admitted to" };
+        }
         if rc.established && rc.performed {
-            let mut r = rc.result;
-            r.attempt_id = id;
-            if len(r.performer) == 0 { r.performer = work.identity_of(v.performer_kind); }
+            // the adapter's record, as it recorded it: judged for whose it
+            // is exactly as a reply is — the performer it names, the
+            // attempt it names if it names one — and never relabelled
+            let r = rc.result;
             let whose = reply_identity_gap(work, v, r);
             if len(whose) > 0 { return Executed { why: "the adapter's record of attempt " + id + " is not this attempt's: " + whose }; }
             let bad = reply_disposition_gap(r);
@@ -402,10 +410,17 @@ fn dispatch_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAtte
         }
         if !rc.established && !rc.idempotent {
             let u = j.append_exact(rev, "effect.result", key, "unknown (reconciled after a restart: " + rc.why + ")");
-            if u.ok || u.error == "stale_revision" || u.error == "claimed" {
+            if u.ok {
                 return Executed { unresolved: true, why: "attempt " + id + " may have acted before its incarnation died and nothing can say whether it did (" + rc.why + "); it waits, unresolved, for a person: `hale dna effect resolve " + key + " --outcome ok|failed`" };
             }
-            return Executed { why: "the record would not take the unknown result of attempt " + id + " (" + u.error + "); nothing ran" };
+            if u.error != "stale_revision" && u.error != "claimed" {
+                return Executed { why: "the record would not take the unknown result of attempt " + id + " (" + u.error + "); nothing ran" };
+            }
+            // the record moved under the decision: it is taken again — an
+            // outcome, a resolution or a takeover landed, or something
+            // unrelated did and the unknown row is appended at the new
+            // reading
+            continue;
         }
         let w = j.append_exact(rev, "effect.redelivered", key, "attempt " + id + " redelivered" + (if rc.idempotent { " (documented idempotent)" } else { " (the adapter says it never acted)" }));
         if w.ok { return perform_attempt(j, work, scope, v, true, f); }

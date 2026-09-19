@@ -19,30 +19,38 @@ interface Performer {
 // it did, and whether acting again is documented safe. Recovery asks
 // this before it decides on a redelivery.
 type Reconciliation {
+    // whose evidence this is: the performer kind and identity the adapter
+    // speaks for. Evidence that does not name the admitted performer is
+    // no evidence about its attempt
+    kind: String = "";
+    identity: String = "";
     established: Bool = false; // the adapter can say
     performed: Bool = false; // it acted under this attempt
     idempotent: Bool = false; // acting again is documented safe: replay is the reconciliation
-    result: WorkResult = WorkResult { }; // what it recorded, when it acted
+    result: WorkResult = WorkResult { }; // what it recorded, when it acted, as it recorded it
     why: String = "";
 }
 
+// An effect adapter's reconciliation, asked for the performer kind and
+// identity the attempt was admitted to, so its answer is scoped to them.
 interface Reconciler {
-    fn reconcile(req: WorkRequest) -> Reconciliation;
+    fn reconcile(kind: String, identity: String, req: WorkRequest) -> Reconciliation;
 }
 
 // No evidence either way: an attempt this adapter may have acted on
 // stays unresolved until a person says what happened.
 locus NoEvidence {
-    fn reconcile(req: WorkRequest) -> Reconciliation {
-        return Reconciliation { why: "no adapter can say whether attempt " + to_string(req.attempt_no) + " of " + req.work_id + " acted" };
+    fn reconcile(kind: String, identity: String, req: WorkRequest) -> Reconciliation {
+        return Reconciliation { kind: kind, identity: identity, why: "no adapter can say whether attempt " + to_string(req.attempt_no) + " of " + req.work_id + " acted" };
     }
 }
 
 // A documented idempotent effect: acting again is safe, so a
-// redelivery is the reconciliation.
+// redelivery is the reconciliation. Installed for the performer kind
+// whose effect is documented so; it speaks for that one.
 locus IdempotentReplay {
-    fn reconcile(req: WorkRequest) -> Reconciliation {
-        return Reconciliation { idempotent: true, why: "documented idempotent: a replay is safe" };
+    fn reconcile(kind: String, identity: String, req: WorkRequest) -> Reconciliation {
+        return Reconciliation { kind: kind, identity: identity, idempotent: true, why: "documented idempotent: a replay is safe" };
     }
 }
 

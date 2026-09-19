@@ -19,26 +19,26 @@ import "../core" as dna;
 // system's own record of what was done. It answers at once, and it can
 // say whether an attempt acted, from that store.
 locus Durable {
-    params { store: dna::MemJournal = dna::MemJournal { }; }
+    params { store: dna::MemJournal = dna::MemJournal { }; name: String = "ledger-service"; }
     fn kind() -> String { return "service"; }
-    fn identity() -> String { return "ledger-service"; }
+    fn identity() -> String { return self.name; }
     fn perform(req: dna::WorkRequest) -> dna::WorkResult {
         let id = req.work_id + "/a" + to_string(req.attempt_no);
         let r = self.store.append(self.store.revision(), "invocation", id, "posted " + req.objective);
-        return dna::WorkResult { disposition: "done", result: "posted " + req.objective, performer: "ledger-service", attempt_id: id };
+        return dna::WorkResult { disposition: "done", result: "posted " + req.objective, performer: self.name, attempt_id: id };
     }
     @unbounded
-    fn reconcile(req: dna::WorkRequest) -> dna::Reconciliation {
+    fn reconcile(kind: String, identity: String, req: dna::WorkRequest) -> dna::Reconciliation {
         let id = req.work_id + "/a" + to_string(req.attempt_no);
         let mut i = 0;
         while i < self.store.revision() {
             let e = self.store.read(i);
             if e.kind == "invocation" && e.entity == id {
-                return dna::Reconciliation { established: true, performed: true, result: dna::WorkResult { disposition: "done", result: e.body, performer: "ledger-service", attempt_id: id }, why: "the invocation is in the adapter's store" };
+                return dna::Reconciliation { kind: kind, identity: self.name, established: true, performed: true, result: dna::WorkResult { disposition: "done", result: e.body, performer: self.name, attempt_id: id }, why: "the invocation is in the adapter's store" };
             }
             i = i + 1;
         }
-        return dna::Reconciliation { established: true, performed: false, why: "no invocation of " + id + " is in the adapter's store" };
+        return dna::Reconciliation { kind: kind, identity: self.name, established: true, performed: false, why: "no invocation of " + id + " is in the adapter's store" };
     }
 }
 
@@ -50,22 +50,56 @@ locus Blind {
     fn perform(req: dna::WorkRequest) -> dna::WorkResult {
         return dna::WorkResult { disposition: "done", result: "posted", performer: "ledger-service", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
     }
-    fn reconcile(req: dna::WorkRequest) -> dna::Reconciliation {
-        return dna::Reconciliation { why: "the adapter keeps no record of what it posted" };
+    fn reconcile(kind: String, identity: String, req: dna::WorkRequest) -> dna::Reconciliation {
+        return dna::Reconciliation { kind: kind, identity: identity, why: "the adapter keeps no record of what it posted" };
     }
 }
 
 // An adapter whose record is not this attempt's: it says it acted, but
-// the outcome it hands back names another performer.
+// the outcome it hands back names another performer — or, told to,
+// this performer and another attempt.
 locus Liar {
+    params { other_attempt: Bool = false; }
     fn kind() -> String { return "service"; }
     fn identity() -> String { return "ledger-service"; }
     fn perform(req: dna::WorkRequest) -> dna::WorkResult {
         return dna::WorkResult { disposition: "done", result: "posted", performer: "ledger-service", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
     }
-    fn reconcile(req: dna::WorkRequest) -> dna::Reconciliation {
-        return dna::Reconciliation { established: true, performed: true, result: dna::WorkResult { disposition: "done", result: "posted by someone", performer: "someone-else", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) }, why: "a record, of a sort" };
+    fn reconcile(kind: String, identity: String, req: dna::WorkRequest) -> dna::Reconciliation {
+        if self.other_attempt {
+            return dna::Reconciliation { kind: kind, identity: identity, established: true, performed: true, result: dna::WorkResult { disposition: "done", result: "posted, for another attempt", performer: identity, attempt_id: "t9/wf1/s0/other/a0" }, why: "a record, of another attempt" };
+        }
+        return dna::Reconciliation { kind: kind, identity: identity, established: true, performed: true, result: dna::WorkResult { disposition: "done", result: "posted by someone", performer: "someone-else", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) }, why: "a record, of a sort" };
     }
+}
+
+// An adapter installed for one kind that answers with another's
+// evidence: it attests, for the service performer, that nothing acted.
+locus Misattributed {
+    fn reconcile(kind: String, identity: String, req: dna::WorkRequest) -> dna::Reconciliation {
+        return dna::Reconciliation { kind: "service", identity: "ledger-service", established: true, performed: false, why: "no service invocation" };
+    }
+}
+
+// A record another hand writes to as the unknown result is appended:
+// an unrelated row, or a person's resolution, lands first, and only
+// then is the runtime's exact append delegated.
+locus Landing {
+    params { inner: dna::MemJournal = dna::MemJournal { }; lands: String = ""; key: String = ""; landed: Bool = false; }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.inner.append(expected, kind, entity, body); }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if kind == "effect.result" && std::str::starts_with(body, "unknown") && !self.landed {
+            self.landed = true;
+            if self.lands == "unrelated" { let u = self.inner.append(self.inner.revision(), "note.kept", "n1", "an unrelated row, under the unknown append"); }
+            if self.lands == "resolution" { let u = self.inner.append(self.inner.revision(), "effect.result", self.key, "ok (resolved by riley: it is in the ledger)"); }
+        }
+        return self.inner.append_exact(expected, kind, entity, body);
+    }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
 }
 
 // A record that refuses one row, once — the crash between the
@@ -98,7 +132,8 @@ main locus App {
         recipe: String = "";
         boot: Boot = Boot { };
         full: dna::MemJournal = dna::MemJournal { }; // the record as the crash left it
-        store: dna::MemJournal = dna::MemJournal { }; // the adapter's own durable store, across boots
+        store: dna::MemJournal = dna::MemJournal { }; // the service adapter's own durable store, across boots
+        human_store: dna::MemJournal = dna::MemJournal { }; // the human adapter's
         lives: String = "";
         outcomes: String = "";
         replies: String = "";
@@ -200,7 +235,7 @@ main locus App {
 
         // ---- boot 0: the adapter records the invocation, and the process
         //      dies before the outcome is persisted
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: Refusing { refuse_once: "attempt.outcome:" + wp + "/a0" }, work: dna::WorkSystem { service: Durable { store: self.store }, reconciler: Durable { store: self.store } } }, owner: dna::Executions { scope: "main" } };
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: Refusing { refuse_once: "attempt.outcome:" + wp + "/a0" }, work: dna::WorkSystem { service: Durable { store: self.store }, service_reconciler: Durable { store: self.store } } }, owner: dna::Executions { scope: "main" } };
         let r0 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
         std::test::assert(r0.ok, "admitted: " + r0.error);
         self.ask();
@@ -215,7 +250,7 @@ main locus App {
 
         // ---- boot 1: the restart recognizes the performed effect from the
         //      adapter's record and completes without performing it twice
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Durable { store: self.store }, reconciler: Durable { store: self.store } } }, owner: dna::Executions { scope: "main" } };
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Durable { store: self.store }, service_reconciler: Durable { store: self.store } } }, owner: dna::Executions { scope: "main" } };
         self.cut(full, self.boot.rt.journal, crashed);
         self.ask();
         self.until_outcome("t1:done", 1);
@@ -232,7 +267,7 @@ main locus App {
         //      unknown, durably, and the attempt waits — asked again it
         //      still waits, nothing replayed — until a person resolves it,
         //      and then the resolution is the outcome
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Blind { }, reconciler: Blind { } } }, owner: dna::Executions { scope: "main" } };
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Blind { }, service_reconciler: Blind { } } }, owner: dna::Executions { scope: "main" } };
         self.cut(full, self.boot.rt.journal, crashed);
         self.ask();
         self.until_life(wp + ":born", 3);
@@ -260,7 +295,7 @@ main locus App {
 
         // ---- boot 3: a documented idempotent adapter: the replay is the
         //      reconciliation
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Durable { store: self.store }, reconciler: dna::IdempotentReplay { } } }, owner: dna::Executions { scope: "main" } };
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Durable { store: self.store }, service_reconciler: dna::IdempotentReplay { } } }, owner: dna::Executions { scope: "main" } };
         self.cut(full, self.boot.rt.journal, crashed);
         self.ask();
         self.until_outcome("t1:done", 3);
@@ -271,7 +306,7 @@ main locus App {
 
         // ---- boot 4: an adapter that can say it never acted (its store
         //      is empty): redelivered
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Durable { }, reconciler: Durable { } } }, owner: dna::Executions { scope: "main" } };
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Durable { }, service_reconciler: Durable { } } }, owner: dna::Executions { scope: "main" } };
         self.cut(full, self.boot.rt.journal, crashed);
         self.ask();
         self.until_outcome("t1:done", 4);
@@ -283,7 +318,7 @@ main locus App {
         // ---- boot 5: an adapter whose record names another performer: it
         //      is not this attempt's record, nothing is recorded from it,
         //      and the attempt waits
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Liar { }, reconciler: Liar { } } }, owner: dna::Executions { scope: "main" } };
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Liar { }, service_reconciler: Liar { } } }, owner: dna::Executions { scope: "main" } };
         self.cut(full, self.boot.rt.journal, crashed);
         self.ask();
         self.until_life(wp + ":born", 6);
@@ -291,6 +326,88 @@ main locus App {
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", ""), 0, "boot 5: no outcome is recorded from a record that is not this attempt's");
         std::test::assert(std::str::contains(self.replies, "not this attempt's"), "and the Work was told: " + self.replies);
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.redelivered", ""), 0, "and nothing was replayed");
+
+        // ---- boot 6: an adapter whose record is this performer's but names
+        //      another attempt: not relabelled, not this attempt's, nothing
+        //      recorded
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Liar { }, service_reconciler: Liar { other_attempt: true } } }, owner: dna::Executions { scope: "main" } };
+        self.cut(full, self.boot.rt.journal, crashed);
+        self.ask();
+        self.until_life(wp + ":born", 7);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", ""), 0, "boot 6: a record from the right performer for another attempt records nothing");
+        std::test::assert(std::str::contains(self.replies, "not " + wp + "/a0"), "and the Work was told which attempt it named: " + self.replies);
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.result", key), 0, "the claim stays open: neither closed nor unknown");
+
+        // ---- boot 7: the unknown result appended as an unrelated row lands:
+        //      the append is stale, decided again, and the unknown row lands
+        //      at the new reading
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: Landing { lands: "unrelated", key: key }, work: dna::WorkSystem { service: Blind { }, service_reconciler: Blind { } } }, owner: dna::Executions { scope: "main" } };
+        self.cut(full, self.boot.rt.journal, crashed);
+        self.ask();
+        self.until_life(wp + ":born", 8);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "note.kept", "n1"), 1, "boot 7: the unrelated row landed under the append");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.result", key), 1, "and the unknown row landed at the reading after it");
+        std::test::assert(std::str::starts_with(self.body_of(self.boot.rt.journal, "effect.result", key), "unknown"), "as unknown");
+        std::test::assert(std::str::contains(self.replies, "hale dna effect resolve " + key), "and the Work was told it waits");
+
+        // ---- boot 8: a person's resolution lands as the unknown result is
+        //      appended: the append is stale, decided again, and the
+        //      resolution is the outcome — no unknown row, no waiting
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: Landing { lands: "resolution", key: key }, work: dna::WorkSystem { service: Blind { }, service_reconciler: Blind { } } }, owner: dna::Executions { scope: "main" } };
+        self.cut(full, self.boot.rt.journal, crashed);
+        self.ask();
+        self.until_outcome("t1:done", 5);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.result", key), 1, "boot 8: one result row: the resolution");
+        std::test::assert(std::str::starts_with(self.body_of(self.boot.rt.journal, "effect.result", key), "ok (resolved by riley"), "not an unknown");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", wp + "/a0"), 1, "the resolution became the outcome at once");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "work.settled", wp), 1, "and the Work settled");
+
+        // ---- boot 9: evidence is the admitted performer's or it is none —
+        //      a human attempt is out at the crash; the service adapter,
+        //      honest over its own store, sees no service invocation; that
+        //      says nothing about the human attempt, which waits unresolved
+        //      and is not invoked again
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: Refusing { refuse_once: "attempt.outcome:" + wp + "/a0" }, work: dna::WorkSystem { human: Durable { store: self.human_store, name: "alice" }, service: Durable { store: self.store }, service_reconciler: Durable { store: self.store } } }, owner: dna::Executions { scope: "main" } };
+        let r9 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", workflow_id: "t1/wf1", definition: "post", revision: 1, recipe: self.recipe, kinds: "p=human", limits: self.limits };
+        self.until_life(wp + ":born", 9);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.human_store, "invocation", wp + "/a0"), 1, "boot 9: the human adapter was invoked once, and the outcome was never saved");
+        self.full = dna::MemJournal { };
+        self.cut(self.boot.rt.journal, self.full, self.boot.rt.journal.revision());
+        let crashed_human = self.full.revision();
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { human: Durable { store: self.human_store, name: "alice" }, service: Durable { store: self.store }, service_reconciler: Durable { store: self.store } } }, owner: dna::Executions { scope: "main" } };
+        self.cut(self.full, self.boot.rt.journal, crashed_human);
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", workflow_id: "t1/wf1", definition: "post", revision: 1, recipe: self.recipe, kinds: "p=human", limits: self.limits };
+        self.until_life(wp + ":born", 10);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.human_store, "invocation", wp + "/a0"), 1, "the human adapter was not invoked again: the service adapter's evidence is not the human performer's");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.redelivered", ""), 0, "nothing redelivered");
+        std::test::assert(std::str::starts_with(self.body_of(self.boot.rt.journal, "effect.result", key), "unknown"), "the human attempt waits, unknown: " + self.body_of(self.boot.rt.journal, "effect.result", key));
+        // with the human adapter's own store installed for the human kind,
+        // the restart recognizes the invocation
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { human: Durable { store: self.human_store, name: "alice" }, human_reconciler: Durable { store: self.human_store, name: "alice" } } }, owner: dna::Executions { scope: "main" } };
+        self.cut(self.full, self.boot.rt.journal, crashed_human);
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", workflow_id: "t1/wf1", definition: "post", revision: 1, recipe: self.recipe, kinds: "p=human", limits: self.limits };
+        self.until_outcome("t1:done", 6);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.human_store, "invocation", wp + "/a0"), 1, "the human adapter's own record is the outcome: still one invocation");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", wp + "/a0"), 1, "recorded");
+
+        // ---- boot 10: an adapter in the human slot answering with the
+        //      service performer's evidence — "never acted" — is no
+        //      evidence about the human attempt: unknown, not redelivered
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { human: Durable { store: self.human_store, name: "alice" }, human_reconciler: Misattributed { } } }, owner: dna::Executions { scope: "main" } };
+        self.cut(self.full, self.boot.rt.journal, crashed_human);
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", workflow_id: "t1/wf1", definition: "post", revision: 1, recipe: self.recipe, kinds: "p=human", limits: self.limits };
+        self.until_life(wp + ":born", 12);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.human_store, "invocation", wp + "/a0"), 1, "boot 10: another performer's negative evidence authorizes no replay of the human attempt");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.redelivered", ""), 0, "nothing redelivered");
+        std::test::assert(std::str::contains(self.body_of(self.boot.rt.journal, "effect.result", key), "not the human performer alice's"), "the unknown row says whose evidence was offered: " + self.body_of(self.boot.rt.journal, "effect.result", key));
 
         // ---- the assembly's restart rule leaves an attempt's claim to the
         //      runtime: over a record holding an attempt claim and a
