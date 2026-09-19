@@ -162,6 +162,9 @@ locus WorkSystem {
         agent: Performer = AgentPerformer { };
         software: Performer = ScriptedPerformer { name: "software" };
         service: Performer = ServicePerformer { };
+        // the effect adapter that says, after a restart, whether an
+        // attempt acted (card 12c); the default can say nothing
+        reconciler: Reconciler = NoEvidence { };
         selection: perspective(WorkRouting) = CapabilityFirstSelection { };
         max_attempts: Int = 3;
         requests: Int = 0;
@@ -189,6 +192,9 @@ locus WorkSystem {
         if kind == "agent" { return self.agent.identity(); }
         if kind == "service" { return self.service.identity(); }
         return self.software.identity();
+    }
+    fn reconcile_as(kind: String, req: WorkRequest) -> Reconciliation {
+        return self.reconciler.reconcile(req);
     }
     fn perform_as(kind: String, req: WorkRequest) -> WorkResult {
         if kind == "human" { return self.human.perform(req); }

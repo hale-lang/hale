@@ -40,6 +40,8 @@ type Executed {
     reused: Bool = false; // the attempt was already settled: its recorded outcome is the answer
     redelivered: Bool = false; // the attempt was claimed by an incarnation that died: its dispatch was issued again, same id, no new claim
     fenced: Bool = false; // the write was refused by the fence: this holder's lease is not live as of the reading
+    reconciled: Bool = false; // the outcome was established without running: the adapter said it acted, or a person resolved the claim
+    unresolved: Bool = false; // nothing could establish whether the attempt acted: it waits, visibly, for a person
     disposition: String = ""; // the recorded outcome's, "" while the attempt is outstanding
     outcome: AttemptOutcome = AttemptOutcome { };
     why: String = "";
@@ -357,7 +359,20 @@ fn dispatch_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAtte
         if !attempt_claimed(j, id, rev) { return execute_attempt(j, work, scope, a, f); }
         let st = effect_status(j, key);
         if st.done && st.unknown {
-            return Executed { why: "attempt " + id + " resulted unknown: what its invocation did before its incarnation died is unresolved, and nothing runs on it until it is reconciled" };
+            return Executed { unresolved: true, why: "attempt " + id + " resulted unknown: what its invocation did before its incarnation died is unresolved, and nothing runs on it until a person resolves it" };
+        }
+        if st.done {
+            // a person resolved the claim (`hale dna effect resolve`): the
+            // attempt's outcome is that resolution, recorded as an
+            // outcome so the Work settles on it; nothing runs
+            let said = effect_result_body(j, key);
+            let r = WorkResult {
+                disposition: if st.ok { "done" } else { "failed" }, result: "resolved: " + said,
+                performer: work.identity_of(v.performer_kind), attempt_id: id
+            };
+            let mut x = record_attempt(j, scope, v, r, false, f);
+            x.reconciled = true;
+            return x;
         }
         if claimed_here || redelivered_here {
             return attach_attempt(j, id, "attempt " + id + " is already running; attached to its outcome", f);
@@ -365,7 +380,34 @@ fn dispatch_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAtte
         let fence = recorded_fence(j, v.task_id, rev);
         if len(fence) > 0 { return Executed { why: fence + "; attempt " + id + " is not redelivered" }; }
         if !fence_holds(j, f, rev) { return fenced(j, f, "the redelivery of attempt " + id); }
-        let w = j.append_exact(rev, "effect.redelivered", key, "attempt " + id + " redelivered");
+        // the claim was an incarnation's that died, and the invocation may
+        // have acted before the outcome was saved: recovery reconciles
+        // before it decides on a redelivery (card 12c). The adapter says
+        // it acted: its record is the outcome, and nothing runs again. It
+        // says it did not, or that acting again is documented safe: the
+        // dispatch is issued again. It cannot say: the claim resulted
+        // unknown, durably and visibly, and the attempt waits for a person
+        let rc = work.reconcile_as(v.performer_kind, attempt_request(v));
+        if rc.established && rc.performed {
+            let mut r = rc.result;
+            r.attempt_id = id;
+            if len(r.performer) == 0 { r.performer = work.identity_of(v.performer_kind); }
+            let whose = reply_identity_gap(work, v, r);
+            if len(whose) > 0 { return Executed { why: "the adapter's record of attempt " + id + " is not this attempt's: " + whose }; }
+            let bad = reply_disposition_gap(r);
+            if len(bad) > 0 { return Executed { why: "the adapter's record of attempt " + id + " carries no outcome: " + bad }; }
+            let mut x = record_attempt(j, scope, v, r, false, f);
+            x.reconciled = true;
+            return x;
+        }
+        if !rc.established && !rc.idempotent {
+            let u = j.append_exact(rev, "effect.result", key, "unknown (reconciled after a restart: " + rc.why + ")");
+            if u.ok || u.error == "stale_revision" || u.error == "claimed" {
+                return Executed { unresolved: true, why: "attempt " + id + " may have acted before its incarnation died and nothing can say whether it did (" + rc.why + "); it waits, unresolved, for a person: `hale dna effect resolve " + key + " --outcome ok|failed`" };
+            }
+            return Executed { why: "the record would not take the unknown result of attempt " + id + " (" + u.error + "); nothing ran" };
+        }
+        let w = j.append_exact(rev, "effect.redelivered", key, "attempt " + id + " redelivered" + (if rc.idempotent { " (documented idempotent)" } else { " (the adapter says it never acted)" }));
         if w.ok { return perform_attempt(j, work, scope, v, true, f); }
         if w.error != "stale_revision" && w.error != "claimed" {
             return Executed { why: "the record would not take the redelivery of attempt " + id + " (" + w.error + "); nothing ran" };

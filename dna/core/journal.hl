@@ -208,6 +208,21 @@ locus MemLeases {
     fn current(key: String) -> Lease { return self.rows.get(key) or Lease { }; }
 }
 
+// The last `effect.result` body for `key`, "" when none: what a person
+// or a restart said about the effect.
+@unbounded
+fn effect_result_body(j: Journal, key: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    let n = j.revision();
+    while i < n {
+        let e = j.read(i);
+        if e.entity == key && e.kind == "effect.result" { out = e.body; }
+        i = i + 1;
+    }
+    return out;
+}
+
 // True when `token` is the live fencing token for `key` at `now`.
 fn lease_fences(c: Coordination, key: String, token: Int, now: Int) -> Bool {
     let cur = c.current(key);
