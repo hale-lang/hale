@@ -83,7 +83,7 @@ locus Refusing {
                 let work = step + "/a";
                 let r0 = self.inner.append(self.inner.revision(), "attempt.outcome", work + "/a0", dna::encode_attempt_outcome(dna::AttemptOutcome {
                     attempt_id: work + "/a0", work_id: work, disposition: "failed", performer: "delayed", result: "no",
-                    transition: dna::TransitionRef { scope: "main", key: work, proposal_id: work + "/a0@outcome" }
+                    transition: dna::TransitionRef { scope: "main", key: work + "/a0", proposal_id: work + "/a0@outcome" }
                 }));
                 let r1 = self.inner.append(self.inner.revision(), "work.settled", work, dna::encode_work_outcome(dna::WorkOutcome {
                     work_id: work, step_id: step, attempt_id: work + "/a0", disposition: "failed",

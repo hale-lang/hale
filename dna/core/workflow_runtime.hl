@@ -645,6 +645,10 @@ locus TaskRun {
     // answer), as a leaf's is.
     fn on_step(s: StepSettlement) {
         if s.disposition != "completed" && s.disposition != "failed" { return; }
+        // the first observation of the step's terminal settlement is the
+        // one that counts: the same signal delivered again — a replay
+        // across a boundary a later card adds — owes nothing more
+        if self.step_settled { return; }
         self.step_settled = true;
         if len(self.outstanding) > 0 { self.redrive = true; return; } // the answer takes it
         if self.unadmitted {
@@ -657,6 +661,9 @@ locus TaskRun {
     // state refused retires; a running one is cancelled the same way,
     // through its own settlement — the fence reaches down the tree.
     fn on_fenced(f: StepFence) {
+        // the first fence is the one that counts; a settlement followed by
+        // a fence is a distinct state change and is heard
+        if self.fenced { return; }
         self.step_settled = true;
         self.fenced = true;
         self.fence_reason = std::str::clone(f.reason);
