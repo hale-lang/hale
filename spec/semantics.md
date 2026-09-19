@@ -3403,6 +3403,22 @@ References to library decls go through the alias as
    when lowering any path-qualified type expression, struct
    literal, or method receiver. The first matching table wins.
 
+**A qualified literal checks like a local one.** `alias::Type {
+... }` resolves to the merged declaration before its
+initializers are validated, so field names, field types,
+interface and perspective coercions, and missing required
+fields are all checked exactly as they are for a literal on a
+locally declared type — an unknown field is the same
+`type T has no field f` error, at the offending initializer's
+span. A literal whose path resolves to no visible declaration
+keeps the permissive `Unknown` typing. Diagnostics name the
+spelling the author wrote (`alias::Type`), not the mangled
+symbol. (GH #707, 2026-09-19 — downstream handoff. Until then
+only the RESULT type was resolved: a misspelled field in an
+imported literal was dropped in silence and the field's default
+constructed instead, so `check` reported `ok` on a program the
+same literal on a local type would have rejected.)
+
 Cross-seed references in user code (`foo::Bar`) and intra-seed
 references inside the imported library (bare `Bar` from a file
 that uses a type declared in a sibling file) BOTH resolve to
