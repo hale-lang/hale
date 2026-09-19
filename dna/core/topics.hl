@@ -142,6 +142,11 @@ type ExecutionAsk {
 topic ExecutionAsked { payload: ExecutionAsk; subject: "dna.execution.asked"; keyed_by scope; }
 type ChildSettlement { step_id: String = ""; key: String = ""; task_id: String = ""; disposition: String = ""; }
 topic ChildSettled { payload: ChildSettlement; subject: "dna.child.settled"; keyed_by step_id; }
+// A child that left — its workflow drained and reclaimed — tells the
+// step that spawned it, by that step: the step's drain waits for this,
+// not for the child's settlement, so a tree reclaims from the leaves up.
+type ChildLeave { step_id: String = ""; key: String = ""; task_id: String = ""; }
+topic ChildLeft { payload: ChildLeave; subject: "dna.child.left"; keyed_by step_id; }
 type WorkflowLeave { task_id: String = ""; }
 topic WorkflowLeft { payload: WorkflowLeave; subject: "dna.workflow.left"; keyed_by task_id; }
 // The record is writable again: a resident holding a transition the

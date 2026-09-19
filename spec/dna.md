@@ -1256,15 +1256,23 @@ subtree, its parent, its spawning step and its member key, which the
 projection accepts only for what the parent bound, from a step that is
 registered, active and unsettled — and runs only once that landed; an
 admission the record refused is held and proposed again when the
-record resumes, or when the spawning step is fenced; one the state
-refused retires under the settled or fenced spawning step, as a leaf
-does. A child that settled tells the step that spawned it once
+record resumes, or when the spawning step settles or is fenced — so
+the state, not the child, says whether it can still be admitted, and
+under a failed step it retires on that answer; one the state refused
+retires under the settled or fenced spawning step, as a leaf does. A
+fence that reaches a child while its admission answer is out is kept,
+with its reason, and applied when the answer comes: an admission that
+landed starts and is cancelled at once through its own settlement. A child that settled tells the step that spawned it once
 (`ChildSettled`, keyed by that step) after its row landed, and the step
 counts the exact child bound under the key: a settlement for another
 Task under the key, for a key that is no child of the step, or
 delivered again changes nothing; a failed child fails the step at
 once, as a failed leaf does. The Task leaves once its workflow has
-(`WorkflowLeft`). A step fenced by its Task's cancellation fences a
+(`WorkflowLeft`), and tells the step that spawned it so (`ChildLeft`,
+keyed by that step): the step's drain waits for a child that settled
+to have left, not for its settlement, so no ancestor reclaims itself
+ahead of a descendant still holding something — a Work whose
+settlement the record refused, say. A step fenced by its Task's cancellation fences a
 running child the same way: the child's Task asks its own workflow to
 cancel, which settles cancelled through the same proposal, so the
 fence reaches every level below and each level drains and reclaims

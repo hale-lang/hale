@@ -493,6 +493,8 @@ locus TaskRun {
         started: Bool = false;
         unadmitted: Bool = false; // the state refused the admission
         step_settled: Bool = false; // the spawning step settled or was fenced
+        fenced: Bool = false; // the spawning step was fenced: this execution is to be cancelled
+        fence_reason: String = "";
         disposition: String = "";
         told: Bool = false; // the spawning step heard the settlement
         gap: String = ""; // the recipe could not be read
@@ -508,6 +510,7 @@ locus TaskRun {
         publish TransitionProposed;
         publish ChildAdmitRequested;
         publish ChildSettled;
+        publish ChildLeft;
         publish MemberRetired;
         publish WorkflowCancelRequested;
         publish RunLives;
@@ -565,8 +568,8 @@ locus TaskRun {
         if !a.ok && a.basis == "record" { self.held = true; return; }
         if !a.ok {
             // the state refused the admission: nothing runs. Under a
-            // spawning step that has settled the child retires; else it
-            // stays, reachable, until that step settles or is fenced
+            // spawning step that has settled or was fenced the child
+            // retires; else it stays, reachable, until that step does
             self.unadmitted = true;
             if self.step_settled {
                 MemberRetired <- MemberRetirement { step_id: self.spawning_step, key: self.member_key, work_id: self.task_id, why: a.why };
@@ -575,6 +578,10 @@ locus TaskRun {
             return;
         }
         self.start();
+        // a fence that arrived while the admission was being decided
+        // applies now: the execution starts behind its admission and is
+        // cancelled at once, through its own settlement
+        if self.fenced { WorkflowCancelRequested <- WorkflowCancel { task_id: self.task_id, reason: self.fence_reason }; }
     }
     // A step of this Task dispatches a child member: the subtree the
     // recipe bound under it, exactly, goes to the executions owner.
@@ -613,22 +620,38 @@ locus TaskRun {
             ChildSettled <- ChildSettlement { step_id: self.spawning_step, key: self.member_key, task_id: self.task_id, disposition: self.disposition };
         }
     }
-    fn on_left(l: WorkflowLeave) { terminate; }
-    // The spawning step settled: a child the state refused retires.
+    // This Task's workflow left: it drained and reclaimed. The step that
+    // spawned this Task hears that — its drain waits for it — and the
+    // Task leaves.
+    fn on_left(l: WorkflowLeave) {
+        if len(self.parent_task) > 0 {
+            ChildLeft <- ChildLeave { step_id: self.spawning_step, key: self.member_key, task_id: self.task_id };
+        }
+        terminate;
+    }
+    // The spawning step settled: a child the state refused retires; a
+    // first admission the record refused is proposed again now, so the
+    // state — not this Task — says whether it can still be admitted
+    // (under a failed step it cannot, and the child retires on that
+    // answer), as a leaf's is.
     fn on_step(s: StepSettlement) {
         if s.disposition != "completed" && s.disposition != "failed" { return; }
         self.step_settled = true;
-        if self.unadmitted && len(self.outstanding) == 0 {
+        if len(self.outstanding) > 0 { return; }
+        if self.unadmitted {
             MemberRetired <- MemberRetirement { step_id: self.spawning_step, key: self.member_key, work_id: self.task_id, why: "never admitted; step " + self.spawning_step + " " + s.disposition };
             terminate;
         }
+        if self.held && self.admit && !self.started { self.propose_admission(); }
     }
     // The spawning step was fenced (its Task cancelled): a child the
     // state refused retires; a running one is cancelled the same way,
     // through its own settlement — the fence reaches down the tree.
     fn on_fenced(f: StepFence) {
         self.step_settled = true;
-        if len(self.outstanding) > 0 { return; }
+        self.fenced = true;
+        self.fence_reason = std::str::clone(f.reason);
+        if len(self.outstanding) > 0 { return; } // the answer applies it
         if self.unadmitted {
             MemberRetired <- MemberRetirement { step_id: self.spawning_step, key: self.member_key, work_id: self.task_id, why: "never admitted; " + f.reason };
             terminate;
@@ -860,6 +883,7 @@ locus StepRun {
         mine_children: ChildSpecRows = ChildSpecRows { };
         required: String = ""; // member keys, in order
         answered: String = ""; // keys that have settled, done or not
+        left: String = ""; // child keys whose execution has drained and left
         retired: String = ""; // keys of leaves never admitted, retired under the settled step
         done: String = ""; // keys that settled done
         stage: String = ""; // "" | "registering" | "activating" | "running" | "completing" | "failing" | "settled"
@@ -876,6 +900,7 @@ locus StepRun {
         subscribe MemberSettled as on_member where key == self.step_id;
         subscribe MemberRetired as on_retired where key == self.step_id;
         subscribe ChildSettled as on_child where key == self.step_id;
+        subscribe ChildLeft as on_child_left where key == self.step_id;
         subscribe RecordResumed as on_resumed where key == self.scope;
         subscribe WorkflowSettled as on_workflow where key == self.task_id;
         publish TransitionProposed;
@@ -1010,9 +1035,31 @@ locus StepRun {
         StepSettled <- StepSettlement { step_id: self.step_id, task_id: self.task_id, disposition: disposition, failed_member: self.failed_member, why: why };
     }
     // every member the step dispatched has settled, or retired never
-    // admitted: nothing outstanding
+    // admitted, and every child that settled has also left — its own
+    // steps drained and reclaimed — so a tree reclaims from the leaves
+    // upward, never an ancestor ahead of a descendant still holding
+    // something
     fn drained() -> Bool {
-        return !self.dispatched || set_count(self.answered) + set_count(self.retired) >= set_count(self.required);
+        if !self.dispatched { return true; }
+        if set_count(self.answered) + set_count(self.retired) < set_count(self.required) { return false; }
+        return self.children_left();
+    }
+    @unbounded
+    fn children_left() -> Bool {
+        let mut i = 0;
+        while i < self.mine_children.len() {
+            let c = self.mine_children.get(i) or ChildSpec { };
+            if set_has(self.answered, c.key) && !set_has(self.left, c.key) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    // A child that settled has now left: it drained and reclaimed.
+    fn on_child_left(c: ChildLeave) {
+        let bound = self.bound_child(c.key);
+        if len(bound) == 0 || bound != c.task_id { self.strays = self.strays + 1; return; }
+        self.left = set_add(self.left, c.key);
+        if self.stage == "settled" && self.drained() { self.leaving(); terminate; }
     }
     @unbounded
     fn on_answer(a: TransitionAnswer) {
