@@ -29,7 +29,7 @@ locus __StdJsonBuilder {
     //      single expression by hand. Good for one-liners.
     //
     //   2. **Streaming** — `begin_object` / `field` / `end_object`
-    //      mutate `self.buf` directly, matching the shape
+    //      append to an owned byte buffer, matching the shape
     //      familiar from Go's `json.Encoder`, Rust's
     //      `serde_json::ser`, JS's `JSON.stringify`. Best for
     //      programs assembling a payload across multiple
@@ -41,14 +41,22 @@ locus __StdJsonBuilder {
     // matches the call-site shape.
     //
     // Streaming state:
-    //   - `buf`  — accumulated wire bytes.
+    //   - `buf`  — owned growing wire buffer (GH #708). Every
+    //              emitter appends; `result()` copies a snapshot
+    //              out, so a document costs one pass over its
+    //              own bytes instead of one String per write.
+    //              Before 2026-09-19 this was a `String` rebuilt
+    //              by `self.buf = self.buf + piece`, which is
+    //              quadratic — a 600 KB document with 512 fields
+    //              drove a downstream handoff's generator to
+    //              23-24 GiB of scratch.
     //   - `ctx`  — open-scope stack, one char per open scope:
     //              `o` = empty object, `O` = object with at
     //              least one field, `a` / `A` = array variants.
     //              Lets `field` / `value` know whether to emit
     //              a leading ", " separator.
     params {
-        buf: String = "";
+        buf: std::bytes::BytesBuilder = std::bytes::BytesBuilder { };
         ctx: String = "";
     }
 
@@ -88,14 +96,19 @@ locus __StdJsonBuilder {
     fn build_array(items: String) -> String {
         let it = std::iter::Lines { };
         let mut from = 0;
-        let mut inner = "";
+        let inner = std::bytes::BytesBuilder { initial_cap: len(items) + 2 };
+        inner.append_str("[");
+        let mut seen = false;
         while from >= 0 {
             let line = it.line_at(items, from);
             from = it.next_idx(items, from);
             if len(line) == 0 { continue; }
-            inner = self.append_entry(inner, line);
+            if seen { inner.append_str(", "); }
+            inner.append_str(line);
+            seen = true;
         }
-        return self.wrap_array(inner);
+        inner.append_str("]");
+        return std::str::clone(inner.text_view());
     }
 
     // Build a JSON array of quoted strings from a "\n"-
@@ -105,14 +118,19 @@ locus __StdJsonBuilder {
     fn build_quoted_array(items: String) -> String {
         let it = std::iter::Lines { };
         let mut from = 0;
-        let mut inner = "";
+        let inner = std::bytes::BytesBuilder { initial_cap: len(items) + 2 };
+        inner.append_str("[");
+        let mut seen = false;
         while from >= 0 {
             let line = it.line_at(items, from);
             from = it.next_idx(items, from);
             if len(line) == 0 { continue; }
-            inner = self.append_entry(inner, self.quote(line));
+            if seen { inner.append_str(", "); }
+            inner.append_str(self.quote(line));
+            seen = true;
         }
-        return self.wrap_array(inner);
+        inner.append_str("]");
+        return std::str::clone(inner.text_view());
     }
 
     // ===== streaming API ============================================
@@ -125,7 +143,7 @@ locus __StdJsonBuilder {
         if n == 0 { return; }
         let top = self.ctx[(n - 1)..n];
         if top == "O" || top == "A" {
-            self.buf = self.buf + ", ";
+            self.buf.append_str(", ");
         } else {
             // empty container becomes non-empty after this write.
             let upper = if top == "o" { "O" } else { "A" };
@@ -138,7 +156,7 @@ locus __StdJsonBuilder {
     // than ", " before the first field.
     fn begin_object() {
         self.__bump_separator();
-        self.buf = self.buf + "{";
+        self.buf.append_str("{");
         self.ctx = self.ctx + "o";
     }
 
@@ -146,7 +164,7 @@ locus __StdJsonBuilder {
     // responsible for keeping begin/end balanced; mismatched
     // close at v1 just emits "}" and leaves ctx stack as-is.
     fn end_object() {
-        self.buf = self.buf + "}";
+        self.buf.append_str("}");
         let n = len(self.ctx);
         if n > 0 {
             self.ctx = std::str::substring(self.ctx, 0, n - 1);
@@ -156,13 +174,13 @@ locus __StdJsonBuilder {
     // Open an array. Mirror of begin_object with "[" / 'a'.
     fn begin_array() {
         self.__bump_separator();
-        self.buf = self.buf + "[";
+        self.buf.append_str("[");
         self.ctx = self.ctx + "a";
     }
 
     // Close the most recently opened array.
     fn end_array() {
-        self.buf = self.buf + "]";
+        self.buf.append_str("]");
         let n = len(self.ctx);
         if n > 0 {
             self.ctx = std::str::substring(self.ctx, 0, n - 1);
@@ -174,7 +192,9 @@ locus __StdJsonBuilder {
     // shapes use the typed helpers below.
     fn field(name: String, value: String) {
         self.__bump_separator();
-        self.buf = self.buf + self.quote(name) + ": " + value;
+        self.buf.append_str(self.quote(name));
+        self.buf.append_str(": ");
+        self.buf.append_str(value);
     }
 
     // Typed field helpers. Each call writes one object field
@@ -201,7 +221,8 @@ locus __StdJsonBuilder {
     //   `begin_object_field(name); ... ; end_object();`.
     fn begin_object_field(name: String) {
         self.__bump_separator();
-        self.buf = self.buf + self.quote(name) + ": {";
+        self.buf.append_str(self.quote(name));
+        self.buf.append_str(": {");
         self.ctx = self.ctx + "o";
     }
 
@@ -209,7 +230,8 @@ locus __StdJsonBuilder {
     // Pairs with `end_array`.
     fn begin_array_field(name: String) {
         self.__bump_separator();
-        self.buf = self.buf + self.quote(name) + ": [";
+        self.buf.append_str(self.quote(name));
+        self.buf.append_str(": [");
         self.ctx = self.ctx + "a";
     }
 
@@ -217,7 +239,7 @@ locus __StdJsonBuilder {
     // arrays — no name, just the value.
     fn value(v: String) {
         self.__bump_separator();
-        self.buf = self.buf + v;
+        self.buf.append_str(v);
     }
     fn string_value(s: String) { self.value(self.quote(s)); }
     fn int_value(n: Int) { self.value(to_string(n)); }
@@ -231,7 +253,7 @@ locus __StdJsonBuilder {
     // a Builder is "snapshot the wire so far" — callers that
     // want a fresh start instantiate a new Builder.
     fn result() -> String {
-        return self.buf;
+        return std::str::clone(self.buf.text_view());
     }
 }
 
@@ -254,80 +276,151 @@ locus __StdJsonBuilder {
 // as \u00XX. Non-ASCII bytes pass through unchanged (the
 // runtime treats String as a byte sequence, so UTF-8 continues
 // to round-trip).
+//
+// 2026-09-19 (GH #708): accumulates into one growing byte
+// buffer and materializes the String once. The prior form
+// rebuilt `out` with `out = out + piece` per byte, which is
+// quadratic in the input length and retains every growing
+// prefix in arena storage until the call returns.
 fn __json_escape_string(s: String) -> String {
-    let bs = std::bytes::from_string(s);
     let n = len(s);
-    let mut out = "";
+    let out = std::bytes::BytesBuilder { initial_cap: n + 16 };
     let mut i = 0;
     while i < n {
-        let c = std::bytes::at(bs, i) or 0;
-        if c == 92 { out = out + "\\\\"; }
-        else if c == 34 { out = out + "\\\""; }
-        else if c == 8 { out = out + "\\b"; }
-        else if c == 12 { out = out + "\\f"; }
-        else if c == 10 { out = out + "\\n"; }
-        else if c == 13 { out = out + "\\r"; }
-        else if c == 9 { out = out + "\\t"; }
+        let c = std::str::byte_at_unchecked(s, i);
+        if c == 92 { out.append_str("\\\\"); }
+        else if c == 34 { out.append_str("\\\""); }
+        else if c == 8 { out.append_str("\\b"); }
+        else if c == 12 { out.append_str("\\f"); }
+        else if c == 10 { out.append_str("\\n"); }
+        else if c == 13 { out.append_str("\\r"); }
+        else if c == 9 { out.append_str("\\t"); }
         else if c < 32 {
             // \u00XX for remaining control bytes. Hex via
             // a tiny nibble table — keeps the helper free of
             // arithmetic-to-hex helpers that aren't yet stdlib.
-            out = out + "\\u00" + __json_hex_byte(c);
+            out.append_str("\\u00");
+            out.append_str(__json_hex_byte(c));
         } else {
-            out = out + s[i..(i + 1)];
+            out.append_u8(c);
         }
         i = i + 1;
     }
-    return out;
+    return std::str::clone(out.text_view());
 }
 
 // Reverse of __json_escape_string. Consumes two-char escapes
-// (\" \\ \/ \b \f \n \r \t) and six-char \uHHHH escapes; for
-// code points >= U+0080 emits the UTF-8 encoding so the
-// round-trip preserves the original byte sequence on ASCII
-// input. Surrogate-pair handling is a follow-up; for v1 a
-// lone \uHHHH in the BMP is emitted as its UTF-8 bytes,
-// surrogates fall through as the raw 3-byte UTF-8 of the
-// surrogate range (matches the "be lenient on input" stance
-// most JSON consumers take).
+// (\" \\ \/ \b \f \n \r \t) and six-char \uHHHH escapes.
+//
+// \uHHHH contract (GH #709, 2026-09-19 — before this the four
+// digits were decoded correctly and then thrown away by a
+// byte-to-String stub that answered "?" for every byte but
+// space / tab / LF / CR, so EVERY escape decoded wrong):
+//
+//   - A scalar value becomes its UTF-8 encoding, 1-4 bytes.
+//   - A high surrogate (U+D800-U+DBFF) immediately followed by
+//     a \uHHHH low surrogate (U+DC00-U+DFFF) combines into the
+//     one astral scalar the pair denotes.
+//   - An unpaired surrogate — a high one with no low after it,
+//     or a bare low one — becomes U+FFFD.
+//   - \u0000 becomes U+FFFD. A native String is NUL-terminated,
+//     so a raw 0 byte would truncate the value and let a prefix
+//     compare equal to the whole; the refusal is visible.
+//   - An escape whose four digits are not all hex passes
+//     through verbatim, like any other unknown escape.
 fn __json_unescape_string(s: String) -> String {
-    let bs = std::bytes::from_string(s);
     let n = len(s);
-    let mut out = "";
+    let out = std::bytes::BytesBuilder { initial_cap: n + 16 };
     let mut i = 0;
     while i < n {
-        let c = std::bytes::at(bs, i) or 0;
+        let c = std::str::byte_at_unchecked(s, i);
         if c == 92 && i + 1 < n {
-            let nx = std::bytes::at(bs, i + 1) or 0;
-            if nx == 34 { out = out + "\""; i = i + 2; }
-            else if nx == 92 { out = out + "\\"; i = i + 2; }
-            else if nx == 47 { out = out + "/"; i = i + 2; }
-            else if nx == 98 { out = out + "\x08"; i = i + 2; }
-            else if nx == 102 { out = out + "\x0c"; i = i + 2; }
-            else if nx == 110 { out = out + "\n"; i = i + 2; }
-            else if nx == 114 { out = out + "\r"; i = i + 2; }
-            else if nx == 116 { out = out + "\t"; i = i + 2; }
+            let nx = std::str::byte_at_unchecked(s, i + 1);
+            if nx == 34 { out.append_u8(34); i = i + 2; }
+            else if nx == 92 { out.append_u8(92); i = i + 2; }
+            else if nx == 47 { out.append_u8(47); i = i + 2; }
+            else if nx == 98 { out.append_u8(8); i = i + 2; }
+            else if nx == 102 { out.append_u8(12); i = i + 2; }
+            else if nx == 110 { out.append_u8(10); i = i + 2; }
+            else if nx == 114 { out.append_u8(13); i = i + 2; }
+            else if nx == 116 { out.append_u8(9); i = i + 2; }
             else if nx == 117 && i + 5 < n {
-                // \uHHHH — 4 hex digits.
-                let h0 = __json_hex_nibble(std::bytes::at(bs, i + 2) or 0);
-                let h1 = __json_hex_nibble(std::bytes::at(bs, i + 3) or 0);
-                let h2 = __json_hex_nibble(std::bytes::at(bs, i + 4) or 0);
-                let h3 = __json_hex_nibble(std::bytes::at(bs, i + 5) or 0);
-                let cp = h0 * 4096 + h1 * 256 + h2 * 16 + h3;
-                out = out + __json_codepoint_utf8(cp);
-                i = i + 6;
+                i = __json_unescape_u(out, s, n, i);
             }
             else {
                 // Unknown escape: emit verbatim (lenient).
-                out = out + s[i..(i + 2)];
+                out.append_u8(c);
+                out.append_u8(nx);
                 i = i + 2;
             }
         } else {
-            out = out + s[i..(i + 1)];
+            out.append_u8(c);
             i = i + 1;
         }
     }
-    return out;
+    return std::str::clone(out.text_view());
+}
+
+// Decode the one \uHHHH escape starting at `i` (the caller has
+// checked s[i] == backslash, s[i+1] == 'u', and that the four
+// digit positions are in range). Appends its UTF-8 bytes to
+// `out` and returns the index just past everything consumed —
+// 12 when it combined a surrogate pair, 6 for a single escape,
+// 2 when the digits were malformed and the escape went out
+// verbatim.
+fn __json_unescape_u(
+    out: std::bytes::BytesBuilder, s: String, n: Int, i: Int
+) -> Int {
+    let hi = __json_hex4(s, i + 2);
+    if hi < 0 {
+        out.append_u8(92);
+        out.append_u8(117);
+        return i + 2;
+    }
+    if hi >= 55296 && hi <= 56319 {
+        // High surrogate — a low one must follow, as its own
+        // escape, for the pair to denote an astral scalar. The
+        // in-range test guards the two reads: && stops at the
+        // first false (GH #643).
+        let has_esc = i + 11 < n
+            && std::str::byte_at_unchecked(s, i + 6) == 92
+            && std::str::byte_at_unchecked(s, i + 7) == 117;
+        if has_esc {
+            let lo = __json_hex4(s, i + 8);
+            if lo >= 56320 && lo <= 57343 {
+                __json_codepoint_utf8(
+                    out, 65536 + (hi - 55296) * 1024 + (lo - 56320));
+                return i + 12;
+            }
+        }
+        __json_codepoint_utf8(out, 65533);
+        return i + 6;
+    }
+    if hi >= 56320 && hi <= 57343 {
+        // A low surrogate with no high one before it.
+        __json_codepoint_utf8(out, 65533);
+        return i + 6;
+    }
+    if hi == 0 {
+        // No representation in a NUL-terminated String — see
+        // the contract on __json_unescape_string.
+        __json_codepoint_utf8(out, 65533);
+        return i + 6;
+    }
+    __json_codepoint_utf8(out, hi);
+    return i + 6;
+}
+
+// Read the four hex digits at `at`. Returns their value, or -1
+// when any of the four is not a hex digit. The caller has
+// already checked that `at + 3` is in range.
+fn __json_hex4(s: String, at: Int) -> Int {
+    let h0 = __json_hex_nibble(std::str::byte_at_unchecked(s, at));
+    let h1 = __json_hex_nibble(std::str::byte_at_unchecked(s, at + 1));
+    let h2 = __json_hex_nibble(std::str::byte_at_unchecked(s, at + 2));
+    let h3 = __json_hex_nibble(std::str::byte_at_unchecked(s, at + 3));
+    if h0 < 0 || h1 < 0 || h2 < 0 || h3 < 0 { return -1; }
+    return h0 * 4096 + h1 * 256 + h2 * 16 + h3;
 }
 
 // Tiny two-hex-digit renderer used by escape_string for
@@ -349,51 +442,48 @@ fn __json_hex_char(nibble: Int) -> String {
     return "f";
 }
 
+// One hex digit's value, or -1 when `b` is not a hex digit.
+// 2026-09-19 (GH #709): the unrecognized answer used to be 0,
+// which silently read \uZZZZ as U+0000. Malformed digits now
+// reach the verbatim-passthrough rule instead of inventing a
+// scalar.
 fn __json_hex_nibble(b: Int) -> Int {
     if b >= 48 && b <= 57 { return b - 48; }
     if b >= 97 && b <= 102 { return b - 97 + 10; }
     if b >= 65 && b <= 70 { return b - 65 + 10; }
-    return 0;
+    return -1;
 }
 
-// Emit a single Unicode code point as UTF-8 bytes packed in
-// a String. Covers BMP only; surrogate pairs aren't reassembled
-// here (v1 leniency — agents rarely hit code points needing
-// surrogate handling in REST payloads).
-fn __json_codepoint_utf8(cp: Int) -> String {
+// Append one Unicode scalar's UTF-8 encoding to `out`. The full
+// range, 1-4 bytes: the astral branch is where a combined
+// surrogate pair lands.
+//
+// 2026-09-19 (GH #709): this built a String by concatenating
+// per-byte pieces from __json_byte_to_string, a stub whose
+// "ASCII printable range" path returned the literal "?" for
+// every byte it had no case for — which was all of them but
+// space, tab, LF and CR. Appending the bytes needs no such
+// packing, and there is nothing left for the stub to do.
+fn __json_codepoint_utf8(out: std::bytes::BytesBuilder, cp: Int) {
     if cp < 128 {
-        return std::str::from_bytes(std::bytes::slice(
-            std::bytes::from_string(" "),
-            0, 0
-        )) + __json_byte_to_string(cp);
+        out.append_u8(cp);
+        return;
     }
     if cp < 2048 {
-        let b1 = 192 + cp / 64;
-        let b2 = 128 + (cp - (cp / 64) * 64);
-        return __json_byte_to_string(b1) + __json_byte_to_string(b2);
+        out.append_u8(192 + cp / 64);
+        out.append_u8(128 + cp % 64);
+        return;
     }
-    let b1 = 224 + cp / 4096;
-    let rem = cp - (cp / 4096) * 4096;
-    let b2 = 128 + rem / 64;
-    let b3 = 128 + (rem - (rem / 64) * 64);
-    return __json_byte_to_string(b1) + __json_byte_to_string(b2) + __json_byte_to_string(b3);
-}
-
-// Helper: build a 1-byte String from an Int byte value.
-// Worked around because Hale doesn't have a single-byte
-// String literal mechanism for arbitrary bytes.
-fn __json_byte_to_string(b: Int) -> String {
-    // Build via std::str::builder — pad_left with 1 char.
-    // Cheaper: emit fixed lookup for the bytes that come up
-    // (printable ASCII, common control). For arbitrary bytes
-    // the agent should drop to std::bytes::* anyway.
-    if b == 32 { return " "; }
-    if b == 9 { return "\t"; }
-    if b == 10 { return "\n"; }
-    if b == 13 { return "\r"; }
-    // ASCII printable range — use the raw bytes API.
-    let bs = std::bytes::from_string("?");
-    return std::str::from_bytes(bs); // fallback placeholder
+    if cp < 65536 {
+        out.append_u8(224 + cp / 4096);
+        out.append_u8(128 + (cp / 64) % 64);
+        out.append_u8(128 + cp % 64);
+        return;
+    }
+    out.append_u8(240 + cp / 262144);
+    out.append_u8(128 + (cp / 4096) % 64);
+    out.append_u8(128 + (cp / 64) % 64);
+    out.append_u8(128 + cp % 64);
 }
 
 // 2026-05-16 — Flat-object field lookup. Scans `json` for the

@@ -144,6 +144,46 @@ values are escaped per the JSON spec automatically; if you need
 to escape or unescape a string by hand, `std::json::escape_string`
 and `unescape_string` are there.
 
+`result()` hands back a copy, so it is a snapshot rather than a
+window: keep building after it and the `String` you already took
+does not change.
+
+The Builder and both helpers accumulate into one growing byte
+buffer, so the cost of a document is one pass over its own
+bytes. You can assemble a multi-megabyte payload a field at a
+time without watching memory climb.
+
+## Escapes
+
+`\uHHHH` decodes to the character it names, so an escaped
+literal and a plain one are the same value:
+
+```hale,fragment
+let a = std::json::unescape_string("hale.v\\u0031");
+println(a == "hale.v1");        // true
+println(std::json::unescape_string("\\u00e9"));        // é
+println(std::json::unescape_string("\\u4e2d"));        // 中
+println(std::json::unescape_string("\\ud83d\\ude00")); // 😀
+```
+
+The last one is a *surrogate pair*: JSON has no way to write a
+character above U+FFFF in one escape, so it writes two, and
+`unescape_string` puts them back together.
+
+Two inputs have no character to decode to, and both become `�`
+(U+FFFD, the replacement character):
+
+- **An unpaired surrogate** — half of a pair, with nothing to
+  join it. It is not a character on its own.
+- **`\u0000`** — a Hale `String` ends at its first zero byte, so
+  a real NUL would silently cut the value short and let a prefix
+  compare equal to the whole. A visible `�` is the safer answer.
+
+Anything else that isn't a real escape passes through as it was
+written — `\uZZZZ` stays `\uZZZZ` — on the principle that a
+malformed byte somewhere in a document shouldn't cost you the
+rest of it.
+
 ## When the shape is deep
 
 `std::json` at v1 is built for flat objects and top-level arrays
