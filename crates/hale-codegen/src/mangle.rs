@@ -110,18 +110,80 @@ pub fn build_seed_renames(
     out
 }
 
+/// GH #714: the seed-level names that may legitimately HEAD a
+/// qualified path. Only a type declaration can: `Color::Red` is an
+/// enum-variant path (#534), and the mangler rewrites its head so
+/// the variant still finds its renamed enum. Everything else a seed
+/// declares — fns, consts, loci, topics — is a value, reached by a
+/// bare name and never through `head::member`.
+///
+/// The complement is what this is for. A path head that is NOT one
+/// of these names is a MODULE ALIAS (`import "../core" as core;`),
+/// which lives in a namespace of its own and must survive mangling
+/// intact, or the per-build path-rename table can no longer see
+/// `core::greet` and resolve it to the imported seed's mangled
+/// `greet`.
+///
+/// Seed-wide because a seed's files share one namespace: an alias
+/// in `a.hl` can collide with a `type` declared in `b.hl`, and a
+/// direct compile resolves that head as the type.
+pub fn seed_path_heads(programs: &[(String, &Program)]) -> HashSet<String> {
+    let mut out: HashSet<String> = HashSet::new();
+    for (_, prog) in programs {
+        collect_path_heads(prog, &mut out);
+    }
+    out
+}
+
+fn collect_path_heads(prog: &Program, out: &mut HashSet<String>) {
+    for item in &prog.items {
+        if let TopDecl::Type(t) = item {
+            out.insert(t.name.name.clone());
+        }
+    }
+}
+
 /// Mangle `prog` using a pre-built `renames` map. Used by the CLI
 /// when mangling multi-file libraries: the caller builds one
 /// unified map via `build_seed_renames` then applies it to each
 /// file, so a use-site in `a.hl` referencing a decl in `b.hl`
 /// rewrites to the correct mangled name.
+///
+/// Path heads default to this file's own type declarations; a
+/// multi-file seed should call `mangle_with_renames_in_seed` with
+/// `seed_path_heads` over the whole bundle.
 pub fn mangle_with_renames(prog: &mut Program, renames: &HashMap<String, String>) {
+    let mut heads: HashSet<String> = HashSet::new();
+    collect_path_heads(prog, &mut heads);
+    mangle_with_renames_in_seed(prog, renames, &heads);
+}
+
+/// `mangle_with_renames` with the seed's path heads supplied by the
+/// caller (`seed_path_heads` over every file in the bundle) so the
+/// module-alias exemption is decided against the whole seed's type
+/// names, not just this file's.
+pub fn mangle_with_renames_in_seed(
+    prog: &mut Program,
+    renames: &HashMap<String, String>,
+    path_heads: &HashSet<String>,
+) {
     if renames.is_empty() {
         return;
     }
+    // GH #714: this file's import aliases, minus any that a type
+    // declaration also claims (a type head wins — that is how a
+    // direct compile resolves it, and codegen's path lowering tries
+    // `user_enums` before the import-rename table).
+    let module_aliases: HashSet<String> = prog
+        .imports
+        .iter()
+        .filter_map(|i| i.alias.clone())
+        .filter(|a| !path_heads.contains(a))
+        .collect();
     let mut walker = Mangler {
         renames,
         scopes: Vec::new(),
+        module_aliases,
     };
     for item in &mut prog.items {
         walker.walk_top_decl(item);
@@ -667,6 +729,11 @@ fn top_decl_name(d: &TopDecl) -> Option<&str> {
 struct Mangler<'a> {
     renames: &'a HashMap<String, String>,
     scopes: Vec<HashSet<String>>,
+    /// GH #714: the module aliases this file imports under, minus
+    /// the ones a type declaration also claims. A path head in this
+    /// set names a module, not a value, so it is left alone for the
+    /// per-build path-rename table to resolve.
+    module_aliases: HashSet<String>,
 }
 
 impl<'a> Mangler<'a> {
@@ -706,10 +773,23 @@ impl<'a> Mangler<'a> {
     /// codegen's constructor-pattern arm looked up a `Color` that no
     /// longer existed. Rewrite the head when it is one of this
     /// seed's own names (an importer alias is never in the map).
+    ///
+    /// GH #714: this seed's OWN aliases are, though — `import
+    /// "../core" as core;` beside `fn core(...)` is legal, and a
+    /// direct compile resolves `core::greet` through the alias and
+    /// `core("x")` through the fn. The head of a two-segment path
+    /// is never a value, so an aliased head is left intact and the
+    /// path-rename table resolves it; only a bare identifier
+    /// resolves against the free fn.
     fn rewrite_variant_path(&self, q: &mut QualifiedName) {
         match q.segments.len() {
             1 => self.rewrite_ident(&mut q.segments[0].name),
-            2 => self.rewrite_ident(&mut q.segments[0].name),
+            2 => {
+                if self.module_aliases.contains(&q.segments[0].name) {
+                    return;
+                }
+                self.rewrite_ident(&mut q.segments[0].name)
+            }
             _ => {}
         }
     }
@@ -1763,6 +1843,80 @@ mod tests {
                 other => panic!("expected Call payload, got {:?}", other),
             },
             other => panic!("expected OrDisposition::Fail, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn import_alias_head_survives_a_same_named_free_fn() {
+        // GH #714: `import "../core" as core;` beside `fn core(...)`.
+        // The seed compiles directly — the alias governs the
+        // `core::greet` path, the fn governs the `core("x")` call —
+        // so the imported compile must resolve the same targets.
+        // Pre-fix the two-segment head was rewritten to the free
+        // fn's mangled symbol and codegen rejected the path.
+        let src = r#"
+            import "../core" as core;
+            fn core(args: String) -> String { return args; }
+            fn go() -> String {
+                return core::greet("mid") + core("x");
+            }
+        "#;
+        let mut prog = parse(src);
+        mangle_program(&mut prog, "toy", "main");
+
+        let go = find_fn(&prog, "__lib_toy_main_go").expect("go renamed");
+        let ret = match &go.body.stmts[0] {
+            Stmt::Return(Some(e), _) => e,
+            other => panic!("expected Return, got {:?}", other),
+        };
+        let (lhs, rhs) = match ret {
+            Expr::Binary { left, right, .. } => (left.as_ref(), right.as_ref()),
+            other => panic!("expected Binary, got {:?}", other),
+        };
+        // `core::greet("mid")` — the alias head stays as written.
+        match lhs {
+            Expr::Call { callee, .. } => match callee.as_ref() {
+                Expr::Path(q) => {
+                    assert_eq!(q.segments[0].name, "core", "alias head");
+                    assert_eq!(q.segments[1].name, "greet");
+                }
+                other => panic!("expected Path callee, got {:?}", other),
+            },
+            other => panic!("expected Call, got {:?}", other),
+        }
+        // `core("x")` — the bare name is the free fn, and mangles.
+        match rhs {
+            Expr::Call { callee, .. } => match callee.as_ref() {
+                Expr::Ident(i) => assert_eq!(i.name, "__lib_toy_main_core"),
+                other => panic!("expected Ident callee, got {:?}", other),
+            },
+            other => panic!("expected Call, got {:?}", other),
+        }
+        // The decl itself still mangles.
+        assert!(find_fn(&prog, "__lib_toy_main_core").is_some());
+    }
+
+    #[test]
+    fn type_name_wins_over_a_same_named_import_alias() {
+        // The #534 enum-variant head rewrite is unchanged when the
+        // colliding name is a TYPE: `Color::Red` resolves against
+        // the seed's own enum both directly (codegen tries
+        // `user_enums` before the import-rename table) and here.
+        let src = r#"
+            import "../core" as Color;
+            type Color = enum { Red, Blue };
+            fn pick() -> Color { return Color::Red; }
+        "#;
+        let mut prog = parse(src);
+        mangle_program(&mut prog, "toy", "main");
+
+        let pick = find_fn(&prog, "__lib_toy_main_pick").expect("pick renamed");
+        match &pick.body.stmts[0] {
+            Stmt::Return(Some(Expr::Path(q)), _) => {
+                assert_eq!(q.segments[0].name, "__lib_toy_main_Color");
+                assert_eq!(q.segments[1].name, "Red");
+            }
+            other => panic!("expected Return of a path, got {:?}", other),
         }
     }
 

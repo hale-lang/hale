@@ -2248,6 +2248,14 @@ fn resolve_imports(
         let lib_id = lib_canonical_id(&target, workspace_root);
         let seed_renames =
             hale_codegen::mangle::build_seed_renames(&stem_prog_refs, &lib_id);
+        // GH #714: the names that may head a qualified path in this
+        // seed (its type decls). Everything else a path head can be
+        // is a module alias of the seed's own imports, which the
+        // mangler must leave intact so `alias::Name` still resolves
+        // through the rename table — even when the seed also
+        // declares a free fn of the alias's name.
+        let seed_heads =
+            hale_codegen::mangle::seed_path_heads(&stem_prog_refs);
         {
             let cache_key = match &target {
                 ImportTarget::Directory(d) => {
@@ -2267,7 +2275,11 @@ fn resolve_imports(
             if trace {
                 eprintln!("[import]     mangle start: {}", pf.path.display());
             }
-            hale_codegen::mangle::mangle_with_renames(&mut pf.program, &seed_renames);
+            hale_codegen::mangle::mangle_with_renames_in_seed(
+                &mut pf.program,
+                &seed_renames,
+                &seed_heads,
+            );
             if trace {
                 eprintln!("[import]     mangle done : {}", pf.path.display());
             }
