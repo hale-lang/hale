@@ -45,6 +45,7 @@ locus Boot {
     params {
         rt: dna::WorkflowRuntime = dna::WorkflowRuntime { };
         owner: dna::Executions = dna::Executions { };
+        lone: dna::Executions = dna::Executions { }; // an owner in a scope no runtime serves: its questions stay outstanding
     }
 }
 
@@ -64,6 +65,7 @@ main locus App {
         subscribe dna::WorkflowSettled as on_outcome;
         subscribe dna::ExecutionRefused as on_refused;
         publish dna::ExecutionAsked;
+        publish dna::AdmissionAnswered; // forged, by the review's probe
     }
     fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
     fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
@@ -187,7 +189,7 @@ main locus App {
         return self.boot.rt.settle(attempt_id, dna::WorkResult { disposition: "done", result: "later", performer: "delayed", attempt_id: attempt_id });
     }
     fn fresh() {
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Counting { }, agent: Delayed { }, agent_reconciler: dna::IdempotentReplay { }, service_reconciler: dna::IdempotentReplay { } } }, owner: dna::Executions { scope: "main" } };
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Counting { }, agent: Delayed { }, agent_reconciler: dna::IdempotentReplay { }, service_reconciler: dna::IdempotentReplay { } } }, owner: dna::Executions { scope: "main" }, lone: dna::Executions { scope: "lone" } };
     }
     // Every claim of a rerun-free record: each attempt claimed once.
     @unbounded
@@ -339,6 +341,148 @@ main locus App {
         std::test::assert(std::str::contains(self.refusals, "t8|"), "a task admitted with a torn recipe is refused: " + self.refusals);
         std::test::assert_eq_int(self.count(self.lives, "task:t8:born"), 0, "and nothing was born for it");
         std::test::assert_eq_int(self.boot.owner.refused, 1, "the owner refused it");
+
+        // ---- (review) the admission recovered is the one the projection
+        //      ACCEPTED, never the last row naming the task: a later
+        //      re-admission of t1 under revision 2, refused by the
+        //      projection, and a row about t1 whose body names another
+        //      task, are in the record; the restore runs the revision-1
+        //      execution t1 was admitted with
+        self.fresh();
+        self.cut(full, self.boot.rt.journal, point_sibling);
+        self.admit(self.boot.rt.journal, self.cat2, "t1", 2);
+        let x3 = self.cat.expand("t3", "close-month", 1, self.limits);
+        let cross = self.boot.rt.journal.append(self.boot.rt.journal.revision(), "workflow.admitted", "t1", dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: "t3", definition: "close-month", revision: 1, request: "ask-t3", recipe: self.cat.encode_bound(), limits: self.limits, works: x3.works, tasks: x3.tasks, steps: x3.steps, depth: x3.depth
+        }));
+        std::test::assert(cross.ok, "the row about t1 that names t3 is in the record: " + cross.error);
+        let wb1_before = self.count(self.lives, wb1 + ":born");
+        self.ask("t1");
+        self.until(true, wb1 + ":born", wb1_before + 1);
+        self.settle();
+        std::test::assert_eq_int(self.count(self.lives, "t1/wf2/s0:born"), 0, "the refused revision-2 re-admission is not the execution");
+        std::test::assert_eq_int(self.count(self.lives, "task:t3:born") + self.count(self.lives, "t3/wf1/s0:born"), 0, "nor is the row whose body names t3");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.redelivered", "attempt:" + wb1 + "/a0"), 1, "t1 resumed the revision-1 execution where the record left it");
+        std::test::assert_eq_int(self.boot.owner.refused, 0, "and was not refused");
+        // a record whose only admission rows of t5 the projection refused
+        // holds no admission of t5: refused to resume, for the projection's
+        // reason, not run from a row the projection would not apply
+        self.fresh();
+        let x5 = self.cat.expand("t5", "close-month", 1, self.limits);
+        let r5 = self.boot.rt.journal.append(0, "workflow.admitted", "t5", dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: "t3", definition: "close-month", revision: 1, request: "ask-t5", recipe: self.cat.encode_bound(), limits: self.limits, works: x5.works, tasks: x5.tasks, steps: x5.steps, depth: x5.depth
+        }));
+        std::test::assert(r5.ok, "the row about t5 that names t3 is in the record: " + r5.error);
+        self.ask("t5");
+        self.settle();
+        std::test::assert(std::str::contains(self.refusals, "t5|the admission of t5 is in the record and the projection refused it: the row is about `t5`; the admission it carries is about `t3`"), "a refused admission row is no admission: " + self.refusals);
+        std::test::assert_eq_int(self.count(self.lives, "task:t5:born"), 0, "and nothing was born for it");
+
+        // ---- (review) an attempt's performer kind is the record's, not the
+        //      ask's: restarted with every leaf asked as a service, B1's
+        //      admitted attempt is re-proposed as the agent attempt the
+        //      record holds — no conflict, nothing minted — and redelivered
+        //      to the agent, who is yet to answer; the leaves not attempted
+        //      before the restart run under the ask's kinds
+        self.fresh();
+        self.cut(full, self.boot.rt.journal, point_sibling);
+        let b1_before = self.count(self.lives, wb1 + ":born");
+        let done_before = self.count(self.outcomes, "t1:done");
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", kinds: "a=service b1=service c1=service d=service" };
+        self.until(true, wb1 + ":born", b1_before + 1);
+        self.settle();
+        std::test::assert_eq_int(self.boot.rt.conflicts, 0, "B1's attempt was re-proposed as the record holds it: an agent's");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.admitted", ""), 2, "nothing was minted");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.redelivered", "attempt:" + wb1 + "/a0"), 1, "B1 was redelivered");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "work.settled", wb1), 0, "to the agent, who has not answered — a service would have");
+        let rb = self.reply(wb1 + "/a0");
+        std::test::assert(rb.ok, "the agent's later answer is B1's: " + rb.why);
+        self.until(false, "t1:done", done_before + 1);
+        std::test::assert_eq_int(self.count(self.outcomes, "t1:done"), done_before + 1, "C1 and D ran as services and t1 completed: " + self.outcomes);
+
+        // ---- (review) a child is recovered through its parent, never asked
+        //      as a root: asked for the child directly, the record refuses
+        //      — it says whose child it is — and births nothing; asked for
+        //      the root, the child comes back in its bound place, once
+        self.fresh();
+        self.cut(full, self.boot.rt.journal, point_grandchild);
+        let child_before = self.count(self.lives, "task:t1.s0.b:born");
+        let c1_before = self.count(self.lives, wc1 + ":born");
+        self.ask("t1.s0.b");
+        self.settle();
+        std::test::assert(std::str::contains(self.refusals, "t1.s0.b|task t1.s0.b is a child of t1, spawned by step t1/wf1/s0 as `b`: it is recovered through its parent, not asked as a root"), "a child asked as a root is refused: " + self.refusals);
+        std::test::assert_eq_int(self.count(self.lives, "task:t1.s0.b:born"), child_before, "and nothing was born for it");
+        self.ask("t1");
+        self.until(true, wc1 + ":born", c1_before + 1);
+        self.settle();
+        std::test::assert_eq_int(self.count(self.lives, "task:t1.s0.b:born"), child_before + 1, "asked for the root, the child is recovered under it, once");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.redelivered", "attempt:" + wc1 + "/a0"), 1, "and its grandchild's leaf resumed");
+
+        // ---- (review) an answer is taken only to the question this owner
+        //      holds outstanding, for the task it asked about, once: an
+        //      answer under an outstanding question's identity that names
+        //      another task, a positive answer nobody asked for, and one
+        //      under the identity of a question already answered, all
+        //      birth nothing
+        self.fresh();
+        let x7 = self.cat.expand("t7", "close-month", 1, self.limits);
+        let forged7 = self.cat.encode_bound();
+        let x9 = self.cat.expand("t9", "close-month", 1, self.limits);
+        let forged9 = self.cat.encode_bound();
+        self.ask("t9"); // its question is t9@ask1, outstanding until the record answers it
+        dna::AdmissionAnswered <- dna::AdmissionAnswer { scope: "main", ask_id: "t9@ask1", task_id: "t7", kinds: "a=service", admitted: true, definition: "close-month", revision: 1, workflow_id: "t7/wf1", recipe: forged7, limits: self.limits };
+        self.settle();
+        std::test::assert_eq_int(self.boot.owner.refused, 1, "the record answered t9's question: never admitted");
+        dna::AdmissionAnswered <- dna::AdmissionAnswer { scope: "main", ask_id: "t7@ask1", task_id: "t7", kinds: "a=service", admitted: true, definition: "close-month", revision: 1, workflow_id: "t7/wf1", recipe: forged7, limits: self.limits };
+        dna::AdmissionAnswered <- dna::AdmissionAnswer { scope: "main", ask_id: "t9@ask1", task_id: "t9", kinds: "a=service", admitted: true, definition: "close-month", revision: 1, workflow_id: "t9/wf1", recipe: forged9, limits: self.limits };
+        self.settle();
+        std::test::assert_eq_int(self.boot.owner.strays, 3, "three strays: t7 under t9's question, t7 under no question, t9 under a question already answered");
+        std::test::assert_eq_int(self.boot.owner.roots, 0, "and nothing was born from any of them");
+        std::test::assert_eq_int(self.count(self.lives, "task:t7:born") + self.count(self.lives, "task:t9:born"), 0, "nothing at all");
+        // in a scope no runtime serves, the question stays outstanding: an
+        // answer under its identity that names another task is a stray;
+        // the answer under its identity for its task is taken — once
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "lone", task_id: "t9", kinds: "a=service" };
+        self.settle();
+        dna::AdmissionAnswered <- dna::AdmissionAnswer { scope: "lone", ask_id: "t9@ask1", task_id: "t7", kinds: "a=service", admitted: true, definition: "close-month", revision: 1, workflow_id: "t7/wf1", recipe: forged7, limits: self.limits };
+        self.settle();
+        std::test::assert_eq_int(self.boot.lone.strays, 1, "an answer under the outstanding question that names another task is a stray");
+        std::test::assert_eq_int(self.boot.lone.roots + self.boot.lone.refused, 0, "and the question is still open: nothing born, nothing refused");
+        dna::AdmissionAnswered <- dna::AdmissionAnswer { scope: "lone", ask_id: "t9@ask1", task_id: "t9", kinds: "a=service", why: "answered by the fixture" };
+        dna::AdmissionAnswered <- dna::AdmissionAnswer { scope: "lone", ask_id: "t9@ask1", task_id: "t9", kinds: "a=service", why: "answered by the fixture, again" };
+        self.settle();
+        std::test::assert_eq_int(self.boot.lone.refused, 1, "the answer to the question, for its task, was taken");
+        std::test::assert_eq_int(self.boot.lone.strays, 2, "once: the second is a stray");
+        std::test::assert(std::str::contains(self.refusals, "t9|answered by the fixture\\n"), "and it was the first: " + self.refusals);
+        std::test::assert_eq_int(self.count(self.lives, "task:t7:born"), 0, "t7 was never born anywhere");
+
+        // ---- (review) the workflow identity an execution runs under is the
+        //      one its recipe bound, read from the record, never re-derived:
+        //      the projection refuses an admission whose recipe binds the
+        //      task under any workflow but §4's `<task>/wf<revision>` —
+        //      under a different revision's, or under a name of no such
+        //      form — so a restore of it is refused out loud, with the
+        //      projection's reason, and nothing is born
+        self.fresh();
+        let x6 = self.cat.expand("t6", "close-month", 1, self.limits);
+        let wf7 = std::str::replace(self.cat.encode_bound(), "t6/wf1", "t6/wf7");
+        let r6 = self.boot.rt.journal.append(0, "workflow.admitted", "t6", dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: "t6", definition: "close-month", revision: 1, request: "ask-t6", recipe: wf7, limits: self.limits, works: x6.works, tasks: x6.tasks, steps: x6.steps, depth: x6.depth
+        }));
+        std::test::assert(r6.ok, "the row admitting t6 under t6/wf7 is in the record: " + r6.error);
+        let x4 = self.cat.expand("t4", "close-month", 1, self.limits);
+        let odd = std::str::replace(self.cat.encode_bound(), "t4/wf1", "odd");
+        let r4 = self.boot.rt.journal.append(1, "workflow.admitted", "t4", dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: "t4", definition: "close-month", revision: 1, request: "ask-t4", recipe: odd, limits: self.limits, works: x4.works, tasks: x4.tasks, steps: x4.steps, depth: x4.depth
+        }));
+        std::test::assert(r4.ok, "the row admitting t4 under `odd` is in the record: " + r4.error);
+        self.ask("t6");
+        self.ask("t4");
+        self.settle();
+        std::test::assert(std::str::contains(self.refusals, "t6|the admission of t6 is in the record and the projection refused it: the recipe an admission of t6 carries binds it under `t6/wf7`, not `t6/wf1`, the workflow of t6 at revision 1"), "a recipe binding another revision's workflow is refused: " + self.refusals);
+        std::test::assert(std::str::contains(self.refusals, "t4|the admission of t4 is in the record and the projection refused it: the recipe an admission of t4 carries binds it under `odd`, not `t4/wf1`, the workflow of t4 at revision 1"), "a recipe binding a workflow of no such form is refused: " + self.refusals);
+        std::test::assert_eq_int(self.count(self.lives, "task:t6:born") + self.count(self.lives, "task:t4:born"), 0, "and nothing was born for either");
+        std::test::assert_eq_int(self.count(self.lives, "t6/wf7/s0:born") + self.count(self.lives, "t6/wf1/s0:born") + self.count(self.lives, "odd/s0:born"), 0, "no step of either, under any identity");
         std::test::assert(self.boot.rt.journal.verify_chain(), "the record's chain holds");
     }
 }

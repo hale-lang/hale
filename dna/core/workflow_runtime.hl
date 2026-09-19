@@ -75,10 +75,12 @@ locus WorkflowRuntime {
         subscribe AttemptRequested as on_attempt where key == self.scope;
         subscribe ExecutionStateAsked as on_state where key == self.scope;
         subscribe AdmissionAsked as on_admission where key == self.scope;
+        subscribe WorkStateAsked as on_work_state where key == self.scope;
         publish TransitionAnswered;
         publish AttemptReplied;
         publish ExecutionStateAnswered;
         publish AdmissionAnswered;
+        publish WorkStateAnswered;
     }
     // Apply what the record holds beyond what the projection has seen,
     // and remember each committed proposal's id and revision. Returns the
@@ -250,40 +252,81 @@ locus WorkflowRuntime {
     // the record never admitted, or admitted with a recipe that cannot be
     // read or that the projection refused, is not resumed — the answer
     // says why, and nothing is invented for it.
+    // The admission is the one the projection ACCEPTED — the body it
+    // recorded when it applied the row — never the last row in the
+    // record that names the task: a later row the projection refused
+    // (a re-admission under another revision, a row whose body names
+    // another task) is not the execution. A task the projection holds
+    // no admission of is answered with why: the record holds no row, or
+    // holds rows it refused, for the reason a dry replay of the last
+    // one gives. A child of another Task is not recovered here: it is
+    // recovered through its parent, in its bound position.
     @unbounded
     fn on_admission(q: AdmissionAsk) {
         let moved = self.journal.refresh();
         let seen = self.catch_up();
-        let mut body = "";
-        let mut i = 0;
-        while i < seen {
-            let e = self.journal.read(i);
-            if e.kind == "workflow.admitted" && e.entity == q.task_id { body = e.body; }
-            i = i + 1;
-        }
+        let body = self.p.recorded("workflow.admitted", q.task_id);
         if len(body) == 0 {
-            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, task_id: q.task_id, kinds: q.kinds, why: "task " + q.task_id + " was never admitted: the record holds no admission of it" };
+            let mut raw = "";
+            let mut i = 0;
+            while i < seen {
+                let e = self.journal.read(i);
+                if e.kind == "workflow.admitted" && e.entity == q.task_id { raw = e.body; }
+                i = i + 1;
+            }
+            if len(raw) == 0 {
+                AdmissionAnswered <- AdmissionAnswer { scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, why: "task " + q.task_id + " was never admitted: the record holds no admission of it" };
+                return;
+            }
+            self.p.dry = true;
+            let would = replay(self.p, "workflow.admitted", q.task_id, raw);
+            self.p.dry = false;
+            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, why: "the admission of " + q.task_id + " is in the record and the projection refused it: " + would.why };
             return;
         }
         let read = decode_admission(body);
         if !read.ok {
-            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, task_id: q.task_id, kinds: q.kinds, why: "the admission of " + q.task_id + " is in the record but cannot be read: " + read.why };
-            return;
-        }
-        let gap = self.p.reader.decode_bound(read.value.recipe);
-        if len(gap) > 0 {
-            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, task_id: q.task_id, kinds: q.kinds, why: "the admission of " + q.task_id + " carries a recipe that cannot be read: " + gap };
-            return;
-        }
-        if len(self.p.task(q.task_id).task_id) == 0 {
-            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, task_id: q.task_id, kinds: q.kinds, why: "the admission of " + q.task_id + " is in the record, and the projection refused it: it binds nothing this execution can run" };
+            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, why: "the admission of " + q.task_id + " the projection accepted cannot be read back: " + read.why };
             return;
         }
         let a = read.value;
+        if len(a.parent_task) > 0 {
+            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, why: "task " + q.task_id + " is a child of " + a.parent_task + ", spawned by step " + a.spawning_step + " as `" + a.member_key + "`: it is recovered through its parent, not asked as a root" };
+            return;
+        }
+        let gap = self.p.reader.decode_bound(a.recipe);
+        if len(gap) > 0 {
+            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, why: "the admission of " + q.task_id + " carries a recipe that cannot be read: " + gap };
+            return;
+        }
+        // the execution's workflow identity is the one the recipe bound,
+        // read from its root node — never re-derived
+        let root = self.p.reader.bound_node(q.task_id);
+        if root.kind != "task" || len(root.workflow_id) == 0 {
+            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, why: "the recipe the admission of " + q.task_id + " carries binds no workflow identity for it" };
+            return;
+        }
         AdmissionAnswered <- AdmissionAnswer {
-            scope: self.scope, task_id: q.task_id, kinds: q.kinds, admitted: true,
-            definition: a.definition, revision: a.revision, workflow_id: q.task_id + "/wf" + to_string(a.revision),
+            scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, admitted: true,
+            definition: a.definition, revision: a.revision, workflow_id: root.workflow_id,
             recipe: a.recipe, limits: a.limits
+        };
+    }
+    // What the record holds about a Work: its current attempt, as the
+    // projection has it, and that attempt's performer kind from the
+    // admission the projection recorded for it.
+    fn on_work_state(q: WorkStateAsk) {
+        let moved = self.journal.refresh();
+        let seen = self.catch_up();
+        let w = self.p.work(q.work_id);
+        let mut kind = "";
+        if len(w.attempt_id) > 0 {
+            let read = decode_attempt(self.p.recorded("attempt.admitted", w.attempt_id));
+            if read.ok { kind = read.value.performer_kind; }
+        }
+        WorkStateAnswered <- WorkState {
+            work_id: q.work_id, attempted: len(w.attempt_id) > 0, attempt_id: w.attempt_id, attempt_no: w.attempt_no,
+            performer_kind: kind, attempt_disposition: w.attempt_disposition, disposition: w.disposition
         };
     }
     // What the record holds about an execution, from the projection.
@@ -342,14 +385,40 @@ locus WorkRun {
         subscribe RecordResumed as on_resumed where key == self.scope;
         subscribe StepSettled as on_step where key == self.step_id;
         subscribe StepFenced as on_fenced where key == self.step_id;
+        subscribe WorkStateAnswered as on_work_state where key == self.work_id;
         publish TransitionProposed;
         publish AttemptRequested;
         publish MemberSettled;
         publish MemberRetired;
+        publish WorkStateAsked;
         publish RunLives;
     }
     birth() { RunLives <- RunLife { key: self.work_id, what: "born" }; }
-    run() { self.admit_next(); }
+    // Before proposing anything, the record is asked what it holds about
+    // this Work (card 13): a settled Work has answered — its step hears
+    // that and the Work leaves; a Work with an admitted attempt resumes
+    // that attempt, under its number, id and performer kind as the
+    // record has them, never as the ask has them; a Work the record
+    // never attempted admits its first attempt under the kind the ask
+    // names.
+    run() { WorkStateAsked <- WorkStateAsk { scope: self.scope, work_id: self.work_id }; }
+    fn on_work_state(w: WorkState) {
+        if self.settled || self.attempt_no >= 0 { return; } // one answer, before anything was proposed
+        if len(w.disposition) > 0 {
+            self.settled = true;
+            self.settling = std::str::clone(w.disposition);
+            MemberSettled <- MemberSettlement { step_id: self.step_id, key: self.key, work_id: self.work_id, disposition: w.disposition };
+            terminate;
+        }
+        if w.attempted {
+            self.attempt_no = w.attempt_no;
+            self.attempt_id = std::str::clone(w.attempt_id);
+            if len(w.performer_kind) > 0 { self.performer_kind = std::str::clone(w.performer_kind); }
+            self.propose_admission();
+            return;
+        }
+        self.admit_next();
+    }
     // Nothing of this Work was ever admitted, and under its settled Step
     // nothing can be: no attempt, no claim, no effect to await. It
     // retires — which is not a settlement — and its Step stops waiting.
@@ -832,6 +901,9 @@ locus Executions {
         born: String = ""; // task ids with a TaskRun born here: one execution is one Task, asked twice or not
         repeats: Int = 0;
         refused: Int = 0;
+        asked: Int = 0; // questions put to the record, each under its own identity
+        outstanding: String = ""; // "<ask id>" per question awaiting its answer
+        strays: Int = 0; // answers to no outstanding question
     }
     bus {
         subscribe ExecutionAsked as on_root where key == self.scope;
@@ -842,13 +914,26 @@ locus Executions {
     }
     accept(t: TaskRun) { }
     // A root is run as the record admitted it: the owner asks the runtime
-    // for the admission, and births the Task from the answer
+    // for the admission under a question of its own identity, holds the
+    // question outstanding, and births the Task from the answer to it
+    @unbounded
     fn on_root(a: ExecutionAsk) {
         if set_has(self.born, a.task_id) { self.repeats = self.repeats + 1; return; }
-        AdmissionAsked <- AdmissionAsk { scope: self.scope, task_id: a.task_id, kinds: a.kinds };
+        self.asked = self.asked + 1;
+        let ask_id = a.task_id + "@ask" + to_string(self.asked);
+        self.outstanding = set_add(self.outstanding, ask_id);
+        AdmissionAsked <- AdmissionAsk { scope: self.scope, ask_id: ask_id, task_id: a.task_id, kinds: a.kinds };
     }
+    // Only the answer to a question this owner holds outstanding — the
+    // same scope, task and identity — and only once; anything else,
+    // including a positive answer nobody asked for, is a stray.
     @unbounded
     fn on_admission(a: AdmissionAnswer) {
+        if a.scope != self.scope || !set_has(self.outstanding, a.ask_id) || !std::str::starts_with(a.ask_id, a.task_id + "@ask") {
+            self.strays = self.strays + 1;
+            return;
+        }
+        self.outstanding = set_remove(self.outstanding, a.ask_id);
         if set_has(self.born, a.task_id) { self.repeats = self.repeats + 1; return; }
         if !a.admitted {
             self.refused = self.refused + 1;

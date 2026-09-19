@@ -1370,6 +1370,33 @@ do not rerun; the grandchild settles, then the child, then the root.
 Only unfinished responsibilities exist in memory after a restart, and
 every id and every required-member set is the record's.
 
+The admission recovered is the one the projection accepted — the body
+it recorded when it applied the row — never the last row in the record
+that names the task: a later row the projection refused (a
+re-admission under another revision, a row whose body names another
+task) is not the execution, and a task the projection holds no
+admission of is refused with the projection's reason for the last row
+it refused, from a dry replay of that row. A child of another Task is
+not recovered by asking for it: the answer says whose child it is,
+under which step and key, and the child comes back through its parent,
+in its bound place. The workflow identity an execution runs under is
+the one its recipe bound, read from the record and never re-derived;
+the projection refuses an admission whose recipe binds the task under
+any workflow but `<task>/wf<revision>` (§4 of the contract), so the
+recipe and the identity never say different things. Every question the
+owner puts to the record carries an identity of its own
+(`AdmissionAsked.ask_id`), held outstanding until answered; an answer
+is taken only to a question this owner holds outstanding, for the task
+it asked about, and only once — an answer nobody asked for, however
+positive, and an answer under a question already answered, are strays
+and birth nothing. A leaf asks the record what it holds about it before
+proposing anything (`WorkStateAsked` / `WorkStateAnswered`): a settled
+Work has answered and leaves; a Work with an admitted attempt resumes
+that attempt under its number, id and performer kind as the record has
+them — the kinds a restart is asked with bind only attempts not yet
+admitted — and a Work never attempted admits its first attempt under
+the asked kind.
+
 ## Workflow execution: uncertain external effects
 
 An attempt's performer may have acted before the outcome was saved:
