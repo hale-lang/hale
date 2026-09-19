@@ -37,6 +37,31 @@ dependencies in v1" rule means every package your program pulls
 in is visible in your lockfile — if a library uses another, you
 vendor both explicitly.
 
+## The alias is not a value
+
+The name after `as` is a namespace, not a binding, so it can be
+the same as a fn you declare:
+
+```hale
+import "../core" as core;
+
+fn core(args: String) -> String { return "[" + args + "]"; }
+
+fn go() -> String {
+    return core::greet("mid") + " " + core("x");
+}
+```
+
+`core::greet` goes through the import; `core("x")` calls your fn.
+Paths take the alias, bare names take the value — and it reads the
+same way when someone else imports *your* seed.
+
+Types are the exception: `Name::Thing` is also how you write an
+enum variant, so if you name an alias after one of your own types
+the type wins and the alias becomes unreachable in path position.
+Aliases are lower-case by convention, which keeps them out of the
+way of type names.
+
 ## The catalog
 
 **Persistence & data**
