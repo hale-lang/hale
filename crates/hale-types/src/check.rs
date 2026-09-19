@@ -13445,7 +13445,7 @@ impl<'a> Checker<'a> {
         inits: &[StructInit],
         span: Span,
     ) -> Ty {
-        let mut stdlib_resolved: Option<String> = None;
+        let mut qualified_resolved: Option<String> = None;
         if path.segments.len() != 1 {
             // Resolve an imported qualified literal (`mat::Grid { }`)
             // to the merged symbol codegen lowers it to, so field and
@@ -13454,81 +13454,100 @@ impl<'a> Checker<'a> {
             // the gap that let `mat::Grid { }.make(x)` (no such method;
             // `make` is a free fn) pass `check` and die in codegen.
             //
-            // Only the result TYPE is resolved for IMPORTS. The inits
-            // are not re-validated against the imported params, so any
-            // literal `check` accepted before (as Unknown) still
-            // typechecks. Empty renames (every single-seed bundle)
+            // GH #707: the INITS are validated against that resolved
+            // declaration too, exactly as a local literal's are.
+            // Resolving only the result type left the field names
+            // unchecked, so `alias::Resume { key: "main" }` — a typo
+            // for `scope` — silently constructed the default while
+            // `check` reported `ok`; the same literal on a local type
+            // was rejected. Empty renames (every single-seed bundle)
             // skip straight past this.
             let key: Vec<String> =
                 path.segments.iter().map(|s| s.name.clone()).collect();
-            if let Some((_, mangled)) =
-                self.import_renames.iter().find(|(p, _)| *p == key)
-            {
-                for init in inits {
-                    let _ = self.check_expr(&init.value);
-                }
+            let imported: Option<String> = self
+                .import_renames
+                .iter()
+                .find(|(p, _)| *p == key)
+                .map(|(_, mangled)| mangled.clone());
+            if let Some(mangled) = imported {
                 if matches!(
-                    self.top.lookup(mangled),
+                    self.top.lookup(&mangled),
                     Some(
                         TopSymbol::Locus(_)
                             | TopSymbol::Type(_)
                             | TopSymbol::Perspective(_)
                     )
                 ) {
-                    return Ty::Named(mangled.clone());
-                }
-                return Ty::Unknown;
-            }
-            // GH #470: a STDLIB qualified literal resolves through
-            // PATH_RENAMES to the mangled symbol the Hale-source
-            // stdlib declares (now registered in the top scope), and
-            // then falls through to FULL literal validation below —
-            // fields checked, interface coercions enforced. The old
-            // `Ty::Unknown` tolerance here was fail-open all the way
-            // to runtime memory corruption (a wrong-arity middleware
-            // coerced to `std::http::Middleware` unchecked).
-            let segs: Vec<&str> =
-                path.segments.iter().map(|s| s.name.as_str()).collect();
-            if let Some(m) = crate::stdlib_bodies::mangled_locus_name(&segs)
-            {
-                if self.top.lookup(m).is_some() {
-                    stdlib_resolved = Some(m.to_string());
+                    // Falls through to the full literal validation
+                    // below under the merged name. Diagnostics name
+                    // `__lib_*` symbols, which the CLI demangles back
+                    // to the `alias::Name` the author wrote.
+                    qualified_resolved = Some(mangled);
                 } else {
-                    // Renamed but not Hale-source-declared (a
-                    // Rust-implemented handle, e.g.
-                    // std::io::tcp::Listener): keep the historical
-                    // tolerance — a Named with no symbol behind it
-                    // would trade fail-open for false errors.
+                    // Renamed to something that isn't a declaration we
+                    // can see: keep the historical tolerance rather
+                    // than invent errors against a definition we don't
+                    // have.
                     for init in inits {
                         let _ = self.check_expr(&init.value);
                     }
                     return Ty::Unknown;
                 }
-            } else if segs.first() == Some(&"std") {
-                // GH #470: a std:: literal that matches nothing in
-                // the rename table is a typo, not an Unknown —
-                // `std::log::TotallyFakeSink {}` used to typecheck.
-                self.diags.push(Diag::ty(
-                    span,
-                    format!(
-                        "unknown stdlib type `{}` in struct/locus \
-                         literal",
-                        key.join("::")
-                    ),
-                ));
-                for init in inits {
-                    let _ = self.check_expr(&init.value);
+            }
+            if qualified_resolved.is_none() {
+                // GH #470: a STDLIB qualified literal resolves through
+                // PATH_RENAMES to the mangled symbol the Hale-source
+                // stdlib declares (now registered in the top scope),
+                // and then falls through to FULL literal validation
+                // below — fields checked, interface coercions
+                // enforced. The old `Ty::Unknown` tolerance here was
+                // fail-open all the way to runtime memory corruption
+                // (a wrong-arity middleware coerced to
+                // `std::http::Middleware` unchecked).
+                let segs: Vec<&str> =
+                    path.segments.iter().map(|s| s.name.as_str()).collect();
+                if let Some(m) =
+                    crate::stdlib_bodies::mangled_locus_name(&segs)
+                {
+                    if self.top.lookup(m).is_some() {
+                        qualified_resolved = Some(m.to_string());
+                    } else {
+                        // Renamed but not Hale-source-declared (a
+                        // Rust-implemented handle, e.g.
+                        // std::io::tcp::Listener): keep the historical
+                        // tolerance — a Named with no symbol behind it
+                        // would trade fail-open for false errors.
+                        for init in inits {
+                            let _ = self.check_expr(&init.value);
+                        }
+                        return Ty::Unknown;
+                    }
+                } else if segs.first() == Some(&"std") {
+                    // GH #470: a std:: literal that matches nothing in
+                    // the rename table is a typo, not an Unknown —
+                    // `std::log::TotallyFakeSink {}` used to typecheck.
+                    self.diags.push(Diag::ty(
+                        span,
+                        format!(
+                            "unknown stdlib type `{}` in struct/locus \
+                             literal",
+                            key.join("::")
+                        ),
+                    ));
+                    for init in inits {
+                        let _ = self.check_expr(&init.value);
+                    }
+                    return Ty::Unknown;
+                } else {
+                    for init in inits {
+                        let _ = self.check_expr(&init.value);
+                    }
+                    return Ty::Unknown;
                 }
-                return Ty::Unknown;
-            } else {
-                for init in inits {
-                    let _ = self.check_expr(&init.value);
-                }
-                return Ty::Unknown;
             }
         }
         let name: &String =
-            stdlib_resolved.as_ref().unwrap_or(&path.segments[0].name);
+            qualified_resolved.as_ref().unwrap_or(&path.segments[0].name);
         // M3 stage 3 tranche 2 (2026-07-02): mangled generic
         // monomorph literal (`Box_Int { ... }`). Resolve the
         // `Base_Tok[_Tok...]` shape against a generic type

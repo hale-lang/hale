@@ -34,6 +34,12 @@ type Config { host: String = "127.0.0.1"; port: Int = 8080; }
 let c = Config { port: 9000 };    // host defaults
 ```
 
+A literal is checked against the declaration: a field name that
+isn't there, or a value of the wrong type, is a compile error —
+never a silently defaulted field. That holds for a record you
+imported from another seed too, where you spell the type
+`alias::Config { ... }`.
+
 Records nest, and they're what travels on the bus and in and out
 of functions. When a record starts wanting *methods*, that's the
 signal to promote it to a [locus](./locus-gently.md).
