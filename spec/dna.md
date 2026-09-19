@@ -1296,8 +1296,12 @@ cancelled is not cancelled-and-drained, and the current step is born
 fenced, so those Works settle cancelled, the step drains, and the
 workflow leaves behind it. A cancellation heard while the record is
 being asked waits for the answer: an execution the record has settled
-is not cancelled, and one still open is cancelled first. One still
-open proposes its transitions exactly as a fresh one does,
+is not cancelled, and one still open is cancelled first — and then,
+as whenever a cancellation lands with no step active, the record is
+asked again what it still holds admitted and unsettled, and that is
+drained through the current step, born fenced, before the workflow
+leaves. One still open proposes its transitions exactly as a fresh one
+does,
 and the committer answers what the record already holds as a replay,
 so every Task, Step, Work and Attempt id a restored incarnation uses is
 the record's, never minted again — a completed record rebooted gains
@@ -1312,7 +1316,10 @@ redelivered. Every request is decided against the record at one
 reading: an attempt whose outcome is recorded is answered from it and
 never runs again, and a claim the dead incarnation left open under it
 is closed with it, durably, before the Work is answered — on every
-path that answers from a recorded outcome, a request or a reply — and
+path that answers from a recorded outcome: a request that finds it,
+one that runs into it on its own reading after seeing the attempt
+unclaimed, one that attaches to a running attempt and finds it, and a
+reply — and
 a close the record refuses leaves the Work holding its responsibility,
 told so, until a later request or reply closes it: a Work whose
 request was refused without an outcome asks again when the record

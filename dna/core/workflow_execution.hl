@@ -141,6 +141,7 @@ fn reply_outstanding(r: WorkResult) -> Bool {
 fn attach_attempt(j: Journal, attempt_id: String, why: String) -> Executed {
     let settled = recorded_attempt_outcome(j, attempt_id, j.revision());
     if settled.ok {
+        if !claim_closed(j, attempt_id, settled.value.disposition) { return close_refused(attempt_id); }
         return Executed { ok: true, attached: true, reused: true, disposition: settled.value.disposition, outcome: settled.value };
     }
     return Executed { ok: true, attached: true, why: why };
@@ -209,6 +210,9 @@ fn execute_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAttem
         if len(gap) > 0 { return Executed { why: gap }; }
         let settled = recorded_attempt_outcome(j, id, rev);
         if settled.ok {
+            // an outcome recorded meanwhile — by another hand — is the
+            // answer, once the claim under it is closed
+            if !claim_closed(j, id, settled.value.disposition) { return close_refused(id); }
             return Executed { ok: true, reused: true, disposition: settled.value.disposition, outcome: settled.value };
         }
         if attempt_claimed(j, id, rev) {

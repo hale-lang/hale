@@ -786,7 +786,7 @@ locus WorkflowRun {
         mine_children: ChildSpecRows = ChildSpecRows { };
         current: Int = -1; // the active step's index
         active: Bool = false; // a StepRun of `current` is alive
-        stage: String = ""; // "" | "asking" | "running" | "settling" | "settled"
+        stage: String = ""; // "" | "asking" | "running" | "settling" | "settled" | "draining" (settled, asking the record what is still owed)
         outstanding: String = "";
         held: Bool = false;
         proposing: String = ""; // the disposition being proposed
@@ -842,6 +842,19 @@ locus WorkflowRun {
     // current step starts; a cancellation heard while asking is proposed
     // now, first.
     fn on_state(s: ExecutionState) {
+        if self.stage == "draining" {
+            // the cancellation landed with no step active: what the record
+            // still holds admitted and unsettled is drained through the
+            // current step, born fenced; nothing owed, the workflow leaves
+            self.stage = "settled";
+            if s.outstanding > 0 && s.current_step < self.step_count {
+                self.fence_steps = true;
+                self.start_step(s.current_step);
+                return;
+            }
+            WorkflowLeft <- WorkflowLeave { task_id: self.task_id };
+            terminate;
+        }
         if self.stage != "asking" { return; }
         if s.disposition == "done" || s.disposition == "failed" || s.disposition == "cancelled" {
             self.stage = "settled";
@@ -931,6 +944,14 @@ locus WorkflowRun {
         self.stage = "settled";
         self.disposition = std::str::clone(self.proposing);
         WorkflowSettled <- WorkflowSettlement { task_id: self.task_id, disposition: self.disposition, reason: self.reason };
+        if !self.active && self.disposition == "cancelled" {
+            // cancelled with no step active — before the current step was
+            // restored, or between steps: the record says what is still
+            // admitted and unsettled, and that is drained before leaving
+            self.stage = "draining";
+            ExecutionStateAsked <- ExecutionStateAsk { scope: self.scope, task_id: self.task_id };
+            return;
+        }
         if !self.active { WorkflowLeft <- WorkflowLeave { task_id: self.task_id }; terminate; }
         // cancelled with a step active: the step fences its Works and
         // drains; the workflow leaves when it hears that
