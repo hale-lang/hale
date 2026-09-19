@@ -59,10 +59,7 @@ topic TransitionAnswered { payload: TransitionAnswer; subject: "dna.transition.a
 // every reply — the one that came back from the call and the one that
 // came later — keyed by the Work; a Work that settled tells its Step,
 // keyed by the Step; a Step that settled tells its owner.
-// `redeliver` (card 12a): the Work was restored from the record and asks
-// again; a claim an earlier incarnation took and never answered is
-// dispatched again with the same id, once per incarnation.
-type AttemptRequest { scope: String = ""; attempt_id: String = ""; work_id: String = ""; redeliver: Bool = false; }
+type AttemptRequest { scope: String = ""; attempt_id: String = ""; work_id: String = ""; }
 topic AttemptRequested { payload: AttemptRequest; subject: "dna.attempt.requested"; keyed_by scope; }
 type AttemptReply {
     work_id: String = "";
@@ -127,7 +124,6 @@ type ChildAdmission {
     tasks: Int = 0;
     steps: Int = 0;
     depth: Int = 0;
-    restore: Bool = false;
 }
 topic ChildAdmitRequested { payload: ChildAdmission; subject: "dna.child.admit"; keyed_by scope; }
 // A root execution asked of the executions owner: its admission is in
@@ -142,7 +138,6 @@ type ExecutionAsk {
     recipe: String = "";
     kinds: String = "";
     limits: AdmissionLimits = AdmissionLimits { };
-    restore: Bool = false; // the execution is restored from the record: transitions already there replay, a claimed attempt is redelivered
 }
 topic ExecutionAsked { payload: ExecutionAsk; subject: "dna.execution.asked"; keyed_by scope; }
 type ChildSettlement { step_id: String = ""; key: String = ""; task_id: String = ""; disposition: String = ""; }
@@ -154,6 +149,15 @@ type ChildLeave { step_id: String = ""; key: String = ""; task_id: String = ""; 
 topic ChildLeft { payload: ChildLeave; subject: "dna.child.left"; keyed_by step_id; }
 type WorkflowLeave { task_id: String = ""; }
 topic WorkflowLeft { payload: WorkflowLeave; subject: "dna.workflow.left"; keyed_by task_id; }
+// GH #646 workflow card 12a: what the record holds about one execution,
+// asked of the runtime by its workflow before it starts — restored after
+// a restart or fresh, the same question — and answered from the
+// projection: an execution the record has settled is over, whatever is
+// in memory.
+type ExecutionStateAsk { scope: String = ""; task_id: String = ""; }
+topic ExecutionStateAsked { payload: ExecutionStateAsk; subject: "dna.execution.state.asked"; keyed_by scope; }
+type ExecutionState { task_id: String = ""; admitted: Bool = false; disposition: String = ""; reason: String = ""; }
+topic ExecutionStateAnswered { payload: ExecutionState; subject: "dna.execution.state.answered"; keyed_by task_id; }
 // The record is writable again: a resident holding a transition the
 // record refused proposes it again. Published by whoever knows — the
 // host after a reconnect, a fixture — keyed by the committer's scope.

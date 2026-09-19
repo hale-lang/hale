@@ -50,6 +50,7 @@ locus WorkflowRuntime {
         committed: String = "\n"; // "<proposal id>=<revision>\n" per committed proposal
         answered: Int = 0;
         requests: Int = 0; // attempts asked for
+        claimed: String = ""; // attempt ids this incarnation claimed: those are running here
         redelivered: String = ""; // attempt ids this incarnation redelivered: once each
         refused: Int = 0;
         replayed: Int = 0;
@@ -58,8 +59,10 @@ locus WorkflowRuntime {
     bus {
         subscribe TransitionProposed as on_proposal where key == self.scope;
         subscribe AttemptRequested as on_attempt where key == self.scope;
+        subscribe ExecutionStateAsked as on_state where key == self.scope;
         publish TransitionAnswered;
         publish AttemptReplied;
+        publish ExecutionStateAnswered;
     }
     // Apply what the record holds beyond what the projection has seen,
     // and remember each committed proposal's id and revision. Returns the
@@ -179,14 +182,25 @@ locus WorkflowRuntime {
             self.reply(Executed { why: "attempt " + r.attempt_id + " was never admitted; nothing runs before its admission is in the record" }, r.work_id, r.attempt_id);
             return;
         }
-        if r.redeliver && !set_has(self.redelivered, r.attempt_id) {
-            self.redelivered = set_add(self.redelivered, r.attempt_id);
-            let y = redeliver_attempt(self.journal, self.work, self.scope, admitted.value);
-            self.reply(y, r.work_id, r.attempt_id);
+        // the request is the Work's own: an attempt asked for under
+        // another Work's name is nobody's
+        if admitted.value.work_id != r.work_id {
+            self.reply(Executed { why: "attempt " + r.attempt_id + " is an attempt of " + admitted.value.work_id + ", not of " + r.work_id + "; not this Work's to ask for" }, r.work_id, r.attempt_id);
             return;
         }
-        let x = execute_attempt(self.journal, self.work, self.scope, admitted.value);
+        // whether this incarnation claimed or redelivered the attempt is
+        // the runtime's own knowledge, never the request's word
+        let x = dispatch_attempt(self.journal, self.work, self.scope, admitted.value, set_has(self.claimed, r.attempt_id), set_has(self.redelivered, r.attempt_id));
+        if x.ran && !x.redelivered { self.claimed = set_add(self.claimed, r.attempt_id); }
+        if x.redelivered { self.redelivered = set_add(self.redelivered, r.attempt_id); }
         self.reply(x, r.work_id, r.attempt_id);
+    }
+    // What the record holds about an execution, from the projection.
+    fn on_state(q: ExecutionStateAsk) {
+        let moved = self.journal.refresh();
+        let seen = self.catch_up();
+        let t = self.p.task(q.task_id);
+        ExecutionStateAnswered <- ExecutionState { task_id: q.task_id, admitted: len(t.task_id) > 0, disposition: t.disposition, reason: t.reason };
     }
     // A reply that arrives later goes to its Work the same way.
     fn settle(attempt_id: String, r: WorkResult) -> Executed {
@@ -214,7 +228,6 @@ locus WorkRun {
         performer_kind: String = "";
         request: WorkRequest = WorkRequest { };
         allowance: Int = 1;
-        restored: Bool = false; // born from the record after a restart: the first request is a redelivery
         attempt_no: Int = -1;
         attempt_id: String = "";
         outstanding: String = ""; // the one proposal awaiting its answer
@@ -330,10 +343,7 @@ locus WorkRun {
             return;
         }
         if self.proposing == "admit" {
-            // a restored Work's first request redelivers: a claim the
-            // incarnation that died took is dispatched again, same id
-            let redeliver = self.restored && self.attempt_no == 0;
-            AttemptRequested <- AttemptRequest { scope: self.scope, attempt_id: self.attempt_id, work_id: self.work_id, redeliver: redeliver };
+            AttemptRequested <- AttemptRequest { scope: self.scope, attempt_id: self.attempt_id, work_id: self.work_id };
             return;
         }
         // the settlement is in the record: now, and only now, the member
@@ -498,7 +508,6 @@ locus TaskRun {
         steps: Int = 0;
         depth: Int = 0;
         admit: Bool = false; // propose the admission (a child); false: it is in the record already (a root)
-        restored: Bool = false; // restored from the record: what is there replays
         cat: WorkflowCatalog = WorkflowCatalog { }; // the recipe, decoded
         outstanding: String = "";
         held: Bool = false;
@@ -573,7 +582,7 @@ locus TaskRun {
             }
             i = i + 1;
         }
-        WorkflowRun { scope: self.scope, task_id: self.task_id, workflow_id: self.workflow_id, step_count: step_count, leaves: leaves, child_specs: children, restored: self.restored };
+        WorkflowRun { scope: self.scope, task_id: self.task_id, workflow_id: self.workflow_id, step_count: step_count, leaves: leaves, child_specs: children };
     }
     fn on_answer(a: TransitionAnswer) {
         if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
@@ -628,7 +637,7 @@ locus TaskRun {
             scope: self.scope, task_id: r.child_task, workflow_id: n.workflow_id, parent_task: self.task_id,
             spawning_step: r.step_id, member_key: r.key, definition: n.definition, revision: n.revision,
             recipe: self.cat.encode_bound_under(r.child_task), kinds: self.kinds, limits: self.limits,
-            works: works, tasks: tasks, steps: steps, depth: depth, restore: self.restored
+            works: works, tasks: tasks, steps: steps, depth: depth
         };
     }
     // This Task's workflow settled, durably: the step that spawned it
@@ -720,7 +729,7 @@ locus Executions {
         self.roots = self.roots + 1;
         TaskRun {
             scope: self.scope, task_id: a.task_id, workflow_id: a.workflow_id, definition: a.definition, revision: a.revision,
-            recipe: a.recipe, kinds: a.kinds, limits: a.limits, admit: false, restored: a.restore
+            recipe: a.recipe, kinds: a.kinds, limits: a.limits, admit: false
         };
     }
     @unbounded
@@ -731,7 +740,7 @@ locus Executions {
         TaskRun {
             scope: self.scope, task_id: c.task_id, workflow_id: c.workflow_id, parent_task: c.parent_task,
             spawning_step: c.spawning_step, member_key: c.member_key, definition: c.definition, revision: c.revision,
-            recipe: c.recipe, kinds: c.kinds, limits: c.limits, works: c.works, tasks: c.tasks, steps: c.steps, depth: c.depth, admit: true, restored: c.restore
+            recipe: c.recipe, kinds: c.kinds, limits: c.limits, works: c.works, tasks: c.tasks, steps: c.steps, depth: c.depth, admit: true
         };
     }
 }
@@ -758,10 +767,9 @@ locus WorkflowRun {
         mine: LeafSpecRows = LeafSpecRows { }; // the workflow's own copy
         child_specs: ChildSpecRows = ChildSpecRows { }; // every child member of the execution, as handed in
         mine_children: ChildSpecRows = ChildSpecRows { };
-        restored: Bool = false;
         current: Int = -1; // the active step's index
         active: Bool = false; // a StepRun of `current` is alive
-        stage: String = ""; // "" | "running" | "settling" | "settled"
+        stage: String = ""; // "" | "asking" | "running" | "settling" | "settled"
         outstanding: String = "";
         held: Bool = false;
         proposing: String = ""; // the disposition being proposed
@@ -775,10 +783,12 @@ locus WorkflowRun {
         subscribe TransitionAnswered as on_answer where key == self.task_id;
         subscribe StepDrained as on_drained where key == self.task_id;
         subscribe WorkflowCancelRequested as on_cancel where key == self.task_id;
+        subscribe ExecutionStateAnswered as on_state where key == self.task_id;
         subscribe RecordResumed as on_resumed where key == self.scope;
         publish TransitionProposed;
         publish WorkflowSettled;
         publish WorkflowLeft;
+        publish ExecutionStateAsked;
         publish RunLives;
     }
     accept(s: StepRun) { }
@@ -796,8 +806,28 @@ locus WorkflowRun {
         }
         RunLives <- RunLife { key: self.task_id, what: "born" };
     }
+    // Before anything is born, the record is asked what it holds about
+    // this execution: restored after a restart or fresh, the same
+    // question. An execution the record has settled is over — its
+    // settlement is announced and the workflow leaves, birthing nothing;
+    // one still open starts at step 0, and every step already in the
+    // record replays.
     run() {
+        self.stage = "asking";
+        ExecutionStateAsked <- ExecutionStateAsk { scope: self.scope, task_id: self.task_id };
+    }
+    fn on_state(s: ExecutionState) {
+        if self.stage != "asking" { return; }
+        if s.disposition == "done" || s.disposition == "failed" || s.disposition == "cancelled" {
+            self.stage = "settled";
+            self.disposition = std::str::clone(s.disposition);
+            self.reason = std::str::clone(s.reason);
+            WorkflowSettled <- WorkflowSettlement { task_id: self.task_id, disposition: self.disposition, reason: self.reason };
+            WorkflowLeft <- WorkflowLeave { task_id: self.task_id };
+            terminate;
+        }
         self.stage = "running";
+        if self.cancel_asked { self.propose_outcome("cancelled", self.cancel_reason); return; }
         self.start_step(0);
     }
     // Step `index` is born, this workflow's own child, with the leaves
@@ -821,7 +851,7 @@ locus WorkflowRun {
         }
         self.current = index;
         self.active = true;
-        StepRun { scope: self.scope, step_id: step_id, task_id: self.task_id, workflow_id: self.workflow_id, step_index: index, leaves: rows, child_specs: kids, restored: self.restored };
+        StepRun { scope: self.scope, step_id: step_id, task_id: self.task_id, workflow_id: self.workflow_id, step_index: index, leaves: rows, child_specs: kids };
     }
     fn propose_outcome(disposition: String, reason: String) {
         self.stage = "settling";
@@ -910,7 +940,6 @@ locus StepRun {
         mine: LeafSpecRows = LeafSpecRows { }; // the step's own copy of it
         child_specs: ChildSpecRows = ChildSpecRows { }; // the child members handed in
         mine_children: ChildSpecRows = ChildSpecRows { };
-        restored: Bool = false;
         required: String = ""; // member keys, in order
         answered: String = ""; // keys that have settled, done or not
         left: String = ""; // child keys whose execution has drained and left
@@ -1128,7 +1157,7 @@ locus StepRun {
                 let l = self.mine.get(i) or LeafSpec { };
                 WorkRun {
                     scope: self.scope, work_id: l.work_id, step_id: self.step_id, task_id: self.task_id, key: l.key,
-                    performer_kind: l.performer_kind, request: l.request, allowance: l.allowance, restored: self.restored
+                    performer_kind: l.performer_kind, request: l.request, allowance: l.allowance
                 };
                 i = i + 1;
             }

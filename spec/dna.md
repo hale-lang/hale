@@ -1286,30 +1286,47 @@ from the leaves upward.
 
 ## Workflow execution: restore
 
-An execution restored after a restart is asked of the executions owner
-with `restore` set, over the record the crash left, and proposes its
-transitions exactly as a fresh one does: the committer answers what
-the record already holds as a replay, so every Task, Step, Work and
-Attempt id a restored incarnation uses is the record's, never minted
-again — a completed record rebooted gains no row and runs nothing.
-The one thing a restart adds is redelivery. A restored Work's first
-request says so, and the runtime, once per incarnation for each
-attempt, decides it against the record: an attempt whose outcome is
-recorded is answered from it and never runs again — and a claim the
-dead incarnation left open under it is closed with it; one never
-claimed runs through the ordinary path and claims first; one claimed
-and never answered was claimed by an incarnation nobody will hear from
-again, so its dispatch is issued again with the same attempt id and no
-new claim — a transport redelivery, not a new attempt — unless the
-execution was cancelled meanwhile. A second request for the attempt in
-the same incarnation attaches, as any request for a running attempt
-does, so a duplicate dispatch starts no second invocation; a reply from
-the old process for the still-current attempt is accepted and recorded
-like any reply, and whichever reply arrives second changes nothing.
-The restored incarnation's performer of the admitted kind runs the
-attempt; the admission's kind is durable. What an invocation that died
-did before it died is a later card's, as are numbered retries under a
-restart and cross-process delivery.
+Restore is not a mode. An execution asked of the executions owner over
+the record a crash left — or fresh: the same ask — first asks the
+runtime what the record holds about it (`ExecutionStateAsked`,
+answered from the projection): one the record has settled is over,
+its settlement is announced and the workflow leaves, birthing nothing;
+one still open proposes its transitions exactly as a fresh one does,
+and the committer answers what the record already holds as a replay,
+so every Task, Step, Work and Attempt id a restored incarnation uses is
+the record's, never minted again — a completed record rebooted gains
+no row and runs nothing, and a cancelled one ends the restored
+execution before anything is born.
+
+The one thing a restart adds is redelivery, and the runtime derives it
+from its own incarnation, never from a request: a request for an
+attempt names the attempt and the Work it is an attempt of, and the
+runtime knows which attempts it claimed itself and which it already
+redelivered. Every request is decided against the record at one
+reading: an attempt whose outcome is recorded is answered from it and
+never runs again, and a claim the dead incarnation left open under it
+is closed with it, durably, before the Work is answered — a close the
+record refuses leaves the Work holding its responsibility, told so,
+until a later request closes it; one never claimed runs through the
+ordinary path, which claims first; one claimed by this incarnation, or
+redelivered by it, is running, and the request attaches, so a duplicate
+dispatch starts no second invocation; one claimed and never answered by
+a claimant this incarnation is not was claimed by an incarnation nobody
+will hear from again — unless its effect resulted unknown (a restart
+the existing recovery reconciled no further), which stays visibly
+unresolved, nothing running on it until card 12c's reconciliation
+says what happened. Otherwise its dispatch is issued again with the
+same attempt id and no new claim — a transport redelivery, not a new
+attempt — and that decision is a row (`effect.redelivered`) appended
+exactly at the reading that saw the claim, no outcome and no fence, so
+an outcome or a cancellation landing meanwhile makes it stale and the
+decision is taken again. A reply from the old process for the
+still-current attempt is accepted and recorded like any reply, and
+whichever reply arrives second changes nothing. The admission's
+performer kind is durable: the restored incarnation runs the attempt on
+that kind. What an invocation that died did before it died is a later
+card's, as are numbered retries under a restart and cross-process
+delivery.
 
 ## Storage interfaces
 
