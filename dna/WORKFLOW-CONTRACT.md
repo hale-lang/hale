@@ -428,7 +428,17 @@ task); the Task cuts the subtree from its recipe and asks the owner
 (`ChildAdmitRequested`, keyed by scope), which births one `TaskRun` per
 Task id; the child proposes its own admission and runs behind it; a
 child that settled answers its spawning step (`ChildSettled`, keyed by
-that step); a workflow that left tells its Task (`WorkflowLeft`). A `WorkflowRun` births step i+1 only from the
+that step) and, once its workflow drained and left, tells it so
+(`ChildLeft`), which is what the step's drain waits for; a workflow
+that left tells its Task (`WorkflowLeft`). A fence that reaches a child
+while its admission answer is out is applied when the answer comes; a
+record-held child admission is decided again by the state when the
+spawning step settles, as a leaf's is. **[proven, card 11 review: a
+root cancelled by another hand as the child's admission lands, the
+child settling cancelled behind it; a held child admission under a
+step its sibling failed, retiring and the root failing; the tree
+cancelled with the deepest Work's settlement refused once, no ancestor
+reclaiming before that Work settled and each level left]** A `WorkflowRun` births step i+1 only from the
 handler that hears step i drained (`StepDrained`, keyed by task, which a
 step publishes as it leaves) behind its committed completion, and a
 cancellation (`WorkflowCancelRequested`) is a `workflow.settled`
