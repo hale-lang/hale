@@ -302,7 +302,9 @@ fn main() {
 The test-runner contract is exit-code based:
 
 - **Pass** = exit 0 with **no stdout**. A test program that
-  runs to completion silently has passed.
+  runs to completion silently has passed. Stderr is not inspected:
+  a test may write progress or diagnostics with `eprintln` and
+  still pass.
 - **Fail** = non-zero exit code with `ASSERTION FAILED: <msg>`
   (and, for `assert_eq_*`, `expected: X / actual: Y`) on
   stdout. The first failure short-circuits — `std::process::exit`

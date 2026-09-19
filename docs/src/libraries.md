@@ -25,6 +25,12 @@ hale fetch
 import "vendor/pond/router" as router;
 ```
 
+Everything the library declares is then reachable as
+`router::Name`, and a qualified literal — `router::Config { ...
+}` — is typechecked against the library's own declaration:
+misspell a field and `hale check` says so, the same as for a
+type you declared yourself.
+
 `hale fetch` clones each dependency into `vendor/<name>/` and
 pins the resolved commit in `hale.lock`. Pond's "no transitive
 dependencies in v1" rule means every package your program pulls
