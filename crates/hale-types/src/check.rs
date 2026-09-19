@@ -41,6 +41,68 @@ fn method_to_fn_ty(m: &MethodInfo) -> Ty {
     }
 }
 
+/// GH #734 — the member names the compiler injects on EVERY locus,
+/// with the phrase that explains each one in a diagnostic.
+///
+/// `self.children` (the accept'd-child collection), `self.k_max`
+/// (F.1 displacement bound) and `self.draining` (F.27 drain flag)
+/// are resolved before any declared member of the same name, in
+/// both `field_ty` here and the field lowering in codegen. A locus
+/// that declares one of these spellings therefore has a member it
+/// can never read back: the read takes the synthetic member's type
+/// and lowering instead, and the program fails somewhere else — as
+/// an unrelated type mismatch at the USE site (`expected Int, got
+/// [?]`), or, when the declared type happens to match, as a codegen
+/// error about params the locus never declared. Reserving the names
+/// at the declaration keeps the failure at the one line that can fix
+/// it, and keeps a collision from reaching codegen at all.
+const SYNTHETIC_LOCUS_MEMBERS: [(&str, &str); 3] = [
+    (
+        "children",
+        "the accept'd-child collection every locus carries \
+         (`for c in self.children`, `self.children.count`)",
+    ),
+    (
+        "k_max",
+        "the F.1 displacement bound every locus carries \
+         (`self.k_max`)",
+    ),
+    (
+        "draining",
+        "the F.27 drain flag every locus carries (`self.draining`)",
+    ),
+];
+
+/// The explanatory phrase for `name` iff it is a synthetic locus
+/// member, else `None`.
+fn synthetic_locus_member(name: &str) -> Option<&'static str> {
+    SYNTHETIC_LOCUS_MEMBERS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, what)| *what)
+}
+
+/// Push the GH #734 reserved-member diagnostic at `id`'s span when
+/// `id` spells a synthetic locus member. `kind` names what was
+/// declared ("params field", "method", "capacity slot").
+fn reserved_member_diag(diags: &mut Vec<Diag>, kind: &str, id: &Ident) {
+    let Some(what) = synthetic_locus_member(&id.name) else {
+        return;
+    };
+    diags.push(Diag::ty(
+        id.span,
+        format!(
+            "{kind} `{n}`: `{n}` is a reserved locus member — it names \
+             {what}, and the compiler resolves that before anything a \
+             locus declares, so `self.{n}` never reaches this {kind}. \
+             Rename it (`own_{n}`, say).",
+            kind = kind,
+            n = id.name,
+            what = what,
+        ),
+    ));
+}
+
 /// Phase 3 migration: two loci have the same *footprint* iff their
 /// params (the user-visible state fields) match by name and type in
 /// declaration order. A state-preserving `reperspective` keeps the
@@ -6853,7 +6915,47 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// GH #734: a declared member may not take the spelling of a
+    /// synthetic one (`children` / `k_max` / `draining`). Reported
+    /// at the declaration, where the rename happens — reads of such
+    /// a member resolve to the synthetic member, so the collision
+    /// otherwise surfaces as an unrelated error at a use site, or
+    /// (when the declared type matches the synthetic one) not until
+    /// codegen.
+    fn check_reserved_member_names(&mut self, decl: &LocusDecl) {
+        for member in &decl.members {
+            match member {
+                LocusMember::Params(pb) => {
+                    for p in &pb.params {
+                        reserved_member_diag(
+                            &mut self.diags,
+                            "params field",
+                            &p.name,
+                        );
+                    }
+                }
+                LocusMember::Fn(f) => {
+                    reserved_member_diag(&mut self.diags, "method", &f.name);
+                }
+                LocusMember::Capacity(cb) => {
+                    for slot in &cb.slots {
+                        reserved_member_diag(
+                            &mut self.diags,
+                            "capacity slot",
+                            &slot.name,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn check_locus(&mut self, decl: &'a LocusDecl) {
+        // GH #734 — reserved member names. Runs before the symbol
+        // lookup below so it fires for every parsed locus.
+        self.check_reserved_member_names(decl);
+
         let info = match self.top.lookup(&decl.name.name) {
             Some(TopSymbol::Locus(info)) => info,
             _ => return,

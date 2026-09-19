@@ -97,6 +97,30 @@ Instantiating a locus type produces a **locus handle** of that
 type, allocated as a region within the enclosing scope (per
 `memory.md`).
 
+### Reserved member names
+
+Every locus type also carries three **synthetic members** the
+compiler injects, readable by name from any method body:
+
+| Name | Type | Meaning |
+|---|---|---|
+| `children` | `[ChildType]` | the accept'd-child collection (F.11); `self.children.count` / `.is_empty` summarize it |
+| `k_max` | `Float` | the F.1 displacement bound computed from `B` / `c` / `sigma` / `phi` |
+| `draining` | `Bool` | the F.27 drain flag, true once the locus is winding down |
+
+`self.<name>` resolves the synthetic member **before** any
+member the locus declares, so these three names are **reserved**:
+a params field, member fn, or capacity slot spelled `children`,
+`k_max`, or `draining` is a type error *at its declaration*,
+naming the synthetic member it collides with and suggesting a
+rename. The rule is unconditional — it holds for a locus that
+accepts no child type as much as for one that does, because the
+synthetic member is resolved in both.
+
+The reservation is per-locus-namespace, not per-spelling: a
+`type`'s struct field may be named `children` (types carry no
+synthetic members), and so may a local binding or a fn parameter.
+
 ## Capacity-slot cell handles (F.22)
 
 `Cell<T>` is the value type returned by `acquire()` (Pool slots)
