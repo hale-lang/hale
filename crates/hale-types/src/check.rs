@@ -6951,10 +6951,61 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// GH #756: `type` is a TOP-LEVEL declaration. The parser accepts
+    /// one inside a locus body (`LocusMember::Type`) and the checker
+    /// ignored it, so a locus-level `type` passed `hale check` — and
+    /// then codegen, which has no lowering for the member, refused
+    /// the whole program with `locus L member kind not yet lowered to
+    /// codegen`: a program the gate accepted could not be built, and
+    /// the message named no line. Nothing could USE the declaration
+    /// either: the resolver never registers a member type, so the
+    /// name it introduces is invisible everywhere, including inside
+    /// the locus that declares it.
+    ///
+    /// Rejecting it at the declaration is the fix rather than
+    /// lowering it, for the reasons that decided the sibling member
+    /// `const` (GH #747): a namespaced type has no settled spelling
+    /// (`Holder::Pair` from outside, bare `Pair` inside), it would
+    /// need new resolution in the checker AND in codegen, and it
+    /// lands on the generic-monomorph and cross-seed rename paths
+    /// that already walk a member type's field types. A top-level
+    /// `type` is in scope everywhere in the seed and is what the
+    /// author wanted.
+    fn check_no_member_types(&mut self, decl: &LocusDecl) {
+        for member in &decl.members {
+            let LocusMember::Type(t) = member else {
+                continue;
+            };
+            // At the `type` keyword: `TypeDecl::span` runs from the
+            // keyword to the declaration's end in all three forms
+            // (struct, alias, enum), so the declaration's first
+            // token is the one line that has to change.
+            let kw = Span::new(
+                t.span.start.as_usize(),
+                t.span.start.as_usize() + "type".len(),
+            );
+            self.diags.push(Diag::ty(
+                kw,
+                format!(
+                    "`type {n}` is declared inside locus `{l}`: `type` is a \
+                     top-level declaration, not a locus member. Move it \
+                     above the locus — a top-level `type` is in scope \
+                     everywhere in the seed, including inside every locus.",
+                    n = t.name.name,
+                    l = decl.name.name,
+                ),
+            ));
+        }
+    }
+
     fn check_locus(&mut self, decl: &'a LocusDecl) {
         // GH #734 — reserved member names. Runs before the symbol
         // lookup below so it fires for every parsed locus.
         self.check_reserved_member_names(decl);
+
+        // GH #756 — a `type` is not a locus member. Also before the
+        // lookup, for the same reason.
+        self.check_no_member_types(decl);
 
         let info = match self.top.lookup(&decl.name.name) {
             Some(TopSymbol::Locus(info)) => info,
@@ -9312,7 +9363,13 @@ impl<'a> Checker<'a> {
                     ));
                 }
             }
-            LocusMember::Type(_) => {}
+            LocusMember::Type(_) => {
+                // GH #756: refused at its declaration by
+                // `check_no_member_types` before any member is
+                // walked. Its fields were never checked here either
+                // — the resolver registers no member type, so there
+                // is nothing to check them against.
+            }
             LocusMember::Capacity(cb) => {
                 // F.22 restriction 1: cell type must be a value-shape,
                 // not a LocusRef. Loci have lifecycle; recycling

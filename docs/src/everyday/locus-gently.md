@@ -79,6 +79,12 @@ These aren't rival categories — they're points on a gradient. A
 starts accumulating methods, you promote it from `type` to
 `locus`. There is no third thing to reach for.
 
+Note the two declarations above are **siblings**. A `type` used
+by one locus still goes beside it, not inside its body: a
+top-level `type` is in scope everywhere in the program, including
+inside every locus, and there are no nested types. A `type`
+written inside a locus body is an error at the `type` keyword.
+
 ## Two everyday shapes
 
 Almost every locus you write at this level is one of two shapes.

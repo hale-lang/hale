@@ -97,6 +97,34 @@ Instantiating a locus type produces a **locus handle** of that
 type, allocated as a region within the enclosing scope (per
 `memory.md`).
 
+### `type` is a top-level declaration
+
+A locus body may not declare a `type`. `type X { ... }` is a
+top-level declaration only (see `grammar.ebnf`: `type_decl` is a
+`top_decl`, not a `locus_member`), and a `type` inside a locus
+body is a type error **at the `type` keyword**:
+
+```text
+main.hl:2:5: type error: `type Pair` is declared inside locus
+`Holder`: `type` is a top-level declaration, not a locus member.
+Move it above the locus — a top-level `type` is in scope
+everywhere in the seed, including inside every locus.
+```
+
+A top-level `type` is the supported spelling and loses nothing:
+it is in scope inside every locus of the seed, so a locus that
+wants a record of its own declares it above itself and uses it
+unqualified. A locus-level `type` had no reading at all before
+this rule — the resolver registers no member type, so the name it
+introduced was invisible everywhere, including inside the locus
+that declared it.
+
+Before this rule, the parser accepted the member and the checker
+ignored it, so such a program passed `hale check` and then failed
+in the backend with `locus L member kind not yet lowered to
+codegen` — a program the gate accepted that could not be built
+(GH #756, the sibling of the member `const`).
+
 ### Reserved member names
 
 Every locus type also carries three **synthetic members** the

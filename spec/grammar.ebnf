@@ -293,13 +293,20 @@ locus_member      = params_block
                   | closure_decl
                   | function_decl
                   | const_decl
-                  | type_decl
                   | bindings_block
                   | placement_block
                   | topology_block
                   | claims_block
                   | birth_check_decl
                   ;
+
+(* GH #756 — `type_decl` is NOT a locus member: a type is a
+   top-level declaration (see `top_decl`), in scope everywhere in
+   the seed including inside every locus. The parser still
+   recognizes the keyword in a locus body so the error can be a
+   located type error at the `type` keyword rather than a parse
+   failure that cascades; see `types.md` § `type` is a top-level
+   declaration. *)
 
 (* GH #382 — the `claims { }` main-locus member: named,
    bundle-level sentences over the program graph. Only legal inside
