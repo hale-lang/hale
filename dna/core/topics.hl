@@ -156,7 +156,14 @@ topic WorkflowLeft { payload: WorkflowLeave; subject: "dna.workflow.left"; keyed
 // in memory.
 type ExecutionStateAsk { scope: String = ""; task_id: String = ""; }
 topic ExecutionStateAsked { payload: ExecutionStateAsk; subject: "dna.execution.state.asked"; keyed_by scope; }
-type ExecutionState { task_id: String = ""; admitted: Bool = false; disposition: String = ""; reason: String = ""; }
+type ExecutionState {
+    task_id: String = "";
+    admitted: Bool = false;
+    disposition: String = "";
+    reason: String = "";
+    outstanding: Int = 0; // Works with an admitted attempt and no settlement: a cancelled execution's undrained responsibilities
+    current_step: Int = 0; // the first step the record has not completed
+}
 topic ExecutionStateAnswered { payload: ExecutionState; subject: "dna.execution.state.answered"; keyed_by task_id; }
 // The record is writable again: a resident holding a transition the
 // record refused proposes it again. Published by whoever knows — the

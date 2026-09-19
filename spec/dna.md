@@ -1289,9 +1289,15 @@ from the leaves upward.
 Restore is not a mode. An execution asked of the executions owner over
 the record a crash left — or fresh: the same ask — first asks the
 runtime what the record holds about it (`ExecutionStateAsked`,
-answered from the projection): one the record has settled is over,
-its settlement is announced and the workflow leaves, birthing nothing;
-one still open proposes its transitions exactly as a fresh one does,
+answered from the projection): one the record has settled is over —
+its settlement is announced and the workflow leaves, birthing nothing
+— except a cancelled one whose admitted Works have not settled:
+cancelled is not cancelled-and-drained, and the current step is born
+fenced, so those Works settle cancelled, the step drains, and the
+workflow leaves behind it. A cancellation heard while the record is
+being asked waits for the answer: an execution the record has settled
+is not cancelled, and one still open is cancelled first. One still
+open proposes its transitions exactly as a fresh one does,
 and the committer answers what the record already holds as a replay,
 so every Task, Step, Work and Attempt id a restored incarnation uses is
 the record's, never minted again — a completed record rebooted gains
@@ -1305,9 +1311,12 @@ runtime knows which attempts it claimed itself and which it already
 redelivered. Every request is decided against the record at one
 reading: an attempt whose outcome is recorded is answered from it and
 never runs again, and a claim the dead incarnation left open under it
-is closed with it, durably, before the Work is answered — a close the
-record refuses leaves the Work holding its responsibility, told so,
-until a later request closes it; one never claimed runs through the
+is closed with it, durably, before the Work is answered — on every
+path that answers from a recorded outcome, a request or a reply — and
+a close the record refuses leaves the Work holding its responsibility,
+told so, until a later request or reply closes it: a Work whose
+request was refused without an outcome asks again when the record
+resumes; one never claimed runs through the
 ordinary path, which claims first; one claimed by this incarnation, or
 redelivered by it, is running, and the request attaches, so a duplicate
 dispatch starts no second invocation; one claimed and never answered by

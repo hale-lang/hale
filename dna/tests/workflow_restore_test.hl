@@ -83,10 +83,20 @@ locus Raced {
     fn verify_chain() -> Bool { return self.inner.verify_chain(); }
 }
 
-// A record that refuses one row, once.
+// A record that refuses one row, once — and, told to, asks for the
+// execution's cancellation from inside the runtime's first reading of
+// it, so the cancellation reaches the workflow while its question to
+// the record is still being answered.
 locus Refusing {
-    params { inner: dna::MemJournal = dna::MemJournal { }; refuse_once: String = ""; refused: Bool = false; }
-    fn refresh() -> Bool { return self.inner.refresh(); }
+    params { inner: dna::MemJournal = dna::MemJournal { }; refuse_once: String = ""; refused: Bool = false; cancel_on_refresh: Bool = false; cancelled: Bool = false; }
+    bus { publish dna::WorkflowCancelRequested; }
+    fn refresh() -> Bool {
+        if self.cancel_on_refresh && !self.cancelled {
+            self.cancelled = true;
+            dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: "t1", reason: "asked while the record was being read" };
+        }
+        return self.inner.refresh();
+    }
     fn revision() -> Int { return self.inner.revision(); }
     fn head() -> String { return self.inner.head(); }
     fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
@@ -133,6 +143,8 @@ main locus App {
         subscribe Calls as on_call;
         publish dna::ExecutionAsked;
         publish dna::AttemptRequested;
+        publish dna::WorkflowCancelRequested;
+        publish dna::RecordResumed;
     }
     fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
     fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
@@ -369,13 +381,17 @@ main locus App {
         std::test::assert(self.same_rows(full, self.boot.rt.journal, false), "and the record completed with the same structure");
 
         // ---- boot 9: the crash after the claim, with the execution's
-        //      cancellation in the record: the restored execution is over
-        //      before anything is born
+        //      cancellation in the record and the claimed Work unsettled:
+        //      cancelled is not cancelled-and-drained — the current step
+        //      is born fenced, the Work settles cancelled, the step drains,
+        //      and only then does the execution leave; a late reply is
+        //      recorded and changes nothing
         self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Counting { } } }, owner: dna::Executions { scope: "main" } };
         self.cut(full, self.boot.rt.journal, at_outcome);
-        let cancelled = self.boot.rt.journal.append(self.boot.rt.journal.revision(), "workflow.settled", "t1", dna::encode_workflow_outcome(dna::WorkflowOutcome {
+        let cancel_row = dna::encode_workflow_outcome(dna::WorkflowOutcome {
             task_id: "t1", disposition: "cancelled", reason: "cancelled before the restart", transition: dna::TransitionRef { scope: "main", key: "t1", proposal_id: "t1@cancelled" }
-        }));
+        });
+        let cancelled = self.boot.rt.journal.append(self.boot.rt.journal.revision(), "workflow.settled", "t1", cancel_row);
         std::test::assert(cancelled.ok, "the cancellation is in the record");
         let before9 = self.boot.rt.journal.revision();
         self.ask();
@@ -383,9 +399,46 @@ main locus App {
         self.until_life("task:t1:dissolved", 10);
         self.settle();
         std::test::assert_eq_int(self.count(self.calls, wa + "/a0"), 5, "boot 9: nothing runs under a cancelled execution");
-        std::test::assert_eq_int(self.boot.rt.journal.revision(), before9, "and nothing is written");
-        std::test::assert_eq_int(self.count(self.lives, "t1/wf1/s0:born"), 7, "no step was born");
-        std::test::assert_eq_int(self.count(self.lives, "task:t1:dissolved"), 10, "the restored Task announced the cancellation and left");
+        std::test::assert_eq_int(self.count(self.lives, "t1/wf1/s0:born"), 8, "the current step was born, fenced");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "work.settled", wa), 1, "and the admitted Work settled under the fence");
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), before9 + 1, "that settlement is the one row written");
+        std::test::assert_eq_int(self.count(self.lives, "t1/wf1/s0/a:dissolved") + self.count(self.lives, "t1/wf1/s0:dissolved"), 8 + 8, "the Work and the step drained and left");
+        std::test::assert_eq_int(self.count(self.lives, "task:t1:dissolved"), 10, "then the restored Task left");
+        let late9 = self.boot.rt.settle(wa + "/a0", dna::WorkResult { disposition: "done", result: "late", performer: "counter", attempt_id: wa + "/a0" });
+        std::test::assert(late9.ok, "a late reply for the fenced attempt is recorded: " + late9.why);
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", wa + "/a0"), 1, "as its outcome");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "work.settled", wa), 1, "and the Work's settlement stands");
+
+        // ---- boot 12: cancelled and drained: nothing is born, nothing
+        //      written; the execution is over
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", work: dna::WorkSystem { service: Counting { } } }, owner: dna::Executions { scope: "main" } };
+        self.cut(full, self.boot.rt.journal, at_outcome);
+        let c12 = self.boot.rt.journal.append(self.boot.rt.journal.revision(), "workflow.settled", "t1", cancel_row);
+        let d12 = self.boot.rt.journal.append(self.boot.rt.journal.revision(), "work.settled", wa, dna::encode_work_outcome(dna::WorkOutcome {
+            work_id: wa, step_id: "t1/wf1/s0", attempt_id: wa + "/a0", disposition: "cancelled", transition: dna::TransitionRef { scope: "main", key: wa, proposal_id: wa + "@settled" }
+        }));
+        std::test::assert(c12.ok && d12.ok, "the cancellation and the drain are in the record");
+        let before12 = self.boot.rt.journal.revision();
+        self.ask();
+        self.until_outcome("t1:cancelled", 2);
+        self.until_life("task:t1:dissolved", 11);
+        self.settle();
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), before12, "boot 12: nothing is written");
+        std::test::assert_eq_int(self.count(self.lives, "t1/wf1/s0:born"), 8, "no step is born: the execution is over");
+        std::test::assert_eq_int(self.count(self.lives, "task:t1:dissolved"), 11, "and the Task left");
+
+        // ---- boot 13: a cancellation asked while the restored execution
+        //      is still asking the record (it lands between the question
+        //      and the answer): the record's answer comes first — done —
+        //      and the cancellation is moot
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: Refusing { cancel_on_refresh: true }, work: dna::WorkSystem { service: Counting { } } }, owner: dna::Executions { scope: "main" } };
+        self.cut(full, self.boot.rt.journal, total);
+        self.ask();
+        self.until_outcome("t1:done", 10);
+        self.until_life("task:t1:dissolved", 12);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "workflow.settled", "t1"), 1, "boot 13: the record's one settlement stands; nothing was proposed against it");
+        std::test::assert_eq_int(self.count(self.lives, "task:t1:dissolved"), 12, "and the restored execution left");
 
         // ---- boot 10: the crash after the claim, the claim's effect
         //      resulted unknown (a restart before this engine reconciled
@@ -395,12 +448,12 @@ main locus App {
         let unknown = self.boot.rt.journal.append(self.boot.rt.journal.revision(), "effect.result", "attempt:" + wa + "/a0", "unknown");
         std::test::assert(unknown.ok, "the effect resulted unknown");
         self.ask();
-        self.until_life("t1/wf1/s0/a:born", 8);
+        self.until_life("t1/wf1/s0/a:born", 9);
         self.settle();
         std::test::assert_eq_int(self.count(self.calls, wa + "/a0"), 5, "boot 10: an unresolved effect is not redelivered");
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", ""), 0, "no outcome is invented");
         std::test::assert(std::str::contains(self.replies, "resulted unknown"), "the Work was told why: " + self.replies);
-        std::test::assert_eq_int(self.count(self.lives, "t1/wf1/s0/a:dissolved"), 7, "and stays, reachable, until the effect is reconciled");
+        std::test::assert_eq_int(self.count(self.lives, "t1/wf1/s0/a:dissolved"), 8, "and stays, reachable, until the effect is reconciled");
 
         // ---- boot 11: the crash after the outcome, and the record refuses
         //      to close the open claim, once: the Work is not told it is
@@ -409,16 +462,32 @@ main locus App {
         self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: Refusing { refuse_once: "effect.result:attempt:" + wa + "/a0" }, work: dna::WorkSystem { service: Counting { } } }, owner: dna::Executions { scope: "main" } };
         self.cut(full, self.boot.rt.journal, at_result);
         self.ask();
-        self.until_life("t1/wf1/s0/a:born", 9);
+        self.until_life("t1/wf1/s0/a:born", 10);
         self.settle();
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "work.settled", wa), 0, "boot 11: the claim's close was refused: the Work did not settle on an outcome the record would not close under");
-        std::test::assert(std::str::contains(self.replies, "would not close the claim"), "and was told so: " + self.replies);
-        std::test::assert_eq_int(self.count(self.lives, "t1/wf1/s0/a:dissolved"), 8, "and stays (boot 10's unresolved Work was reclaimed with its incarnation)");
-        dna::AttemptRequested <- dna::AttemptRequest { scope: "main", attempt_id: wa + "/a0", work_id: wa };
-        self.until_outcome("t1:done", 10);
+        std::test::assert(std::str::contains(self.replies, "would not close its claim"), "and was told so: " + self.replies);
+        std::test::assert_eq_int(self.count(self.lives, "t1/wf1/s0/a:dissolved"), 9, "and stays (boot 10's unresolved Work was reclaimed with its incarnation)");
+        dna::RecordResumed <- dna::RecordResume { scope: "main", why: "writable again" };
+        self.until_outcome("t1:done", 11);
         self.settle();
-        std::test::assert_eq_int(self.count(self.calls, wa + "/a0"), 5, "asked again, the outcome is still the answer: no run");
+        std::test::assert_eq_int(self.count(self.calls, wa + "/a0"), 5, "resumed, the Work asked again and the outcome is still the answer: no run");
         std::test::assert(self.same_rows(full, self.boot.rt.journal, true), "the claim closed and the record completed, row for row");
+
+        // ---- boot 14: the refused close again, and this time the old
+        //      process's duplicate terminal reply arrives: a reply that
+        //      returns a recorded outcome closes the claim like a request
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: Refusing { refuse_once: "effect.result:attempt:" + wa + "/a0" }, work: dna::WorkSystem { service: Counting { } } }, owner: dna::Executions { scope: "main" } };
+        self.cut(full, self.boot.rt.journal, at_result);
+        self.ask();
+        self.until_life("t1/wf1/s0/a:born", 11);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "work.settled", wa), 0, "boot 14: the close was refused; the Work holds");
+        let dup = self.boot.rt.settle(wa + "/a0", dna::WorkResult { disposition: "done", result: "counted:count the receipts", performer: "counter", attempt_id: wa + "/a0" });
+        std::test::assert(dup.ok && dup.reused, "the old process's duplicate reply is answered from the recorded outcome: " + dup.why);
+        self.until_outcome("t1:done", 12);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.result", "attempt:" + wa + "/a0"), 1, "and it closed the claim first");
+        std::test::assert(self.same_rows(full, self.boot.rt.journal, true), "the record completed, row for row");
         std::test::assert(self.boot.rt.journal.verify_chain(), "the record's chain holds");
     }
 }

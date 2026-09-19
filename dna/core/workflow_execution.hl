@@ -255,6 +255,22 @@ fn perform_attempt(j: Journal, work: WorkSystem, scope: String, v: AdmittedAttem
     return x;
 }
 
+// The claim on an attempt is closed under its recorded outcome, durably,
+// before anything is answered from that outcome (card 12a): true when
+// it was closed already or its close just landed; false when the record
+// refused it — and then the outcome is not the answer yet, and the Work
+// keeps its responsibility until a later request or reply closes it.
+fn claim_closed(j: Journal, attempt_id: String, disposition: String) -> Bool {
+    let key = execution_key(attempt_id);
+    let st = effect_status(j, key);
+    if !st.requested || st.done { return true; }
+    return effect_result(j, key, disposition == "done");
+}
+
+fn close_refused(attempt_id: String) -> Executed {
+    return Executed { why: "the outcome of attempt " + attempt_id + " is recorded, and the record would not close its claim; the Work keeps its responsibility" };
+}
+
 // Every request for an admitted attempt comes here (card 12a): the
 // record is the authority as always, and what the runtime knows of its
 // own incarnation — whether it made the claim, whether it already
@@ -295,15 +311,7 @@ fn dispatch_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAtte
         if len(gap) > 0 { return Executed { why: gap }; }
         let settled = recorded_attempt_outcome(j, id, rev);
         if settled.ok {
-            if attempt_claimed(j, id, rev) {
-                let st = effect_status(j, key);
-                if !st.done {
-                    let closed = effect_result(j, key, settled.value.disposition == "done");
-                    if !closed {
-                        return Executed { why: "the record would not close the claim on attempt " + id + " under its recorded outcome; the Work keeps its responsibility" };
-                    }
-                }
-            }
+            if !claim_closed(j, id, settled.value.disposition) { return close_refused(id); }
             return Executed { ok: true, reused: true, disposition: settled.value.disposition, outcome: settled.value };
         }
         if !attempt_claimed(j, id, rev) { return execute_attempt(j, work, scope, a); }
@@ -345,6 +353,7 @@ fn settle_attempt(j: Journal, work: WorkSystem, scope: String, attempt_id: Strin
     }
     let settled = recorded_attempt_outcome(j, attempt_id, rev);
     if settled.ok {
+        if !claim_closed(j, attempt_id, settled.value.disposition) { return close_refused(attempt_id); }
         return Executed { ok: true, reused: true, disposition: settled.value.disposition, outcome: settled.value, why: "attempt " + attempt_id + " was already settled; this reply changes nothing" };
     }
     let bad = reply_disposition_gap(r);
@@ -375,11 +384,15 @@ fn record_attempt(j: Journal, scope: String, v: AdmittedAttempt, r: WorkResult, 
         let rev = j.revision();
         let already = recorded_attempt_outcome(j, v.attempt_id, rev);
         if already.ok {
+            if !claim_closed(j, v.attempt_id, already.value.disposition) { return close_refused(v.attempt_id); }
             return Executed { ok: true, ran: ran, reused: true, disposition: already.value.disposition, outcome: already.value, why: "attempt " + v.attempt_id + " was already settled; this reply changes nothing" };
         }
         let w = j.append_exact(rev, "attempt.outcome", v.attempt_id, body);
         if w.ok {
-            let closed = effect_result(j, execution_key(v.attempt_id), r.disposition == "done");
+            if !claim_closed(j, v.attempt_id, r.disposition) {
+                let held = close_refused(v.attempt_id);
+                return Executed { ran: ran, why: held.why };
+            }
             return Executed { ok: true, ran: ran, disposition: r.disposition, outcome: outcome };
         }
         if w.error != "stale_revision" && w.error != "claimed" {
