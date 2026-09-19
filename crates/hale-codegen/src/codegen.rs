@@ -27872,7 +27872,42 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         )? {
             return Ok(slot_result);
         }
-        let (recv_val, recv_ty) = self.lower_expr(receiver_expr, scope)?;
+        // GH #710: a locus LITERAL in receiver position —
+        // `Queries { j: GitLike { } }.total()` — is a temporary whose
+        // owner is this call. Without an owner,
+        // `lower_locus_instantiation` takes the eager path and emits
+        // drain → dissolve → arena_destroy at the END OF THE LITERAL,
+        // so the method ran against a locus whose arena (and whose
+        // children's arenas and structs) were already freed. It read
+        // as "works sometimes": with no child, or a child whose birth
+        // allocates nothing, the freed bytes were still intact; an
+        // interface-typed child (fat pointer into the freed child
+        // struct) or a birth that churns the allocator (a subprocess
+        // drain, a @form(vec) push) recycled them first and the call
+        // took a SIGSEGV.
+        //
+        // Give the temporary the same owner `let` gives it: defer its
+        // dissolve to the enclosing fn's scope-exit flush, exactly as
+        // `Stmt::Let` does for `let q = Queries { ... };`. The receiver
+        // and its whole child tree then live until the fn returns —
+        // across the call, its allocation churn, and any drain point
+        // inside it — and are torn down by the one flush path
+        // (drain → __dissolve_closures → dissolve → arena_destroy),
+        // preserving F.4 ordering. Set immediately before lowering the
+        // receiver and cleared after, so only the OUTERMOST literal
+        // takes the flag (`lower_locus_instantiation` consumes it with
+        // `mem::take` at entry); nested child literals in its inits
+        // stay parent-owned, as in the `let` form.
+        let recv_is_locus_literal =
+            self.expr_is_locus_literal(receiver_expr);
+        if recv_is_locus_literal {
+            self.defer_next_locus_dissolve = true;
+        }
+        let recv_lowered = self.lower_expr(receiver_expr, scope);
+        if recv_is_locus_literal {
+            self.defer_next_locus_dissolve = false;
+        }
+        let (recv_val, recv_ty) = recv_lowered?;
         // F.20 Phase B: dispatch through an interface fat pointer.
         // The receiver value is a pointer to a `{data, vtable}`
         // struct laid out by `coerce_to_interface`. Load data

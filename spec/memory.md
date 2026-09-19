@@ -651,7 +651,11 @@ that instantiated them. m82 changed the *let-bound* case:
 `let h = LocusName { ... }` now defers dissolve to the
 enclosing fn's scope-exit flush instead of the struct-literal
 boundary, so the user-visible binding stays valid for
-subsequent method calls. Long-lived loci (with `bus subscribe`)
+subsequent method calls. GH #710 extends the same deferral to a
+literal in *receiver* position (`LocusName { ... }.method()`) —
+the call is that literal's handle, so the eager path would have
+destroyed the receiver's arena before the method it is the
+receiver of ran. Long-lived loci (with `bus subscribe`)
 continue to defer regardless of binding shape. See
 `spec/semantics.md` "Dissolve timing rules" for the full rule.
 
