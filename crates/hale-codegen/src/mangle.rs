@@ -184,10 +184,50 @@ pub fn mangle_with_renames_in_seed(
         renames,
         scopes: Vec::new(),
         module_aliases,
+        alias_heads: HashMap::new(),
+        mangling: true,
     };
     for item in &mut prog.items {
         walker.walk_top_decl(item);
     }
+}
+
+/// GH #746: rewrite the HEAD of every `alias::Name` reference in one
+/// top-level declaration, so an import alias stops being a build-wide
+/// name.
+///
+/// Aliases are scoped to the seed that declares them (spec
+/// `projects.md`, "Scoped imports (A4)"), but the path-rename table
+/// the checker and codegen resolve `alias::Name` through is one per
+/// build, keyed by the alias as written. Two seeds that spell
+/// different libraries `u` therefore collided in it — last writer won
+/// and both seeds' references resolved to one library, with no
+/// diagnostic. The CLI gives each declaring seed its own head
+/// (`u` -> `u$0`) and registers that seed's rows under it; this pass
+/// puts the scoped head on the seed's own references, so every
+/// consumer of the table — checker, pre-passes, codegen, claims —
+/// resolves the alias the seed's author meant without knowing
+/// anything about files.
+///
+/// Only heads move. A bare name is untouched (the pass carries no
+/// decl renames), so a free fn that shares the alias's name — legal,
+/// and #714's subject — keeps resolving to the fn.
+pub fn rewrite_import_alias_heads(
+    d: &mut TopDecl,
+    alias_heads: &HashMap<String, String>,
+) {
+    if alias_heads.is_empty() {
+        return;
+    }
+    let no_renames: HashMap<String, String> = HashMap::new();
+    let mut walker = Mangler {
+        renames: &no_renames,
+        scopes: Vec::new(),
+        module_aliases: HashSet::new(),
+        alias_heads: alias_heads.clone(),
+        mangling: false,
+    };
+    walker.walk_top_decl(d);
 }
 
 /// brained F.1 / 2026-05-23 — apply the cross-seed
@@ -734,6 +774,16 @@ struct Mangler<'a> {
     /// set names a module, not a value, so it is left alone for the
     /// per-build path-rename table to resolve.
     module_aliases: HashSet<String>,
+    /// GH #746: `alias -> scoped alias` for the alias-head pass.
+    /// Empty on a mangling pass, which leaves every path head to
+    /// `rewrite_variant_path`'s own rule.
+    alias_heads: HashMap<String, String>,
+    /// True on a mangling pass (`mangle_with_renames*`), false on the
+    /// alias-head pass. Guards the one walk step that is a state
+    /// change rather than a rename: marking a `claims { }` block
+    /// library-tier, which is true of an imported seed's block and
+    /// false of the closing seed's.
+    mangling: bool,
 }
 
 impl<'a> Mangler<'a> {
@@ -762,6 +812,69 @@ impl<'a> Mangler<'a> {
     fn rewrite_single_segment_path(&self, q: &mut QualifiedName) {
         if q.segments.len() == 1 {
             self.rewrite_ident(&mut q.segments[0].name);
+        } else {
+            self.rewrite_alias_head(&mut q.segments);
+        }
+    }
+
+    /// GH #746: put this seed's scoped head on a `head::member`
+    /// reference. No-op on a mangling pass (`alias_heads` empty) and
+    /// on a head that is not one of the scoped aliases — a seed type
+    /// heading an enum-variant path, or an alias no other seed
+    /// disagrees about.
+    fn rewrite_alias_head(&self, segments: &mut [Ident]) {
+        if self.alias_heads.is_empty() {
+            return;
+        }
+        let Some(head) = segments.first_mut() else { return };
+        if let Some(scoped) = self.alias_heads.get(&head.name) {
+            head.name = scoped.clone();
+        }
+    }
+
+    /// The same rewrite for a head spelled as the left end of an
+    /// `Expr::Path2` chain (`a::b` built in postfix position) rather
+    /// than as segment 0 of a `QualifiedName`.
+    fn rewrite_alias_head_expr(&self, e: &mut Expr) {
+        if self.alias_heads.is_empty() {
+            return;
+        }
+        match e {
+            Expr::Ident(i) => {
+                if let Some(scoped) = self.alias_heads.get(&i.name) {
+                    i.name = scoped.clone();
+                }
+            }
+            Expr::Path(q) => self.rewrite_alias_head(&mut q.segments),
+            Expr::Path2 { receiver, .. } => {
+                self.rewrite_alias_head_expr(receiver)
+            }
+            _ => {}
+        }
+    }
+
+    /// GH #746: the head of `subscribe alias::Topic` /
+    /// `publish alias::Topic`. The mangling pass leaves a qualified
+    /// subject entirely alone (the path-rename table resolves it
+    /// later); the scoping pass only re-heads it.
+    fn rewrite_bus_subject_head(&self, subject: &mut BusSubject) {
+        if let BusSubject::QualifiedTopic(qn) = subject {
+            self.rewrite_alias_head(&mut qn.segments);
+        }
+    }
+
+    /// GH #746: a topic reference whose head is a scoped alias. A
+    /// qualified topic reaches the walk in two shapes — a real path
+    /// (`BusSubject::QualifiedTopic`, claim and group members) and a
+    /// single ident whose name is the joined path, which is how
+    /// `bindings { alias::Topic: ... }` carries it (#527 B6).
+    fn rewrite_alias_head_joined(&self, id: &mut Ident) {
+        if self.alias_heads.is_empty() {
+            return;
+        }
+        let Some((head, rest)) = id.name.split_once("::") else { return };
+        if let Some(scoped) = self.alias_heads.get(head) {
+            id.name = format!("{}::{}", scoped, rest);
         }
     }
 
@@ -785,12 +898,18 @@ impl<'a> Mangler<'a> {
         match q.segments.len() {
             1 => self.rewrite_ident(&mut q.segments[0].name),
             2 => {
+                // GH #746: an aliased head is the one the scoping
+                // pass moves; it is still never a value here.
+                self.rewrite_alias_head(&mut q.segments);
                 if self.module_aliases.contains(&q.segments[0].name) {
                     return;
                 }
                 self.rewrite_ident(&mut q.segments[0].name)
             }
-            _ => {}
+            // `alias::Color::Red` — an imported enum's variant. The
+            // head is an alias (three segments cannot start with a
+            // value), so only the #746 scoping applies.
+            _ => self.rewrite_alias_head(&mut q.segments),
         }
     }
 
@@ -833,6 +952,11 @@ impl<'a> Mangler<'a> {
                 for m in &mut g.members {
                     if m.segments.len() == 1 && !m.glob {
                         self.rewrite_ident(&mut m.segments[0].name);
+                    } else {
+                        // GH #746: `alias::Name` and the glob
+                        // `alias::*` (one segment, glob set) are both
+                        // headed by an alias.
+                        self.rewrite_alias_head(&mut m.segments);
                     }
                 }
             }
@@ -851,7 +975,13 @@ impl<'a> Mangler<'a> {
             // closing seed's (illegal) top-level one after the seed
             // merge flattens both into one program.
             TopDecl::Claims(cb) => {
-                cb.lib_tier = true;
+                // Only the mangling pass marks the block: it runs on
+                // imported seeds alone. The #746 alias-scoping pass
+                // also visits the CLOSING seed's block, whose claims
+                // are not library-tier.
+                if self.mangling {
+                    cb.lib_tier = true;
+                }
                 self.rewrite_claim_entry_idents(&mut cb.entries);
             }
             // GH #409: a constitution can live in an imported seed
@@ -917,6 +1047,11 @@ impl<'a> Mangler<'a> {
                                 self.rewrite_ident(
                                     &mut g.topic.segments[0].name,
                                 );
+                            } else {
+                                // GH #746
+                                self.rewrite_alias_head(
+                                    &mut g.topic.segments,
+                                );
                             }
                         }
                     }
@@ -929,6 +1064,9 @@ impl<'a> Mangler<'a> {
                             self.rewrite_ident(
                                 &mut topic.segments[0].name,
                             );
+                        } else {
+                            // GH #746
+                            self.rewrite_alias_head(&mut topic.segments);
                         }
                     }
                     ClaimForm::RequireSealed { group }
@@ -943,6 +1081,9 @@ impl<'a> Mangler<'a> {
                             self.rewrite_ident(
                                 &mut topic.segments[0].name,
                             );
+                        } else {
+                            // GH #746
+                            self.rewrite_alias_head(&mut topic.segments);
                         }
                     }
                 }
@@ -982,6 +1123,7 @@ impl<'a> Mangler<'a> {
                             // path resolved later through the per-build
                             // path-rename table; the mangler leaves it alone
                             // (same shape as multi-segment Expr::Path).
+                            self.rewrite_bus_subject_head(subject);
                             if let BusSubject::Topic(ident) = subject {
                                 self.rewrite_ident(&mut ident.name);
                             }
@@ -997,6 +1139,7 @@ impl<'a> Mangler<'a> {
                             }
                         }
                         BusMember::Publish { subject, ty, .. } => {
+                            self.rewrite_bus_subject_head(subject);
                             if let BusSubject::Topic(ident) = subject {
                                 self.rewrite_ident(&mut ident.name);
                             }
@@ -1045,6 +1188,10 @@ impl<'a> Mangler<'a> {
                 // expressions inside it, so nothing to walk past
                 // the topic ident.
                 for entry in &mut bb.entries {
+                    // GH #746: a qualified binding topic
+                    // (`alias::Topic:`) arrives as one ident whose
+                    // name is the joined path (#527 B6).
+                    self.rewrite_alias_head_joined(&mut entry.topic);
                     self.rewrite_ident(&mut entry.topic.name);
                 }
             }
@@ -1115,6 +1262,7 @@ impl<'a> Mangler<'a> {
                     for bm in &mut bb.members {
                         match bm {
                             BusMember::Subscribe { subject, handler, ty, .. } => {
+                                self.rewrite_bus_subject_head(subject);
                                 if let BusSubject::Topic(id) = subject {
                                     self.rewrite_ident(&mut id.name);
                                 }
@@ -1126,6 +1274,7 @@ impl<'a> Mangler<'a> {
                                 }
                             }
                             BusMember::Publish { subject, ty, .. } => {
+                                self.rewrite_bus_subject_head(subject);
                                 if let BusSubject::Topic(id) = subject {
                                     self.rewrite_ident(&mut id.name);
                                 }
@@ -1316,6 +1465,7 @@ impl<'a> Mangler<'a> {
                 // Mangle the topic ref like a bus publish/subscribe
                 // subject, so `Topic.write(...)` resolves to the same
                 // (possibly import-renamed) subject the binding registers.
+                self.rewrite_alias_head_joined(topic);
                 self.rewrite_ident(&mut topic.name);
                 self.walk_expr(max);
                 self.walk_block(body);
@@ -1443,7 +1593,14 @@ impl<'a> Mangler<'a> {
                 self.walk_expr(receiver);
                 self.walk_expr(index);
             }
-            Expr::Path2 { receiver, .. } => self.walk_expr(receiver),
+            // GH #746: `a::b` built in postfix position keeps its head
+            // in the receiver, so the scoped-alias rewrite has to
+            // reach the left end of the chain before the ordinary
+            // walk treats that ident as a value.
+            Expr::Path2 { receiver, .. } => {
+                self.rewrite_alias_head_expr(receiver);
+                self.walk_expr(receiver)
+            }
             Expr::Tuple(es, _) | Expr::Array(es, _) => {
                 for e in es {
                     self.walk_expr(e);
@@ -1925,5 +2082,108 @@ mod tests {
         let mut prog = parse("");
         mangle_program(&mut prog, "toy", "main");
         assert!(prog.items.is_empty());
+    }
+
+    /// GH #746: the alias-head pass moves the head of every
+    /// `alias::Name` path to the seed's scoped head, and leaves bare
+    /// names — including a free fn of the alias's own name (#714) —
+    /// exactly as written.
+    #[test]
+    fn alias_head_pass_rewrites_heads_and_nothing_else() {
+        let src = r#"
+            import "../libx" as u;
+            fn u(args: String) -> String { return args; }
+            type Panel { bounds: u::Box; }
+            fn go() -> String {
+                let b = u::Box { v: 1 };
+                return u::f(b) + u("x");
+            }
+        "#;
+        let scoped = format!("u{}0", '$');
+        let mut prog = parse(src);
+        let heads: HashMap<String, String> =
+            [("u".to_string(), scoped.clone())].into_iter().collect();
+        for item in &mut prog.items {
+            rewrite_import_alias_heads(item, &heads);
+        }
+
+        // A type position.
+        let panel = prog
+            .items
+            .iter()
+            .find_map(|i| match i {
+                TopDecl::Type(t) if t.name.name == "Panel" => Some(t),
+                _ => None,
+            })
+            .expect("Panel");
+        match &panel.body {
+            TypeDeclBody::Struct(fields) => match &fields[0].ty {
+                TypeExpr::Named { path, .. } => {
+                    assert_eq!(path.segments[0].name, scoped);
+                    assert_eq!(path.segments[1].name, "Box");
+                }
+                other => panic!("expected Named, got {:?}", other),
+            },
+            other => panic!("expected Struct, got {:?}", other),
+        }
+
+        let go = find_fn(&prog, "go").expect("go");
+        // A struct literal.
+        match &go.body.stmts[0] {
+            Stmt::Let { value: Expr::Struct { path, .. }, .. } => {
+                assert_eq!(path.segments[0].name, scoped);
+                assert_eq!(path.segments[1].name, "Box");
+            }
+            other => panic!("expected a struct-literal let, got {:?}", other),
+        }
+        // A call, and the bare fn of the alias's name beside it.
+        let ret = match &go.body.stmts[1] {
+            Stmt::Return(Some(e), _) => e,
+            other => panic!("expected Return, got {:?}", other),
+        };
+        let (lhs, rhs) = match ret {
+            Expr::Binary { left, right, .. } => {
+                (left.as_ref(), right.as_ref())
+            }
+            other => panic!("expected Binary, got {:?}", other),
+        };
+        match lhs {
+            Expr::Call { callee, .. } => match callee.as_ref() {
+                Expr::Path(q) => {
+                    assert_eq!(q.segments[0].name, scoped);
+                    assert_eq!(q.segments[1].name, "f");
+                }
+                other => panic!("expected Path callee, got {:?}", other),
+            },
+            other => panic!("expected Call, got {:?}", other),
+        }
+        match rhs {
+            Expr::Call { callee, .. } => match callee.as_ref() {
+                Expr::Ident(i) => {
+                    assert_eq!(i.name, "u", "bare name untouched")
+                }
+                other => panic!("expected Ident callee, got {:?}", other),
+            },
+            other => panic!("expected Call, got {:?}", other),
+        }
+        // The fn DECLARATION keeps its name: the pass carries no decl
+        // renames.
+        assert!(find_fn(&prog, "u").is_some());
+    }
+
+    /// An empty head map is a no-op — what every build with no
+    /// contested alias gets.
+    #[test]
+    fn alias_head_pass_without_contested_aliases_is_a_no_op() {
+        let src = r#"
+            import "../libx" as u;
+            fn go() -> String { return u::f(); }
+        "#;
+        let mut prog = parse(src);
+        let before = prog.clone();
+        for item in &mut prog.items {
+            rewrite_import_alias_heads(item, &HashMap::new());
+        }
+        assert_eq!(prog, before);
     }
 }
