@@ -74,9 +74,11 @@ locus WorkflowRuntime {
         subscribe TransitionProposed as on_proposal where key == self.scope;
         subscribe AttemptRequested as on_attempt where key == self.scope;
         subscribe ExecutionStateAsked as on_state where key == self.scope;
+        subscribe AdmissionAsked as on_admission where key == self.scope;
         publish TransitionAnswered;
         publish AttemptReplied;
         publish ExecutionStateAnswered;
+        publish AdmissionAnswered;
     }
     // Apply what the record holds beyond what the projection has seen,
     // and remember each committed proposal's id and revision. Returns the
@@ -242,6 +244,47 @@ locus WorkflowRuntime {
         if x.ran && !x.redelivered { self.claimed = set_add(self.claimed, r.attempt_id); }
         if x.redelivered { self.redelivered = set_add(self.redelivered, r.attempt_id); }
         self.reply(x, r.work_id, r.attempt_id);
+    }
+    // An execution's admission as the record holds it (card 13): the row,
+    // read whole, and the projection's word that it was admitted. A task
+    // the record never admitted, or admitted with a recipe that cannot be
+    // read or that the projection refused, is not resumed — the answer
+    // says why, and nothing is invented for it.
+    @unbounded
+    fn on_admission(q: AdmissionAsk) {
+        let moved = self.journal.refresh();
+        let seen = self.catch_up();
+        let mut body = "";
+        let mut i = 0;
+        while i < seen {
+            let e = self.journal.read(i);
+            if e.kind == "workflow.admitted" && e.entity == q.task_id { body = e.body; }
+            i = i + 1;
+        }
+        if len(body) == 0 {
+            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, task_id: q.task_id, kinds: q.kinds, why: "task " + q.task_id + " was never admitted: the record holds no admission of it" };
+            return;
+        }
+        let read = decode_admission(body);
+        if !read.ok {
+            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, task_id: q.task_id, kinds: q.kinds, why: "the admission of " + q.task_id + " is in the record but cannot be read: " + read.why };
+            return;
+        }
+        let gap = self.p.reader.decode_bound(read.value.recipe);
+        if len(gap) > 0 {
+            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, task_id: q.task_id, kinds: q.kinds, why: "the admission of " + q.task_id + " carries a recipe that cannot be read: " + gap };
+            return;
+        }
+        if len(self.p.task(q.task_id).task_id) == 0 {
+            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, task_id: q.task_id, kinds: q.kinds, why: "the admission of " + q.task_id + " is in the record, and the projection refused it: it binds nothing this execution can run" };
+            return;
+        }
+        let a = read.value;
+        AdmissionAnswered <- AdmissionAnswer {
+            scope: self.scope, task_id: q.task_id, kinds: q.kinds, admitted: true,
+            definition: a.definition, revision: a.revision, workflow_id: q.task_id + "/wf" + to_string(a.revision),
+            recipe: a.recipe, limits: a.limits
+        };
     }
     // What the record holds about an execution, from the projection.
     fn on_state(q: ExecutionStateAsk) {
@@ -601,6 +644,7 @@ locus TaskRun {
         publish ChildLeft;
         publish MemberRetired;
         publish WorkflowCancelRequested;
+        publish ExecutionRefused;
         publish RunLives;
     }
     accept(w: WorkflowRun) { }
@@ -609,7 +653,12 @@ locus TaskRun {
         RunLives <- RunLife { key: "task:" + self.task_id, what: "born" };
     }
     run() {
-        if len(self.gap) > 0 { return; } // a recipe that cannot be read runs nothing; the admission the state decides on says so
+        if len(self.gap) > 0 {
+            // a recipe that cannot be read runs nothing, and says so:
+            // nothing is invented for it
+            ExecutionRefused <- ExecutionRefusal { scope: self.scope, task_id: self.task_id, why: "the recipe of " + self.task_id + " cannot be read: " + self.gap };
+            return;
+        }
         if self.admit { self.propose_admission(); return; }
         self.start();
     }
@@ -782,15 +831,30 @@ locus Executions {
         child_count: Int = 0;
         born: String = ""; // task ids with a TaskRun born here: one execution is one Task, asked twice or not
         repeats: Int = 0;
+        refused: Int = 0;
     }
     bus {
         subscribe ExecutionAsked as on_root where key == self.scope;
+        subscribe AdmissionAnswered as on_admission where key == self.scope;
         subscribe ChildAdmitRequested as on_child where key == self.scope;
+        publish AdmissionAsked;
+        publish ExecutionRefused;
     }
     accept(t: TaskRun) { }
-    @unbounded
+    // A root is run as the record admitted it: the owner asks the runtime
+    // for the admission, and births the Task from the answer
     fn on_root(a: ExecutionAsk) {
         if set_has(self.born, a.task_id) { self.repeats = self.repeats + 1; return; }
+        AdmissionAsked <- AdmissionAsk { scope: self.scope, task_id: a.task_id, kinds: a.kinds };
+    }
+    @unbounded
+    fn on_admission(a: AdmissionAnswer) {
+        if set_has(self.born, a.task_id) { self.repeats = self.repeats + 1; return; }
+        if !a.admitted {
+            self.refused = self.refused + 1;
+            ExecutionRefused <- ExecutionRefusal { scope: self.scope, task_id: a.task_id, why: a.why };
+            return;
+        }
         self.born = set_add(self.born, a.task_id);
         self.roots = self.roots + 1;
         TaskRun {

@@ -176,7 +176,7 @@ main locus App {
         });
     }
     fn ask() {
-        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", workflow_id: "t1/wf1", definition: "retry", revision: 1, recipe: self.recipe, kinds: "r=human", limits: self.limits };
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: "t1", kinds: "r=human" };
     }
     fn reply(attempt_id: String, disposition: String) -> dna::Executed {
         return self.boot.rt.settle(attempt_id, dna::WorkResult { disposition: disposition, result: "later", performer: "alice", attempt_id: attempt_id });

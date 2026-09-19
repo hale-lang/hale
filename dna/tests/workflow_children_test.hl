@@ -217,7 +217,7 @@ main locus App {
         });
         let r = self.rt.journal.append(self.rt.journal.revision(), "workflow.admitted", task_id, body);
         std::test::assert(r.ok, task_id + " is admitted in the record: " + r.error);
-        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: task_id, workflow_id: task_id + "/wf1", definition: "close-month", revision: 1, recipe: recipe, kinds: kinds, limits: self.limits };
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: task_id, kinds: kinds };
     }
     fn reply(attempt_id: String, disposition: String) -> dna::Executed {
         return self.rt.settle(attempt_id, dna::WorkResult { disposition: disposition, result: "later", performer: "delayed", attempt_id: attempt_id });
