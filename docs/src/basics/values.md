@@ -42,6 +42,22 @@ Shadowing — declaring a second `let x` in the same scope — is
 not allowed. Pick a new name. The language would rather you say
 what you mean than quietly reuse a name for a different value.
 
+## A name that isn't declared is an error
+
+Reading a name nothing declares fails `hale check`, at the name:
+
+```text
+main.hl:3:18: type error: unknown identifier `totl`: no binding,
+param, const or declaration with that name is in scope — did you
+mean `total`?
+```
+
+This is a whole-program rule, so it wants the whole program:
+`hale check <directory>` (the seed) and every build. Checking one
+file of a multi-file seed on its own stays permissive — that file
+legitimately reads a `const` its sibling declares, and the checker
+cannot see the sibling.
+
 ## The primitive types
 
 These are the scalar types built into the language:

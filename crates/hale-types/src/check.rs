@@ -338,19 +338,29 @@ pub fn check_bundle(
     top: &TopScope,
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
-    check_bundle_scoped(bundle, top, allow_unowned_subscriber, false)
+    check_bundle_scoped(bundle, top, allow_unowned_subscriber, false, false)
 }
 
+/// Two whole-program strictnesses, both off for a partial program.
+///
 /// `strict_callees`: refuse a call to a bare name nothing binds
 /// (dna/FRICTION.md F.18) — the rule `hale build` holds. On only when
 /// the caller checked a WHOLE seed, so a single file of a multi-file
 /// seed, a styleguide snippet or a harness's partial program keeps the
 /// permissive `Unknown` it always had for a sibling's fn.
+///
+/// `strict_idents` (GH #721): the same rule for a bare identifier in
+/// VALUE position. Separate from the callee flag because the two have
+/// different safe surfaces — the build path can hold the identifier
+/// rule (what it bundles is exactly what it compiles) without holding
+/// the callee rule, which still over-fires on bare names codegen
+/// answers itself but `BARE_BUILTIN_CALLEES` does not list.
 pub fn check_bundle_scoped(
     bundle: &Bundle<'_>,
     top: &TopScope,
     allow_unowned_subscriber: bool,
     strict_callees: bool,
+    strict_idents: bool,
 ) -> Vec<Diag> {
     let mut diags = Vec::new();
     let known = collect_known_names(top);
@@ -398,6 +408,7 @@ pub fn check_bundle_scoped(
             return_ctx: None,
             wasm_target,
             strict_callees,
+            strict_idents,
             or_value_discarded: false,
             generic_fns,
             generic_types,
@@ -5900,6 +5911,11 @@ struct Checker<'a> {
     /// the browser sandbox) at typecheck — see `wasm_unavailable_stdlib`.
     wasm_target: bool,
     strict_callees: bool, // F.18: on for a whole seed (`hale check <dir>`), off for a partial program
+    /// GH #721: on for a whole program — every import resolved, so a
+    /// bare identifier nothing binds is a typo rather than a name a
+    /// sibling file supplies. `hale check <dir>` and the build path
+    /// both set it; one file checked alone does not.
+    strict_idents: bool,
     /// M3 stage 2 (2026-07-02): true while checking an `or`
     /// expression whose value is discarded (statement position) —
     /// the Substitute arm skips the fallback-vs-success type match.
@@ -10110,6 +10126,34 @@ impl<'a> Checker<'a> {
         let _ = self.check_match_core(stmt, false);
     }
 
+    /// Enter a match arm's pattern binders into the current scope.
+    ///
+    /// Typed `Unknown` deliberately: the binders' types are already
+    /// resolved by codegen (scrutinee for a bare binder, element type
+    /// for a tuple sub-pattern, payload field for a constructor arg),
+    /// and inventing a narrower type here would turn a scope fix into
+    /// a new class of type error on programs that compile today. What
+    /// this establishes is that the NAME exists.
+    fn bind_pattern(&mut self, pat: &Pattern) {
+        match pat {
+            Pattern::Binding(id) => self.locals.insert(
+                &id.name,
+                LocalSym { ty: Ty::Unknown, is_mut: false },
+            ),
+            Pattern::Constructor { args, .. } => {
+                for a in args {
+                    self.bind_pattern(a);
+                }
+            }
+            Pattern::Tuple(parts, _) => {
+                for p in parts {
+                    self.bind_pattern(p);
+                }
+            }
+            Pattern::Literal(_, _) | Pattern::Wildcard(_) => {}
+        }
+    }
+
     /// Shared match checking (Gap C, 2026-07-17). In statement
     /// position (`as_expr = false`) arm-body types are discarded —
     /// heterogeneous arms are legal, exactly the pre-Gap-C
@@ -10124,6 +10168,15 @@ impl<'a> Checker<'a> {
         let scrut_ty = self.check_expr(&stmt.scrutinee);
         let mut joined: Option<Ty> = None;
         for arm in &stmt.arms {
+            // GH #721: an arm's pattern BINDS — `v`, `(a, b)`,
+            // `Event::Tick(n)` — and the binders are in scope for the
+            // guard and the body (codegen's `bindings` vector does
+            // exactly this). The checker never entered them, which
+            // was invisible while an unresolved name typed as
+            // `Unknown` and became a false "unknown identifier" the
+            // moment that stopped being free.
+            self.locals.push();
+            self.bind_pattern(&arm.pattern);
             if let Some(g) = &arm.guard {
                 let _ = self.check_expr(g);
             }
@@ -10134,6 +10187,7 @@ impl<'a> Checker<'a> {
                     Ty::Unknown
                 }
             };
+            self.locals.pop();
             if as_expr {
                 match &joined {
                     None => joined = Some(arm_ty),
@@ -11112,6 +11166,106 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A bare identifier in expression position.
+    ///
+    /// GH #721: an identifier that binds NOTHING used to type as
+    /// `Ty::Unknown` in silence, so `let total = 1; println("" +
+    /// totl);` passed `hale check` and `hale verify` and then died in
+    /// `hale build` as `unknown identifier` with no source location —
+    /// the one place a located message costs nothing to produce. The
+    /// checker holds codegen's rule now, whenever the program it was
+    /// handed is WHOLE (`strict_idents`): every import is resolved, so
+    /// a name nothing binds is a typo, not a sibling file's const. One
+    /// file of a multi-file seed, a snippet or a harness's partial
+    /// program keeps the permissive `Unknown` — the corpus has seeds
+    /// whose every file reads a const another file declares.
+    ///
+    /// `report_unknown` is false at a CALL's callee, where F.18's own
+    /// diagnostic — which names fn-pointer bindings and generic fns,
+    /// the things a callee may also be — already covers the same
+    /// mistake; reporting both would print two messages for one typo.
+    fn check_ident_expr(&mut self, id: &Ident, report_unknown: bool) -> Ty {
+        if let Some(s) = self.locals.lookup(&id.name) {
+            return s.ty.clone();
+        }
+        let Some(sym) = self.top.lookup(&id.name) else {
+            if report_unknown && self.strict_idents {
+                let hint = self
+                    .closest_name_in_scope(&id.name)
+                    .map(|h| format!(" — did you mean `{}`?", h))
+                    .unwrap_or_default();
+                self.diags.push(Diag::ty(
+                    id.span,
+                    format!(
+                        "unknown identifier `{}`: no binding, param, \
+                         const or declaration with that name is in \
+                         scope{}",
+                        id.name, hint
+                    ),
+                ));
+            }
+            return Ty::Unknown;
+        };
+        match sym {
+            TopSymbol::Const(c) => c.ty.clone(),
+            TopSymbol::Fn(sig) => Ty::Function {
+                params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
+                ret: Box::new(sig.ret.clone()),
+            },
+            // Locus / Type / Perspective / Interface
+            // names used in expression position resolve
+            // to the type (struct-literal, call site,
+            // or interface-typed binding).
+            TopSymbol::Locus(_)
+            | TopSymbol::Type(_)
+            | TopSymbol::Perspective(_)
+            | TopSymbol::Interface(_) => Ty::Named(id.name.clone()),
+            // Topics aren't values — they only address
+            // a bus channel. They appear legally only on
+            // the left of `<-` (handled in check_send,
+            // before check_expr ever sees the subject).
+            // Anywhere else is an error.
+            TopSymbol::Topic(_) => {
+                self.diags.push(Diag::ty(
+                    id.span,
+                    format!(
+                        "topic `{}` is not a value; use `{} <- expr` \
+                         to publish on it",
+                        id.name, id.name
+                    ),
+                ));
+                Ty::Unknown
+            }
+            TopSymbol::RingLayout(_) => {
+                self.diags.push(Diag::ty(
+                    id.span,
+                    format!(
+                        "ring_layout `{}` is not a value; reference it \
+                         in a `shm_ring(..., layout: {})` binding",
+                        id.name, id.name
+                    ),
+                ));
+                Ty::Unknown
+            }
+        }
+    }
+
+    /// Nearest spelling to `name` among the things a bare identifier
+    /// could have meant here: the locals in scope first (the typo is
+    /// nearly always a local), then the program's top-level names.
+    fn closest_name_in_scope(&self, name: &str) -> Option<String> {
+        let mut locals: Vec<&str> = Vec::new();
+        for frame in self.locals.frames.iter() {
+            locals.extend(frame.keys().map(|k| k.as_str()));
+        }
+        if let Some(hit) = closest_bare_name(name, &locals) {
+            return Some(hit.to_string());
+        }
+        let tops: Vec<&str> =
+            self.top.symbols.keys().map(|k| k.as_str()).collect();
+        closest_bare_name(name, &tops).map(|h| h.to_string())
+    }
+
     fn check_expr(&mut self, expr: &Expr) -> Ty {
         match expr {
             Expr::Literal(lit, span) => {
@@ -11132,56 +11286,7 @@ impl<'a> Checker<'a> {
                 }
                 lit_ty(lit)
             }
-            Expr::Ident(id) => {
-                if let Some(s) = self.locals.lookup(&id.name) {
-                    s.ty.clone()
-                } else if let Some(sym) = self.top.lookup(&id.name) {
-                    match sym {
-                        TopSymbol::Const(c) => c.ty.clone(),
-                        TopSymbol::Fn(sig) => Ty::Function {
-                            params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
-                            ret: Box::new(sig.ret.clone()),
-                        },
-                        // Locus / Type / Perspective / Interface
-                        // names used in expression position resolve
-                        // to the type (struct-literal, call site,
-                        // or interface-typed binding).
-                        TopSymbol::Locus(_)
-                        | TopSymbol::Type(_)
-                        | TopSymbol::Perspective(_)
-                        | TopSymbol::Interface(_) => Ty::Named(id.name.clone()),
-                        // Topics aren't values — they only address
-                        // a bus channel. They appear legally only on
-                        // the left of `<-` (handled in check_send,
-                        // before check_expr ever sees the subject).
-                        // Anywhere else is an error.
-                        TopSymbol::Topic(_) => {
-                            self.diags.push(Diag::ty(
-                                id.span,
-                                format!(
-                                    "topic `{}` is not a value; use `{} <- expr` \
-                                     to publish on it",
-                                    id.name, id.name
-                                ),
-                            ));
-                            Ty::Unknown
-                        }
-                        TopSymbol::RingLayout(_) => {
-                            self.diags.push(Diag::ty(
-                                id.span,
-                                format!(
-                                    "ring_layout `{}` is not a value; reference it \
-                                     in a `shm_ring(..., layout: {})` binding",
-                                    id.name, id.name
-                                ),
-                            ));
-                            Ty::Unknown
-                        }
-                    }
-                } else {
-                    Ty::Unknown
-                }
-            }
+            Expr::Ident(id) => self.check_ident_expr(id, true),
             Expr::Path(qn) => {
                 // m47-followup: 2-segment path may be an enum
                 // variant construction (`EnumName::VariantName`).
@@ -11864,7 +11969,14 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
-                let callee_ty = self.check_expr(callee);
+                // GH #721: a bare callee gets F.18's diagnostic below,
+                // never the generic unknown-identifier one — two
+                // messages for one typo, and the callee's is the more
+                // informative of the two.
+                let callee_ty = match callee.as_ref() {
+                    Expr::Ident(id) => self.check_ident_expr(id, false),
+                    other => self.check_expr(other),
+                };
                 // GH #583 (dna/FRICTION.md F.18): a bare callee that names
                 // nothing — not a local (a fn-pointer binding), not a
                 // top-level fn, not a generic fn, not a builtin — was
@@ -12548,8 +12660,24 @@ impl<'a> Checker<'a> {
                         // inner call's payload. Same divergence
                         // rule as `or raise`: expression type
                         // collapses to the inner success type.
-                        let _ = payload;
+                        //
+                        // GH #721: `err` — the INNER call's error, the
+                        // same binding the substitute RHS gets — is in
+                        // scope on the payload, which is what makes
+                        // `or fail DstError { kind: err.kind }` an
+                        // inline translation rather than a helper call
+                        // (`tests/hale/or_fail_err_binding_test.hl`
+                        // runs it). The checker had not entered it.
+                        self.locals.push();
+                        self.locals.insert(
+                            "err",
+                            LocalSym {
+                                ty: payload.clone(),
+                                is_mut: false,
+                            },
+                        );
                         let new_payload_ty = self.check_expr_addressed(payload_expr);
+                        self.locals.pop();
                         match &self.fallible_ctx {
                             None => self.diags.push(Diag::ty(
                                 *span,
