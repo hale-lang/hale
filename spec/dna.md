@@ -1233,11 +1233,45 @@ refuses dispatches nothing: the step holds it, no leaf is born, and the
 record's resumption lands it once. Nothing here spawns child workflows
 or survives a restart; those are later cards.
 
-Nothing yet runs a workflow end to end; these are the durable shapes it
-is written in, the state they add up to, the door it is admitted by,
-the one attempt it takes at a time, the one step that keeps its
-members alive across delayed replies, and the steps that follow one
-another only behind a committed completion.
+## Workflow execution: child workflows
+
+One admitted Task is a `TaskRun`, resident like the rest: it holds the
+bound recipe, decoded into its own catalog at birth, and from it the
+leaves and children of every step, and births the one `WorkflowRun`
+that runs them. The executions owner (`Executions`, the Task owner the
+contract names, one per scope) accepts every `TaskRun` and never
+releases one: a root asked of it (`ExecutionAsked`) with its admission
+already in the record, and a child asked by its parent Task. One
+execution is one Task: a Task asked twice is born once. The same
+engine runs every level; there is no other path for a child.
+
+A step that dispatches a child member asks its own Task
+(`ChildRequested`, keyed by the parent task), which holds the recipe
+the child is bound in; the Task cuts the subtree the recipe bound
+under that child, exactly, and asks the owner to admit and run it
+(`ChildAdmitRequested`, keyed by scope). A request that names a child
+the recipe does not bind under that step and key is ignored. The child
+proposes its own admission first — `workflow.admitted` with the
+subtree, its parent, its spawning step and its member key, which the
+projection accepts only for what the parent bound, from a step that is
+registered, active and unsettled — and runs only once that landed; an
+admission the record refused is held and proposed again when the
+record resumes, or when the spawning step is fenced; one the state
+refused retires under the settled or fenced spawning step, as a leaf
+does. A child that settled tells the step that spawned it once
+(`ChildSettled`, keyed by that step) after its row landed, and the step
+counts the exact child bound under the key: a settlement for another
+Task under the key, for a key that is no child of the step, or
+delivered again changes nothing; a failed child fails the step at
+once, as a failed leaf does. The Task leaves once its workflow has
+(`WorkflowLeft`). A step fenced by its Task's cancellation fences a
+running child the same way: the child's Task asks its own workflow to
+cancel, which settles cancelled through the same proposal, so the
+fence reaches every level below and each level drains and reclaims
+from the leaves upward.
+
+Nothing yet survives a restart or is reached through the public
+admission; those are later cards.
 
 ## Storage interfaces
 

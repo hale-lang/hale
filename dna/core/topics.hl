@@ -101,6 +101,49 @@ type StepFence { step_id: String = ""; task_id: String = ""; reason: String = ""
 topic StepFenced { payload: StepFence; subject: "dna.step.fenced"; keyed_by step_id; }
 type WorkflowSettlement { task_id: String = ""; disposition: String = ""; reason: String = ""; }
 topic WorkflowSettled { payload: WorkflowSettlement; subject: "dna.workflow.settled"; keyed_by task_id; }
+// GH #646 workflow card 11: child workflows. A step asks its Task for
+// a child member's execution, by the parent task; the Task, which holds
+// the bound recipe, cuts the subtree and asks the executions owner to
+// admit and run it, by scope; a child that settled tells the step that
+// spawned it, by that step; a workflow that left tells its Task.
+type ChildRequest { parent_task: String = ""; step_id: String = ""; step_index: Int = 0; key: String = ""; child_task: String = ""; definition: String = ""; revision: Int = 0; }
+topic ChildRequested { payload: ChildRequest; subject: "dna.child.requested"; keyed_by parent_task; }
+type ChildAdmission {
+    scope: String = "";
+    task_id: String = "";
+    workflow_id: String = "";
+    parent_task: String = "";
+    spawning_step: String = "";
+    member_key: String = "";
+    definition: String = "";
+    revision: Int = 0;
+    recipe: String = ""; // the bound subtree, the parent's recipe cut at the child
+    kinds: String = ""; // "<key>=<performer kind>" per leaf key
+    limits: AdmissionLimits = AdmissionLimits { };
+    works: Int = 0;
+    tasks: Int = 0;
+    steps: Int = 0;
+    depth: Int = 0;
+}
+topic ChildAdmitRequested { payload: ChildAdmission; subject: "dna.child.admit"; keyed_by scope; }
+// A root execution asked of the executions owner: its admission is in
+// the record already (card 07); this carries what the owner needs to run
+// it. Card 18 wires this to the public admission.
+type ExecutionAsk {
+    scope: String = "";
+    task_id: String = "";
+    workflow_id: String = "";
+    definition: String = "";
+    revision: Int = 0;
+    recipe: String = "";
+    kinds: String = "";
+    limits: AdmissionLimits = AdmissionLimits { };
+}
+topic ExecutionAsked { payload: ExecutionAsk; subject: "dna.execution.asked"; keyed_by scope; }
+type ChildSettlement { step_id: String = ""; key: String = ""; task_id: String = ""; disposition: String = ""; }
+topic ChildSettled { payload: ChildSettlement; subject: "dna.child.settled"; keyed_by step_id; }
+type WorkflowLeave { task_id: String = ""; }
+topic WorkflowLeft { payload: WorkflowLeave; subject: "dna.workflow.left"; keyed_by task_id; }
 // The record is writable again: a resident holding a transition the
 // record refused proposes it again. Published by whoever knows — the
 // host after a reconnect, a fixture — keyed by the committer's scope.

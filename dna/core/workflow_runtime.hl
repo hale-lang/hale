@@ -428,6 +428,263 @@ fn leaf_of(n: BoundNode, task_id: String, performer_kind: String) -> LeafSpec {
     return LeafSpec { key: n.member_key, work_id: n.id, step_id: n.parent, step_index: n.step_index, performer_kind: performer_kind, request: bound_request(n, task_id, n.parent), allowance: n.attempts };
 }
 
+@form(vec)
+locus ChildSpecRows {
+    capacity { heap rows of ChildSpec; }
+}
+
+// What a Step needs to know about one child member to own it: the Task
+// the recipe bound under the key, and the definition it runs.
+type ChildSpec {
+    key: String = "";
+    task_id: String = "";
+    step_id: String = "";
+    step_index: Int = 0;
+    definition: String = "";
+    revision: Int = 0;
+}
+
+fn own_child(c: ChildSpec) -> ChildSpec {
+    return ChildSpec {
+        key: std::str::clone(c.key), task_id: std::str::clone(c.task_id), step_id: std::str::clone(c.step_id), step_index: c.step_index,
+        definition: std::str::clone(c.definition), revision: c.revision
+    };
+}
+
+// A child member from its bound task node.
+fn child_of(n: BoundNode, step_index: Int) -> ChildSpec {
+    return ChildSpec { key: n.member_key, task_id: n.id, step_id: n.spawning_step, step_index: step_index, definition: n.definition, revision: n.revision };
+}
+
+// ---- one execution, root or child --------------------------------------
+
+// One admitted Task. It holds the bound recipe — decoded into its own
+// catalog at birth — and from it the leaves and children of every step,
+// and births the one WorkflowRun that runs them. A child proposes its
+// own admission first (`workflow.admitted`, the subtree its parent bound
+// under it, exactly), and runs only once that landed; a root's admission
+// is the assembly's (card 07) and is in the record before the Task is
+// born. A step of this Task that dispatches a child member asks here,
+// by this Task's id; the Task cuts the subtree from its recipe and asks
+// the executions owner to admit and run it. A child that settled tells
+// the step that spawned it, by that step, once; the Task leaves once its
+// workflow has.
+locus TaskRun {
+    params {
+        scope: String = "";
+        task_id: String = "";
+        workflow_id: String = "";
+        parent_task: String = ""; // "" at the root
+        spawning_step: String = "";
+        member_key: String = "";
+        definition: String = "";
+        revision: Int = 0;
+        recipe: String = "";
+        kinds: String = "";
+        limits: AdmissionLimits = AdmissionLimits { };
+        works: Int = 0;
+        tasks: Int = 0;
+        steps: Int = 0;
+        depth: Int = 0;
+        admit: Bool = false; // propose the admission (a child); false: it is in the record already (a root)
+        cat: WorkflowCatalog = WorkflowCatalog { }; // the recipe, decoded
+        outstanding: String = "";
+        held: Bool = false;
+        started: Bool = false;
+        unadmitted: Bool = false; // the state refused the admission
+        step_settled: Bool = false; // the spawning step settled or was fenced
+        disposition: String = "";
+        told: Bool = false; // the spawning step heard the settlement
+        gap: String = ""; // the recipe could not be read
+    }
+    bus {
+        subscribe TransitionAnswered as on_answer where key == self.task_id;
+        subscribe WorkflowSettled as on_settled where key == self.task_id;
+        subscribe WorkflowLeft as on_left where key == self.task_id;
+        subscribe ChildRequested as on_child where key == self.task_id;
+        subscribe StepSettled as on_step where key == self.spawning_step;
+        subscribe StepFenced as on_fenced where key == self.spawning_step;
+        subscribe RecordResumed as on_resumed where key == self.scope;
+        publish TransitionProposed;
+        publish ChildAdmitRequested;
+        publish ChildSettled;
+        publish MemberRetired;
+        publish WorkflowCancelRequested;
+        publish RunLives;
+    }
+    accept(w: WorkflowRun) { }
+    birth() {
+        self.gap = self.cat.decode_bound(self.recipe);
+        RunLives <- RunLife { key: "task:" + self.task_id, what: "born" };
+    }
+    run() {
+        if len(self.gap) > 0 { return; } // a recipe that cannot be read runs nothing; the admission the state decides on says so
+        if self.admit { self.propose_admission(); return; }
+        self.start();
+    }
+    fn propose_admission() {
+        self.held = false;
+        self.outstanding = transition_id(self.task_id, "admitted");
+        TransitionProposed <- TransitionProposal {
+            scope: self.scope, key: self.task_id, proposal_id: self.outstanding, kind: "workflow.admitted", entity: self.task_id,
+            body: encode_admission(AdmittedWorkflow {
+                task_id: self.task_id, definition: self.definition, revision: self.revision,
+                parent_task: self.parent_task, spawning_step: self.spawning_step, member_key: self.member_key,
+                request: self.task_id, recipe: self.recipe, limits: self.limits,
+                works: self.works, tasks: self.tasks, steps: self.steps, depth: self.depth,
+                transition: TransitionRef { scope: self.scope, key: self.task_id, proposal_id: self.outstanding }
+            })
+        };
+    }
+    // The workflow is born with every leaf and child of this Task, by
+    // step, from the recipe.
+    @unbounded
+    fn start() {
+        if self.started { return; }
+        self.started = true;
+        let mut leaves = LeafSpecRows { };
+        let mut children = ChildSpecRows { };
+        let mut step_count = 0;
+        let mut i = 0;
+        while i < self.cat.bound_count() {
+            let n = self.cat.bound_at(i);
+            if n.kind == "step" && n.parent == self.task_id { step_count = step_count + 1; }
+            if n.kind == "work" && self.cat.bound_node(n.parent).parent == self.task_id {
+                leaves.push(leaf_of(n, self.task_id, map_get(self.kinds, n.member_key, "=")));
+            }
+            if n.kind == "task" && n.parent == self.task_id {
+                children.push(child_of(n, self.cat.bound_node(n.spawning_step).step_index));
+            }
+            i = i + 1;
+        }
+        WorkflowRun { scope: self.scope, task_id: self.task_id, workflow_id: self.workflow_id, step_count: step_count, leaves: leaves, child_specs: children };
+    }
+    fn on_answer(a: TransitionAnswer) {
+        if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
+        self.outstanding = "";
+        if !a.ok && a.basis == "record" { self.held = true; return; }
+        if !a.ok {
+            // the state refused the admission: nothing runs. Under a
+            // spawning step that has settled the child retires; else it
+            // stays, reachable, until that step settles or is fenced
+            self.unadmitted = true;
+            if self.step_settled {
+                MemberRetired <- MemberRetirement { step_id: self.spawning_step, key: self.member_key, work_id: self.task_id, why: a.why };
+                terminate;
+            }
+            return;
+        }
+        self.start();
+    }
+    // A step of this Task dispatches a child member: the subtree the
+    // recipe bound under it, exactly, goes to the executions owner.
+    @unbounded
+    fn on_child(r: ChildRequest) {
+        let n = self.cat.bound_node(r.child_task);
+        if n.kind != "task" || n.parent != self.task_id || n.spawning_step != r.step_id || n.member_key != r.key { return; }
+        let mut works = 0;
+        let mut tasks = 0;
+        let mut steps = 0;
+        let mut depth = 0;
+        let mut i = 0;
+        while i < self.cat.bound_count() {
+            let m = self.cat.bound_at(i);
+            if self.cat.under(m.id, r.child_task) {
+                if m.kind == "work" { works = works + 1; }
+                if m.kind == "step" { steps = steps + 1; }
+                if m.kind == "task" { tasks = tasks + 1; if m.depth > depth { depth = m.depth; } }
+            }
+            i = i + 1;
+        }
+        ChildAdmitRequested <- ChildAdmission {
+            scope: self.scope, task_id: r.child_task, workflow_id: n.workflow_id, parent_task: self.task_id,
+            spawning_step: r.step_id, member_key: r.key, definition: n.definition, revision: n.revision,
+            recipe: self.cat.encode_bound_under(r.child_task), kinds: self.kinds, limits: self.limits,
+            works: works, tasks: tasks, steps: steps, depth: depth
+        };
+    }
+    // This Task's workflow settled, durably: the step that spawned it
+    // hears it, once, by the member it is.
+    fn on_settled(w: WorkflowSettlement) {
+        if len(self.disposition) > 0 { return; }
+        self.disposition = std::str::clone(w.disposition);
+        if len(self.parent_task) > 0 && !self.told {
+            self.told = true;
+            ChildSettled <- ChildSettlement { step_id: self.spawning_step, key: self.member_key, task_id: self.task_id, disposition: self.disposition };
+        }
+    }
+    fn on_left(l: WorkflowLeave) { terminate; }
+    // The spawning step settled: a child the state refused retires.
+    fn on_step(s: StepSettlement) {
+        if s.disposition != "completed" && s.disposition != "failed" { return; }
+        self.step_settled = true;
+        if self.unadmitted && len(self.outstanding) == 0 {
+            MemberRetired <- MemberRetirement { step_id: self.spawning_step, key: self.member_key, work_id: self.task_id, why: "never admitted; step " + self.spawning_step + " " + s.disposition };
+            terminate;
+        }
+    }
+    // The spawning step was fenced (its Task cancelled): a child the
+    // state refused retires; a running one is cancelled the same way,
+    // through its own settlement — the fence reaches down the tree.
+    fn on_fenced(f: StepFence) {
+        self.step_settled = true;
+        if len(self.outstanding) > 0 { return; }
+        if self.unadmitted {
+            MemberRetired <- MemberRetirement { step_id: self.spawning_step, key: self.member_key, work_id: self.task_id, why: "never admitted; " + f.reason };
+            terminate;
+        }
+        if self.held && self.admit && !self.started { self.propose_admission(); return; }
+        if self.started && len(self.disposition) == 0 {
+            WorkflowCancelRequested <- WorkflowCancel { task_id: self.task_id, reason: f.reason };
+        }
+    }
+    fn on_resumed(r: RecordResume) {
+        if !self.held || len(self.outstanding) > 0 || self.started { return; }
+        self.propose_admission();
+    }
+    dissolve() { RunLives <- RunLife { key: "task:" + self.task_id, what: "dissolved" }; }
+}
+
+// The owner of every execution in a scope: it accepts the Tasks — a
+// root asked of it with its admission already in the record, a child
+// asked by its parent Task with the subtree to admit — and never
+// releases one. The Task owner the contract names (§9).
+locus Executions {
+    params {
+        scope: String = "";
+        roots: Int = 0;
+        child_count: Int = 0;
+        born: String = ""; // task ids with a TaskRun born here: one execution is one Task, asked twice or not
+        repeats: Int = 0;
+    }
+    bus {
+        subscribe ExecutionAsked as on_root where key == self.scope;
+        subscribe ChildAdmitRequested as on_child where key == self.scope;
+    }
+    accept(t: TaskRun) { }
+    @unbounded
+    fn on_root(a: ExecutionAsk) {
+        if set_has(self.born, a.task_id) { self.repeats = self.repeats + 1; return; }
+        self.born = set_add(self.born, a.task_id);
+        self.roots = self.roots + 1;
+        TaskRun {
+            scope: self.scope, task_id: a.task_id, workflow_id: a.workflow_id, definition: a.definition, revision: a.revision,
+            recipe: a.recipe, kinds: a.kinds, limits: a.limits, admit: false
+        };
+    }
+    @unbounded
+    fn on_child(c: ChildAdmission) {
+        if set_has(self.born, c.task_id) { self.repeats = self.repeats + 1; return; }
+        self.born = set_add(self.born, c.task_id);
+        self.child_count = self.child_count + 1;
+        TaskRun {
+            scope: self.scope, task_id: c.task_id, workflow_id: c.workflow_id, parent_task: c.parent_task,
+            spawning_step: c.spawning_step, member_key: c.member_key, definition: c.definition, revision: c.revision,
+            recipe: c.recipe, kinds: c.kinds, limits: c.limits, works: c.works, tasks: c.tasks, steps: c.steps, depth: c.depth, admit: true
+        };
+    }
+}
+
 // One admitted execution: its ordered steps. It births step 0, and
 // births step i+1 only from the handler that hears step i drained behind
 // its committed completion — the projection refuses an activation while
@@ -448,6 +705,8 @@ locus WorkflowRun {
         step_count: Int = 0;
         leaves: LeafSpecRows = LeafSpecRows { }; // every leaf of the execution, as handed in
         mine: LeafSpecRows = LeafSpecRows { }; // the workflow's own copy
+        child_specs: ChildSpecRows = ChildSpecRows { }; // every child member of the execution, as handed in
+        mine_children: ChildSpecRows = ChildSpecRows { };
         current: Int = -1; // the active step's index
         active: Bool = false; // a StepRun of `current` is alive
         stage: String = ""; // "" | "running" | "settling" | "settled"
@@ -467,6 +726,7 @@ locus WorkflowRun {
         subscribe RecordResumed as on_resumed where key == self.scope;
         publish TransitionProposed;
         publish WorkflowSettled;
+        publish WorkflowLeft;
         publish RunLives;
     }
     accept(s: StepRun) { }
@@ -475,6 +735,11 @@ locus WorkflowRun {
         let mut i = 0;
         while i < self.leaves.len() {
             self.mine.push(own_leaf(self.leaves.get(i) or LeafSpec { }));
+            i = i + 1;
+        }
+        i = 0;
+        while i < self.child_specs.len() {
+            self.mine_children.push(own_child(self.child_specs.get(i) or ChildSpec { }));
             i = i + 1;
         }
         RunLives <- RunLife { key: self.task_id, what: "born" };
@@ -495,9 +760,16 @@ locus WorkflowRun {
             if l.step_id == step_id { rows.push(l); }
             i = i + 1;
         }
+        let mut kids = ChildSpecRows { };
+        i = 0;
+        while i < self.mine_children.len() {
+            let c = self.mine_children.get(i) or ChildSpec { };
+            if c.step_id == step_id { kids.push(c); }
+            i = i + 1;
+        }
         self.current = index;
         self.active = true;
-        StepRun { scope: self.scope, step_id: step_id, task_id: self.task_id, workflow_id: self.workflow_id, step_index: index, leaves: rows };
+        StepRun { scope: self.scope, step_id: step_id, task_id: self.task_id, workflow_id: self.workflow_id, step_index: index, leaves: rows, child_specs: kids };
     }
     fn propose_outcome(disposition: String, reason: String) {
         self.stage = "settling";
@@ -521,7 +793,7 @@ locus WorkflowRun {
             return;
         }
         self.active = false;
-        if self.stage == "settled" { terminate; } // cancelled meanwhile: the step fenced and drained
+        if self.stage == "settled" { WorkflowLeft <- WorkflowLeave { task_id: self.task_id }; terminate; } // cancelled meanwhile: the step fenced and drained
         if len(self.outstanding) > 0 || self.held { return; } // a settlement is being decided; it decides
         if self.cancel_asked { self.propose_outcome("cancelled", self.cancel_reason); return; }
         if d.disposition == "completed" {
@@ -547,7 +819,7 @@ locus WorkflowRun {
         self.stage = "settled";
         self.disposition = std::str::clone(self.proposing);
         WorkflowSettled <- WorkflowSettlement { task_id: self.task_id, disposition: self.disposition, reason: self.reason };
-        if !self.active { terminate; }
+        if !self.active { WorkflowLeft <- WorkflowLeave { task_id: self.task_id }; terminate; }
         // cancelled with a step active: the step fences its Works and
         // drains; the workflow leaves when it hears that
     }
@@ -584,6 +856,8 @@ locus StepRun {
         step_index: Int = 0;
         leaves: LeafSpecRows = LeafSpecRows { }; // what the owner handed in
         mine: LeafSpecRows = LeafSpecRows { }; // the step's own copy of it
+        child_specs: ChildSpecRows = ChildSpecRows { }; // the child members handed in
+        mine_children: ChildSpecRows = ChildSpecRows { };
         required: String = ""; // member keys, in order
         answered: String = ""; // keys that have settled, done or not
         retired: String = ""; // keys of leaves never admitted, retired under the settled step
@@ -601,9 +875,11 @@ locus StepRun {
         subscribe TransitionAnswered as on_answer where key == self.step_id;
         subscribe MemberSettled as on_member where key == self.step_id;
         subscribe MemberRetired as on_retired where key == self.step_id;
+        subscribe ChildSettled as on_child where key == self.step_id;
         subscribe RecordResumed as on_resumed where key == self.scope;
         subscribe WorkflowSettled as on_workflow where key == self.task_id;
         publish TransitionProposed;
+        publish ChildRequested;
         publish StepSettled;
         publish StepFenced;
         publish StepDrained;
@@ -623,6 +899,11 @@ locus StepRun {
             self.mine.push(own_leaf(self.leaves.get(i) or LeafSpec { }));
             i = i + 1;
         }
+        i = 0;
+        while i < self.child_specs.len() {
+            self.mine_children.push(own_child(self.child_specs.get(i) or ChildSpec { }));
+            i = i + 1;
+        }
         RunLives <- RunLife { key: self.step_id, what: "born" };
     }
     @unbounded
@@ -635,7 +916,26 @@ locus StepRun {
             self.required = set_add(self.required, l.key);
             i = i + 1;
         }
+        i = 0;
+        while i < self.mine_children.len() {
+            let c = self.mine_children.get(i) or ChildSpec { };
+            out = out + (if len(out) > 0 { " " } else { "" }) + c.key + ":child:" + c.task_id;
+            self.required = set_add(self.required, c.key);
+            i = i + 1;
+        }
         return out;
+    }
+    // The child Task bound under a member key, "" when the key is no
+    // child member.
+    @unbounded
+    fn bound_child(key: String) -> String {
+        let mut i = 0;
+        while i < self.mine_children.len() {
+            let c = self.mine_children.get(i) or ChildSpec { };
+            if c.key == key { return c.task_id; }
+            i = i + 1;
+        }
+        return "";
     }
     // The Work bound under a member key, "" when the key is no member.
     @unbounded
@@ -753,6 +1053,17 @@ locus StepRun {
                 };
                 i = i + 1;
             }
+            // and the child members are asked of this step's Task, which
+            // holds the recipe they are bound in
+            i = 0;
+            while i < self.mine_children.len() {
+                let c = self.mine_children.get(i) or ChildSpec { };
+                ChildRequested <- ChildRequest {
+                    parent_task: self.task_id, step_id: self.step_id, step_index: self.step_index, key: c.key,
+                    child_task: c.task_id, definition: c.definition, revision: c.revision
+                };
+                i = i + 1;
+            }
             return;
         }
         if self.stage == "completing" { self.finish("completed", ""); }
@@ -777,11 +1088,30 @@ locus StepRun {
         }
         self.decide();
     }
-    // A leaf that was never admitted retires under the settled step: it
-    // has not answered — it settled nothing — and the step no longer
-    // waits for it. Only under the settled step, and only a member.
+    // A child member answered: its execution settled, durably (the
+    // child's Task says so only after its row landed). The exact child
+    // bound under the key, once; a settlement for another Task under
+    // this key, or for a key that is no child here, is no member's.
+    fn on_child(c: ChildSettlement) {
+        let bound = self.bound_child(c.key);
+        if len(bound) == 0 || bound != c.task_id { self.strays = self.strays + 1; return; }
+        if set_has(self.answered, c.key) { self.duplicates = self.duplicates + 1; return; }
+        self.answered = set_add(self.answered, c.key);
+        if c.disposition == "done" { self.done = set_add(self.done, c.key); }
+        if c.disposition != "done" && len(self.failed_member) == 0 { self.failed_member = std::str::clone(c.key); }
+        if self.stage == "settled" {
+            if self.drained() { self.leaving(); terminate; }
+            return;
+        }
+        self.decide();
+    }
+    // A leaf or child that was never admitted retires under the settled
+    // step: it has not answered — it settled nothing — and the step no
+    // longer waits for it. Only under the settled step, and only a
+    // member: the Work or Task bound under the key.
     fn on_retired(m: MemberRetirement) {
-        let bound = self.bound_work(m.key);
+        let mut bound = self.bound_work(m.key);
+        if len(bound) == 0 { bound = self.bound_child(m.key); }
         if len(bound) == 0 || bound != m.work_id || self.stage != "settled" { self.strays = self.strays + 1; return; }
         if set_has(self.answered, m.key) || set_has(self.retired, m.key) { self.duplicates = self.duplicates + 1; return; }
         self.retired = set_add(self.retired, m.key);
