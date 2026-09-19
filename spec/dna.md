@@ -1360,16 +1360,27 @@ admission the record refuses invokes no performer and spends no retry:
 the Work holds it, with its number, and proposes it again when the
 record resumes.
 
-The runtime runs under a lease (`Coordination`, the existing leases
-with fencing tokens): a key, a holder, the token the holder was
-granted, and the clock it judges the lease by. Every transition the
-committer commits, every claim, every redelivery and every outcome it
-records is fenced on that token at the decision: a holder whose lease
-expired — unclaimed, or re-acquired by another — commits nothing,
-however live it feels, and answers `fenced`, which a resident holds as
-it holds a refusal by the record and proposes again once the record
-resumes under a live token. A runtime with no lease key is unfenced: a
-standalone runtime over a memory record.
+The runtime runs under a lease that is rows of its own record
+(`lease.taken`, whose row number is the fencing token; `lease.renewed`,
+which moves the expiry and keeps the token; `lease.released`): a key, a
+holder, the token the holder was granted, and the clock it judges the
+lease by. Ownership is read at the revision a write is exact at, so the
+fence is atomic with the write by construction: a takeover is a row, it
+moves the revision, and a stale holder's exact append fails and is
+decided again — at the new revision the record names the new holder,
+and the write is fenced. That holds for every write the runtime makes:
+a transition it commits, a claim, a redelivery, an outcome it records,
+a claim it closes. A holder whose lease expired — unclaimed, re-taken
+by another, or re-taken under its own name by a restarted incarnation
+with a new token — commits nothing, however live it feels, and answers
+`fenced`, which a resident holds as it holds a refusal by the record
+and proposes again once the record resumes under a live token; a
+request that only attaches to a running attempt writes nothing and is
+not fenced. Two takes of a free lease at once land one: the other is
+stale, decided again and refused. The cell leases (`MemLeases`,
+`GitLeases`) stay for what they hold — a body, a mutation — where the
+operation they fence is not an append to this record. A runtime with no
+lease key is unfenced: a standalone runtime over a memory record.
 
 ## Storage interfaces
 

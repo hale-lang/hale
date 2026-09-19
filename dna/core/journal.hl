@@ -214,6 +214,96 @@ fn lease_fences(c: Coordination, key: String, token: Int, now: Int) -> Bool {
     return cur.present && cur.token == token && cur.expires > now;
 }
 
+// ---- leases in the record (GH #646 card 12b) -------------------------
+//
+// A lease whose state is rows of the record it fences: `lease.taken`
+// (holder and expiry; the row's own sequence number is the token),
+// `lease.renewed` (holder, token, expiry) and `lease.released` (holder,
+// token). Read at one revision it is the ownership as of that revision,
+// and an exact append at that revision validates ownership atomically
+// with the write: a takeover is a row, it moves the revision, and a
+// stale holder's exact append fails and is decided again. The cell
+// leases above (`MemLeases`, `GitLeases`) stay for what they hold; a
+// committer whose every write must be fenced holds its lease here.
+
+// What the record says about `key` as of `rev`.
+@unbounded
+fn lease_at(j: Journal, key: String, rev: Int) -> Lease {
+    let mut l = Lease { key: key };
+    let mut i = 0;
+    while i < rev {
+        let e = j.read(i);
+        if e.entity == key {
+            if e.kind == "lease.taken" {
+                let sp = std::str::index_of(e.body, " ");
+                if sp > 0 {
+                    l = Lease { key: key, holder: e.body[0..sp], token: i, expires: std::str::parse_int(e.body[(sp + 1)..len(e.body)]) or 0, present: true };
+                }
+            }
+            if e.kind == "lease.renewed" && l.present {
+                let sp1 = std::str::index_of(e.body, " ");
+                let rest = e.body[(sp1 + 1)..len(e.body)];
+                let sp2 = std::str::index_of(rest, " ");
+                if sp1 > 0 && sp2 > 0 {
+                    let holder = e.body[0..sp1];
+                    let token = std::str::parse_int(rest[0..sp2]) or - 1;
+                    let expires = std::str::parse_int(rest[(sp2 + 1)..len(rest)]) or 0;
+                    if holder == l.holder && token == l.token { l.expires = expires; }
+                }
+            }
+            if e.kind == "lease.released" && l.present {
+                let sp = std::str::index_of(e.body, " ");
+                if sp > 0 && e.body[0..sp] == l.holder && (std::str::parse_int(e.body[(sp + 1)..len(e.body)]) or - 1) == l.token { l.present = false; }
+            }
+        }
+        i = i + 1;
+    }
+    return l;
+}
+
+// Whether `holder` holds `key` under `token` as of `rev`, live at `now`.
+fn lease_holds_at(j: Journal, key: String, holder: String, token: Int, rev: Int, now: Int) -> Bool {
+    let l = lease_at(j, key, rev);
+    return l.present && l.holder == holder && l.token == token && l.expires > now;
+}
+
+// Take the lease, exactly at the reading that found it free, expired or
+// already this holder's; `present == false` names who holds it instead.
+@unbounded
+fn lease_take(j: Journal, key: String, holder: String, now: Int, ttl: Int) -> Lease {
+    let mut tries = 0;
+    while tries < 6 {
+        tries = tries + 1;
+        let moved = j.refresh();
+        let rev = j.revision();
+        let cur = lease_at(j, key, rev);
+        if cur.present && cur.expires > now && cur.holder != holder {
+            return Lease { key: key, holder: cur.holder, token: 0, expires: cur.expires, present: false };
+        }
+        let w = j.append_exact(rev, "lease.taken", key, holder + " " + to_string(now + ttl));
+        if w.ok { return Lease { key: key, holder: holder, token: w.revision - 1, expires: now + ttl, present: true }; }
+        if w.error != "stale_revision" && w.error != "claimed" { return Lease { key: key, holder: cur.holder, present: false }; }
+    }
+    return Lease { key: key, present: false };
+}
+
+// Renew the lease this holder holds under `token`: the token stays, the
+// expiry moves. False when the lease is no longer this holder's.
+@unbounded
+fn lease_renew(j: Journal, key: String, holder: String, token: Int, now: Int, ttl: Int) -> Bool {
+    let mut tries = 0;
+    while tries < 6 {
+        tries = tries + 1;
+        let moved = j.refresh();
+        let rev = j.revision();
+        if !lease_holds_at(j, key, holder, token, rev, now) { return false; }
+        let w = j.append_exact(rev, "lease.renewed", key, holder + " " + to_string(token) + " " + to_string(now + ttl));
+        if w.ok { return true; }
+        if w.error != "stale_revision" && w.error != "claimed" { return false; }
+    }
+    return false;
+}
+
 // ---- idempotent effects over the journal --------------------------
 
 // An effect request is committed BEFORE dispatch under a durable key;

@@ -11,9 +11,12 @@
 // attempt zero cannot overwrite its successor. An admission the record
 // refuses invokes no performer and spends no retry: the Work holds it
 // and proposes it again when the record resumes. And the runtime runs
-// under a lease: a holder whose lease expired and was re-acquired by
-// another commits nothing — no transition, no claim, no outcome — until
-// it holds a live token again, and then what was held goes through.
+// under a lease that is rows of its own record: a holder whose lease
+// expired and was re-acquired by another commits nothing — no
+// transition, no claim, no outcome — until it holds a live token again,
+// and then what was held goes through; and because a takeover is a row,
+// one landing after a holder's own check and before its append makes
+// that append stale, and it is decided again and fenced.
 
 import "../core" as dna;
 
@@ -34,6 +37,29 @@ locus Flaky {
         if self.calls == 1 { return dna::WorkResult { disposition: "failed", result: "not this time", performer: "alice", attempt_id: id }; }
         return dna::WorkResult { disposition: "pending", performer: "alice", attempt_id: id };
     }
+}
+
+// A record another holder takes over at the boundary: as this holder
+// appends a row of the given kind — after it checked the lease and
+// found itself live — beta's takeover lands, and only then is the
+// holder's exact append delegated. Beta's clock is ahead of alpha's:
+// alpha's lease has expired by beta's clock while alpha still counts
+// itself live, which is what a stalled or slow holder looks like.
+locus Takeover {
+    params { inner: dna::MemJournal = dna::MemJournal { }; on_kind: String = ""; key: String = ""; taken: Bool = false; }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.inner.append(expected, kind, entity, body); }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if kind == self.on_kind && !self.taken {
+            self.taken = true;
+            let beta = dna::lease_take(self.inner, self.key, "beta", 200, 100);
+        }
+        return self.inner.append_exact(expected, kind, entity, body);
+    }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
 }
 
 // A record that refuses one row, once.
@@ -220,29 +246,33 @@ main locus App {
         let done2 = self.reply(wr + "/a1", "done");
         self.until_outcome("t1:done", 2);
 
-        // ---- boot 3: the runtime runs under a lease. Attempt one is out
-        //      when the lease expires and another holder takes it: the
-        //      stale holder commits nothing — a reply is not recorded, a
-        //      cancellation is not committed — until it holds a live token
-        //      again, and then what was held goes through
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", lease_key: "lease/workflow/main", holder: "alpha", work: dna::WorkSystem { human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
-        std::test::assert(self.boot.rt.take_lease(0, 100), "alpha holds the lease at 0");
+        // ---- boot 3: the runtime runs under a lease, rows of its record.
+        //      Attempt one is out when the lease expires and another holder
+        //      takes it: the stale holder commits nothing — a reply is not
+        //      recorded, a cancellation is not committed, a request runs
+        //      nothing — until it holds a live token again, and then what
+        //      was held goes through
+        let key = "lease/workflow/main";
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", lease_key: key, holder: "alpha", work: dna::WorkSystem { human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
         let r3 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
+        std::test::assert(self.boot.rt.take_lease(0, 100), "alpha holds the lease at 0");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "lease.taken", key), 1, "as a row of the record");
+        std::test::assert(self.boot.rt.renew_lease(50, 100), "and renews it at 50, under the same token");
         self.ask();
         self.until_calls(wr + "/a1", 4);
         self.settle();
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.admitted", wr + "/a1"), 1, "boot 3: attempt one admitted under the lease");
-        let rows_before = self.boot.rt.journal.revision();
         // the lease expires unrenewed: nobody holds it, and an expired
         // token commits nothing either
-        self.boot.rt.tick(150);
+        self.boot.rt.tick(160);
         let expired = self.reply(wr + "/a1", "done");
         std::test::assert(!expired.ok && std::str::contains(expired.why, "held by nobody"), "with the lease expired and unclaimed, alpha's reply is fenced: " + expired.why);
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", wr + "/a1"), 0, "and recorded nothing");
-        // then beta takes it
-        let beta = self.boot.rt.leases.acquire("lease/workflow/main", "beta", 200, 100);
+        // then beta takes it — a row of the record
+        let beta = dna::lease_take(self.boot.rt.journal, key, "beta", 200, 100);
         std::test::assert(beta.present && beta.holder == "beta", "beta holds the lease at 200");
         self.boot.rt.tick(200);
+        let rows_before = self.boot.rt.journal.revision();
         let stale = self.reply(wr + "/a1", "done");
         std::test::assert(!stale.ok && std::str::contains(stale.why, "fenced"), "alpha's reply for attempt one is fenced: " + stale.why);
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", wr + "/a1"), 0, "and recorded nothing");
@@ -251,10 +281,11 @@ main locus App {
         dna::AttemptRequested <- dna::AttemptRequest { scope: "main", attempt_id: wr + "/a1", work_id: wr };
         self.settle();
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "workflow.settled", "t1"), 0, "alpha's cancellation is fenced: not committed");
-        std::test::assert(std::str::contains(self.replies[replies_before..len(self.replies)], "fenced"), "a request to run under a lost lease is fenced too: " + self.replies[replies_before..len(self.replies)]);
-        std::test::assert_eq_int(self.count(self.calls, wr + "/a1"), 4, "and asks no performer");
+        std::test::assert(std::str::contains(self.replies[replies_before..len(self.replies)], "attached"), "a request for the running attempt under a lost lease attaches — it writes nothing — and runs nothing: " + self.replies[replies_before..len(self.replies)]);
+        std::test::assert_eq_int(self.count(self.calls, wr + "/a1"), 4, "no performer was asked");
         std::test::assert_eq_int(self.boot.rt.journal.revision(), rows_before, "the stale holder wrote nothing");
-        std::test::assert(self.boot.rt.fenced_off >= 4, "the fence refused each");
+        std::test::assert_eq_int(self.boot.rt.fenced_off, 3, "the fence refused each write: the two replies and the cancellation");
+        std::test::assert(!self.boot.rt.renew_lease(250, 100), "and alpha cannot renew what beta holds");
         // beta's lease lapses; alpha takes it again, and the record resumes
         std::test::assert(self.boot.rt.take_lease(400, 100), "alpha holds the lease again at 400");
         dna::RecordResumed <- dna::RecordResume { scope: "main", why: "the lease is ours again" };
@@ -265,6 +296,69 @@ main locus App {
         let after = self.reply(wr + "/a1", "done");
         std::test::assert(after.ok, "a late reply is recorded once the lease is live: " + after.why);
         std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", wr + "/a1"), 1, "as its outcome");
+
+        // ---- boot 4: the takeover at the boundary — alpha, live by its own
+        //      clock, checks its lease and finds it live, and beta takes the
+        //      lease as alpha's transition is appended: the append is
+        //      stale, decided again, and fenced; nothing of alpha's lands
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", lease_key: key, holder: "alpha", journal: Takeover { on_kind: "attempt.admitted", key: key }, work: dna::WorkSystem { human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
+        let r4 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
+        std::test::assert(self.boot.rt.take_lease(0, 100), "alpha holds the lease at 0");
+        self.boot.rt.tick(50);
+        self.ask();
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "lease.taken", key), 2, "boot 4: beta took the lease under alpha's append");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.admitted", ""), 0, "and alpha's transition, checked live and appended after the takeover, did not land");
+        std::test::assert_eq_int(self.count(self.calls, wr + "/a0"), 3, "nothing ran");
+        std::test::assert_eq_int(self.boot.rt.fenced_off, 1, "the fence refused it, on the reading after the takeover");
+        std::test::assert_eq_int(self.count(self.lives, wr + ":dissolved"), 4, "the Work holds it");
+        // alpha takes the lease back once beta's lapses; the record resumes
+        std::test::assert(self.boot.rt.take_lease(400, 100), "alpha holds the lease again at 400");
+        dna::RecordResumed <- dna::RecordResume { scope: "main", why: "the lease is ours again" };
+        self.until_calls(wr + "/a0", 4);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.admitted", wr + "/a0"), 1, "resumed under a live token, the transition landed");
+
+        // ---- boot 5: the same takeover under the claim: the executor
+        //      checked the lease live at its reading and the claim's
+        //      exact append is stale; decided again, it is fenced, and no
+        //      performer runs
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", lease_key: key, holder: "alpha", journal: Takeover { on_kind: "effect.requested", key: key }, work: dna::WorkSystem { human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
+        let r5 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
+        std::test::assert(self.boot.rt.take_lease(0, 100), "alpha holds the lease at 0");
+        self.boot.rt.tick(50);
+        self.ask();
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.admitted", wr + "/a0"), 1, "boot 5: attempt zero admitted under alpha's live lease");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.requested", ""), 0, "the claim, appended after the takeover, did not land");
+        std::test::assert_eq_int(self.count(self.calls, wr + "/a0"), 4, "and no performer ran");
+        std::test::assert_eq_int(self.boot.rt.fenced_off, 1, "the fence refused it");
+
+        // ---- boot 6: the token, not the name — alpha restarted takes the
+        //      lease again under its own name while the old alpha still
+        //      counts itself live: the old token is stale, and the old
+        //      alpha's write is fenced
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", lease_key: key, holder: "alpha", work: dna::WorkSystem { human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
+        let r6 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
+        std::test::assert(self.boot.rt.take_lease(0, 100), "alpha holds the lease at 0");
+        self.ask();
+        self.until_calls(wr + "/a1", 5);
+        self.settle();
+        let again = dna::lease_take(self.boot.rt.journal, key, "alpha", 50, 100);
+        std::test::assert(again.present && again.token != self.boot.rt.token, "a restarted alpha takes the lease under a new token while the old one is live by expiry");
+        self.boot.rt.tick(50);
+        let old = self.reply(wr + "/a1", "done");
+        std::test::assert(!old.ok && old.fenced, "the old alpha's reply is fenced on its token, though its name still holds: " + old.why);
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.outcome", wr + "/a1"), 0, "and recorded nothing");
+
+        // ---- boot 7: two takes of a free lease at once: beta's lands as
+        //      alpha's is appended; alpha's take is stale, decided again,
+        //      and refused — one holder, never two
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", lease_key: key, holder: "alpha", journal: Takeover { on_kind: "lease.taken", key: key }, work: dna::WorkSystem { human: Flaky { } } }, owner: dna::Executions { scope: "main" } };
+        let r7 = self.boot.rt.journal.append(0, "workflow.admitted", "t1", self.admission());
+        std::test::assert(!self.boot.rt.take_lease(0, 100), "boot 7: alpha's take, appended after beta's landed, is refused");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "lease.taken", key), 1, "one take landed: beta's");
+        std::test::assert_eq_str(dna::lease_at(self.boot.rt.journal, key, self.boot.rt.journal.revision()).holder, "beta", "and the record says beta holds it");
         std::test::assert(self.boot.rt.journal.verify_chain(), "the record's chain holds");
     }
 }

@@ -46,15 +46,15 @@ locus WorkflowRuntime {
         journal: Journal = MemJournal { };
         work: WorkSystem = WorkSystem { };
         p: WorkflowProjection = WorkflowProjection { };
-        // The lease this scope's committer runs under (card 12b): the
-        // existing coordination, a key, this holder's name, the fencing
-        // token it was granted, and the clock it judges the lease by. No
-        // key: unfenced — a standalone runtime over a memory record. With
-        // one, every transition this runtime commits, every claim, every
-        // redelivery and every outcome it records is fenced on the
-        // token: a holder whose lease expired and was re-acquired by
-        // another is stale and commits nothing, however live it feels.
-        leases: Coordination = MemLeases { };
+        // The lease this scope's committer runs under (card 12b): a key,
+        // this holder's name, the fencing token it was granted, and the
+        // clock it judges the lease by. The lease is rows of the record
+        // itself (`lease_take` / `lease_at`), so every write this runtime
+        // makes — a transition, a claim, a redelivery, an outcome, a close
+        // — is fenced as of the very revision it is exact at: a takeover
+        // is a row, it moves the revision, and a stale holder's append
+        // fails and is decided again, however live that holder feels. No
+        // key: unfenced — a standalone runtime over a memory record.
         lease_key: String = "";
         holder: String = "";
         token: Int = 0;
@@ -113,24 +113,26 @@ locus WorkflowRuntime {
     fn take_lease(now: Int, ttl: Int) -> Bool {
         self.now = now;
         if len(self.lease_key) == 0 { return true; }
-        let l = self.leases.acquire(self.lease_key, self.holder, now, ttl);
+        let l = lease_take(self.journal, self.lease_key, self.holder, now, ttl);
         if !l.present { return false; }
         self.token = l.token;
         return true;
     }
+    // Renew the lease under the same token; false when it is no longer
+    // this holder's.
+    fn renew_lease(now: Int, ttl: Int) -> Bool {
+        self.now = now;
+        if len(self.lease_key) == 0 { return true; }
+        return lease_renew(self.journal, self.lease_key, self.holder, self.token, now, ttl);
+    }
     // The clock moves; the lease is judged at the new time.
     fn tick(now: Int) { self.now = now; }
-    // Whether this runtime may commit now: unfenced, or holding the live
-    // token. Read fresh every time: a lease is lost between two commits.
-    fn holds() -> Bool {
-        if len(self.lease_key) == 0 { return true; }
-        return lease_fences(self.leases, self.lease_key, self.token, self.now);
+    fn fence() -> Fence {
+        return Fence { key: self.lease_key, holder: self.holder, token: self.token, now: self.now };
     }
-    fn fence_why(what: String) -> String {
-        let cur = self.leases.current(self.lease_key);
-        let who = if cur.present && cur.expires > self.now { cur.holder } else { "nobody" };
-        return "fenced: " + what + " is not committed by " + self.holder + ", whose lease on " + self.lease_key + " is not live (held by " + who + ")";
-    }
+    // Whether this runtime may commit exactly at `rev`: unfenced, or
+    // holding the live token as of that reading of the record.
+    fn holds_at(rev: Int) -> Bool { return fence_holds(self.journal, self.fence(), rev); }
     fn refuse(t: TransitionProposal, basis: String, revision: Int, why: String) {
         self.refused = self.refused + 1;
         if basis == "conflict" { self.conflicts = self.conflicts + 1; }
@@ -189,10 +191,11 @@ locus WorkflowRuntime {
                 self.answer(t, true, rev, check.why);
                 return;
             }
-            // the fence, at the decision: a stale holder appends nothing
-            if !self.holds() {
+            // the fence, as of the reading the append is exact at: a
+            // takeover landed since is a row, and this append is stale
+            if !self.holds_at(rev) {
                 self.fenced_off = self.fenced_off + 1;
-                self.refuse(t, "fenced", rev, self.fence_why(t.kind + " " + t.entity));
+                self.refuse(t, "fenced", rev, fenced(self.journal, self.fence(), t.kind + " " + t.entity).why);
                 return;
             }
             let w = self.journal.append_exact(rev, t.kind, t.entity, t.body);
@@ -231,14 +234,11 @@ locus WorkflowRuntime {
             self.reply(Executed { why: "attempt " + r.attempt_id + " is an attempt of " + admitted.value.work_id + ", not of " + r.work_id + "; not this Work's to ask for" }, r.work_id, r.attempt_id);
             return;
         }
-        if !self.holds() {
-            self.fenced_off = self.fenced_off + 1;
-            self.reply(Executed { why: self.fence_why("attempt " + r.attempt_id) }, r.work_id, r.attempt_id);
-            return;
-        }
         // whether this incarnation claimed or redelivered the attempt is
-        // the runtime's own knowledge, never the request's word
-        let x = dispatch_attempt(self.journal, self.work, self.scope, admitted.value, set_has(self.claimed, r.attempt_id), set_has(self.redelivered, r.attempt_id));
+        // the runtime's own knowledge, never the request's word; the
+        // fence is the executor's, at each write's own reading
+        let x = dispatch_attempt(self.journal, self.work, self.scope, admitted.value, set_has(self.claimed, r.attempt_id), set_has(self.redelivered, r.attempt_id), self.fence());
+        if x.fenced { self.fenced_off = self.fenced_off + 1; }
         if x.ran && !x.redelivered { self.claimed = set_add(self.claimed, r.attempt_id); }
         if x.redelivered { self.redelivered = set_add(self.redelivered, r.attempt_id); }
         self.reply(x, r.work_id, r.attempt_id);
@@ -255,14 +255,8 @@ locus WorkflowRuntime {
     }
     // A reply that arrives later goes to its Work the same way.
     fn settle(attempt_id: String, r: WorkResult) -> Executed {
-        if !self.holds() {
-            self.fenced_off = self.fenced_off + 1;
-            let x0 = Executed { why: self.fence_why("the reply for attempt " + attempt_id) };
-            let admitted0 = recorded_attempt_admission(self.journal, attempt_id, self.journal.revision());
-            self.reply(x0, if admitted0.ok { admitted0.value.work_id } else { "" }, attempt_id);
-            return x0;
-        }
-        let x = settle_attempt(self.journal, self.work, self.scope, attempt_id, r);
+        let x = settle_attempt(self.journal, self.work, self.scope, attempt_id, r, self.fence());
+        if x.fenced { self.fenced_off = self.fenced_off + 1; }
         let admitted = recorded_attempt_admission(self.journal, attempt_id, self.journal.revision());
         self.reply(x, if admitted.ok { admitted.value.work_id } else { "" }, attempt_id);
         return x;

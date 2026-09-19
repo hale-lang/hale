@@ -39,9 +39,30 @@ type Executed {
     attached: Bool = false; // the attempt was already running: attached to its pending outcome
     reused: Bool = false; // the attempt was already settled: its recorded outcome is the answer
     redelivered: Bool = false; // the attempt was claimed by an incarnation that died: its dispatch was issued again, same id, no new claim
+    fenced: Bool = false; // the write was refused by the fence: this holder's lease is not live as of the reading
     disposition: String = ""; // the recorded outcome's, "" while the attempt is outstanding
     outcome: AttemptOutcome = AttemptOutcome { };
     why: String = "";
+}
+
+// The lease a write is fenced on (card 12b): the record's own lease
+// rows, read at the revision the write is exact at. No key: unfenced.
+type Fence {
+    key: String = "";
+    holder: String = "";
+    token: Int = 0;
+    now: Int = 0;
+}
+
+fn fence_holds(j: Journal, f: Fence, rev: Int) -> Bool {
+    if len(f.key) == 0 { return true; }
+    return lease_holds_at(j, f.key, f.holder, f.token, rev, f.now);
+}
+
+fn fenced(j: Journal, f: Fence, what: String) -> Executed {
+    let cur = lease_at(j, f.key, j.revision());
+    let who = if cur.present && cur.expires > f.now { cur.holder } else { "nobody" };
+    return Executed { fenced: true, why: "fenced: " + what + " is not committed by " + f.holder + ", whose lease on " + f.key + " is not live as of this reading (held by " + who + ")" };
 }
 
 fn execution_key(attempt_id: String) -> String {
@@ -138,10 +159,10 @@ fn reply_outstanding(r: WorkResult) -> Bool {
 
 // The attempt is running under another invocation's claim: its outcome,
 // if recorded by now, else pending.
-fn attach_attempt(j: Journal, attempt_id: String, why: String) -> Executed {
+fn attach_attempt(j: Journal, attempt_id: String, why: String, f: Fence) -> Executed {
     let settled = recorded_attempt_outcome(j, attempt_id, j.revision());
     if settled.ok {
-        if !claim_closed(j, attempt_id, settled.value.disposition) { return close_refused(attempt_id); }
+        if !claim_closed(j, attempt_id, settled.value.disposition, f) { return close_refused(attempt_id); }
         return Executed { ok: true, attached: true, reused: true, disposition: settled.value.disposition, outcome: settled.value };
     }
     return Executed { ok: true, attached: true, why: why };
@@ -188,7 +209,7 @@ fn recorded_fence(j: Journal, task_id: String, rev: Int) -> String {
 }
 
 @unbounded
-fn execute_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAttempt) -> Executed {
+fn execute_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAttempt, f: Fence) -> Executed {
     let id = a.attempt_id;
     if id != attempt_id_of(a.work_id, a.attempt_no) {
         return Executed { why: "attempt " + id + " is not attempt " + to_string(a.attempt_no) + " of " + a.work_id };
@@ -212,11 +233,11 @@ fn execute_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAttem
         if settled.ok {
             // an outcome recorded meanwhile — by another hand — is the
             // answer, once the claim under it is closed
-            if !claim_closed(j, id, settled.value.disposition) { return close_refused(id); }
+            if !claim_closed(j, id, settled.value.disposition, f) { return close_refused(id); }
             return Executed { ok: true, reused: true, disposition: settled.value.disposition, outcome: settled.value };
         }
         if attempt_claimed(j, id, rev) {
-            return attach_attempt(j, id, "attempt " + id + " is already running; attached to its outcome");
+            return attach_attempt(j, id, "attempt " + id + " is already running; attached to its outcome", f);
         }
         // the fence, at the same reading the claim is exact at (§5): an
         // attempt not yet claimed under a cancelled execution starts no
@@ -226,6 +247,8 @@ fn execute_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAttem
         if len(fence) > 0 {
             return Executed { why: fence + " before attempt " + id + " was claimed; it does not run" };
         }
+        // the fence, as of the same reading the claim is exact at
+        if !fence_holds(j, f, rev) { return fenced(j, f, "the claim on attempt " + id); }
         let w = j.append_exact(rev, "effect.requested", key, "attempt " + id + " by " + v.performer_kind);
         if w.ok { ours = true; }
         else if w.error != "stale_revision" && w.error != "claimed" {
@@ -237,13 +260,13 @@ fn execute_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAttem
         return Executed { why: "the record moved under the claim on attempt " + id + " " + to_string(tries) + " times; nothing ran" };
     }
     // ---- the admitted performer runs, once
-    return perform_attempt(j, work, scope, v, false);
+    return perform_attempt(j, work, scope, v, false, f);
 }
 
 // The admitted performer runs, and its reply is judged and recorded as
 // card 08 has it. `redelivered` marks a dispatch issued again for a claim
 // an earlier incarnation took and never answered (card 12a).
-fn perform_attempt(j: Journal, work: WorkSystem, scope: String, v: AdmittedAttempt, redelivered: Bool) -> Executed {
+fn perform_attempt(j: Journal, work: WorkSystem, scope: String, v: AdmittedAttempt, redelivered: Bool, f: Fence) -> Executed {
     let id = v.attempt_id;
     let req = attempt_request(v);
     let r = work.perform_as(v.performer_kind, req);
@@ -254,7 +277,7 @@ fn perform_attempt(j: Journal, work: WorkSystem, scope: String, v: AdmittedAttem
     }
     let bad = reply_disposition_gap(r);
     if len(bad) > 0 { return Executed { ran: true, redelivered: redelivered, why: bad }; }
-    let mut x = record_attempt(j, scope, v, r, true);
+    let mut x = record_attempt(j, scope, v, r, true, f);
     x.redelivered = redelivered;
     return x;
 }
@@ -264,15 +287,24 @@ fn perform_attempt(j: Journal, work: WorkSystem, scope: String, v: AdmittedAttem
 // it was closed already or its close just landed; false when the record
 // refused it — and then the outcome is not the answer yet, and the Work
 // keeps its responsibility until a later request or reply closes it.
-fn claim_closed(j: Journal, attempt_id: String, disposition: String) -> Bool {
+@unbounded
+fn claim_closed(j: Journal, attempt_id: String, disposition: String, f: Fence) -> Bool {
     let key = execution_key(attempt_id);
-    let st = effect_status(j, key);
-    if !st.requested || st.done { return true; }
-    if effect_result(j, key, disposition == "done") { return true; }
-    // refused — or closed by another hand between the two reads: a claim
-    // that is closed is closed, whoever closed it
-    let again = effect_status(j, key);
-    return again.done;
+    let mut tries = 0;
+    while tries < 6 {
+        tries = tries + 1;
+        let moved = j.refresh();
+        let rev = j.revision();
+        let st = effect_status(j, key);
+        // closed already, by whichever hand: closed
+        if !st.requested || st.done { return true; }
+        if !fence_holds(j, f, rev) { return false; }
+        let w = j.append_exact(rev, "effect.result", key, if disposition == "done" { "ok" } else { "failed" });
+        if w.ok { return true; }
+        if w.error != "stale_revision" && w.error != "claimed" { return false; }
+        // the record moved: a close another hand landed is found above
+    }
+    return false;
 }
 
 fn close_refused(attempt_id: String) -> Executed {
@@ -299,7 +331,7 @@ fn close_refused(attempt_id: String) -> Executed {
 // that revision, and an outcome or a cancellation landing meanwhile
 // makes it stale and the decision is taken again.
 @unbounded
-fn dispatch_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAttempt, claimed_here: Bool, redelivered_here: Bool) -> Executed {
+fn dispatch_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAttempt, claimed_here: Bool, redelivered_here: Bool, f: Fence) -> Executed {
     let id = a.attempt_id;
     if id != attempt_id_of(a.work_id, a.attempt_no) {
         return Executed { why: "attempt " + id + " is not attempt " + to_string(a.attempt_no) + " of " + a.work_id };
@@ -319,21 +351,22 @@ fn dispatch_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAtte
         if len(gap) > 0 { return Executed { why: gap }; }
         let settled = recorded_attempt_outcome(j, id, rev);
         if settled.ok {
-            if !claim_closed(j, id, settled.value.disposition) { return close_refused(id); }
+            if !claim_closed(j, id, settled.value.disposition, f) { return close_refused(id); }
             return Executed { ok: true, reused: true, disposition: settled.value.disposition, outcome: settled.value };
         }
-        if !attempt_claimed(j, id, rev) { return execute_attempt(j, work, scope, a); }
+        if !attempt_claimed(j, id, rev) { return execute_attempt(j, work, scope, a, f); }
         let st = effect_status(j, key);
         if st.done && st.unknown {
             return Executed { why: "attempt " + id + " resulted unknown: what its invocation did before its incarnation died is unresolved, and nothing runs on it until it is reconciled" };
         }
         if claimed_here || redelivered_here {
-            return attach_attempt(j, id, "attempt " + id + " is already running; attached to its outcome");
+            return attach_attempt(j, id, "attempt " + id + " is already running; attached to its outcome", f);
         }
         let fence = recorded_fence(j, v.task_id, rev);
         if len(fence) > 0 { return Executed { why: fence + "; attempt " + id + " is not redelivered" }; }
+        if !fence_holds(j, f, rev) { return fenced(j, f, "the redelivery of attempt " + id); }
         let w = j.append_exact(rev, "effect.redelivered", key, "attempt " + id + " redelivered");
-        if w.ok { return perform_attempt(j, work, scope, v, true); }
+        if w.ok { return perform_attempt(j, work, scope, v, true, f); }
         if w.error != "stale_revision" && w.error != "claimed" {
             return Executed { why: "the record would not take the redelivery of attempt " + id + " (" + w.error + "); nothing ran" };
         }
@@ -346,7 +379,7 @@ fn dispatch_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAtte
 // outstanding: checked by the same rules and persisted the same way. A
 // reply for an attempt whose outcome is recorded changes nothing.
 @unbounded
-fn settle_attempt(j: Journal, work: WorkSystem, scope: String, attempt_id: String, r: WorkResult) -> Executed {
+fn settle_attempt(j: Journal, work: WorkSystem, scope: String, attempt_id: String, r: WorkResult, f: Fence) -> Executed {
     let moved = j.refresh();
     let rev = j.revision();
     let admitted = recorded_attempt_admission(j, attempt_id, rev);
@@ -361,12 +394,12 @@ fn settle_attempt(j: Journal, work: WorkSystem, scope: String, attempt_id: Strin
     }
     let settled = recorded_attempt_outcome(j, attempt_id, rev);
     if settled.ok {
-        if !claim_closed(j, attempt_id, settled.value.disposition) { return close_refused(attempt_id); }
+        if !claim_closed(j, attempt_id, settled.value.disposition, f) { return close_refused(attempt_id); }
         return Executed { ok: true, reused: true, disposition: settled.value.disposition, outcome: settled.value, why: "attempt " + attempt_id + " was already settled; this reply changes nothing" };
     }
     let bad = reply_disposition_gap(r);
     if len(bad) > 0 { return Executed { why: bad }; }
-    return record_attempt(j, scope, admitted.value, r, false);
+    return record_attempt(j, scope, admitted.value, r, false, f);
 }
 
 // Persist the outcome with an exact append at the revision read now.
@@ -374,7 +407,7 @@ fn settle_attempt(j: Journal, work: WorkSystem, scope: String, attempt_id: Strin
 // same reply delivered twice, or another invocation's — is the accepted
 // one, and this reply changes nothing.
 @unbounded
-fn record_attempt(j: Journal, scope: String, v: AdmittedAttempt, r: WorkResult, ran: Bool) -> Executed {
+fn record_attempt(j: Journal, scope: String, v: AdmittedAttempt, r: WorkResult, ran: Bool, f: Fence) -> Executed {
     let outcome = AttemptOutcome {
         attempt_id: v.attempt_id, work_id: v.work_id, disposition: r.disposition,
         performer: r.performer, result: r.result, result_ref: "", evidence_ref: r.evidence,
@@ -392,12 +425,13 @@ fn record_attempt(j: Journal, scope: String, v: AdmittedAttempt, r: WorkResult, 
         let rev = j.revision();
         let already = recorded_attempt_outcome(j, v.attempt_id, rev);
         if already.ok {
-            if !claim_closed(j, v.attempt_id, already.value.disposition) { return close_refused(v.attempt_id); }
+            if !claim_closed(j, v.attempt_id, already.value.disposition, f) { return close_refused(v.attempt_id); }
             return Executed { ok: true, ran: ran, reused: true, disposition: already.value.disposition, outcome: already.value, why: "attempt " + v.attempt_id + " was already settled; this reply changes nothing" };
         }
+        if !fence_holds(j, f, rev) { let x = fenced(j, f, "the outcome of attempt " + v.attempt_id); return Executed { ran: ran, fenced: true, why: x.why }; }
         let w = j.append_exact(rev, "attempt.outcome", v.attempt_id, body);
         if w.ok {
-            if !claim_closed(j, v.attempt_id, r.disposition) {
+            if !claim_closed(j, v.attempt_id, r.disposition, f) {
                 let held = close_refused(v.attempt_id);
                 return Executed { ran: ran, why: held.why };
             }
@@ -417,8 +451,8 @@ locus AttemptExecutor {
         work: WorkSystem = WorkSystem { };
         scope: String = "org";
     }
-    fn execute(a: AdmittedAttempt) -> Executed { return execute_attempt(self.journal, self.work, self.scope, a); }
-    fn settle(attempt_id: String, r: WorkResult) -> Executed { return settle_attempt(self.journal, self.work, self.scope, attempt_id, r); }
+    fn execute(a: AdmittedAttempt) -> Executed { return execute_attempt(self.journal, self.work, self.scope, a, Fence { }); }
+    fn settle(attempt_id: String, r: WorkResult) -> Executed { return settle_attempt(self.journal, self.work, self.scope, attempt_id, r, Fence { }); }
 }
 
 // The first field in which two requests for one Work differ in content,
