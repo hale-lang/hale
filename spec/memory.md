@@ -756,6 +756,16 @@ only when neither reclamation trigger applied; declaring the
 flow's `release` closes it. See spec/semantics.md § "release(c)
 and flow children".)
 
+A message already queued for a locus that ends before it is
+dispatched — a `terminate;` from a handler with a second message
+for the same locus behind it, a parent that publishes to its
+accepted child and terminates in the same handler — reaches
+nobody, exactly as a publish after the dissolve does: the cell is
+dropped at materialization, on its consumer's thread, before
+anything is deserialized into the reclaimed arena or the handler
+runs. (GH #703; the registry quarantine alone only stopped
+messages published *after* the locus ended.)
+
 #### Accept'd-child struct recycling
 
 The child's **locus struct** (as opposed to its `__arena`
