@@ -507,6 +507,7 @@ crates/hale-codegen/tests/fixtures/examples/73-bounded-bus/main.hl f1b5037e9ab0a
 crates/hale-codegen/tests/fixtures/examples/74-effect-contracts/main.hl 48dfa96aea975339
 crates/hale-codegen/tests/fixtures/examples/85-bindings-unix/main.hl c610fbb420c5d496
 crates/hale-codegen/tests/fixtures/examples/86-formatting/main.hl f2c1228edb650960
+crates/hale-codegen/tests/fixtures/examples/87-temp-locus-receiver/main.hl 16381b7a9428a375
 crates/hale-codegen/tests/fixtures/examples/claim-forms.hl fc7429933db197c9
 crates/hale-codegen/tests/fixtures/examples/constitutions.hl 3e28431eef6c20e2
 crates/hale-codegen/tests/fixtures/examples/docs-server/main.hl 1c46881b16096baf
