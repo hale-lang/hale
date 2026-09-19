@@ -50,6 +50,8 @@ locus WorkflowRuntime {
         committed: String = "\n"; // "<proposal id>=<revision>\n" per committed proposal
         answered: Int = 0;
         requests: Int = 0; // attempts asked for
+        claimed: String = ""; // attempt ids this incarnation claimed: those are running here
+        redelivered: String = ""; // attempt ids this incarnation redelivered: once each
         refused: Int = 0;
         replayed: Int = 0;
         conflicts: Int = 0;
@@ -57,8 +59,10 @@ locus WorkflowRuntime {
     bus {
         subscribe TransitionProposed as on_proposal where key == self.scope;
         subscribe AttemptRequested as on_attempt where key == self.scope;
+        subscribe ExecutionStateAsked as on_state where key == self.scope;
         publish TransitionAnswered;
         publish AttemptReplied;
+        publish ExecutionStateAnswered;
     }
     // Apply what the record holds beyond what the projection has seen,
     // and remember each committed proposal's id and revision. Returns the
@@ -178,8 +182,28 @@ locus WorkflowRuntime {
             self.reply(Executed { why: "attempt " + r.attempt_id + " was never admitted; nothing runs before its admission is in the record" }, r.work_id, r.attempt_id);
             return;
         }
-        let x = execute_attempt(self.journal, self.work, self.scope, admitted.value);
+        // the request is the Work's own: an attempt asked for under
+        // another Work's name is nobody's
+        if admitted.value.work_id != r.work_id {
+            self.reply(Executed { why: "attempt " + r.attempt_id + " is an attempt of " + admitted.value.work_id + ", not of " + r.work_id + "; not this Work's to ask for" }, r.work_id, r.attempt_id);
+            return;
+        }
+        // whether this incarnation claimed or redelivered the attempt is
+        // the runtime's own knowledge, never the request's word
+        let x = dispatch_attempt(self.journal, self.work, self.scope, admitted.value, set_has(self.claimed, r.attempt_id), set_has(self.redelivered, r.attempt_id));
+        if x.ran && !x.redelivered { self.claimed = set_add(self.claimed, r.attempt_id); }
+        if x.redelivered { self.redelivered = set_add(self.redelivered, r.attempt_id); }
         self.reply(x, r.work_id, r.attempt_id);
+    }
+    // What the record holds about an execution, from the projection.
+    fn on_state(q: ExecutionStateAsk) {
+        let moved = self.journal.refresh();
+        let seen = self.catch_up();
+        let t = self.p.task(q.task_id);
+        ExecutionStateAnswered <- ExecutionState {
+            task_id: q.task_id, admitted: len(t.task_id) > 0, disposition: t.disposition, reason: t.reason,
+            outstanding: self.p.outstanding_works(q.task_id), current_step: self.p.current_step(q.task_id)
+        };
     }
     // A reply that arrives later goes to its Work the same way.
     fn settle(attempt_id: String, r: WorkResult) -> Executed {
@@ -213,6 +237,7 @@ locus WorkRun {
         proposing: String = ""; // what the outstanding (or held) proposal is: "admit" | "settle"
         settling: String = ""; // the disposition being proposed
         held: Bool = false; // the record refused the proposal: it is proposed again when the record resumes
+        request_held: Bool = false; // the runtime refused the request without an outcome: it is asked again when the record resumes
         unadmitted: Bool = false; // the state refused the first admission: nothing to settle on
         step_settled: String = ""; // the Step's durable disposition, once it published one
         fenced: Bool = false; // the execution was cancelled: nothing new runs
@@ -336,14 +361,27 @@ locus WorkRun {
             self.stale = self.stale + 1;
             return;
         }
-        if len(r.disposition) == 0 { return; } // outstanding, or nothing ran: the Work waits
+        if len(r.disposition) == 0 {
+            // outstanding: the Work waits; refused without an outcome — a
+            // claim the record would not close, a record that moved too
+            // often — the Work keeps its request and asks again when the
+            // record resumes
+            if !r.ok { self.request_held = true; }
+            return;
+        }
         if r.disposition == "done" { self.settle_as("done"); return; }
         if self.attempt_no + 1 < self.allowance { self.admit_next(); return; }
         self.settle_as("failed");
     }
     // The record is writable again: what it refused is proposed again.
     fn on_resumed(r: RecordResume) {
-        if !self.held || len(self.outstanding) > 0 || self.settled { return; }
+        if self.settled || len(self.outstanding) > 0 { return; }
+        if self.request_held && !self.held {
+            self.request_held = false;
+            AttemptRequested <- AttemptRequest { scope: self.scope, attempt_id: self.attempt_id, work_id: self.work_id };
+            return;
+        }
+        if !self.held { return; }
         if self.proposing == "admit" { self.propose_admission(); return; }
         self.settle_as(self.settling);
     }
@@ -748,7 +786,7 @@ locus WorkflowRun {
         mine_children: ChildSpecRows = ChildSpecRows { };
         current: Int = -1; // the active step's index
         active: Bool = false; // a StepRun of `current` is alive
-        stage: String = ""; // "" | "running" | "settling" | "settled"
+        stage: String = ""; // "" | "asking" | "running" | "settling" | "settled" | "draining" (settled, asking the record what is still owed)
         outstanding: String = "";
         held: Bool = false;
         proposing: String = ""; // the disposition being proposed
@@ -756,16 +794,19 @@ locus WorkflowRun {
         disposition: String = ""; // the durable outcome, once landed
         cancel_asked: Bool = false;
         cancel_reason: String = "";
+        fence_steps: Bool = false; // the record has cancelled this execution: every step born is fenced at birth
         duplicates: Int = 0; // drain messages for a step that is not the active one
     }
     bus {
         subscribe TransitionAnswered as on_answer where key == self.task_id;
         subscribe StepDrained as on_drained where key == self.task_id;
         subscribe WorkflowCancelRequested as on_cancel where key == self.task_id;
+        subscribe ExecutionStateAnswered as on_state where key == self.task_id;
         subscribe RecordResumed as on_resumed where key == self.scope;
         publish TransitionProposed;
         publish WorkflowSettled;
         publish WorkflowLeft;
+        publish ExecutionStateAsked;
         publish RunLives;
     }
     accept(s: StepRun) { }
@@ -783,9 +824,54 @@ locus WorkflowRun {
         }
         RunLives <- RunLife { key: self.task_id, what: "born" };
     }
+    // Before anything is born, the record is asked what it holds about
+    // this execution: restored after a restart or fresh, the same
+    // question. An execution the record has settled is over — its
+    // settlement is announced and the workflow leaves, birthing nothing;
+    // one still open starts at step 0, and every step already in the
+    // record replays.
     run() {
+        self.stage = "asking";
+        ExecutionStateAsked <- ExecutionStateAsk { scope: self.scope, task_id: self.task_id };
+    }
+    // The record's answer. Settled and nothing outstanding: over — the
+    // settlement is announced and the workflow leaves. Cancelled with
+    // admitted Works unsettled: the current step is born fenced, so those
+    // Works settle cancelled and the step drains, and the workflow leaves
+    // behind it; cancelled is not cancelled-and-drained. Open: the
+    // current step starts; a cancellation heard while asking is proposed
+    // now, first.
+    fn on_state(s: ExecutionState) {
+        if self.stage == "draining" {
+            // the cancellation landed with no step active: what the record
+            // still holds admitted and unsettled is drained through the
+            // current step, born fenced; nothing owed, the workflow leaves
+            self.stage = "settled";
+            if s.outstanding > 0 && s.current_step < self.step_count {
+                self.fence_steps = true;
+                self.start_step(s.current_step);
+                return;
+            }
+            WorkflowLeft <- WorkflowLeave { task_id: self.task_id };
+            terminate;
+        }
+        if self.stage != "asking" { return; }
+        if s.disposition == "done" || s.disposition == "failed" || s.disposition == "cancelled" {
+            self.stage = "settled";
+            self.disposition = std::str::clone(s.disposition);
+            self.reason = std::str::clone(s.reason);
+            WorkflowSettled <- WorkflowSettlement { task_id: self.task_id, disposition: self.disposition, reason: self.reason };
+            if s.disposition == "cancelled" && s.outstanding > 0 && s.current_step < self.step_count {
+                self.fence_steps = true;
+                self.start_step(s.current_step);
+                return;
+            }
+            WorkflowLeft <- WorkflowLeave { task_id: self.task_id };
+            terminate;
+        }
         self.stage = "running";
-        self.start_step(0);
+        if self.cancel_asked { self.propose_outcome("cancelled", self.cancel_reason); return; }
+        self.start_step(if s.current_step < self.step_count { s.current_step } else { 0 });
     }
     // Step `index` is born, this workflow's own child, with the leaves
     // bound under it.
@@ -808,7 +894,7 @@ locus WorkflowRun {
         }
         self.current = index;
         self.active = true;
-        StepRun { scope: self.scope, step_id: step_id, task_id: self.task_id, workflow_id: self.workflow_id, step_index: index, leaves: rows, child_specs: kids };
+        StepRun { scope: self.scope, step_id: step_id, task_id: self.task_id, workflow_id: self.workflow_id, step_index: index, leaves: rows, child_specs: kids, fenced_at_birth: self.fence_steps };
     }
     fn propose_outcome(disposition: String, reason: String) {
         self.stage = "settling";
@@ -858,6 +944,14 @@ locus WorkflowRun {
         self.stage = "settled";
         self.disposition = std::str::clone(self.proposing);
         WorkflowSettled <- WorkflowSettlement { task_id: self.task_id, disposition: self.disposition, reason: self.reason };
+        if !self.active && self.disposition == "cancelled" {
+            // cancelled with no step active — before the current step was
+            // restored, or between steps: the record says what is still
+            // admitted and unsettled, and that is drained before leaving
+            self.stage = "draining";
+            ExecutionStateAsked <- ExecutionStateAsk { scope: self.scope, task_id: self.task_id };
+            return;
+        }
         if !self.active { WorkflowLeft <- WorkflowLeave { task_id: self.task_id }; terminate; }
         // cancelled with a step active: the step fences its Works and
         // drains; the workflow leaves when it hears that
@@ -866,6 +960,7 @@ locus WorkflowRun {
         if self.stage == "settled" || self.cancel_asked { return; }
         self.cancel_asked = true;
         self.cancel_reason = std::str::clone(c.reason);
+        if self.stage == "asking" { return; } // the record's answer comes first: an execution it has settled is not cancelled
         if len(self.outstanding) > 0 { return; } // decided after the outstanding answer
         self.propose_outcome("cancelled", self.cancel_reason);
     }
@@ -904,6 +999,7 @@ locus StepRun {
         done: String = ""; // keys that settled done
         stage: String = ""; // "" | "registering" | "activating" | "running" | "completing" | "failing" | "settled"
         dispatched: Bool = false; // the leaves were born
+        fenced_at_birth: Bool = false; // born under an execution the record has cancelled: fenced as soon as its members are
         outstanding: String = "";
         held: Bool = false; // the record refused the stage's proposal: proposed again when the record resumes
         disposition: String = ""; // the one terminal outcome, once published
@@ -1128,6 +1224,14 @@ locus StepRun {
                     child_task: c.task_id, definition: c.definition, revision: c.revision
                 };
                 i = i + 1;
+            }
+            // born under an execution the record has cancelled: the
+            // members are fenced now that they exist — what was admitted
+            // settles cancelled, what never was retires — and the step
+            // drains and leaves as any fenced step does
+            if self.fenced_at_birth {
+                self.finish("cancelled", "cancelled before the restart");
+                StepFenced <- StepFence { step_id: self.step_id, task_id: self.task_id, reason: "task " + self.task_id + " was cancelled before the restart" };
             }
             return;
         }
