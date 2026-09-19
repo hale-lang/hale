@@ -2835,8 +2835,11 @@ let r = expr or self.handle_io(err);
 if !self.draining { Result <- r; }
 ```
 
-`self.draining` is the only synthetic field exposed by name to
-user code; `__drain_requested` is internal-only.
+`self.draining` is one of the three synthetic members exposed by
+name to user code (with `self.children` and `self.k_max`); its
+backing field `__drain_requested` is internal-only. All three
+names are reserved — a locus may not declare a member that
+shadows one; see `types.md` § Reserved member names.
 
 ### Rejection contexts
 
