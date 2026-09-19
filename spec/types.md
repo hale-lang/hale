@@ -589,9 +589,37 @@ fn, generic fn or fn-pointer binding with that name is in scope`,
 with a did-you-mean over the program's fns — rather than an
 `Unknown` that `hale build` refuses later. One file checked alone,
 or a partial program a harness assembles, keeps the permissive
-reading: it may call what a sibling file defines. Unresolved
-identifiers in other positions remain permissive (dna/FRICTION.md
+reading: it may call what a sibling file defines (dna/FRICTION.md
 F.18).
+
+### Bare identifiers
+
+The same rule holds in value position. A bare identifier must name
+something in scope: a local binding, a fn param, a match-arm binder,
+the implicit `err` of an `or` handler, a chain's `it` / `idx`, a
+top-level `const`, or a top-level declaration (`fn`, `locus`,
+`type`, `perspective`, `interface`; a `topic` resolves and is then
+refused by its own rule — it addresses a channel, it is not a
+value). In a **whole program** — every import resolved, which is
+`hale check <directory>`, every build (`hale build` / `hale run` /
+`hale test` compile exactly what they bundle) and `hale lsp`, which
+typechecks only once the whole seed has parsed — any other bare
+identifier is a type error at its own span: `unknown identifier X:
+no binding, param, const or declaration with that name is in
+scope`, with a did-you-mean over the locals in scope and then the
+program's top-level names.
+
+Before this, an identifier that bound nothing typed as `Unknown`,
+which is permissive everywhere, so a one-character typo passed
+`check` and `verify` and failed in the backend as `unknown
+identifier` with no source location.
+
+One file of a multi-file seed, checked alone (`hale check
+<file>`), keeps the permissive reading: it legitimately reads a
+`const` a sibling file declares. Only the seed is held to the rule.
+
+A bare unknown CALLEE reports the call diagnostic above and not this
+one — one mistake, one message (GH #721).
 
 ## Contract subsumption
 
