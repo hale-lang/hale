@@ -1,0 +1,83 @@
+// A locus literal used directly as a method receiver (GH #710).
+//
+// `Queries { j: Churner { } }.total()` is a temporary: nothing names
+// it, and the call is its only user. It lives as long as a let-bound
+// receiver does — birth runs before the call, and drain → dissolve →
+// arena_destroy run at the enclosing fn's scope exit, never in the
+// middle of the call it is the receiver of.
+//
+// Here for the run oracles: the shape used to SIGSEGV (and, under
+// LOTUS_ASAN=1, report a heap-use-after-free) because the temporary
+// dissolved at the end of the literal, before the method ran. The
+// interface-typed child is what made it fatal rather than merely
+// wrong: its field is a fat pointer into the child struct, and the
+// allocating birth below recycles the freed bytes.
+
+interface Counter {
+    fn count() -> Int;
+}
+
+type Row {
+    v: Int = 0;
+}
+
+@form(vec)
+locus Rows {
+    capacity {
+        heap rows of Row;
+    }
+}
+
+locus Churner {
+    params {
+        rows: Rows = Rows { };
+    }
+    birth() {
+        self.rows.push(Row { v: 3 });
+    }
+    fn count() -> Int {
+        return self.rows.len() + (self.rows.get(0) or Row { }).v;
+    }
+}
+
+locus Queries {
+    params {
+        j: Counter = Churner { };
+    }
+    // Reads the child, churns the allocator, reads it again: the
+    // receiver has to be whole at the far end of its own call.
+    fn total() -> Int {
+        let first = self.j.count();
+        let mut s = "";
+        let mut i = 0;
+        while i < 200 {
+            s = s + "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" + to_string(i);
+            i = i + 1;
+        }
+        if len(s) < 200 {
+            return -1;
+        }
+        return first + self.j.count();
+    }
+    fn announce() {
+        println("announce ", self.j.count());
+    }
+}
+
+locus Lonely {
+    params {
+        n: Int = 0;
+    }
+    fn double() -> Int {
+        return self.n * 2;
+    }
+}
+
+fn main() {
+    let bound = Queries { j: Churner { } };
+    println("bound=", bound.total());
+    println("temp=", Queries { j: Churner { } }.total());
+    println("childless=", Lonely { n: 21 }.double());
+    println("nested=", Lonely { n: Queries { j: Churner { } }.total() }.double());
+    Queries { j: Churner { } }.announce();
+}
