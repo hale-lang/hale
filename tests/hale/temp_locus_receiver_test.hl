@@ -1,0 +1,146 @@
+// GH #710 — a locus literal in method-receiver position.
+//
+// `Queries { j: GitLike { repo: r } }.total()` died by SIGSEGV while the
+// two-line control (`let q = Queries { ... }; q.total();`) answered. The
+// temporary had no owner, so it took the eager-dissolve path: drain →
+// dissolve → arena_destroy fired at the end of the LITERAL, and the
+// method it was the receiver of then ran against a freed arena. It read
+// as intermittent — with no child, or a child whose birth allocates
+// nothing, the freed bytes were still intact; an interface-typed child
+// (a fat pointer into the freed child struct) or a birth that churns the
+// allocator (a subprocess, a `@form(vec)` push) recycled them first.
+//
+// A receiver-position literal now lives exactly as long as a let-bound
+// one: it is dissolved at the enclosing fn's scope exit. Every shape
+// below asserts the temporary answers what the bound control answers.
+
+interface Counter {
+    fn count() -> Int;
+}
+
+type Row {
+    v: Int = 0;
+}
+
+@form(vec)
+locus Rows {
+    capacity {
+        heap rows of Row;
+    }
+}
+
+locus MemCounter {
+    params {
+        n: Int = 0;
+    }
+    fn count() -> Int {
+        return self.n;
+    }
+}
+
+// Trivial birth, but it allocates: a `@form(vec)` push.
+locus Churner {
+    params {
+        rows: Rows = Rows { };
+    }
+    birth() {
+        self.rows.push(Row { v: 3 });
+    }
+    fn count() -> Int {
+        return self.rows.len() + (self.rows.get(0) or Row { }).v;
+    }
+}
+
+// Birth runs a subprocess — a drain point mid-construction.
+locus Sheller {
+    params {
+        rows: Rows = Rows { };
+    }
+    birth() {
+        let out = std::process::run("printf\nabc") or std::process::ProcessOutput { code: -1, signal: 0, stdout: "", stderr: "" };
+        self.rows.push(Row { v: len(out.stdout) });
+    }
+    fn count() -> Int {
+        return self.rows.len() + (self.rows.get(0) or Row { }).v;
+    }
+}
+
+// Interface-typed child: the field is a fat pointer into the child.
+locus Queries {
+    params {
+        j: Counter = MemCounter { };
+    }
+    // Reads the child, churns the allocator, reads it again — the
+    // receiver must still be whole at the far end of its own call.
+    fn total() -> Int {
+        let first = self.j.count();
+        let mut s = "";
+        let mut i = 0;
+        while i < 200 {
+            s = s + "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" + to_string(i);
+            i = i + 1;
+        }
+        if len(s) < 200 {
+            return -1;
+        }
+        return first + self.j.count();
+    }
+    fn announce() {
+        std::test::assert(self.j.count() > 0, "a void method reaches its child too");
+    }
+}
+
+// Concrete (non-interface) child.
+locus Concrete {
+    params {
+        j: Sheller = Sheller { };
+    }
+    fn total() -> Int {
+        return self.j.count();
+    }
+}
+
+// No child at all — the shape that already worked, kept as a control.
+locus Lonely {
+    params {
+        n: Int = 0;
+    }
+    fn double() -> Int {
+        return self.n * 2;
+    }
+}
+
+fn main() {
+    // 1. interface-typed child, allocating birth (crashed before #710)
+    let bound_a = Queries { j: Churner { } };
+    let want_a = bound_a.total();
+    std::test::assert_eq_int(want_a, 8, "the bound control counts 4 twice");
+    std::test::assert_eq_int(Queries { j: Churner { } }.total(), want_a, "a temporary receiver with an interface child answers the same");
+
+    // 2. interface-typed child whose birth shells out (crashed before)
+    let bound_b = Queries { j: Sheller { } };
+    let want_b = bound_b.total();
+    std::test::assert(want_b > 0, "the bound control survives a subprocess birth");
+    std::test::assert_eq_int(Queries { j: Sheller { } }.total(), want_b, "a temporary receiver survives a subprocess in its child's birth");
+
+    // 3. concrete child whose birth shells out (crashed before)
+    let bound_c = Concrete { j: Sheller { } };
+    let want_c = bound_c.total();
+    std::test::assert_eq_int(Concrete { j: Sheller { } }.total(), want_c, "an interface is not what made it crash");
+
+    // 4. no child — the shape that already worked
+    std::test::assert_eq_int(Lonely { n: 21 }.double(), 42, "a childless temporary receiver still works");
+
+    // 5. statement position, void method
+    Queries { j: Churner { } }.announce();
+
+    // 6. a temporary receiver inside another literal's field, and as a
+    //    call argument — the owner is decided per literal, not per
+    //    statement.
+    std::test::assert_eq_int(Lonely { n: Queries { j: Churner { } }.total() }.double(), 16, "a temporary receiver nested in another literal");
+
+    // 7. the same shape twice in one fn: each literal owns its own
+    //    instance, and both are torn down once.
+    let twice = Queries { j: Churner { } }.total() + Queries { j: Churner { } }.total();
+    std::test::assert_eq_int(twice, 16, "two temporary receivers in one expression");
+}

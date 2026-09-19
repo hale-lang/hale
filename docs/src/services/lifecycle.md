@@ -132,13 +132,18 @@ This is the one piece of bookkeeping worth internalizing,
 because it's how Hale frees resources without a `defer` or a
 `finally`:
 
-- **Statement position** (`Ticker { };` — no binding): the locus
-  runs its whole lifecycle right there and tears down at the end
-  of the statement. Fire-and-forget.
+- **Statement position** (`Ticker { };` — no binding, nothing
+  called on it): the locus runs its whole lifecycle right there
+  and tears down at the end of the statement. Fire-and-forget.
 - **`let`-bound** (`let t = Ticker { };`): it's born and runs,
   but **dissolve is deferred to the end of the enclosing
   function's scope**. The binding stays usable for method calls
   until then.
+- **A literal you call a method on** (`Ticker { }.tick()`): the
+  call is the handle, so it behaves exactly like the `let` form —
+  born before the call, dissolved at the end of the enclosing
+  function. `Queries { j: Journal { } }.count()` and the two-line
+  version that names it are the same program.
 - **Long-lived** (the locus subscribes to the bus, or its `run()`
   hasn't returned): it stays alive until its scope exits,
   regardless of binding — it has to, to keep receiving messages.
@@ -163,8 +168,13 @@ That's fine for a bounded loop and a real problem for a long-running
 one. Both spellings behave identically here — a factory call allocates
 just as a `Matrix { }` literal would — and the compiler warns about
 each of them. The fixes are to hoist one instance out of the loop and
-refill it, or, if the value is only passed straight on, to drop the
-binding: an unbound result is reclaimed at the end of its statement.
+refill it, or to move the iteration's work into a helper function,
+whose return is the per-iteration boundary.
+
+Dropping the binding only helps when nothing is called on the result:
+a bare `Matrix { };` statement is reclaimed where it stands, but
+`Matrix { }.trace()` is a method call, so its receiver lives to the end
+of the function exactly as the binding did.
 
 ### Replacing a locus held in a field
 
