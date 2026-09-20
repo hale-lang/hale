@@ -178,19 +178,12 @@ const KNOWN_CLOSURE_LEAKS: &[&str] = &[];
 /// QUARANTINED FOR LEAKS ONLY. A `heap-use-after-free`, an
 /// overflow, a crash or a hang in one of these is still a hard
 /// failure — a name on this list must not become a hole in the gate
-/// #816 exists to sharpen. Shrink it to empty as #871 is fixed; a
-/// fixture that stops leaking just stops being reported.
-const LEAKS_UNMASKED_BY_NO_CHUNK_POOL: &[&str] = &[
-    "60-perspective-slot",
-    "61-reperspective-swap",
-    "62-perspective-bus-contract",
-    "63-reperspective-migrate",
-    "64-perspective-bus-swap",
-    "65-perspective-ctor-override",
-    "69-http-router",
-    "85-bindings-unix",
-    "87-temp-locus-receiver",
-];
+/// #816 exists to sharpen. GH #871 (PR #894) fixed eight of the nine
+/// by making the cascade reach contract-typed param fields; the one
+/// left is the `bindings { }` transport's program-lifetime arena,
+/// GH #893. Shrink it to empty as that lands; a fixture that stops
+/// leaking just stops being reported.
+const LEAKS_UNMASKED_BY_NO_CHUNK_POOL: &[&str] = &["85-bindings-unix"];
 
 /// Per-fixture wall-clock budget. Demos finish in well under a
 /// second; the budget is generous so a slow CI box doesn't flake,
