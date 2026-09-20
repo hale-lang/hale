@@ -1556,7 +1556,6 @@ pub fn build_executable_with_options(
         declared_owner: None,
         locus_cascade_path: Vec::new(),
         locus_instantiation_path: Vec::new(),
-        instantiating_for_parent_field: false,
         instantiating_into_payload_arena: false,
         placement_for_next_locus_instantiation: None,
         numa_node_for_next_locus_instantiation: None,
@@ -4566,19 +4565,6 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// ones it does not supply. The instantiation twin of
     /// `locus_cascade_path`. Empty outside an instantiation.
     pub(crate) locus_instantiation_path: Vec<(String, Vec<String>)>,
-    /// Phase-2 (2): set by `lower_locus_instantiation` around the
-    /// param-init loop when evaluating a child locus literal as a
-    /// field default / override. The child must NOT dissolve
-    /// eagerly — the parent owns it and needs it alive past the
-    /// instantiation expression. The parent's dissolve sequence
-    /// cascades into the child later. Without this flag, the
-    /// child runs its full birth → dissolve cycle inside the
-    /// expression evaluation, freeing its malloc-backed buffer
-    /// before the parent ever stores the dangling pointer. Same
-    /// `mem::take` discipline as the owner site:
-    /// outermost instantiation owns the flag, nested ones see
-    /// false.
-    pub(crate) instantiating_for_parent_field: bool,
     /// 2026-05-24 — when an outer locus is being m90-routed
     /// to the payload arena (because the enclosing fn declares
     /// it as the return type, fallible or not), every nested
@@ -33583,7 +33569,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         let prev_arena = self.current_arena_override;
         self.current_arena_override = Some(self_arena);
-        self.instantiating_for_parent_field = true;
         // GH #921 A2: a `reperspective` swap builds the new impl from
         // the statement, not from a locus literal the pre-pass walked.
         self.owner_site = Some(crate::ownership::Site::Synthesized(

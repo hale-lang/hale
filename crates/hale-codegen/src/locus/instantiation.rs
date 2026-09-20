@@ -183,14 +183,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     | Some(crate::ownership::Owner::Placement(_))
                     | Some(crate::ownership::Owner::Borrowed(_))
             );
-        // Phase-2 (2): parent locus is constructing us as a field
-        // default / override. Suppress eager dissolve — the parent
-        // owns us and cascades dissolve from its own dispatch.
-        // See `instantiating_for_parent_field` doc on the Codegen
-        // struct. Same mem::take discipline as defer_for_let: only
-        // the outermost instantiation in the expression takes it.
-        let parent_owns_via_field =
-            std::mem::take(&mut self.instantiating_for_parent_field);
+        // Phase-2 (2): the parent locus is constructing us as a
+        // field default / override, so it owns us — no eager
+        // dissolve, our struct lives in the owner's arena, and the
+        // owner's cascade reclaims us.
+        //
+        // GH #921 A3, commit 3: that is `Owner::Field` (or
+        // `Owner::Placement`, a field whose `placement { }` entry
+        // also pins it — the parent still owns the instance) on THIS
+        // node. `instantiating_for_parent_field` carried it, armed by
+        // the params-init loop for a field that can hold a locus and
+        // taken by the first locus literal lowered while it was set —
+        // which in `Holder { c: make(Cfg { }.seed()) }` is the
+        // RECEIVER, a temporary of the enclosing frame that is not the
+        // field's value at all. That is GH #896: the receiver was
+        // handed the field's ownership and the frame that built it
+        // stood back, so nobody reclaimed it. The table decided the
+        // receiver and the field's value separately when it walked the
+        // initialiser.
+        let parent_owns_via_field = matches!(
+            site_owner,
+            Some(crate::ownership::Owner::Field { .. })
+                | Some(crate::ownership::Owner::Placement(_))
+        );
         // F.31 (2026-05-23): consume any placement override the
         // caller set. The override is applied to a LOCAL clone of
         // `info` for this instantiation only — nested
@@ -2267,8 +2282,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // with the default index 0.
                         self.replica_index_for_next_locus_instantiation =
                             Some(i as u64);
-                        let prev_flag = self.instantiating_for_parent_field;
-                        self.instantiating_for_parent_field = true;
                         // The extra replica's self_ptr isn't stored in a
                         // field (replicas are non-addressable workers);
                         // it lives only in the deferred-dissolve frame.
@@ -2277,7 +2290,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         self.in_params_default = true;
                         let _ = self.lower_expr(&rep_expr, scope)?;
                         self.in_params_default = saved_ipd;
-                        self.instantiating_for_parent_field = prev_flag;
                     }
                     // Restore replica 0's overrides for the normal path
                     // below — the loop clobbered them.
@@ -2299,24 +2311,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Cleared after each lower_expr so it doesn't leak
             // past this field's evaluation.
             //
-            // F.29 follow-up (2026-05-19): after lower_expr, the
-            // flag's state tells us whether this field's value-
-            // expr produced a parent-owned locus literal:
-            // - `lower_locus_instantiation` consumes the flag via
-            //   `mem::take` when it enters the `parent_owns_via_field`
-            //   branch (true → false). So `owned_via_literal` is
-            //   `!self.instantiating_for_parent_field` after
-            //   lower_expr returns.
-            // - Non-literal exprs (variable ref, const, conditional
-            //   without a literal in the value-producing branch)
-            //   leave the flag at true, so `owned_via_literal` is
-            //   false. Const/Required don't invoke lower_expr at
-            //   all and short-circuit to false. We use this signal
-            //   to OR-set the matching bit in
-            //   `__locus_ref_owned_mask` below, so the cascade
-            //   knows which children to tear down at this parent's
-            //   dissolve vs. leave alone (they're owned by an
-            //   outer scope).
+            // F.29 follow-up (2026-05-19): `owned_via_literal`
+            // OR-sets the matching bit in `__locus_ref_owned_mask`
+            // below, so the cascade knows which children to tear
+            // down at this parent's dissolve and which to leave
+            // alone (they are owned by an outer scope). GH #921 A3
+            // commit 3 reads it from the owner table; it used to be
+            // inferred from whether `lower_locus_instantiation` had
+            // consumed the one-shot flag.
             // bounded[T; N] (2026-07-02): params fields
             // auto-initialize EMPTY (zeroed slot); explicit init is
             // rejected — the only mutation surface is the
@@ -2391,8 +2393,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // param); keep the old behavior if it ever does.
                 None => true,
             };
-            let prev_field_flag = self.instantiating_for_parent_field;
-            self.instantiating_for_parent_field = field_can_hold_locus;
             // 2026-05-24: if THIS locus is m90-routed to payload
             // arena, route each child literal there too. Child's
             // own `lower_locus_instantiation` consumes the flag
@@ -2491,13 +2491,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }
                         _ => false,
                     };
+                    let owned_literal =
+                        self.owner_table.field_owns_a_literal(expr);
                     let r = self.lower_expr(expr, scope)?;
                     self.params_init_initialized = inner_init;
                     self.in_params_default = inner_ipd;
                     self.params_init_self = inner_pis;
-                    let owned = !self.instantiating_for_parent_field
-                        || factory_owned_by_field;
-                    self.instantiating_for_parent_field = prev_field_flag;
+                    // GH #921 A3, commit 3: the half the flag's
+                    // CONSUMPTION used to signal — "a locus literal
+                    // transferred into this field" — asked of the
+                    // table instead. The factory half is still the
+                    // field-ownership predicates' until commit 4.
+                    let owned = owned_literal || factory_owned_by_field;
                     let from_lit = matches!(
                         expr,
                         Expr::Literal(
@@ -2507,8 +2512,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 } else {
                     match default {
                         DefaultInit::Const(pv) => {
-                            self.instantiating_for_parent_field =
-                                prev_field_flag;
                             let r = self.const_param(pv);
                             // ParamValue has no Bytes variant — only
                             // String literals can land here as a
@@ -2555,12 +2558,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 }
                                 _ => false,
                             };
+                            let owned_literal =
+                                self.owner_table.field_owns_a_literal(e);
                             let r = self.lower_expr(e, scope)?;
                             self.in_params_default = saved_ipd;
-                            let owned = !self.instantiating_for_parent_field
+                            let owned = owned_literal
                                 || factory_owned_by_field;
-                            self.instantiating_for_parent_field =
-                                prev_field_flag;
                             let from_lit = matches!(
                                 e,
                                 Expr::Literal(
@@ -2571,8 +2574,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             (r.0, r.1, owned, from_lit)
                         }
                         DefaultInit::Required => {
-                            self.instantiating_for_parent_field =
-                                prev_field_flag;
                             return Err(CodegenError::Unsupported(format!(
                                 "locus `{}` instantiation: param `{}` is \
                                  required (no default) — supply it as \

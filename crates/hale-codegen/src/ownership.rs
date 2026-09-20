@@ -250,15 +250,41 @@ pub enum Site {
     Synthesized(&'static str),
 }
 
+/// What a row's expression IS. The three shapes that can put a
+/// locus in a position: the literal that builds one, a call to a fn
+/// proven to build one, and a NAME that reads one somebody else
+/// holds.
+///
+/// Typed rather than spelled, because lowering asks the question:
+/// the owner's `__locus_ref_owned_mask` bit used to be set by "a
+/// LITERAL consumed the parent-owned flag", and GH #921 A3 commit 3
+/// has to ask the table the same thing while the factory half is
+/// still decided by the field-ownership predicates.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Produced {
+    Literal,
+    FactoryCall,
+    Handle,
+}
+
+impl std::fmt::Display for Produced {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Produced::Literal => write!(f, "locus literal"),
+            Produced::FactoryCall => write!(f, "factory call"),
+            Produced::Handle => write!(f, "handle"),
+        }
+    }
+}
+
 /// One table row.
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub owner: Owner,
     /// The innermost reclaim scope in effect at the expression.
     pub scope: ScopeId,
-    /// What the expression is: `locus literal`, `factory call`,
-    /// `handle`.
-    pub what: &'static str,
+    /// What the expression is.
+    pub what: Produced,
     /// The locus or callee the expression names.
     pub name: String,
     /// The syntactic position the decision came from.
@@ -405,6 +431,21 @@ impl OwnerTable {
         matches!(
             self.leaf_entry_of(e).map(|x| &x.owner),
             Some(Owner::Field { .. }) | Some(Owner::Placement(_))
+        )
+    }
+
+    /// The same, restricted to a LITERAL — the half of the mask-bit
+    /// decision `instantiating_for_parent_field` carried (GH #921 A3
+    /// commit 3). The factory half is still the field-ownership
+    /// predicates' until commit 4.
+    pub fn field_owns_a_literal(&self, e: &Expr) -> bool {
+        matches!(
+            self.leaf_entry_of(e),
+            Some(Entry {
+                owner: Owner::Field { .. } | Owner::Placement(_),
+                what: Produced::Literal,
+                ..
+            })
         )
     }
 
@@ -1325,7 +1366,7 @@ impl Resolver {
         &mut self,
         id: ExprId,
         owner: Owner,
-        what: &'static str,
+        what: Produced,
         name: String,
         position: &'static str,
         span: Span,
@@ -1447,7 +1488,7 @@ impl Resolver {
                         self.record(
                             id,
                             owner,
-                            "locus literal",
+                            Produced::Literal,
                             lname.clone(),
                             position,
                             span,
@@ -1484,7 +1525,7 @@ impl Resolver {
                     self.record(
                         id,
                         owner,
-                        "factory call",
+                        Produced::FactoryCall,
                         lname,
                         position,
                         span,
@@ -1696,7 +1737,7 @@ impl Resolver {
             let entry = Entry {
                 owner: Owner::Borrowed(ExprId::DECLARED),
                 scope,
-                what: "handle",
+                what: Produced::Handle,
                 name: field.to_string(),
                 position: "param-field initialiser (a name)",
                 decl,

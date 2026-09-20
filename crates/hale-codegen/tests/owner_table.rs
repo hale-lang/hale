@@ -724,6 +724,24 @@ fn the_shadow_is_green_on_the_families_commit_one_closed() {
     );
 }
 
+/// GH #896, folded into #921 — `ownership_matrix.rs`'s
+/// `NESTED_RECEIVER_IN_FIELD_INIT`, 35 cells, closed by commit 3.
+/// The receiver literal inside a locus-typed field's non-literal
+/// initialiser took the parent-owned flag meant for the field's
+/// value, so the frame that built it stood back and nobody reclaimed
+/// it. `parent_owns_via_field` is the table's `Owner::Field` on the
+/// node itself now, and the table decided the receiver and the
+/// field's value separately.
+#[test]
+fn the_shadow_is_green_on_the_family_commit_three_closed() {
+    agrees(
+        &program(
+            "    let h = Holder { c: make(Cfg { }.seed()) };\n    println(\"u=\", h.peek());",
+        ),
+        "nested_receiver",
+    );
+}
+
 #[test]
 fn the_shadow_is_green_on_a_returned_literal_and_a_returned_factory() {
     for (tag, produce) in [
@@ -762,22 +780,5 @@ fn family_or_into_an_interface_field_disagrees() {
         "or_into_iface_field",
         "table says the field owns the value",
         "flags say it does not",
-    );
-}
-
-/// GH #896, folded into #921 — `NESTED_RECEIVER_IN_FIELD_INIT`, 35
-/// cells. The receiver literal inside the field's non-literal
-/// initialiser takes the parent-owned flag meant for the field's
-/// value.
-#[test]
-fn family_nested_receiver_in_a_field_initialiser_disagrees() {
-    let src = program(
-        "    let h = Holder { c: make(Cfg { }.seed()) };\n    println(\"u=\", h.peek());",
-    );
-    disagrees(
-        &src,
-        "nested_receiver",
-        "table says frame (per frame)",
-        "flags say owner field",
     );
 }

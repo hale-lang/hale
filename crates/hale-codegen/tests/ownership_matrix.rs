@@ -137,16 +137,6 @@ const OR_INTO_INTERFACE_FIELD: &str =
      unowned — the LocusRef twin was closed by PR #910, the contract \
      one was not (GH #921 A3, PR #916's residue)";
 
-/// GH #896, folded into #921. `instantiating_for_parent_field` is a
-/// one-shot flag and the FIRST locus literal lowered inside the
-/// field's initialiser takes it — here the receiver of
-/// `Cfg { }.seed()`, which is a temporary of the enclosing frame and
-/// not the field's value at all.
-const NESTED_RECEIVER_IN_FIELD_INIT: &str =
-    "a receiver literal inside a locus-typed field's non-literal \
-     initialiser takes the parent-owned flag meant for the field's \
-     value, so the receiver is owned by nobody (GH #896)";
-
 /// Cells that fail on `main` today, each naming its family. Every
 /// entry is ASSERTED to fail — see the module docs.
 ///
@@ -190,41 +180,6 @@ const KNOWN_OPEN: &[(&str, &str)] = &[
     ("iface_field_or_call/persp_child/guard_untaken", OR_INTO_INTERFACE_FIELD),
 
     // GH #896.
-    ("field_nested_receiver/plain/main", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/plain/free_fn", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/plain/method", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/plain/loop", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/plain/module", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/plain/guard_taken", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/plain/guard_untaken", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/vec_child/main", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/vec_child/free_fn", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/vec_child/method", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/vec_child/loop", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/vec_child/module", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/vec_child/guard_taken", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/vec_child/guard_untaken", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/grandchild/main", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/grandchild/free_fn", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/grandchild/method", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/grandchild/loop", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/grandchild/module", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/grandchild/guard_taken", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/grandchild/guard_untaken", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/iface_child/main", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/iface_child/free_fn", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/iface_child/method", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/iface_child/loop", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/iface_child/module", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/iface_child/guard_taken", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/iface_child/guard_untaken", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/persp_child/main", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/persp_child/free_fn", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/persp_child/method", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/persp_child/loop", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/persp_child/module", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/persp_child/guard_taken", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/persp_child/guard_untaken", NESTED_RECEIVER_IN_FIELD_INIT),
 
     // A frame temporary in a `while` body. Found by this matrix; not filed.
 ];

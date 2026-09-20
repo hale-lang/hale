@@ -3253,7 +3253,12 @@ factories; and `defer_next_locus_dissolve` — a literal is reclaimed
 at the enclosing frame's flush whenever the table says the frame owns
 it (`Binding` or `FrameTemp`), and eagerly, at the end of its own
 expression, only where the spec already calls the value
-fire-and-forget: a bare statement literal. The remaining flags still
+fire-and-forget: a bare statement literal; and
+`instantiating_for_parent_field` — a param field owns its
+initialiser's value because the table gave THAT node
+`Owner::Field`, so the receiver written inside a non-literal
+initialiser (`Holder { c: make(Cfg { }.seed()) }`, GH #896) is the
+enclosing frame's and is reclaimed there. The remaining flags still
 decide what they did. The
 observable rules in `spec/semantics.md` § *Dissolve timing rules* do
 not change — this makes them true by construction.
