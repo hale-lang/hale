@@ -73,16 +73,13 @@
 //!
 //! ## Expected failures
 //!
-//! [`KNOWN_OPEN`] names the cells that fail today, each with the
-//! family it belongs to. They are **asserted to fail**, not skipped:
-//! the matrix is green with them listed, and the day a fix closes
-//! one, its cell goes green and this file goes red until the entry
-//! is deleted. That is the regression test. Nothing here is fixed by
-//! this file; test infrastructure only.
-//!
-//! A4 landed with 200 open cells in four families. GH #921 A3
-//! closes them one commit at a time, and each commit deletes its
-//! block.
+//! [`KNOWN_OPEN`] is **empty**. A4 landed with 200 open cells in
+//! four families; GH #921 A3 closed all four, and every one of the
+//! 945 cells is now held to every oracle. An entry here is asserted
+//! to FAIL, not skipped — so a cell that is listed and then passes
+//! fails the matrix just as a cell that is not listed and fails
+//! does. Adding one means a shape regressed, and it needs a reason
+//! and an issue.
 //!
 //! ## Size
 //!
@@ -95,7 +92,8 @@
 //! context, and is topped up by a fixed co-prime stride to
 //! [`TARGET_SAMPLE`]. Per open position rather than per open cell
 //! because a family fails for every type and, bar one, every
-//! context.
+//! context — with nothing open, the stride fill is the whole
+//! sample.
 //!
 //! ## Corpus note
 //!
@@ -122,67 +120,19 @@ mod harness;
 // Expected failures
 // ===================================================================
 
-// The defect families still open. A cell's KNOWN_OPEN entry names
-// the family it belongs to, so the Phase A commit that closes one
-// deletes one block.
-
-/// GH #921 A3, PR #916's residue. `or_field_owner_locus` compares
-/// the factory's declared locus with the FIELD's, which an
-/// interface-typed field does not have; PR #910 closed the
-/// `LocusRef` twin only. The bare factory into the same field was
-/// closed by GH #895, which is why `iface_field_factory` is green
-/// beside this one.
-const OR_INTO_INTERFACE_FIELD: &str =
-    "`or <call>` into an INTERFACE-typed field leaves the ok value \
-     unowned — the LocusRef twin was closed by PR #910, the contract \
-     one was not (GH #921 A3, PR #916's residue)";
-
-/// Cells that fail on `main` today, each naming its family. Every
-/// entry is ASSERTED to fail — see the module docs.
+/// Cells that fail today, each naming the family it belongs to.
+/// Every entry is ASSERTED to fail — see the module docs.
+///
+/// **EMPTY.** A4 landed with 200 open cells in four families and
+/// GH #921 A3 closed all four: the carrier `return` and the
+/// per-iteration frame temporary (commit 1), GH #896's receiver
+/// inside a field initialiser (commit 3), and `or <call>` into an
+/// interface-typed field (commit 4). Every cell of the matrix is
+/// held to every oracle from here on; adding an entry here means a
+/// shape regressed, and it needs a reason and an issue.
 ///
 /// The cell id is `<position>/<type>/<context>`.
-const KNOWN_OPEN: &[(&str, &str)] = &[
-    // `or <call>` into an INTERFACE-typed field (GH #921 A3, PR #916's residue).
-    ("iface_field_or_call/plain/main", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/plain/free_fn", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/plain/method", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/plain/loop", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/plain/module", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/plain/guard_taken", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/plain/guard_untaken", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/vec_child/main", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/vec_child/free_fn", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/vec_child/method", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/vec_child/loop", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/vec_child/module", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/vec_child/guard_taken", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/vec_child/guard_untaken", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/grandchild/main", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/grandchild/free_fn", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/grandchild/method", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/grandchild/loop", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/grandchild/module", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/grandchild/guard_taken", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/grandchild/guard_untaken", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/iface_child/main", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/iface_child/free_fn", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/iface_child/method", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/iface_child/loop", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/iface_child/module", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/iface_child/guard_taken", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/iface_child/guard_untaken", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/persp_child/main", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/persp_child/free_fn", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/persp_child/method", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/persp_child/loop", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/persp_child/module", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/persp_child/guard_taken", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/persp_child/guard_untaken", OR_INTO_INTERFACE_FIELD),
-
-    // GH #896.
-
-    // A frame temporary in a `while` body. Found by this matrix; not filed.
-];
+const KNOWN_OPEN: &[(&str, &str)] = &[];
 
 /// How many cells the per-PR sample aims for.
 const TARGET_SAMPLE: usize = 60;

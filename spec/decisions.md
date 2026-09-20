@@ -3258,8 +3258,13 @@ fire-and-forget: a bare statement literal; and
 initialiser's value because the table gave THAT node
 `Owner::Field`, so the receiver written inside a non-literal
 initialiser (`Holder { c: make(Cfg { }.seed()) }`, GH #896) is the
-enclosing frame's and is reclaimed there. The remaining flags still
-decide what they did. The
+enclosing frame's and is reclaimed there; and the FIELD-OWNERSHIP
+PREDICATES — the owner's `__locus_ref_owned_mask` bit is
+`Owner::Field` on the value's own node, through an `or`'s
+branches, a carrier's arms and a composite's elements, so an
+interface- or perspective-typed field claims its value exactly as a
+locus-typed one does. The remaining flags still decide what they
+did. The
 observable rules in `spec/semantics.md` § *Dissolve timing rules* do
 not change — this makes them true by construction.
 

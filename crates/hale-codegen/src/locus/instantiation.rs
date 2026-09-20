@@ -2459,50 +2459,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // declines the frame temporary where the value is
                     // lowered, for the node the field NAMES and no
                     // other (GH #837).
-                    // GH #836: the other half of that decision. The
-                    // gate above says the frame does not reclaim it;
-                    // this says WHO does. A fresh factory's result
-                    // transfers into the field, so the owner's
-                    // `__locus_ref_owned_mask` bit is set exactly as
-                    // a literal sets it and the F.29 cascade reaches
-                    // the child. Only a proven-fresh factory (the
-                    // GH #383 fixpoint) qualifies — a call that
-                    // hands back a locus somebody else holds leaves
-                    // the bit clear, as it always did.
-                    //
-                    // GH #853: `make_f(5) or make2()` is the same
-                    // field and the same bit once BOTH branches
-                    // transfer into it — the field holds one of two
-                    // values and owns whichever one was built.
-                    // `or_field_owner_locus` carries that decision
-                    // into `lower_or_expr`, which is where the
-                    // substitute would otherwise take the GH #402
-                    // frame temporary this bit must not double-own.
-                    let factory_owned_by_field = match info
-                        .fields
-                        .get(fname.as_str())
-                        .map(|(_, t)| t)
-                    {
-                        Some(CodegenTy::LocusRef(l)) => {
-                            let l = l.clone();
-                            self.or_substitute_transfers_into_field(expr, &l)
-                                || self
-                                    .field_init_is_fresh_factory(expr, &l)
-                        }
-                        _ => false,
-                    };
-                    let owned_literal =
-                        self.owner_table.field_owns_a_literal(expr);
+                    // GH #921 A3, commit 4: who reclaims this
+                    // field's value is one question with one answer —
+                    // the table's. Three predicates used to share it
+                    // (`field_init_is_fresh_factory` for GH #836's
+                    // bare factory, `or_substitute_transfers_into_
+                    // field` for GH #853's two-branch `or`, and
+                    // `field_init_fresh_factory_impl` for GH #895's
+                    // interface refinement), each comparing the
+                    // factory's DECLARED locus with the FIELD's —
+                    // which an interface-typed field does not have.
+                    // So `Queries { j: make_f(1) or make_churner() }`
+                    // got no bit, the frame stood back (F.17), and
+                    // the child's arena outlived the program: the
+                    // 35-cell `or <call>`-into-an-interface-field
+                    // family. The table asks nothing about the
+                    // field's type. `Owner::Field` on the value's own
+                    // node — through an `or`'s branches, a carrier's
+                    // arms, a composite's elements, all of which it
+                    // decided separately — IS the bit.
+                    let owned = self.owner_table.field_owns(expr);
                     let r = self.lower_expr(expr, scope)?;
                     self.params_init_initialized = inner_init;
                     self.in_params_default = inner_ipd;
                     self.params_init_self = inner_pis;
-                    // GH #921 A3, commit 3: the half the flag's
-                    // CONSUMPTION used to signal — "a locus literal
-                    // transferred into this field" — asked of the
-                    // table instead. The factory half is still the
-                    // field-ownership predicates' until commit 4.
-                    let owned = owned_literal || factory_owned_by_field;
                     let from_lit = matches!(
                         expr,
                         Expr::Literal(
@@ -2537,33 +2517,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // table gave this default's value
                             // `Owner::Field`, so no flag is armed for
                             // it here.
-                            // GH #836, at the default site: a param
-                            // whose DEFAULT is a factory call is the
-                            // same transfer into the same field, so
-                            // it takes the same ownership bit.
-                            // GH #853, likewise: a DEFAULT that is an
-                            // `or <substitute>` transfers into the
-                            // same field on both branches.
-                            let factory_owned_by_field = match info
-                                .fields
-                                .get(fname.as_str())
-                                .map(|(_, t)| t)
-                            {
-                                Some(CodegenTy::LocusRef(l)) => {
-                                    let l = l.clone();
-                                    self.or_substitute_transfers_into_field(
-                                        e, &l,
-                                    ) || self
-                                        .field_init_is_fresh_factory(e, &l)
-                                }
-                                _ => false,
-                            };
-                            let owned_literal =
-                                self.owner_table.field_owns_a_literal(e);
+                            // GH #921 A3, commit 4: the same one
+                            // question at the default site.
+                            let owned = self.owner_table.field_owns(e);
                             let r = self.lower_expr(e, scope)?;
                             self.in_params_default = saved_ipd;
-                            let owned = owned_literal
-                                || factory_owned_by_field;
                             let from_lit = matches!(
                                 e,
                                 Expr::Literal(
@@ -2696,63 +2654,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     locus_name, fname, declared_ty, val_ty
                 )));
             }
-            // GH #895: the last field init a fresh factory could
-            // transfer into and be owned by nobody.
-            //
-            // `Queries { j: make_churner() }`, with `j: Counter` an
-            // interface and `make_churner()` declared `-> Churner`,
-            // is the GH #836 shape written against a CONTRACT-typed
-            // field. Both halves of that decision were already in
-            // place for it and neither could fire: the F.17 gate
-            // keeps the enclosing frame out of an `Interface` field's
-            // initialiser (`field_owns_locus_rhs`, above), and the
-            // GH #871 cascade tears down what
-            // `__owned_child_reclaim_<f>` names — but the bit between
-            // them is set by `field_init_is_fresh_factory`, which
-            // compares the factory's declared locus against the
-            // FIELD's, and an interface field has none. So the frame
-            // stood back, the owner had no bit, and the child's arena
-            // (plus every `@form` buffer under it) outlived the
-            // program.
-            //
-            // The impl's name is what closes it, and it is known
-            // twice over at this point: the factory DECLARES it, and
-            // the coercion above recorded what actually reached the
-            // slot. Claiming the field only when the two agree is
-            // what keeps the bit and the reclaim pointer inseparable
-            // — the store below is the same one a literal init makes,
-            // so the cascade gets `__reclaim_<Impl>` for exactly the
-            // impl this instantiation built, ctor-override included.
-            //
-            // GH #921 A3, commit 1: a `perspective(P)` field is here
-            // too. It used to be deliberately excluded — the F.17
-            // gate (`field_owns_locus_rhs`) did not cover a
-            // perspective-typed field, so a factory's result in that
-            // position took the GH #402 frame temporary and claiming
-            // it for the owner as well would have dissolved it twice.
-            // That gate was `suppress_fresh_temp`'s, and the owner
-            // table replaces it with F.39's answer: a param field's
-            // initialiser is `Owner::Field` whether the field is
-            // locus-, interface- or perspective-typed. The frame now
-            // stands back for all three, so the bit has to claim all
-            // three or the perspective case is the old leak.
-            // `ownership_matrix.rs`'s `persp_field_factory` position
-            // is the shape; it had no cell before this commit.
-            let owned_via_literal = owned_via_literal
-                || (matches!(
-                    declared_ty,
-                    CodegenTy::Interface(_) | CodegenTy::Perspective(_)
-                ) && owned_child_impl.is_some()
-                    && owned_child_impl
-                        == match overrides.get(fname.as_str()) {
-                            Some(e) => self.field_init_fresh_factory_impl(e),
-                            None => match default {
-                                DefaultInit::Expr(e) => {
-                                    self.field_init_fresh_factory_impl(e)
-                                }
-                                _ => None,
-                            },
-                        });
             // GH #921 A2 — shadow. This is the owner's
             // `__locus_ref_owned_mask` bit in its final form: the
             // field-ownership predicates decided it, GH #895's

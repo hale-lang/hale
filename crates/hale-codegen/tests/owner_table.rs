@@ -1,21 +1,22 @@
-//! The ownership pre-pass — GH #921 A2.
+//! The ownership pre-pass — GH #921 A2, retired into lowering by
+//! A3.
 //!
-//! Two halves, both about `hale_codegen::ownership` and neither
-//! about what is emitted (A2 changes no behaviour):
+//! Two halves, both about `hale_codegen::ownership`:
 //!
-//!   1. **derivations** — twenty small programs, one per syntactic
-//!      position F.39 names, asserting the owner the table gives the
-//!      locus-producing expression there. These are the contract A3
-//!      switches lowering over to, so they are stated positively and
-//!      not as "whatever the flags do today".
+//!   1. **derivations** — small programs, one per syntactic position
+//!      F.39 names, asserting the owner the table gives the
+//!      locus-producing expression there. These are the contract
+//!      lowering reads, so they are stated positively and not as
+//!      "whatever the flags do". They seed the fresh-factory fixpoint
+//!      EMPTY on purpose, so a derivation never passes because
+//!      `compute_fresh_locus_factories` happened to agree.
 //!   2. **the shadow** — the same programs built under
 //!      `ShadowMode::Strict`, where a disagreement between the table
-//!      and the seven one-shot flags is a `CodegenError`. The green
-//!      shapes must build; the four `ownership_matrix.rs`
-//!      `KNOWN_OPEN` families must each fail, with the verdicts
-//!      named. That last set is A3's checklist: when a commit fixes
-//!      a family, its test here goes red and has to move from
-//!      `disagrees` to `agrees`.
+//!      and a flag that still decides something is a `CodegenError`.
+//!      A4's four `KNOWN_OPEN` families were pinned here as
+//!      `disagrees` cases and were A3's checklist; all four are
+//!      closed, so every shape is an `agrees` case and each names
+//!      the commit that closed it.
 //!
 //! Every program is assembled from ordinary `"…"` constants, never a
 //! RAW string literal, because `hale_corpus::embedded` harvests raw
@@ -612,29 +613,6 @@ fn agrees(src: &str, tag: &str) {
     }
 }
 
-fn disagrees(src: &str, tag: &str, table_says: &str, flags_say: &str) {
-    let Some(e) = shadow(src, tag) else {
-        panic!(
-            "{tag}: the table and the flags now AGREE. That is the \
-             regression test firing: a GH #921 A3 commit closed this \
-             family, so move this case from `disagrees` to `agrees` and \
-             delete the matching `ownership_matrix.rs` KNOWN_OPEN block."
-        );
-    };
-    assert!(
-        e.contains("owner-shadow"),
-        "{tag}: the build failed for some other reason:\n{e}"
-    );
-    assert!(
-        e.contains(table_says),
-        "{tag}: expected the table to say `{table_says}`; got:\n{e}"
-    );
-    assert!(
-        e.contains(flags_say),
-        "{tag}: expected the flags to say `{flags_say}`; got:\n{e}"
-    );
-}
-
 #[test]
 fn the_shadow_is_green_on_the_shapes_the_matrix_is_green_on() {
     for (tag, payload) in [
@@ -759,26 +737,19 @@ fn the_shadow_is_green_on_a_returned_literal_and_a_returned_factory() {
     }
 }
 
-/// GH #921 A3, PR #916's residue — `OR_INTO_INTERFACE_FIELD`, 35
-/// cells. The ok value and the substitute both belong to the field;
-/// `or_field_owner_locus` compares the factory's declared locus with
-/// the FIELD's, which an interface-typed field does not have.
+/// GH #921 A3, PR #916's residue — `ownership_matrix.rs`'s
+/// `OR_INTO_INTERFACE_FIELD`, 35 cells, closed by commit 4 and the
+/// last family on the board. The ok value and the substitute both
+/// belong to the field; the three field-ownership predicates
+/// compared the factory's DECLARED locus with the FIELD's, which an
+/// interface-typed field does not have, so neither branch got the
+/// owner's mask bit and the frame had already stood back (F.17).
 #[test]
-fn family_or_into_an_interface_field_disagrees() {
-    let src = program(
-        "    let h = IHolder { c: make_f(1) or make2(1) };\n    println(\"u=\", h.peek());",
-    );
-    // GH #921 A3, commit 1: the SUPPRESSION half of this family is
-    // closed — the substitute is its own node and the table gave it
-    // the field's decision — so the disagreement moved to the half
-    // that is still open, the owner's `__locus_ref_owned_mask` bit.
-    // `field_init_is_fresh_factory` / `or_substitute_transfers_into_
-    // field` compare the factory's declared locus with the FIELD's,
-    // and an interface-typed field has none.
-    disagrees(
-        &src,
+fn the_shadow_is_green_on_the_family_commit_four_closed() {
+    agrees(
+        &program(
+            "    let h = IHolder { c: make_f(1) or make2(1) };\n    println(\"u=\", h.peek());",
+        ),
         "or_into_iface_field",
-        "table says the field owns the value",
-        "flags say it does not",
     );
 }
