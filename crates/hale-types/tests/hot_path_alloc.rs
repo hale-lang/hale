@@ -629,3 +629,171 @@ fn main() { spawn_many(3); }
 // `@budget` after `@hot` — so "hot still errors under unbounded" has
 // no representable program; the `emit` gate keeps the precedence
 // anyway.)
+
+// ---- GH #764 (2026-09-20): the lint looks inside modules -----------
+//
+// `check_hot_path_alloc` walked `program.items` and matched only
+// top-level `TopDecl::Fn` / `TopDecl::Locus`, so a `module { … }` was
+// a wall: the identical `@hot` fn was a hard error at the top level
+// and completely silent one brace deeper. The resolver has never
+// treated a module that way — `register_top_decls` recurses and keys
+// `TopScope` by the BARE name — so the lint was the odd one out (the
+// effects manifest and, since #723, the decorator-stack check both
+// recurse).
+
+/// `(is_error, message, the source text the span covers)`.
+///
+/// The span is load-bearing for this gap: a finding that fires for a
+/// module-nested fn but points at an offset in some other declaration
+/// is no better than no finding at all.
+fn diags_with_span_text(src: &str) -> Vec<(bool, String, String)> {
+    let prog = parse_source(src).expect("parse failed");
+    check_program(&prog)
+        .into_iter()
+        .map(|d| {
+            let text =
+                src[d.span.start.as_usize()..d.span.end.as_usize()].to_string();
+            (d.is_error(), d.message, text)
+        })
+        .collect()
+}
+
+const HOT_BODY: &str = "\
+    @hot fn spin(x: Int) {
+        let mut i = 0;
+        while i < x {
+            let b = std::bytes::BytesBuilder { };
+            i = i + 1;
+        }
+    }";
+
+#[test]
+fn hot_fn_inside_a_module_is_flagged_exactly_as_at_top_level() {
+    let nested = format!("module inner {{\n{}\n}}\nfn main() {{ }}\n", HOT_BODY);
+    let flat = format!("{}\nfn main() {{ }}\n", HOT_BODY);
+
+    let nested_ds = diags_with_span_text(&nested);
+    let flat_ds = diags_with_span_text(&flat);
+
+    // The control: unchanged behavior at the top level.
+    assert!(
+        flat_ds.iter().any(|(is_err, m, _)| *is_err
+            && m.contains("@hot")
+            && m.contains("hot-path allocation")),
+        "top-level control must still be an error, got: {:?}",
+        flat_ds
+    );
+
+    let found: Vec<&(bool, String, String)> = nested_ds
+        .iter()
+        .filter(|(_, m, _)| m.contains("hot-path allocation"))
+        .collect();
+    assert_eq!(
+        found.len(),
+        1,
+        "expected exactly one hot-path finding inside the module, got: {:?}",
+        nested_ds
+    );
+    let (is_err, msg, span_text) = found[0];
+    assert!(*is_err, "`@hot` promotes the finding to an error: {:?}", found);
+    assert_eq!(
+        span_text, "std::bytes::BytesBuilder { }",
+        "the finding must point at the allocation inside the module, not \
+         at some other offset"
+    );
+    // Same program, same words: a module changes the namespace, not
+    // what the lint has to say about the body.
+    let flat_msg = flat_ds
+        .iter()
+        .find(|(_, m, _)| m.contains("hot-path allocation"))
+        .map(|(_, m, _)| m.clone())
+        .expect("top-level finding");
+    assert_eq!(*msg, flat_msg);
+}
+
+#[test]
+fn hot_fn_two_modules_deep_is_flagged() {
+    // The walk is recursive, not one level of unwrapping.
+    let src = format!(
+        "module outer {{\nmodule inner {{\n{}\n}}\n}}\nfn main() {{ }}\n",
+        HOT_BODY
+    );
+    let ds = diags_with_span_text(&src);
+    assert!(
+        ds.iter().any(|(is_err, m, t)| *is_err
+            && m.contains("hot-path allocation")
+            && t == "std::bytes::BytesBuilder { }"),
+        "expected the finding two modules deep, got: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn hot_locus_method_inside_a_module_is_flagged() {
+    // The locus arm was equally blind: `@hot` on a METHOD of a locus
+    // declared inside a module never reached `hot_walk_block`.
+    let src = r#"
+module inner {
+    locus L {
+        params { n: Int = 0; }
+        @hot fn spin(x: Int) {
+            let mut i = 0;
+            while i < x {
+                let b = std::bytes::BytesBuilder { };
+                i = i + 1;
+            }
+        }
+        run() { }
+    }
+}
+
+fn main() { }
+"#;
+    let ds = diags_with_span_text(src);
+    assert!(
+        ds.iter().any(|(is_err, m, t)| *is_err
+            && m.contains("hot-path allocation")
+            && t == "std::bytes::BytesBuilder { }"),
+        "expected the finding on a module-nested locus method, got: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn plain_advisory_inside_a_module_is_a_warning_not_an_error() {
+    // Without `@hot` the module-nested finding is the ordinary
+    // advisory — reaching inside a module must not change severity.
+    let src = r#"
+module inner {
+    locus Conn { run() { } }
+
+    locus Server {
+        run() {
+            let mut n = 0;
+            while n < 100 {
+                let c = Conn { };
+                n = n + 1;
+            }
+        }
+    }
+}
+
+fn main() { }
+"#;
+    let ds = diags_with_span_text(src);
+    let found: Vec<&(bool, String, String)> = ds
+        .iter()
+        .filter(|(_, m, _)| m.contains("hot-path allocation"))
+        .collect();
+    assert_eq!(
+        found.len(),
+        1,
+        "expected one module-nested advisory, got: {:?}",
+        ds
+    );
+    assert!(
+        !found[0].0 && found[0].1.contains("locus `Conn`"),
+        "the module-nested finding stays a WARNING: {:?}",
+        found
+    );
+}

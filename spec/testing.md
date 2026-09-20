@@ -209,6 +209,18 @@ the seed being checked exited non-zero with an empty stream — a gate
 saw a failure with nothing explaining it. Every parse diagnostic is
 now a record like any other.
 
+The **position** is not command-scoped. Every command that resolves
+imports — `build`, `run`, `test`, `bench`, `replay`, as well as
+`check` and `verify` — reports a diagnostic from an imported file as
+`path:line:col: kind: message` with the offending source line and a
+caret, at that file's OWN line and column. Each file of an import
+graph is parsed at its own virtual base so the merged spans stay
+globally unique; un-shifting by that base is part of reporting, not a
+property of one command's reporting path (2026-09-20, GH #775; before
+it, the commands with no `--json` channel rendered the bundle offset
+against the file's own text, so the file name and the message were
+right and the line and column were not).
+
 ## `hale bench` — the Layer-3 runner
 
 `hale bench [file | dir]` discovers `*_bench.hl` files (dir walk,

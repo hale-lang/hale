@@ -192,6 +192,18 @@ The compiler tries three locations in order; the first hit wins:
 If none of the three locations resolve, the build fails with a
 diagnostic listing all three search paths.
 
+**A library's identity is its seed directory.** `main.hl` is a
+seed's entry file, not a library of its own, so a rule-1 hit on a
+`main.hl` resolves as rule 2 against the directory around it:
+`import "../lib/main"` and `import "../lib"` name the **same**
+library — one file set, one `lib_id`, one set of mangled symbols —
+and an importer that uses one spelling in one of its files and the
+other spelling in another gets one library under both aliases. Any
+other single file is a library of its own under rule 1, bringing
+in that file and nothing else. The one exception is a `main.hl`
+in the importer's own directory, which stays a rule-1 single-file
+library: a seed does not import itself.
+
 ### Mangling scheme
 
 Each imported library's top-level decls are rewritten with a
@@ -207,8 +219,10 @@ __lib_<lib_id>_<file_stem>_<name>
   root (the nearest ancestor directory containing `hale.toml`
   or `Cargo.toml`). Two consumers importing the same lib
   produce the same `lib_id` regardless of which alias each
-  consumer chose. Non-identifier characters in the path collapse
-  to `_`; runs of underscores collapse to one.
+  consumer chose, and regardless of which of the two spellings
+  of "Resolution order" above each consumer wrote. Non-identifier
+  characters in the path collapse to `_`; runs of underscores
+  collapse to one.
 - **`<file_stem>`** is the basename of the source file the decl
   lives in, sans `.hl`. So two files in the same library can
   share a decl name without colliding.

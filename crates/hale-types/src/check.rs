@@ -1999,28 +1999,48 @@ fn hot_walk_expr(e: &Expr, cx: &mut HotPathCx) {
             // handler context fires at depth 0 too.
             if cx.loop_depth > 0 || cx.in_handler {
                 if let Some(name) = hot_locus_name(path, cx.top) {
-                    let where_ = if cx.loop_depth > 0 {
-                        "inside a loop — a fresh instance (its own arena / \
-                         heap buffer) is allocated every iteration"
-                    } else {
-                        "inside a bus handler — a fresh instance (its own \
-                         arena / heap buffer) is allocated every message"
-                    };
-                    cx.emit(
-                        *span,
+                    // GH #815 retired half of what this advisory used
+                    // to say: a locus created in a LOOP is now
+                    // reclaimed when the next iteration reaches the
+                    // same instantiation, so residency no longer grows
+                    // without bound and a `run()` read loop that never
+                    // returns is no longer the worst case. The
+                    // allocation itself is still per-iteration, which
+                    // is what the advisory is for, so say THAT — the
+                    // arena create/destroy pair on the hot path —
+                    // rather than a reclaim rule that no longer holds.
+                    // The handler-at-depth-0 half is unchanged: one
+                    // instantiation per message, reclaimed at the
+                    // handler's return.
+                    let message = if cx.loop_depth > 0 {
                         format!(
                             "hot-path allocation: locus `{}` is instantiated \
-                             {} and, being let-bound or subscription-bearing, \
-                             is only reclaimed when the enclosing method \
-                             returns (a `run()` read loop never returns). \
+                             inside a loop — a fresh instance (its own arena \
+                             / heap buffer) is allocated every iteration, and \
+                             reclaimed only when the next iteration replaces \
+                             it, so an arena create/destroy pair and the \
+                             instance's whole lifecycle are on the hot path. \
                              Hoist it to a reused field, `clear()` and refill \
-                             one builder, use a bare-statement per-iteration \
-                             child (eagerly dissolved), or acknowledge an \
-                             intentional shape with `@unbounded` on the \
-                             enclosing fn/hook.",
-                            name, where_
-                        ),
-                    );
+                             one builder, or acknowledge an intentional shape \
+                             with `@unbounded` on the enclosing fn/hook.",
+                            name
+                        )
+                    } else {
+                        format!(
+                            "hot-path allocation: locus `{}` is instantiated \
+                             inside a bus handler — a fresh instance (its own \
+                             arena / heap buffer) is allocated every message \
+                             and, being let-bound or subscription-bearing, is \
+                             only reclaimed when the enclosing method \
+                             returns. Hoist it to a reused field, `clear()` \
+                             and refill one builder, use a bare-statement \
+                             per-message child (eagerly dissolved), or \
+                             acknowledge an intentional shape with \
+                             `@unbounded` on the enclosing fn/hook.",
+                            name
+                        )
+                    };
+                    cx.emit(*span, message);
                 }
             }
         }
@@ -2116,69 +2136,89 @@ fn hot_walk_expr(e: &Expr, cx: &mut HotPathCx) {
     }
 }
 
+/// Every declaration in `items`, with `module { … }` nesting
+/// flattened: the module itself is yielded, then each of its items,
+/// recursively.
+///
+/// GH #764: a module is a NAMESPACE, not an analysis boundary. The
+/// resolver's `register_top_decls` recurses through modules and keys
+/// `TopScope` by the BARE name, so a fn or locus inside one is an
+/// ordinary member of the bundle everywhere except in a check that
+/// walks `program.items` and stops. A declaration-shaped check that
+/// does that silently sees half the program.
+fn walk_decls(items: &[TopDecl], f: &mut impl FnMut(&TopDecl)) {
+    for item in items {
+        f(item);
+        if let TopDecl::Module(m) = item {
+            walk_decls(&m.items, f);
+        }
+    }
+}
+
 fn check_hot_path_alloc(bundle: &Bundle<'_>, top: &TopScope, diags: &mut Vec<Diag>) {
-    for program in bundle.programs.values() {
-        for item in &program.items {
-            match item {
-                TopDecl::Locus(l) => {
-                    // Gap D: fn members bound as bus handlers get the
-                    // per-message context (findings fire at depth 0).
-                    let handler_names: BTreeSet<&str> = l
-                        .members
-                        .iter()
-                        .filter_map(|m| match m {
-                            LocusMember::Bus(bb) => Some(bb.members.iter()),
-                            _ => None,
-                        })
-                        .flatten()
-                        .filter_map(|bm| match bm {
-                            BusMember::Subscribe { handler, .. } => {
-                                Some(handler.name.as_str())
-                            }
-                            _ => None,
-                        })
-                        .collect();
-                    for m in &l.members {
-                        let (body, in_handler, hot, unbounded) = match m {
-                            LocusMember::Fn(fd) => (
-                                Some(&fd.body),
-                                handler_names
-                                    .contains(fd.name.name.as_str()),
-                                fd.hot,
-                                fd.unbounded,
-                            ),
-                            LocusMember::Lifecycle(ld) => {
-                                (Some(&ld.body), false, false, ld.unbounded)
-                            }
-                            _ => (None, false, false, false),
-                        };
-                        if let Some(b) = body {
-                            let mut cx = HotPathCx {
-                                top,
-                                diags: &mut *diags,
-                                loop_depth: 0,
-                                in_handler,
-                                hot,
-                                unbounded,
-                            };
-                            hot_walk_block(b, &mut cx);
+    fn check_decl(item: &TopDecl, top: &TopScope, diags: &mut Vec<Diag>) {
+        match item {
+            TopDecl::Locus(l) => {
+                // Gap D: fn members bound as bus handlers get the
+                // per-message context (findings fire at depth 0).
+                let handler_names: BTreeSet<&str> = l
+                    .members
+                    .iter()
+                    .filter_map(|m| match m {
+                        LocusMember::Bus(bb) => Some(bb.members.iter()),
+                        _ => None,
+                    })
+                    .flatten()
+                    .filter_map(|bm| match bm {
+                        BusMember::Subscribe { handler, .. } => {
+                            Some(handler.name.as_str())
                         }
+                        _ => None,
+                    })
+                    .collect();
+                for m in &l.members {
+                    let (body, in_handler, hot, unbounded) = match m {
+                        LocusMember::Fn(fd) => (
+                            Some(&fd.body),
+                            handler_names
+                                .contains(fd.name.name.as_str()),
+                            fd.hot,
+                            fd.unbounded,
+                        ),
+                        LocusMember::Lifecycle(ld) => {
+                            (Some(&ld.body), false, false, ld.unbounded)
+                        }
+                        _ => (None, false, false, false),
+                    };
+                    if let Some(b) = body {
+                        let mut cx = HotPathCx {
+                            top,
+                            diags: &mut *diags,
+                            loop_depth: 0,
+                            in_handler,
+                            hot,
+                            unbounded,
+                        };
+                        hot_walk_block(b, &mut cx);
                     }
                 }
-                TopDecl::Fn(fd) => {
-                    let mut cx = HotPathCx {
-                        top,
-                        diags: &mut *diags,
-                        loop_depth: 0,
-                        in_handler: false,
-                        hot: fd.hot,
-                        unbounded: fd.unbounded,
-                    };
-                    hot_walk_block(&fd.body, &mut cx);
-                }
-                _ => {}
             }
+            TopDecl::Fn(fd) => {
+                let mut cx = HotPathCx {
+                    top,
+                    diags: &mut *diags,
+                    loop_depth: 0,
+                    in_handler: false,
+                    hot: fd.hot,
+                    unbounded: fd.unbounded,
+                };
+                hot_walk_block(&fd.body, &mut cx);
+            }
+            _ => {}
         }
+    }
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| check_decl(item, top, diags));
     }
 }
 
@@ -2305,26 +2345,20 @@ fn check_decorator_stacks(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
             );
         }
     }
-    fn walk(items: &[TopDecl], diags: &mut Vec<Diag>) {
-        for item in items {
-            match item {
-                TopDecl::Fn(fd) => check_fn(fd, diags),
-                TopDecl::Locus(l) => {
-                    for m in &l.members {
-                        if let LocusMember::Fn(fd) = m {
-                            check_fn(fd, diags);
-                        }
+    // A module nests top declarations arbitrarily deep; a decorator
+    // inside one is still a decorator — `walk_decls` flattens them.
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| match item {
+            TopDecl::Fn(fd) => check_fn(fd, diags),
+            TopDecl::Locus(l) => {
+                for m in &l.members {
+                    if let LocusMember::Fn(fd) = m {
+                        check_fn(fd, diags);
                     }
                 }
-                // A module nests top declarations arbitrarily deep;
-                // a decorator inside one is still a decorator.
-                TopDecl::Module(m) => walk(&m.items, diags),
-                _ => {}
             }
-        }
-    }
-    for program in bundle.programs.values() {
-        walk(&program.items, diags);
+            _ => {}
+        });
     }
 }
 

@@ -6732,6 +6732,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self_ptr: PointerValue<'ctx>,
         locus_name: &str,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let slot = self.deferred_dissolve_slot_alloca(locus_name)?;
+        self.builder
+            .build_store(slot, self_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(slot)
+    }
+
+    /// The slot half of `defer_dissolve_slot`: mint the
+    /// NULL-initialized entry-block slot WITHOUT storing a self
+    /// pointer into it.
+    ///
+    /// GH #815: a site inside a loop needs its slot before the
+    /// instantiation runs, not after — the previous iteration's
+    /// occupant has to be torn down while the slot (and the locus
+    /// struct it points at) still describes it. The instantiation
+    /// stores into the same slot on its way out, so the two halves
+    /// bracket the constructor instead of both sitting behind it.
+    pub(crate) fn deferred_dissolve_slot_alloca(
+        &mut self,
+        locus_name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let name = format!("{}.deferred.slot", locus_name);
         let slot = match self.current_fn {
@@ -6776,12 +6797,52 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 slot
             }
         };
-        self.builder
-            .build_store(slot, self_ptr)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(slot)
     }
 
+    /// GH #815: reclaim a deferred-dissolve slot's PREVIOUS
+    /// occupant, immediately before the instantiation that is about
+    /// to overwrite it.
+    ///
+    /// A deferred slot is one alloca per instantiation SITE, and so
+    /// is the locus struct it points at (both hoisted to the fn's
+    /// entry block). A site inside a loop therefore writes the same
+    /// two slots every iteration: the scope-exit flush found only
+    /// the LAST instance and every earlier one leaked its arena and
+    /// its whole child tree. Control re-entering the site is the
+    /// proof that the previous occupant is dead — nothing can still
+    /// name it, since the name it was bound to is about to be
+    /// rebound — so reclaim it here, with the same per-entry spine
+    /// the flush emits (`emit_deferred_entry_teardown`: drain →
+    /// `__dissolve_closures` → dissolve → child cascade →
+    /// arena_destroy → drain). The flush still owns the last one.
+    ///
+    /// The slot's NULL-self guard, already inside that spine, makes
+    /// the first pass a no-op, so a site that runs once emits the
+    /// blocks and never enters them. Only sites lowered INSIDE a
+    /// loop body emit this at all (`self.loops` non-empty) — a
+    /// straight-line site's slot is written once, and gating keeps
+    /// every other program's IR byte-for-byte what it was.
+    ///
+    /// The slot is re-NULLed after the teardown: between here and
+    /// the store at the end of the instantiation it must not name a
+    /// locus that no longer exists, or a teardown reached in
+    /// between (an assertion-failure exit, an `on_failure` route)
+    /// would run the spine a second time. The arena-NULL latch in
+    /// `emit_locus_arena_destroy` would absorb it, but the sentinel
+    /// is the cheaper and more honest statement.
+    pub(crate) fn emit_deferred_slot_reuse_teardown(
+        &mut self,
+        slot: PointerValue<'ctx>,
+        locus_name: &str,
+    ) -> Result<(), CodegenError> {
+        self.emit_deferred_entry_teardown(slot, locus_name, None, true)?;
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        self.builder
+            .build_store(slot, ptr_t.const_null())
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
 
     /// Emit a call to destroy the bus queue. Used at every
     /// main-exit point so the queue tears down cleanly. m52:
@@ -17063,6 +17124,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                 }
                 let alloca = self.alloca_for(&ty, &name.name)?;
+                // GH #815: this binding's alloca IS its dissolve slot
+                // (see the registration below), and `alloca_for`
+                // hoists it to the entry block — so a `let` inside a
+                // loop writes the same slot every iteration and the
+                // scope-exit flush only ever found the LAST factory
+                // result. Reclaim the previous occupant before the
+                // store overwrites it, exactly as the instantiation
+                // path does for a locus literal. Gated on the same
+                // three conditions the registration is (a proven-fresh
+                // factory result, not returned, not `=`-moved): a
+                // binding this scope does not own must not be torn
+                // down here either.
+                if let Some(lname) = fresh_dissolve_of.clone() {
+                    if !self.loops.is_empty()
+                        && !self.deferred_dissolves.is_empty()
+                    {
+                        self.null_init_entry_ptr_slot(alloca)?;
+                        self.emit_deferred_slot_reuse_teardown(
+                            alloca, &lname,
+                        )?;
+                    }
+                }
                 self.builder
                     .build_store(alloca, val)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

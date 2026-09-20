@@ -170,28 +170,44 @@ shared }` borrows `shared`, so the cascade steps over it at
 whatever depth it sits, and `shared` is released once, by the scope
 that made it.
 
-**The scope is the enclosing function, not the enclosing block.** A
-`let` inside a loop body therefore doesn't dissolve per iteration — the
-whole run accumulates and releases at once when the function returns:
+**The scope is the enclosing function, not the enclosing block** — a
+`let` is readable for the rest of the function, including after the
+loop that bound it. But a locus created **in a loop** is reclaimed
+when the next iteration reaches the same line:
 
 ```hale,fragment
 while i < steps {
     let m = zeros(rows, cols);   // a fresh arena every iteration…
     i = i + 1;
-}                                // …none of them reclaimed yet
+}                                // …each one released as the next
+                                 //    replaces it; the last at return
 ```
 
-That's fine for a bounded loop and a real problem for a long-running
-one. Both spellings behave identically here — a factory call allocates
-just as a `Matrix { }` literal would — and the compiler warns about
-each of them. The fixes are to hoist one instance out of the loop and
-refill it, or to move the iteration's work into a helper function,
-whose return is the per-iteration boundary.
+Coming back round to that line is the end of the previous `m`'s life:
+it runs its `drain()` and `dissolve()` and gives back its arena before
+the new one takes its place, and the function's exit releases the last
+one — so `m` is still readable after the loop. The loop holds one
+instance at a time, not `steps` of them. Both spellings behave
+identically — a factory call, a `Matrix { }` literal and a literal you
+merely *use* (`Matrix { }.trace()`, `sum(Matrix { })`) all get the
+same boundary.
 
-Dropping the binding only helps when the value is discarded outright:
-a bare `Matrix { };` statement is reclaimed where it stands, but
-`Matrix { }.trace()` and `sum(Matrix { })` both *use* the literal, so
-it lives to the end of the function exactly as the binding did.
+Each line reclaims its own previous instance, where it stands, so two
+loci bound in one iteration are released in the order they were
+written — the reverse of the newest-first order at function exit. They
+are independent either way; it only shows if one's `dissolve()` reads
+a handle it borrowed from the other, which would see the next
+iteration's instance.
+
+The compiler still warns about the shape, because a fresh arena per
+iteration is real work in a hot loop even when it is reclaimed. To
+spend nothing, hoist one instance out of the loop and refill it.
+
+Dropping the binding changes *where* the reclaim lands, not whether
+one happens: a bare `Matrix { };` statement is reclaimed at the
+statement, while `Matrix { }.trace()` and `sum(Matrix { })` both *use*
+the literal, so each lives to the top of the next iteration — and the
+last of them to the end of the function — exactly as the binding did.
 
 ### Early `return` is an exit, not a shortcut
 

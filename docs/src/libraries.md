@@ -70,6 +70,19 @@ declares itself — `u::f()` written in a seed with no `import … as
 u;` is a check error that names the seed which does declare `u`,
 rather than quietly borrowing that seed's import.
 
+## One library, however you spell it
+
+A library is a directory, and `main.hl` is that directory's entry
+file rather than a library of its own — so `import "../lib/main"`
+and `import "../lib"` name the same library. Both spellings see
+every file of the seed, and both resolve to one set of symbols, so
+a value your app builds as `lib::Config` is the same type the
+library's own signatures mean by it. Spell it whichever way in
+whichever file; there is one library either way.
+
+Any *other* single file is its own small library: `import
+"../lib/helper"` brings in `helper.hl` and nothing else.
+
 ## The catalog
 
 **Persistence & data**
