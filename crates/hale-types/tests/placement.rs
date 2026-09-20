@@ -1667,3 +1667,283 @@ fn main() { App { }; }
         msgs
     );
 }
+
+// === GH #826: a pinned placement forbids a loop ====================
+//
+// A `pinned` entry gives its field its own OS thread; the join record
+// (the deferred-dissolve slot and the `pthread_t` beside it) is one
+// alloca per instantiation SITE, so a site inside a loop overwrites it
+// every iteration and the scope-exit flush joins only the LAST
+// instance — every earlier thread is orphaned with its arena live.
+// `placement { }` is main-only, so the reachable shape is the main
+// locus itself instantiated inside a loop.
+
+/// The GH #826 rejection, keyed on a substring stable across message
+/// edits.
+const PINNED_LOOP: &str = "is instantiated inside a loop, but its";
+
+/// Error-severity messages only. The hot-path lint WARNS about the
+/// same literal, so a message-only assertion could not tell a
+/// rejection from an advisory.
+fn errors(src: &str) -> Vec<String> {
+    let prog = parse_source(src).expect("parse failed");
+    check_program(&prog)
+        .into_iter()
+        .filter(|d| d.is_error())
+        .map(|d| d.message)
+        .collect()
+}
+
+fn pinned_app(body: &str) -> String {
+    format!(
+        r#"
+locus Worker {{
+    params {{ id: Int = 0; }}
+    run() {{ }}
+}}
+
+main locus App {{
+    params {{
+        w: Worker = Worker {{ id: 1 }};
+    }}
+    placement {{
+        w: pinned;
+    }}
+}}
+
+fn main() {{
+{}
+    return 0;
+}}
+"#,
+        body
+    )
+}
+
+#[test]
+fn pinned_placement_locus_in_while_loop_rejected() {
+    let msgs = errors(&pinned_app(
+        "    let mut i = 0;\n    while i < 3 { App { }; i = i + 1; }",
+    ));
+    assert!(
+        msgs.iter().any(|m| m.contains(PINNED_LOOP)
+            && m.contains("`App`")
+            && m.contains("`w`")),
+        "expected the GH #826 rejection naming the locus and the pinned \
+         field, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn pinned_placement_locus_in_for_loop_rejected() {
+    let msgs = errors(&pinned_app("    for i in 0..3 { App { }; }"));
+    assert!(
+        msgs.iter().any(|m| m.contains(PINNED_LOOP)),
+        "a `for` body is a loop body too: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn pinned_placement_let_bound_in_loop_rejected() {
+    let msgs = errors(&pinned_app(
+        "    let mut i = 0;\n    while i < 3 { let a = App { }; i = i + 1; }",
+    ));
+    assert!(
+        msgs.iter().any(|m| m.contains(PINNED_LOOP)),
+        "a `let`-bound instantiation takes the same per-site slot: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn pinned_placement_in_nested_block_in_loop_rejected() {
+    let msgs = errors(&pinned_app(
+        "    let mut i = 0;\n    while i < 3 {\n        if i > 0 {\n            App { };\n        }\n        i = i + 1;\n    }",
+    ));
+    assert!(
+        msgs.iter().any(|m| m.contains(PINNED_LOOP)),
+        "loop depth survives an inner block: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn pinned_placement_in_locus_method_loop_rejected() {
+    // The loop lives in a locus method body, not a free fn — the
+    // walker has to reach locus members and module-nested decls, not
+    // just top-level `TopDecl::Fn` (GH #825: a check that stops at the
+    // top level sees half the program).
+    let src = r#"
+locus Worker {
+    params { id: Int = 0; }
+    run() { }
+}
+
+locus Driver {
+    fn spin() {
+        let mut i = 0;
+        while i < 3 {
+            App { };
+            i = i + 1;
+        }
+    }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { id: 1 };
+        d: Driver = Driver { };
+    }
+    placement {
+        w: pinned;
+    }
+}
+
+fn main() { App { }; return 0; }
+"#;
+    let msgs = errors(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(PINNED_LOOP)),
+        "a loop inside a locus method is a loop: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn pinned_placement_outside_a_loop_is_clean() {
+    let msgs = errors(&pinned_app("    App { };\n    App { };"));
+    assert!(
+        !msgs.iter().any(|m| m.contains(PINNED_LOOP)),
+        "two straight-line sites are two slots — both are joined: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn cooperative_placement_in_a_loop_is_clean() {
+    // The control that isolates `pinned`: a cooperative field spawns
+    // no thread of its own, and GH #815 already reclaims the whole
+    // tree per iteration.
+    let src = r#"
+locus Worker {
+    params { id: Int = 0; }
+    run() { }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { id: 1 };
+    }
+    placement {
+        w: cooperative(pool = io);
+    }
+}
+
+fn main() {
+    let mut i = 0;
+    while i < 3 { App { }; i = i + 1; }
+    return 0;
+}
+"#;
+    let msgs = errors(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(PINNED_LOOP)),
+        "only `pinned` spawns the per-instance thread: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn no_placement_block_in_a_loop_is_clean() {
+    let src = r#"
+locus Worker {
+    params { id: Int = 0; }
+    run() { }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { id: 1 };
+    }
+}
+
+fn main() {
+    let mut i = 0;
+    while i < 3 { App { }; i = i + 1; }
+    return 0;
+}
+"#;
+    let msgs = errors(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(PINNED_LOOP)),
+        "no placement block, no pinned thread: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn factory_called_in_a_loop_is_not_flagged() {
+    // The literal is not in a loop, so the pinned entry is flushed at
+    // `boot`'s own fn exit and every call joins its own thread
+    // (verified under LSan). The check is positional on purpose: this
+    // shape is the fix, not a hole.
+    let src = r#"
+locus Worker {
+    params { id: Int = 0; }
+    run() { }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { id: 1 };
+    }
+    placement {
+        w: pinned;
+    }
+}
+
+fn boot() { App { }; }
+
+fn main() {
+    let mut i = 0;
+    while i < 3 { boot(); i = i + 1; }
+    return 0;
+}
+"#;
+    let msgs = errors(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(PINNED_LOOP)),
+        "a fn call in a loop is not a locus literal in a loop: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn pinned_loop_diagnostic_points_at_the_placement_entry() {
+    let src = pinned_app(
+        "    let mut i = 0;\n    while i < 3 { App { }; i = i + 1; }",
+    );
+    let prog = parse_source(&src).expect("parse failed");
+    let diag = check_program(&prog)
+        .into_iter()
+        .find(|d| d.is_error() && d.message.contains(PINNED_LOOP))
+        .expect("GH #826 rejection");
+    let (rspan, label) = diag
+        .related
+        .first()
+        .cloned()
+        .expect("the rejection carries the placement entry");
+    assert!(
+        label.contains("pinned") && label.contains("`w`"),
+        "related label names the placed field: {:?}",
+        label
+    );
+    let text = &src[rspan.start.as_usize()..rspan.end.as_usize()];
+    assert!(
+        text.contains("pinned"),
+        "related span should cover the placement entry, covers {:?}",
+        text
+    );
+}

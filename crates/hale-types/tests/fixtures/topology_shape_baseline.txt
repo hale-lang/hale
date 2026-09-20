@@ -425,6 +425,7 @@ crates/hale-codegen/tests/decimal_alignment.rs#2 bd1d245d03fbd6a4
 crates/hale-codegen/tests/decimal_alignment.rs#3 2d3b3e0c6a77ebec
 crates/hale-codegen/tests/decimal_format.rs#0 865d341109268295
 crates/hale-codegen/tests/deferred_slot_per_iteration.rs#0 eac6c288815baa44
+crates/hale-codegen/tests/deferred_slot_per_iteration.rs#10 f1400473ef11e19d
 crates/hale-codegen/tests/drain_elision.rs#0 8dbd2b3a0de2ee5b
 crates/hale-codegen/tests/drain_elision.rs#1 e9b3a90b0626e56f
 crates/hale-codegen/tests/dump_pool_residency.rs#0 6ed57213cc511298
@@ -1540,6 +1541,9 @@ crates/hale-types/tests/placement.rs#46 b0a2d4b41ec4adc8
 crates/hale-types/tests/placement.rs#47 d13644db0efe1dd6
 crates/hale-types/tests/placement.rs#48 d13644db0efe1dd6
 crates/hale-types/tests/placement.rs#5 eb89d2367f0fe029
+crates/hale-types/tests/placement.rs#52 eb89d2367f0fe029
+crates/hale-types/tests/placement.rs#53 eb89d2367f0fe029
+crates/hale-types/tests/placement.rs#54 2dac4b388a77bfea
 crates/hale-types/tests/placement.rs#6 eb89d2367f0fe029
 crates/hale-types/tests/placement.rs#8 aa981ce3fa820e36
 crates/hale-types/tests/placement_pairings.rs#3 7fa08ae2a5239b16
