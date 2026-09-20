@@ -162,6 +162,14 @@ locus WorkSystem {
         agent: Performer = AgentPerformer { };
         software: Performer = ScriptedPerformer { name: "software" };
         service: Performer = ServicePerformer { };
+        // the effect adapters that say, after a restart, whether an
+        // attempt acted (card 12c), one per performer kind as the
+        // performers are: evidence about one kind's effect says nothing
+        // about another's. The default can say nothing
+        human_reconciler: Reconciler = NoEvidence { };
+        agent_reconciler: Reconciler = NoEvidence { };
+        service_reconciler: Reconciler = NoEvidence { };
+        software_reconciler: Reconciler = NoEvidence { };
         selection: perspective(WorkRouting) = CapabilityFirstSelection { };
         max_attempts: Int = 3;
         requests: Int = 0;
@@ -189,6 +197,15 @@ locus WorkSystem {
         if kind == "agent" { return self.agent.identity(); }
         if kind == "service" { return self.service.identity(); }
         return self.software.identity();
+    }
+    // The adapter of the admitted kind is asked, for the identity that
+    // kind selects; its answer names them, or it is no evidence.
+    fn reconcile_as(kind: String, req: WorkRequest) -> Reconciliation {
+        let identity = self.identity_of(kind);
+        if kind == "human" { return self.human_reconciler.reconcile(kind, identity, req); }
+        if kind == "agent" { return self.agent_reconciler.reconcile(kind, identity, req); }
+        if kind == "service" { return self.service_reconciler.reconcile(kind, identity, req); }
+        return self.software_reconciler.reconcile(kind, identity, req);
     }
     fn perform_as(kind: String, req: WorkRequest) -> WorkResult {
         if kind == "human" { return self.human.perform(req); }

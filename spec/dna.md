@@ -1362,6 +1362,46 @@ performer kind is durable: the restored incarnation runs the attempt on
 that kind. What an invocation that died did before it died is a later
 card's, as is cross-process delivery.
 
+## Workflow execution: uncertain external effects
+
+An attempt's performer may have acted before the outcome was saved:
+the incarnation claimed the attempt, invoked the adapter, and died
+before the outcome row landed. Recovery reconciles before it decides
+on a redelivery. The work system carries an effect adapter's
+reconciliation beside each of its performers, one per kind as the
+performers are (`Reconciler`, default `NoEvidence`): the adapter of the
+admitted kind is asked, for the identity that kind selects, about an
+attempt whose claim an incarnation that died left open, and it says
+whether it can tell, whether it acted, what it recorded when it did, or
+that acting again is documented safe. Its answer names the kind and
+identity it speaks for, and evidence that does not name the admitted
+performer's is no evidence about the attempt — another adapter's
+attestation that nothing acted, or its documented idempotence, does not
+authorize replaying this performer. An adapter that acted hands back
+the outcome it recorded, as it recorded it — judged for whose it is
+exactly as any reply is, the performer it names and the attempt it
+names if it names one, never relabelled — and that is the attempt's
+outcome, recorded and its claim closed; nothing is performed twice. An adapter
+that attests it never acted, or whose effect is documented idempotent,
+has the dispatch issued again (`effect.redelivered`, saying which).
+An adapter that cannot say leaves the claim resulted unknown, durably
+and visibly (`effect.result unknown (reconciled after a restart: …)`,
+the existing rule-3 mark, appended exactly at the reading and under
+the fence; the record moving under that append — an outcome, a
+resolution, a takeover, or something unrelated — has the decision
+taken again at the new reading, so a resolution that landed meanwhile
+is the outcome and an unrelated move just lands the unknown row
+after it), and the attempt waits — asked again it still waits, nothing
+is replayed blind — until a person resolves it (`hale dna effect
+resolve <key> --outcome ok|failed`); then the resolution is the
+attempt's outcome, recorded so the Work settles on it. The assembly's
+own restart rule, which results the other effect families by evidence
+or marks them unknown, leaves an attempt's claim to the runtime's
+adapter. One flat leaf; no exactly-once external execution is promised
+and no compensation is invented: what is promised is that recovery
+never performs an effect twice on its own say-so, and never pretends to
+know what it cannot.
+
 ## Workflow execution: retries under a restart, and the fence
 
 A retry is the next numbered attempt of a Work, and it is admitted only

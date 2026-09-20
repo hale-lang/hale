@@ -2566,7 +2566,10 @@ locus Dna {
         let mut i = 0;
         while i < n {
             let e = self.journal.read(i);
-            if e.kind == "effect.requested" {
+            // an execution attempt's claim (`attempt:<id>`) is reconciled
+            // by the workflow runtime through its effect adapter, before
+            // it decides on a redelivery (GH #646 card 12c), not here
+            if e.kind == "effect.requested" && !std::str::starts_with(e.entity, "attempt:") {
                 let key = e.entity;
                 let st = effect_status(self.journal, key);
                 if !st.done {
