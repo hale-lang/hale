@@ -150,6 +150,17 @@ because it's how Hale frees resources without a `defer` or a
   is in. That is what lets you hand a fresh locus to a service
   that keeps it: `serve(Provider { })` is as safe as
   `let p = Provider { }; serve(p);`.
+- **A locus a function hands back** (`let t = make_ticker();`, or
+  the call used directly — `serve(make_ticker())`): whatever
+  consumes the handle owns it, so it behaves like the two above.
+  A **fallible** factory is reached through `or`, and that changes
+  nothing: `let c = std::process::spawn(argv) or raise;` closes
+  the child's pipes and reaps it when the scope exits, just as a
+  literal would. The two places the frame stays out of it are the
+  places the handle is *handed on* rather than consumed — written
+  straight into another locus's field (`Router { quick: make("q") }`,
+  which the router owns) and `return`ed to your caller (who owns
+  it).
 - **Long-lived** (the locus subscribes to the bus, or its `run()`
   hasn't returned): it stays alive until its scope exits,
   regardless of binding — it has to, to keep receiving messages.

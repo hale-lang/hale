@@ -52,8 +52,68 @@ the lifetime contract.
 | Tuple | `(A, B, C)` | Fixed-size heterogeneous |
 | Struct | `type Foo { x: Int; y: Int = 0; }` | Named record. Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time. |
 | Enum | `type Foo = enum { A, B(int) };` | Tagged union (sum type) |
+| Alias | `type Thing = Int;` | A second SPELLING of a type, not a new type. See § "Type aliases". |
 | Function | `fn(A, B) -> C` | First-class function values |
 | Generic | `Foo<T>` | Parametric over type T |
+
+## Type aliases
+
+`type Name = Type;` declares an **alias**: a second spelling of an
+existing type.
+
+```hale
+type Thing = Int;
+type Row2  = Row;
+type Names = Vec<String>;
+type Span  = (Int, Int);
+```
+
+An alias is **transparent**, not nominal. It is replaced by its
+target wherever a type is written, so the alias and its target are
+**the same type** — they unify in both directions, share every
+field, and dispatch to the same methods:
+
+```hale
+type Thing = Int;
+
+fn bump(t: Thing) -> Thing { return t + 1; }
+
+fn main() {
+    let t: Thing = 3;      // an Int
+    let u: Int = bump(t);  // and back, with no conversion
+}
+```
+
+The consequences are all one rule:
+
+* **Structural, never nominal.** An alias declares no type of its
+  own, so nothing attaches to the alias name. `type Held =
+  Holder;` names the locus `Holder`; `held.method()` is
+  `Holder`'s method. There is no way to give an alias behaviour
+  its target does not have — for a distinct type with its own
+  methods, declare a locus or a struct.
+* **Transparent in every type position**: `let` ascriptions,
+  struct fields, `params`, function parameters and return types,
+  `capacity` cell types (the form's `indexed_by` resolves to the
+  target's field), generic arguments, and nested shapes (`[Row2;
+  2]`, `(Thing, Thing)`).
+* **An alias chains.** `type A = B; type B = Int;` makes `A` an
+  `Int`. A chain that returns to a name it already visited names
+  nothing and is a type error:
+
+  ```text
+  main.hl:1:1: type error: type alias `A` is cyclic — an alias
+  chain must end at a declared type
+  ```
+
+* **The alias is not a constructor.** A struct literal names the
+  declaring type: write `Row { id: 1 }`, not `Row2 { id: 1 }`.
+  Construction through the alias name is refused with ``
+  `Row2` is not a struct type ``.
+* **The alias form takes no generic parameters.** `type Twin<T> =
+  Pair<T>;` is not supported — the alias target must be a
+  concrete type expression (which may itself be a generic
+  *instantiation*, as `type Names = Vec<String>;` is).
 
 ## Projection-class types
 

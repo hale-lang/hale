@@ -228,10 +228,20 @@ impl Parser {
         t
     }
 
+    /// Token-shape test. Compares only the token's *discriminant*,
+    /// so a payload-carrying kind (`Ident`, `StringLit`, `IntLit`,
+    /// …) matches ANY token of that kind regardless of its payload
+    /// — `at(&TokenKind::Ident("enum".into()))` is true for every
+    /// identifier. A contextual keyword must therefore be matched
+    /// on its spelling (`matches!(self.peek(), TokenKind::Ident(s)
+    /// if s == "enum")`), never through `at` / `eat` / `expect`.
+    /// GH #759 was exactly that mistake.
     fn at(&self, kind: &TokenKind) -> bool {
         std::mem::discriminant(self.peek()) == std::mem::discriminant(kind)
     }
 
+    /// Consume the next token if it has `kind`'s shape. Same
+    /// discriminant-only caveat as [`Parser::at`].
     fn eat(&mut self, kind: &TokenKind) -> bool {
         if self.at(kind) {
             self.bump();
@@ -5379,8 +5389,18 @@ impl Parser {
         //   type X { struct_fields }
         //   type X = enum { variants } ;
         if self.eat(&TokenKind::Eq) {
-            // alias or enum
-            if self.eat(&TokenKind::Ident("enum".to_string())) {
+            // alias or enum. `enum` is a *contextual* keyword: it
+            // lexes as an ordinary identifier, so the split has to
+            // compare the spelling. `eat` compares discriminants
+            // only, so `eat(&Ident("enum"))` matched every
+            // identifier — `type Thing = Int;` was swallowed by the
+            // enum branch, which then demanded `{` and reported
+            // "expected {, got Semi" at the `;`. That made the
+            // alias form unwritable even though the grammar, the
+            // AST (`TypeDeclBody::Alias`) and every downstream pass
+            // carry it (GH #759).
+            if matches!(self.peek(), TokenKind::Ident(s) if s == "enum") {
+                self.bump();
                 self.expect(TokenKind::LBrace, "{")?;
                 let mut variants = Vec::new();
                 if !self.at(&TokenKind::RBrace) {

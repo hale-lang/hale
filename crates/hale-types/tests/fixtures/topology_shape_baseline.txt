@@ -435,6 +435,8 @@ crates/hale-codegen/tests/f22_cell_field_io.rs#1 6df4232a0f869f76
 crates/hale-codegen/tests/f22_cell_field_io.rs#2 f31e4db5e7bc38ec
 crates/hale-codegen/tests/f22_cell_field_io.rs#3 63ff43b1c8746faf
 crates/hale-codegen/tests/factory_locus_reclaim.rs#0 5bee09d4dbc4602d
+crates/hale-codegen/tests/factory_returned_binding.rs#0 967ae4cb6729fe31
+crates/hale-codegen/tests/factory_returned_binding.rs#1 b80a55cf498e1f4a
 crates/hale-codegen/tests/fallible_method_scratch_order.rs#0 10f9617e7cef3887
 crates/hale-codegen/tests/fallible_method_scratch_order.rs#1 04bacc10168e5f20
 crates/hale-codegen/tests/fallible_method_scratch_order.rs#2 53f6481685bfc133
@@ -942,7 +944,8 @@ crates/hale-codegen/tests/process_child.rs#0 53cadec6decfbc54
 crates/hale-codegen/tests/process_child.rs#1 55d9bfc2e7b9f127
 crates/hale-codegen/tests/process_child.rs#2 865d341109268295
 crates/hale-codegen/tests/process_child.rs#3 a636b56f03869150
-crates/hale-codegen/tests/process_child.rs#4 53cadec6decfbc54
+crates/hale-codegen/tests/process_child.rs#4 865d341109268295
+crates/hale-codegen/tests/process_child.rs#5 53cadec6decfbc54
 crates/hale-codegen/tests/process_child_adopt.rs#0 a636b56f03869150
 crates/hale-codegen/tests/process_run.rs#0 53cadec6decfbc54
 crates/hale-codegen/tests/process_run.rs#1 53cadec6decfbc54
@@ -1331,10 +1334,13 @@ crates/hale-types/tests/effect_assertions.rs#1 71a3122c980c048f
 crates/hale-types/tests/effect_assertions.rs#10 23521b5d6a57259e
 crates/hale-types/tests/effect_assertions.rs#11 adb66e587e257061
 crates/hale-types/tests/effect_assertions.rs#12 81a9956f48f92449
-crates/hale-types/tests/effect_assertions.rs#18 20ec55af39f1046a
-crates/hale-types/tests/effect_assertions.rs#22 d8579c59299960f3
-crates/hale-types/tests/effect_assertions.rs#27 3144a66fa473a5a5
+crates/hale-types/tests/effect_assertions.rs#18 7310d7d746860b97
+crates/hale-types/tests/effect_assertions.rs#20 20ec55af39f1046a
+crates/hale-types/tests/effect_assertions.rs#21 20ec55af39f1046a
+crates/hale-types/tests/effect_assertions.rs#23 cb0c6720f3be5e6d
+crates/hale-types/tests/effect_assertions.rs#26 d8579c59299960f3
 crates/hale-types/tests/effect_assertions.rs#3 18ffc12740f4b203
+crates/hale-types/tests/effect_assertions.rs#31 3144a66fa473a5a5
 crates/hale-types/tests/effect_assertions.rs#5 6c25d1df6a64820f
 crates/hale-types/tests/effect_assertions.rs#8 52f5c2d227dbb8b5
 crates/hale-types/tests/effects_through_handles.rs#4 366138d0626a5646
@@ -1538,6 +1544,7 @@ crates/hale-types/tests/topology_projection.rs#4 90f1c7ee9e3d1372
 crates/hale-types/tests/topology_projection.rs#7 43fedbac6dfcd680
 crates/hale-types/tests/topology_projection.rs#8 9987dee9f11ab32a
 crates/hale-types/tests/topology_projection.rs#9 e2f9e2e579bb0933
+crates/hale-types/tests/type_alias.rs#0 865d341109268295
 crates/hale-types/tests/violate.rs#0 8bef0857136a5c1f
 crates/hale-types/tests/violate.rs#1 d85d74c1f266771b
 crates/hale-types/tests/violate.rs#10 d85d74c1f266771b

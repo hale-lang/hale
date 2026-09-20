@@ -1400,6 +1400,7 @@ pub fn build_executable_with_options(
         elidable_methods: BTreeMap::new(),
         user_types: BTreeMap::new(),
         pending_type_names: BTreeSet::new(),
+        user_type_aliases: BTreeMap::new(),
         user_enums: BTreeMap::new(),
         user_interfaces: BTreeSet::new(),
         user_consts: BTreeMap::new(),
@@ -3566,6 +3567,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// type even when the stdlib type's full TypeInfo hasn't
     /// been registered yet.
     pub(crate) pending_type_names: BTreeSet<String>,
+    /// GH #759: `type Name = T;` — name → target type expression.
+    /// An alias is TRANSPARENT: it declares no LLVM type of its
+    /// own, and `type_expr_to_codegen_ty` resolves a use of the
+    /// name straight to the target's lowering. Populated in pass
+    /// A0 before any type decl is declared.
+    pub(crate) user_type_aliases: BTreeMap<String, TypeExpr>,
     /// m47: user-defined enum declarations indexed by name. Each
     /// entry carries the variant-name → tag-index map. m47-payloads
     /// added payload-bearing variants (`Trade(Decimal, Int)`): such
@@ -6475,7 +6482,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// GH #383: resolve a call's callee to the merged-program fn
     /// name, for the fresh-factory lookup. Accepts both `Path2` and
     /// `Field` spellings, matching the analysis pass.
-    fn callee_fn_name(&self, callee: &Expr) -> Option<String> {
+    pub(crate) fn callee_fn_name(&self, callee: &Expr) -> Option<String> {
         fn segs(e: &Expr, out: &mut Vec<String>) -> bool {
             match e {
                 Expr::Ident(i) => {
@@ -6515,6 +6522,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let key: Vec<String> = segs.iter().map(|s| s.to_string()).collect();
         self.import_renames.get(&key).cloned()
+    }
+
+    /// GH #383 / #793: is `binding` a local this frame must NOT
+    /// reclaim? Two things take a local out of the single-owner
+    /// position the binding-scoped dissolve rule assumes:
+    ///
+    ///  - the enclosing fn hands it back (`compute_returned_
+    ///    bindings`), so the CALLER owns it and dissolving here
+    ///    frees it out from under them — reads come back as zeros
+    ///    rather than crashing, which is why it needs a rule and
+    ///    not a sanitizer;
+    ///  - a bare-local `=` moves it between names
+    ///    (`compute_assign_moved_bindings`), so two names can reach
+    ///    one value.
+    ///
+    /// Conservative in the same direction as both sets: a `true`
+    /// here only suppresses a dissolve, which is the old leak,
+    /// never a double free.
+    pub(crate) fn binding_escapes_this_frame(&self, binding: &str) -> bool {
+        let Some(fname) = self
+            .current_fn
+            .map(|f| f.get_name().to_string_lossy().to_string())
+        else {
+            return false;
+        };
+        let in_set = |m: &std::collections::BTreeMap<
+            String,
+            std::collections::BTreeSet<String>,
+        >| {
+            m.get(&fname).map(|s| s.contains(binding)).unwrap_or(false)
+        };
+        in_set(&self.returned_bindings) || in_set(&self.assign_moved_bindings)
     }
 
     /// hale-bun upstream item 3: diagnostic for a qualified path
@@ -8828,6 +8867,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if t.generics.is_empty() {
                 self.pending_type_names.insert(t.name.name.clone());
             }
+        }
+
+        // GH #759: record the alias targets before anything lowers
+        // a type expression. `type Thing = Int;` adds no LLVM type
+        // — a use of `Thing` lowers as `Int` — so the name must be
+        // resolvable from the first signature onwards.
+        for t in &type_decls {
+            if let TypeDeclBody::Alias(te) = &t.body {
+                if t.generics.is_empty() {
+                    self.user_type_aliases
+                        .insert(t.name.name.clone(), te.clone());
+                }
+            }
+        }
+        // Drop any alias whose chain comes back to its own name.
+        // `check` reports the cycle with a span; codegen only has
+        // to make sure the resolution below terminates — following
+        // `type A = B; type B = A;` would recurse until the stack
+        // ran out.
+        let cyclic: Vec<String> = self
+            .user_type_aliases
+            .keys()
+            .filter(|n| self.alias_chain_is_cyclic(n))
+            .cloned()
+            .collect();
+        for n in cyclic {
+            self.user_type_aliases.remove(&n);
         }
 
         // Now declare concrete user-written non-generic decls.
@@ -12680,7 +12746,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 }
                             }
                         }
-                        TypeDeclBody::Alias(_) => {}
+                        // GH #759: an alias may NAME a generic
+                        // instantiation (`type Names =
+                        // Vec<String>;`). Walk its target so the
+                        // monomorph is synthesized even when the
+                        // program only ever spells the alias.
+                        TypeDeclBody::Alias(te) => {
+                            Self::collect_generic_uses(
+                                te,
+                                generic_names,
+                                seen,
+                                requests,
+                            )?;
+                        }
                     }
                 }
                 TopDecl::Type(_) => {
@@ -12892,7 +12970,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             }
                         }
                     }
-                    TypeDeclBody::Alias(_) => {}
+                    // GH #759: see the top-level arm.
+                    TypeDeclBody::Alias(te) => {
+                        Self::collect_generic_uses(
+                            te,
+                            generic_names,
+                            seen,
+                            requests,
+                        )?;
+                    }
                 }
             }
             LocusMember::Contract(_)
@@ -17015,8 +17101,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // RHS (below), so suppress temporary registration for
                 // the top-level call — otherwise the value would be
                 // registered twice and dissolved twice.
+                //
+                // GH #793: `let c = make() or raise;` is the one RHS
+                // shape this site cannot own from here. The value it
+                // binds is produced on the `or`'s OK branch, and on a
+                // substitute disposition the other branch produces a
+                // different value that already has an owner (an
+                // unowned literal registers itself — GH #814 — and a
+                // fresh factory call in that position takes a temp —
+                // GH #402), so registering the binding's alloca would
+                // dissolve the substitute twice. `lower_or_expr` does
+                // the registering, on the branch that actually
+                // produced the value; what this site contributes is
+                // the ownership DECISION, carried in the same
+                // one-shot flag: keep the suppression only when the
+                // value is not ours to reclaim.
+                let rhs_is_or = matches!(value_to_lower, Expr::Or { .. });
                 let prev_sft = self.suppress_fresh_temp;
-                self.suppress_fresh_temp = true;
+                self.suppress_fresh_temp = !rhs_is_or
+                    || self.binding_escapes_this_frame(&name.name);
                 let lower_result =
                     self.lower_expr_into(value_to_lower, scope, hint_ty.as_ref());
                 self.suppress_fresh_temp = prev_sft;

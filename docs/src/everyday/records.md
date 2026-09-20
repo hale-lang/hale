@@ -77,6 +77,40 @@ let pair = (1, "one");
 Reach for a `type` once the grouping has meaning worth naming;
 tuples are for the throwaway case.
 
+## Aliases — a second name for a type
+
+`type Name = Type;` gives an existing type another name:
+
+```hale
+type Cents = Int;
+
+fn price_of(n: Cents) -> Cents { return n * 2; }
+
+fn main() {
+    let c: Cents = 250;
+    println(price_of(c));
+}
+```
+
+An alias is **transparent**: `Cents` *is* `Int`, not a new type
+wrapped around one. The two are interchangeable in both
+directions, with no conversion and no wrapper — so an alias buys
+you a name that reads better at the call site, and nothing else.
+
+That cuts both ways. Because the alias adds no type of its own,
+it also adds no safety: nothing stops you passing a plain `Int`
+where `Cents` is expected. If you want the compiler to keep two
+integers apart, give each a record of its own (`type Cents { v:
+Int; }`).
+
+Two small rules:
+
+* A struct literal names the declaring type. With `type Row2 =
+  Row;` you still write `Row { id: 1 }` — `Row2 { id: 1 }` is
+  refused.
+* An alias chain has to end somewhere. `type A = B; type B = A;`
+  is a type error.
+
 ## Enums — one of several shapes
 
 An enum is a value that is exactly one of a set of named

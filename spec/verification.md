@@ -1636,6 +1636,21 @@ assume the others in a build:
   `time_from_unix(n)` is deterministic while `monotonic_ns()` is not;
   `http::parse_request` is pure while `http::get` is blocking I/O.
 
+  **A classification is a property of the call, never of a
+  placement** (GH #791). `block` means "this waits", and the registry
+  row says so unconditionally: `std::time::sleep` carries `block` on
+  every pool, because on a classic pool it really does hold that
+  pool's OS thread. It has to be unconditional — a locus TYPE is
+  placed per *instance* (F.31), so the same method can run on an
+  async_io pool for one field and a classic pool for another, and a
+  free fn has no placement at all; a fn-grained certificate that
+  depended on placement would have no single answer. So `@no_block`
+  refuses a handler that sleeps even where that sleep parks, and the
+  `.hale.effects` manifest reports `block` there. Where the worker
+  *is* held is a question about a placement, and the one check that
+  knows a placement — the placement-implied advisory below — is the
+  one place that answers it.
+
   **Incompleteness fails closed, in both of its forms.** An entry
   present but *unclassified* is treated as may-do-anything and
   violates every assertion. So is a `std::` path with **no registry
@@ -2067,6 +2082,29 @@ assume the others in a build:
   is engaged, and the enforced error replaces it). This is the class
   of bug that shipped as a downstream latency mystery — a sleeping
   handler holding an engine pool — now visible at compile time.
+
+  **The leaf set is `block` minus what parks** (GH #791, 2026-09-20).
+  Waiting stalls co-scheduled loci only if it holds the worker, and
+  on an `async_io` pool some waits do not: the runtime swaps the coro
+  out and the drain loop continues. Those leaves — `std::time::sleep`
+  (the timer-only park), `io::tcp::{accept_one, recv_into,
+  recv_stamped_into, __accept_one, __recv, __recv_bytes}`,
+  `io::udp::{recv, __recv, recv_with_source, recv_into}` and
+  `io::tls::{recv_into, recv_stamped_into}` — are exempt from THIS
+  advisory (`stdlib_surface::ASYNC_IO_PARKING`, enumerated from the
+  park lowering, each entry naming its runtime primitive). Everything
+  else still warns, including the calls that open a connection
+  (`tcp::connect`, `tls::connect`, `tls::upgrade`, and so
+  `std::http::*`), file and stdin reads, `tls::recv_bytes` (a plain
+  `SSL_read`; only the `recv_into` family got the park) and
+  `std::process::{run, wait, read_stdout, read_stderr}`. The
+  exemption is per-LEAF: a handler that both sleeps and blocks is
+  still reported, with the witness naming the blocking leaf.
+
+  Without this, the fix for the bug above (the timer-only sleep park)
+  turned its own reproducer into a correct program that the advisory
+  still flagged — and the fix it suggested, `@no_block`, is a compile
+  error on that program.
 - **Hot-path allocation lint — default-on advisory** (2026-07-16). Two
   loop-scoped anti-patterns get a **warning** (never a build failure), so
   the allocation-free shape is the path of least resistance rather than
