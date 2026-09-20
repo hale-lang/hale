@@ -1,0 +1,439 @@
+// dna/tests/workflow_children_test.hl — recursive child workflows (DNA
+// workflow card 11).
+//
+// The canonical three-level example (contract §6) runs through the new
+// engine: a root whose first step has a leaf and a child workflow, whose
+// second step has a leaf; the child's second step invokes a grandchild;
+// the grandchild's one step has a leaf with two attempts. A delayed
+// grandchild leaf keeps root D from starting; a grandchild that fails
+// fails its step, its execution, the child's step, the child's
+// execution, the root's step and the root, and D never runs; a child
+// settlement for a key that is no child of the step, for another root's
+// child, for the wrong step, or delivered twice changes nothing; two
+// roots run at once and two uses of one child definition never share an
+// id; a cancellation of the root reaches down to the grandchild's leaf;
+// and everything reclaims from the leaves upward.
+
+import "../core" as dna;
+
+locus Counting {
+    params { calls: Int = 0; }
+    fn kind() -> String { return "service"; }
+    fn identity() -> String { return "counter"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        return dna::WorkResult { disposition: "done", result: "counted:" + req.objective, performer: "counter", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+    }
+}
+
+locus Delayed {
+    params { calls: Int = 0; }
+    fn kind() -> String { return "agent"; }
+    fn identity() -> String { return "delayed"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        return dna::WorkResult { disposition: "pending", performer: "delayed", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+    }
+}
+
+locus Failing {
+    params { calls: Int = 0; }
+    fn kind() -> String { return "human"; }
+    fn identity() -> String { return "alice"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        return dna::WorkResult { disposition: "failed", result: "no", performer: "alice", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+    }
+}
+
+// A journal that refuses the rows it is told to, once each — and, as
+// one row lands, cancels an execution as another instance over the same
+// record would: it lands the `workflow.settled cancelled` row itself and
+// fences the step, so the fence reaches a child before that child hears
+// its admission was answered (a cancellation asked over the bus can only
+// land after the answer; only another hand's can land before it).
+locus Refusing {
+    params {
+        inner: dna::MemJournal = dna::MemJournal { };
+        refuse_once: String = "";
+        refused_yet: String = "";
+        cancel_on: String = "";
+        cancel_task: String = "";
+        cancelled: Bool = false;
+        // and, as one row is refused, fails the spawning step by another
+        // hand — the sibling's settlement and the step's failure landed,
+        // the settlement announced — so the step's settlement reaches the
+        // child before the refusal it is answered with
+        fail_on: String = "";
+        fail_task: String = "";
+        failed: Bool = false;
+    }
+    bus { publish dna::StepFenced; publish dna::StepSettled; }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.inner.append(expected, kind, entity, body); }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if dna::set_has(self.refuse_once, kind + ":" + entity) && !dna::set_has(self.refused_yet, kind + ":" + entity) {
+            self.refused_yet = dna::set_add(self.refused_yet, kind + ":" + entity);
+            if kind + ":" + entity == self.fail_on && !self.failed {
+                self.failed = true;
+                let t = self.fail_task;
+                let step = t + "/wf1/s0";
+                let work = step + "/a";
+                let r0 = self.inner.append(self.inner.revision(), "attempt.outcome", work + "/a0", dna::encode_attempt_outcome(dna::AttemptOutcome {
+                    attempt_id: work + "/a0", work_id: work, disposition: "failed", performer: "delayed", result: "no",
+                    transition: dna::TransitionRef { scope: "main", key: work + "/a0", proposal_id: work + "/a0@outcome" }
+                }));
+                let r1 = self.inner.append(self.inner.revision(), "work.settled", work, dna::encode_work_outcome(dna::WorkOutcome {
+                    work_id: work, step_id: step, attempt_id: work + "/a0", disposition: "failed",
+                    transition: dna::TransitionRef { scope: "main", key: work, proposal_id: work + "@settled" }
+                }));
+                let r2 = self.inner.append(self.inner.revision(), "step.failed", step, dna::encode_step_outcome(dna::StepOutcome {
+                    step_id: step, task_id: t, disposition: "failed", members: "a b", failed_member: "a",
+                    transition: dna::TransitionRef { scope: "main", key: step, proposal_id: step + "@failed" }
+                }));
+                dna::StepSettled <- dna::StepSettlement { step_id: step, task_id: t, disposition: "failed", failed_member: "a", why: "by another hand" };
+            }
+            return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() };
+        }
+        let r = self.inner.append_exact(expected, kind, entity, body);
+        if r.ok && !self.cancelled && kind + ":" + entity == self.cancel_on {
+            self.cancelled = true;
+            let pid = self.cancel_task + "@cancelled";
+            let row = self.inner.append(self.inner.revision(), "workflow.settled", self.cancel_task, dna::encode_workflow_outcome(dna::WorkflowOutcome {
+                task_id: self.cancel_task, disposition: "cancelled", reason: "by another hand",
+                transition: dna::TransitionRef { scope: "main", key: self.cancel_task, proposal_id: pid }
+            }));
+            dna::StepFenced <- dna::StepFence { step_id: self.cancel_task + "/wf1/s0", task_id: self.cancel_task, reason: "task " + self.cancel_task + " was cancelled by another hand" };
+        }
+        return r;
+    }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+}
+
+main locus App {
+    params {
+        cat: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        limits: dna::AdmissionLimits = dna::AdmissionLimits { };
+        rt: dna::WorkflowRuntime = dna::WorkflowRuntime {
+            scope: "main",
+            journal: Refusing {
+                refuse_once: "workflow.admitted:t5.s0.b workflow.admitted:t7.s0.b work.settled:t8.s0.b.s1.c/wf1/s0/c1 workflow.admitted:t9.s0.b",
+                cancel_on: "workflow.admitted:t6.s0.b", cancel_task: "t6",
+                fail_on: "workflow.admitted:t9.s0.b", fail_task: "t9"
+            },
+            work: dna::WorkSystem { service: Counting { }, agent: Delayed { }, human: Failing { } }
+        };
+        owner: dna::Executions = dna::Executions { scope: "main" };
+        lives: String = "";
+        outcomes: String = ""; // "<task>:<disposition> " per WorkflowSettled
+        steps: String = ""; // "<step>:<disposition> " per StepSettled
+        answers: String = ""; // "<step>/<key>:<disposition> " per ChildSettled
+    }
+    bus {
+        subscribe dna::RunLives as on_life;
+        subscribe dna::WorkflowSettled as on_outcome;
+        subscribe dna::StepSettled as on_step;
+        subscribe dna::ChildSettled as on_child;
+        publish dna::ExecutionAsked;
+        publish dna::ChildSettled;
+        publish dna::ChildRequested;
+        publish dna::ChildLeft;
+        publish dna::WorkflowCancelRequested;
+        publish dna::RecordResumed;
+    }
+    fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
+    fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
+    fn on_step(s: dna::StepSettlement) { self.steps = self.steps + s.step_id + ":" + s.disposition + " "; }
+    fn on_child(c: dna::ChildSettlement) { self.answers = self.answers + c.step_id + "/" + c.key + "=" + c.task_id + ":" + c.disposition + " "; }
+    @unbounded
+    fn count(list: String, item: String) -> Int {
+        let mut n = 0;
+        let mut rest = list;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            if rest[0..sp] == item { n = n + 1; }
+            rest = rest[(sp + 1)..len(rest)];
+        }
+        return n;
+    }
+    // Whether `a` was seen before `b` in the lives.
+    fn before(a: String, b: String) -> Bool {
+        let ia = std::str::index_of(self.lives, " " + a + " ");
+        let ib = std::str::index_of(self.lives, " " + b + " ");
+        return ia >= 0 && ib >= 0 && ia < ib;
+    }
+    @unbounded
+    fn rows(kind: String, entity: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.rt.journal.revision() {
+            let e = self.rt.journal.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    // Every execution claim in the record, in order: the exact order of
+    // dispatch across the whole tree.
+    @unbounded
+    fn claims() -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.rt.journal.revision() {
+            let e = self.rt.journal.read(i);
+            if e.kind == "effect.requested" && std::str::starts_with(e.entity, "attempt:") { out = out + e.entity[8..len(e.entity)] + " "; }
+            i = i + 1;
+        }
+        return out;
+    }
+    fn settle() {
+        let mut i = 0;
+        while i < 10 {
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    @unbounded
+    fn until(list_is_lives: Bool, item: String, n: Int) {
+        let mut i = 0;
+        while i < 1000 {
+            if self.count(if list_is_lives { self.lives } else { self.outcomes }, item) >= n { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    // A root: admitted in the record as card 07 admits it, then asked
+    // of the executions owner with its recipe.
+    fn ask_root(task_id: String, kinds: String) {
+        let x = self.cat.expand(task_id, "close-month", 1, self.limits);
+        std::test::assert(x.ok, task_id + " expands: " + x.why);
+        let recipe = self.cat.encode_bound();
+        let body = dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: task_id, definition: "close-month", revision: 1, request: "ask-" + task_id,
+            recipe: recipe, limits: self.limits, works: x.works, tasks: x.tasks, steps: x.steps, depth: x.depth
+        });
+        let r = self.rt.journal.append(self.rt.journal.revision(), "workflow.admitted", task_id, body);
+        std::test::assert(r.ok, task_id + " is admitted in the record: " + r.error);
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "main", task_id: task_id, workflow_id: task_id + "/wf1", definition: "close-month", revision: 1, recipe: recipe, kinds: kinds, limits: self.limits };
+    }
+    fn reply(attempt_id: String, disposition: String) -> dna::Executed {
+        return self.rt.settle(attempt_id, dna::WorkResult { disposition: disposition, result: "later", performer: "delayed", attempt_id: attempt_id });
+    }
+    run() {
+        // ---- the canonical example, bound (contract §6)
+        std::test::assert_eq_str(self.cat.define("close-month", 1, 2, "close the month"), "", "close-month");
+        std::test::assert_eq_str(self.cat.define("collect-receipts", 1, 2, ""), "", "collect-receipts");
+        std::test::assert_eq_str(self.cat.define("chase-supplier", 1, 1, ""), "", "chase-supplier");
+        std::test::assert_eq_str(self.cat.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed" }, 1), "", "a");
+        std::test::assert_eq_str(self.cat.child("close-month", 1, 0, "b", "collect-receipts", 1), "", "b");
+        std::test::assert_eq_str(self.cat.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries" }, 1), "", "d");
+        std::test::assert_eq_str(self.cat.leaf("collect-receipts", 1, 0, "b1", dna::WorkRequest { objective: "list missing receipts" }, 1), "", "b1");
+        std::test::assert_eq_str(self.cat.child("collect-receipts", 1, 1, "c", "chase-supplier", 1), "", "c");
+        std::test::assert_eq_str(self.cat.leaf("chase-supplier", 1, 0, "c1", dna::WorkRequest { objective: "email the supplier" }, 2), "", "c1");
+
+        // ---- t1: a delayed grandchild leaf keeps root D from starting
+        self.ask_root("t1", "a=service b1=service c1=agent d=service");
+        self.until(true, "t1.s0.b.s1.c/wf1/s0/c1:born", 1);
+        self.settle();
+        std::test::assert_eq_str(self.claims(), "t1/wf1/s0/a/a0 t1.s0.b/wf1/s0/b1/a0 t1.s0.b.s1.c/wf1/s0/c1/a0 ", "A ran, the child's B1 ran, the grandchild's C1 is out: D is not requested");
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t1.s0.b"), 1, "the child was admitted, once");
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t1.s0.b.s1.c"), 1, "and the grandchild, once, under it");
+        std::test::assert_eq_int(self.rows("step.registered", "t1/wf1/s1"), 0, "the root's second step is not registered");
+        std::test::assert_eq_int(self.rows("workflow.settled", ""), 0, "nothing has settled");
+        std::test::assert_eq_int(self.rows("step.completed", "t1/wf1/s0"), 0, "the root's first step waits for b");
+
+        // ---- t3: a second root at the same time; the same child
+        //      definition twice in the process, never one id
+        self.ask_root("t3", "a=service b1=service c1=agent d=service");
+        self.until(true, "t3.s0.b.s1.c/wf1/s0/c1:born", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t3.s0.b") + self.rows("workflow.admitted", "t3.s0.b.s1.c"), 2, "t3's child and grandchild are executions of their own");
+        std::test::assert_eq_int(self.rows("workflow.admitted", ""), 6, "six executions, no id shared");
+
+        // ---- a child settlement that is no member's changes nothing: a
+        //      leaf's key, another root's child, the wrong step
+        dna::ChildSettled <- dna::ChildSettlement { step_id: "t1/wf1/s0", key: "a", task_id: "t1.s0.b", disposition: "done" };
+        dna::ChildSettled <- dna::ChildSettlement { step_id: "t1/wf1/s0", key: "b", task_id: "t3.s0.b", disposition: "done" };
+        dna::ChildSettled <- dna::ChildSettlement { step_id: "t1/wf1/s0", key: "c", task_id: "t1.s0.b.s1.c", disposition: "done" };
+        dna::ChildSettled <- dna::ChildSettlement { step_id: "t1.s0.b/wf1/s0", key: "c", task_id: "t1.s0.b.s1.c", disposition: "done" };
+        // and a leave of the exact child before it settled is nobody's:
+        // a leave follows a settlement; banked, it would let the root's
+        // step reclaim ahead of the child (the cleanup order below)
+        dna::ChildLeft <- dna::ChildLeave { step_id: "t1/wf1/s0", key: "b", task_id: "t1.s0.b" };
+        self.settle();
+        std::test::assert_eq_int(self.rows("step.completed", ""), 2, "only the two children's first steps (B1) have completed; nothing forged completed anything");
+        std::test::assert_eq_str(self.claims(), "t1/wf1/s0/a/a0 t1.s0.b/wf1/s0/b1/a0 t1.s0.b.s1.c/wf1/s0/c1/a0 t3/wf1/s0/a/a0 t3.s0.b/wf1/s0/b1/a0 t3.s0.b.s1.c/wf1/s0/c1/a0 ", "and D of neither root was requested");
+
+        // ---- t3's grandchild answers first: only t3 advances
+        let c3 = self.reply("t3.s0.b.s1.c/wf1/s0/c1/a0", "done");
+        std::test::assert(c3.ok, "t3's C1 reply: " + c3.why);
+        self.until(false, "t3:done", 1);
+        self.until(true, "task:t3:dissolved", 1);
+        std::test::assert_eq_int(self.count(self.outcomes, "t3.s0.b.s1.c:done") + self.count(self.outcomes, "t3.s0.b:done") + self.count(self.outcomes, "t3:done"), 3, "grandchild, child and root of t3 settled done");
+        std::test::assert_eq_int(self.rows("step.completed", "t1/wf1/s0"), 0, "t1's first step still waits");
+        std::test::assert_eq_int(self.rows("step.registered", "t1/wf1/s1"), 0, "and t1's D is not started");
+
+        // ---- t1's grandchild answers: the settlement climbs, D runs, done
+        let c1 = self.reply("t1.s0.b.s1.c/wf1/s0/c1/a0", "done");
+        std::test::assert(c1.ok, "t1's C1 reply: " + c1.why);
+        self.until(false, "t1:done", 1);
+        self.until(true, "task:t1:dissolved", 1);
+        std::test::assert_eq_int(self.rows("workflow.settled", "t1.s0.b.s1.c"), 1, "the grandchild settled");
+        std::test::assert_eq_int(self.count(self.answers, "t1.s0.b/wf1/s1/c=t1.s0.b.s1.c:done"), 1, "and answered the child's step 1, once");
+        std::test::assert_eq_int(self.rows("workflow.settled", "t1.s0.b"), 1, "the child settled");
+        std::test::assert_eq_int(self.count(self.answers, "t1/wf1/s0/b=t1.s0.b:done"), 1, "and answered the root's step 0, once");
+        std::test::assert_eq_int(self.rows("step.completed", "t1/wf1/s0"), 1, "which completed on A and b");
+        std::test::assert_eq_int(self.rows("step.activated", "t1/wf1/s1"), 1, "then D's step activated");
+        std::test::assert_eq_int(self.rows("workflow.settled", "t1"), 1, "and the root settled done");
+        std::test::assert_eq_int(self.count(self.outcomes, "t1:done"), 1, "once");
+        // the real child settlement delivered again changes nothing
+        dna::ChildSettled <- dna::ChildSettlement { step_id: "t1/wf1/s0", key: "b", task_id: "t1.s0.b", disposition: "done" };
+        self.settle();
+        std::test::assert_eq_int(self.rows("step.completed", "t1/wf1/s0"), 1, "a duplicate child settlement completes nothing twice");
+        // cleanup from the leaves upward
+        std::test::assert(self.before("t1.s0.b.s1.c/wf1/s0/c1:dissolved", "t1.s0.b.s1.c/wf1/s0:dissolved"), "C1 reclaimed before its step");
+        std::test::assert(self.before("t1.s0.b.s1.c/wf1/s0:dissolved", "t1.s0.b.s1.c:dissolved"), "the grandchild's step before its workflow");
+        std::test::assert(self.before("t1.s0.b.s1.c:dissolved", "task:t1.s0.b.s1.c:dissolved"), "its workflow before its Task");
+        std::test::assert(self.before("task:t1.s0.b.s1.c:dissolved", "t1.s0.b/wf1/s1:dissolved"), "the grandchild's Task before the child's step that invoked it");
+        std::test::assert(self.before("t1.s0.b/wf1/s1:dissolved", "task:t1.s0.b:dissolved"), "the child's step before the child's Task");
+        std::test::assert(self.before("task:t1.s0.b:dissolved", "t1/wf1/s0:dissolved"), "the child's Task before the root's step that invoked it");
+        std::test::assert(self.before("t1/wf1/s1:dissolved", "task:t1:dissolved"), "and the root's last step before the root's Task");
+        std::test::assert_eq_int(self.count(self.lives, "task:t1.s0.b:born"), 1, "every child was born once");
+
+        // ---- t2: a failed grandchild blocks the ancestors' later steps
+        self.ask_root("t2", "a=service b1=service c1=human d=service");
+        self.until(false, "t2:failed", 1);
+        self.until(true, "task:t2:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("attempt.admitted", "t2.s0.b.s1.c/wf1/s0/c1/a0") + self.rows("attempt.admitted", "t2.s0.b.s1.c/wf1/s0/c1/a1"), 2, "C1 was tried twice, its allowance");
+        std::test::assert_eq_int(self.rows("step.failed", "t2.s0.b.s1.c/wf1/s0"), 1, "then its step failed");
+        std::test::assert_eq_int(self.count(self.outcomes, "t2.s0.b.s1.c:failed"), 1, "the grandchild failed");
+        std::test::assert_eq_int(self.rows("step.failed", "t2.s0.b/wf1/s1"), 1, "the child's step 1 failed on c");
+        std::test::assert_eq_int(self.count(self.outcomes, "t2.s0.b:failed"), 1, "the child failed");
+        std::test::assert_eq_int(self.rows("step.failed", "t2/wf1/s0"), 1, "the root's step 0 failed on b");
+        std::test::assert_eq_int(self.count(self.outcomes, "t2:failed"), 1, "the root failed, once");
+        std::test::assert_eq_int(self.rows("step.registered", "t2/wf1/s1"), 0, "and D's step was never born");
+        std::test::assert_eq_int(self.count(self.lives, "t2.s0.b.s1.c/wf1/s0/c1:dissolved") + self.count(self.lives, "task:t2.s0.b.s1.c:dissolved") + self.count(self.lives, "task:t2.s0.b:dissolved"), 3, "the grandchild's leaf, the grandchild and the child reclaimed themselves");
+
+        // ---- t4: the root cancelled while the grandchild's leaf is out:
+        //      the fence reaches down, the tree drains and reclaims
+        self.ask_root("t4", "a=service b1=service c1=agent d=service");
+        self.until(true, "t4.s0.b.s1.c/wf1/s0/c1:born", 1);
+        self.settle();
+        dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: "t4", reason: "the month is closed by hand" };
+        self.until(false, "t4:cancelled", 1);
+        self.until(true, "task:t4:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.count(self.outcomes, "t4.s0.b:cancelled") + self.count(self.outcomes, "t4.s0.b.s1.c:cancelled"), 2, "the child and the grandchild settled cancelled under the root's fence");
+        std::test::assert_eq_int(self.rows("work.settled", "t4.s0.b.s1.c/wf1/s0/c1"), 1, "C1, out under the fence, settled");
+        std::test::assert_eq_int(self.rows("step.registered", "t4/wf1/s1"), 0, "D was never born");
+        std::test::assert_eq_int(self.count(self.lives, "task:t4.s0.b.s1.c:dissolved") + self.count(self.lives, "task:t4.s0.b:dissolved") + self.count(self.lives, "t4.s0.b.s1.c/wf1/s0/c1:dissolved"), 3, "and the tree reclaimed itself");
+        let late = self.reply("t4.s0.b.s1.c/wf1/s0/c1/a0", "done");
+        std::test::assert(late.ok, "C1's late reply is recorded: " + late.why);
+
+        // ---- t5: the child's admission refused by the record, once: the
+        //      child holds it and runs nothing — no step of it registers —
+        //      until the record resumes; a child request that names the
+        //      wrong step, and one asked again, birth nothing
+        self.ask_root("t5", "a=service b1=service c1=agent d=service");
+        self.until(true, "task:t5.s0.b:born", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t5.s0.b"), 0, "the record refused the child's admission");
+        std::test::assert_eq_int(self.rows("step.registered", "t5.s0.b/wf1/s0"), 0, "and nothing of the child ran: no step registered");
+        std::test::assert_eq_int(self.count(self.lives, "t5.s0.b:born"), 0, "no workflow of it was born");
+        let children_before = self.owner.child_count;
+        dna::ChildRequested <- dna::ChildRequest { parent_task: "t5", step_id: "t5/wf1/s1", step_index: 1, key: "b", child_task: "t5.s0.b", definition: "collect-receipts", revision: 1 };
+        dna::ChildRequested <- dna::ChildRequest { parent_task: "t5", step_id: "t5/wf1/s0", step_index: 0, key: "b", child_task: "t5.s0.b", definition: "collect-receipts", revision: 1 };
+        self.settle();
+        std::test::assert_eq_int(self.owner.child_count, children_before, "a child request naming the wrong step, and the real one asked again, birth no execution");
+        std::test::assert_eq_int(self.owner.repeats, 1, "the repeat was seen as one");
+        dna::RecordResumed <- dna::RecordResume { scope: "main", why: "writable again" };
+        self.until(true, "t5.s0.b.s1.c/wf1/s0/c1:born", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t5.s0.b"), 1, "resumed, the child's admission landed, once");
+        std::test::assert_eq_int(self.count(self.lives, "t5.s0.b:born"), 1, "and its workflow was born once");
+        let c5 = self.reply("t5.s0.b.s1.c/wf1/s0/c1/a0", "done");
+        self.until(false, "t5:done", 1);
+        self.until(true, "task:t5:dissolved", 1);
+        std::test::assert_eq_int(self.count(self.outcomes, "t5:done"), 1, "and the root ran to done");
+
+        // ---- t6: the root cancelled by another hand as the child's
+        //      admission lands — the fence reaches the child before its
+        //      admission answer: it starts behind the admission and is
+        //      cancelled at once, through its own settlement. (The root's
+        //      own residents learn of a cancellation committed elsewhere
+        //      only through a restart; that is a later card's.)
+        self.ask_root("t6", "a=service b1=service c1=agent d=service");
+        self.until(false, "t6.s0.b:cancelled", 1);
+        self.until(true, "task:t6.s0.b:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t6.s0.b"), 1, "the child's admission landed");
+        std::test::assert_eq_int(self.rows("workflow.settled", "t6"), 1, "the root's cancellation landed before the child heard its answer");
+        std::test::assert_eq_int(self.count(self.outcomes, "t6.s0.b:cancelled"), 1, "and the child settled cancelled: the fence it heard before its answer applied when the answer came");
+        std::test::assert_eq_int(self.rows("effect.requested", "attempt:t6.s0.b/wf1/s0/b1/a0"), 0, "nothing of it ran");
+        std::test::assert_eq_int(self.count(self.lives, "task:t6.s0.b:dissolved"), 1, "and the child reclaimed itself");
+
+        // ---- t7: the child's admission refused by the record, then the
+        //      sibling fails the step: the held admission is decided again
+        //      by the state, refused, and the child retires; the root fails
+        self.ask_root("t7", "a=human b1=service c1=agent d=service");
+        self.until(false, "t7:failed", 1);
+        self.until(true, "task:t7:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t7.s0.b"), 0, "the child was never admitted");
+        std::test::assert_eq_int(self.rows("step.failed", "t7/wf1/s0"), 1, "A failed the root's step");
+        std::test::assert_eq_int(self.count(self.outcomes, "t7:failed"), 1, "the root settled failed, once: the step drained without the child");
+        std::test::assert_eq_int(self.count(self.lives, "task:t7.s0.b:dissolved"), 1, "the never-admitted child retired");
+
+        // ---- t8: the tree cancelled with the deepest Work's settlement
+        //      refused once by the record: every ancestor stays until the
+        //      grandchild's leaf has settled and every level has left
+        self.ask_root("t8", "a=service b1=service c1=agent d=service");
+        self.until(true, "t8.s0.b.s1.c/wf1/s0/c1:born", 1);
+        self.settle();
+        dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: "t8", reason: "stop" };
+        self.until(false, "t8.s0.b.s1.c:cancelled", 1);
+        self.settle();
+        std::test::assert_eq_int(self.count(self.outcomes, "t8:cancelled") + self.count(self.outcomes, "t8.s0.b:cancelled") + self.count(self.outcomes, "t8.s0.b.s1.c:cancelled"), 3, "all three executions settled cancelled");
+        std::test::assert_eq_int(self.rows("work.settled", "t8.s0.b.s1.c/wf1/s0/c1"), 0, "C1's settlement was refused by the record: it holds");
+        std::test::assert_eq_int(self.count(self.lives, "t8.s0.b.s1.c/wf1/s0/c1:dissolved"), 0, "C1 is reachable");
+        std::test::assert_eq_int(self.count(self.lives, "task:t8.s0.b.s1.c:dissolved") + self.count(self.lives, "task:t8.s0.b:dissolved") + self.count(self.lives, "task:t8:dissolved"), 0, "and no ancestor has reclaimed itself ahead of it");
+        // a leave for another Task under the child's key is no member's
+        dna::ChildLeft <- dna::ChildLeave { step_id: "t8/wf1/s0", key: "b", task_id: "t1.s0.b" };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.lives, "task:t8:dissolved"), 0, "a forged leave of another execution's child under the key drains nothing");
+        dna::RecordResumed <- dna::RecordResume { scope: "main", why: "writable again" };
+        self.until(true, "task:t8:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("work.settled", "t8.s0.b.s1.c/wf1/s0/c1"), 1, "resumed, C1 settled");
+        std::test::assert(self.before("t8.s0.b.s1.c/wf1/s0/c1:dissolved", "task:t8.s0.b.s1.c:dissolved"), "C1 reclaimed before the grandchild's Task");
+        std::test::assert(self.before("task:t8.s0.b.s1.c:dissolved", "task:t8.s0.b:dissolved"), "the grandchild's Task before the child's");
+        std::test::assert(self.before("task:t8.s0.b:dissolved", "task:t8:dissolved"), "and the child's before the root's");
+
+        // ---- t9: the inverse of t7 — the spawning step fails by another
+        //      hand (A's attempt, out, recorded failed elsewhere; A's Work
+        //      and the step settled with it) while the child's admission
+        //      answer is out, and that answer is a refusal by the record.
+        //      A's own reply never comes, so that settlement is the only
+        //      one the child ever hears: the re-decision it owed is taken
+        //      on the answer, the state refuses the child under the failed
+        //      step, and it retires
+        self.ask_root("t9", "a=agent b1=service c1=agent d=service");
+        self.until(true, "task:t9.s0.b:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("step.failed", "t9/wf1/s0"), 1, "the step failed, durably, before the child's admission was answered");
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t9.s0.b"), 0, "the child was never admitted: refused by the record, then decided again and refused by the state");
+        std::test::assert_eq_int(self.count(self.lives, "task:t9.s0.b:dissolved"), 1, "and it retired, without the record resuming");
+        std::test::assert_eq_int(self.count(self.lives, "t9.s0.b:born"), 0, "no workflow of it was ever born");
+
+        std::test::assert(self.rt.journal.verify_chain(), "the record's chain holds");
+        std::test::assert_eq_int(self.rt.conflicts, 0, "no conflict");
+        std::test::assert_eq_int(self.owner.roots, 9, "nine roots");
+        std::test::assert_eq_int(self.owner.child_count, 15, "fifteen children and grandchildren");
+    }
+}
+
+fn main() { App { }; }
