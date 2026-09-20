@@ -381,9 +381,11 @@ jobs:
         #
         # A ratchet against a recorded baseline: a NEW divergence
         # fails, and so does a FIXED one, so the list cannot rot.
-        # #[ignore]'d like the sweeps below since it compiles ~1300
-        # programs (~80s); --ignored opts in. Folded into this job to
-        # reuse the release build above.
+        # #[ignore]'d like the sweeps below since it compiles ~1500
+        # programs; --ignored opts in. The sweep runs on every core
+        # (#927: 6.7min serial on a 4-core runner, ~2min now;
+        # HALE_CORPUS_SWEEP_THREADS=1 restores the serial walk).
+        # Folded into this job to reuse the release build above.
         run: |
           cargo test --release -p hale-codegen --features dynamic-llvm \
             --test corpus_check_build_agreement \
