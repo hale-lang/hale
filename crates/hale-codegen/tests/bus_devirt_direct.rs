@@ -9,15 +9,15 @@
 //! non-flat payload or an off-thread subscriber stays on the deferred
 //! `lotus_bus_dispatch_static` enqueue.
 //!
-//! The IR is dumped via `LOTUS_DUMP_IR=1` BEFORE the optimization
-//! pipeline, so each publish site is a literal call to one of the two
-//! runtime entry points. Single-threaded test (env toggle), repo
-//! default `--test-threads=1`.
+//! The IR is dumped via `BuildOptions::dump_ir` BEFORE the
+//! optimization pipeline, so each publish site is a literal call to
+//! one of the two runtime entry points. The dump used to be requested
+//! by writing `LOTUS_DUMP_IR` into the process environment, which is
+//! a global mutation and UB next to a concurrent reader — this file
+//! is where GH #843 was found.
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use hale_codegen::build_executable;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -33,17 +33,9 @@ fn unique_path(tag: &str, ext: &str) -> PathBuf {
 
 fn build_ir(tag: &str, src: &str) -> String {
     let bin = unique_path(tag, "bin");
-    let ir = bin.with_extension("ll");
     let program = hale_syntax::parse_source(src).expect("parse");
-    // SAFETY: single test thread; no concurrent env mutation.
-    std::env::set_var("LOTUS_DUMP_IR", "1");
-    std::env::remove_var("LOTUS_NO_BUS_DEVIRT");
-    let result = build_executable(&program, &bin);
-    std::env::remove_var("LOTUS_DUMP_IR");
-    result.expect("build");
-    let text = std::fs::read_to_string(&ir).expect("read IR");
+    let text = harness::build_ir_text(&program, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
-    let _ = std::fs::remove_file(&ir);
     text
 }
 
@@ -272,6 +264,48 @@ fn direct_dispatch_records_its_payload_inside_the_obs_gate() {
         "the recorder call must appear ONCE, inside the \
          obs-gated block — an unobserved publish pays for it \
          otherwise"
+    );
+}
+
+/// GH #843 — the control arm the differential harness depends on.
+///
+/// `bus_devirt_differential.rs` compiles every bus fixture twice and
+/// demands identical behavior, which asserts nothing at all unless
+/// the second build really is the all-dynamic lowering. That arm
+/// used to be forced with `LOTUS_NO_BUS_DEVIRT` in the process
+/// environment and is now `BuildOptions::no_bus_devirt`; either way,
+/// a knob that quietly stopped working leaves the whole gate green
+/// and vacuous — it would be comparing two identical builds. So pin
+/// it here, where the IR is already in hand: the same program that
+/// lowers to the inline direct call above must emit no static
+/// lowering at all under the flag.
+#[test]
+fn no_bus_devirt_forces_the_all_dynamic_lowering() {
+    let bin = unique_path("nodevirt", "bin");
+    let ll = bin.with_extension("ll");
+    let program = hale_syntax::parse_source(QUIET_FLAT).expect("parse");
+    let options = hale_codegen::BuildOptions {
+        no_bus_devirt: true,
+        dump_ir: Some(ll.clone()),
+        ..Default::default()
+    };
+    hale_codegen::build_executable_with_options(&program, &bin, &[], &options)
+        .expect("build");
+    let ir = std::fs::read_to_string(&ll).expect("read IR");
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_file(&ll);
+    assert!(
+        !calls_inline_direct(&ir)
+            && !calls_direct_helper(&ir)
+            && !calls_deferred_static(&ir),
+        "`no_bus_devirt` must empty the devirt plan, so NO static \
+         lowering is emitted — otherwise the differential harness \
+         compares two builds of the same thing"
+    );
+    assert!(
+        ir.contains("call void @lotus_bus_dispatch("),
+        "the all-dynamic arm must publish through the dynamic \
+         `lotus_bus_dispatch` scan"
     );
 }
 

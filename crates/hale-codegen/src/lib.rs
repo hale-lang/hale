@@ -54,5 +54,5 @@ pub use codegen::{
     stdlib_doc_source, stdlib_path_renames,
     build_executable, build_executable_with_imports,
     build_executable_with_options, BuildOptions, CodegenError, CompileTarget,
-    DebugSourceFile, DebugSources, TargetCpu,
+    DebugSourceFile, DebugSources, LtoMode, TargetCpu,
 };

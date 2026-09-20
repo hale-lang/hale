@@ -1,8 +1,8 @@
 //! m60: per-payload-type serializer-shape verification.
 //!
 //! Compiles a small Hale program that uses `bus subscribe`/
-//! `<-` on a struct payload, dumps the LLVM IR via the
-//! `LOTUS_DUMP_IR` env var, and asserts the IR contains the
+//! `<-` on a struct payload, dumps the LLVM IR via
+//! `BuildOptions::dump_ir`, and asserts the IR contains the
 //! synthesized `__serialize_<T>` and `__deserialize_<T>` fns.
 //!
 //! This guards the *shape* of the substrate: codegen must emit
@@ -14,8 +14,6 @@
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use hale_codegen::build_executable;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -76,22 +74,14 @@ fn ir_contains_per_payload_serializer_pair() {
     "#;
 
     let bin = unique_path("shape", "bin");
-    let ir = bin.with_extension("ll");
     let program = hale_syntax::parse_source(src).expect("parse");
 
-    // LOTUS_DUMP_IR makes build_executable also write the .ll
-    // file alongside the binary. The env var is read inside
-    // build_executable, so we set it for the duration of the
-    // build only.
-    std::env::set_var("LOTUS_DUMP_IR", "1");
-    let result = build_executable(&program, &bin);
-    std::env::remove_var("LOTUS_DUMP_IR");
-    result.expect("build");
-
-    let ir_text = std::fs::read_to_string(&ir).expect("read IR");
+    // `BuildOptions::dump_ir` makes the build also write the `.ll`
+    // beside the binary; the request is scoped to this one build
+    // rather than to the whole process (GH #843).
+    let ir_text = harness::build_ir_text(&program, &bin).expect("build");
 
     let _ = std::fs::remove_file(&bin);
-    let _ = std::fs::remove_file(&ir);
 
     // Both types should have a serialize + deserialize fn at
     // module scope. We're looking for fn definitions, not just

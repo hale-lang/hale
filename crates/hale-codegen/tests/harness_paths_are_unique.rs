@@ -122,6 +122,63 @@ fn no_hand_rolled_binary_temp_paths() {
     );
 }
 
+/// No test mutates this process's environment (GH #843).
+///
+/// The environment is one global table shared by every thread, and
+/// `cargo test` runs a file's tests as *threads* in one process —
+/// so a `set_var` in a test is (a) undefined behavior against the
+/// concurrent `getenv` every other in-flight `build_executable` is
+/// doing, and (b) visibly wrong even where it survives: the build
+/// knobs these calls set (`LOTUS_DUMP_IR`, `LOTUS_ASAN`,
+/// `LOTUS_NO_BUS_DEVIRT`, `LOTUS_NO_OWNERSHIP_BUBBLE`, `LOTUS_LTO`)
+/// change what a *neighbouring* test compiles, and the paired
+/// `remove_var` switches the knob back off underneath a build that
+/// is still running. Only nextest's process-per-test isolation hid
+/// it, and the repo supports both runners.
+///
+/// Every one of those knobs is a `BuildOptions` field now, so the
+/// request travels with the build that wants it. `harness`'s
+/// `set_build_env_var` is the sole exception and the sole
+/// allow-listed caller — see its doc-comment for when a knob
+/// genuinely cannot reach `BuildOptions` (today: `HALE_NO_TS_SHIM`,
+/// read by a free function with no options in scope).
+///
+/// Note the scan covers `tests/*.rs` and not `tests/support/`, which
+/// is exactly the split wanted: the helper lives in `support/`.
+#[test]
+fn no_test_mutates_the_process_environment() {
+    // This file names the calls it bans, so it cannot scan itself.
+    const SELF: &str = "harness_paths_are_unique.rs";
+    // The open paren matters: `stdlib_env.rs` has a test named
+    // `var_returns_empty_for_unset_variable`, and "un-SET_VAR-iable"
+    // matches a bare substring. Every spelling of the call —
+    // `std::env::set_var(`, `env::set_var(`, an imported bare
+    // `set_var(` — keeps its paren.
+    let offenders: Vec<String> = test_sources()
+        .into_iter()
+        .filter(|(name, _)| name != SELF)
+        .filter(|(_, text)| {
+            text.contains("set_var(") || text.contains("remove_var(")
+        })
+        .map(|(name, _)| name)
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "these tests mutate the process environment ({} found):\n{:#?}\n\n\
+         The environment is global to the process and `cargo test` runs \
+         tests as threads, so this is UB against every concurrent \
+         `build_executable` — and it changes what a neighbouring test \
+         compiles. Pass the knob through `hale_codegen::BuildOptions` \
+         instead (`dump_ir`, `asan`, `no_bus_devirt`, \
+         `no_ownership_bubble`, `lto`), or, for a child process, \
+         through `std::process::Command::env`. If the knob truly \
+         cannot reach `BuildOptions`, route it through \
+         `harness::set_build_env_var` and say in the call site why.",
+        offenders.len(),
+        offenders
+    );
+}
+
 /// A scraper that matched nothing would make both checks above pass
 /// vacuously, which is exactly how the first registry-parity test
 /// shipped with a hole.
@@ -148,5 +205,22 @@ fn scan_is_not_vacuous() {
         using > 150,
         "only {} files reference unique_bin — the sweep did not land",
         using
+    );
+    // GH #843: the environment ban is only meaningful over a suite
+    // that actually asks for its build knobs through the API. If
+    // nobody did, the ban would be passing on an empty premise —
+    // and a rewrite that quietly dropped the knobs would look like
+    // a clean sweep.
+    let via_options = srcs
+        .iter()
+        .filter(|(_, t)| {
+            t.contains("build_ir_text") || t.contains("BuildOptions")
+        })
+        .count();
+    assert!(
+        via_options > 20,
+        "only {} files route a build knob through BuildOptions — the \
+         env-var sweep did not land",
+        via_options
     );
 }

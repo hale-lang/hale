@@ -38,6 +38,22 @@ fn build_named(name: &str, src: &str) -> std::path::PathBuf {
     bin
 }
 
+/// The control arm: the same program with gate #2b off. GH #843 —
+/// the gate used to be `LOTUS_NO_OWNERSHIP_BUBBLE=1` in the *process*
+/// environment, which every concurrent build in this binary would
+/// also have read; it is a per-build option now.
+fn build_named_no_bubble(name: &str, src: &str) -> std::path::PathBuf {
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bin = harness::unique_bin(&format!("hale_test_ownership_bubble_multi_{}", name));
+    let options = hale_codegen::BuildOptions {
+        no_ownership_bubble: true,
+        ..Default::default()
+    };
+    hale_codegen::build_executable_with_options(&program, &bin, &[], &options)
+        .expect("build");
+    bin
+}
+
 fn run(bin: &std::path::PathBuf) -> String {
     let out = Command::new(bin).output().expect("run hale");
     let _ = std::fs::remove_file(bin);
@@ -200,9 +216,7 @@ fn disable_flag_reverts_both_worlds_to_transient() {
     // Yard.run()'s scope exit), so BOTH Worlds collect nothing — proving
     // the flag empties the non-singleton plan + the forwarding fields and
     // the emit is inert without it.
-    std::env::set_var("LOTUS_NO_OWNERSHIP_BUBBLE", "1");
-    let bin = build_named("isolation_off", ISOLATION_SRC);
-    std::env::remove_var("LOTUS_NO_OWNERSHIP_BUBBLE");
+    let bin = build_named_no_bubble("isolation_off", ISOLATION_SRC);
     let stdout = run(&bin);
     assert!(
         stdout.contains("w100 count=0 total=0")
