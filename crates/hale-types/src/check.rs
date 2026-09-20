@@ -2474,30 +2474,32 @@ fn check_cooperative_pool_blocking(
     bundle: &Bundle<'_>,
     diags: &mut Vec<Diag>,
 ) {
+    // GH #825: all three passes flatten `module { … }`. The index of
+    // free fns is what the interprocedural blocking call graph is
+    // built from, so a module-nested helper that blocks has to be in
+    // it or a top-level `run()` calling it looks clean.
     let mut local_loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
     let mut free_fns: BTreeMap<String, &Block> = BTreeMap::new();
     for program in bundle.programs.values() {
-        for item in &program.items {
-            match item {
-                TopDecl::Locus(l) => {
-                    local_loci.insert(l.name.name.as_str(), l);
-                }
-                TopDecl::Fn(f) => {
-                    free_fns.insert(f.name.name.clone(), &f.body);
-                }
-                _ => {}
+        walk_decls(&program.items, &mut |item| match item {
+            TopDecl::Locus(l) => {
+                local_loci.insert(l.name.name.as_str(), l);
             }
-        }
+            TopDecl::Fn(f) => {
+                free_fns.insert(f.name.name.clone(), &f.body);
+            }
+            _ => {}
+        });
     }
     // Interprocedural call graph for the warning path: free fns that
     // block (directly or via another blocking free fn).
     let blocking_free = blocking_free_fns(&free_fns);
 
     for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(main) = item else { continue };
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(main) = item else { return };
             if !main.is_main {
-                continue;
+                return;
             }
             // The placement block is optional: phase 1 (blocking-call
             // diagnostics) needs entries, but phase 2 (run() starvation)
@@ -2955,7 +2957,7 @@ fn check_cooperative_pool_blocking(
                     }
                 }
             }
-        }
+        });
     }
 }
 

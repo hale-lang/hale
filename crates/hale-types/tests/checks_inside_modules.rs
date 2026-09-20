@@ -187,6 +187,46 @@ fn accept_without_release_inside_a_module_is_flagged() {
     );
 }
 
+// ---- check_cooperative_pool_blocking -------------------------------
+//
+// A non-main cooperative subscriber whose `run()` makes a blocking
+// call is a DEAD RECEIVER: the blocking call holds the pool's OS
+// thread, so the dispatch that would deliver to its handlers never
+// runs. A hard error, and silent inside a module.
+
+const DEAD_RECEIVER: &str = "\
+type Tick { n: Int; }
+
+locus Gateway {
+    bus { subscribe \"tick\" as on_tick of type Tick; }
+    fn on_tick(t: Tick) { }
+    run() { let n = std::io::tls::recv_into(0, 0, 64); }
+}
+
+locus Feed {
+    bus { publish \"tick\" of type Tick; }
+    run() { \"tick\" <- Tick { n: 1 }; }
+}
+
+main locus App {
+    params {
+        gw: Gateway = Gateway { };
+        feed: Feed  = Feed { };
+    }
+    placement {
+        gw: cooperative(pool = ws);
+    }
+}
+";
+
+#[test]
+fn dead_receiver_inside_a_module_is_flagged() {
+    assert_module_matches_top_level(
+        DEAD_RECEIVER,
+        "monopolizes the pool's thread",
+    );
+}
+
 #[test]
 fn a_module_nested_advisory_stays_a_warning() {
     // Severity is part of the contract: reaching inside a module
