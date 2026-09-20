@@ -275,6 +275,77 @@ fn main() -> ExitCode {
         };
     }
 
+    // GH #861: `build` and `run` split their arguments the way
+    // `check` does — the first argument that is not a flag IS the
+    // target, and a flag is a flag wherever it stands. Before this,
+    // the target was always argv[2] and `parse_build_options`
+    // started at argv[3], so `hale build --dev app.hl` failed with
+    // `not a file or directory: --dev` while `hale check --json
+    // app.hl` was fine. One splitter, so the two commands cannot
+    // drift apart again.
+    if cmd == "build" || cmd == "run" {
+        let (before, target, after) = split_target_args(&args[2..]);
+        let target = match target {
+            Some(t) => PathBuf::from(t),
+            None => {
+                usage();
+                return ExitCode::from(2);
+            }
+        };
+        if cmd == "build" {
+            // `build` has no trailing operand of its own, so the
+            // flags on both sides are one list.
+            let mut flags = before;
+            flags.extend(after);
+            return run_build(&target, &flags);
+        }
+        // `hale run` compiles the program to a temporary binary
+        // (the same codegen backend as `hale build`) and executes
+        // it — there is no separate interpreter. The program's
+        // trailing argv is forwarded to the exec'd process, so
+        // `hale run script.hl foo bar` makes the program's
+        // `std::env::arg(1..)` see ["foo", "bar"] exactly as a
+        // built binary run directly would. That is why the
+        // splitter's rule stops at the target here: after it, a
+        // `--flag` is the PROGRAM's, not ours.
+        let mut user_args = after;
+        // GH #527 B3: `hale run --observe <target>` — the program
+        // publishes its observation segment (LOTUS_OBS=1, inherited
+        // by the child) and an iris session runs beside it for the
+        // program's lifetime. The flag is consumed here; nothing
+        // reaches the program's argv. Accepted immediately after
+        // the target too, the spelling that shipped in B3.
+        let mut observe = before.iter().any(|f| f == "--observe");
+        if !observe && user_args.first().map(String::as_str) == Some("--observe") {
+            observe = true;
+            user_args.remove(0);
+        }
+        // Anything else before the target is a flag `hale run` does
+        // not have. Naming it beats compiling the program and
+        // silently doing nothing with it — `run` builds with the
+        // default options, so a `hale build` flag accepted here
+        // would be a flag that reads as honored and is not.
+        if let Some(bad) = before.iter().find(|f| *f != "--observe") {
+            eprintln!("unknown `hale run` flag: {}", bad);
+            eprintln!(
+                "(`hale run` takes --observe before the target; \
+                 everything after the target is the program's argv)"
+            );
+            return ExitCode::from(2);
+        }
+        if observe {
+            std::env::set_var("LOTUS_OBS", "1");
+            let session = iris::spawn_session();
+            let code = run_program(&target, &user_args);
+            if let Some(mut s) = session {
+                let _ = s.kill();
+                let _ = s.wait();
+            }
+            return code;
+        }
+        return run_program(&target, &user_args);
+    }
+
     if args.len() < 3 {
         usage();
         return ExitCode::from(2);
@@ -284,38 +355,6 @@ fn main() -> ExitCode {
     match cmd.as_str() {
         "lex" => run_lex_file(&target),
         "parse" => run_parse_file(&target),
-        "run" => {
-            // `hale run` compiles the program to a temporary binary
-            // (the same codegen backend as `hale build`) and executes
-            // it — there is no separate interpreter. The program's
-            // trailing argv is forwarded to the exec'd process, so
-            // `hale run script.hl foo bar` makes the program's
-            // `std::env::arg(1..)` see ["foo", "bar"] exactly as a
-            // built binary run directly would.
-            let user_args: Vec<String> = args.iter().skip(3).cloned().collect();
-            // GH #527 B3: `hale run --observe <target>` — the program
-            // publishes its observation segment (LOTUS_OBS=1, inherited
-            // by the child) and an iris session runs beside it for the
-            // program's lifetime. The flag is consumed here; nothing
-            // reaches the program's argv.
-            if user_args.first().map(String::as_str) == Some("--observe") || target.to_str() == Some("--observe") {
-                let (target, user_args) = if target.to_str() == Some("--observe") {
-                    (PathBuf::from(user_args.first().cloned().unwrap_or_default()), user_args[1..].to_vec())
-                } else {
-                    (target.clone(), user_args[1..].to_vec())
-                };
-                std::env::set_var("LOTUS_OBS", "1");
-                let session = iris::spawn_session();
-                let code = run_program(&target, &user_args);
-                if let Some(mut s) = session {
-                    let _ = s.kill();
-                    let _ = s.wait();
-                }
-                return code;
-            }
-            run_program(&target, &user_args)
-        }
-        "build" => run_build(&target),
         other => {
             eprintln!("unknown command: {}", other);
             usage();
@@ -340,19 +379,22 @@ fn usage() {
     eprintln!("    hale topology graph <artifact> render a --dump-topology artifact (svg|mermaid|dot; experimental)");
     eprintln!("    hale model dump <file.hl | dir> derive + print the canonical ApplicationModel (internal; experimental)");
     eprintln!("    hale model diff <a> <b>       semantic diff of two --dump-topology artifacts (--json|--text)");
+    eprintln!("    hale fleet check|dump|sign    compose topology artifacts across binaries (also attest|keygen)");
     eprintln!("    hale run   <file.hl | dir>    compile + run as a native binary");
     eprintln!("    hale build <file.hl | dir>    parse + typecheck + emit native binary");
     eprintln!("    hale replay <rec> <file.hl>   re-run a LOTUS_OBS_RECORD recording");
+    eprintln!("        [--diff: report first divergence, fail on any; per-category coverage on a match]");
+    eprintln!("        [--json (with --diff): that verdict + coverage, machine-readable]");
+    eprintln!("        [--at <n> | --at <consumer-id>:<ordinal>: SIGSTOP at that consume]");
+    eprintln!("        [--feed: inject the recorded ingress tape into (possibly changed) code]");
+    eprintln!("        [--allow-unmatched-feed: accept a partially-fed tape]");
+    eprintln!("        [--allow-live-effects] [--allow-unverified-model] [--allow-truncated]");
     eprintln!("    hale iris  [port] [artifact]  the embedded observer: attach to LOTUS_OBS=1 processes, serve :8787");
     eprintln!("    hale iris inspect <artifact>  artifact-side inspector (drift / declared-but-silent / law)");
     eprintln!("    hale run --observe <target>   run with LOTUS_OBS=1 and an iris session beside it");
     eprintln!("    hale dna init|new|upgrade     attach the DNA to an application (vendor/dna, dna/, seeded Journal)");
-    eprintln!("        [--diff: report first divergence, fail on any; per-category coverage on a match]");
-    eprintln!("        [--json (with --diff): that verdict + coverage, machine-readable]");
-    eprintln!("        [--at <n> | --at <consumer-id>:<ordinal>: SIGSTOP at that consume]");
-    eprintln!("        [--allow-live-effects] [--allow-unverified-model] [--allow-truncated]");
-    eprintln!("        [--feed: inject the recorded ingress tape into (possibly changed) code]");
-    eprintln!("        [--allow-unmatched-feed: accept a partially-fed tape]");
+    eprintln!("    hale node  <name>             express a fleet plan's instances on this machine, from the record");
+    eprintln!("    hale targets                  the targets this compiler can name, and which it can build");
     eprintln!("    hale test  [file | dir]       compile + run *_test.hl (default: cwd)");
     eprintln!("        [-run <substr>] [--json]");
     eprintln!("    hale bench [file | dir]       run *_bench.hl bench_* fns (default: cwd)");
@@ -449,6 +491,15 @@ build depends on without guessing from git — an untracked, ignored
 or oddly named source file beside the reviewed ones is compiled all
 the same. Takes no flags.
 ",
+        "targets" => "\
+hale targets                  the targets this compiler can name
+
+One paragraph per target: its canonical triple, what it is for, and
+its tier — naming a target and being able to BUILD it are different
+capabilities, so each says which of the two it is. The host's own
+target is marked `(host)`. `--list-targets` is the same command.
+Takes no flags; `hale build --target <triple>` is what selects one.
+",
         "fetch" => "\
 hale fetch [repo-root]        fetch the git deps in hale.toml into vendor/
 
@@ -464,11 +515,13 @@ result from a temporary path — there is no interpreter. The target
 is one `.hl` file, whose `import` directives are followed, or one
 directory, whose `.hl` files are one seed.
 
-Everything after the target is the PROGRAM's argv: `std::env::arg`
-sees what a built binary run directly would see.
+The first argument that is not a flag IS the target, so `hale run`'s
+own flags go BEFORE it. Everything after the target is the PROGRAM's
+argv: `std::env::arg` sees what a built binary run directly would
+see.
 
-  --observe    before the target: run the program with LOTUS_OBS=1
-               and an iris session beside it, for its lifetime
+  --observe    run the program with LOTUS_OBS=1 and an iris session
+               beside it, for its lifetime
 ",
         "build" => "\
 hale build <file.hl | dir> [flags]   parse + typecheck + emit a native binary
@@ -483,7 +536,10 @@ The binary lands beside the target, and there is no `-o`:
     hale build myapp/    ->  myapp/myapp     the directory's own name,
                                              inside it
 
-Flags follow the target:
+Flags may stand on either side of the target — the first argument
+that is not a flag is the target, as in `hale check`:
+
+    hale build --dev app.hl   ==   hale build app.hl --dev
 
   --target <native|wasm32|triple>  which backend emits the artifact
                                    (`hale targets` lists every target
@@ -7492,7 +7548,11 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     )
 }
 
-fn run_build(target: &Path) -> ExitCode {
+/// `flags` is every `hale build` flag the splitter found, from both
+/// sides of the target (GH #861). The other build-time switches
+/// below are read straight from `std::env::args()` with a scan that
+/// never depended on position, so they keep working unchanged.
+fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // Phase 2i: warn if the CLI binary was built against an older
     // codegen+runtime source tree than what's on disk now. Silent
     // miscompile (stale CLI emitting old lowering against new
@@ -7733,7 +7793,7 @@ fn run_build(target: &Path) -> ExitCode {
             return ExitCode::from(1);
         }
     }
-    let mut options = match parse_build_options() {
+    let mut options = match parse_build_options(flags) {
         Ok(o) => o,
         Err(msg) => {
             eprintln!("{}", msg);
@@ -8021,15 +8081,66 @@ fn collect_ffi_from_imports(
     opts
 }
 
+/// The `hale build` / `hale run` flags whose value is the NEXT argv
+/// entry rather than part of the flag (there is no `--flag=value`
+/// shorthand). The splitter has to know their arity: without it,
+/// `hale build --link raylib app.hl` would take `raylib` — the
+/// first argument that does not start with `-` — for the target.
+const VALUE_FLAGS: &[&str] =
+    &["--link", "--csrc", "--target", "--target-cpu", "--target-cache"];
+
+/// GH #861: the one argument splitter `hale build` and `hale run`
+/// share. Given everything after the subcommand, it returns the
+/// flags BEFORE the target, the target, and everything after it.
+///
+/// The rule is `hale check`'s: the first argument that is not a flag
+/// is the target, and a flag is a flag wherever it stands. `build`
+/// and `run` used to have no rule at all — the target was argv[2]
+/// and `parse_build_options` read from argv[3] — so `hale build
+/// --dev app.hl` failed with `not a file or directory: --dev`.
+///
+/// A value-taking flag missing its value is NOT an error here: it is
+/// passed through so `parse_build_options` can report it in the words
+/// it always used (`--link requires a library name`), rather than
+/// this function inventing a second vocabulary for the same mistake.
+fn split_target_args(
+    rest: &[String],
+) -> (Vec<String>, Option<String>, Vec<String>) {
+    let mut before: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        let a = &rest[i];
+        // `-` alone is a target (stdin-ish spellings), not a flag.
+        if a == "-" || !a.starts_with('-') {
+            return (before, Some(a.clone()), rest[i + 1..].to_vec());
+        }
+        before.push(a.clone());
+        if VALUE_FLAGS.contains(&a.as_str()) {
+            if let Some(v) = rest.get(i + 1) {
+                before.push(v.clone());
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    (before, None, Vec::new())
+}
+
 /// Stage-1 FFI (2026-05-22): parse `--link` / `--csrc` flags from
-/// `hale build`'s trailing argv. Each flag is repeatable; the
-/// flag and its value are two separate argv entries (no `=`
-/// shorthand at Stage 1). Unknown flags surface as a clear
-/// diagnostic so the user knows we didn't silently swallow them.
-fn parse_build_options() -> Result<hale_codegen::BuildOptions, String> {
+/// `hale build`'s argv. Each flag is repeatable; the flag and its
+/// value are two separate argv entries (no `=` shorthand at Stage
+/// 1). Unknown flags surface as a clear diagnostic so the user knows
+/// we didn't silently swallow them.
+///
+/// GH #861: takes the flags the splitter found on BOTH sides of the
+/// target. It used to read `std::env::args()` from index 3, which is
+/// what made a flag before the target unreachable.
+fn parse_build_options(
+    args: &[String],
+) -> Result<hale_codegen::BuildOptions, String> {
     let mut opts = hale_codegen::BuildOptions::default();
-    let args: Vec<String> = std::env::args().collect();
-    let mut i = 3;
+    let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--link" => {

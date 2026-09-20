@@ -566,6 +566,18 @@ End-to-end coverage lives in
 
 ## Build flags + environment
 
+A flag may stand on either side of the target: the first argument
+that is not a flag IS the target, so `hale build --dev app.hl` and
+`hale build app.hl --dev` are one command (2026-09-20, GH #861;
+before it `build`'s flag parsing started at argv[3] and a flag in
+front of the target was read as the target itself). Value-taking
+flags — `--link`, `--csrc`, `--target`, `--target-cpu`,
+`--target-cache` — take the next argument as their value, so that
+argument is never mistaken for the target. `hale run` follows the
+same rule up to the target and then stops: everything after the
+target is the PROGRAM's argv, which is why `run`'s own `--observe`
+goes in front of it.
+
 | Surface | Effect |
 |---|---|
 | `hale build --dev` / `HALE_DEV=1` | Latency mode: LLVM O1 pipeline + Less machine codegen instead of the O3/`target-cpu=native` release default. For edit-build-run loops. |
