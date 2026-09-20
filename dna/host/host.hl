@@ -167,6 +167,129 @@ type FleetOutcome {
     missing: String = "";
 }
 
+// ---- the organism's build cache -----------------------------------
+//
+// `hale build` re-emits the IR for a whole seed every time it is
+// asked, and the organization's seed is the vendored DNA core (~17k
+// lines) plus a handful of project files: 3.8s on a quiet machine
+// (the tracing of PR #931), the same 3.8s on every start and every
+// restart of an organism whose sources did not move — 58.6s of the
+// 212s the eleven slowest DNA integration tests take. A build is a
+// pure function of what it reads, so it is done ONCE per content
+// fingerprint and copied thereafter — the discipline `hale iris`
+// already uses for the observer, one level down: there the key is the
+// toolchain alone, because those sources ship with it; here it is the
+// toolchain AND the sources, because a body must see its own edits.
+//
+// The fingerprint names every file the build reads — `hale inputs`,
+// which resolves imports exactly as the compiler does, rather than a
+// glob here that would go stale the day a seed grows an import —
+// each by its path relative to the project and the SHA-256 of its
+// bytes; the project's manifest and lock; the toolchain version and
+// the `hale` binary's own size and mtime, so a compiler rebuilt in
+// place without a version bump is a different key; every environment
+// variable that changes codegen; and the seed's own path, because a
+// binary carries the paths of the sources it was built from.
+//
+// A hit is a copy and nothing else, so a fingerprint that cannot be
+// taken whole is simply not taken: every miss builds exactly as
+// before. `HALE_DNA_NO_BUILD_CACHE=1` turns the cache off.
+const BUILD_CACHE_KEEP: Int = 32;
+const BUILD_ENV_KNOBS: String = "HALE_DEV HALE_TS_SHIM_A LOTUS_LTO LOTUS_ASAN LOTUS_DUMP_IR LOTUS_NO_BUS_DEVIRT LOTUS_NO_DEBUGINFO LOTUS_NO_CHUNK_POOL";
+
+// `$XDG_CACHE_HOME/hale/dna-build` (or `~/.cache/hale/dna-build`), a
+// sibling of the toolchain cache `hale iris` builds the host itself
+// into. "" when the cache is off or this machine names no cache home.
+fn build_cache_dir() -> String {
+    if std::env::var_exists("HALE_DNA_NO_BUILD_CACHE") && std::env::var("HALE_DNA_NO_BUILD_CACHE") != "0" { return ""; }
+    let xdg = std::env::var("XDG_CACHE_HOME");
+    let home = std::env::var("HOME");
+    let base = if len(xdg) > 0 { xdg } else if len(home) > 0 { home + "/.cache" } else { "" };
+    if len(base) == 0 { return ""; }
+    let dir = base + "/hale/dna-build";
+    let m = dna::run_tool("mkdir\n-p\n" + dir);
+    if m.code != 0 { return ""; }
+    return dir;
+}
+
+// Every file a build of `seed_dir` reads, one `<path> <sha256>` line
+// each, in the order the compiler lists them; "" when it cannot say.
+// A path under `root` is named relative to it, so the fingerprint is
+// of the project and not of where the project happens to sit.
+@unbounded
+fn input_digests(hale: String, root: String, seed_dir: String) -> String {
+    let r = dna::run_tool(hale + "\ninputs\n" + seed_dir);
+    if r.code != 0 { return ""; }
+    let prefix = root + "/";
+    let mut out = "";
+    let mut rest = dna::trim_nl(r.stdout) + "\n";
+    while len(rest) > 1 {
+        let nl = std::str::index_of(rest, "\n");
+        if nl < 0 { rest = "\n"; continue; }
+        let path = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        if len(path) == 0 { continue; }
+        let body = std::io::fs::read_file(path) or "";
+        let rel = if std::str::starts_with(path, prefix) { path[len(prefix)..len(path)] } else { path };
+        out = out + rel + " " + dna::hex(std::crypto::sha256(std::bytes::from_string(body))) + "\n";
+    }
+    return out;
+}
+
+// The content fingerprint of a build of `seed_dir`; "" when any part
+// of it could not be read, which is how the cache declines rather
+// than guesses.
+@unbounded
+fn build_fingerprint(hale: String, root: String, seed_dir: String) -> String {
+    let files = input_digests(hale, root, seed_dir);
+    if len(files) == 0 { return ""; }
+    // the compiler's identity: what it says it is, and what this file
+    // on this machine is — a dev build keeps its predecessor's version
+    let id = dna::run_tool("sh\n-c\np=$(command -v -- \"$1\" 2>/dev/null || echo \"$1\"); ls -lnL -- \"$p\" 2>/dev/null; \"$1\" --version 2>&1\nsh\n" + hale);
+    if id.code != 0 { return ""; }
+    let mut t = "hale dna build cache v1\n";
+    t = t + "toolchain " + std::env::var("HALE_DNA_TOOLCHAIN") + "\n";
+    t = t + "compiler " + dna::trim_nl(id.stdout) + "\n";
+    t = t + "seed " + seed_dir + "\n";
+    let mut rest = BUILD_ENV_KNOBS + " ";
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        if sp < 0 { rest = ""; continue; }
+        let name = rest[0..sp];
+        rest = rest[(sp + 1)..len(rest)];
+        if len(name) > 0 && std::env::var_exists(name) { t = t + "env " + name + "=" + std::env::var(name) + "\n"; }
+    }
+    let manifest = std::io::fs::read_file(root + "/hale.toml") or "";
+    let lock = std::io::fs::read_file(root + "/hale.lock") or "";
+    t = t + "manifest " + dna::hex(std::crypto::sha256(std::bytes::from_string(manifest))) + "\n";
+    t = t + "lock " + dna::hex(std::crypto::sha256(std::bytes::from_string(lock))) + "\n";
+    t = t + files;
+    return dna::hex(std::crypto::sha256(std::bytes::from_string(t)));
+}
+
+// Put the cached binary at `bin`. The copy lands beside it and is
+// renamed over it, so a reader sees the old file or the whole new one
+// and never a half-copied one, and a binary that is still running is
+// replaced rather than written through. The entry is touched on the
+// way, so the pruning below is least-recently-USED.
+fn build_cache_take(entry: String, bin: String) -> Bool {
+    if !std::io::fs::file_exists(entry) { return false; }
+    let r = dna::run_tool("sh\n-c\nset -e; cp -- \"$1\" \"$2.cache.$$\"; chmod +x -- \"$2.cache.$$\"; mv -f -- \"$2.cache.$$\" \"$2\"; touch -- \"$1\"\nsh\n" + entry + "\n" + bin);
+    if r.code != 0 { return false; }
+    return std::io::fs::file_exists(bin);
+}
+
+// Keep what was just built under its fingerprint, and hold the cache
+// to BUILD_CACHE_KEEP binaries, pruned least-recently-used first. No
+// lock: a store is a rename, so a reader finds a whole binary or
+// none, and two hosts that build the same thing at once simply both
+// store it. An entry pruned mid-copy fails that copy, and a failed
+// copy builds — the behaviour without a cache at all.
+fn build_cache_keep(entry: String, bin: String, cache: String) {
+    let after = to_string(BUILD_CACHE_KEEP + 1);
+    let r = dna::run_tool("sh\n-c\nset -e; cp -- \"$2\" \"$1.tmp.$$\"; mv -f -- \"$1.tmp.$$\" \"$1\"; cd -- \"$3\" && ls -1t 2>/dev/null | tail -n +" + after + " | while IFS= read -r x; do rm -f -- \"./$x\"; done\nsh\n" + entry + "\n" + bin + "\n" + cache);
+}
+
 locus Host {
     params {
         verb: String = "run";
@@ -356,12 +479,22 @@ locus Host {
         if r.ok && r.expires > self.lease.expires { self.lease.expires = r.expires; }
         return true;
     }
+    // A seed is built ONCE per content fingerprint and copied
+    // thereafter (see `build_cache_dir` above): every start and every
+    // restart of an organism whose sources did not move re-emitted the
+    // IR for the whole vendored core, 3.8s of it, for a binary that
+    // could only come out the same. A miss builds exactly as before.
     fn build_seed(seed_dir: String) -> String {
-        let b = dna::run_tool(self.hale + "\nbuild\n" + seed_dir);
-        if b.code != 0 { self.say("`hale build " + seed_dir + "` failed"); return ""; }
         let sl = last_index_of(seed_dir, "/");
         let bin = seed_dir + "/" + (if sl < 0 { seed_dir } else { seed_dir[(sl + 1)..len(seed_dir)] });
+        let cache = build_cache_dir();
+        let key = if len(cache) > 0 { build_fingerprint(self.hale, self.root, seed_dir) } else { "" };
+        let entry = if len(key) > 0 { cache + "/" + key } else { "" };
+        if len(entry) > 0 && build_cache_take(entry, bin) { return bin; }
+        let b = dna::run_tool(self.hale + "\nbuild\n" + seed_dir);
+        if b.code != 0 { self.say("`hale build " + seed_dir + "` failed"); return ""; }
         if !std::io::fs::file_exists(bin) { self.say("no binary at " + bin); return ""; }
+        if len(entry) > 0 { build_cache_keep(entry, bin, cache); }
         return bin;
     }
     fn sha12(bin: String) -> String {
