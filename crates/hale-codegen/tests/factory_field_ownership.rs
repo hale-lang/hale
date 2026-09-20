@@ -465,3 +465,120 @@ fn a_factory_field_in_a_method_frame_is_leak_clean_under_asan() {
         );
     }
 }
+
+/// GH #895 — the same measurement for an INTERFACE-typed field.
+///
+/// The field declares a contract (`j: Counter`) and the factory
+/// declares the impl (`make_churner() -> Churner`), so the rule
+/// above could not fire for it: it asks whether the factory's
+/// declared locus IS the field's, and a contract-typed field has no
+/// locus to be. The F.17 gate reads an `Interface` field all the
+/// same, so the frame already stood back — leaving the child with no
+/// owner at all, which is the leak here in bytes: a free-standing
+/// locus arena per `Churner`, plus the `@form(vec)` buffer its
+/// `Rows` grew, four times over.
+///
+/// From a METHOD frame for the reason the twin above is: measured in
+/// `main` the same program reads clean, because main's arena is
+/// destroyed at exit (GH #793's note).
+///
+/// `LOTUS_NO_CHUNK_POOL=1` on the child as well. The sanitizer
+/// cflags default it on (GH #816), and stating it here keeps the
+/// negative assertions from being answered by a recycled chunk that
+/// still holds its bytes.
+#[test]
+fn an_interface_factory_field_in_a_method_frame_is_leak_clean_under_asan() {
+    let src = r#"
+        type Row { v: Int = 0; }
+
+        @form(vec)
+        locus Rows { capacity { heap rows of Row; } }
+
+        interface Counter { fn count() -> Int; }
+
+        locus Churner {
+            params { rows: Rows = Rows { }; }
+            birth() { self.rows.push(Row { v: 3 }); }
+            fn count() -> Int { return self.rows.len(); }
+        }
+
+        locus Queries {
+            params { j: Counter = Churner { }; }
+            fn total() -> Int { return self.j.count(); }
+        }
+
+        fn make_churner() -> Churner {
+            return Churner { };
+        }
+
+        fn make_churner_f(n: Int) -> Churner fallible(String) {
+            if n < 0 { fail "negative"; }
+            return Churner { };
+        }
+
+        locus Engine {
+            params { runs: Int = 0; }
+            fn step() -> Int {
+                let q = Queries { j: make_churner() };
+                let r = Queries { j: make_churner_f(1) or raise };
+                self.runs = self.runs + 1;
+                return q.total() + r.total();
+            }
+        }
+
+        fn main() {
+            let e = Engine { };
+            let mut t = 0;
+            let mut i = 0;
+            while i < 4 { t = t + e.step(); i = i + 1; }
+            println("t=", t);
+            println("runs=", e.runs);
+        }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bin = harness::unique_bin("factory_iface_field_asan");
+    harness::build_asan(&program, &bin);
+    let out = Command::new(&bin)
+        .env("ASAN_OPTIONS", "detect_leaks=1")
+        .env("LOTUS_NO_CHUNK_POOL", "1")
+        .output()
+        .expect("run asan binary");
+    let _ = std::fs::remove_file(&bin);
+    let report = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success(),
+        "non-zero exit under ASan: {:?}\n{}",
+        out.status,
+        report
+    );
+    // A reclaim that fires too early is leak-clean and wrong, which
+    // is the state that looks like success under a sanitizer.
+    assert!(
+        report.contains("t=8") && report.contains("runs=4"),
+        "the reclaim disturbed the values it was supposed to \
+         outlive:\n{}",
+        report
+    );
+    for bad in [
+        "Direct leak",
+        "Indirect leak",
+        "heap-use-after-free",
+        "use-after-free",
+        "double-free",
+        "attempting double-free",
+        "attempting free on address which was not malloc",
+        "heap-buffer-overflow",
+        "SEGV",
+    ] {
+        assert!(
+            !report.contains(bad),
+            "ASan reported `{}`:\n{}",
+            bad,
+            report
+        );
+    }
+}

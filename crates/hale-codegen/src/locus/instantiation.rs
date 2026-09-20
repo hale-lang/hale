@@ -2582,6 +2582,52 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     locus_name, fname, declared_ty, val_ty
                 )));
             }
+            // GH #895: the last field init a fresh factory could
+            // transfer into and be owned by nobody.
+            //
+            // `Queries { j: make_churner() }`, with `j: Counter` an
+            // interface and `make_churner()` declared `-> Churner`,
+            // is the GH #836 shape written against a CONTRACT-typed
+            // field. Both halves of that decision were already in
+            // place for it and neither could fire: the F.17 gate
+            // keeps the enclosing frame out of an `Interface` field's
+            // initialiser (`field_owns_locus_rhs`, above), and the
+            // GH #871 cascade tears down what
+            // `__owned_child_reclaim_<f>` names — but the bit between
+            // them is set by `field_init_is_fresh_factory`, which
+            // compares the factory's declared locus against the
+            // FIELD's, and an interface field has none. So the frame
+            // stood back, the owner had no bit, and the child's arena
+            // (plus every `@form` buffer under it) outlived the
+            // program.
+            //
+            // The impl's name is what closes it, and it is known
+            // twice over at this point: the factory DECLARES it, and
+            // the coercion above recorded what actually reached the
+            // slot. Claiming the field only when the two agree is
+            // what keeps the bit and the reclaim pointer inseparable
+            // — the store below is the same one a literal init makes,
+            // so the cascade gets `__reclaim_<Impl>` for exactly the
+            // impl this instantiation built, ctor-override included.
+            //
+            // A `perspective(P)` field is deliberately NOT here. The
+            // F.17 gate does not cover it, so a factory's result in
+            // that position already takes the GH #402 frame temporary
+            // and is already reclaimed once; claiming it for the
+            // owner as well would dissolve it twice.
+            let owned_via_literal = owned_via_literal
+                || (matches!(declared_ty, CodegenTy::Interface(_))
+                    && owned_child_impl.is_some()
+                    && owned_child_impl
+                        == match overrides.get(fname.as_str()) {
+                            Some(e) => self.field_init_fresh_factory_impl(e),
+                            None => match default {
+                                DefaultInit::Expr(e) => {
+                                    self.field_init_fresh_factory_impl(e)
+                                }
+                                _ => None,
+                            },
+                        });
             // Bus-arena reclaim follow-up (2026-05-21): when this
             // instantiation runs inside a method body, the
             // field-init expression's value may live in the

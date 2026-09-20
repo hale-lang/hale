@@ -284,3 +284,192 @@ fn a_designated_perspective_impl_is_reclaimed_with_its_holder() {
     assert_eq!(count(&out, "v1 dissolved"), 0, "got:\n{out}");
     assert_eq!(count(&out, "gateway dissolved"), 1, "got:\n{out}");
 }
+
+/// GH #895 — the same interface-typed field, reached through a
+/// FACTORY rather than a literal.
+///
+/// `Queries { j: make_churner() }` is the GH #836 transfer written
+/// against a CONTRACT-typed field, and it was the last shape in this
+/// family that nobody owned. Both halves of the decision were already
+/// in place: the F.17 gate keeps the enclosing frame out of an
+/// `Interface` field's initialiser, and the cascade above tears down
+/// whatever `__owned_child_reclaim_<f>` names. Between them sits the
+/// mask bit, and the predicate that sets it compares the factory's
+/// declared locus with the FIELD's — which an interface field does
+/// not have. So the frame stood back, the owner had no bit, and the
+/// `Churner` plus the `Rows` `@form(vec)` under it outlived the
+/// process.
+///
+/// The impl's name is what closes it: the factory DECLARES it, so
+/// the instantiation can write `__reclaim_<Impl>` into the slot
+/// exactly as a literal init does.
+const FACTORY_TREE: &str = r#"
+    type Row { v: Int = 0; }
+    @form(vec)
+    locus Rows { capacity { heap rows of Row; } }
+    interface Counter { fn count() -> Int; }
+    locus Churner {
+        params { rows: Rows = Rows { }; }
+        birth() { self.rows.push(Row { v: 3 }); }
+        drain() { println("churner drained"); }
+        dissolve() { println("churner dissolved"); }
+        fn count() -> Int { return self.rows.len(); }
+    }
+    locus Tally {
+        dissolve() { println("tally dissolved"); }
+        fn count() -> Int { return 7; }
+    }
+    locus Queries {
+        params { j: Counter = Churner { }; }
+        dissolve() { println("queries dissolved"); }
+        fn total() -> Int { return self.j.count(); }
+    }
+    locus Defaulted {
+        params { j: Counter = make_churner(); }
+        dissolve() { println("defaulted dissolved"); }
+        fn total() -> Int { return self.j.count(); }
+    }
+    fn make_churner() -> Churner {
+        return Churner { };
+    }
+    fn make_churner_f(n: Int) -> Churner fallible(String) {
+        if n < 0 { fail "negative"; }
+        return Churner { };
+    }
+    fn make_tally() -> Tally {
+        return Tally { };
+    }
+    fn pick(a: Churner, b: Churner, which: Int) -> Churner {
+        if which == 0 { return a; }
+        return b;
+    }
+"#;
+
+fn factory(body: &str) -> String {
+    format!("{FACTORY_TREE}\n{body}\n")
+}
+
+/// The headline, in both spellings. A diverging `or` leaves the
+/// factory's result as the only value the field can hold, so it is
+/// the same transfer and takes the same bit.
+#[test]
+fn a_factory_built_interface_child_is_reclaimed_with_its_owner() {
+    let (out, _) = run(
+        "iface_factory",
+        &factory(
+            r#"
+            fn main() {
+                let q = Queries { j: make_churner() };
+                println("t=", q.total());
+                let r = Queries { j: make_churner_f(1) or raise };
+                println("u=", r.total());
+                println("done");
+            }
+        "#,
+        ),
+    );
+    // Exact, because a missing teardown is silence and a double one
+    // is the same line twice. Reverse-order flush over the two
+    // bindings; within each, the owner's own `dissolve()` body runs
+    // before its cascade, and a contract child's whole spine — drain
+    // included — runs at that one point (it is not split the way a
+    // `LocusRef` field's is, whose type IS known at the first).
+    assert_eq!(
+        out,
+        "t=1\nu=1\ndone\n\
+         queries dissolved\nchurner drained\nchurner dissolved\n\
+         queries dissolved\nchurner drained\nchurner dissolved\n",
+        "a factory-built interface child must be reclaimed by the \
+         owner it was built into, once, in either spelling"
+    );
+}
+
+/// The ctor-override shape (`65-perspective-ctor-override`'s twin
+/// for an interface slot): the factory returns an impl that is NOT
+/// the one the param's default literal names. The reclaim is chosen
+/// per instantiation, so the slot has to carry `__reclaim_Tally` and
+/// not the declared default's `__reclaim_Churner` — the wrong one
+/// would run a teardown spine for a `Rows` child that was never
+/// built.
+#[test]
+fn a_factory_of_another_impl_writes_that_impls_reclaim() {
+    let (out, _) = run(
+        "iface_factory_override",
+        &factory(
+            r#"
+            fn main() {
+                let q = Queries { j: make_tally() };
+                println("t=", q.total());
+                println("done");
+            }
+        "#,
+        ),
+    );
+    assert_eq!(
+        out,
+        "t=7\ndone\nqueries dissolved\ntally dissolved\n",
+        "the owner must reclaim the impl its factory actually built"
+    );
+}
+
+/// The param DEFAULT site, which is the other half of the same
+/// decision (GH #836 pinned it for a locus-typed field): a contract
+/// param whose default is a factory call is the same transfer into
+/// the same field, and it is the only way to reach the default-init
+/// arm.
+#[test]
+fn a_factory_interface_param_default_dissolves_with_its_owner() {
+    let (out, _) = run(
+        "iface_factory_default",
+        &factory(
+            r#"
+            fn main() {
+                let d = Defaulted { };
+                println("t=", d.total());
+                println("done");
+            }
+        "#,
+        ),
+    );
+    assert_eq!(
+        out,
+        "t=1\ndone\ndefaulted dissolved\n\
+         churner drained\nchurner dissolved\n",
+        "a contract param whose DEFAULT is a factory call must be \
+         reclaimed by the owner it defaulted into"
+    );
+}
+
+/// The guard, at the interface field. `pick` hands back a locus it
+/// did not build — one of its own arguments — so the `let` that
+/// built it is still the owner and the field's bit must stay clear.
+/// Setting it would dissolve that value twice: once from the owner's
+/// cascade and once from the binding's scope. Identical output
+/// before and after this fix, on purpose.
+#[test]
+fn an_accessor_returned_interface_handle_is_left_to_its_owner() {
+    let (out, _) = run(
+        "iface_accessor",
+        &factory(
+            r#"
+            fn main() {
+                let x = Churner { };
+                let y = Churner { };
+                let q = Queries { j: pick(x, y, 1) };
+                println("t=", q.total());
+                println("done");
+            }
+        "#,
+        ),
+    );
+    // Two churners built, two torn down — `y` by its own binding,
+    // not a second time by the holder's cascade.
+    assert_eq!(
+        out,
+        "t=1\ndone\nqueries dissolved\n\
+         churner drained\nchurner dissolved\n\
+         churner drained\nchurner dissolved\n",
+        "a call that returns a locus somebody else owns must leave \
+         the interface field's mask bit clear"
+    );
+}

@@ -465,6 +465,7 @@ crates/hale-codegen/tests/factory_field_ownership.rs#1 dd20069ee61e746e
 crates/hale-codegen/tests/factory_field_ownership.rs#2 57e71d9ac7bf4fd2
 crates/hale-codegen/tests/factory_field_ownership.rs#3 3d81d0f4d8450a29
 crates/hale-codegen/tests/factory_field_ownership.rs#4 7d14dad571a55ad9
+crates/hale-codegen/tests/factory_field_ownership.rs#5 d5aa2c0aad4d9767
 crates/hale-codegen/tests/factory_locus_reclaim.rs#0 5bee09d4dbc4602d
 crates/hale-codegen/tests/factory_returned_binding.rs#0 967ae4cb6729fe31
 crates/hale-codegen/tests/factory_returned_binding.rs#1 b80a55cf498e1f4a
@@ -943,6 +944,7 @@ crates/hale-codegen/tests/os_getrandom.rs#3 06171a026a661ad4
 crates/hale-codegen/tests/os_getrandom.rs#4 8b96bb75fff4a698
 crates/hale-codegen/tests/owned_child_arena_reclaim.rs#0 f33c497096dc5dbf
 crates/hale-codegen/tests/owned_child_arena_reclaim.rs#5 3b0e8370f1acd561
+crates/hale-codegen/tests/owned_child_arena_reclaim.rs#8 a02b92823a26a9c5
 crates/hale-codegen/tests/ownership_bubble.rs#0 3408913d71b2bff6
 crates/hale-codegen/tests/ownership_bubble.rs#1 ef3055b186950d67
 crates/hale-codegen/tests/ownership_bubble.rs#2 f81faba0af524049
