@@ -451,6 +451,18 @@ pub fn check_bundle_scoped(
             }
         }
     }
+    // GH #724: aliases of imports this bundle never resolved. Empty on
+    // every CLI path (the merge strips `imports`); populated only for a
+    // consumer of a library whose seed is not in the bundle.
+    let mut unresolved_import_aliases: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    for program in bundle.programs.values() {
+        for imp in &program.imports {
+            if let Some(alias) = &imp.alias {
+                unresolved_import_aliases.insert(alias.clone());
+            }
+        }
+    }
     for program in bundle.programs.values() {
         let mut generic_fns: BTreeMap<String, &FnDecl> = BTreeMap::new();
         collect_generic_fns(&program.items, &mut generic_fns);
@@ -476,6 +488,7 @@ pub fn check_bundle_scoped(
             generic_types,
             bound_topics: &bound_topics,
             import_renames: &bundle.import_renames,
+            unresolved_import_aliases: &unresolved_import_aliases,
         };
         for item in &program.items {
             cx.check_top_decl(item);
@@ -6161,6 +6174,16 @@ struct Checker<'a> {
     /// passed `check` and died at build). Empty for a single-seed
     /// bundle, so this only ever activates on imported literals.
     import_renames: &'a [(Vec<String>, String)],
+    /// GH #724: import aliases whose seed this bundle does NOT hold.
+    /// Every CLI path merges the imported seeds and hands the checker
+    /// one program with no `import` directives left, so this set is
+    /// empty there. `hale lsp` bundles a directory's own files with
+    /// their `import` lines intact and no rename table at all — which
+    /// is why a qualified type or call types as opaque in the editor
+    /// rather than as an error. A qualified perspective path behind
+    /// such an alias gets the same tolerance, so the editor does not
+    /// squiggle a program `hale check` accepts.
+    unresolved_import_aliases: &'a std::collections::BTreeSet<String>,
 }
 
 #[derive(Default)]
@@ -10915,6 +10938,27 @@ impl<'a> Checker<'a> {
     /// Both arguments are top-symbol names. Caller has already
     /// verified that `iface_name` resolves to a TopSymbol::Interface.
     /// `locus_name` may be any TopSymbol — non-locus returns Err.
+    /// GH #724: does this name reference a seed the bundle does not
+    /// hold? True only for a `::`-joined path whose head is an import
+    /// alias still unresolved in this bundle AND which the rename
+    /// table cannot map. A resolvable path never reaches here as a
+    /// path — the import-rename pass collapsed it to the imported
+    /// declaration's mangled name before typecheck — so this is the
+    /// "we genuinely cannot see the declaration" case, kept tolerant
+    /// exactly as an imported struct literal's fields are when its
+    /// declaration is invisible.
+    fn unresolved_alias_path(&self, name: &str) -> bool {
+        let Some((head, _)) = name.split_once("::") else {
+            return false;
+        };
+        if !self.unresolved_import_aliases.contains(head) {
+            return false;
+        }
+        let key: Vec<String> =
+            name.split("::").map(|s| s.to_string()).collect();
+        !self.import_renames.iter().any(|(p, _)| *p == key)
+    }
+
     /// Phase 2a: verify a `locus L : serves P` provides every
     /// method of perspective contract `P`. Emits a diagnostic per
     /// missing / mismatched method (arity, param types, return
@@ -10927,6 +10971,16 @@ impl<'a> Checker<'a> {
             return;
         };
         for persp_name in &decl.serves {
+            // GH #724: `serves lib::Routing` where this bundle holds
+            // no `lib`. The contract is behind an alias we cannot
+            // see, so there is nothing to conform to — the same
+            // tolerance every other qualified reference already has
+            // in that situation. A path whose head is NOT an
+            // unresolved alias (`lib::Nope` in a bundle that did
+            // resolve `lib`, a bare typo) still reports below.
+            if self.unresolved_alias_path(&persp_name.name) {
+                continue;
+            }
             let persp = match self.top.lookup(&persp_name.name) {
                 Some(TopSymbol::Perspective(p)) => p,
                 Some(_) => {
@@ -11071,6 +11125,15 @@ impl<'a> Checker<'a> {
             ));
             return;
         };
+        // GH #724: `reperspective self.f as lib::Impl` where this
+        // bundle holds no `lib`. Both ends — the impl and the field's
+        // contract — sit behind an alias we cannot see, so nothing
+        // here is decidable. Every CLI path merges the imported seed
+        // before checking, so this only ever skips in a tool holding
+        // one seed (the LSP).
+        if self.unresolved_alias_path(&impl_name.name) {
+            return;
+        }
         // Resolve the field's declared perspective contract.
         let field_ty =
             locus.params.iter().find(|p| p.name == field.name).map(|p| &p.ty);
