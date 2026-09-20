@@ -1553,6 +1553,7 @@ pub fn build_executable_with_options(
         codec_thunks: BTreeMap::new(),
         generic_fn_templates: BTreeMap::new(),
         generic_locus_templates: BTreeMap::new(),
+        instantiating_program_lifetime: false,
         declared_owner: None,
         locus_cascade_path: Vec::new(),
         locus_instantiation_path: Vec::new(),
@@ -4537,6 +4538,16 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// resolution (`let c: Cache<Int, String> = Cache { ... };`),
     /// matching the m61b/m61c pattern for generic structs.
     generic_locus_templates: BTreeMap<String, LocusDecl>,
+    /// GH #921 A3, commit 6: this instantiation's struct must live
+    /// for the PROGRAM, not for the frame that builds it — a
+    /// `bindings { }` transport, adapter or codec, which the runtime
+    /// dispatches through for as long as the process runs. A storage
+    /// decision and nothing else: who reclaims the instance is
+    /// `declared_owner` below (`Owner::Placement`). The two used to
+    /// travel together as a spoofed `current_user_fn_ret`, which is
+    /// the conflation GH #921 named. One-shot, taken at the top of
+    /// `lower_locus_instantiation`.
+    pub(crate) instantiating_program_lifetime: bool,
     /// GH #921 A3, commit 2: the owner of a locus literal codegen
     /// SYNTHESISES, stated at the site because there is no source
     /// expression for a table row to key on — the `@export`
@@ -11447,10 +11458,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // cooperative; birth runs inline right here on the boot
         // path, and the listen serve thread is C-spawned by
         // birth itself (lotus_bus_transport_spawn_server).
-        let saved_ret = self.current_user_fn_ret.clone();
-        self.current_user_fn_ret =
-            Some(Some(CodegenTy::LocusRef(locus_name.to_string())));
         let mut scope = Scope::default();
+        self.instantiating_program_lifetime = true;
         // GH #921 A2: codegen builds this literal; there is no source
         // expression the pre-pass could have numbered. F.39 calls the
         // bindings transport `Placement(entry)` (Riley's answer to
@@ -11465,7 +11474,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let result = self.lower_expr(&locus_lit, &mut scope);
         self.owner_site = None;
         self.declared_owner = None;
-        self.current_user_fn_ret = saved_ret;
+        self.instantiating_program_lifetime = false;
         let (self_val, _self_ty) = result?;
         let self_ptr = self_val.into_pointer_value();
         // GH #893: the routing above answers "where does this
@@ -11851,9 +11860,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Pre-F.31 this fell out of the adapter locus's
         // `: schedule pinned` annotation; F.31 makes it
         // implicit at the bindings-inline site.
-        let saved_ret = self.current_user_fn_ret.clone();
-        self.current_user_fn_ret =
-            Some(Some(CodegenTy::LocusRef(locus.name.clone())));
+        self.instantiating_program_lifetime = true;
         self.placement_for_field = Some((
             topic_name.to_string(),
             ScheduleClass::Pinned(None),
@@ -11863,7 +11870,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.owner_site = None;
         self.declared_owner = None;
         self.placement_for_field = None;
-        self.current_user_fn_ret = saved_ret;
+        self.instantiating_program_lifetime = false;
         let (self_val, _self_ty) = lowered?;
 
         // Resolve the locus's `send` method. The typechecker has
@@ -11969,15 +11976,40 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // typecheck per F.36 Slice 2). Default cooperative
         // placement keeps the instance on `main`'s arena
         // discipline without spawning a worker.
-        let saved_ret = self.current_user_fn_ret.clone();
-        self.current_user_fn_ret =
-            Some(Some(CodegenTy::LocusRef(locus.name.clone())));
         let mut scope = Scope::default();
+        self.instantiating_program_lifetime = true;
         let lowered = self.lower_expr(&locus_lit, &mut scope);
         self.owner_site = None;
         self.declared_owner = None;
-        self.current_user_fn_ret = saved_ret;
+        self.instantiating_program_lifetime = false;
         let (self_val, _) = lowered?;
+        // GH #921 A3, commit 6: give the codec an owner. The spoof
+        // above said "allocate where the caller can see it" AND
+        // "nobody owns it", so `lower_locus_instantiation` suppressed
+        // the eager dissolve and pushed no deferred entry: a codec's
+        // `dissolve()` never ran and its arena lived to process exit.
+        // Register it on the enclosing frame — `fn main`'s, pushed
+        // before this prelude runs — exactly as PR #918 did for the
+        // transport. The prelude precedes every user statement, so
+        // this is one of the frame's first entries and the
+        // reverse-order flush tears it down after every user locus
+        // has dissolved, which is what a program-lifetime slot means.
+        let codec_self_ptr = self_val.into_pointer_value();
+        let codec_slot =
+            self.defer_dissolve_slot(codec_self_ptr, &locus.name)?;
+        match self.deferred_dissolves.last_mut() {
+            Some(frame) => {
+                frame.push((codec_slot, locus.name.clone(), None))
+            }
+            None => {
+                return Err(CodegenError::Unsupported(format!(
+                    "codec binding for `{}`: locus `{}` instantiated \
+                     outside any dissolve frame (the bindings prelude \
+                     runs inside `fn main`)",
+                    topic_name, locus.name
+                )));
+            }
+        }
 
         // Resolve encode / decode method ptrs. Typecheck has
         // already verified both exist with the right signatures

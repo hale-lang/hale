@@ -3267,8 +3267,15 @@ locus-typed one does; and `placement_for_next_locus_instantiation`
 — a `placement { }` entry belongs to the instance the entry names,
 claimed by the instantiation whose owner is `Placement(entry)`
 rather than taken from a slot the next literal lowered could pick
-up. The `returns_this_locus` / `current_user_fn_ret` spoof is the
-last one, and still decides what it did. The
+up; and the `returns_this_locus` / `current_user_fn_ret` spoof —
+split in two, because it answered two questions. STORAGE
+("allocate where the caller can still see it") stays the
+conservative fact about the enclosing fn's declared return type;
+OWNERSHIP ("nobody here reclaims it") is the table's
+`Owner::Caller`, decided per node. A `bindings { }` transport,
+adapter or codec says the first explicitly and takes
+`Owner::Placement` for the second, instead of spoofing the fn's
+return type to get both. All seven are gone. The
 observable rules in `spec/semantics.md` § *Dissolve timing rules* do
 not change — this makes them true by construction.
 

@@ -1808,12 +1808,21 @@ impl Resolver {
                     }
                 }
                 if bare {
-                    let slot = self.slot_for(&head);
-                    self.assign(
-                        value,
-                        Decision::Binding(slot),
-                        "assignment RHS",
-                    );
+                    // The same carve-out `Stmt::Let` makes: a name
+                    // this frame hands back with a bare `return x;`
+                    // is the CALLER's, whichever statement last wrote
+                    // it. Missed here, `fn f() -> Buf { let mut a =
+                    // make(); a = Buf { }; return a; }` gave the
+                    // literal to the frame's flush and the caller a
+                    // reclaimed locus — found by
+                    // `freefn_locus_rebind.rs` when GH #921 A3
+                    // commit 6 made lowering read this decision.
+                    let d = if self.returned.contains(&head) {
+                        Decision::Caller
+                    } else {
+                        Decision::Binding(self.slot_for(&head))
+                    };
+                    self.assign(value, d, "assignment RHS");
                 } else {
                     self.assign(
                         value,

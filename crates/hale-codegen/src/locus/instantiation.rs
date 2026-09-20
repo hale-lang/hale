@@ -384,7 +384,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // must outlive the fn's subregion. The fat-pointer struct
         // itself is deep-copied into caller_arena by
         // emit_return_value_deep_copy.
-        let returns_this_locus = self
+        // GH #921 A3, commit 6: `returns_this_locus` answered TWO
+        // questions and the conflation is what #921 named. One is
+        // about STORAGE — "allocate where the caller can still see
+        // it" — and is a fact about the enclosing fn's declared
+        // return type, so it stays exactly as it was and stays
+        // conservative: any literal of the returned locus goes to the
+        // program-lifetime payload arena, whether or not this
+        // particular one reaches the caller. The other is about
+        // OWNERSHIP — "nobody here reclaims it" — and is the table's
+        // `Owner::Caller`, decided per node, so `let b = X { };` in a
+        // fn returning `X` that hands back something else is the
+        // frame's and is reclaimed at its flush instead of living to
+        // process exit.
+        let escapes_by_declared_return = self
             .current_user_fn_ret
             .as_ref()
             .and_then(|r| r.as_ref())
@@ -396,6 +409,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 _ => false,
             })
             .unwrap_or(false);
+        let returns_this_locus =
+            matches!(site_owner, Some(crate::ownership::Owner::Caller));
+        // A literal codegen builds for a program-lifetime slot — a
+        // `bindings { }` transport, adapter or codec — needs the same
+        // STORAGE and none of the ownership. It used to get both by
+        // spoofing `current_user_fn_ret` to its own locus (PR #918
+        // removed the spoof's ownership half for the transport by
+        // hand; the other two still had it, which is why an
+        // adapter's or codec's arena was never destroyed). Now it
+        // says which one it means.
+        let program_lifetime =
+            std::mem::take(&mut self.instantiating_program_lifetime);
         // 2026-05-24: consume the
         // `instantiating_into_payload_arena` flag. If set, our
         // PARENT is being m90-routed and we — as one of its
@@ -409,7 +434,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // alloc path as `returns_this_locus`).
         let routed_by_parent =
             std::mem::take(&mut self.instantiating_into_payload_arena);
-        let go_to_payload_arena = returns_this_locus || routed_by_parent;
+        let go_to_payload_arena = escapes_by_declared_return
+            || routed_by_parent
+            || program_lifetime;
         // Interest-based ownership #2 / #2b: same-tower bubble. When the
         // DIRECT enclosing locus does not accept us, but an ownership plan
         // resolved `(enclosing, I) -> A`, we stitch `I` to `A` instead of
