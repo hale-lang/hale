@@ -403,7 +403,23 @@ position by GH #711 / #812):
   caller is the owner — the binding (or the caller) owns
   `combine`'s result, and `make`'s is a result nothing names,
   owned by the enclosing fn's scope and reclaimed at its exit
-  (GH #837). This
+  (GH #837). An `if`, a `match` or a block written **as a value**
+  is not the value either: it hands back one arm's, and exactly
+  one arm runs — so the rule applies **per path**, to each arm's
+  tail expression, which is what is written at that position on
+  the path that produces it. `return if c { make(1) } else {
+  make(2) };` hands the caller whichever arm ran, and the frame
+  that built it reclaims neither; `let x = if c { make(1) } else
+  { make(2) };` reclaims whichever arm ran exactly once, at the
+  enclosing fn's scope exit. A factory call anywhere else inside
+  such a carrier — in the condition, in the scrutinee, in a
+  statement before a block's tail — is a result nothing names,
+  reclaimed at that scope's exit like any other. An **ascribed
+  array or tuple** literal is likewise what the site names, never
+  one of its elements: `let xs: [Thing; 2] = [make(1),
+  make(2)];` names the array, and each element's result is one
+  nothing names, reclaimed at the enclosing fn's scope exit
+  (GH #883). This
   is the same rule in the **fallible** spelling, where the call
   is reached through `or` — `let c = std::process::spawn(argv)
   or raise;` is reclaimed exactly as `let h = make(argv);` is,

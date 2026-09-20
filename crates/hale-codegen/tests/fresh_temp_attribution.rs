@@ -379,3 +379,284 @@ fn a_factory_argument_in_a_method_frame_is_leak_clean_under_asan() {
         );
     }
 }
+
+// ---------------------------------------------------------------
+// GH #883 — the same decision, PER ARM.
+//
+// `if` / `match` / a block in value position produce no value of
+// their own: they hand back an ARM's, and exactly one arm runs.
+// PR #882 let the one-shot flag reach them unchanged, so the first
+// arm lowered took the site's decision and every other arm's result
+// became a GH #402 frame temporary dissolved right here — while the
+// owner the site named (a caller, a binding) still held it. Each
+// test below runs BOTH paths of the same shape, because a defect
+// that lands on "whichever arm lowered first" is invisible from one.
+//
+// One thing these tests deliberately do not pin: what becomes of a
+// returned arm value AFTER it reaches the caller. A fn whose
+// `return` names an `if` / `match` / block is not a proven-fresh
+// factory — `compute_fresh_locus_factories` classifies the carrier
+// node itself, never its arms — so the caller's binding does not
+// own the result and nothing reclaims it. That is a leak, it is a
+// separate seam, and it was already the fate of the one arm that
+// worked before this fix. What #883 is about, and what these
+// assertions cover, is that the frame which produced the value no
+// longer tears it down while somebody else is still reading it.
+
+/// The headline. `pick` hands back one of two fresh results, and
+/// before this fix the `else` arm's was dissolved inside `pick` —
+/// `main` then read a field of a torn-down locus.
+#[test]
+fn an_if_expression_in_return_position_hands_every_arm_to_the_caller() {
+    let src = format!(
+        "{LIB}
+        fn pick(c: Bool) -> Thing {{
+            return if c {{ make(1) }} else {{ make(2) }};
+        }}
+        fn main() {{
+            let a = pick(true);
+            println(\"a=\", a.n);
+            let b = pick(false);
+            println(\"b=\", b.n);
+            println(\"end\");
+        }}"
+    );
+    let (out, verdict) = build_and_run("return_if_arms", &src);
+    assert!(verdict.is_empty(), "{}\n{}", verdict, out);
+    assert!(
+        out.starts_with("a=1\nb=2\nend\n"),
+        "no teardown may run inside `pick` on EITHER path: on that \
+         path the arm's value is the one the `return` names, so it \
+         is the caller's, and a `bye` before the caller's read is a \
+         locus torn down under it\n{}",
+        out
+    );
+}
+
+/// Three arms, so "the first one lowered" and "the last one
+/// lowered" are both wrong answers and the middle arm has to be
+/// reached by the rule rather than by luck.
+#[test]
+fn a_match_expression_in_return_position_hands_every_arm_to_the_caller() {
+    let src = format!(
+        "{LIB}
+        fn pick(k: Int) -> Thing {{
+            return match k {{
+                0 -> make(10),
+                1 -> make(11),
+                _ -> make(12),
+            }};
+        }}
+        fn main() {{
+            let a = pick(0);
+            println(\"a=\", a.n);
+            let b = pick(1);
+            println(\"b=\", b.n);
+            let c = pick(7);
+            println(\"c=\", c.n);
+            println(\"end\");
+        }}"
+    );
+    let (out, verdict) = build_and_run("return_match_arms", &src);
+    assert!(verdict.is_empty(), "{}\n{}", verdict, out);
+    assert!(
+        out.starts_with("a=10\nb=11\nc=12\nend\n"),
+        "every arm of a match in return position hands its value to \
+         the caller; before the fix the first arm took the decision \
+         and the other two were dissolved inside `pick`\n{}",
+        out
+    );
+}
+
+/// A block in value position, where both halves of the rule show at
+/// once: the factory in a STATEMENT is nobody's but this frame's
+/// (`bye 100`, on the way out of `pick_b`), and the factory in the
+/// TAIL is the value the `return` named, so `pick_b` must not touch
+/// it. Before the fix the statement's call took the decision — the
+/// flag was still set when the statements lowered — and the tail's
+/// result got the frame temporary instead.
+#[test]
+fn a_block_in_return_position_names_its_tail_and_not_its_statements() {
+    let src = format!(
+        "{LIB}
+        fn pick_b(k: Int) -> Thing {{
+            return {{ println(\"t=\", tally(1, make(100))); make(k) }};
+        }}
+        fn main() {{
+            let v = pick_b(7);
+            println(\"v=\", v.n);
+            println(\"end\");
+        }}"
+    );
+    let (out, verdict) = build_and_run("return_block_tail", &src);
+    assert!(verdict.is_empty(), "{}\n{}", verdict, out);
+    assert!(
+        out.starts_with("t=101\nbye 100\nv=7\nend\n"),
+        "the statement's factory result is this frame's temporary \
+         and is reclaimed on the way out; the tail's is the value \
+         the `return` names and must reach the caller intact\n{}",
+        out
+    );
+}
+
+/// The binding half, where the teardown that proves the fix is
+/// observable. A `let` registers its scope-exit dissolve only for a
+/// direct factory call, so an `if` RHS leaves each arm's result to
+/// the GH #402 frame temporary — one per arm, exactly once. Before
+/// the fix the then-arm took the binding's suppression and was
+/// reclaimed by nobody at all, which is why only the second
+/// evaluation's teardown printed.
+#[test]
+fn a_binding_of_an_if_expression_reclaims_every_arm_exactly_once() {
+    let src = format!(
+        "{LIB}
+        fn main() {{
+            let c = true;
+            let x = if c {{ make(1) }} else {{ make(2) }};
+            println(\"x=\", x.n);
+            let d = false;
+            let y = if d {{ make(3) }} else {{ make(4) }};
+            println(\"y=\", y.n);
+            println(\"end\");
+        }}"
+    );
+    let (out, verdict) = build_and_run("let_if_arms", &src);
+    assert!(verdict.is_empty(), "{}\n{}", verdict, out);
+    assert_eq!(
+        out, "x=1\ny=4\nend\nbye 4\nbye 1\n",
+        "each evaluated arm's result is reclaimed once, at this \
+         frame's exit and in reverse registration order — the \
+         then-arm no longer vanishes without an owner"
+    );
+}
+
+/// The composite-hint arms of `lower_expr_into`, which descend into
+/// an ascribed array's or tuple's elements without passing the
+/// outer node through `lower_expr` — so the GH #402 hook, the one
+/// place that takes the flag, never sees the node the site named.
+/// An aggregate is not any one of its elements: whatever owns it
+/// owns the storage, so the decision stops at the composite and
+/// every element factory takes the frame temporary. This shape
+/// reads the same before and after the fix (no site arms the flag
+/// for an array or tuple literal today); it pins the rule so the
+/// first site that does cannot hand an aggregate's ownership to its
+/// first element.
+#[test]
+fn an_ascribed_array_or_tuple_reclaims_every_element_exactly_once() {
+    let src = format!(
+        "{LIB}
+        fn main() {{
+            let xs: [Thing; 2] = [make(1), make(2)];
+            println(\"x0=\", xs[0].n);
+            let pr: (Thing, Thing) = (make(3), make(4));
+            println(\"p0=\", pr.0.n);
+            println(\"end\");
+        }}"
+    );
+    let (out, verdict) = build_and_run("composite_elements", &src);
+    assert!(verdict.is_empty(), "{}\n{}", verdict, out);
+    assert_eq!(
+        out, "x0=1\np0=3\nend\nbye 4\nbye 3\nbye 2\nbye 1\n",
+        "all four element factories are temporaries of this frame — \
+         four teardowns, none twice, none missing"
+    );
+}
+
+/// The per-arm defect measured from a method frame, where the waste
+/// is LeakSanitizer-visible for the reason PR #835 documented: a
+/// `@form(vec)` locus carries its own arena and its buffer is freed
+/// only on the dissolve path, so an arm result nobody owned
+/// survives the whole run. `let b = if …` is the shape — the
+/// binding registers no dissolve for a carrier RHS, so before the
+/// fix the then-arm's `zeros(n)` took the binding's suppression and
+/// leaked once per call while the else-arm was reclaimed normally.
+///
+/// The build goes through `harness::build_asan` (`BuildOptions::
+/// asan`, GH #843), whose runtime cflags carry
+/// `-DLOTUS_NO_CHUNK_POOL_DEFAULT=1` (GH #816); the child states
+/// `LOTUS_NO_CHUNK_POOL=1` as well, so chunk recycling cannot mask
+/// a reclaim that fires on a value still in use.
+#[test]
+fn an_if_expression_binding_in_a_method_frame_is_leak_clean_under_asan() {
+    let src = r#"
+        @form(vec)
+        locus Buf {
+            params { n: Int = 0; }
+            capacity { heap data of Float; }
+        }
+
+        fn zeros(n: Int) -> Buf {
+            let b = Buf { n: n };
+            let mut i = 0;
+            while i < n { b.push(1.5); i = i + 1; }
+            return b;
+        }
+
+        fn total(base: Float, b: Buf) -> Float {
+            let v = b.get(0) or 0.0;
+            return base + v;
+        }
+
+        locus Engine {
+            params { runs: Int = 0; }
+            fn step(n: Int) -> Float {
+                self.runs = self.runs + 1;
+                let b = if n > 8 { zeros(n) } else { zeros(4) };
+                return total(1.0, b);
+            }
+        }
+
+        fn main() {
+            let e = Engine { };
+            let mut t = 0.0;
+            let mut r = 0;
+            while r < 4 { t = t + e.step(16); r = r + 1; }
+            println("t=", t);
+            println("runs=", e.runs);
+        }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bin = harness::unique_bin("fresh_temp_arm_asan");
+    harness::build_asan(&program, &bin);
+    let out = Command::new(&bin)
+        .env("ASAN_OPTIONS", "detect_leaks=1")
+        .env("LOTUS_NO_CHUNK_POOL", "1")
+        .output()
+        .expect("run asan binary");
+    let _ = std::fs::remove_file(&bin);
+    let report = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success(),
+        "non-zero exit under ASan: {:?}\n{}",
+        out.status,
+        report
+    );
+    assert!(
+        report.contains("t=10") && report.contains("runs=4"),
+        "the reclaim disturbed the values it was supposed to \
+         outlive:\n{}",
+        report
+    );
+    for bad in [
+        "Direct leak",
+        "Indirect leak",
+        "heap-use-after-free",
+        "use-after-free",
+        "double-free",
+        "attempting double-free",
+        "attempting free on address which was not malloc",
+        "heap-buffer-overflow",
+        "SEGV",
+    ] {
+        assert!(
+            !report.contains(bad),
+            "ASan reported `{}`:\n{}",
+            bad,
+            report
+        );
+    }
+}
