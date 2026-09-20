@@ -377,6 +377,31 @@ placement and the locus's shape are known at compile time:
       return 0;
   }
   ```
+- **A placement entry a factory hands you is an error.** A placement
+  attaches to the locus *literal* written for the field. A factory
+  call hands back a locus that has already been born and run inside
+  the factory, so there is nothing left to place — the entry would
+  be silently dropped, and the field would run wherever an unplaced
+  field runs. Write the literal in the field:
+
+  ```hale
+  main locus App {
+      params {
+          a: Worker = make_worker();   // error: nothing carries `a: pinned`
+          b: Worker = Worker { };      // fine: this literal is placed
+      }
+      placement {
+          a: pinned;
+          b: pinned;
+      }
+  }
+  ```
+
+  The same holds at the instantiation site for a field declared
+  without a default: `App { a: Worker { } }` carries the entry,
+  `App { a: make_worker() }` does not. If the factory did setup
+  work, move it into the locus's own `params` defaults or its
+  `birth()`.
 
 It also enforces the **single-threaded-method invariant**: a locus's
 methods may only be called on the thread that owns its pool, so a

@@ -2110,6 +2110,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .deployment.main_placement_node
                     .get(fname.as_str())
                     .copied();
+                // GH #890 backstop. All three overrides above are
+                // consumed by the next locus LITERAL lowered — and by
+                // nothing else. A field initialised any other way (a
+                // factory call is the shape that bites) leaves them
+                // untaken, and the next field's turn through this loop
+                // resets them: no thread, no pool, no diagnostic.
+                // `check_placement_entry_consumed` refuses the shape
+                // with a located diagnostic, so nothing that runs the
+                // checker reaches this. `build_executable` does NOT
+                // run the checker, and neither does a direct codegen
+                // embedder — refuse there rather than drop the
+                // placement the author wrote.
+                if self
+                    .deployment
+                    .main_placement_map
+                    .contains_key(fname.as_str())
+                {
+                    let init =
+                        overrides.get(fname.as_str()).copied().or(
+                            match default {
+                                DefaultInit::Expr(e) => Some(e),
+                                _ => None,
+                            },
+                        );
+                    if let Some(e) = init {
+                        if !matches!(e, Expr::Struct { .. }) {
+                            return Err(CodegenError::Unsupported(format!(
+                                "locus `{}` field `{}` carries a `placement \
+                                 {{ }}` entry but is initialised by an \
+                                 expression that is not a locus literal; a \
+                                 placement is carried by the literal lowered \
+                                 for the field, so this entry would be \
+                                 silently dropped. Write the literal in the \
+                                 field (`{}: T = T {{ }};`) — see \
+                                 spec/semantics.md § Placement block rule 18",
+                                locus_name, fname, fname
+                            )));
+                        }
+                    }
+                }
             }
             // Topology Phase 1c: fan out the extra replicas. For a
             // `pinned(..., replicas = K)` field (K > 1) we emit K-1

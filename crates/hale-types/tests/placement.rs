@@ -2136,3 +2136,276 @@ fn pinned_loop_diagnostic_points_at_the_placement_entry() {
         text
     );
 }
+
+// === GH #890: a placement entry no instantiation consumes ========
+//
+// A placement entry reaches codegen as an override on the NEXT locus
+// LITERAL lowered for its field. A factory call lowers none — the
+// literal is inside the factory, already born and run by the time the
+// value comes back — so the entry sat untaken until the next field's
+// turn through the params-init loop reset it: no thread, no pool, no
+// diagnostic. The A/B in the issue differed only in the default's
+// spelling, and the factory spelling had one fewer `pthread_create`
+// call site in the binary and ran in strict declaration order.
+//
+// The rule is not factory-shaped: EVERY entry must be consumed by
+// exactly one instantiation, whether the value comes from the params
+// default or from the init at the instantiation site.
+
+const UNCONSUMED: &str = "names a field no locus literal initialises";
+
+#[test]
+fn placement_over_a_factory_default_is_rejected() {
+    let src = r#"
+locus Worker { run() { } }
+
+fn make_worker() -> Worker { Worker { } }
+
+main locus App {
+    params {
+        a: Worker = make_worker();
+        b: Int = 7;
+    }
+    placement {
+        a: pinned;
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = errors(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(UNCONSUMED)),
+        "a factory default carries no placement: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn placement_over_a_locus_literal_default_stays_clean() {
+    // The control half of the issue's A/B: the same program with the
+    // default spelled as the literal. This one honours the entry.
+    let src = r#"
+locus Worker { run() { } }
+
+fn make_worker() -> Worker { Worker { } }
+
+main locus App {
+    params {
+        a: Worker = Worker { };
+        b: Int = 7;
+    }
+    placement {
+        a: pinned;
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = errors(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(UNCONSUMED)),
+        "a locus-literal default consumes the entry: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn placement_over_a_factory_supplied_at_the_site_is_rejected() {
+    // The other half of the backstop. The field has no default, so the
+    // value — and the placement with it — comes from the init at the
+    // instantiation site. A call there drops the entry exactly as a
+    // factory default does.
+    let src = r#"
+locus Worker { run() { } }
+
+fn make_worker() -> Worker { Worker { } }
+
+main locus App {
+    params {
+        a: Worker;
+        b: Int = 7;
+    }
+    placement {
+        a: pinned;
+    }
+}
+
+fn main() { App { a: make_worker() }; }
+"#;
+    let msgs = errors(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(UNCONSUMED)),
+        "a call at the instantiation site carries no placement: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn placement_over_a_literal_supplied_at_the_site_stays_clean() {
+    // Its control: a no-default placed field IS honoured when the site
+    // writes the literal, and that shape must keep working.
+    let src = r#"
+locus Worker { run() { } }
+
+main locus App {
+    params {
+        a: Worker;
+        b: Int = 7;
+    }
+    placement {
+        a: pinned;
+    }
+}
+
+fn main() { App { a: Worker { } }; }
+"#;
+    let msgs = errors(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(UNCONSUMED)),
+        "a literal at the instantiation site consumes the entry: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn a_default_every_site_overrides_is_not_a_dropped_placement() {
+    // The default is dead text here — every instantiation supplies the
+    // field with a literal, so the entry IS consumed and the default's
+    // spelling never reaches codegen. Flagging it would be a false
+    // positive.
+    let src = r#"
+locus Worker { run() { } }
+
+fn make_worker() -> Worker { Worker { } }
+
+main locus App {
+    params {
+        a: Worker = make_worker();
+        b: Int = 7;
+    }
+    placement {
+        a: pinned;
+    }
+}
+
+fn main() { App { a: Worker { } }; }
+"#;
+    let msgs = errors(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(UNCONSUMED)),
+        "an overridden default is not a dropped entry: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn cooperative_pool_over_a_factory_default_is_rejected() {
+    // The drop is not pinned-only: the parallel pool override rides
+    // the same slot, so `cooperative(pool = X)` over a factory-built
+    // field silently leaves the locus on main.
+    let src = r#"
+locus Worker { run() { } }
+
+fn make_worker() -> Worker { Worker { } }
+
+main locus App {
+    params {
+        a: Worker = make_worker();
+    }
+    placement {
+        a: cooperative(pool = io);
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = errors(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(UNCONSUMED)),
+        "a pool entry over a factory default is dropped too: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn unconsumed_placement_diagnostic_points_at_the_entry() {
+    let src = r#"
+locus Worker { run() { } }
+
+fn make_worker() -> Worker { Worker { } }
+
+main locus App {
+    params {
+        a: Worker = make_worker();
+    }
+    placement {
+        a: pinned;
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let prog = parse_source(src).expect("parse failed");
+    let diag = check_program(&prog)
+        .into_iter()
+        .find(|d| d.is_error() && d.message.contains(UNCONSUMED))
+        .expect("GH #890 rejection");
+    assert!(
+        diag.message.contains("a: Worker = Worker { };"),
+        "the message spells the literal form: {:?}",
+        diag.message
+    );
+    let primary = &src[diag.span.start.as_usize()..diag.span.end.as_usize()];
+    assert_eq!(
+        primary, "make_worker()",
+        "the primary span covers the initialiser that drops the entry"
+    );
+    let (rspan, label) = diag
+        .related
+        .first()
+        .cloned()
+        .expect("the rejection carries the placement entry");
+    assert!(
+        label.contains("`a`") && label.contains("placed"),
+        "related label names the placed field: {:?}",
+        label
+    );
+    let text = &src[rspan.start.as_usize()..rspan.end.as_usize()];
+    assert!(
+        text.contains("pinned"),
+        "related span should cover the placement entry, covers {:?}",
+        text
+    );
+}
+
+#[test]
+fn an_imported_seeds_main_placement_is_not_flagged() {
+    // An imported seed's main locus is renamed `__lib_*` and is not
+    // the deployment root: `collect_main_placement` filters it, so its
+    // entries never reach the plan and flagging them (as a drop the
+    // author could fix) would be a false positive. The same scope rule
+    // rule 17's check uses.
+    let src = r#"
+locus Worker { run() { } }
+
+fn make_worker() -> Worker { Worker { } }
+
+main locus __lib_App {
+    params {
+        a: Worker = make_worker();
+    }
+    placement {
+        a: pinned;
+    }
+}
+
+fn main() { }
+"#;
+    let msgs = errors(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(UNCONSUMED)),
+        "an imported seed's main is not the deployment root: {:?}",
+        msgs
+    );
+}
