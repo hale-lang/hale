@@ -529,6 +529,15 @@ pub enum CodegenError {
     LlvmInit(String),
     LlvmEmit(String),
     Link(String),
+    /// GH #808: the program needs `libhale_ts_shim.a` (it reaches
+    /// `std::ts::*`, directly or through the stdlib) and the
+    /// staticlib is not on any of the lookup paths. Refused before
+    /// the link so the user reads "the toolchain isn't fully
+    /// built" instead of `undefined symbol: lotus_ts_parse_go`.
+    /// The span, when known, is the first `std::ts::*` call the
+    /// program lowered; the CLI renders it like a check
+    /// diagnostic.
+    MissingTsShim(String, Option<hale_syntax::Span>),
 }
 
 impl std::fmt::Display for CodegenError {
@@ -541,6 +550,7 @@ impl std::fmt::Display for CodegenError {
             CodegenError::LlvmInit(s) => write!(f, "LLVM init failed: {}", s),
             CodegenError::LlvmEmit(s) => write!(f, "LLVM emit failed: {}", s),
             CodegenError::Link(s) => write!(f, "link failed: {}", s),
+            CodegenError::MissingTsShim(s, _) => write!(f, "{}", s),
         }
     }
 }
@@ -1383,6 +1393,7 @@ pub fn build_executable_with_options(
         target: target_spec.clone(),
         wasm_exports: Vec::new(),
         native_exports: Vec::new(),
+        ts_call_span: None,
         current_instantiation_parent: None,
         instantiating_persistent_singleton: false,
         cell_owned_clone: false,
@@ -2038,6 +2049,28 @@ pub fn build_executable_with_options(
     // future flag can gate the link on `std::ts` actually being
     // referenced by the user program.
     let ts_shim_path = locate_ts_shim_staticlib();
+    // GH #808: without the staticlib, every surviving `lotus_ts_*`
+    // reference is an undefined symbol — and `ld.lld: undefined
+    // symbol: lotus_ts_parse_go` reads as a bug in the user's
+    // program rather than "the toolchain wasn't fully built".
+    // Refuse here instead, naming the artifact and the command
+    // that produces it, and (when a `std::ts::*` call was lowered)
+    // pointing at the source that needs it. The question is asked
+    // of the POST-pipeline module, so a program that merely merges
+    // the stdlib's `std::ts` users without calling them — they are
+    // stripped by the internalize+globaldce prepass — still links.
+    if ts_shim_path.is_none() && module_references_ts_shim(&cx.module) {
+        let msg = format!(
+            "this program uses `std::ts::*`, which needs the \
+             tree-sitter shim staticlib `libhale_ts_shim.a`; it \
+             was not found next to the `hale` binary, under \
+             `HALE_TS_SHIM_A`, or in the workspace target dir. \
+             Build the whole workspace (`cargo build --release`) \
+             — `cargo build -p hale-cli` does not produce it"
+        );
+        let _ = std::fs::remove_file(&main_input);
+        return Err(CodegenError::MissingTsShim(msg, cx.ts_call_span));
+    }
     let mut clang = Command::new("clang");
     clang
         .arg(&main_input)
@@ -2188,16 +2221,32 @@ pub fn build_executable_with_options(
     }
     if let Some(p) = ts_shim_path.as_ref() {
         clang.arg(p);
-        // Rust staticlibs depend on libdl + libm via libstd.
-        // Adding these unconditionally is harmless when no
-        // staticlib symbols are actually pulled in. macOS has no
-        // separate libdl (dlopen/dlsym are in libSystem), so `-ldl`
-        // would be "library 'dl' not found" — link it on Linux only.
-        if !target_spec.is_macos() {
-            clang.arg("-ldl");
-        }
-        clang.arg("-lm");
     }
+    // GH #808: libm and libdl are linked UNCONDITIONALLY, and last,
+    // after every object and archive that can reference them.
+    //
+    // They used to sit inside the `ts_shim_path` arm above, justified
+    // as "Rust staticlibs depend on libdl + libm via libstd" — but
+    // `std::math::*` lowers to libm calls (`tanh`, `exp`, ...) with
+    // or without the shim, so a `hale` that could not find
+    // `libhale_ts_shim.a` failed every math program with
+    // `ld.lld: error: undefined symbol: tanh`, blaming the user's
+    // program for a half-built toolchain. That comment's own
+    // argument applies here: both libs are harmless when nothing
+    // references them, so there is nothing to gate.
+    //
+    // Position matters. `--as-needed` (the default on most distros)
+    // drops a shared library that nothing pending needs AT THE POINT
+    // IT IS SEEN, so `-lm` must follow the ts-shim archive, not
+    // precede it. (`-ldl` also appears earlier, with `-lz`, for the
+    // runtime's own dlopen; a second mention is free.) macOS has no
+    // separate libdl — dlopen/dlsym are in libSystem and `-ldl`
+    // would be a hard "library 'dl' not found" — so it stays
+    // Linux-only.
+    if !target_spec.is_macos() {
+        clang.arg("-ldl");
+    }
+    clang.arg("-lm");
     // Stage-1 FFI: append the per-build link surface from
     // BuildOptions. Each `--csrc <path>` is passed as a translation
     // unit compiled alongside the runtime; each `--link <lib>`
@@ -2563,15 +2612,48 @@ if (typeof process !== "undefined" && process.versions && process.versions.node)
 }
 "#;
 
+/// GH #808: does the (post-pipeline) module still reference a
+/// `lotus_ts_*` symbol — i.e. would the emitted object need
+/// `libhale_ts_shim.a` to link?
+///
+/// `builtins.rs` DECLARES the whole `lotus_ts_*` surface in every
+/// module, so "is the declaration present" is not the question;
+/// "does anything still call it" is. Asked after
+/// `internalize + globaldce + default<O3>` has run, so a program
+/// that merely merges the stdlib's `std::ts` users (`std::source`'s
+/// walker) without reaching them answers no — which is exactly the
+/// set of programs that link fine without the shim today. An
+/// unoptimized build (`LOTUS_ASAN=1` skips the pipeline) keeps the
+/// dead bodies and therefore answers yes; that is also correct,
+/// since its object really does carry the undefined symbols.
+fn module_references_ts_shim(module: &inkwell::module::Module<'_>) -> bool {
+    use inkwell::values::BasicValue;
+    let mut f = module.get_first_function();
+    while let Some(func) = f {
+        let is_shim_symbol = func
+            .get_name()
+            .to_str()
+            .map(|n| n.starts_with("lotus_ts_"))
+            .unwrap_or(false);
+        if is_shim_symbol
+            && func.as_global_value().get_first_use().is_some()
+        {
+            return true;
+        }
+        f = func.get_next_function();
+    }
+    false
+}
+
 /// m96: find `libhale_ts_shim.a`, the staticlib produced by the
 /// sibling `hale-ts-shim` workspace crate. Returns `None` if the
-/// staticlib hasn't been built yet — the user-program link will
-/// then succeed only if the program doesn't actually call any
-/// `lotus_ts_*` symbol (the externs would resolve to undefined at
-/// link time and clang would error). std::io::fs's
-/// `__StdSourceWalk` transitively references those symbols, so a
-/// program that only touches `std::io::fs::read_file` still needs
-/// the shim.
+/// staticlib hasn't been built yet — which `cargo build -p
+/// hale-cli` never does, since nothing declares a Cargo dependency
+/// on a `crate-type = ["staticlib"]` crate. The user-program link
+/// then succeeds only if no `lotus_ts_*` reference survives into
+/// the object; GH #808 makes that case an explicit, located
+/// refusal (`module_references_ts_shim` above) rather than a
+/// linker undefined-symbol wall.
 ///
 /// Lookup order:
 ///   1. `HALE_TS_SHIM_A` env var (explicit override)
@@ -2584,6 +2666,14 @@ if (typeof process !== "undefined" && process.versions && process.versions.node)
 ///   3. Workspace `target/release/`
 ///   4. Workspace `target/debug/`
 fn locate_ts_shim_staticlib() -> Option<PathBuf> {
+    // GH #808: test-only override — force the "staticlib was never
+    // built" path so the regression tests can assert both halves of
+    // the fix (math links without the shim; `std::ts` gets a located
+    // refusal) without deleting a build artifact other tests share.
+    // Same shape as LOTUS_NO_BUS_DEVIRT / LOTUS_NO_OWNERSHIP_BUBBLE.
+    if env_flag("HALE_NO_TS_SHIM") {
+        return None;
+    }
     if let Ok(p) = std::env::var("HALE_TS_SHIM_A") {
         let pb = PathBuf::from(p);
         if pb.exists() {
@@ -3863,6 +3953,13 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// through the internalize+globaldce prepass (they're exactly
     /// the symbols an external C caller links by name).
     pub(crate) native_exports: Vec<String>,
+    /// GH #808: span of the first `std::ts::*` call lowered in this
+    /// program. The link step uses it to point the "tree-sitter
+    /// shim staticlib not found" refusal at real user source
+    /// instead of handing the user a linker undefined-symbol wall.
+    /// `None` when no `std::ts::*` path call was lowered (the
+    /// refusal then carries no location).
+    pub(crate) ts_call_span: Option<hale_syntax::Span>,
     /// iris handoff-2 P9: the self pointer of the locus currently
     /// being INSTANTIATED, so children created during its
     /// param-init register LOCUS_BIRTH with real parentage
@@ -25622,6 +25719,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // unknown std::* path errors with the same shape as the rest
         // of this match's catch-all.
         if segs.first() == Some(&"std") {
+            self.note_ts_call_site(&segs, qn);
             return self.lower_stdlib_path_call(&segs, args, scope);
         }
         match segs.as_slice() {
@@ -25691,6 +25789,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let segs: Vec<&str> =
             qn.segments.iter().map(|s| s.name.as_str()).collect();
         if segs.first() == Some(&"std") {
+            self.note_ts_call_site(&segs, qn);
             return self.lower_stdlib_path_call_expr(&segs, args, scope);
         }
         match segs.as_slice() {
@@ -25851,6 +25950,43 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     // in `declare_builtins` (Phase 1 stdlib section), add a match
     // arm here, and implement one `lower_std_*` method.
     // ============================================================
+
+    /// GH #808: remember where the program first reaches
+    /// `std::ts::*`. Every one of those paths lowers to a
+    /// `lotus_ts_*` extern that only `libhale_ts_shim.a` defines,
+    /// so when that staticlib is missing the link step needs a
+    /// user-source span to blame. Recording here (rather than
+    /// refusing here) keeps the refusal honest: the module's dead
+    /// stdlib is stripped by the internalize+globaldce prepass, so
+    /// only the link step knows whether a `lotus_ts_*` reference
+    /// actually survives into the object.
+    fn note_ts_call_site(&mut self, segs: &[&str], qn: &QualifiedName) {
+        if self.ts_call_span.is_some() || segs.get(1) != Some(&"ts") {
+            return;
+        }
+        // Only a span in USER code can be pointed at. The stdlib is
+        // merged from `hale_stdlib::AP_SOURCE`, a separate
+        // coordinate space that OVERLAPS user file ranges, so a
+        // span from `std::ts`'s own walker or `std::source`'s
+        // renders at a wrong line in the wrong file — the same
+        // reason `di_enter_stmt` refuses to emit debug info for
+        // those bodies, and the same test. `__lib_*` is an imported
+        // user file parsed at a real file base and does count. A
+        // program that reaches `std::ts` only through the stdlib
+        // records nothing and gets the unlocated message.
+        let in_user_code = self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .map(|f| {
+                let n = f.get_name().to_string_lossy().into_owned();
+                !n.starts_with("__") || n.starts_with("__lib_")
+            })
+            .unwrap_or(false);
+        if in_user_code {
+            self.ts_call_span = Some(qn.span);
+        }
+    }
 
     /// Statement-position dispatcher for `std::*` paths. The leading
     /// `"std"` segment is included in `segs` for symmetry with the
