@@ -52,7 +52,10 @@
 //! appended ([`with_synthetic_main`]) and is built like any other.
 //!
 //! Slow (it lowers and links each one), so it is `#[ignore]`d like
-//! the oracle's sanitizer sweep and run explicitly in CI.
+//! the oracle's sanitizer sweep and run explicitly in CI. The
+//! programs are independent, so the sweep hands them out to worker
+//! threads and aggregates by index — see `sweep_threads`, and
+//! `HALE_CORPUS_SWEEP_THREADS=1` to walk it serially.
 //!
 //! ## The other direction (GH #779)
 //!
@@ -62,6 +65,7 @@
 //! builds the programs the strict rule refuses — a handful, not 1400.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use hale_codegen::build_executable;
 use hale_syntax::ast::TopDecl;
@@ -147,6 +151,28 @@ fn sweep_verdict(source: &str, bin_tag: &str) -> Verdict {
     }
 }
 
+/// How many programs the sweep decides at once.
+///
+/// `HALE_CORPUS_SWEEP_THREADS=1` restores the serial walk, which is
+/// what to reach for when a failure needs to be read without
+/// interleaving — the verdicts are per-program and the aggregation
+/// is by index, so the two runs report identically.
+fn sweep_threads() -> usize {
+    if let Ok(v) = std::env::var("HALE_CORPUS_SWEEP_THREADS") {
+        if let Ok(n) = v.parse::<usize>() {
+            if n > 0 {
+                return n;
+            }
+        }
+    }
+    // Capped like `corpus_oracle`'s pool: each worker runs a clang
+    // link, so the useful width is bounded well before the core
+    // count on a big machine, and CI runners have four.
+    std::thread::available_parallelism()
+        .map(|n| n.get().min(8))
+        .unwrap_or(4)
+}
+
 #[test]
 #[ignore = "compiles ~1500 programs; run explicitly (see corpus_oracle)"]
 fn every_check_clean_corpus_program_also_builds() {
@@ -157,9 +183,65 @@ fn every_check_clean_corpus_program_also_builds() {
     // than a hundred times.
     let mut failures: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
-    for p in hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok())
-    {
-        match sweep_verdict(&p.source, &format!("hale_cb_{}", checked)) {
+    // One program's verdict does not depend on another's, and
+    // `build_executable` is already driven from eight threads of one
+    // process by `corpus_oracle`: the LLVM `Context` is created per
+    // call, the object path derives from the caller's
+    // `harness::unique_bin` (pid + an atomic process-local counter),
+    // and the cached runtime objects are written to a per-call temp
+    // path and renamed into place precisely so concurrent same-process
+    // builds cannot clobber each other. So the sweep is handed out
+    // across workers rather than walked.
+    //
+    // The ORDER is preserved deliberately: each verdict is stored at
+    // its program's index and aggregated afterwards in corpus order,
+    // so `checked`, `built` and the ratchet's rendered list are
+    // byte-identical to the serial run. Nothing here may depend on
+    // completion order.
+    let programs =
+        hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok());
+    let next = AtomicUsize::new(0);
+    let n_workers = sweep_threads().min(programs.len().max(1));
+    let programs = &programs;
+    let per_worker: Vec<Vec<(usize, Verdict)>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..n_workers)
+            .map(|_| {
+                let next = &next;
+                scope.spawn(move || {
+                    let mut mine: Vec<(usize, Verdict)> = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(p) = programs.get(i) else { break };
+                        // The tag is the program's index rather than a
+                        // running count of checked programs: it only
+                        // names a temp file, and an index is unique
+                        // without a shared counter.
+                        mine.push((
+                            i,
+                            sweep_verdict(&p.source, &format!("hale_cb_{}", i)),
+                        ));
+                    }
+                    mine
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            // Re-raise a worker's panic as its own panic rather than
+            // burying the message in a join error.
+            .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    });
+
+    let mut verdicts: Vec<Option<Verdict>> =
+        (0..programs.len()).map(|_| None).collect();
+    for (i, v) in per_worker.into_iter().flatten() {
+        verdicts[i] = Some(v);
+    }
+
+    for (p, v) in programs.iter().zip(verdicts) {
+        let v = v.expect("every swept program is handed out exactly once");
+        match v {
             Verdict::Skipped(_) => continue,
             Verdict::Built => {
                 checked += 1;
