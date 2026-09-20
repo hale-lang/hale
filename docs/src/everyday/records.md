@@ -44,6 +44,13 @@ Records nest, and they're what travels on the bus and in and out
 of functions. When a record starts wanting *methods*, that's the
 signal to promote it to a [locus](./locus-gently.md).
 
+A `type` is always declared at the **top level** — beside your
+`fn`s and `locus`es, never inside a locus body. It's in scope
+everywhere in the program, including inside every locus, so a
+locus that needs a record of its own declares it just above
+itself. A `type` written inside a locus body is an error at the
+`type` keyword.
+
 ## Arrays
 
 A fixed sequence of one type is an array. `[T]` is a slice (a

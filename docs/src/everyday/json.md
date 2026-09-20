@@ -22,7 +22,8 @@ let active  = std::json::find_bool_field(doc, "active");    // true
 
 Missing fields come back as the type's zero value (`""`, `0`,
 `false`) rather than failing — so for "is this really present?"
-semantics, check with the raw accessor or validate upstream.
+semantics, use [`string_field`](#reading-a-field-that-may-be-null)
+below, which names the shape it found.
 `find_field_raw` returns the raw substring for a field, which is
 how you reach into a nested object:
 
@@ -40,6 +41,66 @@ registry's `versions` — read each key with
 `std::json::obj_key_string(it, doc)`: it decodes escapes the same
 way `obj_value_string` does, which hand-slicing
 `doc[it.key_start..it.key_end]` silently skips.
+
+## Reading a field that may be null
+
+`find_string_field` hands back a `String` whatever the value was,
+which is convenient until the field is optional. `null` arrives as
+the four-character string `"null"` — a perfectly good name — and
+absent, empty, and a number all arrive as something a name-shaped
+field will happily accept:
+
+```hale,fragment
+let a = std::json::find_string_field("{\"owner\": null}", "owner");     // "null"  (!)
+let b = std::json::find_string_field("{\"owner\": \"null\"}", "owner"); // "null"
+let c = std::json::find_string_field("{\"owner\": \"\"}", "owner");     // ""
+let d = std::json::find_string_field("{}", "owner");                    // ""
+let e = std::json::find_string_field("{\"owner\": 7}", "owner");        // "7"
+```
+
+`string_field` answers with the shape as well as the text, so you
+decide instead of guessing:
+
+```hale,fragment
+let owner = std::json::string_field(body, "owner");
+if owner.kind == "string" {
+    println("owned by ", owner.text);
+} else if owner.kind == "null" || owner.kind == "missing" {
+    println("a root");                  // parentless — not named `null`
+} else {
+    println("owner must be a string or null");
+}
+```
+
+It returns a `std::json::JsonString`, which is two fields:
+
+- `kind` — one of `"string"`, `"null"`, `"missing"`, `"number"`,
+  `"bool"`, `"array"`, `"object"`, `"invalid"`.
+- `text` — the decoded string content (quotes stripped, escapes
+  resolved) **only** when `kind` is `"string"`. Every other kind
+  carries `""`, so forgetting to check `kind` gives you an empty
+  name rather than a plausible wrong one.
+
+`"missing"` means the document is an object with no such member.
+`"invalid"` means the document is not an object at all, or the
+member's value is not something the scanner can name (an
+unterminated string, a bare `NaN`). A key repeated inside one
+object resolves to the first one — the same member
+`find_string_field` reads.
+
+The kind is not string-specific. An `Int` or `Bool` read has the
+same coercion problem (`null` becomes `0`, anything that isn't
+`true` becomes `false`), and the same gate fixes it:
+
+```hale,fragment
+if std::json::string_field(body, "port").kind == "number" {
+    let port = std::json::find_int_field(body, "port");
+    println(port);
+}
+```
+
+`find_string_field` is unchanged and stays permissive — existing
+callers keep the behaviour they have.
 
 ## Parsing into a type
 
@@ -183,6 +244,68 @@ Anything else that isn't a real escape passes through as it was
 written — `\uZZZZ` stays `\uZZZZ` — on the principle that a
 malformed byte somewhere in a document shouldn't cost you the
 rest of it.
+
+## Validating
+
+The readers above are forgiving on purpose: `find_string_field`
+answers with what it finds and doesn't mind a missing brace. When
+the bytes come from somewhere you don't control — a request body,
+a file on disk, a line of somebody's journal — ask first:
+
+```hale,fragment
+if !std::json::valid(body) {
+    return Response { status: 400, body: "not JSON" };
+}
+```
+
+`std::json::valid` is true for exactly one well-formed JSON
+value, and nothing after it. Whitespace around the value is fine;
+a second value, a stray brace or trailing text is not, and the
+empty string is not a document. The number rules are JSON's, which
+are stricter than most languages': `01`, `1.`, `.5`, `1e` and
+`+1` are all refused, while `-0`, `1e5` and `-1.25e-3` are fine.
+
+Most gates want a bit more than "is it JSON":
+
+```hale,fragment
+// A record: an object, with each field named once.
+if !std::json::valid_object(row) { return false; }
+```
+
+`valid_object` is `valid` plus "the top level is an object whose
+keys are unique and unescaped". Both extras are about
+*agreement*, not taste. JSON's grammar permits
+`{"a":1,"a":2}` — last-one-wins is a convention, not a rule — so
+two readers of those bytes can disagree about the record. And
+`{"\u0061":1}` spells the key `a`, but `find_int_field(row, "a")`
+looks for the literal text `"a"` and won't find it: the field
+would be present and unfindable at once. Refusing both up front
+means everything downstream can trust what it reads.
+
+Three inputs are refused even though a pedantic reading of the
+spec allows them, and they are the same three the escape rules
+above have no character for: text that isn't valid UTF-8, a lone
+surrogate escape, and `\u0000`. A validator's job is admission,
+so it says no rather than handing on a `�`.
+
+Two limits are worth knowing, because both answer `false` rather
+than working harder:
+
+- **Nesting stops at 64 levels.** Deeper input is refused, not
+  scanned — a document made of ten thousand `[` costs you a
+  constant amount of work.
+- **`valid_object` checks uniqueness over at most 64 top-level
+  fields.** Past that it answers `false`. That bound is what lets
+  it check keys without building anything: it compares them where
+  they sit in your string. Plain `valid` has no such limit, and
+  nested objects are only checked for syntax, so a map of a
+  thousand keys is still checkable as JSON — walk its keys with
+  `object_first` / `obj_key_eq` if you need them unique too.
+
+Validating is a pass over the bytes and allocates nothing at all
+— no substring, no set of keys, nothing left in the arena
+afterwards — about 10 ms per megabyte. It is cheap enough to run
+on every inbound message rather than hoping.
 
 ## When the shape is deep
 

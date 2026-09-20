@@ -1885,13 +1885,12 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 }
                 LocusMember::Const(_)
                 | LocusMember::Type(_) => {
-                    // GH #747: a member `const` no longer arrives
-                    // here — the checker refuses it at its own
-                    // `const` keyword, so `check` and `build` agree
-                    // on the same program. This arm stays the
-                    // backstop for a member `type`, which the
-                    // checker still accepts and which has the same
-                    // defect (unfiled at the time of #747).
+                    // GH #747 / GH #756: a member `const` or `type`
+                    // no longer arrives here — the checker refuses
+                    // both at their own keyword, so `check` and
+                    // `build` agree on the same program. This arm
+                    // stays the backstop for a caller that skips the
+                    // checker.
                     return Err(CodegenError::Unsupported(format!(
                         "locus `{}` member kind not yet lowered to codegen",
                         l.name.name

@@ -724,8 +724,10 @@ impl<'a> QualifiedRenameApplier<'a> {
             // …, topic t::Tasks`, `count …(topic t::X)`)
             // canonicalize exactly as qualified topic refs in bus
             // blocks do (#334) — collapse to the mangled single
-            // segment. Group names and effect classes are same-seed
-            // / interned and need no rewriting.
+            // segment. Effect classes are interned and need no
+            // rewriting; a single-segment GROUP name names this
+            // seed's own declaration and is canonicalized by the
+            // ident mangler below (GH #733).
             LocusMember::Claims(cb) => {
                 rewrite_claim_topic_refs(&mut cb.entries, self.renames);
             }
@@ -1057,10 +1059,11 @@ impl<'a> Mangler<'a> {
 
 
     /// GH #409: canonicalize the group / topic idents inside a set
-    /// of claim entries. Shared by a library-tier `claims { }` block
-    /// and by a `constitution` — both are claimsets that can arrive
-    /// through an import, so both resolve their references through
-    /// the same rename table.
+    /// of claim entries. Shared by a library-tier `claims { }` block,
+    /// by a `constitution`, and (GH #733) by a MAIN locus's inline
+    /// `claims { }` block — every claimset that can arrive through an
+    /// import, so all of them resolve their references through the
+    /// same rename table.
     fn rewrite_claim_entry_idents(&mut self, entries: &mut [ClaimDecl]) {
         for e in entries {
                 match &mut e.form {
@@ -1264,11 +1267,24 @@ impl<'a> Mangler<'a> {
                 }
                 self.rewrite_ident(&mut bc.closure_name.name);
             }
-            LocusMember::Claims(_) => {
-                // GH #382: claims live only in the CLOSING build's
-                // main locus (the parser enforces main-only), and
-                // they reference group names + effect classes —
-                // neither participates in the seed rename table.
+            LocusMember::Claims(cb) => {
+                // GH #733: a main locus's inline claims name the
+                // GROUPS of the seed that declares them, and group
+                // declarations DO participate in the rename table
+                // (GH #382). An imported application still carries
+                // its main locus through the merge — that is what an
+                // importing test seed stands up — and its inline
+                // claims are re-evaluated in the closing world, so
+                // leaving their group references as written detached
+                // them from the declarations the merge had just
+                // mangled: the importer reported the defining seed's
+                // own groups as "never declared". Resolve them
+                // through the same table a library-tier `claims { }`
+                // block and a `constitution` use, so an inline claim
+                // keeps its defining seed's vocabulary and an
+                // importer's same-named group cannot be substituted
+                // for it.
+                self.rewrite_claim_entry_idents(&mut cb.entries);
             }
         }
     }

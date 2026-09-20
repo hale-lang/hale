@@ -1,0 +1,8 @@
+// The control's importer: the adopted-constitution form was already
+// green through an import and stays green.
+import "../seed-adopt" as chat;
+
+fn main() {
+    let r = chat::Room { room: 3 };
+    println("lines ", r.lines);
+}

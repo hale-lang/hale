@@ -194,6 +194,16 @@ tests by suffix (`_test.hl`) regardless of location.
 `hale test` runs Layer 1 + Layer 2 today; `hale bench` runs
 Layer 3's single-language half.
 
+`check` and `verify` resolve the whole import graph, and a parse
+failure **anywhere** in it — the target's own files, a library it
+imports, a library that library imports — fails both, at the
+offending file's own line and column, with the same exit status and
+`--json` row any other error gets. That is the contract a gate rests
+on: `check` never reports success on a tree `build` would refuse
+(2026-09-19, GH #765; before it, an imported seed that failed to parse
+left its declarations silently absent and both commands answered
+clean).
+
 ## `hale bench` — the Layer-3 runner
 
 `hale bench [file | dir]` discovers `*_bench.hl` files (dir walk,

@@ -15,6 +15,7 @@
 //!   hale dna ask <intent…>      offer intent over the membrane
 //!   hale dna history [<entity>] walk the Journal by causal links
 //!   hale dna review <id> <verdict> a verdict over the membrane (the Review decides)
+//!   hale dna --embedded-digest  the DNA source this binary embeds, by name (GH #726)
 //!
 //! Layout after `init` (root = the workspace holding hale.toml):
 //!
@@ -46,6 +47,10 @@ const RECORD_REF: &str = "refs/dna/journal";
 /// `hale dna run` runs; the application is never grafted.
 const ORG_SEED: &str = "dna/org";
 const BASELINE_REL: &str = ".hale/dna/baseline.topology";
+/// GH #726: which embedded DNA source materialized `vendor/dna` here.
+/// Toolchain-owned like the tree it describes (`/.hale/` is ignored),
+/// so it is never part of the project's own source or its reviews.
+const PROVENANCE_REL: &str = ".hale/dna/embedded.digest";
 const VERDICT_SOCK_REL: &str = ".hale/dna/hale-dna.review.verdict.sock";
 const INTENT_SOCK_REL: &str = ".hale/dna/hale-dna.intent.offered.sock";
 const OBSERVED_SOCK_REL: &str = ".hale/dna/hale-dna.expression.observed.sock";
@@ -256,8 +261,20 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         Some("status") => {
             let (dir, rest) = project_arg(&args[1..], true);
+            // GH #726: which embedded DNA source this toolchain
+            // carries, and whether vendor/dna came from the same one.
+            // Not in `--json`: that form is parsed as one JSON
+            // document, and the projection is the host's.
+            if !rest.iter().any(|a| a == "--json") {
+                print_embedded_provenance(&dir);
+            }
             host_exec("status", &dir, &rest)
         }
+        // GH #726: the digest of the DNA source THIS binary embeds —
+        // the only output, so a fixture can compare it with the
+        // working tree's (`--from-tree <dir>`, a checkout holding
+        // `dna/core`) before it trusts a mutation result.
+        Some("--embedded-digest") => embedded_digest_cmd(&args[1..]),
         Some("ask") => host_exec("ask", Path::new("."), &args[1..]),
         // GH #596 W: `hale dna task done <id> [--as <who>] [--note …]`
         Some("task") => host_exec("task", Path::new("."), &args[1..]),
@@ -328,10 +345,82 @@ pub fn run(args: &[String]) -> ExitCode {
     }
 }
 
+/// GH #726 — `hale dna --embedded-digest [--from-tree <dir>]`: the
+/// name of a DNA source set, and nothing else on stdout. Without a
+/// tree it is what this binary embeds; with one it is what `<dir>`
+/// would embed if the toolchain were built from it, by the same
+/// algorithm, so a fixture can refuse to believe a mutation run
+/// against a binary that predates its edit.
+fn embedded_digest_cmd(rest: &[String]) -> ExitCode {
+    let mut tree: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        if rest[i] == "--from-tree" {
+            match rest.get(i + 1) {
+                Some(d) => tree = Some(d.clone()),
+                None => {
+                    eprintln!("hale dna --embedded-digest --from-tree <dir>: name the checkout holding dna/core");
+                    return ExitCode::from(2);
+                }
+            }
+            i += 2;
+            continue;
+        }
+        if let Some(d) = rest[i].strip_prefix("--from-tree=") {
+            tree = Some(d.to_string());
+            i += 1;
+            continue;
+        }
+        eprintln!("hale dna --embedded-digest: unknown argument `{}`", rest[i]);
+        return ExitCode::from(2);
+    }
+    match tree {
+        None => {
+            println!("{}", hale_dna::EMBEDDED_DIGEST);
+            ExitCode::SUCCESS
+        }
+        Some(dir) => match hale_dna::digest_of_tree(Path::new(&dir)) {
+            Ok(d) => {
+                println!("{d}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("hale dna --embedded-digest --from-tree {dir}: {e}");
+                ExitCode::from(1)
+            }
+        },
+    }
+}
+
+/// The provenance line `hale dna status` opens with: what this
+/// toolchain embeds, and — when `vendor/dna` was materialized from
+/// another source set — that it is stale. Printed before the host is
+/// exec'd, so stdout is flushed by hand.
+fn print_embedded_provenance(dir: &Path) {
+    use std::io::Write as _;
+    let mut line = format!("embedded dna: {} (hale {TOOLCHAIN})", hale_dna::embedded_short());
+    let root = dir
+        .canonicalize()
+        .map(|d| crate::find_workspace_root_pub(&d).unwrap_or(d))
+        .unwrap_or_else(|_| dir.to_path_buf());
+    if let Some(was) = materialized_digest(&root) {
+        if was != hale_dna::EMBEDDED_DIGEST {
+            let short: String = was.chars().take(16).collect();
+            line.push_str(&format!("; vendor/dna was materialized from {short} — run `hale dna upgrade`"));
+        }
+    }
+    println!("{line}");
+    let _ = std::io::stdout().flush();
+}
+
 fn usage(code: u8) -> ExitCode {
     eprintln!("usage: hale dna init [app-dir]      attach the DNA to an existing application");
     eprintln!("       hale dna new <name>          a greenfield application with its DNA");
     eprintln!("       hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain");
+    eprintln!("       hale dna --embedded-digest [--from-tree <dir>]");
+    eprintln!("                                    the digest of the DNA source this binary embeds (nothing else on stdout);");
+    eprintln!("                                    with a checkout, what that tree would embed — a mismatch means the binary");
+    eprintln!("                                    predates the working tree and a mutation run against it proves nothing");
     eprintln!("       hale dna models [project]    the catalog (dna/org/models.hl): every backend, and one small request to each");
     eprintln!("       hale dna knowledge [project] [--port N]");
     eprintln!("                                    the knowledge service in the foreground: the record's ratified knowledge applied into");
@@ -464,17 +553,34 @@ fn materialize_vendor(root: &Path) -> Result<(usize, usize), String> {
         fs::write(&p, f.content).map_err(|e| format!("write {}: {e}", p.display()))?;
         written += 1;
     }
+    // The vendored core says which source set it came from (GH #726):
+    // a version alone does not identify it, so the digest of the
+    // embedded set is written beside it and refreshed on `upgrade`.
     let readme = dir.join("README.md");
-    if !readme.exists() {
-        let _ = fs::write(
-            &readme,
-            format!(
-                "# vendor/dna — toolchain-owned\n\nThe DNA core (`dna/core` of the hale repository) as shipped by hale {TOOLCHAIN}.\nRegenerated by `hale dna init` / `hale dna upgrade`; pinned in `hale.lock` as\n`[dna] toolchain`. Do not edit: project-owned source lives in `dna/`.\n"
-            ),
-        );
+    let readme_text = format!(
+        "# vendor/dna — toolchain-owned\n\nThe DNA core (`dna/core` of the hale repository) as shipped by hale {TOOLCHAIN}.\nEmbedded source digest: {}\n(`hale dna --embedded-digest`; two builds of one version can embed different\nsource, so the digest is the provenance and the version is not.)\nRegenerated by `hale dna init` / `hale dna upgrade`; pinned in `hale.lock` as\n`[dna] toolchain`. Do not edit: project-owned source lives in `dna/`.\n",
+        hale_dna::EMBEDDED_DIGEST
+    );
+    if fs::read_to_string(&readme).map(|s| s != readme_text).unwrap_or(true) {
+        let _ = fs::write(&readme, &readme_text);
     }
+    // …and machine-readably, for a fixture or a `status` that asks
+    // which toolchain last materialized this tree. Same shape as
+    // `hale --version`, with all 64 digits.
+    let prov = root.join(PROVENANCE_REL);
+    if let Some(parent) = prov.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(&prov, format!("hale {TOOLCHAIN}\nembedded dna: {}\n", hale_dna::EMBEDDED_DIGEST));
     pin_lock(root)?;
     Ok((written, same))
+}
+
+/// The digest recorded when `vendor/dna` was last materialized under
+/// `root`, when the record is there.
+fn materialized_digest(root: &Path) -> Option<String> {
+    let text = fs::read_to_string(root.join(PROVENANCE_REL)).ok()?;
+    text.lines().find_map(|l| l.strip_prefix("embedded dna: ")).map(|d| d.trim().to_string())
 }
 
 fn pin_lock(root: &Path) -> Result<(), String> {
@@ -581,11 +687,12 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     // 2. the toolchain-owned core
     let (w, same) = materialize_vendor(&app.root)?;
     out.push(format!(
-        "{} vendor/dna ({} file(s) written, {} unchanged; hale.lock pins toolchain {})",
+        "{} vendor/dna ({} file(s) written, {} unchanged; hale.lock pins toolchain {}, embedded dna {})",
         if w > 0 { "wrote  " } else { "kept   " },
         w,
         same,
-        TOOLCHAIN
+        TOOLCHAIN,
+        hale_dna::embedded_short()
     ));
     // 3. the artifact, cut by the toolchain as a subprocess
     let baseline = app.root.join(BASELINE_REL);
@@ -702,8 +809,11 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     }
     let (w, same) = materialize_vendor(&root)?;
     let mut out = vec![format!(
-        "vendor/dna: {} file(s) rewritten, {} unchanged; hale.lock pins toolchain {}. dna/ untouched.",
-        w, same, TOOLCHAIN
+        "vendor/dna: {} file(s) rewritten, {} unchanged; hale.lock pins toolchain {}, embedded dna {}. dna/ untouched.",
+        w,
+        same,
+        TOOLCHAIN,
+        hale_dna::embedded_short()
     )];
     // GH #583 M1: an organization from before the catalog gets one; its
     // main is the project's and is told, not edited

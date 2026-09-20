@@ -504,6 +504,14 @@ fn __json_codepoint_utf8(out: std::bytes::BytesBuilder, cp: Int) {
 //   - Nested objects + arrays NOT supported as values.
 //   - Doesn't decode \uHHHH escapes inside strings (defers to
 //     unescape_string for explicit handling).
+//
+// This helper is PERMISSIVE by contract, and it stays that way:
+// a non-String value comes back as its raw scalar spelling, so
+// `"owner": null` reads as the four-character String "null" and
+// is indistinguishable from `"owner": "null"` or from a missing
+// field. When the difference matters — an optional field whose
+// absence is not an empty name — use `std::json::string_field`
+// (GH #719), which answers WHICH JSON shape the value had.
 fn __json_find_string_field(json: String, name: String) -> String {
     let raw = __json_find_field_raw(json, name);
     if len(raw) == 0 { return ""; }
@@ -524,6 +532,130 @@ fn __json_find_int_field(json: String, name: String) -> Int {
 fn __json_find_bool_field(json: String, name: String) -> Bool {
     let raw = __json_find_field_raw(json, name);
     return raw == "true";
+}
+
+// ===== 2026-09-19 (GH #719) — typed field access =====
+//
+// `find_string_field` answers with a String whatever the value
+// was, so eight different documents give the same answer and a
+// caller cannot tell them apart:
+//
+//   {"owner": null}      -> "null"   (an identity named `null`)
+//   {"owner": "null"}    -> "null"
+//   {"owner": ""}        -> ""
+//   {}                   -> ""       (absent)
+//   {"owner": 7}         -> "7"
+//   {"owner": true}      -> "true"
+//   {"owner": []}        -> "[]"
+//   {"owner": {"a": 1}}  -> "{\"a\": 1}"
+//
+// `string_field` returns the shape alongside the text, so the
+// optional-field read is one comparison instead of a hand-written
+// validator per call site:
+//
+//   let owner = std::json::string_field(body, "owner");
+//   if owner.kind == "string" { adopt(owner.text); }
+//   else if owner.kind == "null" || owner.kind == "missing" { root(); }
+//   else { reject(); }
+//
+// The kind is not string-specific — an Int or Bool reader can
+// gate `find_int_field` / `find_bool_field` on
+// `string_field(json, name).kind == "number"` / `== "bool"`
+// before trusting the coercion.
+/// One field read as a String: which JSON shape the value had,
+/// and its decoded text when that shape was a string.
+type __JsonString {
+    // "string" | "null" | "missing" | "number" | "bool" |
+    // "array" | "object" | "invalid"
+    kind: String;
+    // The decoded text — escapes resolved, surrounding quotes
+    // gone — and ONLY when kind is "string". Every other kind
+    // carries "", so a caller that forgets to look at kind gets
+    // an empty name rather than a plausible wrong one.
+    text: String;
+}
+
+// Read `name` from the top-level object in `json`.
+//
+//   - "string"  — a quoted value; `text` is its decoded content
+//                 (`\uHHHH` included, per GH #709).
+//   - "null"    — the JSON literal null.
+//   - "missing" — `json` IS an object, and has no such member.
+//   - "number" / "bool" / "array" / "object" — the value is
+//                 there and is that shape; `text` stays "".
+//   - "invalid" — `json` is not an object at all, or the member's
+//                 value is not a JSON value the scanner can name
+//                 (an unterminated string, a bare token).
+//
+// A key repeated inside one object resolves to the FIRST member
+// with that name, which is what `find_string_field` does too —
+// both walk the same top-level object cursor and stop at the
+// first match.
+fn __json_string_field(json: String, name: String) -> std::json::JsonString {
+    let total = len(json);
+    let p = std::json::next_non_ws(json, 0, total);
+    // 123 = `{`. A non-object carries no named members, so the
+    // answer is "invalid" rather than "missing" — the caller's
+    // input is wrong, not the document's content.
+    if p >= total || std::str::byte_at_unchecked(json, p) != 123 {
+        return std::json::JsonString { kind: "invalid", text: "" };
+    }
+    let mut it = __json_obj_first_span(json);
+    while !it.done {
+        if __json_obj_key_eq(it, json, name) {
+            return __json_classify_value(json, it.val_start, it.val_end);
+        }
+        it = __json_obj_next_span(it, json);
+    }
+    return std::json::JsonString { kind: "missing", text: "" };
+}
+
+// Name the JSON value in [start, end_pos) — a range the object
+// cursor has already bounded — and decode it when it is a string.
+fn __json_classify_value(json: String, start: Int, end_pos: Int)
+    -> std::json::JsonString
+{
+    if end_pos <= start {
+        return std::json::JsonString { kind: "invalid", text: "" };
+    }
+    let first = std::str::byte_at_unchecked(json, start);
+    if first == 34 { // `"`
+        // Both ends must be quotes: the cursor stops at the end of
+        // the source for an unterminated string, and that half-value
+        // is not a string the caller can use.
+        if end_pos - start < 2 {
+            return std::json::JsonString { kind: "invalid", text: "" };
+        }
+        if std::str::byte_at_unchecked(json, end_pos - 1) != 34 {
+            return std::json::JsonString { kind: "invalid", text: "" };
+        }
+        return std::json::JsonString {
+            kind: "string",
+            text: __json_unescape_string(json[(start + 1)..(end_pos - 1)])
+        };
+    }
+    if first == 123 { // `{`
+        return std::json::JsonString { kind: "object", text: "" };
+    }
+    if first == 91 { // `[`
+        return std::json::JsonString { kind: "array", text: "" };
+    }
+    if std::str::range_eq(json, start, end_pos, "null") {
+        return std::json::JsonString { kind: "null", text: "" };
+    }
+    if std::str::range_eq(json, start, end_pos, "true") {
+        return std::json::JsonString { kind: "bool", text: "" };
+    }
+    if std::str::range_eq(json, start, end_pos, "false") {
+        return std::json::JsonString { kind: "bool", text: "" };
+    }
+    // 45 = `-`, 48..57 = `0`..`9`. The rest of the token is not
+    // validated here — `find_int_field` / `std::str::parse_*` are
+    // where a malformed number is refused.
+    if first == 45 || (first >= 48 && first <= 57) {
+        return std::json::JsonString { kind: "number", text: "" };
+    }
+    return std::json::JsonString { kind: "invalid", text: "" };
 }
 
 // Locate `"<name>":` in `json` and return the value token
@@ -1295,4 +1427,434 @@ fn __json_find_field_raw_in(json: String, name: String, start: Int, end_exclusiv
         p = p + 1;
     }
     return "";
+}
+
+// 2026-09-19 (GH #754) — RFC 8259 syntax validation.
+//
+// The find_* helpers above are deliberately permissive field
+// scanners: `find_string_field("{\"x\":1", "x")` answers "1"
+// without complaining about the missing brace. Nothing in the
+// stdlib answered "is this text one well-formed JSON value?", so
+// every consumer that must refuse malformed input wrote its own
+// — a downstream handoff carried four hand-rolled validators of
+// the same ~120 lines, one of them reached through an interface
+// inverted just to borrow it.
+//
+// Shape of the scan (`valid` is linear in `len(text)`):
+//
+//   1. one pass for UTF-8 well-formedness (`__json_utf8_ok`);
+//   2. one pass for the grammar (`__json_value_end`), iterative
+//      with a 64-bit container-kind mask rather than recursive —
+//      a coroutine stack is 64 KiB, and 64 frames of a recursive
+//      descent is a real fraction of it;
+//   3. for `valid_object` only, a walk of the top-level members
+//      per member, to check key uniqueness in place. Bounded by
+//      the 64-field width limit, which is there for exactly this
+//      reason.
+//
+// NOTHING here allocates: no substring, no set of seen keys, no
+// accumulator. That is a contract rather than an accident — a
+// free fn's temporaries live in the CALLER's arena until the
+// caller returns, so a per-call scratch buffer in a gate that
+// runs per message is a loop that grows without bound, not a
+// leak anyone would see. (The first cut kept seen keys in a fixed
+// `[0; 1024]` table; `[0; N]` lowers to an arena allocation, and
+// 200,000 calls grew RSS by 1.69 GB.)
+//
+// The scan caches `len(text)` once and reads bytes with
+// `std::str::byte_at_unchecked` after explicit bounds checks. The
+// pattern matters: a checked one-byte slice allocates, so a
+// per-character `text[p..p + 1]` scan is the shape that took
+// 10.6 s over 1 MiB before a downstream handoff rewrote it to
+// 17 ms (GH #720).
+//
+// Whitespace runs are skipped with `std::json::next_non_ws`,
+// which is SIMD-accelerated. String bodies are NOT scanned with
+// the sibling `next_quote_or_bs` jump on purpose: the jump cannot
+// see the raw control bytes that RFC 8259 §7 forbids inside a
+// string, and accepting those would make `valid` weaker than the
+// validators it replaces.
+
+// True when `text` is one well-formed RFC 8259 value and nothing
+// else — objects, arrays, strings, numbers, `true` / `false` /
+// `null`, with JSON whitespace (space, tab, LF, CR) allowed
+// around every token. Leading/trailing whitespace is fine;
+// trailing anything else is not. "" is not a JSON document.
+//
+// Bounded: nesting deeper than 64 is refused rather than scanned,
+// so a hostile `[[[[…` cannot cost the caller an unbounded walk.
+//
+// Three refusals go beyond "the grammar says no", and all three
+// are cases this runtime cannot carry a value for:
+//
+//   - text that is not well-formed UTF-8 (including a surrogate
+//     encoded directly as three bytes);
+//   - a lone `\uXXXX` surrogate — a high one with no low escape
+//     after it, or a bare low one. It denotes no scalar;
+//     `unescape_string` answers U+FFFD for it, and a validator
+//     whose job is admission should say no rather than hand on
+//     something that decodes to a replacement character;
+//   - `\u0000`, for the same reason `unescape_string` refuses to
+//     produce it: a native String is NUL-terminated, so U+0000
+//     would truncate the value and let a prefix compare equal to
+//     the whole.
+//
+// Duplicate object keys are syntactically valid JSON and are
+// accepted here; `valid_object` is the fn that refuses them.
+fn __json_valid(text: String) -> Bool {
+    let n = len(text);
+    if n == 0 { return false; }
+    if !__json_utf8_ok(text, n) { return false; }
+    let e = __json_value_end(text, 0, n);
+    if e < 0 { return false; }
+    return std::json::next_non_ws(text, e, n) == n;
+}
+
+// `valid`, and additionally: the top-level value is an object
+// whose keys are unique and free of escapes.
+//
+// That is what callers of a JSON gate actually want — every
+// hand-rolled validator this replaces was guarding a record,
+// and two of them rejected duplicate and escaped keys for the
+// same reason. A duplicate key has no agreed meaning (last-wins
+// is a convention, not the spec), so two readers of the same
+// bytes can disagree about the record; an escaped key spelling
+// (`"\u0061"` for `"a"`) compares unequal to the plain
+// in every field lookup in this module, so admitting one lets a
+// field be present and unfindable at the same time.
+//
+// Bounded in width as well as depth, and for the same reason: at
+// most 64 top-level fields, above which this answers false. The
+// bound is what keeps the fn allocation-free — uniqueness is
+// decided by walking the object's earlier members and comparing
+// keys in place (see `__json_key_seen`), so the whole check is at
+// most 64 passes rather than a table this call has to allocate.
+// `valid` has no width bound, so a wider object is still
+// checkable as JSON; only the unique-key guarantee stops at 64.
+//
+// Keys of NESTED objects are checked for syntax only. Deciding
+// uniqueness at every level needs a key set per open level, and
+// no caller has asked for it.
+fn __json_valid_object(text: String) -> Bool {
+    if !__json_valid(text) { return false; }
+    let n = len(text);
+    let obj = std::json::next_non_ws(text, 0, n);
+    if std::str::byte_at_unchecked(text, obj) != 123 { return false; }
+    let mut p = std::json::next_non_ws(text, obj + 1, n);
+    if std::str::byte_at_unchecked(text, p) == 125 { return true; }
+    let mut fields = 0;
+    while true {
+        let k = __json_string_end(text, p, n);
+        if k < 0 { return false; }
+        // An escaped key spelling is refused, not decoded.
+        let mut q = p + 1;
+        while q < k - 1 {
+            if std::str::byte_at_unchecked(text, q) == 92 { return false; }
+            q = q + 1;
+        }
+        fields = fields + 1;
+        if fields > 64 { return false; }
+        if __json_key_seen(text, n, obj, p, k - 1) { return false; }
+        p = std::json::next_non_ws(text, k, n);
+        if std::str::byte_at_unchecked(text, p) != 58 { return false; }
+        p = __json_value_end(text, p + 1, n);
+        if p < 0 { return false; }
+        p = std::json::next_non_ws(text, p, n);
+        if p >= n { return false; }
+        // `__json_valid` already established that this object's
+        // close is the end of the document.
+        if std::str::byte_at_unchecked(text, p) == 125 { return true; }
+        p = std::json::next_non_ws(text, p + 1, n);
+    }
+    return false;
+}
+
+// Does the key whose quote sits at `at` (content ending at `hi`)
+// already appear among the EARLIER members of the object that opens
+// at `obj`? Walks that object's members from the start and stops at
+// `at`, comparing keys where they live.
+//
+// This is what keeps the fn allocation-free: no table of seen keys
+// to allocate, and no accumulator String to grow — the
+// `keys = keys + key + "|"` shape the hand-rolled validators used
+// is quadratic in the key count all by itself. The price is one walk
+// of the object per member, which is why `valid_object` bounds the
+// top-level width at 64: the whole uniqueness check is then at most
+// 64 passes, the same bound and the same reasoning as the depth
+// limit. `valid` has no width bound.
+fn __json_key_seen(
+    text: String, n: Int, obj: Int, at: Int, hi: Int
+) -> Bool {
+    let mut p = std::json::next_non_ws(text, obj + 1, n);
+    // Every early return below is unreachable for text that
+    // `__json_valid` accepted; the walk stays defensive so this
+    // helper cannot read past the document on its own.
+    while p < at {
+        let k = __json_string_end(text, p, n);
+        if k < 0 { return false; }
+        if __json_span_eq(text, p + 1, k - 1, at + 1, hi) { return true; }
+        p = std::json::next_non_ws(text, k, n);
+        if p >= n || std::str::byte_at_unchecked(text, p) != 58 {
+            return false;
+        }
+        p = __json_value_end(text, p + 1, n);
+        if p < 0 { return false; }
+        p = std::json::next_non_ws(text, p, n);
+        if p >= n || std::str::byte_at_unchecked(text, p) != 44 {
+            return false;
+        }
+        p = std::json::next_non_ws(text, p + 1, n);
+    }
+    return false;
+}
+
+// Are the byte spans [a_lo, a_hi) and [b_lo, b_hi) of `text` equal?
+fn __json_span_eq(
+    text: String, a_lo: Int, a_hi: Int, b_lo: Int, b_hi: Int
+) -> Bool {
+    if a_hi - a_lo != b_hi - b_lo { return false; }
+    let mut i = 0;
+    let width = a_hi - a_lo;
+    while i < width {
+        if std::str::byte_at_unchecked(text, a_lo + i)
+            != std::str::byte_at_unchecked(text, b_lo + i)
+        {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// UTF-8 well-formedness over the whole document: rejects
+// overlong forms, truncated sequences, continuation bytes with
+// no lead, the surrogate range (ED A0..BF) and anything above
+// U+10FFFF (F5..FF). A String cannot contain a NUL, so the
+// scanner never has to consider one.
+fn __json_utf8_ok(text: String, n: Int) -> Bool {
+    let mut i = 0;
+    while i < n {
+        let c = std::str::byte_at_unchecked(text, i);
+        if c < 128 { i = i + 1; continue; }
+        let width = if c >= 194 && c <= 223 { 2 }
+        else if c >= 224 && c <= 239 { 3 }
+        else if c >= 240 && c <= 244 { 4 }
+        else { 0 };
+        if width == 0 || i + width > n { return false; }
+        let second = std::str::byte_at_unchecked(text, i + 1);
+        if (c == 224 && second < 160) || (c == 237 && second > 159)
+            || (c == 240 && second < 144) || (c == 244 && second > 143)
+        {
+            return false;
+        }
+        let mut k = 1;
+        while k < width {
+            let part = std::str::byte_at_unchecked(text, i + k);
+            if part < 128 || part > 191 { return false; }
+            k = k + 1;
+        }
+        i = i + width;
+    }
+    return true;
+}
+
+// The index just past the one value starting at or after
+// `start`, or -1 when the text there is not a value.
+//
+// Iterative: `depth` counts open containers and `kinds` is a
+// 64-bit mask whose bit d-1 says whether level d is an object.
+// That is why the depth bound is 64 — one Int of state, no
+// per-level frame, and the mask is the whole reason this is not
+// a recursive descent.
+fn __json_value_end(text: String, start: Int, n: Int) -> Int {
+    let mut i = start;
+    let mut depth = 0;
+    let mut kinds = 0;
+    // true: a value must be read at `i`; false: one just ended.
+    let mut want = true;
+    while true {
+        if want {
+            i = std::json::next_non_ws(text, i, n);
+            if i >= n { return -1; }
+            let c = std::str::byte_at_unchecked(text, i);
+            if c == 123 || c == 91 {
+                if depth >= 64 { return -1; }
+                depth = depth + 1;
+                if c == 123 { kinds = kinds | (1 << (depth - 1)); }
+                else { kinds = kinds & ~(1 << (depth - 1)); }
+                i = std::json::next_non_ws(text, i + 1, n);
+                if i >= n { return -1; }
+                let close = if c == 123 { 125 } else { 93 };
+                if std::str::byte_at_unchecked(text, i) == close {
+                    i = i + 1;
+                    depth = depth - 1;
+                    want = false;
+                    continue;
+                }
+                if c == 123 {
+                    i = __json_member_colon(text, i, n);
+                    if i < 0 { return -1; }
+                }
+                continue;
+            }
+            let e = __json_scalar_end(text, i, n, c);
+            if e < 0 { return -1; }
+            i = e;
+            want = false;
+            continue;
+        }
+        if depth == 0 { return i; }
+        i = std::json::next_non_ws(text, i, n);
+        if i >= n { return -1; }
+        let sep = std::str::byte_at_unchecked(text, i);
+        let is_obj = ((kinds >> (depth - 1)) & 1) == 1;
+        let close = if is_obj { 125 } else { 93 };
+        if sep == close {
+            // The container is itself a finished value, so `want`
+            // stays false: what follows it is a separator.
+            i = i + 1;
+            depth = depth - 1;
+            continue;
+        }
+        if sep != 44 { return -1; }
+        i = i + 1;
+        if is_obj {
+            i = std::json::next_non_ws(text, i, n);
+            i = __json_member_colon(text, i, n);
+            if i < 0 { return -1; }
+        }
+        want = true;
+    }
+    return -1;
+}
+
+// `"key"` whitespace `:` at `start` — returns the index of the
+// value that follows, or -1. A trailing comma in an object lands
+// here and fails on the string.
+fn __json_member_colon(text: String, start: Int, n: Int) -> Int {
+    let k = __json_string_end(text, start, n);
+    if k < 0 { return -1; }
+    let c = std::json::next_non_ws(text, k, n);
+    if c >= n || std::str::byte_at_unchecked(text, c) != 58 { return -1; }
+    return c + 1;
+}
+
+// One string, number or literal at `start`; `c` is its first
+// byte, already read by the caller.
+fn __json_scalar_end(text: String, start: Int, n: Int, c: Int) -> Int {
+    if c == 34 { return __json_string_end(text, start, n); }
+    if c == 116 { return __json_literal_end(text, start, n, "true"); }
+    if c == 102 { return __json_literal_end(text, start, n, "false"); }
+    if c == 110 { return __json_literal_end(text, start, n, "null"); }
+    return __json_number_end(text, start, n);
+}
+
+// The index just past the string starting at `start`, or -1.
+// Raw bytes below 0x20 are refused (RFC 8259 §7 requires them
+// escaped), as are unknown escapes and the three \uXXXX cases
+// documented on `__json_valid`.
+fn __json_string_end(text: String, start: Int, n: Int) -> Int {
+    if start >= n || std::str::byte_at_unchecked(text, start) != 34 {
+        return -1;
+    }
+    let mut p = start + 1;
+    while p < n {
+        let c = std::str::byte_at_unchecked(text, p);
+        if c == 34 { return p + 1; }
+        if c < 32 { return -1; }
+        if c == 92 {
+            p = p + 1;
+            if p >= n { return -1; }
+            let e = std::str::byte_at_unchecked(text, p);
+            if e == 117 {
+                // The bound check covers __json_hex4's four reads.
+                if p + 4 >= n { return -1; }
+                let cp = __json_hex4(text, p + 1);
+                // -1 = not four hex digits; 0 = \u0000.
+                if cp <= 0 { return -1; }
+                if cp >= 56320 && cp <= 57343 { return -1; }
+                if cp >= 55296 && cp <= 56319 {
+                    // A high surrogate needs its low one, as its
+                    // own escape, right here.
+                    if p + 10 >= n { return -1; }
+                    if std::str::byte_at_unchecked(text, p + 5) != 92
+                        || std::str::byte_at_unchecked(text, p + 6) != 117
+                    {
+                        return -1;
+                    }
+                    let low = __json_hex4(text, p + 7);
+                    if low < 56320 || low > 57343 { return -1; }
+                    p = p + 6;
+                }
+                p = p + 4;
+            } else if e != 34 && e != 92 && e != 47 && e != 98 && e != 102
+                && e != 110 && e != 114 && e != 116
+            {
+                return -1;
+            }
+        }
+        p = p + 1;
+    }
+    return -1;
+}
+
+// The index just past the number at `start`, or -1. RFC 8259 §6:
+// an optional `-`, then `0` or a nonzero-led digit run, then an
+// optional fraction with at least one digit, then an optional
+// exponent with at least one digit.
+//
+// A leading zero needs no rule of its own: `01` ends the number
+// after the `0`, and the `1` is then trailing garbage wherever
+// the number sat.
+fn __json_number_end(text: String, start: Int, n: Int) -> Int {
+    let mut p = start;
+    if p < n && std::str::byte_at_unchecked(text, p) == 45 { p = p + 1; }
+    if p >= n { return -1; }
+    let lead = std::str::byte_at_unchecked(text, p);
+    if lead == 48 {
+        p = p + 1;
+    } else {
+        if lead < 49 || lead > 57 { return -1; }
+        while p < n {
+            let c = std::str::byte_at_unchecked(text, p);
+            if c < 48 || c > 57 { break; }
+            p = p + 1;
+        }
+    }
+    if p < n && std::str::byte_at_unchecked(text, p) == 46 {
+        p = p + 1;
+        let frac = p;
+        while p < n {
+            let c = std::str::byte_at_unchecked(text, p);
+            if c < 48 || c > 57 { break; }
+            p = p + 1;
+        }
+        if p == frac { return -1; }
+    }
+    if p < n {
+        let marker = std::str::byte_at_unchecked(text, p);
+        if marker == 101 || marker == 69 {
+            p = p + 1;
+            if p < n {
+                let sign = std::str::byte_at_unchecked(text, p);
+                if sign == 43 || sign == 45 { p = p + 1; }
+            }
+            let expo = p;
+            while p < n {
+                let d = std::str::byte_at_unchecked(text, p);
+                if d < 48 || d > 57 { break; }
+                p = p + 1;
+            }
+            if p == expo { return -1; }
+        }
+    }
+    return p;
+}
+
+// `word` (`true` / `false` / `null`) at `start`, exactly.
+fn __json_literal_end(text: String, start: Int, n: Int, word: String) -> Int {
+    let width = len(word);
+    if start + width > n { return -1; }
+    if !std::str::range_eq(text, start, start + width, word) { return -1; }
+    return start + width;
 }

@@ -240,3 +240,138 @@ fn escape_and_builder_stay_within_a_hard_memory_cap() {
         stdout
     );
 }
+
+/// GH #754 — `std::json::valid` is LINEAR in the input, and the proof
+/// is a wall bound over ~1 MiB.
+///
+/// The validators this replaces were written with per-character
+/// checked slicing (`text[p..p + 1]`), which allocates a String per
+/// byte and re-runs `len()` (a native strlen) per step: a downstream
+/// handoff measured 10.6 s over 1 MiB that way, and 17 ms after the
+/// rewrite to a cached length plus `byte_at_unchecked` (GH #720).
+/// Seconds-versus-milliseconds is exactly what a wall bound can tell
+/// apart, so a quadratic regression here fails the build rather than
+/// slowly costing a caller their request budget.
+///
+/// Three shapes, since they exercise different loops: a flat array of
+/// numbers (the scalar scanner), a 64-field object of long string
+/// values (`valid_object` at its documented width bound, where its
+/// per-field walk over the earlier keys is longest), and the same
+/// array behind 64 levels of nesting (the depth mask).
+///
+/// The fourth measurement is the one that is not about time at all.
+/// Both fns are documented to allocate nothing, and a free fn's
+/// temporaries live in the CALLER's arena until the caller returns —
+/// so a per-call scratch buffer does not show up as a leak, it shows
+/// up as a loop that grows without bound. The first cut of
+/// `valid_object` kept seen keys in a fixed `[0; 1024]` table, which
+/// lowers to an arena allocation: 200,000 calls grew RSS by 1.69 GB.
+/// Here the same loop must not move RSS at all.
+#[test]
+fn valid_scans_a_megabyte_within_a_wall_bound() {
+    let src = r#"
+        fn main() {
+            let arr = std::bytes::BytesBuilder { initial_cap: 1200000 };
+            arr.append_str("[0");
+            let mut i = 0;
+            while i < 150000 {
+                arr.append_str(",-12.5e3");
+                i = i + 1;
+            }
+            arr.append_str("]");
+            let doc = std::str::clone(arr.text_view());
+            println("arr_len=", len(doc));
+            println("arr_valid=", std::json::valid(doc));
+
+            let obj = std::bytes::BytesBuilder { initial_cap: 1200000 };
+            obj.append_str("{");
+            let value = std::str::repeat("v", 16000);
+            let mut f = 0;
+            while f < 64 {
+                if f > 0 { obj.append_str(","); }
+                obj.append_str("\"field");
+                obj.append_str(to_string(f));
+                obj.append_str("\": \"");
+                obj.append_str(value);
+                obj.append_str("\"");
+                f = f + 1;
+            }
+            obj.append_str("}");
+            let wide = std::str::clone(obj.text_view());
+            println("obj_len=", len(wide));
+            println("obj_valid=", std::json::valid_object(wide));
+
+            let nest = std::bytes::BytesBuilder { initial_cap: 1200000 };
+            let mut d = 0;
+            while d < 63 {
+                nest.append_str("[");
+                d = d + 1;
+            }
+            nest.append_str(doc);
+            while d > 0 {
+                nest.append_str("]");
+                d = d - 1;
+            }
+            let deep = std::str::clone(nest.text_view());
+            println("deep_len=", len(deep));
+            println("deep_valid=", std::json::valid(deep));
+
+            // Allocation: a row-shaped gate, 200,000 times.
+            let row = "{\"seq\":1,\"kind\":\"k\",\"body\":\"b\"}";
+            let before = std::process::rss_bytes();
+            let mut r = 0;
+            let mut gated = 0;
+            while r < 200000 {
+                if std::json::valid_object(row) { gated = gated + 1; }
+                if std::json::valid(row) { gated = gated + 1; }
+                r = r + 1;
+            }
+            println("gated=", gated);
+            println("rss_growth=", std::process::rss_bytes() - before);
+        }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bin = harness::unique_bin("hale_test_stdlib_json_valid_scaling");
+    build_executable(&program, &bin).expect("build");
+    // ~10 ms per megabyte measured; 10 s is 1000x of headroom for the
+    // linear form and far under what a per-character-slice scan needs.
+    let output = Command::new("timeout")
+        .arg("10")
+        .arg(&bin)
+        .output()
+        .expect("run the validator under a 10 s wall bound");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "validating ~1 MiB did not finish inside 10 s \
+         (124 = the wall bound).\nexit: {:?}\nstdout: {}\nstderr: {}",
+        output.status.code(),
+        stdout,
+        stderr,
+    );
+    // Exact lengths: a truncated document would otherwise validate
+    // quickly and pass.
+    assert!(stdout.contains("arr_len=1200003"), "array length; got: {:?}", stdout);
+    assert!(stdout.contains("arr_valid=true"), "array verdict; got: {:?}", stdout);
+    assert!(stdout.contains("obj_len=1024887"), "object length; got: {:?}", stdout);
+    assert!(stdout.contains("obj_valid=true"), "object verdict; got: {:?}", stdout);
+    assert!(stdout.contains("deep_len=1200129"), "nested length; got: {:?}", stdout);
+    assert!(stdout.contains("deep_valid=true"), "nested verdict; got: {:?}", stdout);
+    assert!(stdout.contains("gated=400000"), "gate verdicts; got: {:?}", stdout);
+    let growth: i64 = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("rss_growth="))
+        .expect("the program prints its RSS growth")
+        .trim()
+        .parse()
+        .expect("RSS growth is a number");
+    assert!(
+        growth < 4 * 1024 * 1024,
+        "400,000 validator calls grew RSS by {} bytes — both fns are \
+         documented to allocate nothing, and a free fn's scratch lands \
+         in the caller's arena until the caller returns",
+        growth,
+    );
+}

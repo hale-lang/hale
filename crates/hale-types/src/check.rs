@@ -535,6 +535,10 @@ pub fn check_bundle_scoped(
     // loop. Warnings that steer toward the allocation-free shape
     // (hoisted field / `recv_into`).
     check_hot_path_alloc(bundle, top, &mut diags);
+    // GH #723: the fn-level contract decorators stack, so a stack can
+    // be incoherent — the same decorator twice, or `@unbounded` against
+    // a contract that forbids allocation.
+    check_decorator_stacks(bundle, &mut diags);
     // Gap D (2026-07-17): accept-without-release on a daemon-shaped
     // locus — resident children accumulate until OOM.
     check_accept_release(bundle, &mut diags);
@@ -2173,6 +2177,152 @@ fn check_hot_path_alloc(bundle: &Bundle<'_>, top: &TopScope, diags: &mut Vec<Dia
                 _ => {}
             }
         }
+    }
+}
+
+// === GH #723: decorator stacks =====================================
+
+/// GH #723: the coherence of a fn's DECORATOR STACK.
+///
+/// `@unbounded`, `@hot`, `@budget(...)` and the effect assertions state
+/// orthogonal things, so the parser accepts them in any order and in
+/// any combination (before #723 a second decorator was a parse error,
+/// which is why a `@unbounded` method needed a free `@no_syscall`
+/// wrapper to carry both contracts). What the parser can no longer say
+/// is whether a stack MEANS anything, and two shapes do not:
+///
+/// - the same decorator twice — the second is either redundant or
+///   silently overrides the first (`@budget`), and either way the
+///   author wrote something they did not mean;
+/// - `@unbounded` against a contract that forbids allocation. Every
+///   conflicting pair is this one pair in different spellings: the
+///   `@hot` certification (which turns the allocation advisory
+///   `@unbounded` silences into a hard error), an assertion that
+///   forbids the `alloc` class, and the `@budget(alloc_per_call = 0)`
+///   zero-allocation certificate. A decorator that contradicts its
+///   neighbour cannot be enforced; both together is a statement about
+///   the program that is not true of any program.
+///
+/// A ceiling ABOVE zero is not a conflict: `@budget(alloc_per_call =
+/// 2) @unbounded` says "at most two allocations per call, and their
+/// aggregate growth is deliberate" — a cache insert per call is
+/// exactly that shape.
+fn check_decorator_stacks(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    fn check_fn(fd: &FnDecl, diags: &mut Vec<Diag>) {
+        // Duplicates. The general `@effects(...)` is exempt: it is a
+        // set of clauses (`none:` / `publish:` / `is:` / …) and two of
+        // them compose, where a bare flag can only repeat itself.
+        let mut seen: Vec<&FnDecorator> = Vec::new();
+        for d in &fd.decorators {
+            if d.name == "effects" {
+                continue;
+            }
+            if let Some(prev) = seen.iter().find(|p| p.name == d.name) {
+                diags.push(
+                    Diag::ty(
+                        d.span,
+                        format!(
+                            "duplicate `@{}` on `{}` — it is already \
+                             declared on this fn. State it once.",
+                            d.name, fd.name.name
+                        ),
+                    )
+                    .with_related(prev.span, "first written here"),
+                );
+                continue;
+            }
+            seen.push(d);
+        }
+        let Some(unbounded) = fd.decorators.iter().find(|d| d.name == "unbounded")
+        else {
+            return;
+        };
+        let spelled = |name: &str| -> Span {
+            fd.decorators
+                .iter()
+                .find(|d| d.name == name)
+                .map(|d| d.span)
+                .unwrap_or(unbounded.span)
+        };
+        if let Some(hot) = fd.decorators.iter().find(|d| d.name == "hot") {
+            diags.push(
+                Diag::ty(
+                    unbounded.span,
+                    format!(
+                        "`@unbounded` and `@hot` contradict on `{}`: \
+                         `@unbounded` acknowledges an allocation this fn \
+                         makes without a static bound, and `@hot` makes \
+                         exactly that allocation a hard error. Keep the one \
+                         that states the intent.",
+                        fd.name.name
+                    ),
+                )
+                .with_related(hot.span, "the hot-path certification"),
+            );
+        }
+        // An assertion forbids `alloc` either openly (`none: {alloc}`)
+        // or by closing a set that leaves it out (`only: {…}` — the
+        // fn's inferred effects must be a SUBSET, so an unlisted class
+        // is forbidden).
+        let forbids_alloc = fd.effects.iter().any(|a| match a {
+            EffectAssert::Forbid(cs) => cs.contains(&EffectClass::Alloc),
+            EffectAssert::Only(cs) => !cs.contains(&EffectClass::Alloc),
+            _ => false,
+        });
+        if forbids_alloc {
+            diags.push(
+                Diag::ty(
+                    unbounded.span,
+                    format!(
+                        "`@unbounded` and an effect assertion that forbids \
+                         `alloc` contradict on `{}`: one acknowledges an \
+                         allocation without a static bound, the other says \
+                         this fn performs none. Drop `@unbounded`, or let \
+                         the assertion admit `alloc`.",
+                        fd.name.name
+                    ),
+                )
+                .with_related(spelled("effects"), "the assertion that forbids `alloc`"),
+            );
+        }
+        if fd.budget == Some(0) {
+            diags.push(
+                Diag::ty(
+                    unbounded.span,
+                    format!(
+                        "`@unbounded` and `@budget(alloc_per_call = 0)` \
+                         contradict on `{}`: the budget is the zero-alloc \
+                         certificate and `@unbounded` acknowledges an \
+                         allocation without a static bound. A ceiling above \
+                         zero does stack with `@unbounded` — bounded per \
+                         call, deliberately unbounded in aggregate.",
+                        fd.name.name
+                    ),
+                )
+                .with_related(spelled("budget"), "the zero-alloc certificate"),
+            );
+        }
+    }
+    fn walk(items: &[TopDecl], diags: &mut Vec<Diag>) {
+        for item in items {
+            match item {
+                TopDecl::Fn(fd) => check_fn(fd, diags),
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        if let LocusMember::Fn(fd) = m {
+                            check_fn(fd, diags);
+                        }
+                    }
+                }
+                // A module nests top declarations arbitrarily deep;
+                // a decorator inside one is still a decorator.
+                TopDecl::Module(m) => walk(&m.items, diags),
+                _ => {}
+            }
+        }
+    }
+    for program in bundle.programs.values() {
+        walk(&program.items, diags);
     }
 }
 
@@ -6974,6 +7124,53 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// GH #756: `type` is a TOP-LEVEL declaration. The parser accepts
+    /// one inside a locus body (`LocusMember::Type`) and the checker
+    /// ignored it, so a locus-level `type` passed `hale check` — and
+    /// then codegen, which has no lowering for the member, refused
+    /// the whole program with `locus L member kind not yet lowered to
+    /// codegen`: a program the gate accepted could not be built, and
+    /// the message named no line. Nothing could USE the declaration
+    /// either: the resolver never registers a member type, so the
+    /// name it introduces is invisible everywhere, including inside
+    /// the locus that declares it.
+    ///
+    /// Rejecting it at the declaration is the fix rather than
+    /// lowering it, for the reasons that decided the sibling member
+    /// `const` (GH #747): a namespaced type has no settled spelling
+    /// (`Holder::Pair` from outside, bare `Pair` inside), it would
+    /// need new resolution in the checker AND in codegen, and it
+    /// lands on the generic-monomorph and cross-seed rename paths
+    /// that already walk a member type's field types. A top-level
+    /// `type` is in scope everywhere in the seed and is what the
+    /// author wanted.
+    fn check_no_member_types(&mut self, decl: &LocusDecl) {
+        for member in &decl.members {
+            let LocusMember::Type(t) = member else {
+                continue;
+            };
+            // At the `type` keyword: `TypeDecl::span` runs from the
+            // keyword to the declaration's end in all three forms
+            // (struct, alias, enum), so the declaration's first
+            // token is the one line that has to change.
+            let kw = Span::new(
+                t.span.start.as_usize(),
+                t.span.start.as_usize() + "type".len(),
+            );
+            self.diags.push(Diag::ty(
+                kw,
+                format!(
+                    "`type {n}` is declared inside locus `{l}`: `type` is a \
+                     top-level declaration, not a locus member. Move it \
+                     above the locus — a top-level `type` is in scope \
+                     everywhere in the seed, including inside every locus.",
+                    n = t.name.name,
+                    l = decl.name.name,
+                ),
+            ));
+        }
+    }
+
     /// GH #747: `const` is a TOP-LEVEL declaration. The parser
     /// accepts one inside a locus body (`LocusMember::Const`) and
     /// the checker used to typecheck its value, so a locus-level
@@ -7026,6 +7223,9 @@ impl<'a> Checker<'a> {
         // lookup below so it fires for every parsed locus.
         self.check_reserved_member_names(decl);
 
+        // GH #756 — a `type` is not a locus member. Also before the
+        // lookup, for the same reason.
+        self.check_no_member_types(decl);
         // GH #747 — a `const` is not a locus member. Also before the
         // lookup, for the same reason.
         self.check_no_member_consts(decl);
@@ -9379,7 +9579,13 @@ impl<'a> Checker<'a> {
                 // Int, got String") about a declaration that has
                 // to move either way — one mistake, one diagnostic.
             }
-            LocusMember::Type(_) => {}
+            LocusMember::Type(_) => {
+                // GH #756: refused at its declaration by
+                // `check_no_member_types` before any member is
+                // walked. Its fields were never checked here either
+                // — the resolver registers no member type, so there
+                // is nothing to check them against.
+            }
             LocusMember::Capacity(cb) => {
                 // F.22 restriction 1: cell type must be a value-shape,
                 // not a LocusRef. Loci have lifecycle; recycling
@@ -12637,12 +12843,25 @@ impl<'a> Checker<'a> {
                             // now, so the hint was unreachable —
                             // dead advice about a limitation that no
                             // longer exists is worse than none.)
-                            let hint = crate::stdlib_surface::nearest_name(
+                            let mut hint = crate::stdlib_surface::nearest_name(
                                 &name.name,
                                 candidates.iter().map(|s| s.as_str()),
                             )
                             .map(|s| format!(" — did you mean `{}`?", s))
                             .unwrap_or_default();
+                            // GH #722: `s.len()` / `s.length` on a
+                            // String or Bytes is the member spelling
+                            // of a builtin; no candidate name can
+                            // bridge it, so point at the builtin.
+                            if hint.is_empty() {
+                                if let Some(advice) =
+                                    crate::stdlib_surface::builtin_member_advice(
+                                        &rt, &name.name,
+                                    )
+                                {
+                                    hint = format!(" — {}", advice);
+                                }
+                            }
                             self.diags.push(Diag::ty(
                                 *span,
                                 format!(

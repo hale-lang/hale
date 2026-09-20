@@ -149,6 +149,7 @@ fn dna_fixture_set_is_complete() {
             "deployment_test.hl",
             "editing_test.hl",
             "effect_outcomes_test.hl",
+            "embedded_provenance_test.hl",
             "extensions_test.hl",
             "fanout_join_test.hl",
             "grant_layering_test.hl",
