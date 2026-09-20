@@ -540,6 +540,11 @@ pub const SURFACES: &[NsSurface] = &[
             e("obj_value_float", EffectSet::PURE), e("obj_value_int", EffectSet::PURE), e("obj_value_raw", EffectSet::PURE),
             e("obj_value_string", EffectSet::PURE), e("object_first", EffectSet::PURE), e("object_next", EffectSet::PURE),
             e("unescape_string", EffectSet::PURE),
+            // GH #754: syntax validation. Both are byte scans over
+            // one immutable String with no allocation at all — the
+            // uniqueness table is a fixed local array — so PURE is
+            // the honest class, not ALLOC.
+            e("valid", EffectSet::PURE), e("valid_object", EffectSet::PURE),
         ],
         open_prefixes: &[],
     },
@@ -971,6 +976,10 @@ pub const SIGS: &[FnSig] = &[
     sig!(NS_JSON, "find_field_raw", [Str, Str], Str),
     sig!(NS_JSON, "escape_string", [Str], Str),
     sig!(NS_JSON, "unescape_string", [Str], Str),
+    // GH #754: one well-formed RFC 8259 value / a top-level object
+    // with unique literal keys.
+    sig!(NS_JSON, "valid", [Str], Bool),
+    sig!(NS_JSON, "valid_object", [Str], Bool),
     sig!(NS_STR, "index_of", [Str, Str], Int),
     // #353: the everyday predicates. The runtime carried
     // `lotus_str_contains` / `_starts_with` all along; `ends_with` is

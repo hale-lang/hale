@@ -1,0 +1,268 @@
+// GH #754: `std::json::valid` answers "is this text one well-formed
+// RFC 8259 value?", and `std::json::valid_object` adds "…and is it a
+// top-level object with unique, unescaped keys?".
+//
+// The find_* helpers are deliberately permissive field scanners, so
+// before this every consumer that had to refuse malformed input wrote
+// its own validator — a downstream handoff carried four of them.
+//
+// A valid/invalid pair per production, plus the three refusals that
+// go beyond the grammar (invalid UTF-8, a lone surrogate escape,
+// `\u0000`) and the two bounds (depth 64, and `valid_object`'s
+// 512-field width bound).
+
+fn refute(got: Bool, label: String) {
+    std::test::assert(!got, label);
+}
+
+fn main() {
+    // --- objects and arrays ---
+    std::test::assert(std::json::valid("{}"), "empty object");
+    std::test::assert(std::json::valid("[]"), "empty array");
+    std::test::assert(std::json::valid("{\"a\":1}"), "one member");
+    std::test::assert(std::json::valid("[1,2,3]"), "three elements");
+    std::test::assert(
+        std::json::valid("{\"a\":1,\"b\":[1,{\"c\":null}],\"d\":{}}"),
+        "nested containers"
+    );
+    refute(std::json::valid("{"), "unclosed object");
+    refute(std::json::valid("[1,2"), "unclosed array");
+    refute(std::json::valid("}"), "a bare close brace");
+    refute(std::json::valid("[1}"), "mismatched close");
+    refute(std::json::valid("[1,]"), "trailing comma in an array");
+    refute(std::json::valid("{\"a\":1,}"), "trailing comma in an object");
+    refute(std::json::valid("[,1]"), "leading comma");
+    refute(std::json::valid("{\"a\" 1}"), "member with no colon");
+    refute(std::json::valid("{a:1}"), "unquoted key");
+    refute(std::json::valid("{\"a\":}"), "member with no value");
+    refute(std::json::valid("{1:2}"), "non-string key");
+
+    // --- whitespace, trailing garbage, empty ---
+    std::test::assert(
+        std::json::valid(" \t\r\n{ \"a\" : [ 1 , 2 ] } \n"),
+        "JSON whitespace around every token"
+    );
+    refute(std::json::valid(""), "the empty string is not a document");
+    refute(std::json::valid("   "), "whitespace alone is not a document");
+    refute(std::json::valid("{}x"), "trailing garbage");
+    refute(std::json::valid("1 2"), "two values, not one");
+    refute(std::json::valid("{\"a\":1} {}"), "two documents");
+
+    // --- strings and escapes ---
+    std::test::assert(std::json::valid("\"\""), "empty string");
+    std::test::assert(std::json::valid("\"plain\""), "bare string value");
+    std::test::assert(
+        std::json::valid("\"\\\" \\\\ \\/ \\b \\f \\n \\r \\t\""),
+        "every two-character escape"
+    );
+    std::test::assert(
+        std::json::valid("\"\\u0041\\u00e9\\u4e2d\""), "\\uXXXX scalars"
+    );
+    std::test::assert(
+        std::json::valid("\"\\ud83d\\ude00\""), "a surrogate pair"
+    );
+    std::test::assert(
+        std::json::valid("\"a\\u0001b\""), "an escaped control byte"
+    );
+    std::test::assert(std::json::valid("\"café 中\""), "UTF-8 passes through");
+    refute(std::json::valid("\"unterminated"), "unterminated string");
+    refute(std::json::valid("\"\\q\""), "unknown escape");
+    refute(std::json::valid("\"\\uZZZZ\""), "four digits that are not hex");
+    refute(std::json::valid("\"\\u00\""), "a truncated \\u escape");
+    refute(std::json::valid("\"\\ud83d\""), "a lone high surrogate");
+    refute(std::json::valid("\"\\udc00\""), "a lone low surrogate");
+    refute(
+        std::json::valid("\"\\ud83d\\u0041\""),
+        "a high surrogate followed by a non-surrogate escape"
+    );
+    refute(std::json::valid("\"\\u0000\""), "an escaped NUL");
+
+    // A raw control byte must be escaped (RFC 8259 §7); the escaped
+    // form of the same byte is fine, asserted above.
+    let raw_tab = std::bytes::BytesBuilder { };
+    raw_tab.append_str("\"a");
+    raw_tab.append_u8(9);
+    raw_tab.append_str("b\"");
+    refute(
+        std::json::valid(std::str::from_bytes(raw_tab.snapshot())),
+        "a raw tab inside a string"
+    );
+
+    // Invalid UTF-8 is refused: a lead byte with no continuation, and
+    // a surrogate spelled out as three bytes.
+    let truncated = std::bytes::BytesBuilder { };
+    truncated.append_str("\"a");
+    truncated.append_u8(195);
+    truncated.append_str("b\"");
+    refute(
+        std::json::valid(std::str::from_bytes(truncated.snapshot())),
+        "a truncated UTF-8 sequence"
+    );
+    let surrogate = std::bytes::BytesBuilder { };
+    surrogate.append_str("\"");
+    surrogate.append_u8(237);
+    surrogate.append_u8(160);
+    surrogate.append_u8(128);
+    surrogate.append_str("\"");
+    refute(
+        std::json::valid(std::str::from_bytes(surrogate.snapshot())),
+        "a surrogate encoded directly as UTF-8"
+    );
+
+    // --- numbers ---
+    std::test::assert(std::json::valid("0"), "zero");
+    std::test::assert(std::json::valid("-0"), "minus zero");
+    std::test::assert(std::json::valid("42"), "an integer");
+    std::test::assert(std::json::valid("-1.25"), "a fraction");
+    std::test::assert(std::json::valid("1e5"), "an exponent");
+    std::test::assert(std::json::valid("1E+5"), "a signed exponent");
+    std::test::assert(std::json::valid("-1.25e-3"), "sign, fraction, exponent");
+    std::test::assert(std::json::valid("[0,-0.5,1e300]"), "numbers in an array");
+    refute(std::json::valid("01"), "a leading zero");
+    refute(std::json::valid("-01"), "a signed leading zero");
+    refute(std::json::valid("1."), "a trailing dot");
+    refute(std::json::valid(".5"), "a leading dot");
+    refute(std::json::valid("1e"), "an exponent with no digits");
+    refute(std::json::valid("1e+"), "a signed exponent with no digits");
+    refute(std::json::valid("+1"), "a leading plus");
+    refute(std::json::valid("-"), "a bare minus");
+    refute(std::json::valid("0x10"), "a hex literal");
+    refute(std::json::valid("1.2.3"), "two dots");
+
+    // --- literals ---
+    std::test::assert(std::json::valid("true"), "true");
+    std::test::assert(std::json::valid("false"), "false");
+    std::test::assert(std::json::valid("null"), "null");
+    refute(std::json::valid("tru"), "a truncated literal");
+    refute(std::json::valid("TRUE"), "an uppercased literal");
+    refute(std::json::valid("truex"), "a literal with trailing bytes");
+    refute(std::json::valid("nil"), "not a JSON literal");
+
+    // --- the depth bound: 64 accepted, 65 refused ---
+    let mut opens = "";
+    let mut closes = "";
+    let mut d = 0;
+    while d < 64 {
+        opens = opens + "[";
+        closes = closes + "]";
+        d = d + 1;
+    }
+    std::test::assert(std::json::valid(opens + closes), "depth 64");
+    std::test::assert(
+        std::json::valid(opens + "1" + closes), "depth 64 around a scalar"
+    );
+    refute(std::json::valid("[" + opens + closes + "]"), "depth 65");
+
+    // The same bound over objects, which exercises bit 63 of the
+    // container-kind mask.
+    let mut oopens = "";
+    let mut ocloses = "";
+    let mut k = 0;
+    while k < 64 {
+        oopens = oopens + "{\"k\":";
+        ocloses = ocloses + "}";
+        k = k + 1;
+    }
+    std::test::assert(
+        std::json::valid(oopens + "1" + ocloses), "64 nested objects"
+    );
+    refute(
+        std::json::valid("[" + oopens + "1" + ocloses + "]"),
+        "65 levels, mixing an array and objects"
+    );
+
+    // --- valid_object ---
+    std::test::assert(std::json::valid_object("{}"), "vo: empty object");
+    std::test::assert(
+        std::json::valid_object("  {\"a\":1, \"b\":\"x\"}  "),
+        "vo: two distinct keys"
+    );
+    std::test::assert(
+        std::json::valid_object("{\"a\":{\"a\":1},\"b\":[{\"a\":2}]}"),
+        "vo: a nested object may reuse a top-level key name"
+    );
+    refute(std::json::valid_object("[1]"), "vo: a top-level array");
+    refute(std::json::valid_object("\"s\""), "vo: a top-level string");
+    refute(std::json::valid_object("42"), "vo: a top-level number");
+    refute(std::json::valid_object("{\"a\":1,}"), "vo: malformed object");
+    refute(
+        std::json::valid_object("{\"\\u0061\":1}"),
+        "vo: an escaped key spelling"
+    );
+
+    // A duplicate key is valid JSON syntax and refused by valid_object
+    // — the asymmetry the two fns exist to express.
+    std::test::assert(
+        std::json::valid("{\"a\":1,\"a\":2}"), "duplicate keys are valid JSON"
+    );
+    refute(
+        std::json::valid_object("{\"a\":1,\"a\":2}"),
+        "vo: duplicate keys"
+    );
+    refute(
+        std::json::valid_object("{\"a\":1,\"b\":2,\"a\":3}"),
+        "vo: duplicate keys with another between them"
+    );
+
+    // --- valid_object's width bound: 64 fields in, 65 out ---
+    std::test::assert(
+        std::json::valid_object(wide_object(64)), "vo: 64 distinct keys"
+    );
+    std::test::assert(
+        std::json::valid(wide_object(65)), "65 keys is valid JSON"
+    );
+    refute(
+        std::json::valid_object(wide_object(65)),
+        "vo: 65 keys exceeds the documented width bound"
+    );
+    // A duplicate in the LAST field is where the walk over earlier
+    // members is longest, and it repeats the FIRST key, so a check
+    // that only looked at recent neighbours would miss it.
+    std::test::assert(
+        std::json::valid(wide_object_then_repeat(60)),
+        "60 keys plus a repeat is valid JSON"
+    );
+    refute(
+        std::json::valid_object(wide_object_then_repeat(60)),
+        "vo: the 61st field repeats the 1st"
+    );
+
+    // Keys where one is a prefix of another must not compare equal:
+    // the in-place compare has to check the lengths, not just the
+    // shared bytes.
+    std::test::assert(
+        std::json::valid_object("{\"k1\":1,\"k11\":2,\"k\":3}"),
+        "vo: prefix keys are distinct"
+    );
+}
+
+// `n` distinct keys, then `"k0"` a second time — `n + 1` fields.
+fn wide_object_then_repeat(n: Int) -> String {
+    let b = std::bytes::BytesBuilder { initial_cap: n * 10 + 12 };
+    b.append_str("{");
+    let mut i = 0;
+    while i < n {
+        b.append_str("\"k");
+        b.append_str(to_string(i));
+        b.append_str("\":1,");
+        i = i + 1;
+    }
+    b.append_str("\"k0\":2}");
+    return std::str::clone(b.text_view());
+}
+
+// `{"k0":1,"k1":1,…}` with `n` distinct keys.
+fn wide_object(n: Int) -> String {
+    let b = std::bytes::BytesBuilder { initial_cap: n * 10 + 4 };
+    b.append_str("{");
+    let mut i = 0;
+    while i < n {
+        if i > 0 { b.append_str(","); }
+        b.append_str("\"k");
+        b.append_str(to_string(i));
+        b.append_str("\":1");
+        i = i + 1;
+    }
+    b.append_str("}");
+    return std::str::clone(b.text_view());
+}

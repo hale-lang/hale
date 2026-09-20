@@ -184,6 +184,68 @@ written — `\uZZZZ` stays `\uZZZZ` — on the principle that a
 malformed byte somewhere in a document shouldn't cost you the
 rest of it.
 
+## Validating
+
+The readers above are forgiving on purpose: `find_string_field`
+answers with what it finds and doesn't mind a missing brace. When
+the bytes come from somewhere you don't control — a request body,
+a file on disk, a line of somebody's journal — ask first:
+
+```hale,fragment
+if !std::json::valid(body) {
+    return Response { status: 400, body: "not JSON" };
+}
+```
+
+`std::json::valid` is true for exactly one well-formed JSON
+value, and nothing after it. Whitespace around the value is fine;
+a second value, a stray brace or trailing text is not, and the
+empty string is not a document. The number rules are JSON's, which
+are stricter than most languages': `01`, `1.`, `.5`, `1e` and
+`+1` are all refused, while `-0`, `1e5` and `-1.25e-3` are fine.
+
+Most gates want a bit more than "is it JSON":
+
+```hale,fragment
+// A record: an object, with each field named once.
+if !std::json::valid_object(row) { return false; }
+```
+
+`valid_object` is `valid` plus "the top level is an object whose
+keys are unique and unescaped". Both extras are about
+*agreement*, not taste. JSON's grammar permits
+`{"a":1,"a":2}` — last-one-wins is a convention, not a rule — so
+two readers of those bytes can disagree about the record. And
+`{"\u0061":1}` spells the key `a`, but `find_int_field(row, "a")`
+looks for the literal text `"a"` and won't find it: the field
+would be present and unfindable at once. Refusing both up front
+means everything downstream can trust what it reads.
+
+Three inputs are refused even though a pedantic reading of the
+spec allows them, and they are the same three the escape rules
+above have no character for: text that isn't valid UTF-8, a lone
+surrogate escape, and `\u0000`. A validator's job is admission,
+so it says no rather than handing on a `�`.
+
+Two limits are worth knowing, because both answer `false` rather
+than working harder:
+
+- **Nesting stops at 64 levels.** Deeper input is refused, not
+  scanned — a document made of ten thousand `[` costs you a
+  constant amount of work.
+- **`valid_object` checks uniqueness over at most 64 top-level
+  fields.** Past that it answers `false`. That bound is what lets
+  it check keys without building anything: it compares them where
+  they sit in your string. Plain `valid` has no such limit, and
+  nested objects are only checked for syntax, so a map of a
+  thousand keys is still checkable as JSON — walk its keys with
+  `object_first` / `obj_key_eq` if you need them unique too.
+
+Validating is a pass over the bytes and allocates nothing at all
+— no substring, no set of keys, nothing left in the arena
+afterwards — about 10 ms per megabyte. It is cheap enough to run
+on every inbound message rather than hoping.
+
 ## When the shape is deep
 
 `std::json` at v1 is built for flat objects and top-level arrays

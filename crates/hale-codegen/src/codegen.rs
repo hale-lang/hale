@@ -26451,6 +26451,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 result.ok_or_else(|| CodegenError::Unsupported(
                     "std::json::find_bool_field returns Bool but called in a position that expects no value".to_string()))
             }
+            // GH #754: RFC 8259 syntax validation, the strict
+            // counterpart to the permissive find_* scanners.
+            ["std", "json", "valid"] => {
+                let result = self.lower_user_fn_call("__json_valid", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::valid returns Bool but called in a position that expects no value".to_string()))
+            }
+            ["std", "json", "valid_object"] => {
+                let result = self.lower_user_fn_call("__json_valid_object", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::valid_object returns Bool but called in a position that expects no value".to_string()))
+            }
             ["std", "json", "find_field_raw"] => {
                 let result = self.lower_user_fn_call("__json_find_field_raw", args, scope)?;
                 result.ok_or_else(|| CodegenError::Unsupported(
