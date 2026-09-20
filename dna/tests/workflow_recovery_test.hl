@@ -41,6 +41,34 @@ locus Delayed {
     }
 }
 
+// A record whose reading fences a Step: on the Nth refresh — the
+// runtime's, answering a Work's state question — the Step's fence lands
+// on the Work before the record's answer does.
+locus Fencing {
+    params { inner: dna::MemJournal = dna::MemJournal { }; step_id: String = ""; task_id: String = ""; fence_on_refresh: Int = 1; refreshes: Int = 0; fenced: Bool = false; }
+    bus { publish dna::StepFenced; }
+    fn refresh() -> Bool {
+        self.refreshes = self.refreshes + 1;
+        if self.refreshes == self.fence_on_refresh && !self.fenced {
+            self.fenced = true;
+            dna::StepFenced <- dna::StepFence { step_id: self.step_id, task_id: self.task_id, reason: "fenced while the record was being read" };
+        }
+        return self.inner.refresh();
+    }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.inner.append(expected, kind, entity, body); }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.inner.append_exact(expected, kind, entity, body); }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+}
+
+// The fixture's own cue: a Work born from a handler, as the engine births
+// its Works — a Work born from `run()` would settle and end inside its own
+// run, in place.
+type Go { key: String = ""; }
+topic GoNow { payload: Go; subject: "test.recovery.go"; keyed_by key; }
+
 locus Boot {
     params {
         rt: dna::WorkflowRuntime = dna::WorkflowRuntime { };
@@ -59,13 +87,68 @@ main locus App {
         lives: String = "";
         outcomes: String = "";
         refusals: String = "";
+        // (review) Works of one record-local id in two scopes: no runtime
+        // serves either; the fixture answers the left one's question
+        left: dna::WorkRun = dna::WorkRun { scope: "left", work_id: "t1/wf1/s0/a", step_id: "t1/wf1/s0", task_id: "t1", key: "a", performer_kind: "service", request: dna::WorkRequest { objective: "left" }, allowance: 1 };
+        right: dna::WorkRun = dna::WorkRun { scope: "right", work_id: "t1/wf1/s0/a", step_id: "t1/wf1/s0", task_id: "t1", key: "a", performer_kind: "agent", request: dna::WorkRequest { objective: "right" }, allowance: 1 };
+        // (review) a never-attempted Work fenced while its state question is out
+        race2: dna::WorkRun = dna::WorkRun { scope: "race2", work_id: "race2/wf1/s0/a", step_id: "race2/wf1/s0", task_id: "race2", key: "a", performer_kind: "agent", request: dna::WorkRequest { objective: "never attempted" }, allowance: 1 };
+        // (review) an admitted Work fenced while its state question is read
+        race_request: dna::WorkRequest = dna::WorkRequest { }; // B1's recorded request, for the Work born on the cue
+        cancelled: dna::MemJournal = dna::MemJournal { }; // t1 cancelled while B1's attempt was out
+        left_admits: Int = 0;
+        right_admits: Int = 0;
+        right_kind: String = "";
+        race2_settlements: Int = 0;
+        race2_retired: Int = 0;
+        race_bad: Int = 0; // settlement proposals for B1 naming no attempt, or unreadable
+        race_settlements: Int = 0;
     }
     bus {
         subscribe dna::RunLives as on_life;
         subscribe dna::WorkflowSettled as on_outcome;
         subscribe dna::ExecutionRefused as on_refused;
+        subscribe dna::TransitionProposed as on_proposal;
+        subscribe dna::WorkStateAsked as on_left_state where key == "left";
+        subscribe dna::MemberRetired as on_race2_retired where key == "race2/wf1/s0";
+        subscribe GoNow as on_go where key == "race";
+        publish GoNow;
         publish dna::ExecutionAsked;
         publish dna::AdmissionAnswered; // forged, by the review's probe
+        publish dna::WorkStateAsked; // the left question, put again once this locus listens
+        publish dna::WorkStateAnswered; // the left record's honest answer, and forgeries
+        publish dna::StepFenced;
+        publish dna::TransitionAnswered; // the fixture is race2's committer
+        publish dna::WorkflowCancelRequested;
+    }
+    // the left record answers the left Work's question, honestly
+    fn on_left_state(q: dna::WorkStateAsk) {
+        dna::WorkStateAnswered <- dna::WorkState { scope: "left", ask_id: q.ask_id, work_id: q.work_id, attempted: true, attempt_id: q.work_id + "/a0", attempt_no: 0, performer_kind: "service" };
+    }
+    accept(w: dna::WorkRun) { }
+    // B1's Work, born as the engine would bear it: under the cancelled
+    // root, its admitted attempt in the record, its state question out
+    fn on_go(g: Go) {
+        dna::WorkRun { scope: "main", work_id: "t1.s0.b/wf1/s0/b1", step_id: "t1.s0.b/wf1/s0", task_id: "t1.s0.b", key: "b1", performer_kind: "agent", request: self.race_request, allowance: 1 };
+    }
+    fn on_race2_retired(r: dna::MemberRetirement) { if r.work_id == "race2/wf1/s0/a" { self.race2_retired = self.race2_retired + 1; } }
+    fn on_proposal(p: dna::TransitionProposal) {
+        if p.scope == "left" && p.kind == "attempt.admitted" { self.left_admits = self.left_admits + 1; }
+        if p.scope == "right" && p.kind == "attempt.admitted" {
+            self.right_admits = self.right_admits + 1;
+            let a = dna::decode_attempt(p.body);
+            if a.ok { self.right_kind = std::str::clone(a.value.performer_kind); }
+        }
+        if p.scope == "race2" && p.kind == "work.settled" { self.race2_settlements = self.race2_settlements + 1; }
+        if p.scope == "race2" && p.kind == "attempt.admitted" {
+            // the state refuses a first admission under a cancelled task
+            dna::TransitionAnswered <- dna::TransitionAnswer { scope: "race2", key: p.key, proposal_id: p.proposal_id, ok: false, basis: "state", why: "task race2 was cancelled; it admits nothing further" };
+        }
+        if p.scope == "main" && p.key == "t1.s0.b/wf1/s0/b1" && p.kind == "work.settled" {
+            self.race_settlements = self.race_settlements + 1;
+            let o = dna::decode_work_outcome(p.body);
+            if !o.ok || len(o.value.attempt_id) == 0 { self.race_bad = self.race_bad + 1; }
+        }
     }
     fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
     fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
@@ -124,6 +207,16 @@ main locus App {
             std::test::assert(r.ok, "row " + to_string(i) + " copied: " + r.error);
             i = i + 1;
         }
+    }
+    @unbounded
+    fn body_of(j: dna::Journal, kind: String, entity: String) -> String {
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && e.entity == entity { return e.body; }
+            i = i + 1;
+        }
+        return "";
     }
     fn settle() {
         let mut i = 0;
@@ -483,6 +576,85 @@ main locus App {
         std::test::assert(std::str::contains(self.refusals, "t4|the admission of t4 is in the record and the projection refused it: the recipe an admission of t4 carries binds it under `odd`, not `t4/wf1`, the workflow of t4 at revision 1"), "a recipe binding a workflow of no such form is refused: " + self.refusals);
         std::test::assert_eq_int(self.count(self.lives, "task:t6:born") + self.count(self.lives, "task:t4:born"), 0, "and nothing was born for either");
         std::test::assert_eq_int(self.count(self.lives, "t6/wf7/s0:born") + self.count(self.lives, "t6/wf1/s0:born") + self.count(self.lives, "odd/s0:born"), 0, "no step of either, under any identity");
+
+        // ---- (review) a Work-state answer is its scope's and its question's:
+        //      the left record answers the left Work — same-named in the
+        //      right scope, the right Work takes nothing from it; a stale
+        //      copy of an answer, and an answer to no question, are strays
+        let wl = "t1/wf1/s0/a";
+        // the Works asked at their birth, before this locus listened: the
+        // left question is put again under the Work's own identity. (The
+        // main record's answers for its own `t1/wf1/s0/a`, over every
+        // restart above, reached both Works too — strays, counted from here.)
+        let ls0 = self.left.state_strays;
+        let rs0 = self.right.state_strays;
+        dna::WorkStateAsked <- dna::WorkStateAsk { scope: "left", ask_id: wl + "@state", work_id: wl };
+        self.settle();
+        std::test::assert_eq_int(self.left_admits, 1, "the left Work took its record's answer and proposed its attempt");
+        std::test::assert_eq_int(self.right_admits, 0, "the right Work proposed nothing on the left record's answer");
+        std::test::assert_eq_str(self.right_kind, "", "and adopted no performer kind from it");
+        std::test::assert_eq_int(self.right.state_strays, rs0 + 1, "to the right Work the left answer was a stray");
+        dna::WorkStateAnswered <- dna::WorkState { scope: "left", ask_id: wl + "@state", work_id: wl, attempted: true, attempt_id: wl + "/a0", attempt_no: 0, performer_kind: "service" };
+        dna::WorkStateAnswered <- dna::WorkState { scope: "right", ask_id: "nobody@state", work_id: wl, attempted: true, attempt_id: wl + "/a0", attempt_no: 0, performer_kind: "service" };
+        self.settle();
+        std::test::assert_eq_int(self.left.state_strays, ls0 + 2, "the left answer, delivered again after it was taken, is a stray to the left Work — as is the right-scoped one");
+        std::test::assert_eq_int(self.right.state_strays, rs0 + 3, "an answer in the right scope to no question of the right Work's is a stray — as is the replayed left one");
+        std::test::assert_eq_int(self.right_admits + self.left_admits, 1, "and nothing more was proposed on either");
+
+        // ---- (review) fenced while its state question is out, a Work
+        //      decides after the answer: never attempted, it retires under
+        //      its cancelled Step once the state refuses its first admission;
+        //      no settlement naming no attempt is ever proposed
+        dna::StepFenced <- dna::StepFence { step_id: "race2/wf1/s0", task_id: "race2", reason: "cancelled while the state was outstanding" };
+        self.settle();
+        std::test::assert_eq_int(self.race2_settlements, 0, "the fence alone settles nothing: the record has not said what the Work is");
+        dna::WorkStateAnswered <- dna::WorkState { scope: "race2", ask_id: "race2/wf1/s0/a@state", work_id: "race2/wf1/s0/a", attempted: false };
+        self.settle();
+        std::test::assert_eq_int(self.race2_retired, 1, "never attempted, its first admission refused by the state, the Work retired");
+        std::test::assert_eq_int(self.race2_settlements, 0, "and proposed no settlement");
+
+        // ---- (review) the same ordering inside the engine: t1 is cancelled
+        //      while B1's admitted attempt is out, and the record is cut
+        //      there; a record whose reading fences B1's Step lands the fence
+        //      on B1 before the record's answer does. B1 settles cancelled on
+        //      its admitted attempt — one readable proposal, its row in the
+        //      record — never on no attempt
+        self.fresh();
+        self.cut(full, self.boot.rt.journal, point_sibling);
+        let b1_before2 = self.count(self.lives, wb1 + ":born");
+        let cancelled_before = self.count(self.outcomes, "t1:cancelled");
+        self.ask("t1");
+        self.until(true, wb1 + ":born", b1_before2 + 1);
+        self.settle();
+        dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: "t1", reason: "cancelled for the race" };
+        self.until(false, "t1:cancelled", cancelled_before + 1);
+        self.settle();
+        let point_cancelled = self.after(self.boot.rt.journal, "workflow.settled", "t1");
+        std::test::assert(point_cancelled > 0 && self.rows(self.boot.rt.journal, "work.settled", wb1) == 1, "t1 cancelled with B1's attempt out, and B1 then settled cancelled: " + to_string(self.rows(self.boot.rt.journal, "work.settled", wb1)));
+        self.cut(self.boot.rt.journal, self.cancelled, point_cancelled);
+        std::test::assert_eq_int(self.rows(self.cancelled, "work.settled", wb1), 0, "the cut leaves B1 admitted, unsettled, under a cancelled root");
+        let recorded = dna::decode_attempt(self.body_of(self.cancelled, "attempt.admitted", wb1 + "/a0"));
+        std::test::assert(recorded.ok, "B1's admitted attempt reads back");
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: Fencing { step_id: "t1.s0.b/wf1/s0", task_id: "t1.s0.b", fence_on_refresh: 1 }, work: dna::WorkSystem { service: Counting { }, agent: Delayed { }, agent_reconciler: dna::IdempotentReplay { }, service_reconciler: dna::IdempotentReplay { } } }, owner: dna::Executions { scope: "main" } };
+        self.cut(self.cancelled, self.boot.rt.journal, self.cancelled.revision());
+        let rq = recorded.value.request;
+        // the recorded request, field by field: what the Work re-proposes must be the record's bytes
+        self.race_request = dna::WorkRequest {
+            work_id: std::str::clone(rq.work_id), task_id: std::str::clone(rq.task_id), step_id: std::str::clone(rq.step_id),
+            objective: std::str::clone(rq.objective), context_digest: std::str::clone(rq.context_digest), knowledge_bindings: std::str::clone(rq.knowledge_bindings),
+            output_contract: std::str::clone(rq.output_contract), data_class: std::str::clone(rq.data_class), requires: std::str::clone(rq.requires),
+            target: std::str::clone(rq.target), cost_ceiling: rq.cost_ceiling, attempt_no: rq.attempt_no
+        };
+        // (B1's settlement proposals over the restarts above are counted too: from here)
+        let rs = self.race_settlements;
+        let rb = self.race_bad;
+        GoNow <- Go { key: "race" };
+        self.settle();
+        std::test::assert_eq_int(self.race_bad, rb, "no settlement proposal named no attempt, or was unreadable");
+        std::test::assert_eq_int(self.race_settlements, rs + 1, "one settlement was proposed: on the admitted attempt, after the record answered");
+        let settled = dna::decode_work_outcome(self.body_of(self.boot.rt.journal, "work.settled", wb1));
+        std::test::assert(settled.ok && settled.value.attempt_id == wb1 + "/a0" && settled.value.disposition == "cancelled", "and it is in the record: B1 cancelled on attempt zero");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "attempt.admitted", ""), 2, "nothing was minted: A's and B1's attempts are the record's");
         std::test::assert(self.boot.rt.journal.verify_chain(), "the record's chain holds");
     }
 }

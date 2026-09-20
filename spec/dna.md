@@ -1395,7 +1395,18 @@ Work has answered and leaves; a Work with an admitted attempt resumes
 that attempt under its number, id and performer kind as the record has
 them — the kinds a restart is asked with bind only attempts not yet
 admitted — and a Work never attempted admits its first attempt under
-the asked kind.
+the asked kind. The state question carries the Work's scope and an
+identity of its own (`WorkStateAsked.ask_id`), held outstanding until
+answered; the answer carries both back, and the Work takes only the
+answer to its one outstanding question — its scope, its identity —
+once: a same-named Work in another scope's record (ids are minted
+within a record) is not this Work, and a stale or unsolicited answer is
+no state. A fence heard while the state question is outstanding is
+remembered and decided on after the answer: an admitted attempt is
+re-proposed and, admitted under the fence, settles cancelled; a Work
+never attempted proposes its first admission, which the state refuses
+under the cancelled Task, and retires. No settlement ever names no
+attempt.
 
 ## Workflow execution: uncertain external effects
 

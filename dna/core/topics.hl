@@ -169,10 +169,16 @@ topic AdmissionAnswered { payload: AdmissionAnswer; subject: "dna.admission.answ
 // A Work asks the record what it holds about it before it proposes
 // anything (card 13): its current attempt, if one is admitted — that
 // attempt's number, id and performer kind are the record's, never the
-// ask's — and whether it has settled.
-type WorkStateAsk { scope: String = ""; work_id: String = ""; }
+// ask's — and whether it has settled. The question carries the Work's
+// scope and an identity of its own; the answer carries both back, and
+// the Work takes only the answer to its one outstanding question, once:
+// a same-named Work in another scope's record — ids are minted within a
+// record — is not this Work, and its record's answer is not this one's.
+type WorkStateAsk { scope: String = ""; ask_id: String = ""; work_id: String = ""; }
 topic WorkStateAsked { payload: WorkStateAsk; subject: "dna.work.state.asked"; keyed_by scope; }
 type WorkState {
+    scope: String = "";
+    ask_id: String = "";
     work_id: String = "";
     attempted: Bool = false;
     attempt_id: String = "";

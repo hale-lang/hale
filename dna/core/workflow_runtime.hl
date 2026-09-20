@@ -325,6 +325,7 @@ locus WorkflowRuntime {
             if read.ok { kind = read.value.performer_kind; }
         }
         WorkStateAnswered <- WorkState {
+            scope: self.scope, ask_id: q.ask_id,
             work_id: q.work_id, attempted: len(w.attempt_id) > 0, attempt_id: w.attempt_id, attempt_no: w.attempt_no,
             performer_kind: kind, attempt_disposition: w.attempt_disposition, disposition: w.disposition
         };
@@ -378,6 +379,9 @@ locus WorkRun {
         fenced: Bool = false; // the execution was cancelled: nothing new runs
         settled: Bool = false;
         stale: Int = 0; // replies that were not this attempt's
+        state_asked: String = ""; // the one state question awaiting the record's answer (card 13)
+        state_strays: Int = 0; // state answers to no question of this Work's
+        fence_reason: String = ""; // a fence heard while the state question was outstanding
     }
     bus {
         subscribe TransitionAnswered as on_answer where key == self.work_id;
@@ -400,10 +404,21 @@ locus WorkRun {
     // that attempt, under its number, id and performer kind as the
     // record has them, never as the ask has them; a Work the record
     // never attempted admits its first attempt under the kind the ask
-    // names.
-    run() { WorkStateAsked <- WorkStateAsk { scope: self.scope, work_id: self.work_id }; }
+    // names. The question has an identity, held outstanding until its
+    // answer; only the answer to it — this scope, this question — is
+    // taken, once. A same-named Work in another scope's record is not
+    // this Work, and a stale or unsolicited answer is no state.
+    run() {
+        self.state_asked = self.work_id + "@state";
+        WorkStateAsked <- WorkStateAsk { scope: self.scope, ask_id: self.state_asked, work_id: self.work_id };
+    }
     fn on_work_state(w: WorkState) {
-        if self.settled || self.attempt_no >= 0 { return; } // one answer, before anything was proposed
+        if len(self.state_asked) == 0 || w.scope != self.scope || w.ask_id != self.state_asked || w.work_id != self.work_id {
+            self.state_strays = self.state_strays + 1;
+            return;
+        }
+        self.state_asked = "";
+        if self.settled || self.attempt_no >= 0 { return; } // before anything was proposed
         if len(w.disposition) > 0 {
             self.settled = true;
             self.settling = std::str::clone(w.disposition);
@@ -414,9 +429,15 @@ locus WorkRun {
             self.attempt_no = w.attempt_no;
             self.attempt_id = std::str::clone(w.attempt_id);
             if len(w.performer_kind) > 0 { self.performer_kind = std::str::clone(w.performer_kind); }
+            // fenced while the question was out: the admitted attempt is
+            // re-proposed and, admitted under the fence, settles cancelled
+            // — the one path every fenced admission takes
             self.propose_admission();
             return;
         }
+        // never attempted: its first admission is proposed — and, fenced
+        // while the question was out, refused by the state, so the Work
+        // retires under its cancelled Step, never settling on no attempt
         self.admit_next();
     }
     // Nothing of this Work was ever admitted, and under its settled Step
@@ -576,6 +597,11 @@ locus WorkRun {
     fn on_fenced(f: StepFence) {
         self.fenced = true;
         if len(self.step_settled) == 0 { self.step_settled = "cancelled"; }
+        // the record has not yet said what this Work is (card 13): the
+        // fence is remembered, and decided on after the exact state
+        // answer — on the admitted attempt, or by retiring a Work never
+        // admitted — never by a settlement naming no attempt
+        if len(self.state_asked) > 0 { self.fence_reason = std::str::clone(f.reason); return; }
         if self.settled || len(self.outstanding) > 0 { return; }
         if self.held && self.proposing == "admit" && self.attempt_no == 0 { self.propose_admission(); return; }
         if self.unadmitted {
