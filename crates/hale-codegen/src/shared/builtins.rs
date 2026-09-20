@@ -2180,6 +2180,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i64_t.fn_type(&[], false),
             None,
         );
+        // GH #717: the recorded-failure latch. The assert sets it
+        // instead of calling exit(1); the call-site check reads it
+        // and routes out through main's teardown.
+        self.module.add_function(
+            "lotus_test_note_fail",
+            void_t.fn_type(&[], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_test_failed",
+            i64_t.fn_type(&[], false),
+            None,
+        );
 
         // Wave B (bus-transport redesign): adapter-binding
         // registration. The runtime stores the (self, send_fn)
