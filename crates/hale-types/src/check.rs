@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
 
-use crate::resolve::{resolve_type_expr, TopScope};
+use crate::resolve::{resolve_type_expr, KnownNames, TopScope};
 use crate::symbol::*;
 use crate::ty::{is_flat_shapeable, is_key_eligible, Ty};
 
@@ -283,7 +283,7 @@ fn collect_generic_types<'a>(
 /// (Unknown) for anything it can't confidently name.
 fn mangle_token_to_ty(
     tok: &str,
-    known: &BTreeMap<String, Span>,
+    known: &KnownNames,
 ) -> Ty {
     match tok {
         "Int" => Ty::Prim(PrimType::Int),
@@ -364,7 +364,7 @@ fn unify_generic_ty(
 fn substitute_generic_ty(
     te: &TypeExpr,
     bindings: &BTreeMap<String, Ty>,
-    known: &BTreeMap<String, Span>,
+    known: &KnownNames,
 ) -> Ty {
     match te {
         TypeExpr::Named { path, generic_args, .. }
@@ -5965,14 +5965,24 @@ fn check_bus_backpressure(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     }
 }
 
-fn collect_known_names(top: &TopScope) -> BTreeMap<String, Span> {
-    let mut m = BTreeMap::new();
+fn collect_known_names(top: &TopScope) -> KnownNames {
+    let mut m = KnownNames::default();
     for (name, sym) in &top.symbols {
         if matches!(
             sym,
             TopSymbol::Locus(_) | TopSymbol::Type(_) | TopSymbol::Perspective(_)
         ) {
             m.insert(name.clone(), sym.span());
+        }
+        // GH #759: carry the alias targets across, already
+        // expanded by `build_top_scope` — the checker resolves
+        // type expressions against THIS table, so without them a
+        // `type Thing = Int;` use would come back `Ty::Named`
+        // again and stop unifying with `Int`.
+        if let TopSymbol::Type(info) = sym {
+            if let TypeKind::Alias(t) = &info.kind {
+                m.set_alias(name.clone(), t.clone());
+            }
         }
     }
     m
@@ -6112,7 +6122,7 @@ fn wasm_unavailable_stdlib(segs: &[&str]) -> Option<&'static str> {
 
 struct Checker<'a> {
     top: &'a TopScope,
-    known: &'a BTreeMap<String, Span>,
+    known: &'a KnownNames,
     diags: &'a mut Vec<Diag>,
     locals: ScopeStack,
     current_locus: Option<&'a LocusInfo>,
@@ -8463,6 +8473,7 @@ impl<'a> Checker<'a> {
                 return;
             }
         };
+        let cell_name = self.through_type_alias(cell_name);
         match self.top.lookup(&cell_name) {
             Some(TopSymbol::Type(info)) => match &info.kind {
                 TypeKind::Struct(fields) => {
@@ -8726,6 +8737,7 @@ impl<'a> Checker<'a> {
                 return;
             }
         };
+        let cell_name = self.through_type_alias(cell_name);
         let field_ty = match self.top.lookup(&cell_name) {
             Some(TopSymbol::Type(info)) => match &info.kind {
                 TypeKind::Struct(fields) => {
@@ -11477,6 +11489,20 @@ impl<'a> Checker<'a> {
                 name.name
             ),
         ));
+    }
+
+    /// GH #759: a type name written in a position the checker reads
+    /// SYNTACTICALLY (the `@form(hashmap)` / `@form(lru_cache)` cell
+    /// slot, which needs the declaring struct to resolve
+    /// `indexed_by`) may be a transparent alias. Answer with the
+    /// name the alias expands to; anything that isn't an alias of a
+    /// named type comes back unchanged, so the existing "not a
+    /// struct" diagnostics still fire on their own terms.
+    fn through_type_alias(&self, name: String) -> String {
+        match self.known.alias_target(&name) {
+            Some(Ty::Named(target)) => target.clone(),
+            _ => name,
+        }
     }
 
     fn field_ty(&self, ty: &Ty, name: &str) -> Option<Ty> {
