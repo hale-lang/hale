@@ -99,6 +99,34 @@ whichever file; there is one library either way.
 Any *other* single file is its own small library: `import
 "../lib/helper"` brings in `helper.hl` and nothing else.
 
+## When the path names nothing
+
+A path that resolves to none of those places fails the check where
+you wrote it:
+
+```text
+/tmp/app/main.hl:1:8: type error: could not resolve import `../nowhere` (tried /tmp/app/../nowhere.hl, /tmp/app/../nowhere/, and workspace-root/../nowhere/)
+    import "../nowhere" as nowhere;
+           ^^^^^^^^^^^^
+```
+
+The three paths in the message are the three places the compiler
+looked, in order, so a typo and a library you have not vendored yet
+look different at a glance. The caret is under the string itself —
+the thing to change — and the file it names is the file holding the
+`import`, which for a two-hop failure is the library's file rather
+than yours.
+
+`build`, `run` and `test` print that same line, and `hale check
+--json` carries it as one record with the file, line and column in
+it, so an editor opens the `import` rather than the top of the
+program.
+
+If the path *does* resolve but there is nothing to compile there —
+a vendored directory with no `.hl` files in it, a checkout that
+did not finish — the report names that directory instead. The
+import was found; reading what it named is what failed.
+
 ## The catalog
 
 **Persistence & data**

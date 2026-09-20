@@ -536,10 +536,14 @@ impl Parser {
 
     fn parse_import(&mut self) -> Result<Import, Diag> {
         let kw = self.expect(TokenKind::Import, "import")?;
-        let path = match self.peek().clone() {
+        // GH #860: the literal's own span travels with the path —
+        // an unresolvable import is reported under the string, not
+        // under the whole statement.
+        let (path, path_span) = match self.peek().clone() {
             TokenKind::StringLit(s) => {
+                let span = self.peek_token().span;
                 self.bump();
-                s
+                (s, span)
             }
             other => {
                 return Err(Diag::parse(
@@ -570,6 +574,7 @@ impl Parser {
             path,
             alias: Some(alias),
             span: kw.span.merge(semi.span),
+            path_span,
         })
     }
 
