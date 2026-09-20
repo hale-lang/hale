@@ -396,7 +396,14 @@ position by GH #711 / #812):
   inside the callee and handed back, so the expression that
   consumes the handle is its owner, with **the same timing as a
   let-bound literal**. A binding owns what it names; a call
-  result nothing names is owned by the enclosing fn's scope. This
+  result nothing names is owned by the enclosing fn's scope. What
+  a binding names is the expression written **at that position**,
+  not a factory call nested inside it: in `let x = combine(a,
+  make());` — and in `return combine(a, make());`, where the
+  caller is the owner — the binding (or the caller) owns
+  `combine`'s result, and `make`'s is a result nothing names,
+  owned by the enclosing fn's scope and reclaimed at its exit
+  (GH #837). This
   is the same rule in the **fallible** spelling, where the call
   is reached through `or` — `let c = std::process::spawn(argv)
   or raise;` is reclaimed exactly as `let h = make(argv);` is,
