@@ -46,6 +46,16 @@
 //! with exit 1. It is now one record per unreadable input, at
 //! `"line":0,"col":0` under `"kind":"io error"`, written by the same
 //! writer every other record goes through.
+//!
+//! GH #822 is the same split one field over. With the position
+//! settled, the FILE still differed by channel: `check` resolved it
+//! through the canonical `file_bases` and `build` / `run` / `test`
+//! through `ImportDiag`, which holds the path as the resolver
+//! REACHED it (`/abs/app/../lib/second.hl`), and the target's own
+//! files came out exactly as the command line spelled them. All of
+//! them name the right file; none of them is a join key, and
+//! `check --json`'s `file` field is used as one. Every renderer now
+//! spells a path the one way — absolute, canonical, `..`-free.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -659,26 +669,99 @@ fn test_positions_an_imported_parse_error_in_its_own_file() {
 /// `check` is the control: it has been right since GH #770, and the
 /// other commands now print exactly what it prints. Pinning them to
 /// each other is what stops the two paths drifting apart again.
+///
+/// GH #822 extends it from the position to the whole located prefix.
+/// Once every command agreed about `line:col` the FILE was the last
+/// thing left differing: `check` resolves the diagnostic through the
+/// canonical `file_bases` and printed `/abs/lib/second.hl`, while
+/// `build` / `run` / `test` render it from `ImportDiag`, which holds
+/// the path as the resolver REACHED it — through the importer's own
+/// directory, so `/abs/app/../lib/second.hl`. Both name the file and
+/// both are clickable; neither is a join key, and `check --json`'s
+/// `file` field is used as one. The seed is imported via `../`
+/// precisely so that a `..` in the output is a failure.
 #[test]
 fn check_and_build_agree_about_the_position() {
     let d = import_seed("import775agree");
+    let app = d.join("app");
 
-    let (_, check_err, check_code) = hale_check(&[], &d.join("app"));
-    let (_, build_err, build_code) = hale_cmd("build", &[], &d.join("app"));
+    let (_, check_err, check_code) = hale_check(&[], &app);
+    let (check_json, _, json_code) = hale_check(&["--json"], &app);
+    let (_, build_err, build_code) = hale_cmd("build", &[], &app);
+    let (_, run_err, run_code) = hale_cmd("run", &[], &app);
+    let (test_out, _, test_code) =
+        hale_cmd("test", &[], &app.join("app_test.hl"));
     assert_eq!(check_code, 1, "check refuses it:\n{check_err}");
+    assert_eq!(json_code, 1, "check --json refuses it:\n{check_json}");
     assert_eq!(build_code, 1, "build refuses it:\n{build_err}");
+    assert_eq!(run_code, 1, "run refuses it:\n{run_err}");
+    assert_eq!(test_code, 1, "test refuses it:\n{test_out}");
 
-    let position = |out: &str| -> String {
+    // The whole located prefix — `file:line:col` — of the one parse
+    // error, from whichever stream that command reports on.
+    let located = |what: &str, out: &str| -> String {
         out.lines()
             .find(|l| l.contains("parse error"))
-            .and_then(|l| l.split("second.hl").nth(1))
-            .unwrap_or_else(|| panic!("no located parse error in:\n{out}"))
+            .and_then(|l| l.split(": parse error").next())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| {
+                panic!("no located parse error from {what}:\n{out}")
+            })
+    };
+    // `file:line:col` → `file`. The path may contain no `:` of its
+    // own here; splitting from the RIGHT is what makes that true of
+    // any path.
+    let file_of = |prefix: &str| -> String {
+        prefix
+            .rsplitn(3, ':')
+            .nth(2)
+            .unwrap_or_else(|| panic!("not a located prefix: {prefix}"))
             .to_string()
     };
+
+    let from_check = located("check", &check_err);
+    for (what, out) in [
+        ("build", &build_err),
+        ("run", &run_err),
+        ("test", &test_out),
+    ] {
+        assert_eq!(
+            located(what, out),
+            from_check,
+            "{what} must name the file, line and column exactly as \
+             check does\ncheck:\n{check_err}\n{what}:\n{out}"
+        );
+    }
+
+    // The machine-readable channel reads the same string: `file` is
+    // what a gate diffing `--json` against a build failure joins on.
+    let record: serde_json::Value =
+        serde_json::from_str(check_json.lines().next().unwrap_or(""))
+            .unwrap_or_else(|e| panic!("stdout is NDJSON ({e}): {check_json}"));
     assert_eq!(
-        position(&check_err),
-        position(&build_err),
-        "check:\n{check_err}\nbuild:\n{build_err}"
+        record["file"].as_str().unwrap(),
+        file_of(&from_check),
+        "--json `file` is the text renderer's path: {check_json}"
+    );
+
+    // And the spelling itself: absolute, canonical, `..`-free — the
+    // library is reached through `import \"../lib\"`, so the
+    // as-reached path has a `..` in it and the canonical one cannot.
+    let file = file_of(&from_check);
+    assert!(
+        !file.contains(".."),
+        "a file reached through `../` is still named without one: \
+         {file}"
+    );
+    assert_eq!(
+        file,
+        d.join("lib")
+            .join("second.hl")
+            .canonicalize()
+            .expect("the library file exists")
+            .display()
+            .to_string(),
+        "the canonical path of the file that holds the error"
     );
 
     let _ = std::fs::remove_dir_all(&d);

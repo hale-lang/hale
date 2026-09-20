@@ -61,16 +61,40 @@ fn ledger(service: String) -> String {
     return curl("GET", service + "/ledger/rows?from=0", "").body;
 }
 
+// Every bound in this fixture is a number of 500ms polls sized for a
+// quiet machine, widened by `dna::wait_scale()` (HALE_DNA_WAIT_SCALE) on
+// a loaded one: one knob for the whole fixture (GH #795). `POLLS` is one
+// step the service or a body takes; `BOOT` is a service or a body coming
+// up, which builds it first.
+const POLLS: Int = 240;
+const BOOT: Int = 600;
+
 @unbounded
 fn wait_row(service: String, needle: String, tries: Int) -> String {
+    let limit = tries * dna::wait_scale();
     let mut n = 0;
-    while n < tries {
+    while n < limit {
         let row = row_with(ledger(service), needle);
         if len(row) > 0 { return row; }
         std::time::sleep(500ms);
         n = n + 1;
     }
     return "";
+}
+
+// The lease row for `key` once it is (or is no longer) held; its last
+// body either way, so a failed assertion prints what the service said.
+@unbounded
+fn wait_lease(service: String, key: String, held: Bool, tries: Int) -> String {
+    let limit = tries * dna::wait_scale();
+    let mut n = 0;
+    let mut row = curl("GET", service + "/ledger/lease?key=" + key, "").body;
+    while std::str::contains(row, "\"present\": true") != held && n < limit {
+        std::time::sleep(500ms);
+        row = curl("GET", service + "/ledger/lease?key=" + key, "").body;
+        n = n + 1;
+    }
+    return row;
 }
 
 fn alive(pid: String) -> Bool {
@@ -120,9 +144,23 @@ main locus App {
     }
     @unbounded
     fn body_up(dir: String, tries: Int) -> Bool {
+        let limit = tries * dna::wait_scale();
         let mut n = 0;
-        while n < tries {
+        while n < limit {
             if std::io::fs::file_exists(dir + "/.hale/dna/hale-dna.intent.offered.sock") && std::io::fs::file_exists(dir + "/.hale/dna/org.pid") { return true; }
+            std::time::sleep(500ms);
+            n = n + 1;
+        }
+        return false;
+    }
+    // The service answers its head; it builds before it listens, so this is
+    // the fixture's longest wait on a loaded machine.
+    @unbounded
+    fn service_up(service: String, tries: Int) -> Bool {
+        let limit = tries * dna::wait_scale();
+        let mut n = 0;
+        while n < limit {
+            if curl("GET", service + "/ledger/head", "").status == 200 { return true; }
             std::time::sleep(500ms);
             n = n + 1;
         }
@@ -130,8 +168,9 @@ main locus App {
     }
     @unbounded
     fn wait_gone(pid: String, tries: Int) -> Bool {
+        let limit = tries * dna::wait_scale();
         let mut n = 0;
-        while n < tries {
+        while n < limit {
             if !alive(pid) { return true; }
             std::time::sleep(500ms);
             n = n + 1;
@@ -169,18 +208,12 @@ main locus App {
         // ---- one service, the ledger adopted into it
         let ksrv = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_DSN=memory HALE_DNA_OWNER_KEYS=\"acme=ka north=kb\" nohup timeout 900 \"$1\" dna knowledge . --port \"$2\" >.hale/knowledge.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + to_string(kport));
         let kpid = dna::trim_nl(ksrv.stdout);
-        let mut kup = false;
-        let mut tries = 0;
-        while !kup && tries < 600 {
-            if curl("GET", service + "/ledger/head", "").status == 200 { kup = true; } else { std::time::sleep(200ms); }
-            tries = tries + 1;
-        }
-        std::test::assert(kup, "the service came up at " + service);
+        std::test::assert(self.service_up(service, BOOT), "the service came up at " + service + ": " + (std::io::fs::read_file(app + "/.hale/knowledge.log") or ""));
         let adopted = through(app, service, toolchain() + "\ndna\nledger\nadopt\n--as\nalice");
         std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "ledger adopted at"), "adopted: " + adopted.stdout + adopted.stderr);
         // ---- acme's body beside clone A, north's beside clone B
         let pid_a = self.start_body(app, service);
-        std::test::assert(self.body_up(app, 600), "acme's body came up: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
+        std::test::assert(self.body_up(app, BOOT), "acme's body came up: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
         let other = scratch + "/north";
         let cl = in_dir(scratch, "git\nclone\n-q\n" + bare + "\n" + other);
         std::test::assert_eq_int(cl.code, 0, "north clones the record: " + cl.stderr);
@@ -188,9 +221,11 @@ main locus App {
         let synced = through(other, service, toolchain() + "\ndna\nsync");
         std::test::assert_eq_int(synced.code, 0, "north's clone has the record: " + synced.stdout + synced.stderr);
         let pid_b = self.start_body(other, service);
-        std::test::assert(self.body_up(other, 600), "north's body came up beside acme's: " + (std::io::fs::read_file(other + "/.hale/body.log") or ""));
-        let la = curl("GET", service + "/ledger/lease?key=owner/acme", "").body;
-        let lb = curl("GET", service + "/ledger/lease?key=owner/north", "").body;
+        std::test::assert(self.body_up(other, BOOT), "north's body came up beside acme's: " + (std::io::fs::read_file(other + "/.hale/body.log") or ""));
+        // a body opens its membrane and takes its lease in its own order:
+        // each lease is waited for, not read the moment the socket is there
+        let la = wait_lease(service, "owner/acme", true, POLLS);
+        let lb = wait_lease(service, "owner/north", true, POLLS);
         std::test::assert(std::str::contains(la, "\"present\": true") && std::str::contains(la, "shared"), "acme's lease is held, by its clone: " + la);
         std::test::assert(std::str::contains(lb, "\"present\": true") && std::str::contains(lb, "north"), "north's lease is held, by its clone: " + lb);
         std::test::assert(!std::str::contains(curl("GET", service + "/ledger/lease?key=body", "").body, "\"present\": true"), "no lease is the one body's: " + curl("GET", service + "/ledger/lease?key=body", "").body);
@@ -198,10 +233,10 @@ main locus App {
         // ---- acme's body writes under its epoch: an ask for its own position lands
         let asked = through(app, service, toolchain() + "\ndna\nask\n--no-wait\n--to\norg/books\n--as\nalice\nchase the late invoice");
         std::test::assert_eq_int(asked.code, 0, "alice asks acme's body: " + asked.stdout + asked.stderr);
-        let offered = wait_row(service, "\"kind\": \"intent.offered\"", 240);
+        let offered = wait_row(service, "\"kind\": \"intent.offered\"", POLLS);
         std::test::assert(std::str::contains(offered, "chase the late invoice (from alice)"), "the body's write landed under its lease: " + ledger(service));
         // ---- the plan names bob, north's member: a transfer, not a hand-off
-        let transfer = wait_row(service, "\"kind\": \"task.transfer_requested\"", 240);
+        let transfer = wait_row(service, "\"kind\": \"task.transfer_requested\"", POLLS);
         std::test::assert(std::json::find_string_field(row_body(transfer), "to") == "north" && std::json::find_string_field(row_body(transfer), "assignee") == "bob" && std::json::find_string_field(row_body(transfer), "owner") == "acme", "acme's body offers the job to north for bob: " + transfer);
         let tid = std::json::find_string_field(transfer, "entity");
         std::test::assert(std::str::starts_with(tid, "acme:t"), "the task is acme's, in acme's namespace: " + tid);
@@ -210,11 +245,11 @@ main locus App {
         std::test::assert(not_theirs.code != 0 && std::str::contains(not_theirs.stdout + not_theirs.stderr, "only north's accepts"), "acme's member cannot accept for north: " + not_theirs.stdout + not_theirs.stderr);
         let accepted = through(other, service, toolchain() + "\ndna\ntask\naccept\n" + tid + "\n--as\nbob\n--note\nwe take it");
         std::test::assert(accepted.code == 0 && std::str::contains(accepted.stdout, "accepted for north by bob"), "north's member accepts: " + accepted.stdout + accepted.stderr);
-        let handed = wait_row(service, "\"kind\": \"task.handed\"", 240);
+        let handed = wait_row(service, "\"kind\": \"task.handed\"", POLLS);
         std::test::assert(std::json::find_string_field(row_body(handed), "transferred_from") == "acme" && std::json::find_string_field(row_body(handed), "assignee") == "bob" && std::json::find_string_field(row_body(handed), "by") == "north" && std::json::find_string_field(row_body(handed), "accepted_by") == "bob", "north's body hands it to bob in its own name: " + handed);
         let done = through(other, service, toolchain() + "\ndna\ntask\ndone\n" + tid + "\n--as\nbob\n--note\npaid");
         std::test::assert(done.code == 0 && std::str::contains(done.stdout, "done by bob"), "bob closes it from north's clone: " + done.stdout + done.stderr);
-        std::test::assert(std::str::contains(wait_row(service, "\"kind\": \"task.done\"", 60), "\"author\": \"bob\""), "in bob's name, in the one ledger");
+        std::test::assert(std::str::contains(wait_row(service, "\"kind\": \"task.done\"", POLLS), "\"author\": \"bob\""), "in bob's name, in the one ledger: " + ledger(service));
         // ---- a forced claim of acme's lease from a third clone of acme's:
         // the epoch rises, the old body stops, north's does not
         let third = scratch + "/acme-2";
@@ -223,9 +258,11 @@ main locus App {
         let s2 = through(third, service, toolchain() + "\ndna\nsync");
         let claimed = through(third, service, toolchain() + "\ndna\nbody\nclaim\n--force\n--as\ncarol");
         std::test::assert(claimed.code == 0 && std::str::contains(claimed.stdout, "was taken by carol"), "acme's lease is taken from its body: " + claimed.stdout + claimed.stderr);
-        std::test::assert(self.wait_gone(pid_a, 120), "acme's body stops itself once its lease is gone: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
+        std::test::assert(self.wait_gone(pid_a, POLLS), "acme's body stops itself once its lease is gone: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
         std::test::assert(alive(pid_b), "north's body is untouched");
-        let la2 = curl("GET", service + "/ledger/lease?key=owner/acme", "").body;
+        // the release is the claim's own step, not the stopped body's: waited
+        // for rather than read the moment that body is gone
+        let la2 = wait_lease(service, "owner/acme", false, POLLS);
         std::test::assert(!std::str::contains(la2, "\"present\": true"), "acme's lease is released for the next body: " + la2);
         // the stopped body's epoch writes nothing any more
         let stale = curl("POST", service + "/ledger/append", "{\"expected\": 0, \"exact\": false, \"kind\": \"task.born\", \"entity\": \"t-stale\", \"body\": \"late\", \"as\": \"\", \"request_id\": \"stale-1\", \"lease\": \"owner/acme\", \"token\": " + to_string(epoch_a) + "}");
@@ -236,7 +273,7 @@ main locus App {
         // ---- north's body still writes
         let asked_b = through(other, service, toolchain() + "\ndna\nask\n--no-wait\n--to\norg/collections\n--as\nbob\ncall the agency");
         std::test::assert_eq_int(asked_b.code, 0, "bob asks north's body: " + asked_b.stdout + asked_b.stderr);
-        let offered_b = wait_row(service, "call the agency (from bob)", 240);
+        let offered_b = wait_row(service, "call the agency (from bob)", POLLS);
         std::test::assert(len(offered_b) > 0, "north's body still writes under its own lease: " + ledger(service));
         // ---- down
         let k1 = dna::run_tool("kill\n" + pid_b);

@@ -500,6 +500,58 @@ static __thread lotus_arena_chunk_t *
     g_chunk_pool[LOTUS_CHUNK_POOL_CAP];
 static __thread int g_chunk_pool_count = 0;
 
+/* LOTUS_NO_CHUNK_POOL (GH #816) — sanitizer-visibility knob.
+ *
+ * Recycling a chunk hands the SAME bytes back out: a load from an
+ * arena that was destroyed reads memory the process still owns, so
+ * AddressSanitizer never sees a `free` and never reports the
+ * use-after-free. That is not a theoretical gap — GH #710, #750,
+ * #711 and #812 were all arena use-after-free and the ASan corpus
+ * oracle was silent on every one of them. The #812 shape
+ * (`Holder { tag: "hello" }.tag`, the field loaded after the
+ * literal's teardown) produced no sanitizer output at all, only a
+ * wrong answer once a second literal in the same statement claimed
+ * the recycled chunk; the #711 shape aborted inside glibc's
+ * `pthread_mutex_lock` (the dying arena's own lock read out of
+ * reclaimed storage) instead of naming the fault.
+ *
+ * With this knob set, `lotus_arena_destroy` really `free()`s each
+ * chunk and every chunk request really `malloc()`s, so the
+ * allocator's redzones + quarantine are in play and an arena UAF
+ * surfaces as a `heap-use-after-free` with both stacks — where it
+ * was freed and where it was read.
+ *
+ * Default OFF: recycling is a real hot-path win (the per-method
+ * scratch open/destroy cycle runs at ~6 kHz on a busy dispatch
+ * loop) and nothing about a production build should change. It
+ * defaults ON in ASan builds instead, via
+ * `-DLOTUS_NO_CHUNK_POOL_DEFAULT=1` in the sanitizer cflags
+ * (`crates/hale-codegen/src/codegen.rs`), so no ASan test has to
+ * remember to ask for it. `LOTUS_NO_CHUNK_POOL` overrides the
+ * compile-time default in BOTH directions: `=1` disables recycling
+ * on an ordinary build (useful for bisecting a suspected UAF
+ * without a sanitizer rebuild), `=0` restores it under ASan.
+ *
+ * Read once in a constructor, before main and before any Hale
+ * allocation, so the check on the release path is a plain load of
+ * an already-settled static — the same shape as
+ * LOTUS_GLIBC_ARENA_MAX below. */
+#ifndef LOTUS_NO_CHUNK_POOL_DEFAULT
+#define LOTUS_NO_CHUNK_POOL_DEFAULT 0
+#endif
+
+static int g_no_chunk_pool = LOTUS_NO_CHUNK_POOL_DEFAULT;
+
+__attribute__((constructor))
+static void lotus_no_chunk_pool_init(void) {
+    const char *env = getenv("LOTUS_NO_CHUNK_POOL");
+    if (env && env[0]) {
+        g_no_chunk_pool = (env[0] != '0');
+    }
+}
+
+static inline int lotus_no_chunk_pool(void) { return g_no_chunk_pool; }
+
 /* LOTUS_CHUNK_POOL_STATS — when set, every chunk
  * acquire / release tallies into per-thread counters that
  * dump to stderr at process exit. Useful for diagnosing
@@ -1186,6 +1238,13 @@ static int lotus_chunk_pool_prefill_count(void) {
 static void lotus_chunk_pool_prefill_if_needed(void) {
     if (g_chunk_pool_prefilled) return;
     g_chunk_pool_prefilled = 1;
+    /* GH #816: with recycling off nothing ever comes back to the
+     * pool, so a prefill would only park 32 chunks that are handed
+     * out once and then freed — and every one of them would sit in
+     * the pool at thread exit looking like a live allocation. Skip
+     * it; the pool stays empty for the whole run, which is what
+     * makes the pop below unreachable. */
+    if (lotus_no_chunk_pool()) return;
     int target = lotus_chunk_pool_prefill_count();
     while (g_chunk_pool_count < target) {
         lotus_arena_chunk_t *c = (lotus_arena_chunk_t *)
@@ -1412,7 +1471,14 @@ static lotus_arena_chunk_t *lotus_arena_new_chunk_for(
     }
     lotus_chunk_pool_prefill_if_needed();
     /* Pool only the common-case default chunk size. Mixing
-     * sizes in one freelist would force a scan per pop. */
+     * sizes in one freelist would force a scan per pop.
+     *
+     * GH #816: no explicit `lotus_no_chunk_pool()` guard here on
+     * purpose — with the knob set the prefill is skipped and
+     * `lotus_arena_release_chunk` never stores, so the count is
+     * zero for the life of the thread and this test already fails.
+     * Keeping the hot path a single load-and-branch matters more
+     * than restating the knob. */
     if (cap == LOTUS_ARENA_CHUNK_BYTES && g_chunk_pool_count > 0) {
         lotus_arena_chunk_t *c =
             g_chunk_pool[--g_chunk_pool_count];
@@ -1518,6 +1584,17 @@ static void lotus_arena_release_chunk(lotus_arena_chunk_t *c) {
      * an mmap'd region. */
     if (c->via_mmap) {
         munmap(c, c->mmap_size);
+        return;
+    }
+    /* GH #816: the whole point of the knob. Hand the chunk back to
+     * libc so its bytes leave our control — a later load from this
+     * destroyed arena is then a real heap-use-after-free that ASan
+     * reports with the free stack AND the read stack, instead of a
+     * silent read of memory we quietly kept. Ahead of the pool
+     * predicate so the overflow counter stays meaningful (it means
+     * "the pool was full", not "the pool is off"). */
+    if (lotus_no_chunk_pool()) {
+        free(c);
         return;
     }
     if (c->cap == LOTUS_ARENA_CHUNK_BYTES
@@ -8312,7 +8389,16 @@ static void lotus_coro_release(lotus_coop_pool_t *p, lotus_coro_t *c) {
      * here — the one point that holds for a coro that parked any number
      * of times as well as for one that ran straight through. */
     lotus_coro_payload_dispose(c);
-    if (p->free_count < LOTUS_CORO_FREELIST_MAX) {
+    /* GH #816: the coro free-list is the chunk pool's shape one
+     * level up — a released slot keeps its 64 KiB stack and hands
+     * the same bytes to the next handler, so a pointer into a
+     * finished handler's frame reads live memory and no sanitizer
+     * fires. Under the no-pool knob a completed coro is freed
+     * outright (the same path a full free-list already takes), so
+     * ASan owns the stack and the struct the moment the handler
+     * returns. `lotus_coro_alloc`'s reuse arm needs no guard: the
+     * list is then always empty. */
+    if (!lotus_no_chunk_pool() && p->free_count < LOTUS_CORO_FREELIST_MAX) {
         c->next = p->free_head;
         p->free_head = c;
         p->free_count++;

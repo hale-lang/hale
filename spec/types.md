@@ -708,6 +708,27 @@ goes through the same field-access lowering as any other
 LocusRef receiver. Synthetic fields (`self.db.k_max`,
 `self.db.draining`) work on non-self receivers too (B14 / G31).
 
+**A locus may not contain itself by value (GH #813).** A param
+default that *constructs* the locus it belongs to — directly, or
+around a cycle through other loci — is an error at the param
+("param `next` of `Node` defaults to a `Node`; a locus cannot
+contain itself by value"). Every instance the default builds needs
+another, and no call site can end the chain: `Node { next: ... }`
+needs a `Node` to hand over, and building one asks the same
+question again. The rule is over locus LITERALS in a default, and a
+literal's own supplied fields count — a default that spells out
+every param of the locus it builds expands no default of its own
+and is not a cycle. A **call** in a default (`next: Node = make()`)
+is not a containment edge: the checker cannot tell a factory that
+builds a fresh locus from an accessor handing back one somebody
+else owns, and lowering a call terminates either way (that program
+compiles, and recurses at run time like any other unbounded
+recursion). A cycle whose loci live in different files of one seed
+is reported when the seed is checked together, since a single file
+holds no declaration for its sibling's types. Codegen enforces the
+same rule for itself, as an `Unsupported` error, so a path that
+bypasses the checker terminates too.
+
 ## `inferred` params
 
 Per F.3: a param declared `: inferred` (instead of `= value`)

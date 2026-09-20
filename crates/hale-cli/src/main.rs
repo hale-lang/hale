@@ -2462,9 +2462,18 @@ impl IoDiag {
 
     /// The NDJSON record, through the one writer every `--json`
     /// record is formatted by.
+    ///
+    /// GH #822: `file` is spelled by the rule every other record's
+    /// `file` is — [`diag_file_name`] — so a consumer joining on it
+    /// does not have to know that this row came from a file that
+    /// never opened. A path that is not on disk (the commonest case
+    /// here: a target that is not there) still comes out absolute
+    /// and `..`-free. The `text` channel is untouched: it is the
+    /// sentence the failing site composed, byte for byte what it
+    /// printed before it travelled.
     fn record(&self) -> String {
         render_json_record(
-            &self.path.display().to_string(),
+            &diag_file_name(&self.path),
             0,
             0,
             "error",
@@ -2503,7 +2512,12 @@ enum ImportDiag {
     /// A diagnostic raised in a file the resolver PARSED.
     Located {
         /// The file the diagnostic was raised in, as the resolver
-        /// reached it — that spelling is what the user sees.
+        /// reached it. What the user sees is [`diag_file_name`] of
+        /// it (GH #822) — the resolver reaches a library through the
+        /// importer's own directory, so the path it holds is
+        /// routinely `app/../lib/second.hl`, and `check`, which
+        /// resolves the same diagnostic through the canonical
+        /// `file_bases`, named the file differently from `build`.
         file: PathBuf,
         /// The virtual base `file` was parsed at; 0 for the entry
         /// file, which `parse_with_imports` parses unshifted.
@@ -2529,6 +2543,13 @@ impl ImportDiag {
     /// searching `file_bases`: the entry already knows its own file
     /// and base, so there is no window to test and no call to
     /// [`hale_syntax::file_owns_offset`].
+    ///
+    /// The FILE goes through [`diag_file_name`] (GH #822), which is
+    /// what the `file_bases` road does too — one spelling, whichever
+    /// road a command takes. [`ImportDiag::Io`]'s `text` is the
+    /// sentence its failing site composed, so it is printed as it
+    /// stands; the path in its RECORD goes through the same rule
+    /// ([`IoDiag::record`]).
     fn render(&self) -> String {
         match self {
             ImportDiag::Located {
@@ -2536,11 +2557,7 @@ impl ImportDiag {
                 base,
                 diag,
                 source,
-            } => diag.render_located(
-                &file.display().to_string(),
-                source,
-                *base,
-            ),
+            } => diag.render_located(&diag_file_name(file), source, *base),
             ImportDiag::Io(io) => io.text.clone(),
         }
     }
@@ -3575,6 +3592,70 @@ fn unscoped_alias_uses(
     out
 }
 
+/// GH #822: the one spelling a diagnostic names its file by —
+/// absolute, symlinks resolved, no `.` or `..` component.
+///
+/// The same file used to have two names depending on which channel
+/// reported it. `check` resolves an imported file's diagnostic
+/// through `file_bases`, whose entries `resolve_imports` records
+/// CANONICALLY (the `visited` set is keyed that way, so a cycle is
+/// broken however many aliases reach the lib), and printed
+/// `/abs/lib/second.hl`. `build`, `run` and `test` render the same
+/// diagnostic from [`ImportDiag`], which carries the path as the
+/// resolver REACHED it, and printed `/abs/app/../lib/second.hl`.
+/// The target's OWN files are a third spelling again: `parse_files`
+/// records them exactly as the command line spelled them, so `hale
+/// check ../lib/second.hl` named a file relative to a directory the
+/// reader has to already know. Every one of them names the right
+/// file and every one is clickable — but none of them is a JOIN KEY,
+/// which is what `check --json`'s `file` field is used as: a gate
+/// diffing `--json` against a build failure, or an editor matching a
+/// build error to an open buffer, compared two strings for one file.
+///
+/// The rule lives at the rendering boundary rather than at each site
+/// that records a path, because that is the one thing every channel
+/// does and nothing else does. `file_bases` entries are also the KEY
+/// `sources` and the program map are looked up by, and the entry
+/// path is the base the replay digest's logical source ids are taken
+/// relative to; rewriting those to fix a display string would move
+/// four things to fix one. Every renderer below turns a `&Path` into
+/// the string the user and the tool read through here, so a new one
+/// cannot quietly reintroduce a second spelling.
+fn diag_file_name(path: &Path) -> String {
+    if let Ok(canon) = path.canonicalize() {
+        return canon.display().to_string();
+    }
+    // A file that is not on disk cannot be asked of the filesystem —
+    // a target that does not exist, or one deleted between the read
+    // and the report. Canonicalize the deepest ancestor that DOES
+    // exist and re-join what is left: the `..` in
+    // `app/../lib/gone.hl` is then resolved by the parent's
+    // canonicalization, which is the only correct way to resolve one
+    // (removing `..` lexically walks out of the wrong directory the
+    // moment a symlink is involved).
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|d| d.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut cur: &Path = &absolute;
+    while let (Some(name), Some(parent)) = (cur.file_name(), cur.parent()) {
+        tail.push(name.to_os_string());
+        if let Ok(canon) = parent.canonicalize() {
+            let mut out = canon;
+            for seg in tail.iter().rev() {
+                out.push(seg);
+            }
+            return out.display().to_string();
+        }
+        cur = parent;
+    }
+    absolute.display().to_string()
+}
+
 /// Render a post-merge diagnostic, demultiplexing its (globally-unique,
 /// `parse_source_at`-shifted) span back to the file it came from via
 /// `file_bases`, so the output reads `path:line:col` against that file's
@@ -3583,6 +3664,11 @@ fn unscoped_alias_uses(
 /// Resolve a merged-bundle span to `(path, line, col)` via the
 /// file-base table. Shared by the text and JSON renderers for both
 /// primary and related spans.
+///
+/// The path comes out through [`diag_file_name`] (GH #822), so a
+/// related location — the clickable second location of a two-place
+/// diagnostic, in `--json` and in the `note:` line alike — is spelled
+/// the way the primary is.
 fn locate_span(
     span: hale_syntax::Span,
     file_bases: &[(u32, PathBuf, u32)],
@@ -3593,7 +3679,7 @@ fn locate_span(
         if hale_syntax::file_owns_offset(*base, *len, off) {
             let src = sources.get(path)?;
             let (l, c) = span.shifted(base.wrapping_neg()).line_col(src);
-            return Some((path.display().to_string(), l, c));
+            return Some((diag_file_name(path), l, c));
         }
     }
     None
@@ -3609,7 +3695,7 @@ fn render_located(
         if hale_syntax::file_owns_offset(*base, *len, off) {
             if let Some(src) = sources.get(path) {
                 let mut out =
-                    d.render_located(&path.display().to_string(), src, *base);
+                    d.render_located(&diag_file_name(path), src, *base);
                 // Secondary locations, each resolved through the
                 // file table — a related span may live in a
                 // DIFFERENT file than the primary.
@@ -6053,7 +6139,10 @@ fn render_diag_json(
                     .span
                     .shifted(base.wrapping_neg())
                     .line_col(src);
-                file = path.display().to_string();
+                // GH #822: the `file` field is the join key
+                // downstream tooling matches on, so it is the same
+                // string the text renderer prints.
+                file = diag_file_name(path);
                 line = l;
                 col = c;
             }

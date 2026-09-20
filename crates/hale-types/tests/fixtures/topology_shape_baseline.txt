@@ -905,6 +905,7 @@ crates/hale-codegen/tests/nested_long_running_child.rs#2 1e551372d2bca719
 crates/hale-codegen/tests/nested_long_running_child.rs#3 97f5fab961ae8fb0
 crates/hale-codegen/tests/nested_struct_bus_payload.rs#0 03313d72623aa0d5
 crates/hale-codegen/tests/nested_struct_bus_payload.rs#1 9829a98896fec443
+crates/hale-codegen/tests/no_chunk_pool_knob.rs#0 4707eb603fd26fa8
 crates/hale-codegen/tests/noalias_self.rs#0 c48db3a4a7ec3bdf
 crates/hale-codegen/tests/noalias_self.rs#1 eca8127dcb7fdece
 crates/hale-codegen/tests/obs_emission.rs#0 b524dee0804a0399
@@ -1012,6 +1013,10 @@ crates/hale-codegen/tests/replay_truncated.rs#0 c2a81f93ab151f59
 crates/hale-codegen/tests/replica_keys.rs#0 3339627819e66a48
 crates/hale-codegen/tests/replica_keys.rs#1 27ea505efcac4821
 crates/hale-codegen/tests/restart_bound.rs#1 d4dabe7a57f79bfa
+crates/hale-codegen/tests/self_containing_locus.rs#2 b9b48c565ea0f322
+crates/hale-codegen/tests/self_containing_locus.rs#3 e5e2c21efda8f602
+crates/hale-codegen/tests/self_containing_locus.rs#4 6c193ac6910a7bb4
+crates/hale-codegen/tests/self_containing_locus.rs#5 68d2b62674efdc9f
 crates/hale-codegen/tests/self_field_alias.rs#0 cc87392098879459
 crates/hale-codegen/tests/self_field_alias.rs#1 cc87392098879459
 crates/hale-codegen/tests/self_field_alias.rs#2 00a0c7a19f9e4446
@@ -1553,6 +1558,7 @@ crates/hale-types/tests/recognition_submodes.rs#1 e44ab1fd789cfdef
 crates/hale-types/tests/reserved_locus_members.rs#2 87609b63a5d1f959
 crates/hale-types/tests/reserved_locus_members.rs#3 f2c1228edb650960
 crates/hale-types/tests/sealability_survey.rs#0 f4d56c805acf3eb3
+crates/hale-types/tests/self_containing_locus.rs#4 ef994cf13a5419f6
 crates/hale-types/tests/stdlib_name_check.rs#3 7ba49c53bd84fd5d
 crates/hale-types/tests/stdlib_name_check.rs#4 f2c1228edb650960
 crates/hale-types/tests/stdlib_or_on_infallible.rs#1 865d341109268295

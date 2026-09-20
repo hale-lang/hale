@@ -52,6 +52,24 @@ transcribed into a Rust substring match, and it gets typechecked
 the checker). Keep assertions about *compiler output* — diagnostics,
 IR shape, leak counts — in Rust.
 
+Memory bugs have their own gate. The compiled-corpus oracle
+(`crates/hale-codegen/tests/corpus_oracle.rs`) runs every example
+fixture under exit, deadline and AddressSanitizer oracles:
+
+```sh
+LOTUS_ASAN=1 cargo test --release -p hale-codegen \
+    --test corpus_oracle -- --ignored --test-threads=1
+```
+
+An ASan build turns the arena's chunk recycling OFF
+(`LOTUS_NO_CHUNK_POOL`, defaulted on by the sanitizer cflags —
+GH #816). Without that, `lotus_arena_destroy` hands a dying
+arena's chunks back out with their bytes intact, so a
+use-after-free reads memory the process still owns and the
+sanitizer says nothing — which is how four of them shipped. Set
+`LOTUS_NO_CHUNK_POOL=1` on an ordinary build to chase a suspected
+one without a sanitizer rebuild.
+
 Codegen requires **LLVM 18** dev libs with `llvm-config-18` on
 PATH (or `LLVM_SYS_180_PREFIX` set); `inkwell` is pinned to
 `llvm18-0`. LLVM 17 / 19 / 20 will not link.

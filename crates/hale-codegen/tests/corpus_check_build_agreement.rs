@@ -25,11 +25,31 @@
 //!
 //!   * programs the checker REJECTS are diagnostic fixtures; being
 //!     unbuildable is their purpose;
-//!   * programs with no entry point cannot be built by definition;
 //!   * programs that `import` a sibling seed, because the harvester
 //!     takes one seed at a time — the other half is not present, so
 //!     "unknown qualified name `t::Intent`" is the harvester
 //!     speaking, not the compiler.
+//!
+//! ## The third exclusion, removed (GH #829)
+//!
+//! There used to be a third: "programs with no entry point cannot be
+//! built by definition". That was wrong, and it was a hole in the
+//! gate exactly the shape of the programs this file exists to catch.
+//! Codegen synthesizes the C `main` itself and lowers every
+//! declaration whether or not a user `fn main` calls it, so an
+//! entry-point-less program compiles fine — and the checks that
+//! DIVERGE (a stdlib call with a wrong-typed argument, a construct
+//! codegen never learned to lower) live in those declarations, not
+//! in the entry point. A `locus`-only snippet embedded in a Rust
+//! test — the harvester's staple, since `program_like` admits any
+//! literal with a top-level `locus` — was therefore typechecked and
+//! never compiled.
+//!
+//! `crates/hale-types/tests/bus_graph.rs`'s
+//! `std::io::tcp::recv_into(0, 0, 64)` was one such program: check
+//! clean, build refused. So every harvested program now goes through
+//! codegen; one with no entry point gets a synthetic `fn main() { }`
+//! appended ([`with_synthetic_main`]) and is built like any other.
 //!
 //! Slow (it lowers and links each one), so it is `#[ignore]`d like
 //! the oracle's sanitizer sweep and run explicitly in CI.
@@ -49,7 +69,7 @@ use hale_syntax::ast::TopDecl;
 #[path = "support/harness.rs"]
 mod harness;
 
-/// A program can only be built if something can start it.
+/// Does something in this program start it?
 fn has_entry_point(program: &hale_syntax::ast::Program) -> bool {
     program.items.iter().any(|i| match i {
         TopDecl::Fn(f) => f.name.name == "main",
@@ -58,8 +78,77 @@ fn has_entry_point(program: &hale_syntax::ast::Program) -> bool {
     })
 }
 
+/// GH #829: a program with no entry point, with `fn main() { }`
+/// appended — the smallest thing that makes it a program without
+/// changing what codegen must lower. Every declaration it carries is
+/// still lowered (codegen walks the decls, not the call graph), so
+/// the divergences that hide in a library-shaped snippet are reached.
+///
+/// A program that already has an entry point is returned untouched:
+/// a second `main` would be the harness inventing a compile error.
+fn with_synthetic_main(
+    program: &hale_syntax::ast::Program,
+) -> std::borrow::Cow<'_, hale_syntax::ast::Program> {
+    if has_entry_point(program) {
+        return std::borrow::Cow::Borrowed(program);
+    }
+    let stub = hale_syntax::parse_source("fn main() { }\n")
+        .expect("the synthetic entry point must parse");
+    let mut wrapped = program.clone();
+    wrapped.items.extend(stub.items);
+    std::borrow::Cow::Owned(wrapped)
+}
+
+/// The sweep's verdict on one harvested program.
+#[derive(Debug, PartialEq)]
+enum Verdict {
+    /// Not the sweep's business (see the exclusions in the module
+    /// doc); it carries the reason so a test can say which.
+    Skipped(&'static str),
+    Built,
+    /// `hale check` accepted it and `hale build` refused it — the
+    /// divergence this file exists to catch. Carries the codegen
+    /// error, rendered.
+    Refused(String),
+}
+
+/// One program, decided the way the sweep decides it.
+///
+/// A function rather than the body of the loop so the coverage can
+/// be pinned by a fast test: `an_entry_point_less_program_is_built`
+/// asks this for its verdict on a program with no entry point, and
+/// restoring the GH #829 skip makes that test fail immediately
+/// instead of quietly shrinking the ~1500-program sweep.
+fn sweep_verdict(source: &str, bin_tag: &str) -> Verdict {
+    let Ok(program) = hale_syntax::parse_source(source) else {
+        return Verdict::Skipped("does not parse");
+    };
+    // Diagnostic fixtures are SUPPOSED to fail; their being
+    // unbuildable is not a divergence.
+    if hale_types::check_program(&program).iter().any(|d| d.is_error()) {
+        return Verdict::Skipped("the checker rejects it");
+    }
+    // Cross-seed: the sibling seed is not in this fragment.
+    // Matched on the source because an import is not a
+    // `TopDecl` — it is consumed before the AST.
+    if source.contains("import \"") {
+        return Verdict::Skipped("imports a sibling seed");
+    }
+    // GH #829: no entry point is not a reason to skip; it is a
+    // reason to add one.
+    let program = with_synthetic_main(&program);
+    let bin = harness::unique_bin(bin_tag);
+    match build_executable(&program, &bin) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&bin);
+            Verdict::Built
+        }
+        Err(e) => Verdict::Refused(format!("{:?}", e)),
+    }
+}
+
 #[test]
-#[ignore = "compiles ~1400 programs; run explicitly (see corpus_oracle)"]
+#[ignore = "compiles ~1500 programs; run explicitly (see corpus_oracle)"]
 fn every_check_clean_corpus_program_also_builds() {
     let mut checked = 0usize;
     let mut built = 0usize;
@@ -70,41 +159,15 @@ fn every_check_clean_corpus_program_also_builds() {
 
     for p in hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok())
     {
-        let Ok(program) = hale_syntax::parse_source(&p.source) else {
-            continue;
-        };
-        // Diagnostic fixtures are SUPPOSED to fail; their being
-        // unbuildable is not a divergence.
-        if hale_types::check_program(&program)
-            .iter()
-            .any(|d| d.is_error())
-        {
-            continue;
-        }
-        if !has_entry_point(&program) {
-            continue;
-        }
-        // Cross-seed: the sibling seed is not in this fragment.
-        // Matched on the source because an import is not a
-        // `TopDecl` — it is consumed before the AST.
-        if p.source.contains("import \"") {
-            continue;
-        }
-        checked += 1;
-        let bin = harness::unique_bin(&format!(
-            "hale_cb_{}",
-            checked
-        ));
-        match build_executable(&program, &bin) {
-            Ok(()) => {
+        match sweep_verdict(&p.source, &format!("hale_cb_{}", checked)) {
+            Verdict::Skipped(_) => continue,
+            Verdict::Built => {
+                checked += 1;
                 built += 1;
-                let _ = std::fs::remove_file(&bin);
             }
-            Err(e) => {
-                failures
-                    .entry(format!("{:?}", e))
-                    .or_default()
-                    .push(p.origin.clone());
+            Verdict::Refused(e) => {
+                checked += 1;
+                failures.entry(e).or_default().push(p.origin.clone());
             }
         }
     }
@@ -118,10 +181,12 @@ fn every_check_clean_corpus_program_also_builds() {
         checked
     );
 
-    // A RATCHET, not a clean bill of health. 47 divergences exist
-    // today; each is a check the compiler performs in codegen that
-    // the checker could perform earlier, with a span. They are
-    // recorded so that:
+    // A RATCHET, not a clean bill of health. 44 divergences exist
+    // today over 1507 swept programs (GH #829 widened the sweep by
+    // the 88 programs with no entry point, which found four more
+    // and fixed four); each is a check the compiler performs in
+    // codegen that the checker could perform earlier, with a span.
+    // They are recorded so that:
     //
     //   * a NEW divergence fails immediately — that is the point;
     //   * a FIXED one also fails, so the list cannot quietly rot
@@ -191,6 +256,82 @@ fn every_check_clean_corpus_program_also_builds() {
         checked - built,
         checked
     );
+}
+
+/// GH #829 — the coverage the sweep gained, pinned cheaply.
+///
+/// Two locus-only programs, neither with an entry point, both
+/// check-clean. One lowers; the other is refused by codegen. Before
+/// #829 the sweep skipped BOTH on "no entry point", so the refused
+/// one — a check-accepts/build-refuses divergence, the exact thing
+/// this file is the gate for — was invisible to it.
+///
+/// The verdicts come from [`sweep_verdict`], which is the sweep's
+/// own decision procedure, so restoring the skip fails here in
+/// seconds rather than silently shrinking an `#[ignore]`d sweep
+/// nobody runs by hand.
+///
+/// The programs are deliberately PLAIN string literals: the corpus
+/// harvester scrapes `r#"…"#` literals out of test sources, and a
+/// program written to be unbuildable would otherwise harvest itself
+/// into the sweep's own ratchet baseline. Do not "tidy" them into
+/// raw strings.
+#[test]
+fn an_entry_point_less_program_is_built() {
+    let lowers = "locus Counter {\n\
+                  params { n: Int = 0; }\n\
+                  fn bump() { self.n = self.n + 1; }\n\
+                  }\n";
+    // `or discard` needs a Unit success type; `std::process::run`
+    // yields a value. The checker does not say so (that is GH #791's
+    // territory) and codegen does, with no span — a divergence.
+    let refused = "locus Runner {\n\
+                   fn go() { std::process::run(\"true\") or discard; }\n\
+                   }\n";
+
+    for src in [lowers, refused] {
+        let program = hale_syntax::parse_source(src).expect("parses");
+        assert!(
+            !has_entry_point(&program),
+            "this test is about programs with NO entry point; this one \
+             has one, so it proves nothing:\n{}",
+            src
+        );
+        let errors: Vec<String> = hale_types::check_program(&program)
+            .into_iter()
+            .filter(|d| d.is_error())
+            .map(|d| d.message)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "a program the checker rejects is a diagnostic fixture and \
+             is skipped for that reason instead — this one must check \
+             clean to test what it claims to: {:?}\n{}",
+            errors,
+            src
+        );
+    }
+
+    assert_eq!(
+        sweep_verdict(lowers, "hale_cb_ep_lowers"),
+        Verdict::Built,
+        "an entry-point-less program that lowers must be BUILT by the \
+         sweep, not skipped"
+    );
+
+    match sweep_verdict(refused, "hale_cb_ep_refused") {
+        Verdict::Refused(e) => assert!(
+            e.contains("or discard"),
+            "expected the `or discard` refusal, got: {}",
+            e
+        ),
+        other => panic!(
+            "an entry-point-less program the checker accepts and codegen \
+             refuses is a check/build DIVERGENCE the sweep must see; got \
+             {:?}",
+            other
+        ),
+    }
 }
 
 /// The bare name in ``call to `X`: no free fn, generic fn or
@@ -507,3 +648,4 @@ fn purity_bare_builtins_are_bare_callees() {
         orphans
     );
 }
+
