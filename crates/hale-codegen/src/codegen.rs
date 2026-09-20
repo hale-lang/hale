@@ -1932,11 +1932,27 @@ pub fn build_executable_with_options(
         rt_cflags.push("-fsanitize=address,undefined".into());
         rt_cflags.push("-fno-sanitize-recover=all".into());
         rt_cflags.push("-fno-omit-frame-pointer".into());
+        // GH #816: an ASan build too, so it gets the same
+        // no-recycling default (see the LOTUS_ASAN branch).
+        rt_cflags.push("-DLOTUS_NO_CHUNK_POOL_DEFAULT=1".into());
         rt_cflags.push("-O1".into());
     } else if lotus_asan {
         // ASAN: same rationale as TSAN re: the wrap shim.
         rt_cflags.push("-fsanitize=address".into());
         rt_cflags.push("-fno-omit-frame-pointer".into());
+        // GH #816: the arena's thread-local chunk pool (and the
+        // coro free-list) hand recycled bytes straight back out, so
+        // a read from a destroyed arena lands in memory the process
+        // still owns and ASan reports nothing — four arena
+        // use-after-frees (#710, #750, #711, #812) went undetected
+        // by the ASan corpus oracle for exactly this reason. An
+        // instrumented build defaults the recycling OFF so those
+        // reads are real `heap-use-after-free`s with both stacks.
+        // Compile-time rather than an env var the harnesses set, so
+        // no ASan test can forget it; `LOTUS_NO_CHUNK_POOL=0` still
+        // turns recycling back on if a run wants the pooled
+        // allocator under the sanitizer.
+        rt_cflags.push("-DLOTUS_NO_CHUNK_POOL_DEFAULT=1".into());
         rt_cflags.push("-O1".into());
     } else {
         // Default build: -O2 + the wrap-malloc wrapper bodies, paired
