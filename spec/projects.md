@@ -335,6 +335,29 @@ down (`app → A → B`) and across A's multiple files. (This is the
 rule below still holds — the *app* cannot name `b::Thing` unless
 it imports B itself.)
 
+**A qualified type is checked like a local one.** In a WHOLE
+program — one where every `import` is resolved, which is what
+`hale check <dir>`, `build`, `run` and `test` hand the checker —
+`lib::Thing` in any annotation position (`let`, fn parameter, fn
+return, struct field, `params` field, a `capacity` slot, an alias
+target) denotes the imported declaration and is typed as it. The
+annotation constrains what may fill it, the same way a locally
+declared type does: `let t: lib::Thing = "x";` is a located type
+error naming `lib::Thing`, and field and method access through the
+binding resolves against the imported declaration. Two aliases for
+one library are one type, because the declaration they name is one
+declaration.
+
+Two things stay permissive, both because the declaration genuinely
+is not in the bundle: a path whose head no seed of the bundle
+resolved (the tolerance the rule above is stated against), and a
+check of a single FILE of a multi-file seed, where the `import`
+line may live in a sibling — one file is not a whole program, the
+same boundary the unbound-identifier rule draws. (GH #833: until
+then the annotation typed as unknown, so nothing was checked
+against it and the mismatch surfaced at build, unlocated, or not
+at all.)
+
 **No re-exports.** B's decls are not visible to A's importers
 unless they declare their own dependency on B. The `<lib_id>`
 in B's mangled prefix is derived from B's canonical path, NOT
