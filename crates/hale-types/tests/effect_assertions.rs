@@ -583,3 +583,196 @@ fn qualified_names_parse_inside_an_effects_set() {
         "a qualified topic name must parse in a publish set"
     );
 }
+
+// === GH #723: decorator stacks =====================================
+//
+// `@unbounded` and an effect assertion are orthogonal contracts, and
+// applying both to one fn used to fail at SYNTAX in either order — so a
+// `@unbounded` method needed a free `@no_syscall` wrapper to carry both
+// (downstream handoff). Stacking them must weaken neither half, and a
+// stack that contradicts itself must say so at the decorator.
+
+fn full_diags(src: &str) -> Vec<hale_syntax::Diag> {
+    let program = hale_syntax::parse_source(src).expect("parse");
+    hale_types::check_program(&program)
+}
+
+/// The assertion half survives the stack: a syscall three frames down
+/// still fails, with the witness path.
+#[test]
+fn stacked_with_unbounded_the_assertion_still_reports_the_witness_path() {
+    let src = r#"
+        fn deep() { println("a syscall, three frames down"); }
+        fn middle() { deep(); }
+        @unbounded
+        @no_syscall
+        fn entry() { middle(); }
+        fn main() { entry(); }
+    "#;
+    let ds = diags_for(src);
+    let hit = ds
+        .iter()
+        .find(|m| m.contains("must not reach `syscall`"))
+        .unwrap_or_else(|| panic!("expected a syscall-effect error; got {:?}", ds));
+    assert!(
+        hit.contains("entry -> middle -> deep"),
+        "the witness chain must survive the stack: {}",
+        hit
+    );
+}
+
+/// …and in the other order, which failed to parse symmetrically.
+#[test]
+fn assertion_before_unbounded_is_enforced_too() {
+    let src = r#"
+        fn deep() { println("a syscall"); }
+        @no_syscall
+        @unbounded
+        fn entry() { deep(); }
+        fn main() { entry(); }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        ds.iter().any(|m| m.contains("must not reach `syscall`")),
+        "assertion-then-unbounded must still be enforced: {:?}",
+        ds
+    );
+}
+
+/// The `@unbounded` half survives too — and only `@unbounded`
+/// suppresses the allocation advisory. The same program twice: the
+/// assertion alone warns, the stack does not.
+#[test]
+fn only_unbounded_suppresses_the_allocation_advisory_in_a_stack() {
+    let body = r#"
+        locus Thing { params { n: Int = 0; } fn v() -> Int { return self.n; } }
+        %DECORATORS%
+        fn build(n: Int) -> Int {
+            let mut total = 0;
+            let mut i = 0;
+            while i < n {
+                let t = Thing { n: i };
+                total = total + t.v();
+                i = i + 1;
+            }
+            return total;
+        }
+        main locus App { run() { println(build(3)); } }
+        fn main() { App { }; }
+    "#;
+    let advisory = |decorators: &str| -> bool {
+        diags_for(&body.replace("%DECORATORS%", decorators))
+            .iter()
+            .any(|m| m.contains("hot-path allocation"))
+    };
+    assert!(
+        advisory("@no_syscall"),
+        "the assertion alone must not silence the advisory"
+    );
+    assert!(
+        !advisory("@unbounded\n@no_syscall"),
+        "`@unbounded` in the stack must silence the advisory"
+    );
+    assert!(
+        !advisory("@no_syscall\n@unbounded"),
+        "…in either order"
+    );
+}
+
+/// A stack that contradicts itself is a check-time error pointing AT
+/// the decorator, not a parse failure. `@unbounded` acknowledges an
+/// allocation without a static bound; `@hot`, an assertion forbidding
+/// `alloc`, and `@budget(alloc_per_call = 0)` each say there is none.
+#[test]
+fn contradictory_decorators_are_diagnosed_at_the_decorator() {
+    let cases: [(&str, &str); 3] = [
+        ("@unbounded\n@hot\n", "`@unbounded` and `@hot` contradict"),
+        (
+            "@unbounded\n@effects(none: { alloc })\n",
+            "an effect assertion that forbids `alloc` contradict",
+        ),
+        (
+            "@unbounded\n@budget(alloc_per_call = 0)\n",
+            "`@budget(alloc_per_call = 0)` contradict",
+        ),
+    ];
+    for (decorators, needle) in cases {
+        let src = format!(
+            "{}fn grow(n: Int) -> Int {{ return n; }}\n\
+             fn main() {{ println(grow(1)); }}",
+            decorators
+        );
+        let ds = full_diags(&src);
+        let hit = ds
+            .iter()
+            .find(|d| d.message.contains(needle))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected {:?} for {:?}; got {:?}",
+                    needle,
+                    decorators,
+                    ds.iter().map(|d| &d.message).collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            src[hit.span.start.as_usize()..].starts_with("@unbounded"),
+            "the diagnostic must point at the decorator, got {:?}",
+            &src[hit.span.start.as_usize()..]
+        );
+        assert!(
+            !hit.related.is_empty(),
+            "and name the decorator it contradicts: {}",
+            hit.message
+        );
+    }
+}
+
+/// A ceiling ABOVE zero is not a contradiction: bounded per call,
+/// deliberately unbounded in aggregate (a cache insert per call).
+#[test]
+fn a_nonzero_budget_stacks_with_unbounded() {
+    let src = r#"
+        @unbounded
+        @budget(alloc_per_call = 2)
+        fn grow(n: Int) -> Int { return n; }
+        fn main() { println(grow(1)); }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("contradict")),
+        "a nonzero per-call ceiling must compose with `@unbounded`: {:?}",
+        ds
+    );
+}
+
+/// The same decorator twice is diagnosed at the SECOND one, with the
+/// first as the related location — including when another decorator
+/// sits between them (the run is one stack, not two).
+#[test]
+fn duplicate_decorators_are_diagnosed() {
+    let src = "@unbounded\n@unbounded\nfn grow(n: Int) -> Int { return n; }\n\
+               fn main() { println(grow(1)); }";
+    let ds = full_diags(src);
+    let hit = ds
+        .iter()
+        .find(|d| d.message.contains("duplicate `@unbounded`"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a duplicate diagnostic; got {:?}",
+                ds.iter().map(|d| &d.message).collect::<Vec<_>>()
+            )
+        });
+    let (line, _) = hit.span.line_col(src);
+    assert_eq!(line, 2, "points at the second `@unbounded`: {}", hit.message);
+    assert!(!hit.related.is_empty(), "with the first as related");
+
+    let split = "@no_syscall\n@unbounded\n@no_syscall\n\
+                 fn grow(n: Int) -> Int { return n; }\n\
+                 fn main() { println(grow(1)); }";
+    assert!(
+        full_diags(split)
+            .iter()
+            .any(|d| d.message.contains("duplicate `@no_syscall`")),
+        "a repeat across an intervening decorator is still a repeat"
+    );
+}

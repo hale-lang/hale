@@ -588,8 +588,20 @@ adopts resolves its groups in the constitution's own scope and
 passes. Reproducer: `dna/acceptance/chat-server` with the claim moved
 back inline, then `hale test dna/acceptance/chat-server`.
 
-**Worked around:** the acceptance copy carries the claim as an
+**Was worked around:** the acceptance copy carried the claim as an
 adopted constitution (the page keeps it inline).
+
+**Resolution:** FIXED upstream (GH #733, hale PR #769): the seed
+mangler now canonicalizes the group references inside a main locus's
+inline `claims { }` block through the same import-rename table a
+library-tier `claims { }` block and a `constitution` already used, so
+an inline claim keeps its defining seed's vocabulary through an
+import. The workaround is gone — `dna/acceptance/chat-server` states
+the claim inline, exactly as the page does, and its own tests
+(`import ".." as app`) pass. The fix also closed a soundness hole in
+the same place: an importer that declared its own group of the same
+name had it substituted for the one the imported claim was written
+against, and a violated law went quiet.
 
 ## F.15 — a flow child cannot outlive its `run()` to await a bus reply
 
@@ -652,7 +664,10 @@ corruption).
 **Compiler bugs fixed since:** F.11 (SOUNDNESS: `forbid reaches`
 through an interface-typed field followed the declaration default —
 fixed in #538 by fanning to every conformer; per-field narrowing is
-the open follow-up).
+the open follow-up), F.14 (an imported main's inline claims now keep
+their defining seed's groups — GH #733, PR #769; the same fix stopped
+an importer's same-named group from being substituted for one an
+imported claim was written against).
 
 **Compiler bugs open, reproducers under `dna/friction/`:** F.1 (enum match across
 seeds: checker and codegen), F.10 (perspectives do not cross seeds),
@@ -666,8 +681,7 @@ are.
 drain, so the retry loop lives with whoever owns the performers),
 F.15 (a flow child cannot await an asynchronous reply: routed Work
 settles pending, the assembly settles the durable Task from the
-Journal), F.14 (an imported main's inline claims cannot see its
-seed's groups; an adopted constitution can).
+Journal).
 
 **Runtime limitations, FIXED:** F.12 (keyed subscriptions now hear
 wire deliveries — receive-side key derivation), F.13 (a listen

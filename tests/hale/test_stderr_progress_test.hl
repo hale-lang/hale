@@ -1,0 +1,9 @@
+// The test runner inspects stdout only: a test that narrates its
+// progress on stderr is still a passing test (GH #715).
+fn main() {
+    eprintln("case 1: arithmetic");
+    std::test::assert_eq_int(2 + 2, 4, "arithmetic");
+    eprintln("case 2: strings");
+    std::test::assert_eq_str("con" + "cat", "concat", "concat");
+    eprintln("done");
+}

@@ -27,8 +27,10 @@ fn main() {
 
 The contract is exit-code based, and it's the whole model:
 
-- **Pass** — the program runs to completion and exits `0` with no
-  output. A silent test has passed.
+- **Pass** — the program runs to completion and exits `0` with nothing
+  on stdout. A silent test has passed. Only stdout is inspected: what
+  the program writes to stderr (`eprintln`) is diagnostic output and
+  doesn't count, so print progress there if you want it.
 - **Fail** — the first failing assertion prints
   `ASSERTION FAILED: <msg>` (and, for `assert_eq_*`, the expected and
   actual values) and exits non-zero immediately. There's no "collect

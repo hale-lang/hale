@@ -1,0 +1,181 @@
+// std::str::ByteView — safe linear-time byte scanning (GH #720).
+//
+// The behaviour worth pinning is the edges, because the whole point
+// of the view is that the edges are CHECKED: the naive loop this
+// replaces was quadratic, and the only linear alternative
+// (`byte_at_unchecked`) answers an out-of-range index with a raw
+// out-of-bounds load. Every read here that should refuse, refuses
+// with -1.
+//
+// Scaling (that the view is actually linear) is a separate test in
+// `crates/hale-codegen/tests/stdlib_str.rs` — it needs a clock and
+// megabytes of input, neither of which belongs in an assertion.
+
+fn main() {
+    // --- ASCII: the ordinary case -------------------------------
+    let ascii = "hello";
+    let v = std::str::bytes_view(ascii);
+    std::test::assert_eq_int(v.n, 5, "n is the byte length");
+
+    // 104 = 'h', 111 = 'o'.
+    std::test::assert_eq_int(std::str::byte_at(v, 0), 104, "byte at 0");
+    std::test::assert_eq_int(
+        std::str::byte_at(v, v.n - 1),
+        111,
+        "byte at n-1"
+    );
+
+    // Off the end, and well off the end: -1, never a load.
+    std::test::assert_eq_int(std::str::byte_at(v, v.n), -1, "byte at n");
+    std::test::assert_eq_int(std::str::byte_at(v, 1000005), -1, "far past");
+    std::test::assert_eq_int(std::str::byte_at(v, -1), -1, "byte at -1");
+    std::test::assert_eq_int(std::str::byte_at(v, -1000000), -1, "far below");
+
+    // Slices: interior, both edges, and every out-of-range shape
+    // clamped rather than refused.
+    std::test::assert_eq_str(std::str::slice(v, 0, 2), "he", "slice head");
+    std::test::assert_eq_str(
+        std::str::slice(v, 3, v.n),
+        "lo",
+        "slice to the exact end"
+    );
+    std::test::assert_eq_str(
+        std::str::slice(v, 3, v.n + 99),
+        "lo",
+        "slice past the end clamps"
+    );
+    std::test::assert_eq_str(
+        std::str::slice(v, -4, 2),
+        "he",
+        "negative start clamps to 0"
+    );
+    std::test::assert_eq_str(std::str::slice(v, 4, 2), "", "inverted is empty");
+    std::test::assert_eq_str(std::str::slice(v, 2, 2), "", "empty range");
+    std::test::assert_eq_str(
+        std::str::slice(v, v.n, v.n + 5),
+        "",
+        "slice starting at the end"
+    );
+    std::test::assert_eq_str(
+        std::str::slice(v, 0, v.n),
+        "hello",
+        "whole-string slice round-trips"
+    );
+    // An absurd end — the shape a length field in untrusted input
+    // takes — is clamped, not copied. Unclamped this asks for a
+    // 100 MB copy out of a 5-byte String.
+    std::test::assert_eq_str(
+        std::str::slice(v, 3, 100000000),
+        "lo",
+        "a 100 MB end offset clamps instead of copying"
+    );
+
+    // --- The empty String ---------------------------------------
+    let empty = std::str::bytes_view("");
+    std::test::assert_eq_int(empty.n, 0, "empty view length");
+    std::test::assert_eq_int(std::str::byte_at(empty, 0), -1, "empty has none");
+    std::test::assert_eq_str(
+        std::str::slice(empty, 0, 10),
+        "",
+        "slice of an empty view"
+    );
+
+    // --- Multi-byte UTF-8: these are BYTES ----------------------
+    // "aé" is 3 bytes: 'a', then é = 0xC3 0xA9 (195, 169).
+    let u = std::str::bytes_view("aé");
+    std::test::assert_eq_int(u.n, 3, "é counts as two bytes");
+    std::test::assert_eq_int(std::str::byte_at(u, 0), 97, "'a'");
+    std::test::assert_eq_int(std::str::byte_at(u, 1), 195, "é lead byte");
+    std::test::assert_eq_int(
+        std::str::byte_at(u, 2),
+        169,
+        "é continuation byte"
+    );
+    std::test::assert_eq_int(std::str::byte_at(u, 3), -1, "one past the end");
+    // The view agrees with the codepoint accessors about the same
+    // offsets — 0xE9 is é's codepoint, and offset 2 is mid-sequence.
+    std::test::assert_eq_int(std::str::cp_at("aé", 1), 233, "cp_at agrees");
+    std::test::assert_eq_int(std::str::cp_at("aé", 2), -1, "mid-sequence");
+
+    // --- A truncated sequence cannot read past the end ----------
+    // Cutting "aé" at byte 2 leaves a lone 0xC3 lead byte with no
+    // continuation: malformed UTF-8, and a scanner given it must
+    // still stop at the real end of the String.
+    let truncated = std::str::slice(u, 1, 2);
+    let t = std::str::bytes_view(truncated);
+    std::test::assert_eq_int(t.n, 1, "the truncated sequence is one byte");
+    std::test::assert_eq_int(std::str::byte_at(t, 0), 195, "the lead byte");
+    std::test::assert_eq_int(std::str::byte_at(t, 1), -1, "no continuation");
+    std::test::assert_eq_int(std::str::byte_at(t, 2), -1, "nor after it");
+    std::test::assert_eq_str(
+        std::str::slice(t, 0, 4),
+        truncated,
+        "slicing past the end of a malformed String clamps"
+    );
+
+    // --- The scan loop the API exists for -----------------------
+    // Count commas in a CSV-ish line with the bounded loop, and
+    // check the tokens come out whole.
+    let line = "alpha,beta,gamma";
+    let lv = std::str::bytes_view(line);
+    let mut commas = 0;
+    let mut first_comma = -1;
+    let mut i = 0;
+    while i < lv.n {
+        let c = std::str::byte_at(lv, i);
+        if c == 44 {
+            commas = commas + 1;
+            if first_comma < 0 { first_comma = i; }
+        }
+        i = i + 1;
+    }
+    std::test::assert_eq_int(commas, 2, "two commas");
+    std::test::assert_eq_int(first_comma, 5, "first comma offset");
+    std::test::assert_eq_str(
+        std::str::slice(lv, 0, first_comma),
+        "alpha",
+        "first field"
+    );
+    std::test::assert_eq_str(
+        std::str::slice(lv, first_comma + 1, lv.n),
+        "beta,gamma",
+        "the rest"
+    );
+
+    // The loop ran to the end and stopped: one read past the final
+    // byte refuses, which is what terminates a real parser.
+    std::test::assert_eq_int(i, lv.n, "the loop ended at n");
+    std::test::assert_eq_int(std::str::byte_at(lv, i), -1, "terminating read");
+
+    // --- range_copy: what slice is built on ---------------------
+    // Same clamping, but the caller supplies the length instead of
+    // a view — the strlen-free sibling of `substring`.
+    std::test::assert_eq_str(
+        std::str::range_copy(line, lv.n, 6, 10),
+        "beta",
+        "range_copy extracts a token"
+    );
+    std::test::assert_eq_str(
+        std::str::range_copy(line, lv.n, 11, 99),
+        "gamma",
+        "range_copy clamps to n"
+    );
+    std::test::assert_eq_str(
+        std::str::range_copy(line, lv.n, 9, 4),
+        "",
+        "range_copy on an inverted range"
+    );
+
+    // And it agrees with the O(n) forms it replaces, on the same
+    // input — the equivalence that makes it a safe substitution.
+    std::test::assert_eq_str(
+        std::str::slice(lv, 6, 10),
+        std::str::substring(line, 6, 10),
+        "slice agrees with substring"
+    );
+    std::test::assert_eq_str(
+        std::str::slice(lv, 0, 5),
+        line[0..5],
+        "slice agrees with the slice expression"
+    );
+}

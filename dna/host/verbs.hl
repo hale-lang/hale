@@ -666,9 +666,13 @@ fn unit_text(name: String, dir: String) -> String {
 fn provision_script(name: String, pin: String, remote_url: String, dir: String, dsn: String) -> String {
     let infra = ReferenceInfrastructure { };
     let mut s = "set -eu\nPIN=" + sq(pin) + "\nREMOTE=" + sq(remote_url) + "\nDIR=" + shell_path(dir) + "\nNAME=" + sq(name) + "\nDSN=" + sq(dsn) + "\n";
-    s = s + "have=$(\"$HOME/.hale/bin/hale\" --version 2>/dev/null | awk '{print $2}' || true)\n";
+    // `hale --version` has a second line since GH #726 (the embedded
+    // DNA source's digest), so the version is field 2 of the FIRST
+    // line — over both lines this read installed the toolchain again
+    // on every provision.
+    s = s + "have=$(\"$HOME/.hale/bin/hale\" --version 2>/dev/null | awk 'NR==1{print $2}' || true)\n";
     s = s + "if [ \"$have\" != \"$PIN\" ]; then echo \"installing hale $PIN\"; HALE_VERSION=\"v$PIN\" sh -c \"$(curl -fsSL https://hale-lang.org/install.sh)\" >/dev/null; fi\n";
-    s = s + "\"$HOME/.hale/bin/hale\" --version | grep -q \"$PIN\" || { echo \"the toolchain did not install at $PIN; nothing else was written\"; exit 4; }\n";
+    s = s + "\"$HOME/.hale/bin/hale\" --version | head -1 | grep -q \"$PIN\" || { echo \"the toolchain did not install at $PIN; nothing else was written\"; exit 4; }\n";
     s = s + "export PATH=\"$HOME/.hale/bin:$PATH\"\n";
     s = s + "if [ -d \"$DIR/.git\" ]; then git -C \"$DIR\" fetch -q; echo \"fetched into $DIR\"; else mkdir -p \"$(dirname \"$DIR\")\"; git clone -q \"$REMOTE\" \"$DIR\"; echo \"cloned into $DIR\"; fi\n";
     s = s + "cd \"$DIR\" && hale dna upgrade . >/dev/null && (hale dna sync >/dev/null 2>&1 || true)\n";
