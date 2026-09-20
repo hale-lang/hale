@@ -65,6 +65,20 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // GH #817: `--help` / `-h` right after a subcommand asks what
+    // THAT subcommand takes. Answered here, once, before any command
+    // parses its own arguments — otherwise the flag is whatever each
+    // command does with an unrecognized first argument, and no two
+    // agree (`hale build --help` read it as the target and failed
+    // with `not a file or directory: --help`). Only the first
+    // argument: further along it belongs to whatever is parsing
+    // there.
+    if matches!(args.get(2).map(String::as_str), Some("--help") | Some("-h"))
+        && subcommand_help(cmd)
+    {
+        return ExitCode::SUCCESS;
+    }
+
     // Which targets exist, and what the compiler can actually do with
     // each. Naming a target and building it are different capabilities,
     // so the listing states the tier rather than implying parity.
@@ -206,15 +220,7 @@ fn main() -> ExitCode {
             return run_model_diff(&rest[1..]);
         }
         if rest.first().map(String::as_str) != Some("dump") {
-            eprintln!("usage: hale model dump <file.hl | dir>");
-            eprintln!("       hale model diff <a.topology> <b.topology> [--json|--text]");
-            eprintln!();
-            eprintln!("`dump` derives the canonical ApplicationModel (GH #476) and prints an internal,");
-            eprintln!("non-stable dump (experimental, pre-1.0).");
-            eprintln!("`diff` compares two --dump-topology artifacts: declarations (added / removed /");
-            eprintln!("renamed / moved / split / joined / ambiguous), per-locus contract deltas, effect");
-            eprintln!("and certificate deltas, law and adequacy deltas, and a source-only vs model-shape");
-            eprintln!("classification. JSON (versioned, digest-bearing) by default; --text for a review view.");
+            eprint!("{}", model_usage());
             return ExitCode::from(2);
         }
         // The check pipeline's dump section reads PROCESS argv (it
@@ -361,6 +367,280 @@ fn usage() {
     eprintln!();
     eprintln!("    hale --version               print the version, and the embedded DNA source's digest");
     eprintln!("    hale --help                  print this help");
+    eprintln!("    hale <command> --help        that command's flags, input shape and output");
+}
+
+/// GH #817: one subcommand's usage — what `--help` / `-h` as its
+/// first argument prints, before the command parses anything.
+///
+/// Every command used to answer that question differently, because
+/// none of them was answering it: `hale build --help` read the flag
+/// as its target (`not a file or directory: --help`), `hale init
+/// --help` would have scaffolded a project into a directory of that
+/// name, `hale lsp` / `hale mcp` started a server on stdio and
+/// waited, and the flag-parsing commands called it an unknown flag
+/// (exit 2). Help is the one part of the surface every command has,
+/// so it is written in one place.
+///
+/// Commands whose text already exists somewhere else call it rather
+/// than repeat it: a second copy of a flag list is a copy that goes
+/// stale.
+///
+/// Returns `false` for a command this does not answer — `iris` and
+/// `dna` parse `--help` themselves further in, and the parser that
+/// owns the flags owns their description. A `false` falls through
+/// to ordinary dispatch.
+fn subcommand_help(cmd: &str) -> bool {
+    let text: &str = match cmd {
+        // `check` and `verify` have answered `--help` since the
+        // v0.15.0 devex review; the pre-pass routes to the same text
+        // so there is one description of the flag set.
+        "check" | "verify" => {
+            check_usage(cmd == "verify");
+            return true;
+        }
+        "fleet" => {
+            print!("{}", fleet_usage());
+            return true;
+        }
+        "model" => {
+            print!("{}", model_usage());
+            return true;
+        }
+        "topology" => {
+            print!("{}", topology_graph::usage_text());
+            return true;
+        }
+        "node" => {
+            print!("{}", dna::node_usage());
+            return true;
+        }
+        "lex" => "\
+hale lex <file.hl>            tokenize and print the token stream
+
+One file: every token on its own line, with its line:col. Nothing is
+parsed, `import` is not followed, and there are no flags.
+",
+        "parse" => "\
+hale parse <file.hl>          parse and print the AST
+
+One file: the parsed `Program`, pretty-printed. Nothing is
+typechecked and `import` is not followed — `hale check` is the
+command that reads the whole import graph. Takes no flags.
+",
+        "init" => "\
+hale init [dir]               bootstrap a project (default: the current directory)
+
+Writes a `hale.toml` skeleton, a hello-world `main.hl`, a first
+`tests/*_test.hl` so `hale test` works from minute one, and a
+`.gitignore` covering the build artifact and `vendor/`.
+
+Strictly non-destructive: a file that already exists is reported and
+left exactly as it was, so `init` is safe to re-run in a
+half-scaffolded directory. Takes no flags.
+",
+        "inputs" => "\
+hale inputs <seed-dir | file.hl>   every file a build of the seed reads
+
+One canonical path per line: the seed's own `.hl` files and every
+`.hl` of every directory they import, transitively, resolved exactly
+as the compiler resolves them. For anything that must know what a
+build depends on without guessing from git — an untracked, ignored
+or oddly named source file beside the reviewed ones is compiled all
+the same. Takes no flags.
+",
+        "fetch" => "\
+hale fetch [repo-root]        fetch the git deps in hale.toml into vendor/
+
+Each `[deps]` entry is cloned into `vendor/<name>/` and its resolved
+SHA pinned in `hale.lock`. Default root: the current directory.
+Takes no flags.
+",
+        "run" => "\
+hale run <file.hl | dir> [program args...]   compile + run as a native binary
+
+Compiles the target exactly as `hale build` does and execs the
+result from a temporary path — there is no interpreter. The target
+is one `.hl` file, whose `import` directives are followed, or one
+directory, whose `.hl` files are one seed.
+
+Everything after the target is the PROGRAM's argv: `std::env::arg`
+sees what a built binary run directly would see.
+
+  --observe    before the target: run the program with LOTUS_OBS=1
+               and an iris session beside it, for its lifetime
+",
+        "build" => "\
+hale build <file.hl | dir> [flags]   parse + typecheck + emit a native binary
+
+The target is one `.hl` file, whose `import` directives are
+followed, or one directory, whose `.hl` files are one seed and one
+binary.
+
+The binary lands beside the target, and there is no `-o`:
+
+    hale build app.hl    ->  ./app           the basename, minus .hl
+    hale build myapp/    ->  myapp/myapp     the directory's own name,
+                                             inside it
+
+Flags follow the target:
+
+  --target <native|wasm32|triple>  which backend emits the artifact
+                                   (`hale targets` lists every target
+                                   this compiler can name, and says
+                                   which it can build)
+  --target-cpu <native|baseline>   `native` tunes to this host, best
+                                   speed and not portable; `baseline`
+                                   pins a portable x86-64-v3 for an
+                                   artifact that travels
+  --dev                            LLVM O1 instead of the O3 default:
+                                   build latency over run speed
+  --link <name>                    link a system library (repeatable)
+  --csrc <file.c>                  compile and link a C source
+                                   (repeatable)
+  --wrap-main                      synthesize the wasm @export entry
+                                   from `fn main` (--target wasm32)
+  --locality-report                the per-locus working-set table,
+                                   on stderr; the build proceeds
+  --target-cache <l1|l2|l3>        evaluate each locus against that
+                                   cache tier's budget
+  --strict                         with --target-cache: an over-budget
+                                   locus is a build error, not a
+                                   warning
+",
+        "replay" => "\
+hale replay <recording> <program.hl>   re-run a LOTUS_OBS_RECORD recording
+
+The recording is the journal a program wrote under
+`LOTUS_OBS_RECORD=<path>`; the program is the code to re-execute it
+against. Admission is fail-closed: a recording from different build
+inputs, from a different model, or without a clean finalize is
+refused unless the matching flag accepts the gap.
+
+  --diff                    report the first divergence from the
+                            recording and fail on any; on a match,
+                            per-category coverage
+  --json                    with --diff: that verdict and coverage,
+                            machine-readable
+  --at <n>                  SIGSTOP at the n'th consume
+  --at <consumer-id>:<n>    ... at that consumer's n'th consume,
+                            stable across multi-consumer runs
+  --feed                    inject the recorded ingress tape into
+                            (possibly changed) code — there is no
+                            recorded schedule to compare against, so
+                            not with --diff or --at
+  --allow-unmatched-feed    with --feed: accept a partially-fed tape
+  --allow-live-effects      re-execute although this program can
+                            reach the live world (syscall and ffi
+                            writes repeat)
+  --allow-unverified-model  accept a recording whose execution
+                            identity is missing or does not match
+                            this compile
+  --allow-truncated         replay the recorded prefix of a
+                            crash-truncated recording
+",
+        "test" => "\
+hale test [file | dir]        compile + run every `*_test.hl` (default: cwd)
+
+Each `_test.hl` file is compiled and run as its own binary, and its
+exit status is the verdict. Finding nothing to run is success, not
+an error.
+
+  -run <substr>   only files whose path contains <substr>
+                  (`--run`, `-run=<substr>` and `--run=<substr>` too)
+  --json          the results as JSON on stdout
+",
+        "bench" => "\
+hale bench [file | dir]       run every `*_bench.hl`'s bench_* fns (default: cwd)
+
+Self-calibrating: each parameterless `bench_*` fn is run until the
+harness has a stable measurement, and reports ns/op and allocs/op. A
+`*_bench.hl` file may not declare `fn main`.
+
+  -run <substr>   only benches whose NAME contains <substr>
+  --json          the results as JSON on stdout
+",
+        "fmt" => "\
+hale fmt [file | dir ...]     canonical formatter, in place (default: cwd)
+
+Go-style and zero config. Directories are recursed; `vendor/` and
+dot-dirs are skipped. A file that does not lex is reported and
+skipped — the formatter never rewrites a file it cannot fully
+tokenize.
+
+  --check    do not write: list the files that would change and exit
+             1 (the CI gate)
+  --diff     do not write: print the before/after for those files
+  --stdin    format stdin to stdout (editor integration)
+",
+        "doc" => "\
+hale doc [file | dir]         render the seed's API reference (`///` comments)
+
+Markdown on stdout, one entry per documented declaration of the
+seed's `.hl` files.
+
+  --json        the same items as JSON instead of Markdown
+  -o <path>     write to <path> instead of stdout (`--out` too)
+  --stdlib      document the `std::` surface instead of a seed
+",
+        "lsp" => "\
+hale lsp                      stdio Language Server (diagnostics)
+
+Speaks LSP over stdin and stdout. No target and no flags: the seed
+to check is derived per document from the client's `textDocument`
+URIs. Not meant to be run by hand — point an editor at `hale lsp`.
+",
+        "mcp" => "\
+hale mcp                      stdio Model Context Protocol server (agent tools)
+
+Speaks MCP over stdin and stdout, exposing the toolchain to a host
+without a shell. No target and no flags. Its tools self-exec this
+binary, so the compiler an agent drives is the one it is talking to.
+",
+        _ => return false,
+    };
+    print!("{}", text);
+    true
+}
+
+/// The `hale fleet` surface. One text for two callers: the usage
+/// error (stderr, exit 2) and `--help` (stdout, exit 0).
+fn fleet_usage() -> &'static str {
+    "\
+hale fleet check [plan.json]   compose and check
+                                (no plan: every fleet in [fleets];
+                                 --in <dir> another workspace's, --if-declared: none is ok)
+hale fleet dump  <plan.json>    write the fleet artifact
+hale fleet attest <plan.json>   binaries match the plan's sha256 rows
+hale fleet keygen <prefix>      ES256 keypair for signing
+hale fleet sign <file> --key K  detached .sig over exact bytes
+
+check/dump take --trust <pub.pem> (repeatable):
+with trust roots declared, every component must
+verify under one of them.
+
+A plan names exact application INSTANCES and the
+routes between them. It composes artifacts, never
+source: matching wire identities establish
+compatibility, but only an explicit route creates
+a fleet edge.
+"
+}
+
+/// The `hale model` surface. One text for two callers: the usage
+/// error (stderr, exit 2) and `--help` (stdout, exit 0).
+fn model_usage() -> &'static str {
+    "\
+usage: hale model dump <file.hl | dir>
+       hale model diff <a.topology> <b.topology> [--json|--text]
+
+`dump` derives the canonical ApplicationModel (GH #476) and prints an internal,
+non-stable dump (experimental, pre-1.0).
+`diff` compares two --dump-topology artifacts: declarations (added / removed /
+renamed / moved / split / joined / ambiguous), per-locus contract deltas, effect
+and certificate deltas, law and adequacy deltas, and a source-only vs model-shape
+classification. JSON (versioned, digest-bearing) by default; --text for a review view.
+"
 }
 
 
@@ -4062,23 +4342,7 @@ fn run_fleet(rest: &[String]) -> ExitCode {
             (sub.unwrap(), p)
         }
         _ => {
-            eprintln!("hale fleet check [plan.json]   compose and check");
-            eprintln!("                                (no plan: every fleet in [fleets];");
-            eprintln!("                                 --in <dir> another workspace's, --if-declared: none is ok)");
-            eprintln!("hale fleet dump  <plan.json>    write the fleet artifact");
-            eprintln!("hale fleet attest <plan.json>   binaries match the plan's sha256 rows");
-            eprintln!("hale fleet keygen <prefix>      ES256 keypair for signing");
-            eprintln!("hale fleet sign <file> --key K  detached .sig over exact bytes");
-            eprintln!();
-            eprintln!("check/dump take --trust <pub.pem> (repeatable):");
-            eprintln!("with trust roots declared, every component must");
-            eprintln!("verify under one of them.");
-            eprintln!();
-            eprintln!("A plan names exact application INSTANCES and the");
-            eprintln!("routes between them. It composes artifacts, never");
-            eprintln!("source: matching wire identities establish");
-            eprintln!("compatibility, but only an explicit route creates");
-            eprintln!("a fleet edge.");
+            eprint!("{}", fleet_usage());
             return ExitCode::from(2);
         }
     };

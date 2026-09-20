@@ -57,6 +57,12 @@ diagnostic's meaning, go there.
 | `hale lsp` | the language server, in the compiler binary |
 | `hale mcp` | the MCP server, in the compiler binary |
 
+Every one of them answers `--help` (or `-h`) as its first argument with
+its own flags, its input shape and where its output goes. `hale build
+--help` is where the built binary's path is written down — `build` has
+no `-o`, so a file target becomes `./app` and a directory target becomes
+`myapp/myapp`, inside the directory.
+
 `check` and `verify` follow every `import`, so a parse failure anywhere
 in the import graph — a library you import, or one it imports — fails
 them both, reported at that file's own line and column. Neither ever
