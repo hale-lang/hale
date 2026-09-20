@@ -355,6 +355,25 @@ binding registered won, both seeds resolved to one library, and
 nothing reported it (`hale check` passed and the binary computed
 the wrong value).
 
+**A reference must name an alias its own seed declares.** The
+guarantee above holds in both directions, so a qualified path whose
+head is an import alias that some *other* seed of the build declares
+— and this one does not — is a check error located at the path,
+naming the seed that does declare it. This closes the other half of
+the flat-table hole: a seed that imported nothing at all could write
+`u::f()` and have the one table answer it out of an importer's row,
+so a library silently called whatever library its app happened to
+spell `u` (and the same library, compiled from a different app,
+called something else). Until GH #762 that was accepted in silence
+whenever the alias was uncontested, and reported only when two seeds
+contested it.
+
+Exempt from the rule: `std::`, the bundled namespace no seed
+imports, and a head naming one of the seed's own declarations
+(`Color::Red` is an enum variant, not an alias). A head NO seed in
+the build declares is refused where it always was, at build —
+nothing resolves through it either way.
+
 One seed whose own files disagree — the same alias bound to two
 libraries inside a single namespace — resolves to one of them, as
 it always has; the compiler does not (yet) reject that shape.
