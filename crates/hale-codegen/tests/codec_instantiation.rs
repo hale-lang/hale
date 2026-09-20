@@ -125,3 +125,81 @@ fn codec_locus_is_instantiated_at_main_prelude() {
         stdout
     );
 }
+
+/// GH #921 A3, commit 6: a codec locus has an OWNER.
+///
+/// The prelude used to spoof `current_user_fn_ret` to the codec's
+/// own locus, which said two things at once: "allocate where the
+/// caller can see it" (right — the runtime dispatches through this
+/// instance for the program's life) and "nobody here reclaims it"
+/// (wrong — it made `lower_locus_instantiation` suppress the eager
+/// dissolve AND push no deferred entry). So `dissolve()` never ran
+/// and the codec's arena lived to process exit. PR #918 removed the
+/// same spoof's ownership half for the transport by hand; #921's A3
+/// list names the adapter and codec preludes as still carrying it.
+///
+/// The adapter's own instance was already registered — its
+/// `placement { }`-equivalent `Pinned(None)` routes it through the
+/// pinned branch, which pushes a join record unconditionally — so
+/// the codec is the half that leaked, and its `dissolve()` line is
+/// the oracle. `role: listen` so no peer process is needed. The
+/// program is assembled without a raw string literal so
+/// `hale_corpus::embedded` does not harvest it.
+#[test]
+fn a_codec_locus_is_reclaimed_at_main_exit() {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let sock = format!(
+        "{}/codec-dissolve-{}-{}.sock",
+        std::env::temp_dir().display(),
+        std::process::id(),
+        nanos
+    );
+    let src = [
+        "type Tick { sym: String = \"\"; price: Int = 0; }\n",
+        "type EncErr { kind: String = \"\"; }\n",
+        "type DecErr { kind: String = \"\"; }\n",
+        "topic TickTopic { payload: Tick; subject: \"ticks\"; }\n",
+        "locus TickJsonCodec {\n",
+        "    birth() { println(\"[codec] birth\"); }\n",
+        "    dissolve() { println(\"[codec] dissolve\"); }\n",
+        "    fn encode(v: Tick) -> Bytes fallible(EncErr) {\n",
+        "        return std::bytes::from_string(v.sym);\n",
+        "    }\n",
+        "    fn decode(b: Bytes) -> Tick fallible(DecErr) {\n",
+        "        return Tick { sym: \"x\", price: 0 };\n",
+        "    }\n",
+        "}\n",
+        "main locus App {\n",
+        "    bus { publish TickTopic; }\n",
+        "    bindings {\n",
+        "        TickTopic: unix(\"",
+        &sock,
+        "\", role: listen)\n",
+        "                   codec(TickJsonCodec { });\n",
+        "    }\n",
+        "    run() { println(\"[app] running\"); }\n",
+        "}\n",
+        "fn main() { App { }; }\n",
+    ]
+    .concat();
+    let program = hale_syntax::parse_source(&src).expect("parse");
+    let bin = harness::unique_bin("hale_codec_dissolve_921");
+    build_executable(&program, &bin).expect("build");
+    let output = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_file(&sock);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("[codec] birth")
+            && stdout.contains("[app] running"),
+        "the codec should be built and the app should run: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("[codec] dissolve"),
+        "the codec locus has no owner: its `dissolve()` never ran, so \
+         its arena lives to process exit: {stdout:?}"
+    );
+}

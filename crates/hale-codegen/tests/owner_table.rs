@@ -1,21 +1,23 @@
-//! The ownership pre-pass — GH #921 A2.
+//! The ownership pre-pass — GH #921 A2, read by lowering since A3.
 //!
-//! Two halves, both about `hale_codegen::ownership` and neither
-//! about what is emitted (A2 changes no behaviour):
+//! Two halves, both about `hale_codegen::ownership`:
 //!
-//!   1. **derivations** — twenty small programs, one per syntactic
-//!      position F.39 names, asserting the owner the table gives the
-//!      locus-producing expression there. These are the contract A3
-//!      switches lowering over to, so they are stated positively and
-//!      not as "whatever the flags do today".
-//!   2. **the shadow** — the same programs built under
-//!      `ShadowMode::Strict`, where a disagreement between the table
-//!      and the seven one-shot flags is a `CodegenError`. The green
-//!      shapes must build; the four `ownership_matrix.rs`
-//!      `KNOWN_OPEN` families must each fail, with the verdicts
-//!      named. That last set is A3's checklist: when a commit fixes
-//!      a family, its test here goes red and has to move from
-//!      `disagrees` to `agrees`.
+//!   1. **derivations** — small programs, one per syntactic position
+//!      F.39 names, asserting the owner the table gives the
+//!      locus-producing expression there. These are the contract
+//!      lowering reads, so they are stated positively and not as
+//!      "whatever lowering happens to do". They seed the
+//!      fresh-factory fixpoint EMPTY on purpose, so a derivation
+//!      never passes because `compute_fresh_locus_factories`
+//!      happened to agree.
+//!   2. **the build** — the same programs compiled. Reaching a locus
+//!      instantiation the table has no row for is a `CodegenError`
+//!      (F.39's rule, A3 commit 7), so a build that succeeds is the
+//!      statement that every locus in the program was decided before
+//!      lowering began. A4's four `KNOWN_OPEN` families were pinned
+//!      here as shadow-mode DISAGREEMENTS and were A3's checklist;
+//!      all four are closed, and each is a shape here naming the
+//!      commit that closed it.
 //!
 //! Every program is assembled from ordinary `"…"` constants, never a
 //! RAW string literal, because `hale_corpus::embedded` harvests raw
@@ -26,7 +28,6 @@ use std::collections::BTreeMap;
 
 use hale_codegen::ownership::{
     resolve_owners, Entry, ExprId, Owner, OwnerTable, ScopeKind,
-    ShadowMode,
 };
 
 #[path = "support/harness.rs"]
@@ -39,8 +40,7 @@ mod harness;
 /// The subject and the helpers every program leans on. `Subj` is a
 /// plain locus; `Holder` holds one behind a locus-typed field and
 /// `IHolder` behind an interface-typed one; `make` / `make2` are
-/// proven-fresh factories and `produce` is the carrier-return shape
-/// the shipped fixpoint does not prove.
+/// proven-fresh factories.
 const DECLS: &str = "
 locus Subj {
     params { n: Int = 0; }
@@ -445,6 +445,61 @@ fn a_receiver_inside_a_field_initialiser_is_not_the_fields() {
     );
 }
 
+/// The declarations behind the `perspective(P)`-typed field shape —
+/// `ownership_matrix.rs`'s `persp_field_factory` position, added by
+/// GH #921 A3 because no cell covered it.
+const PERSP_DECLS: &str = "
+perspective PRoute { fn pv() -> Int; }
+
+locus PRouteV1 : serves PRoute {
+    params { n: Int = 1; }
+    dissolve() { println(\"D:proute\"); }
+    fn pv() -> Int { return self.n; }
+}
+
+locus PHolder {
+    params { r: perspective(PRoute) = PRouteV1 { }; }
+    fn peek() -> Int { return self.r.pv(); }
+}
+
+fn makep() -> PRouteV1 { return PRouteV1 { }; }
+";
+
+#[test]
+fn a_factory_into_a_perspective_field_is_the_fields() {
+    // F.39 says a param field's initialiser is `Owner::Field` whether
+    // the field is locus-, interface- or perspective-typed. Lowering
+    // used to disagree for the third: the F.17 gate covered
+    // `LocusRef` and `Interface` only, so the value took the GH #402
+    // frame temporary and the owner's mask bit deliberately did not
+    // claim it. GH #921 A3 commit 1 retires that gate with
+    // `suppress_fresh_temp`, so the bit has to claim it.
+    let src = [
+        PERSP_DECLS,
+        "\nfn main() {\n    let h = PHolder { r: makep() };\n",
+        "    println(\"u=\", h.peek());\n}\n",
+    ]
+    .concat();
+    let t = table_of(&src);
+    let e = row(&t, "fn main", "param-field initialiser", "PRouteV1");
+    assert!(
+        matches!(&e.owner, Owner::Field { field, .. } if field == "r"),
+        "{:?}",
+        e.owner
+    );
+}
+
+#[test]
+fn every_locus_is_decided_in_a_factory_into_a_perspective_field() {
+    let src = [
+        PERSP_DECLS,
+        "\nfn main() {\n    let h = PHolder { r: makep() };\n",
+        "    println(\"u=\", h.peek());\n}\n",
+    ]
+    .concat();
+    agrees(&src, "persp_field_factory");
+}
+
 #[test]
 fn a_placed_field_is_a_placement_entry() {
     let src = concat!(
@@ -465,10 +520,13 @@ fn a_placed_field_is_a_placement_entry() {
 
 #[test]
 fn a_carrier_return_fn_is_a_proven_fresh_factory_in_the_table() {
-    // The whole of the 105-cell carrier-return family: the shipped
-    // `compute_fresh_locus_factories` classifies the carrier node and
-    // never its arms, so `produce` is not a factory there and its
-    // caller's binding does not own the result.
+    // The whole of the 105-cell carrier-return family.
+    // `compute_fresh_locus_factories::collect` classifies the CARRIER
+    // node and never its arms, so `produce` was not a factory and its
+    // caller's binding did not own the result. The table flattens the
+    // arms, and GH #921 A3 commit 1 folds its answer back into the
+    // map lowering reads — the seed here stays EMPTY so this asserts
+    // the table's own fixpoint and not the fold-back.
     let src = [
         DECLS,
         "\nfn produce(c: Bool) -> Subj {\n",
@@ -518,27 +576,15 @@ fn the_table_numbers_every_locus_producing_node_it_decides() {
 }
 
 // ===================================================================
-// 2 — the shadow
+// 2 — the build
 // ===================================================================
 
-fn strict() -> hale_codegen::BuildOptions {
-    hale_codegen::BuildOptions {
-        owner_shadow: Some(ShadowMode::Strict),
-        ..Default::default()
-    }
-}
-
-/// Build under `strict` and hand back the refusal, if any.
-fn shadow(src: &str, tag: &str) -> Option<String> {
+/// Build the program and hand back the refusal, if any.
+fn build(src: &str, tag: &str) -> Option<String> {
     let p = hale_syntax::parse_source(src)
         .unwrap_or_else(|e| panic!("{tag}: does not parse: {e:?}\n{src}"));
     let bin = harness::unique_bin(&["ownertab_", tag].concat());
-    let r = hale_codegen::build_executable_with_options(
-        &p,
-        &bin,
-        &[],
-        &strict(),
-    );
+    let r = hale_codegen::build_executable(&p, &bin);
     let _ = std::fs::remove_file(&bin);
     match r {
         Ok(()) => None,
@@ -546,40 +592,21 @@ fn shadow(src: &str, tag: &str) -> Option<String> {
     }
 }
 
+/// Every locus in this program is decided before lowering begins.
+/// A row the table does not have is a `CodegenError` naming the
+/// expression (F.39's rule, GH #921 A3 commit 7), so a clean build
+/// IS the assertion.
 fn agrees(src: &str, tag: &str) {
-    if let Some(e) = shadow(src, tag) {
+    if let Some(e) = build(src, tag) {
         panic!(
-            "{tag}: the owner table and the lowering flags disagree, and \
-             this shape is supposed to be green:\n{e}"
+            "{tag}: this shape must build — a locus the owner table \
+             has no row for is refused:\n{e}"
         );
     }
 }
 
-fn disagrees(src: &str, tag: &str, table_says: &str, flags_say: &str) {
-    let Some(e) = shadow(src, tag) else {
-        panic!(
-            "{tag}: the table and the flags now AGREE. That is the \
-             regression test firing: a GH #921 A3 commit closed this \
-             family, so move this case from `disagrees` to `agrees` and \
-             delete the matching `ownership_matrix.rs` KNOWN_OPEN block."
-        );
-    };
-    assert!(
-        e.contains("owner-shadow"),
-        "{tag}: the build failed for some other reason:\n{e}"
-    );
-    assert!(
-        e.contains(table_says),
-        "{tag}: expected the table to say `{table_says}`; got:\n{e}"
-    );
-    assert!(
-        e.contains(flags_say),
-        "{tag}: expected the flags to say `{flags_say}`; got:\n{e}"
-    );
-}
-
 #[test]
-fn the_shadow_is_green_on_the_shapes_the_matrix_is_green_on() {
+fn every_locus_is_decided_in_the_shapes_the_matrix_is_green_on() {
     for (tag, payload) in [
         ("let_literal", "    let a = Subj { n: 1 };\n    println(\"u=\", a.probe());"),
         ("bare_stmt", "    Subj { n: 1 };"),
@@ -625,8 +652,68 @@ fn the_shadow_is_green_on_the_shapes_the_matrix_is_green_on() {
     }
 }
 
+/// GH #921 A3, commit 1 closed these: the carrier-return family
+/// (`ownership_matrix.rs`'s 105 cells) and the per-iteration frame
+/// temporary (its 25). Both were `disagrees` pins until the commit
+/// that retired `suppress_fresh_temp`; they are green shapes now, and
+/// the matrix holds their cells to it.
 #[test]
-fn the_shadow_is_green_on_a_returned_literal_and_a_returned_factory() {
+fn every_locus_is_decided_in_the_families_commit_one_closed() {
+    let carrier = [
+        DECLS,
+        "\nfn produce(c: Bool) -> Subj {\n",
+        "    return if c { make(1) } else { make2(1) };\n}\n",
+        "fn main() { let a = produce(true); println(\"u=\", a.probe()); }\n",
+    ]
+    .concat();
+    agrees(&carrier, "carrier_return");
+
+    // The `let`-named twin of the same program — the shape the
+    // matrix's differential oracle compares against, and the one the
+    // fixpoint had to learn to resolve through a binding.
+    let carrier_twin = [
+        DECLS,
+        "\nfn produce(c: Bool) -> Subj {\n",
+        "    let t = if c { make(1) } else { make2(1) };\n    return t;\n}\n",
+        "fn main() { let a = produce(true); println(\"u=\", a.probe()); }\n",
+    ]
+    .concat();
+    agrees(&carrier_twin, "carrier_return_twin");
+
+    agrees(
+        &program_in_loop(
+            "        let c = true;\n        let a = if c { make(1) } else { make2(1) };\n        println(\"u=\", a.probe());",
+        ),
+        "frame_temp_per_iteration",
+    );
+    agrees(
+        &program_in_loop(
+            "        let xs: [Subj; 2] = [make(1), make2(1)];\n        println(\"u=\", xs[0].probe());",
+        ),
+        "composite_per_iteration",
+    );
+}
+
+/// GH #896, folded into #921 — `ownership_matrix.rs`'s
+/// `NESTED_RECEIVER_IN_FIELD_INIT`, 35 cells, closed by commit 3.
+/// The receiver literal inside a locus-typed field's non-literal
+/// initialiser took the parent-owned flag meant for the field's
+/// value, so the frame that built it stood back and nobody reclaimed
+/// it. `parent_owns_via_field` is the table's `Owner::Field` on the
+/// node itself now, and the table decided the receiver and the
+/// field's value separately.
+#[test]
+fn every_locus_is_decided_in_the_family_commit_three_closed() {
+    agrees(
+        &program(
+            "    let h = Holder { c: make(Cfg { }.seed()) };\n    println(\"u=\", h.peek());",
+        ),
+        "nested_receiver",
+    );
+}
+
+#[test]
+fn every_locus_is_decided_in_a_returned_literal_and_a_returned_factory() {
     for (tag, produce) in [
         ("return_literal", "fn produce() -> Subj { return Subj { n: 1 }; }\n"),
         ("return_factory", "fn produce() -> Subj { return make(1); }\n"),
@@ -642,87 +729,19 @@ fn the_shadow_is_green_on_a_returned_literal_and_a_returned_factory() {
     }
 }
 
-/// GH #921 A3, PR #913's residue — `ownership_matrix.rs`'s
-/// `CARRIER_RETURN`, 105 cells.
+/// GH #921 A3, PR #916's residue — `ownership_matrix.rs`'s
+/// `OR_INTO_INTERFACE_FIELD`, 35 cells, closed by commit 4 and the
+/// last family on the board. The ok value and the substitute both
+/// belong to the field; the three field-ownership predicates
+/// compared the factory's DECLARED locus with the FIELD's, which an
+/// interface-typed field does not have, so neither branch got the
+/// owner's mask bit and the frame had already stood back (F.17).
 #[test]
-fn family_carrier_return_disagrees() {
-    let src = [
-        DECLS,
-        "\nfn produce(c: Bool) -> Subj {\n",
-        "    return if c { make(1) } else { make2(1) };\n}\n",
-        "fn main() { let a = produce(true); println(\"u=\", a.probe()); }\n",
-    ]
-    .concat();
-    disagrees(
-        &src,
-        "carrier_return",
-        "table says owned by the site",
-        "flags say nobody",
-    );
-}
-
-/// GH #921 A3, PR #916's residue — `OR_INTO_INTERFACE_FIELD`, 35
-/// cells. The ok value and the substitute both belong to the field;
-/// `or_field_owner_locus` compares the factory's declared locus with
-/// the FIELD's, which an interface-typed field does not have.
-#[test]
-fn family_or_into_an_interface_field_disagrees() {
-    let src = program(
-        "    let h = IHolder { c: make_f(1) or make2(1) };\n    println(\"u=\", h.peek());",
-    );
-    disagrees(
-        &src,
+fn every_locus_is_decided_in_the_family_commit_four_closed() {
+    agrees(
+        &program(
+            "    let h = IHolder { c: make_f(1) or make2(1) };\n    println(\"u=\", h.peek());",
+        ),
         "or_into_iface_field",
-        "table says owned by the site",
-        "flags say frame temporary",
-    );
-}
-
-/// GH #896, folded into #921 — `NESTED_RECEIVER_IN_FIELD_INIT`, 35
-/// cells. The receiver literal inside the field's non-literal
-/// initialiser takes the parent-owned flag meant for the field's
-/// value.
-#[test]
-fn family_nested_receiver_in_a_field_initialiser_disagrees() {
-    let src = program(
-        "    let h = Holder { c: make(Cfg { }.seed()) };\n    println(\"u=\", h.peek());",
-    );
-    disagrees(
-        &src,
-        "nested_receiver",
-        "table says frame (per frame)",
-        "flags say owner field",
-    );
-}
-
-/// Found by `ownership_matrix.rs` and not filed —
-/// `FRAME_TEMP_PER_ITERATION`, 25 cells. A GH #402 frame temporary
-/// is one alloca per SITE with no reuse teardown, so a `while` body
-/// reclaims only the last iteration's value.
-#[test]
-fn family_frame_temp_per_iteration_disagrees() {
-    let src = program_in_loop(
-        "        let c = true;\n        let a = if c { make(1) } else { make2(1) };\n        println(\"u=\", a.probe());",
-    );
-    disagrees(
-        &src,
-        "frame_temp_per_iteration",
-        "table says frame temporary (per iteration)",
-        "flags say frame temporary (per frame)",
-    );
-}
-
-/// The composite half of the same family: an ascribed array's
-/// elements take the GH #402 temporary too.
-#[test]
-fn family_frame_temp_per_iteration_disagrees_for_a_composite() {
-    let src = program_in_loop(
-        "        let xs: [Subj; 2] = [make(1), make2(1)];\n        println(\"u=\", xs[0].probe());",
-    );
-    disagrees(
-        &src,
-        "composite_per_iteration",
-        "table says frame temporary (per iteration)",
-        "flags say frame temporary (per frame)",
     );
 }

@@ -241,16 +241,6 @@ pub(crate) struct LoopFrame<'ctx> {
 pub(crate) struct MatchExprCapture<'ctx> {
     arm_values: Vec<(BasicValueEnum<'ctx>, CodegenTy, BasicBlock<'ctx>)>,
     fallthrough_bb: Option<BasicBlock<'ctx>>,
-    /// GH #883: the `suppress_fresh_temp` decision the site armed
-    /// for the whole match, carried in so every arm body can take
-    /// it — exactly one arm runs, and on that path the arm's value
-    /// IS the value the site named. Lives here rather than in the
-    /// flag itself because the flag is one-shot: left set across
-    /// `lower_match_core` it was consumed by the first arm lowered
-    /// (or by a factory call in the SCRUTINEE), and every other
-    /// arm's result became a frame temporary this frame dissolved
-    /// while the site's owner still held it.
-    owner_decided_elsewhere: bool,
 }
 
 /// Bounds-check-elimination (BCE) support for `@form(vec)` `.get`
@@ -656,11 +646,6 @@ pub struct BuildOptions {
     /// for the spellings. Ignored under any sanitizer and on wasm32,
     /// exactly as the env spelling is.
     pub lto: Option<LtoMode>,
-    /// GH #921 A2: how loudly the ownership shadow speaks. `None`
-    /// reads `LOTUS_OWNER_SHADOW` (unset = off), which is what the
-    /// CLI and a corpus run use; a test passes the mode so it never
-    /// has to mutate the process environment.
-    pub owner_shadow: Option<crate::ownership::ShadowMode>,
 }
 
 /// The per-build source table for DWARF emission: each entry is one
@@ -1080,16 +1065,33 @@ pub fn build_executable_with_options(
     // desugared program and before anything borrows it. It numbers
     // every locus-producing expression node (the only mutation it
     // makes) and derives an owner for each from syntactic position,
-    // using the same fresh-factory fixpoint lowering uses — extended,
-    // in the table only, to the carrier returns that fixpoint misses.
-    // Nothing reads the table except the shadow check.
-    let fresh_locus_factories =
+    // using the same fresh-factory fixpoint lowering uses — extended
+    // to the carrier returns that fixpoint misses.
+    //
+    // GH #921 A3, commit 1: the extension is no longer table-only.
+    // `compute_fresh_locus_factories::collect` classifies the CARRIER
+    // node and never its arms, so `return if c { make(1) } else {
+    // make2(1) }` left `produce` out of the map and its caller's
+    // binding did not own the result — the 105-cell carrier-return
+    // family. The pre-pass already flattens `if` / `match` / block
+    // tails to decide the same question; folding its answer back into
+    // the map lowering reads is what closes the family, and it keeps
+    // the two sides of every ownership decision computed once.
+    let mut fresh_locus_factories =
         compute_fresh_locus_factories(&merged, import_renames);
     let owner_table = crate::ownership::resolve_owners(
         &mut merged,
         &fresh_locus_factories,
         import_renames,
     );
+    for (fname, locus) in owner_table.extended_fresh_factories() {
+        // A carrier return hands back an ARM's value, so there is no
+        // single returned binding to name: `None`, the same as a fn
+        // whose every `return` is a literal.
+        fresh_locus_factories
+            .entry(fname.clone())
+            .or_insert_with(|| (locus.clone(), None));
+    }
 
     // `program_has_offthread` — THE single source of truth for "does
     // any thread cross the bus boundary in this program". It drives
@@ -1546,12 +1548,12 @@ pub fn build_executable_with_options(
         codec_thunks: BTreeMap::new(),
         generic_fn_templates: BTreeMap::new(),
         generic_locus_templates: BTreeMap::new(),
-        defer_next_locus_dissolve: false,
+        instantiating_program_lifetime: false,
+        declared_owner: None,
         locus_cascade_path: Vec::new(),
         locus_instantiation_path: Vec::new(),
-        instantiating_for_parent_field: false,
         instantiating_into_payload_arena: false,
-        placement_for_next_locus_instantiation: None,
+        placement_for_field: None,
         numa_node_for_next_locus_instantiation: None,
         main_placement_replicas: BTreeMap::new(),
         params_init_self: None,
@@ -1576,13 +1578,8 @@ pub fn build_executable_with_options(
         obs_entity_ids: options.obs_entity_ids.clone(),
         replica_index_for_next_locus_instantiation: None,
         current_instantiation_replica_index: 0,
-        suppress_fresh_temp: false,
         owner_table,
-        owner_shadow: options
-            .owner_shadow
-            .unwrap_or_else(crate::ownership::shadow_mode),
         owner_site: None,
-        or_field_owner_locus: None,
         in_fresh_temp_hook: false,
         current_fn_skip_exit_drain: false,
         bus_inert,
@@ -4533,22 +4530,23 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// resolution (`let c: Cache<Int, String> = Cache { ... };`),
     /// matching the m61b/m61c pattern for generic structs.
     generic_locus_templates: BTreeMap<String, LocusDecl>,
-    /// m82: locus-all-the-way-down lifecycle. Set true by
-    /// `Stmt::Let` lowering immediately before evaluating the RHS
-    /// when that RHS is a locus struct literal. Consumed (via
-    /// `std::mem::take`) by `lower_locus_instantiation`, which
-    /// then routes the locus into the enclosing fn's
-    /// `deferred_dissolves` frame instead of dissolving eagerly
-    /// at the end of the struct-literal expression. The decoupling
-    /// the user-visible binding (`s`) holds the handle; the locus
-    /// instance lives until its binding's scope ends. Cleared
-    /// between any two RHS lowerings; nested instantiations inside
-    /// the same RHS evaluation (e.g. `Outer { inner: Inner{...} }`)
-    /// only consume it for the outermost call, leaving inner
-    /// instantiations on the eager path. Statement-position locus
-    /// literals (`Stream { ... };`) are unaffected — the flag
-    /// only fires from `Stmt::Let`.
-    pub(crate) defer_next_locus_dissolve: bool,
+    /// GH #921 A3, commit 6: this instantiation's struct must live
+    /// for the PROGRAM, not for the frame that builds it — a
+    /// `bindings { }` transport, adapter or codec, which the runtime
+    /// dispatches through for as long as the process runs. A storage
+    /// decision and nothing else: who reclaims the instance is
+    /// `declared_owner` below (`Owner::Placement`). The two used to
+    /// travel together as a spoofed `current_user_fn_ret`, which is
+    /// the conflation GH #921 named. One-shot, taken at the top of
+    /// `lower_locus_instantiation`.
+    pub(crate) instantiating_program_lifetime: bool,
+    /// GH #921 A3, commit 2: the owner of a locus literal codegen
+    /// SYNTHESISES, stated at the site because there is no source
+    /// expression for a table row to key on — the `@export`
+    /// singleton's prelude, a `reperspective` swap, the `bindings { }`
+    /// transport / adapter / codec preludes. One-shot, taken at the
+    /// top of `lower_locus_instantiation` beside `owner_site`.
+    pub(crate) declared_owner: Option<crate::ownership::Owner>,
     /// GH #750: the ancestor chain the teardown cascade is
     /// currently inside. `emit_locus_field_drains` /
     /// `emit_locus_field_dissolves` recurse into a child's own
@@ -4570,19 +4568,6 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// ones it does not supply. The instantiation twin of
     /// `locus_cascade_path`. Empty outside an instantiation.
     pub(crate) locus_instantiation_path: Vec<(String, Vec<String>)>,
-    /// Phase-2 (2): set by `lower_locus_instantiation` around the
-    /// param-init loop when evaluating a child locus literal as a
-    /// field default / override. The child must NOT dissolve
-    /// eagerly — the parent owns it and needs it alive past the
-    /// instantiation expression. The parent's dissolve sequence
-    /// cascades into the child later. Without this flag, the
-    /// child runs its full birth → dissolve cycle inside the
-    /// expression evaluation, freeing its malloc-backed buffer
-    /// before the parent ever stores the dangling pointer. Same
-    /// `mem::take` discipline as `defer_next_locus_dissolve`:
-    /// outermost instantiation owns the flag, nested ones see
-    /// false.
-    pub(crate) instantiating_for_parent_field: bool,
     /// 2026-05-24 — when an outer locus is being m90-routed
     /// to the payload arena (because the enclosing fn declares
     /// it as the return type, fallible or not), every nested
@@ -4605,18 +4590,20 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// them sees the flag still set as long as the parent's
     /// params-init loop holds it.
     pub(crate) instantiating_into_payload_arena: bool,
-    /// F.31 (2026-05-23): placement override for the next
-    /// `lower_locus_instantiation` call. The main-locus
-    /// params-init loop sets this per-field (looking up the
-    /// field name in `main_placement_map`) before lowering each
-    /// field's default expression; the adapter-binding emit path
-    /// sets it to `Pinned(None)` before lowering the adapter
-    /// locus literal (adapter loci instantiated inline in
-    /// `bindings { }` are pinned-equivalent by construction).
-    /// `lower_locus_instantiation` consumes via `mem::take` so
-    /// the first nested locus instantiation absorbs the override
-    /// and inner ones see None.
-    pub(crate) placement_for_next_locus_instantiation: Option<ScheduleClass>,
+    /// F.31 (2026-05-23): the placement a `placement { }` entry
+    /// gives one field, as `(entry, class)`.
+    ///
+    /// GH #921 A3, commit 5: this is no longer a slot the NEXT
+    /// instantiation takes. It used to be, and the slot could
+    /// survive the params-init loop — a `placement { }`'d field
+    /// initialised by anything but a locus literal left it untaken,
+    /// and when the placed field was the LAST one nothing reset it,
+    /// so a downstream instantiation could pick up a pinned thread
+    /// the author wrote for something else (PR #919's note). Now the
+    /// instantiation reads its own owner: `Owner::Placement(entry)`,
+    /// and only when `entry` is this one. The setter scopes it to the
+    /// field's initialiser and restores what was there.
+    pub(crate) placement_for_field: Option<(String, ScheduleClass)>,
     /// Topology arena-on-node (2026-07-05): parallel to
     /// `placement_for_next_locus_instantiation` — the resolved
     /// NUMA node for the field being instantiated, when its
@@ -4788,15 +4775,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// GH #767: set by `Stmt::Let` immediately before lowering an
     /// `Expr::ArrayRepeat` RHS that `stack_array_bindings` cleared,
     /// consumed by the `ArrayRepeat` arm (same one-shot handshake as
-    /// `defer_next_locus_dissolve`). Nested array literals inside the
+    /// the owner site). Nested array literals inside the
     /// RHS keep the arena path.
     pub(crate) next_array_repeat_is_stack_local: bool,
-    /// GH #402: set while lowering an expression whose fresh-factory
-    /// result already has an owner decided by the caller — a `let`'s
-    /// direct RHS (the binding owns it) or a `return`'s expression
-    /// (the CALLER owns it). Temporary registration is suppressed
-    /// there; everywhere else a fresh-factory call produces a value
-    /// nothing names, and this frame owns it.
     /// P26: the build-time model identity to stamp into the obs
     /// segment header (None = harness build, header reads 0).
     pub(crate) model_hash: Option<u64>,
@@ -4814,29 +4795,16 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// params/subscriptions lower — what a `where key == replica`
     /// filter registers as the subscription key.
     pub(crate) current_instantiation_replica_index: u64,
-    pub(crate) suppress_fresh_temp: bool,
-    /// GH #921 A2: the owner every locus-producing expression was
-    /// given by the pre-pass, before lowering. Built on every compile
-    /// so the pre-pass itself is exercised; READ only by the shadow
-    /// check, which compares it with what the seven one-shot flags
-    /// decide. A3 switches the consumers over one flag at a time.
+    /// GH #921 A2 / A3: the owner every locus-producing expression
+    /// was given by the pre-pass, before lowering. Lowering READS it
+    /// — a locus instantiation with no row in it is a
+    /// `CodegenError`, which is F.39's rule.
     pub(crate) owner_table: crate::ownership::OwnerTable,
-    /// GH #921 A2: how loudly the shadow speaks (`LOTUS_OWNER_SHADOW`).
-    pub(crate) owner_shadow: crate::ownership::ShadowMode,
     /// GH #921 A2: where the value about to be instantiated came
     /// from. One-shot, taken at the top of
     /// `lower_locus_instantiation` exactly like the flags it shadows,
     /// so a nested literal does not read its parent's site.
     pub(crate) owner_site: Option<crate::ownership::Site>,
-    /// GH #853: the locus a param field being initialised holds,
-    /// when that field's initialiser is an `or <substitute>` whose
-    /// BOTH branches transfer into it
-    /// (`or_substitute_transfers_into_field`). One-shot, taken by
-    /// `lower_or_expr` on the outermost `or` node exactly as
-    /// `suppress_fresh_temp` is, and the reason the substitute is
-    /// not ALSO given the GH #402 frame temporary that the field's
-    /// mask bit would then double-own.
-    pub(crate) or_field_owner_locus: Option<String>,
     /// GH #402: re-entry guard for the fresh-temp hook, cleared
     /// immediately on entry so nested calls still get their own.
     pub(crate) in_fresh_temp_hook: bool,
@@ -7209,291 +7177,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.import_renames.get(&key).cloned()
     }
 
-    /// GH #895: which locus does this param-field initialiser BUILD,
-    /// when it is a proven-fresh factory call?
-    ///
-    /// Its twin below asks the yes/no form of the same question —
-    /// "is the value this initialiser produces the field's alone?" —
-    /// by comparing the factory's declared return against the field's
-    /// declared locus. An INTERFACE-typed field has no such locus to
-    /// compare with: `Queries { j: make_churner() }` declares `j:
-    /// Counter` and `make_churner()` declares `Churner`. The
-    /// ownership answer is the same (the result is a locus nobody
-    /// else names), but the owner needs the impl's NAME rather than a
-    /// bit, because that is what picks the `__reclaim_<Impl>` its
-    /// cascade calls through `__owned_child_reclaim_<f>` (GH #871).
-    ///
-    /// Both spellings, for the reason spelled out below: a DIVERGING
-    /// `or` leaves the factory's result as the only value the field
-    /// can hold, while `or <substitute>` is a separate question this
-    /// rule stays out of.
-    pub(crate) fn field_init_fresh_factory_impl(
-        &self,
-        e: &Expr,
-    ) -> Option<String> {
-        let call = match e {
-            Expr::Call { .. } => e,
-            Expr::Or { inner, disposition, .. }
-                if matches!(
-                    disposition,
-                    OrDisposition::Raise(_) | OrDisposition::Fail(..)
-                ) =>
-            {
-                inner.as_ref()
-            }
-            _ => return None,
-        };
-        let Expr::Call { callee, .. } = call else {
-            return None;
-        };
-        self.callee_fn_name(callee)
-            .and_then(|f| self.fresh_locus_factories.get(&f))
-            .map(|(l, _)| l.clone())
-    }
-
-    /// GH #836: does this param-field initialiser hand the field a
-    /// locus the enclosing literal is the SOLE owner of?
-    ///
-    /// `Router { quick: make(5) }` — and its `or raise` twin —
-    /// leave the field holding a locus nobody else names, exactly
-    /// as `Router { quick: Quick { } }` does. The F.17 gate already
-    /// keeps the enclosing FRAME out of it ("the frame does not
-    /// reclaim it — the parent does"), but the parent's
-    /// `__locus_ref_owned_mask` bit was only ever set by a LITERAL,
-    /// so the F.29 cascade stepped over the factory-built child and
-    /// nothing tore it down at all.
-    ///
-    /// A call in that position is not always a factory. `pick(x, y,
-    /// n)` hands back a locus its own `let` still owns, and setting
-    /// the bit for that would dissolve it twice — once from the
-    /// parent's cascade and once from the binding's scope. The
-    /// discriminator is the one GH #383 and GH #402 already decide
-    /// ownership with: `fresh_locus_factories`, the fixpoint over
-    /// fns whose every return arm is a freshly built value of the
-    /// declared locus. An accessor's return arm is a parameter or a
-    /// field read, so it never qualifies.
-    ///
-    /// The declared return must also BE the field's locus: a
-    /// coercion, an interface-typed field or a disagreement between
-    /// the analysis and the lowered type leaves the bit clear,
-    /// which is the old leak rather than a double free.
-    pub(crate) fn field_init_is_fresh_factory(
-        &self,
-        e: &Expr,
-        field_locus: &str,
-    ) -> bool {
-        // `make(5)` and `make(5) or raise` are the same ownership
-        // question, because a DIVERGING err branch leaves the
-        // factory's result as the only value the field can hold.
-        //
-        // `or <substitute>` is a different question, because the
-        // field then holds one of two values decided at run time and
-        // BOTH have to be the field's for the bit to be right. That
-        // is `or_substitute_transfers_into_field` (GH #853), asked
-        // separately by the same two sites; an external handle in
-        // that position still belongs to its own binding and still
-        // leaves the bit clear — the direction this family of rules
-        // never goes, since a missed bit is the old leak and an
-        // extra one is a double free.
-        let call = match e {
-            Expr::Call { .. } => e,
-            Expr::Or { inner, disposition, .. }
-                if matches!(
-                    disposition,
-                    OrDisposition::Raise(_) | OrDisposition::Fail(..)
-                ) =>
-            {
-                inner.as_ref()
-            }
-            _ => return false,
-        };
-        let Expr::Call { callee, .. } = call else {
-            return false;
-        };
-        self.callee_fn_name(callee)
-            .and_then(|f| self.fresh_locus_factories.get(&f))
-            .map(|(l, _)| l == field_locus)
-            .unwrap_or(false)
-    }
-
-    /// GH #837: does the expression a `let`, `return`, assignment or
-    /// field init NAMES take the `suppress_fresh_temp` decision
-    /// itself?
-    ///
-    /// The flag is one-shot and means "the value this site's
-    /// expression produces already has an owner — do not ALSO hand it
-    /// the frame temporary GH #402 gives an unowned factory result".
-    /// Nothing in the flag says which node it is about, so the taker
-    /// was whichever proven-fresh factory call lowering reached
-    /// first — and in `return combine(a, make());` that is the
-    /// ARGUMENT. `make()`'s result took the return's ownership and
-    /// nothing reclaimed it, while `combine`'s result — the value the
-    /// site actually named — was left to the rules for an ordinary
-    /// call. One value gained an owner it does not have and the other
-    /// lost the only one it could have had.
-    ///
-    /// So the site asks this before descending, and arms the flag
-    /// only for a node that can hand back the named value itself:
-    ///
-    ///   * a proven-fresh factory call — the GH #402 hook at the top
-    ///     of `lower_expr` takes the flag on that node, BEFORE
-    ///     descending into its arguments, so nested calls already see
-    ///     it clear;
-    ///   * an `or` wrapping one — `lower_or_expr` takes it on the
-    ///     outermost node (GH #793 / PR #835), which is this same fix
-    ///     for the one shape that had already bitten;
-    ///   * `if` / `match` / a block in value position, which hand
-    ///     back a nested expression's value unchanged. These are
-    ///     carriers, not takers: `lower_if_expr`,
-    ///     `lower_match_expr` and `lower_block_as_expr` take the
-    ///     flag on the outer node and ask this question again for
-    ///     EVERY arm's tail (GH #883), because exactly one arm runs
-    ///     and on that path the arm's tail is the value the site
-    ///     named. Left to the one-shot flag, the first arm lowered
-    ///     took the decision and every other arm's result became a
-    ///     frame temporary dissolved here — a dead locus for the
-    ///     site's owner on those paths.
-    ///
-    /// Everything else — a call to a fn that is not a factory, a
-    /// method call, a struct literal, an operator — leaves the flag
-    /// clear, and every factory call inside it gets the frame
-    /// temporary an unowned result is supposed to get.
-    pub(crate) fn fresh_temp_decision_lands_on(&self, e: &Expr) -> bool {
-        match e {
-            Expr::Call { callee, .. } => self
-                .callee_fn_name(callee)
-                .map(|f| self.fresh_locus_factories.contains_key(&f))
-                .unwrap_or(false),
-            Expr::Or { inner, .. } => {
-                self.fresh_temp_decision_lands_on(inner)
-            }
-            Expr::If(_) | Expr::Match(_) | Expr::Block(_) => true,
-            _ => false,
-        }
-    }
-
-    /// GH #853: does an `or <substitute>` param-field initialiser
-    /// hand the field a value the field is the SOLE owner of on
-    /// EITHER branch?
-    ///
-    /// `Router { quick: make_f(5) or make2() }` is one field and one
-    /// mask bit, but two values: the factory's on the ok branch and
-    /// the substitute's on the err branch, and only one of them is
-    /// ever built. The bit is a static store, so it claims whichever
-    /// one the field ends up holding — which is right exactly when
-    /// NEITHER branch's value has an owner elsewhere. Then the
-    /// owner's cascade tears down the value that was produced, once.
-    ///
-    /// Left to the older rules the same field got neither: the F.17
-    /// gate kept the frame off the ok value and no bit claimed it
-    /// (a leak), while the substitute took the GH #402 frame
-    /// temporary and was flushed at the enclosing fn's exit with the
-    /// field still pointing at it (a use-after-free as soon as the
-    /// owner outlives that frame — a returned router read its
-    /// child's fields after the child's `dissolve()` had run).
-    ///
-    /// A branch transfers into the field when it is
-    ///
-    ///   * a proven-fresh factory call of the field's own locus —
-    ///     the `fresh_locus_factories` fixpoint GH #383 / #402 / #836
-    ///     already decide ownership with, so an ACCESSOR (`pick(x, y)`
-    ///     hands back a locus its own `let` still owns) never
-    ///     qualifies;
-    ///   * a locus literal of that locus, which is the shape that was
-    ///     already right: it consumes the parent-field flag and sets
-    ///     this same bit the ordinary way;
-    ///   * a nested `or` whose own branches all qualify, diverging
-    ///     (`or raise` / `or fail`) or substituting.
-    ///
-    /// Anything else — an external handle, a call the fixpoint did
-    /// not prove fresh, an interface-typed field — leaves the bit
-    /// clear and reads exactly as it did before.
-    ///
-    /// The answer is also what arms `or_field_owner_locus`, so the
-    /// claim at the store and the suppression of the substitute's
-    /// frame temporary in `lower_or_expr` cannot disagree: one
-    /// predicate, asked once per field init.
-    pub(crate) fn or_substitute_transfers_into_field(
-        &self,
-        e: &Expr,
-        field_locus: &str,
-    ) -> bool {
-        let Expr::Or { inner, disposition, .. } = e else {
-            return false;
-        };
-        let OrDisposition::Substitute(rhs) = disposition else {
-            return false;
-        };
-        // The ok branch. Note this is the inner call itself, not
-        // `field_init_is_fresh_factory` — which would also accept a
-        // nested `or`, and a nested `or` on the OK side of an outer
-        // one is `lower_fallible_call`'s territory rather than this
-        // rule's.
-        let ok_transfers = match inner.as_ref() {
-            Expr::Call { callee, .. } => self
-                .callee_fn_name(callee)
-                .and_then(|f| self.fresh_locus_factories.get(&f))
-                .map(|(l, _)| l == field_locus)
-                .unwrap_or(false),
-            _ => false,
-        };
-        ok_transfers && self.or_branch_transfers_into_field(rhs, field_locus)
-    }
-
-    /// GH #853: the per-branch half of the rule above — "this
-    /// expression, evaluated in a param-field initialiser, produces a
-    /// value the field is the sole owner of".
-    pub(crate) fn or_branch_transfers_into_field(
-        &self,
-        e: &Expr,
-        field_locus: &str,
-    ) -> bool {
-        match e {
-            Expr::Call { callee, .. } => self
-                .callee_fn_name(callee)
-                .and_then(|f| self.fresh_locus_factories.get(&f))
-                .map(|(l, _)| l == field_locus)
-                .unwrap_or(false),
-            // `Router { quick: make_f(5) or Quick { n: 9 } }` — the
-            // spelling that was already right, stated here so the
-            // predicate describes the whole rule rather than only
-            // the part that moved.
-            Expr::Struct { path, .. } => path
-                .segments
-                .last()
-                .map(|s| s.name == field_locus)
-                .unwrap_or(false),
-            Expr::Or { .. } => {
-                self.field_init_is_fresh_factory(e, field_locus)
-                    || self.or_substitute_transfers_into_field(e, field_locus)
-            }
-            _ => false,
-        }
-    }
-
     // ---------------------------------------------------------------
-    // GH #921 A2 — the shadow check
+    // GH #921 A3 — the site of the instantiation being lowered
     // ---------------------------------------------------------------
     //
-    // Three observation points cover all seven one-shot flags, each
-    // placed where the flags are CONSUMED:
-    //
-    //   * `owner_shadow_literal` — `lower_locus_instantiation`, after
-    //     `defer_next_locus_dissolve`,
-    //     `instantiating_for_parent_field`,
-    //     `placement_for_next_locus_instantiation` and the
-    //     `returns_this_locus` / `current_user_fn_ret` spoof have all
-    //     been read;
-    //   * `owner_shadow_call` — the GH #402 hook at the top of
-    //     `lower_expr` and the GH #793 hook in `lower_or_expr`, where
-    //     `suppress_fresh_temp` and `or_field_owner_locus` are taken;
-    //   * `owner_shadow_field_init` — the params-init loop, where the
-    //     field-ownership predicates decide the owner's mask bit.
-    //
-    // Nothing here emits anything. Under `LOTUS_OWNER_SHADOW=strict` a
-    // disagreement is a `CodegenError`; under `=1` / `=log` it is one
-    // line; unset, the comparison does not run at all, so an ordinary
-    // build is byte-for-byte what it was.
+    // `lower_locus_instantiation` resolves its own owner from the
+    // table, keyed by the id the pre-pass wrote into the node. These
+    // hand it that id. A node codegen builds itself either carries
+    // the id of the source expression it stands for (the
+    // generic-struct path rewrites do) or declares its owner
+    // (`declared_owner`); anything else is refused there.
 
     /// The pre-pass's id for this node, or `Unindexed` when codegen
     /// built the node itself (a generic-struct path rewrite, a
@@ -7538,219 +7231,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
-    fn owner_shadow_off(&self) -> bool {
-        self.owner_shadow == crate::ownership::ShadowMode::Off
-    }
-
-    /// One disagreement: log it, or refuse the build under `strict`.
-    fn owner_shadow_say(&self, line: String) -> Result<(), CodegenError> {
-        match self.owner_shadow {
-            crate::ownership::ShadowMode::Off => Ok(()),
-            crate::ownership::ShadowMode::Log => {
-                crate::ownership::report(&line);
-                Ok(())
-            }
-            crate::ownership::ShadowMode::Strict => {
-                Err(CodegenError::Unsupported(format!(
-                    "owner-shadow (GH #921 A2): {line}"
-                )))
-            }
-        }
-    }
-
-    /// The site of the instantiation about to be lowered, described
-    /// for a disagreement line.
-    fn owner_shadow_site_desc(
-        site: Option<crate::ownership::Site>,
-    ) -> String {
-        match site {
-            Some(crate::ownership::Site::Expr(id)) => {
-                format!("expression #{}", id.0)
-            }
-            Some(crate::ownership::Site::Unindexed(sp)) => format!(
-                "a node the pre-pass never numbered (bytes {}..{})",
-                sp.start.0, sp.end.0
-            ),
-            Some(crate::ownership::Site::Synthesized(what)) => {
-                format!("a synthesised site ({what})")
-            }
-            None => "an uninstrumented site".to_string(),
-        }
-    }
-
-    /// The instantiation half. `flags` is the disposition the seven
-    /// flags just decided for this literal.
-    pub(crate) fn owner_shadow_literal(
-        &mut self,
-        locus_name: &str,
-        site: Option<crate::ownership::Site>,
-        flags: crate::ownership::Disposition,
-    ) -> Result<(), CodegenError> {
-        if self.owner_shadow_off() {
-            return Ok(());
-        }
-        let id = match site {
-            Some(crate::ownership::Site::Expr(id)) => id,
-            // A node codegen built rather than parsed, or a
-            // synthesised instantiation that declares itself: not a
-            // missing decision, but listed so a corpus run says how
-            // many there are.
-            other => {
-                return self.owner_shadow_say(format!(
-                    "unindexed literal `{}` at {} — flags say {}",
-                    locus_name,
-                    Self::owner_shadow_site_desc(other),
-                    flags
-                ));
-            }
-        };
-        let Some(entry) = self.owner_table.entry(id) else {
-            return self.owner_shadow_say(format!(
-                "MISSING: locus `{}` is instantiated at expression #{} \
-                 and the owner table has no decision for it — flags \
-                 say {}",
-                locus_name, id.0, flags
-            ));
-        };
-        let table = self.owner_table.disposition(entry);
-        if table == flags {
-            return Ok(());
-        }
-        let line = format!(
-            "literal: table says {}, flags say {} — {}",
-            table,
-            flags,
-            self.owner_table.describe(id)
-        );
-        self.owner_shadow_say(line)
-    }
-
-    /// The factory-call half.
-    pub(crate) fn owner_shadow_call(
-        &mut self,
-        e: &Expr,
-        flags: crate::ownership::TempVerdict,
-        note: &'static str,
-    ) -> Result<(), CodegenError> {
-        if self.owner_shadow_off() {
-            return Ok(());
-        }
-        let Some(id) = self.owner_table.id_of(e) else {
-            // Codegen synthesised this call node; there is nothing to
-            // compare against and nothing was lost.
-            return Ok(());
-        };
-        let table =
-            self.owner_table.temp_verdict(self.owner_table.entry(id));
-        if table == flags {
-            return Ok(());
-        }
-        let where_ = if self.owner_table.entry(id).is_some() {
-            self.owner_table.describe(id)
-        } else {
-            format!(
-                "a call at expression #{} the table gives no owner",
-                id.0
-            )
-        };
-        let line = format!(
-            "call: table says {table}, flags say {flags} ({note}) — \
-             {where_}"
-        );
-        self.owner_shadow_say(line)
-    }
-
-    /// The field-ownership-predicate half: does the owner's
-    /// `__locus_ref_owned_mask` bit claim this initialiser's value?
-    pub(crate) fn owner_shadow_field_init(
-        &mut self,
-        owner_locus: &str,
-        field: &str,
-        e: &Expr,
-        flags_owned: bool,
-    ) -> Result<(), CodegenError> {
-        if self.owner_shadow_off() {
-            return Ok(());
-        }
-        let (table_owned, what) = match self.owner_table.id_of(e) {
-            Some(id) => (
-                matches!(
-                    self.owner_table.entry(id).map(|x| &x.owner),
-                    Some(crate::ownership::Owner::Field { .. })
-                        | Some(crate::ownership::Owner::Placement(_))
-                ),
-                self.owner_table.describe(id),
-            ),
-            // A name in field position carries no node id; GH #730's
-            // `Borrowed` rows are keyed by the field instead.
-            None => match self
-                .owner_table
-                .borrowed_entry(owner_locus, field)
-            {
-                Some(_) => (false, "a borrowed handle".to_string()),
-                None => return Ok(()),
-            },
-        };
-        if table_owned == flags_owned {
-            return Ok(());
-        }
-        let line = format!(
-            "field init `{}.{}`: table says the field {} the value, \
-             flags say it {} — {}",
-            owner_locus,
-            field,
-            if table_owned { "owns" } else { "does not own" },
-            if flags_owned { "does" } else { "does not" },
-            what
-        );
-        self.owner_shadow_say(line)
-    }
-
-    /// GH #383 / #793: is `binding` a local this frame must NOT
-    /// reclaim? Two things take a local out of the single-owner
-    /// position the binding-scoped dissolve rule assumes:
-    ///
-    ///  - the enclosing fn hands it back (`compute_returned_
-    ///    bindings`), so the CALLER owns it and dissolving here
-    ///    frees it out from under them — reads come back as zeros
-    ///    rather than crashing, which is why it needs a rule and
-    ///    not a sanitizer;
-    ///  - a bare-local `=` moves it between names
-    ///    (`compute_assign_moved_bindings`), so two names can reach
-    ///    one value.
-    ///
-    /// Conservative in the same direction as both sets: a `true`
-    /// here only suppresses a dissolve, which is the old leak,
-    /// never a double free.
-    pub(crate) fn binding_escapes_this_frame(&self, binding: &str) -> bool {
-        let Some(fname) = self
-            .current_fn
-            .map(|f| f.get_name().to_string_lossy().to_string())
-        else {
-            return false;
-        };
-        let in_set = |m: &std::collections::BTreeMap<
-            String,
-            std::collections::BTreeSet<String>,
-        >| {
-            m.get(&fname).map(|s| s.contains(binding)).unwrap_or(false)
-        };
-        in_set(&self.returned_bindings) || in_set(&self.assign_moved_bindings)
-    }
-
-    /// hale-bun upstream item 3: diagnostic for a qualified path
-    /// that resolves to nothing. The old message blamed the
-    /// *position* ("qualified-name struct literal in expression
-    /// position") when the actual problem is the *name* —
-    /// expression position is fully supported for names that
-    /// resolve, so `std::process::Output` (real name:
-    /// `ProcessOutput`) sent its reporter hunting a nonexistent
-    /// positional restriction. Name the real failure and suggest:
-    /// substring match against siblings under the same prefix
-    /// first (`Output` → `ProcessOutput` is edit-distance 7,
-    /// far past any sane nearest-name threshold, but exactly the
-    /// mistake users make), nearest-name second, then list what
-    /// the prefix actually provides.
     pub(crate) fn unknown_qualified_path_msg(&self, segs: &[&str]) -> String {
         let path = segs.join("::");
         let base = format!("unknown qualified name `{}`", path);
@@ -11804,10 +11284,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // cooperative; birth runs inline right here on the boot
         // path, and the listen serve thread is C-spawned by
         // birth itself (lotus_bus_transport_spawn_server).
-        let saved_ret = self.current_user_fn_ret.clone();
-        self.current_user_fn_ret =
-            Some(Some(CodegenTy::LocusRef(locus_name.to_string())));
         let mut scope = Scope::default();
+        self.instantiating_program_lifetime = true;
         // GH #921 A2: codegen builds this literal; there is no source
         // expression the pre-pass could have numbered. F.39 calls the
         // bindings transport `Placement(entry)` (Riley's answer to
@@ -11816,9 +11294,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.owner_site = Some(crate::ownership::Site::Synthesized(
             "a `bindings { T: unix(..) }` transport",
         ));
+        self.declared_owner = Some(crate::ownership::Owner::Placement(
+            topic_name.to_string(),
+        ));
         let result = self.lower_expr(&locus_lit, &mut scope);
         self.owner_site = None;
-        self.current_user_fn_ret = saved_ret;
+        self.declared_owner = None;
+        self.instantiating_program_lifetime = false;
         let (self_val, _self_ty) = result?;
         let self_ptr = self_val.into_pointer_value();
         // GH #893: the routing above answers "where does this
@@ -12185,6 +11667,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.owner_site = Some(crate::ownership::Site::Synthesized(
             "a `bindings { T: adapter(..) }` prelude",
         ));
+        self.declared_owner = Some(crate::ownership::Owner::Placement(
+            topic_name.to_string(),
+        ));
 
         // Trigger m90 routing so the locus self_ptr is allocated
         // in the payload arena (program-lifetime). Restore the
@@ -12201,14 +11686,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Pre-F.31 this fell out of the adapter locus's
         // `: schedule pinned` annotation; F.31 makes it
         // implicit at the bindings-inline site.
-        let saved_ret = self.current_user_fn_ret.clone();
-        self.current_user_fn_ret =
-            Some(Some(CodegenTy::LocusRef(locus.name.clone())));
-        self.placement_for_next_locus_instantiation =
-            Some(ScheduleClass::Pinned(None));
+        self.instantiating_program_lifetime = true;
+        self.placement_for_field = Some((
+            topic_name.to_string(),
+            ScheduleClass::Pinned(None),
+        ));
         let mut scope = Scope::default();
-        let (self_val, _self_ty) = self.lower_expr(&locus_lit, &mut scope)?;
-        self.current_user_fn_ret = saved_ret;
+        let lowered = self.lower_expr(&locus_lit, &mut scope);
+        self.owner_site = None;
+        self.declared_owner = None;
+        self.placement_for_field = None;
+        self.instantiating_program_lifetime = false;
+        let (self_val, _self_ty) = lowered?;
 
         // Resolve the locus's `send` method. The typechecker has
         // already confirmed it exists with the right shape via
@@ -12303,6 +11792,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.owner_site = Some(crate::ownership::Site::Synthesized(
             "a `bindings { T: ... codec }` prelude",
         ));
+        self.declared_owner = Some(crate::ownership::Owner::Placement(
+            topic_name.to_string(),
+        ));
 
         // m90 routing for program-lifetime allocation. Codec is
         // NOT pinned — its methods are pure and dispatched from
@@ -12310,12 +11802,40 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // typecheck per F.36 Slice 2). Default cooperative
         // placement keeps the instance on `main`'s arena
         // discipline without spawning a worker.
-        let saved_ret = self.current_user_fn_ret.clone();
-        self.current_user_fn_ret =
-            Some(Some(CodegenTy::LocusRef(locus.name.clone())));
         let mut scope = Scope::default();
-        let (self_val, _) = self.lower_expr(&locus_lit, &mut scope)?;
-        self.current_user_fn_ret = saved_ret;
+        self.instantiating_program_lifetime = true;
+        let lowered = self.lower_expr(&locus_lit, &mut scope);
+        self.owner_site = None;
+        self.declared_owner = None;
+        self.instantiating_program_lifetime = false;
+        let (self_val, _) = lowered?;
+        // GH #921 A3, commit 6: give the codec an owner. The spoof
+        // above said "allocate where the caller can see it" AND
+        // "nobody owns it", so `lower_locus_instantiation` suppressed
+        // the eager dissolve and pushed no deferred entry: a codec's
+        // `dissolve()` never ran and its arena lived to process exit.
+        // Register it on the enclosing frame — `fn main`'s, pushed
+        // before this prelude runs — exactly as PR #918 did for the
+        // transport. The prelude precedes every user statement, so
+        // this is one of the frame's first entries and the
+        // reverse-order flush tears it down after every user locus
+        // has dissolved, which is what a program-lifetime slot means.
+        let codec_self_ptr = self_val.into_pointer_value();
+        let codec_slot =
+            self.defer_dissolve_slot(codec_self_ptr, &locus.name)?;
+        match self.deferred_dissolves.last_mut() {
+            Some(frame) => {
+                frame.push((codec_slot, locus.name.clone(), None))
+            }
+            None => {
+                return Err(CodegenError::Unsupported(format!(
+                    "codec binding for `{}`: locus `{}` instantiated \
+                     outside any dissolve frame (the bindings prelude \
+                     runs inside `fn main`)",
+                    topic_name, locus.name
+                )));
+            }
+        }
 
         // Resolve encode / decode method ptrs. Typecheck has
         // already verified both exist with the right signatures
@@ -12947,18 +12467,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         block: &Block,
         scope: &mut Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy, BlockEnd), CodegenError> {
-        // GH #883: the ownership decision a `let` / `return` / `=`
-        // armed for THIS block is about the block's TAIL — the one
-        // expression whose value leaves it — and about nothing the
-        // statements do on the way. Left set across the statements,
-        // the one-shot flag was taken by whichever proven-fresh
-        // factory call lowering reached first, so
-        // `return { warm(make(1)); make(2) };` gave the caller's
-        // ownership to `make(1)` (a value the caller never sees, so
-        // nothing reclaimed it) and left `make(2)` — the value the
-        // `return` actually named — to the frame-temporary rules,
-        // dissolved on the way out while the caller still holds it.
-        let carried = std::mem::replace(&mut self.suppress_fresh_temp, false);
+        // GH #883 / GH #921 A3: the ownership decision a `let` /
+        // `return` / `=` made about THIS block is about the block's
+        // TAIL — the one expression whose value leaves it — and about
+        // nothing the statements do on the way. The table records it
+        // on the tail's own node, so a `return { warm(make(1));
+        // make(2) };` cannot hand the caller's ownership to
+        // `make(1)` the way the one-shot flag did.
         for stmt in &block.stmts {
             match self.lower_stmt(stmt, scope)? {
                 BlockEnd::Open => continue,
@@ -12979,14 +12494,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         match &block.tail {
             Some(tail) => {
-                // Re-armed for the tail, and only when the tail is a
-                // node the decision can land on — the same question
-                // the site asked about this block.
-                self.suppress_fresh_temp =
-                    carried && self.fresh_temp_decision_lands_on(tail);
-                let lowered = self.lower_expr(tail, scope);
-                self.suppress_fresh_temp = false;
-                let (v, ty) = lowered?;
+                let (v, ty) = self.lower_expr(tail, scope)?;
                 Ok((v, ty, BlockEnd::Open))
             }
             None => Err(CodegenError::Unsupported(
@@ -14993,19 +14501,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             app_self_global.set_linkage(inkwell::module::Linkage::Internal);
             self.current_fn = Some(start_fn);
             self.deferred_dissolves.push(Vec::new());
-            self.defer_next_locus_dissolve = true;
             // Allocate the singleton in the persistent global arena, not
             // a stack alloca — it must outlive _hale_start.
             self.instantiating_persistent_singleton = true;
             let scope = Scope::default();
-            // GH #921 A2: no source expression builds this one.
+            // GH #921 A2 / A3: no source expression builds this
+            // one, so it states its owner. The frame it is registered
+            // in is then DISCARDED unflushed, which is what makes the
+            // singleton live for the module's lifetime; the owner is
+            // still this frame's, and saying so keeps the
+            // registration identical to what the flag produced.
             self.owner_site = Some(crate::ownership::Site::Synthesized(
                 "the @export singleton's prelude",
             ));
+            self.declared_owner = Some(crate::ownership::Owner::FrameTemp(
+                crate::ownership::ScopeId(0),
+            ));
             let self_ptr = self.lower_locus_instantiation(lname, &[], &scope)?;
             self.owner_site = None;
+            self.declared_owner = None;
             self.instantiating_persistent_singleton = false;
-            self.defer_next_locus_dissolve = false;
             // Drop the frame WITHOUT flushing → no dissolve IR emitted.
             let _ = self.deferred_dissolves.pop();
             self.builder
@@ -18371,23 +17886,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     },
                     _ => value,
                 };
-                // m82: if the RHS is a locus struct literal, signal
-                // `lower_locus_instantiation` to defer the locus's
-                // dissolve to the enclosing fn's scope-exit flush
-                // instead of firing eagerly at the end of the
-                // struct-literal expression. The binding is the
-                // user-visible handle; the locus instance lives
-                // until that handle goes out of scope. Set
-                // immediately before lowering the RHS — consumed
-                // (via `std::mem::take`) by the outermost
-                // instantiation, leaving any nested locus literals
-                // inside the RHS on the eager path. Cleared after
-                // lowering regardless of whether the flag was
-                // consumed (defensive — guards against the RHS
-                // bailing out before reaching an instantiation).
-                if self.expr_is_locus_literal(value_to_lower) {
-                    self.defer_next_locus_dissolve = true;
-                }
+                // m82's rule — the binding is the user-visible
+                // handle, so the instance lives until that handle
+                // goes out of scope rather than being dissolved at
+                // the end of the struct-literal expression — is the
+                // table's `Owner::Binding` for this RHS's own node
+                // since GH #921 A3 commit 2. Nothing is armed here.
                 // G20 (2026-05-23): if the let has an ascription
                 // and the ascription resolves to a composite type
                 // with Interface elements, route the RHS through
@@ -18488,32 +17992,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // the second argument took the frame temporary it was
                 // always going to take.
                 //
-                // GH #883: an `if` / `match` / block RHS delegates
-                // the same way an `or` does. Its value comes out of
-                // an ARM, the registration (or the suppression of
-                // one) happens there, and THIS binding registers a
-                // scope-exit dissolve only for a direct factory call
-                // — so suppressing the arms would leave the result
-                // with no owner at all rather than moving ownership
-                // here. The one case where somebody else really does
-                // own it is a binding this fn hands back, which is
-                // the same carve-out `or` already has.
-                let rhs_delegates = matches!(
-                    value_to_lower,
-                    Expr::Or { .. }
-                        | Expr::If(_)
-                        | Expr::Match(_)
-                        | Expr::Block(_)
-                );
-                let prev_sft = self.suppress_fresh_temp;
-                self.suppress_fresh_temp = (!rhs_delegates
-                    || self.binding_escapes_this_frame(&name.name))
-                    && self.fresh_temp_decision_lands_on(value_to_lower);
+                // GH #921 A3, commit 1: the binding's claim on a
+                // fresh-factory result travels in the owner table and
+                // not in a flag armed here. The table walked this RHS
+                // before lowering began: a DIRECT factory call is
+                // `Owner::Binding`, while an `if` / `match` / block /
+                // `or` RHS delegates — its value comes out of an ARM,
+                // so each arm carries the decision (a frame temporary
+                // of the innermost reclaim scope, or `Owner::Caller`
+                // when this frame hands the binding back) and the
+                // join names nothing.
                 let lower_result =
                     self.lower_expr_into(value_to_lower, scope, hint_ty.as_ref());
-                self.suppress_fresh_temp = prev_sft;
                 self.current_arena_override = saved_override_for_returned;
-                self.defer_next_locus_dissolve = false;
                 self.next_array_repeat_is_stack_local = false;
                 let (mut val, mut ty) = lower_result?;
                 // GH #383: a let-bound call to a proven-fresh locus
@@ -19183,16 +18674,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // assignment names. `local.field = pick(a, make());`
                 // set it for the whole subtree, so `make()`'s result
                 // took the slot's ownership and went unreclaimed.
-                let assign_owns_locus_rhs = matches!(op, AssignOp::Eq)
-                    && matches!(slot_ty, CodegenTy::LocusRef(_))
-                    && self.fresh_temp_decision_lands_on(value);
-                let prev_sft = self.suppress_fresh_temp;
-                if assign_owns_locus_rhs {
-                    self.suppress_fresh_temp = true;
-                }
-                let lower_result = self.lower_expr(value, scope);
-                self.suppress_fresh_temp = prev_sft;
-                let (rhs, rhs_ty) = lower_result?;
+                let (rhs, rhs_ty) = self.lower_expr(value, scope)?;
                 let new_val = if matches!(op, AssignOp::Eq) {
                     if rhs_ty != slot_ty {
                         return Err(CodegenError::Unsupported(format!(
@@ -21813,29 +21295,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // value. Record it with the block the value flows
                 // out of (body lowering may have opened nested
                 // blocks) for the wrapper's phi.
-                let carried = cap.owner_decided_elsewhere;
+                // GH #921 A3, commit 1: each arm's tail is its own
+                // node and the table decided it there, so nothing has
+                // to be carried in for the arms any more.
                 let (arm_v, arm_ty, arm_end) = match &arm.body {
                     MatchArmBody::Expr(e) => {
-                        // GH #883: this arm's body IS the value the
-                        // site named, on the one path that runs it.
-                        self.suppress_fresh_temp =
-                            carried && self.fresh_temp_decision_lands_on(e);
-                        let lowered = self.lower_expr(e, scope);
-                        self.suppress_fresh_temp = false;
-                        let (v, ty) = lowered?;
+                        let (v, ty) = self.lower_expr(e, scope)?;
                         (v, ty, BlockEnd::Open)
                     }
                     MatchArmBody::Block(b) => {
                         let mut arm_scope = Scope {
                             locals: scope.locals.clone(),
                         };
-                        // `lower_block_as_expr` narrows it to the
-                        // block's tail.
-                        self.suppress_fresh_temp = carried;
-                        let lowered =
-                            self.lower_block_as_expr(b, &mut arm_scope);
-                        self.suppress_fresh_temp = false;
-                        lowered?
+                        self.lower_block_as_expr(b, &mut arm_scope)?
                     }
                 };
                 if arm_end == BlockEnd::Open {
@@ -21928,15 +21400,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         m: &MatchStmt,
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        // GH #883: taken here, before the scrutinee lowers, and
-        // handed to every arm through the capture.
         let mut cap = MatchExprCapture {
             arm_values: Vec::new(),
             fallthrough_bb: None,
-            owner_decided_elsewhere: std::mem::replace(
-                &mut self.suppress_fresh_temp,
-                false,
-            ),
         };
         let mut inner = Scope {
             locals: scope.locals.clone(),
@@ -23365,14 +22831,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // returned expression is not a node that takes the decision
         // itself, every factory call inside it is an unowned
         // temporary this frame owns (GH #402).
-        let _sft_guard = ();
-        let prev_sft = self.suppress_fresh_temp;
-        self.suppress_fresh_temp = expr
-            .map(|e| self.fresh_temp_decision_lands_on(e))
-            .unwrap_or(false);
-        let r = self.lower_return_inner(expr, scope);
-        self.suppress_fresh_temp = prev_sft;
-        return r;
+        return self.lower_return_inner(expr, scope);
     }
 
     fn lower_return_inner(
@@ -24183,55 +23642,126 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // stayed on the program-lifetime path. Give it one: this
         // frame.
         //
-        // Both flags are ONE-SHOT (`mem::replace`), and that is the
-        // whole subtlety. `suppress_fresh_temp` says "the owner of
-        // the NEXT call is already decided" — a `let` RHS (the
-        // binding owns it) or a `return` expression (the caller
-        // does). Left sticky it would swallow the entire subtree,
-        // and the nested `matmul` in a `let z = add(matmul(..), b);`
-        // would go unowned again — which is exactly the bug this
-        // shape is. `in_fresh_temp_hook` is the re-entry guard for
-        // the single node being re-lowered, cleared immediately so
-        // nested calls still get their own hook.
+        // GH #921 A3, commit 1: WHO owns it is the owner table's
+        // answer, read here for the node the call is written at.
+        // `suppress_fresh_temp` used to carry it — a one-shot flag
+        // armed by a `let` RHS, a `return`, an `=` into a locus slot
+        // or a param-field initialiser, and consumed by "the next
+        // fresh-factory call lowered". Every bug the 2026-09 sweep
+        // fixed in this area was that flag taken by the wrong node
+        // (GH #837, #883), and it could only ever answer for ONE node
+        // per site: `return if c { make(1) } else { make2(1) }` armed
+        // it once and the second arm registered a temporary this
+        // frame reclaimed while the caller still held it. The table
+        // decides each arm, branch and element separately, so the
+        // question is asked once per node and never travels.
+        //
+        // `in_fresh_temp_hook` is the re-entry guard for the single
+        // node being re-lowered, cleared immediately so nested calls
+        // still get their own hook.
         let reentry = std::mem::replace(&mut self.in_fresh_temp_hook, false);
         if !reentry {
             if let Expr::Call { callee, .. } = e {
                 let factory = self
                     .callee_fn_name(callee)
                     .and_then(|f| self.fresh_locus_factories.get(&f).cloned());
-                if factory.is_none() {
-                    // GH #921 A2 — shadow. A call the fixpoint did not
-                    // prove fresh gets no owner from any flag; the
-                    // table may still say somebody has to reclaim it,
-                    // which is the carrier-return family.
-                    self.owner_shadow_call(
-                        e,
-                        crate::ownership::TempVerdict::Nobody,
-                        "the callee is not a proven-fresh factory",
-                    )?;
-                }
                 if let Some((lname, _)) = factory {
-                    let owned_elsewhere =
-                        std::mem::replace(&mut self.suppress_fresh_temp, false);
+                    let verdict = self
+                        .owner_table
+                        .temp_verdict(self.owner_table.entry_of(e));
+                    // No row is not "a value nobody owns" — F.39
+                    // gives every locus-producing expression an
+                    // owner. It is either a missing decision, which
+                    // the guard after the call refuses, or a factory
+                    // whose return is not a LOCUS at all:
+                    // `compute_fresh_locus_factories` does not check
+                    // that (`fn __http_parse_url(..) -> Url` is in
+                    // its map though `Url` is a `type`), and the
+                    // table filters those out because it has no
+                    // lowered type to filter on. Those reach here,
+                    // fail the `LocusRef` guard below, and register
+                    // nothing — exactly as they always did.
+                    let (wants_temp, per_iteration) = match verdict {
+                        crate::ownership::TempVerdict::SiteOwned => {
+                            (false, false)
+                        }
+                        crate::ownership::TempVerdict::FrameTemp {
+                            per_iteration,
+                        } => (true, per_iteration),
+                        crate::ownership::TempVerdict::Nobody => {
+                            (true, false)
+                        }
+                    };
+                    // GH #921 A4's fourth family: the slot below is
+                    // one alloca per SITE, so a site inside a loop
+                    // rewrites it every iteration and the scope-exit
+                    // flush only ever found the LAST value. Mint it
+                    // BEFORE the call runs — control reaching here
+                    // again is the proof the previous occupant is
+                    // dead — and reclaim that occupant against it,
+                    // exactly as GH #815 does for the binding slot
+                    // and the `or` slot. The binding path has had
+                    // this since #824; the GH #402 temporary had not,
+                    // which is the whole of the 25-cell family.
+                    let preminted = if wants_temp
+                        && per_iteration
+                        && !self.loops.is_empty()
+                        && !self.deferred_dissolves.is_empty()
+                    {
+                        let slot =
+                            self.deferred_dissolve_slot_alloca(&format!(
+                                "{}.fresh_temp",
+                                lname
+                            ))?;
+                        self.emit_deferred_slot_reuse_teardown(
+                            slot, &lname,
+                        )?;
+                        Some(slot)
+                    } else {
+                        None
+                    };
                     self.in_fresh_temp_hook = true;
                     let res = self.lower_expr(e, scope);
                     self.in_fresh_temp_hook = false;
                     let (val, ty) = res?;
-                    let mut registered_temp = false;
-                    if !owned_elsewhere
+                    // GH #921 A3, commit 7: F.39's rule on the call
+                    // half. A call that produced a LOCUS and has no
+                    // row is a node the pre-pass did not walk —
+                    // refuse it rather than pick a reclaim point.
+                    if ty == CodegenTy::LocusRef(lname.clone())
+                        && matches!(
+                            verdict,
+                            crate::ownership::TempVerdict::Nobody
+                        )
+                    {
+                        return Err(CodegenError::Unsupported(format!(
+                            "the call to `{}` produces locus `{}` and the \
+                             ownership pre-pass gave it no owner. Every \
+                             locus-producing expression is decided before \
+                             lowering — see spec/decisions.md F.39 — so \
+                             this is a compiler defect, not a program \
+                             error.",
+                            self.callee_fn_name(callee)
+                                .unwrap_or_else(|| "?".to_string()),
+                            lname
+                        )));
+                    }
+                    if wants_temp
                         && ty == CodegenTy::LocusRef(lname.clone())
                         && !self.deferred_dissolves.is_empty()
                         && val.is_pointer_value()
                     {
-                        registered_temp = true;
                         // NULL-inited: this expression may sit on a
                         // branch, and the flush at fn exit is
                         // unconditional — a bypassed store must
                         // read as "nothing to dissolve", not stack
                         // garbage.
-                        let slot = self.alloca_ptr_null_in_entry(
-                            &format!("{}.fresh_temp", lname),
-                        )?;
+                        let slot = match preminted {
+                            Some(slot) => slot,
+                            None => self.alloca_ptr_null_in_entry(
+                                &format!("{}.fresh_temp", lname),
+                            )?,
+                        };
                         self.builder
                             .build_store(slot, val)
                             .map_err(|e| {
@@ -24242,30 +23772,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .expect("checked non-empty")
                             .push((slot, lname, None));
                     }
-                    // GH #921 A2 — shadow. The GH #402 slot is one
-                    // alloca per SITE with no reuse teardown, so it is
-                    // reclaimed once per FRAME even inside a loop;
-                    // that is the fourth open family (#921 A4).
-                    let (verdict, note) = if owned_elsewhere {
-                        (
-                            crate::ownership::TempVerdict::SiteOwned,
-                            "`suppress_fresh_temp` was armed",
-                        )
-                    } else if registered_temp {
-                        (
-                            crate::ownership::TempVerdict::FrameTemp {
-                                per_iteration: false,
-                            },
-                            "the GH #402 hook registered a temporary",
-                        )
-                    } else {
-                        (
-                            crate::ownership::TempVerdict::Nobody,
-                            "a proven-fresh factory, but the GH #402 \
-                             hook's guards did not fire",
-                        )
-                    };
-                    self.owner_shadow_call(e, verdict, note)?;
                     return Ok((val, ty));
                 }
             }
@@ -25173,11 +24679,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // consumed there by `mem::take`, so a nested literal
                 // in the inits takes its own (parent-owned) path.
                 let name = path.segments[0].name.clone();
-                self.defer_next_locus_dissolve = true;
                 self.set_owner_site(e);
                 let lowered =
                     self.lower_locus_instantiation(&name, inits, scope);
-                self.defer_next_locus_dissolve = false;
                 self.owner_site = None;
                 let ptr = lowered?;
                 Ok((ptr.into(), CodegenTy::LocusRef(name)))
@@ -25208,11 +24712,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // handed to a callee, or read for a field) is owned
                     // by the enclosing fn's scope, not torn down at the
                     // end of its own expression.
-                    self.defer_next_locus_dissolve = true;
                     self.set_owner_site(e);
                     let lowered =
                         self.lower_locus_instantiation(mangled, inits, scope);
-                    self.defer_next_locus_dissolve = false;
                     self.owner_site = None;
                     let ptr = lowered?;
                     Ok((ptr.into(), CodegenTy::LocusRef(mangled.to_string())))
@@ -25556,17 +25058,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if parts.is_empty() {
                     return self.lower_expr(e, scope);
                 }
-                // GH #883: an ascribed composite descends into its
-                // elements without passing the outer node through
-                // `lower_expr`, so the GH #402 hook — the one place
-                // that takes `suppress_fresh_temp` — never sees the
-                // node the site named. An ARRAY is not any one of
-                // its elements: whatever owns it owns the storage,
-                // never an element in it. Take the decision here so
-                // each element factory gets the frame temporary an
-                // unowned result is supposed to get, instead of the
-                // first element silently taking the array's.
-                self.suppress_fresh_temp = false;
+                // GH #883: an ARRAY is not any one of its elements
+                // — whatever owns it owns the storage, never an
+                // element in it. The table said so when it walked the
+                // composite (a decision passing THROUGH a composite
+                // is demoted to a frame temporary of the innermost
+                // reclaim scope, per element), so there is nothing to
+                // clear here any more.
                 let mut elem_vals: Vec<BasicValueEnum<'ctx>> =
                     Vec::with_capacity(parts.len());
                 for p in parts {
@@ -25651,10 +25149,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if parts.len() == want_tys.len() && parts.len() >= 2 =>
             {
                 // GH #883, the tuple half of the same rule: a tuple
-                // is not any one of its elements, so the decision
-                // the site made about the tuple stops here and each
-                // element factory takes its own frame temporary.
-                self.suppress_fresh_temp = false;
+                // is not any one of its elements, and the table
+                // decided each element separately.
                 let mut elem_vals: Vec<BasicValueEnum<'ctx>> =
                     Vec::with_capacity(parts.len());
                 let mut elem_tys: Vec<CodegenTy> =
@@ -25790,19 +25286,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         // GH #883: an `if` in value position hands back an ARM's
-        // value, and exactly one arm runs. The ownership decision a
-        // site armed for this node therefore belongs to every arm —
-        // each arm's tail is the value the site names on that path —
-        // and to none of the arms more than once. Taken here, before
-        // the condition lowers: the flag is one-shot, so left set it
-        // was consumed by the first proven-fresh factory call
-        // lowering reached, which is the first arm's (or a factory
-        // in the CONDITION, which is not the if-expression's value
-        // at all). The arm that took it was handed on correctly and
-        // every other arm's result became a GH #402 frame temporary
-        // dissolved here — a dead locus for whoever the site handed
-        // the value to.
-        let carried = std::mem::replace(&mut self.suppress_fresh_temp, false);
+        // value, and exactly one arm runs, so the ownership decision
+        // belongs to every arm and to none of them more than once.
+        // GH #921 A3, commit 1: the table records it on each arm
+        // tail's own node, which is what the one-shot flag could not
+        // do — left set it was taken by the first factory call
+        // lowering reached, including one in the CONDITION, which is
+        // not the if-expression's value at all.
         let (cond_v, cond_ty) = self.lower_expr(&ifs.cond, scope)?;
         if cond_ty != CodegenTy::Bool {
             return Err(CodegenError::Unsupported(format!(
@@ -25826,13 +25316,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut then_scope = Scope {
             locals: scope.locals.clone(),
         };
-        // Re-armed per arm (GH #883); `lower_block_as_expr` narrows
-        // it to the arm's tail.
-        self.suppress_fresh_temp = carried;
-        let then_lowered =
-            self.lower_block_as_expr(&ifs.then_block, &mut then_scope);
-        self.suppress_fresh_temp = false;
-        let (then_v, then_ty, then_end) = then_lowered?;
+        let (then_v, then_ty, then_end) =
+            self.lower_block_as_expr(&ifs.then_block, &mut then_scope)?;
         let then_incoming = self.builder.get_insert_block().unwrap_or(then_bb);
         if then_end == BlockEnd::Open {
             self.builder
@@ -25849,18 +25334,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (else_v, else_ty, else_end) = match &ifs.else_block {
             Some(eb) => match eb.as_ref() {
                 ElseBranch::Else(b) => {
-                    self.suppress_fresh_temp = carried;
-                    let lowered = self.lower_block_as_expr(b, &mut else_scope);
-                    self.suppress_fresh_temp = false;
-                    lowered?
+                    self.lower_block_as_expr(b, &mut else_scope)?
                 }
                 ElseBranch::ElseIf(nested) => {
-                    // The nested `if` is this arm's whole value, so
-                    // it takes the decision and re-arms its own arms.
-                    self.suppress_fresh_temp = carried;
-                    let lowered = self.lower_if_expr(nested, &else_scope);
-                    self.suppress_fresh_temp = false;
-                    let (v, ty) = lowered?;
+                    let (v, ty) = self.lower_if_expr(nested, &else_scope)?;
                     (v, ty, BlockEnd::Open)
                 }
             },
@@ -29787,45 +29264,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
 
 
-    /// Statement-level locus instantiation `T { f: v, ... };`.
-    /// Allocates a struct on the caller's stack, fills its fields
-    /// (defaults overridden by the call site), then calls birth()
-    /// and run() if present. The locus is ephemeral: when the
-    /// surrounding fn returns the alloca is reclaimed. Long-lived
-    /// loci wait on the cooperative scheduler + region allocator.
-    /// m82: classify whether an expression is a struct literal
-    /// that resolves to a locus (user-declared or stdlib-bundled).
-    /// Used by `Stmt::Let` to gate `defer_next_locus_dissolve`:
-    /// only locus literals produce a deferred-dissolve binding;
-    /// user-type literals, scalars, calls, etc. stay on the eager
-    /// path. Stdlib path-qualified locus literals
-    /// (`std::io::tcp::Stream { ... }`) are matched via
-    /// `stdlib_locus_for_path` so they get the same treatment as
-    /// bare-name user loci.
-    fn expr_is_locus_literal(&self, e: &Expr) -> bool {
-        if let Expr::Struct { path, .. } = e {
-            if path.segments.len() == 1 {
-                return self
-                    .user_loci
-                    .contains_key(&path.segments[0].name);
-            }
-            let segs: Vec<&str> = path
-                .segments
-                .iter()
-                .map(|s| s.name.as_str())
-                .collect();
-            // Use the generalized lookup, then narrow to loci.
-            // m84: path-qualified stdlib `type` records resolve via
-            // the same table; we mustn't accidentally classify them
-            // as locus literals (they have no dissolve to defer).
-            if let Some(mangled) = self.mangled_for_path(&segs) {
-                return self.user_loci.contains_key(&mangled);
-            }
-        }
-        false
-    }
-
-
     /// Lower a `self.method(args)` call. Resolves the method on the
     /// current locus's `user_methods` table and emits a call with
     /// `self_ptr` prepended. Returns the lowered value + type when
@@ -30318,7 +29756,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #710: a locus LITERAL in receiver position —
         // `Queries { j: GitLike { } }.total()` — is a temporary whose
         // owner is this call, and PR #743 gave it one by setting
-        // `defer_next_locus_dissolve` here, around the receiver.
+        // the deferred-dissolve decision here, around the
+        // receiver.
         // GH #711 (the literal as a call ARGUMENT, retained by the
         // callee) and GH #812 (the literal read for a FIELD) are the
         // same defect in the two positions that were left out, so the
@@ -33816,14 +33255,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         let prev_arena = self.current_arena_override;
         self.current_arena_override = Some(self_arena);
-        self.instantiating_for_parent_field = true;
         // GH #921 A2: a `reperspective` swap builds the new impl from
         // the statement, not from a locus literal the pre-pass walked.
         self.owner_site = Some(crate::ownership::Site::Synthesized(
             "a `reperspective` swap",
         ));
+        self.declared_owner = Some(crate::ownership::Owner::Field {
+            owner: crate::ownership::ExprId::DECLARED,
+            field: field_locus.to_string(),
+        });
         let new_ptr = self.lower_locus_instantiation(new_locus, inits, scope)?;
         self.owner_site = None;
+        self.declared_owner = None;
         self.current_arena_override = prev_arena;
 
         // (3) Repoint the field at the live new instance.

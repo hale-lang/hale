@@ -95,3 +95,77 @@ fn locus_literal_default_under_a_placement_entry_still_builds() {
         "both halves should run: {stdout:?}"
     );
 }
+
+/// GH #921 A3, commit 5 (PR #919's note): the placement override
+/// must not outlive the field it was looked up for.
+///
+/// It used to be a slot the NEXT locus literal lowered took. The
+/// params-init loop set it per field, and for every field but the
+/// LAST the next turn through the loop reset it — so a placed field
+/// whose initialiser never reaches `lower_locus_instantiation` left a
+/// pinned `ScheduleClass` behind and the next instantiation anywhere
+/// took it. `DefaultInit::Const` is that shape: `const_param` lowers
+/// no expression, and the GH #890 backstop only fires for an
+/// initialiser it can see, so a `placement { }` entry on a
+/// scalar-defaulted field is neither consumed nor refused. The
+/// checker rejects placement on a non-locus field, but
+/// `build_executable` does not run the checker — which is what this
+/// whole file is about.
+///
+/// The oracle is the GH #826 refusal: a PINNED locus instantiated
+/// inside a loop cannot build, because its thread's join record is
+/// one slot per site. So if the stale override reaches the loop's
+/// literal the build is refused, and the fix is the build succeeding.
+/// The program is assembled without a raw string literal so
+/// `hale_corpus::embedded` does not harvest it.
+#[test]
+fn a_placement_entry_does_not_reach_a_later_instantiation() {
+    let src = [
+        "locus Worker {\n",
+        "    run() { print(\"worker\"); }\n",
+        "}\n",
+        "locus Other {\n",
+        "    params { n: Int = 0; }\n",
+        "    fn v() -> Int { return self.n + 1; }\n",
+        "}\n",
+        // `slot` is the LAST params field and carries the entry, and
+        // its default is a scalar — so nothing lowers an expression
+        // for it and nothing resets the override after it.
+        "main locus App {\n",
+        "    params {\n",
+        "        w: Worker = Worker { };\n",
+        "        slot: Int = 5;\n",
+        "    }\n",
+        "    placement {\n",
+        "        slot: pinned;\n",
+        "    }\n",
+        "    run() { print(\"app run\"); }\n",
+        "}\n",
+        "fn main() {\n",
+        "    App { };\n",
+        "    let mut i = 0;\n",
+        "    while i < 2 {\n",
+        "        println(\"o=\", Other { n: i }.v());\n",
+        "        i = i + 1;\n",
+        "    }\n",
+        "}\n",
+    ]
+    .concat();
+    let program = hale_syntax::parse_source(&src).expect("parse");
+    let bin = harness::unique_bin("hale_placement_slot_scope_921");
+    let built = build_executable(&program, &bin);
+    assert!(
+        built.is_ok(),
+        "a placement entry on an earlier field must not pin a later \
+         instantiation — the GH #826 loop refusal is the tell: {:?}",
+        built.err()
+    );
+    let out = std::process::Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "non-zero exit");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("o=1") && stdout.contains("o=2"),
+        "both iterations should run: {stdout:?}"
+    );
+}

@@ -1,18 +1,19 @@
-//! GH #921 A2 — locus ownership resolved before lowering, in shadow
-//! mode.
+//! GH #921 — locus ownership is resolved before lowering.
 //!
 //! `spec/decisions.md` F.39 is the design. The short version: locus
-//! ownership is decided today by seven one-shot flags on `Cx`
+//! ownership USED to be decided by seven one-shot flags on `Cx`
 //! (`suppress_fresh_temp`, `defer_next_locus_dissolve`,
 //! `instantiating_for_parent_field`,
 //! `placement_for_next_locus_instantiation`, `or_field_owner_locus`,
 //! the `returns_this_locus` / `current_user_fn_ret` spoof, and the
 //! field-ownership predicates), each consumed by "the next literal or
 //! call lowered". Every teardown leak the 2026-09 sweep fixed was a
-//! flag taken by the wrong node. This module computes the same
-//! decisions ONCE, from syntactic position, into a side table keyed by
-//! expression identity — and, in this PR, only CHECKS the table
-//! against what the flags do. Nothing here changes what is emitted.
+//! flag taken by the wrong node. This module makes the same decisions
+//! ONCE, from syntactic position, into a side table keyed by
+//! expression identity, and lowering READS it — an instantiation with
+//! no row is a `CodegenError`. A2 (PR #937) built the table and only
+//! checked it against the flags; A3 switched the consumers over, one
+//! flag per commit, and the flags are gone.
 //!
 //! ## The key
 //!
@@ -28,10 +29,11 @@
 //! different expressions can carry one span.
 //!
 //! Only the two shapes that can PRODUCE a locus carry an id — a struct
-//! literal and a call. A node codegen synthesises after this pass
-//! (a generic specialisation's body, the `Stmt::Let` generic-path
-//! rewrite when it does not carry the id over) keeps `NodeId::NONE`
-//! and is reported as `unindexed` rather than as a missing decision.
+//! literal and a call. A node codegen synthesises after this pass has
+//! to carry over the id of the source expression it stands for (the
+//! generic-struct path rewrites do) or declare its owner at the site
+//! (`Cx::declared_owner`); anything else keeps `NodeId::NONE` and is
+//! refused with a span.
 //!
 //! ## The derivation
 //!
@@ -56,31 +58,48 @@
 //! carrier, a composite — is demoted from `Binding` to
 //! `FrameTemp(innermost reclaim scope)`, because the binding names the
 //! join and not the arm: the arm's value is materialised in a
-//! temporary the frame reclaims, which is exactly what lowering does
-//! and what GH #921 A4 asks A3 to keep doing with a per-iteration
-//! slot. `Caller`, `Field` and `Placement` are not demoted — the value
+//! temporary the frame reclaims — once per ITERATION inside a loop,
+//! which is what GH #921 A4's fourth family was about.
+//! `Caller`, `Field` and `Placement` are not demoted — the value
 //! really does leave the frame, or the field's mask bit really does
 //! claim whichever branch ran (GH #853).
 //!
 //! The innermost reclaim scope is the enclosing frame, or the
 //! enclosing LOOP body when there is one: GH #824 gave a `let` in a
 //! loop a per-iteration slot, and A4 found that a carrier or composite
-//! RHS — which takes the GH #402 frame temporary instead — still does
-//! not have one. That difference is what [`ScopeKind`] carries, and it
-//! is the whole of the fourth open family.
+//! RHS — which takes the GH #402 frame temporary instead — had none.
+//! That difference is what [`ScopeKind`] carries, and A3 commit 1 gave
+//! the GH #402 temporary the same per-iteration reclaim.
 //!
 //! ## The fresh-factory set
 //!
 //! The table derives factory calls from an EXTENDED set: the one
 //! `compute_fresh_locus_factories` computes, plus every fn whose
 //! return arms are fresh once `if` / `match` / block tails are
-//! flattened. `compute_fresh_locus_factories::collect` classifies the
-//! carrier node and never its arms, which is why `return if c {
-//! make(1) } else { make(2) }` is not a factory today and its caller's
-//! binding does not own the result — the 105-cell carrier-return
-//! family. The extension lives HERE, in the table, and not in the
-//! shared function: extending the shared one would change what
-//! lowering emits, and this PR changes nothing.
+//! flattened, and every fn that hands back a BINDING of one.
+//! `compute_fresh_locus_factories::collect` classifies the carrier
+//! node and never its arms, which is why `return if c { make(1) }
+//! else { make(2) }` was not a factory and its caller's binding did
+//! not own the result — the 105-cell carrier-return family.
+//!
+//! GH #921 A3 commit 1 folds the extension back into the map lowering
+//! reads ([`OwnerTable::extended_fresh_factories`], applied in
+//! `lower_program`), so the two sides of every ownership decision are
+//! computed once and cannot drift. It lives here rather than inside
+//! `compute_fresh_locus_factories` because the flattening is the same
+//! walk the table already does to decide each arm.
+//!
+//! ## What lowering asks
+//!
+//! `lower_locus_instantiation` resolves its own [`Owner`] from this
+//! table (or from the site's declaration) and derives every decision
+//! it used to take from a flag: whether the enclosing frame reclaims
+//! the instance at its flush, whether a param field owns it and its
+//! mask bit claims it, whether a `placement { }` entry applies, and
+//! whether the caller reclaims it. The GH #402 hook in `lower_expr`
+//! and the GH #793 hook in `lower_or_expr` ask
+//! [`OwnerTable::temp_verdict`] the same question for a factory
+//! call's result.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -158,43 +177,6 @@ pub enum Owner {
     Placement(String),
 }
 
-/// What the owner means for WHEN the value is reclaimed — the
-/// granularity both the table and the flags can answer at a locus
-/// INSTANTIATION, and so the granularity the shadow compares there.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Disposition {
-    /// This frame reclaims it at a flush, or eagerly at the end of its
-    /// own expression. `per_iteration` is true when that happens once
-    /// per loop iteration rather than once per frame.
-    Frame { per_iteration: bool },
-    /// An owning locus reclaims it: a param field's mask bit, or an
-    /// acceptor's `__children[]` spine.
-    Owned,
-    /// The caller reclaims it.
-    Caller,
-    /// A placement entry: pinned, program lifetime.
-    Placement,
-    /// A handle passed in; nothing in this frame reclaims it.
-    Borrowed,
-}
-
-impl std::fmt::Display for Disposition {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Disposition::Frame { per_iteration: true } => {
-                write!(f, "frame (per iteration)")
-            }
-            Disposition::Frame { per_iteration: false } => {
-                write!(f, "frame (per frame)")
-            }
-            Disposition::Owned => write!(f, "owner field"),
-            Disposition::Caller => write!(f, "caller"),
-            Disposition::Placement => write!(f, "placement"),
-            Disposition::Borrowed => write!(f, "borrowed"),
-        }
-    }
-}
-
 /// The finer question a FACTORY CALL site can answer on both sides.
 /// The flags there decide one bit — "does this frame register a GH
 /// #402 / #793 temporary for the value" — and, when it does, at what
@@ -245,15 +227,41 @@ pub enum Site {
     Synthesized(&'static str),
 }
 
+/// What a row's expression IS. The three shapes that can put a
+/// locus in a position: the literal that builds one, a call to a fn
+/// proven to build one, and a NAME that reads one somebody else
+/// holds.
+///
+/// Typed rather than spelled, because lowering asks the question:
+/// the owner's `__locus_ref_owned_mask` bit used to be set by "a
+/// LITERAL consumed the parent-owned flag", and GH #921 A3 commit 3
+/// has to ask the table the same thing while the factory half is
+/// still decided by the field-ownership predicates.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Produced {
+    Literal,
+    FactoryCall,
+    Handle,
+}
+
+impl std::fmt::Display for Produced {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Produced::Literal => write!(f, "locus literal"),
+            Produced::FactoryCall => write!(f, "factory call"),
+            Produced::Handle => write!(f, "handle"),
+        }
+    }
+}
+
 /// One table row.
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub owner: Owner,
     /// The innermost reclaim scope in effect at the expression.
     pub scope: ScopeId,
-    /// What the expression is: `locus literal`, `factory call`,
-    /// `handle`.
-    pub what: &'static str,
+    /// What the expression is.
+    pub what: Produced,
     /// The locus or callee the expression names.
     pub name: String,
     /// The syntactic position the decision came from.
@@ -315,21 +323,6 @@ impl OwnerTable {
             .unwrap_or(ScopeKind::Frame)
     }
 
-    /// The disposition a row implies at an instantiation.
-    pub fn disposition(&self, entry: &Entry) -> Disposition {
-        let per_iteration =
-            self.scope_kind(entry.scope) == ScopeKind::LoopIteration;
-        match &entry.owner {
-            Owner::Binding(_) | Owner::FrameTemp(_) => {
-                Disposition::Frame { per_iteration }
-            }
-            Owner::Field { .. } => Disposition::Owned,
-            Owner::Caller => Disposition::Caller,
-            Owner::Placement(_) => Disposition::Placement,
-            Owner::Borrowed(_) => Disposition::Borrowed,
-        }
-    }
-
     /// What a row says about the frame-temporary question a factory
     /// call site asks. No row means the table says nothing has to
     /// reclaim this value.
@@ -355,6 +348,67 @@ impl OwnerTable {
     /// in here and not in its map).
     pub fn extended_fresh_factory(&self, fn_name: &str) -> Option<&str> {
         self.fresh.get(fn_name).map(|s| s.as_str())
+    }
+
+    /// The whole extended set, `fn name -> locus`. GH #921 A3 folds
+    /// it back into the map lowering reads, so the carrier-return
+    /// arms are proven fresh on both sides of the decision.
+    pub fn extended_fresh_factories(
+        &self,
+    ) -> impl Iterator<Item = (&String, &String)> {
+        self.fresh.iter()
+    }
+
+    /// The row for the value an expression hands its site, looking
+    /// THROUGH the delegating shapes that do not produce a locus of
+    /// their own: an `or`'s ok value, a carrier's first arm tail, a
+    /// composite's first element. Every leaf under a delegating node
+    /// carries the same decision (the site's, demoted by
+    /// [`Decision::through_delegate`]), so the first one answers for
+    /// all of them.
+    ///
+    /// `Expr::Or` and the carriers carry no [`NodeId`] — only a
+    /// literal and a call do — so a consumer handed a field
+    /// initialiser has to reach the leaf to find the row at all.
+    pub fn leaf_entry_of(&self, e: &Expr) -> Option<&Entry> {
+        match e {
+            Expr::Struct { .. } | Expr::Call { .. } => self.entry_of(e),
+            Expr::Or { inner, .. } => self.leaf_entry_of(inner),
+            Expr::If(_) | Expr::Match(_) | Expr::Block(_) => {
+                let mut arms = Vec::new();
+                return_arms(e, &mut arms);
+                arms.first().and_then(|a| self.leaf_entry_of(a))
+            }
+            Expr::Array(parts, _) | Expr::Tuple(parts, _) => {
+                parts.first().and_then(|p| self.leaf_entry_of(p))
+            }
+            _ => None,
+        }
+    }
+
+    /// Does the row for this expression's value say an OWNING LOCUS
+    /// reclaims it — a param field's mask bit, or a placement entry?
+    /// The question the field-ownership predicates answer today.
+    pub fn field_owns(&self, e: &Expr) -> bool {
+        matches!(
+            self.leaf_entry_of(e).map(|x| &x.owner),
+            Some(Owner::Field { .. }) | Some(Owner::Placement(_))
+        )
+    }
+
+    /// The same, restricted to a LITERAL — the half of the mask-bit
+    /// decision `instantiating_for_parent_field` carried (GH #921 A3
+    /// commit 3). The factory half is still the field-ownership
+    /// predicates' until commit 4.
+    pub fn field_owns_a_literal(&self, e: &Expr) -> bool {
+        matches!(
+            self.leaf_entry_of(e),
+            Some(Entry {
+                owner: Owner::Field { .. } | Owner::Placement(_),
+                what: Produced::Literal,
+                ..
+            })
+        )
     }
 
     pub fn len(&self) -> usize {
@@ -954,23 +1008,18 @@ fn extend_fresh_factories(
             if arms.is_empty() {
                 continue;
             }
-            let all_fresh = arms.iter().all(|a| match a {
-                Expr::Struct { path, .. } => {
-                    let segs = qname_segs(path);
-                    resolve_path(&segs, renames).as_deref() == Some(&l)
-                        || path
-                            .segments
-                            .last()
-                            .map(|s| s.name == l)
-                            .unwrap_or(false)
-                }
-                Expr::Call { callee, .. } => {
-                    callee_fn_name(callee, renames)
-                        .and_then(|n| out.get(&n).cloned())
-                        .map(|cl| cl == l)
-                        .unwrap_or(false)
-                }
-                _ => false,
+            // The binding shape: `let t = <carrier>; return t;` is the
+            // same program as `return <carrier>;` and has to be the
+            // same answer (spec/semantics.md "Dissolve timing rules"
+            // — the `let`-named and inline spellings are one
+            // program). The name is resolved through the fn's own
+            // `let`s, once, and only when it is bound exactly once and
+            // never re-assigned; anything else leaves the fn out of
+            // the set, which is the old leak and never a double free.
+            let lets = collect_lets(&f.body);
+            let assigned = assigned_names(&f.body);
+            let all_fresh = arms.iter().all(|a| {
+                arm_is_fresh(a, &l, &out, renames, &lets, &assigned, 0)
             });
             if all_fresh {
                 out.insert(f.name.name.clone(), l);
@@ -981,6 +1030,144 @@ fn extend_fresh_factories(
             break;
         }
     }
+    out
+}
+
+/// Is this return arm a value the fn freshly built?
+///
+/// A literal of the declared locus, a call to a fn already proven to
+/// build one, or a NAME bound once to either — including through a
+/// carrier, which is the `let t = if c { make(1) } else { make2(1) };
+/// return t;` spelling of the same program.
+#[allow(clippy::too_many_arguments)]
+fn arm_is_fresh(
+    a: &Expr,
+    l: &str,
+    known: &BTreeMap<String, String>,
+    renames: &[(Vec<String>, String)],
+    lets: &[(String, &Expr)],
+    assigned: &BTreeSet<String>,
+    depth: u32,
+) -> bool {
+    if depth > 4 {
+        return false;
+    }
+    match a {
+        Expr::Struct { path, .. } => {
+            let segs = qname_segs(path);
+            resolve_path(&segs, renames).as_deref() == Some(l)
+                || path
+                    .segments
+                    .last()
+                    .map(|s| s.name == l)
+                    .unwrap_or(false)
+        }
+        Expr::Call { callee, .. } => callee_fn_name(callee, renames)
+            .and_then(|n| known.get(&n).cloned())
+            .map(|cl| cl == l)
+            .unwrap_or(false),
+        Expr::Ident(i) => {
+            if assigned.contains(&i.name) {
+                return false;
+            }
+            let bound: Vec<&(String, &Expr)> =
+                lets.iter().filter(|(n, _)| *n == i.name).collect();
+            if bound.len() != 1 {
+                return false;
+            }
+            let mut inner = Vec::new();
+            return_arms(bound[0].1, &mut inner);
+            !inner.is_empty()
+                && inner.iter().all(|x| {
+                    arm_is_fresh(
+                        x,
+                        l,
+                        known,
+                        renames,
+                        lets,
+                        assigned,
+                        depth + 1,
+                    )
+                })
+        }
+        _ => false,
+    }
+}
+
+/// Every `let` in a body, as `(name, RHS)`. A name bound twice is
+/// listed twice, which [`arm_is_fresh`] treats as unresolvable.
+fn collect_lets(b: &Block) -> Vec<(String, &Expr)> {
+    let mut out = Vec::new();
+    fn go<'e>(b: &'e Block, out: &mut Vec<(String, &'e Expr)>) {
+        for s in &b.stmts {
+            match s {
+                Stmt::Let { name, value, .. } => {
+                    out.push((name.name.clone(), value))
+                }
+                Stmt::If(i) => go_if(i, out),
+                Stmt::Match(m) => {
+                    for a in &m.arms {
+                        if let MatchArmBody::Block(bb) = &a.body {
+                            go(bb, out);
+                        }
+                    }
+                }
+                Stmt::While { body, .. }
+                | Stmt::For { body, .. }
+                | Stmt::ShmWrite { body, .. }
+                | Stmt::Block(body) => go(body, out),
+                _ => {}
+            }
+        }
+    }
+    fn go_if<'e>(i: &'e IfStmt, out: &mut Vec<(String, &'e Expr)>) {
+        go(&i.then_block, out);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => go(b, out),
+            Some(ElseBranch::ElseIf(n)) => go_if(n, out),
+            None => {}
+        }
+    }
+    go(b, &mut out);
+    out
+}
+
+/// Names a body re-assigns with a bare `=`. A binding that moves
+/// between names can be reached through two of them, so it is never
+/// the fn's own fresh value.
+fn assigned_names(b: &Block) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    fn go(b: &Block, out: &mut BTreeSet<String>) {
+        for s in &b.stmts {
+            match s {
+                Stmt::Assign { target, .. } => {
+                    out.insert(target.head.name.clone());
+                }
+                Stmt::If(i) => go_if(i, out),
+                Stmt::Match(m) => {
+                    for a in &m.arms {
+                        if let MatchArmBody::Block(bb) = &a.body {
+                            go(bb, out);
+                        }
+                    }
+                }
+                Stmt::While { body, .. }
+                | Stmt::For { body, .. }
+                | Stmt::ShmWrite { body, .. }
+                | Stmt::Block(body) => go(body, out),
+                _ => {}
+            }
+        }
+    }
+    fn go_if(i: &IfStmt, out: &mut BTreeSet<String>) {
+        go(&i.then_block, out);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => go(b, out),
+            Some(ElseBranch::ElseIf(n)) => go_if(n, out),
+            None => {}
+        }
+    }
+    go(b, &mut out);
     out
 }
 
@@ -1141,7 +1328,7 @@ impl Resolver {
         &mut self,
         id: ExprId,
         owner: Owner,
-        what: &'static str,
+        what: Produced,
         name: String,
         position: &'static str,
         span: Span,
@@ -1263,7 +1450,7 @@ impl Resolver {
                         self.record(
                             id,
                             owner,
-                            "locus literal",
+                            Produced::Literal,
                             lname.clone(),
                             position,
                             span,
@@ -1300,7 +1487,7 @@ impl Resolver {
                     self.record(
                         id,
                         owner,
-                        "factory call",
+                        Produced::FactoryCall,
                         lname,
                         position,
                         span,
@@ -1512,7 +1699,7 @@ impl Resolver {
             let entry = Entry {
                 owner: Owner::Borrowed(ExprId::DECLARED),
                 scope,
-                what: "handle",
+                what: Produced::Handle,
                 name: field.to_string(),
                 position: "param-field initialiser (a name)",
                 decl,
@@ -1583,12 +1770,21 @@ impl Resolver {
                     }
                 }
                 if bare {
-                    let slot = self.slot_for(&head);
-                    self.assign(
-                        value,
-                        Decision::Binding(slot),
-                        "assignment RHS",
-                    );
+                    // The same carve-out `Stmt::Let` makes: a name
+                    // this frame hands back with a bare `return x;`
+                    // is the CALLER's, whichever statement last wrote
+                    // it. Missed here, `fn f() -> Buf { let mut a =
+                    // make(); a = Buf { }; return a; }` gave the
+                    // literal to the frame's flush and the caller a
+                    // reclaimed locus — found by
+                    // `freefn_locus_rebind.rs` when GH #921 A3
+                    // commit 6 made lowering read this decision.
+                    let d = if self.returned.contains(&head) {
+                        Decision::Caller
+                    } else {
+                        Decision::Binding(self.slot_for(&head))
+                    };
+                    self.assign(value, d, "assignment RHS");
                 } else {
                     self.assign(
                         value,
@@ -2162,66 +2358,5 @@ impl Resolver {
                 );
             }
         }
-    }
-}
-
-// ===================================================================
-// Shadow reporting
-// ===================================================================
-
-/// How loudly the shadow speaks.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ShadowMode {
-    /// The default: the table is built (so the pre-pass runs on every
-    /// compile) but nothing is compared and nothing is printed. This
-    /// PR changes no behaviour, and that includes stderr.
-    Off,
-    /// `LOTUS_OWNER_SHADOW=1` / `=log`: compare, and print one line
-    /// per distinct disagreement so a corpus or matrix run finishes
-    /// with every disagreement LISTED.
-    Log,
-    /// `LOTUS_OWNER_SHADOW=strict`: a disagreement — or an
-    /// instantiation with no table entry — is a `CodegenError`.
-    Strict,
-}
-
-pub fn shadow_mode() -> ShadowMode {
-    match std::env::var("LOTUS_OWNER_SHADOW").as_deref() {
-        Ok("strict") => ShadowMode::Strict,
-        Ok("1") | Ok("log") | Ok("on") => ShadowMode::Log,
-        _ => ShadowMode::Off,
-    }
-}
-
-/// One line per distinct disagreement, deduplicated per process so a
-/// corpus run produces a list rather than a transcript. Written to
-/// `LOTUS_OWNER_SHADOW_LOG` when that names a file, so an in-process
-/// matrix run can collect them without `--nocapture`.
-pub fn report(line: &str) {
-    use std::io::Write;
-    use std::sync::Mutex;
-    use std::sync::OnceLock;
-    static SEEN: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
-    let seen = SEEN.get_or_init(|| Mutex::new(BTreeSet::new()));
-    {
-        let mut g = seen.lock().expect("owner-shadow log mutex");
-        if !g.insert(line.to_string()) {
-            return;
-        }
-    }
-    let text = format!("[owner-shadow] {line}\n");
-    match std::env::var("LOTUS_OWNER_SHADOW_LOG") {
-        Ok(path) if !path.is_empty() => {
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-            {
-                let _ = f.write_all(text.as_bytes());
-                return;
-            }
-            eprint!("{text}");
-        }
-        _ => eprint!("{text}"),
     }
 }

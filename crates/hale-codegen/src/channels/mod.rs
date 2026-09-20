@@ -526,15 +526,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(Option<BasicValueEnum<'ctx>>, Option<CodegenTy>), CodegenError> {
         // GH #793 — does this `or` hand back a proven-fresh factory's
         // locus? Decided from the AST BEFORE the inner call is
-        // lowered, for two reasons. `suppress_fresh_temp` (the
-        // "owner already decided" signal) is one-shot, and the first
-        // fresh-factory call reached during lowering consumes it —
-        // for an `or` expression that would be an ARGUMENT of the
-        // inner call rather than the value this expression produces,
-        // so the flag has to be taken here, on the outermost node it
-        // was set for. And taking it only when this node is itself a
-        // fresh factory call keeps every other `or` — the vast
-        // majority — reading exactly as it did.
+        // lowered: the value this expression produces is the INNER
+        // call's, and the ok branch below is the only place it is
+        // unambiguously that.
+        //
+        // GH #921 A3, commit 1: who owns it is the owner table's
+        // answer for the inner call's node. `suppress_fresh_temp`
+        // used to carry it and had to be taken HERE rather than at
+        // the GH #402 hook, because the one-shot flag would otherwise
+        // have been consumed by an ARGUMENT of the inner call. A
+        // per-node table has no such ordering to get right.
         let inner_fresh_locus: Option<String> = match inner {
             Expr::Call { callee, .. } => self
                 .callee_fn_name(callee)
@@ -542,21 +543,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map(|(l, _)| l),
             _ => None,
         };
-        let ok_owned_elsewhere = if inner_fresh_locus.is_some() {
-            std::mem::replace(&mut self.suppress_fresh_temp, false)
-        } else {
-            self.suppress_fresh_temp
-        };
-        // GH #853 — and when this `or` IS a param-field initialiser
-        // whose branches all transfer into the field, the same is
-        // true of the substitute. The field's mask bit claims
-        // whichever value was built, so a substitute that also took
-        // the GH #402 frame temporary would be dissolved twice:
-        // once by the frame, at the enclosing fn's exit, with the
-        // owner still pointing at it, and once by the owner's
-        // cascade. Taken on the same node and for the same reason as
-        // the flag above — one-shot, outermost `or`.
-        let field_owner_locus = self.or_field_owner_locus.take();
+        let ok_owned_elsewhere = matches!(
+            self.owner_table.temp_verdict(self.owner_table.entry_of(inner)),
+            crate::ownership::TempVerdict::SiteOwned
+        );
         let call = self.lower_fallible_call(inner, scope)?;
         let func = self
             .current_fn
@@ -612,7 +602,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // NULL-initialized in the entry block, which is what makes the
         // never-stored err path a skip at the flush rather than a
         // teardown of stack garbage.
-        let mut or_registered_temp = false;
         if let (Some(CodegenTy::LocusRef(lname)), Some(v), Some(fresh_l)) =
             (&call.success_ty, &ok_v_opt, &inner_fresh_locus)
         {
@@ -621,7 +610,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 && !self.deferred_dissolves.is_empty()
                 && v.is_pointer_value()
             {
-                or_registered_temp = true;
                 let lname = lname.clone();
                 let ptr = v.into_pointer_value();
                 let slot = self.deferred_dissolve_slot_alloca(&lname)?;
@@ -642,38 +630,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("checked non-empty")
                     .push((slot, lname, None));
             }
-        }
-        // GH #921 A2 — shadow. `suppress_fresh_temp` and
-        // `or_field_owner_locus` were both taken on this node above;
-        // say what they decided for the value the `or` hands back.
-        {
-            let (verdict, note) = if inner_fresh_locus.is_none() {
-                (
-                    crate::ownership::TempVerdict::Nobody,
-                    "the callee is not a proven-fresh factory",
-                )
-            } else if ok_owned_elsewhere {
-                (
-                    crate::ownership::TempVerdict::SiteOwned,
-                    "`suppress_fresh_temp` was armed",
-                )
-            } else if or_registered_temp {
-                // Unlike the GH #402 hook, this slot carries GH #815's
-                // reuse teardown inside a loop.
-                (
-                    crate::ownership::TempVerdict::FrameTemp {
-                        per_iteration: !self.loops.is_empty(),
-                    },
-                    "the GH #793 hook registered a temporary",
-                )
-            } else {
-                (
-                    crate::ownership::TempVerdict::Nobody,
-                    "a proven-fresh factory, but the GH #793 hook's \
-                     guards did not fire",
-                )
-            };
-            self.owner_shadow_call(inner, verdict, note)?;
         }
         let ok_end_bb = self
             .builder
@@ -765,29 +721,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     };
                     // GH #853: the field owns this branch's value
                     // too, so the substitute does not ALSO become a
-                    // frame temporary. Armed only for a substitute
-                    // that hands back the named value itself — a
-                    // proven-fresh factory call, or a nested `or`
-                    // around one, which re-arms the field-owner slot
-                    // so the recursion makes the same decision for
-                    // ITS substitute. A locus literal there needs
-                    // nothing: it consumes the parent-field flag and
-                    // is already the field's.
-                    let sub_owned_by_field = field_owner_locus
-                        .as_deref()
-                        .map(|l| self.or_branch_transfers_into_field(rhs, l))
-                        .unwrap_or(false);
-                    let prev_sft = self.suppress_fresh_temp;
-                    let prev_ofo = self.or_field_owner_locus.take();
-                    if sub_owned_by_field
-                        && !matches!(rhs, Expr::Struct { .. })
-                    {
-                        self.suppress_fresh_temp = true;
-                        if matches!(rhs, Expr::Or { .. }) {
-                            self.or_field_owner_locus =
-                                field_owner_locus.clone();
-                        }
-                    }
+                    // frame temporary — it would be dissolved twice,
+                    // once by the frame at the enclosing fn's exit
+                    // with the owner still pointing at it, and once
+                    // by the owner's cascade.
+                    //
+                    // GH #921 A3, commit 1: nothing has to be armed
+                    // for that any more, and `or_field_owner_locus`
+                    // — the one-shot that carried the field's locus
+                    // into this branch so the substitute could be
+                    // recognised — is gone with it. The substitute is
+                    // its own node, the table gave it the field's
+                    // decision when it walked the initialiser, and
+                    // the GH #402 hook reads that decision where the
+                    // substitute is lowered. A nested `or` needs no
+                    // re-arming for the same reason.
                     let (sub_v, sub_ty) = if call.success_ty.is_none() {
                         // v1.x-FORM-4: Unit-success fallible (e.g.
                         // hashmap.remove / write_file). The substitute RHS
@@ -821,8 +769,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     } else {
                         self.lower_expr_opt(rhs, &sub_scope)?
                     };
-                    self.or_field_owner_locus = prev_ofo;
-                    self.suppress_fresh_temp = prev_sft;
                     // A disposer that always diverges — `or { return …; }`
                     // or `or { fail …; }` — terminates the err branch and
                     // produces NO substitute value: `lower_block_as_expr`

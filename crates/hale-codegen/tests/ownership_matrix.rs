@@ -17,12 +17,13 @@
 //! renderer:
 //!
 //!   * **position** — where the locus-producing expression is
-//!     written (26 of them: `let`, bare statement, receiver,
+//!     written (27 of them: `let`, bare statement, receiver,
 //!     argument retained / dropped, field read, `return` of a
 //!     literal / factory / carrier, param-field literal / factory /
 //!     `or raise` / `or <literal>` / `or <call>` / default / nested
-//!     receiver, the same against an INTERFACE-typed field, `if` /
-//!     `match` / block tails, array and tuple elements);
+//!     receiver, the same against an INTERFACE-typed field and a
+//!     factory into a `perspective(P)`-typed one, `if` / `match` /
+//!     block tails, array and tuple elements);
 //!   * **type** — the shape of the tree being instantiated (plain,
 //!     a `@form(vec)` child, a grandchild, an interface-typed child,
 //!     a `perspective(P)` child);
@@ -72,18 +73,17 @@
 //!
 //! ## Expected failures
 //!
-//! [`KNOWN_OPEN`] names the 200 cells that fail on `main` today:
-//! three of the residues GH #921 Phase A is about, and one family
-//! this matrix found rather than inherited (a frame temporary in a
-//! `while` body). They are **asserted to fail**, not skipped: the
-//! matrix is green on `main` with them listed, and the day a Phase A
-//! commit fixes one, its cell goes green and this file goes red
-//! until the entry is deleted. That is the regression test. Nothing
-//! here is fixed by this file; test infrastructure only.
+//! [`KNOWN_OPEN`] is **empty**. A4 landed with 200 open cells in
+//! four families; GH #921 A3 closed all four, and every one of the
+//! 945 cells is now held to every oracle. An entry here is asserted
+//! to FAIL, not skipped — so a cell that is listed and then passes
+//! fails the matrix just as a cell that is not listed and fails
+//! does. Adding one means a shape regressed, and it needs a reason
+//! and an issue.
 //!
 //! ## Size
 //!
-//! The full matrix (26 × 5 × 7 = 910 cells, ~95 s on seven threads)
+//! The full matrix (27 × 5 × 7 = 945 cells, ~100 s on seven threads)
 //! is behind `HALE_MATRIX=full`, for a nightly job. The per-PR
 //! default runs a deterministic sample (~90 cells, ~17 s) that
 //! always contains one
@@ -91,8 +91,9 @@
 //! neighbours, at least one cell per position, per type and per
 //! context, and is topped up by a fixed co-prime stride to
 //! [`TARGET_SAMPLE`]. Per open position rather than per open cell
-//! because the four families each fail for every type and (bar one)
-//! every context: 200 cells are open, ten positions are.
+//! because a family fails for every type and, bar one, every
+//! context — with nothing open, the stride fill is the whole
+//! sample.
 //!
 //! ## Corpus note
 //!
@@ -119,267 +120,19 @@ mod harness;
 // Expected failures
 // ===================================================================
 
-// The four defect families the matrix finds on `main` today. A
-// cell's KNOWN_OPEN entry names the family it belongs to, so the
-// Phase A commit that closes one deletes one block.
-
-/// GH #921 A3, PR #913's residue. `compute_fresh_locus_factories::
-/// collect` classifies the CARRIER node, never its arms, so a fn
-/// whose `return` names an `if` / `match` / block is not a
-/// proven-fresh factory: the arm's value reaches the caller with no
-/// owner, the frame that built it correctly declines to reclaim it
-/// (GH #883), and nothing else does.
-const CARRIER_RETURN: &str =
-    "carrier `return` leaks: a fn returning an if/match/block tail is \
-     not a proven-fresh factory, so the caller's binding does not own \
-     the result (GH #921 A3, PR #913's residue)";
-
-/// GH #921 A3, PR #916's residue. `or_field_owner_locus` compares
-/// the factory's declared locus with the FIELD's, which an
-/// interface-typed field does not have; PR #910 closed the
-/// `LocusRef` twin only. The bare factory into the same field was
-/// closed by GH #895, which is why `iface_field_factory` is green
-/// beside this one.
-const OR_INTO_INTERFACE_FIELD: &str =
-    "`or <call>` into an INTERFACE-typed field leaves the ok value \
-     unowned — the LocusRef twin was closed by PR #910, the contract \
-     one was not (GH #921 A3, PR #916's residue)";
-
-/// GH #896, folded into #921. `instantiating_for_parent_field` is a
-/// one-shot flag and the FIRST locus literal lowered inside the
-/// field's initialiser takes it — here the receiver of
-/// `Cfg { }.seed()`, which is a temporary of the enclosing frame and
-/// not the field's value at all.
-const NESTED_RECEIVER_IN_FIELD_INIT: &str =
-    "a receiver literal inside a locus-typed field's non-literal \
-     initialiser takes the parent-owned flag meant for the field's \
-     value, so the receiver is owned by nobody (GH #896)";
-
-/// Found by this matrix and not filed: the GH #402 frame-temporary
-/// registration is per FRAME, and a `while` body runs in one frame,
-/// so each iteration overwrites the previous iteration's slot and
-/// only the last value is flushed at scope exit. The binding path
-/// already has a per-iteration slot (`deferred_slot_per_iteration.rs`),
-/// which is why `let_literal` in a loop is green and a carrier or
-/// composite RHS — which takes the frame temporary instead — is not.
-const FRAME_TEMP_PER_ITERATION: &str =
-    "a GH #402 frame temporary is registered once per frame, so in a \
-     `while` body only the last iteration's value is reclaimed (found \
-     by this matrix; not filed)";
-
-/// Cells that fail on `main` today, each naming its family. Every
-/// entry is ASSERTED to fail — see the module docs.
+/// Cells that fail today, each naming the family it belongs to.
+/// Every entry is ASSERTED to fail — see the module docs.
+///
+/// **EMPTY.** A4 landed with 200 open cells in four families and
+/// GH #921 A3 closed all four: the carrier `return` and the
+/// per-iteration frame temporary (commit 1), GH #896's receiver
+/// inside a field initialiser (commit 3), and `or <call>` into an
+/// interface-typed field (commit 4). Every cell of the matrix is
+/// held to every oracle from here on; adding an entry here means a
+/// shape regressed, and it needs a reason and an issue.
 ///
 /// The cell id is `<position>/<type>/<context>`.
-const KNOWN_OPEN: &[(&str, &str)] = &[
-    // The carrier `return` (GH #921 A3, PR #913's residue).
-    ("return_if_tail/plain/main", CARRIER_RETURN),
-    ("return_if_tail/plain/free_fn", CARRIER_RETURN),
-    ("return_if_tail/plain/method", CARRIER_RETURN),
-    ("return_if_tail/plain/loop", CARRIER_RETURN),
-    ("return_if_tail/plain/module", CARRIER_RETURN),
-    ("return_if_tail/plain/guard_taken", CARRIER_RETURN),
-    ("return_if_tail/plain/guard_untaken", CARRIER_RETURN),
-    ("return_if_tail/vec_child/main", CARRIER_RETURN),
-    ("return_if_tail/vec_child/free_fn", CARRIER_RETURN),
-    ("return_if_tail/vec_child/method", CARRIER_RETURN),
-    ("return_if_tail/vec_child/loop", CARRIER_RETURN),
-    ("return_if_tail/vec_child/module", CARRIER_RETURN),
-    ("return_if_tail/vec_child/guard_taken", CARRIER_RETURN),
-    ("return_if_tail/vec_child/guard_untaken", CARRIER_RETURN),
-    ("return_if_tail/grandchild/main", CARRIER_RETURN),
-    ("return_if_tail/grandchild/free_fn", CARRIER_RETURN),
-    ("return_if_tail/grandchild/method", CARRIER_RETURN),
-    ("return_if_tail/grandchild/loop", CARRIER_RETURN),
-    ("return_if_tail/grandchild/module", CARRIER_RETURN),
-    ("return_if_tail/grandchild/guard_taken", CARRIER_RETURN),
-    ("return_if_tail/grandchild/guard_untaken", CARRIER_RETURN),
-    ("return_if_tail/iface_child/main", CARRIER_RETURN),
-    ("return_if_tail/iface_child/free_fn", CARRIER_RETURN),
-    ("return_if_tail/iface_child/method", CARRIER_RETURN),
-    ("return_if_tail/iface_child/loop", CARRIER_RETURN),
-    ("return_if_tail/iface_child/module", CARRIER_RETURN),
-    ("return_if_tail/iface_child/guard_taken", CARRIER_RETURN),
-    ("return_if_tail/iface_child/guard_untaken", CARRIER_RETURN),
-    ("return_if_tail/persp_child/main", CARRIER_RETURN),
-    ("return_if_tail/persp_child/free_fn", CARRIER_RETURN),
-    ("return_if_tail/persp_child/method", CARRIER_RETURN),
-    ("return_if_tail/persp_child/loop", CARRIER_RETURN),
-    ("return_if_tail/persp_child/module", CARRIER_RETURN),
-    ("return_if_tail/persp_child/guard_taken", CARRIER_RETURN),
-    ("return_if_tail/persp_child/guard_untaken", CARRIER_RETURN),
-    ("return_match_tail/plain/main", CARRIER_RETURN),
-    ("return_match_tail/plain/free_fn", CARRIER_RETURN),
-    ("return_match_tail/plain/method", CARRIER_RETURN),
-    ("return_match_tail/plain/loop", CARRIER_RETURN),
-    ("return_match_tail/plain/module", CARRIER_RETURN),
-    ("return_match_tail/plain/guard_taken", CARRIER_RETURN),
-    ("return_match_tail/plain/guard_untaken", CARRIER_RETURN),
-    ("return_match_tail/vec_child/main", CARRIER_RETURN),
-    ("return_match_tail/vec_child/free_fn", CARRIER_RETURN),
-    ("return_match_tail/vec_child/method", CARRIER_RETURN),
-    ("return_match_tail/vec_child/loop", CARRIER_RETURN),
-    ("return_match_tail/vec_child/module", CARRIER_RETURN),
-    ("return_match_tail/vec_child/guard_taken", CARRIER_RETURN),
-    ("return_match_tail/vec_child/guard_untaken", CARRIER_RETURN),
-    ("return_match_tail/grandchild/main", CARRIER_RETURN),
-    ("return_match_tail/grandchild/free_fn", CARRIER_RETURN),
-    ("return_match_tail/grandchild/method", CARRIER_RETURN),
-    ("return_match_tail/grandchild/loop", CARRIER_RETURN),
-    ("return_match_tail/grandchild/module", CARRIER_RETURN),
-    ("return_match_tail/grandchild/guard_taken", CARRIER_RETURN),
-    ("return_match_tail/grandchild/guard_untaken", CARRIER_RETURN),
-    ("return_match_tail/iface_child/main", CARRIER_RETURN),
-    ("return_match_tail/iface_child/free_fn", CARRIER_RETURN),
-    ("return_match_tail/iface_child/method", CARRIER_RETURN),
-    ("return_match_tail/iface_child/loop", CARRIER_RETURN),
-    ("return_match_tail/iface_child/module", CARRIER_RETURN),
-    ("return_match_tail/iface_child/guard_taken", CARRIER_RETURN),
-    ("return_match_tail/iface_child/guard_untaken", CARRIER_RETURN),
-    ("return_match_tail/persp_child/main", CARRIER_RETURN),
-    ("return_match_tail/persp_child/free_fn", CARRIER_RETURN),
-    ("return_match_tail/persp_child/method", CARRIER_RETURN),
-    ("return_match_tail/persp_child/loop", CARRIER_RETURN),
-    ("return_match_tail/persp_child/module", CARRIER_RETURN),
-    ("return_match_tail/persp_child/guard_taken", CARRIER_RETURN),
-    ("return_match_tail/persp_child/guard_untaken", CARRIER_RETURN),
-    ("return_block_tail/plain/main", CARRIER_RETURN),
-    ("return_block_tail/plain/free_fn", CARRIER_RETURN),
-    ("return_block_tail/plain/method", CARRIER_RETURN),
-    ("return_block_tail/plain/loop", CARRIER_RETURN),
-    ("return_block_tail/plain/module", CARRIER_RETURN),
-    ("return_block_tail/plain/guard_taken", CARRIER_RETURN),
-    ("return_block_tail/plain/guard_untaken", CARRIER_RETURN),
-    ("return_block_tail/vec_child/main", CARRIER_RETURN),
-    ("return_block_tail/vec_child/free_fn", CARRIER_RETURN),
-    ("return_block_tail/vec_child/method", CARRIER_RETURN),
-    ("return_block_tail/vec_child/loop", CARRIER_RETURN),
-    ("return_block_tail/vec_child/module", CARRIER_RETURN),
-    ("return_block_tail/vec_child/guard_taken", CARRIER_RETURN),
-    ("return_block_tail/vec_child/guard_untaken", CARRIER_RETURN),
-    ("return_block_tail/grandchild/main", CARRIER_RETURN),
-    ("return_block_tail/grandchild/free_fn", CARRIER_RETURN),
-    ("return_block_tail/grandchild/method", CARRIER_RETURN),
-    ("return_block_tail/grandchild/loop", CARRIER_RETURN),
-    ("return_block_tail/grandchild/module", CARRIER_RETURN),
-    ("return_block_tail/grandchild/guard_taken", CARRIER_RETURN),
-    ("return_block_tail/grandchild/guard_untaken", CARRIER_RETURN),
-    ("return_block_tail/iface_child/main", CARRIER_RETURN),
-    ("return_block_tail/iface_child/free_fn", CARRIER_RETURN),
-    ("return_block_tail/iface_child/method", CARRIER_RETURN),
-    ("return_block_tail/iface_child/loop", CARRIER_RETURN),
-    ("return_block_tail/iface_child/module", CARRIER_RETURN),
-    ("return_block_tail/iface_child/guard_taken", CARRIER_RETURN),
-    ("return_block_tail/iface_child/guard_untaken", CARRIER_RETURN),
-    ("return_block_tail/persp_child/main", CARRIER_RETURN),
-    ("return_block_tail/persp_child/free_fn", CARRIER_RETURN),
-    ("return_block_tail/persp_child/method", CARRIER_RETURN),
-    ("return_block_tail/persp_child/loop", CARRIER_RETURN),
-    ("return_block_tail/persp_child/module", CARRIER_RETURN),
-    ("return_block_tail/persp_child/guard_taken", CARRIER_RETURN),
-    ("return_block_tail/persp_child/guard_untaken", CARRIER_RETURN),
-
-    // `or <call>` into an INTERFACE-typed field (GH #921 A3, PR #916's residue).
-    ("iface_field_or_call/plain/main", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/plain/free_fn", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/plain/method", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/plain/loop", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/plain/module", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/plain/guard_taken", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/plain/guard_untaken", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/vec_child/main", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/vec_child/free_fn", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/vec_child/method", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/vec_child/loop", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/vec_child/module", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/vec_child/guard_taken", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/vec_child/guard_untaken", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/grandchild/main", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/grandchild/free_fn", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/grandchild/method", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/grandchild/loop", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/grandchild/module", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/grandchild/guard_taken", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/grandchild/guard_untaken", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/iface_child/main", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/iface_child/free_fn", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/iface_child/method", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/iface_child/loop", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/iface_child/module", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/iface_child/guard_taken", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/iface_child/guard_untaken", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/persp_child/main", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/persp_child/free_fn", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/persp_child/method", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/persp_child/loop", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/persp_child/module", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/persp_child/guard_taken", OR_INTO_INTERFACE_FIELD),
-    ("iface_field_or_call/persp_child/guard_untaken", OR_INTO_INTERFACE_FIELD),
-
-    // GH #896.
-    ("field_nested_receiver/plain/main", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/plain/free_fn", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/plain/method", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/plain/loop", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/plain/module", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/plain/guard_taken", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/plain/guard_untaken", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/vec_child/main", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/vec_child/free_fn", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/vec_child/method", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/vec_child/loop", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/vec_child/module", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/vec_child/guard_taken", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/vec_child/guard_untaken", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/grandchild/main", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/grandchild/free_fn", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/grandchild/method", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/grandchild/loop", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/grandchild/module", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/grandchild/guard_taken", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/grandchild/guard_untaken", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/iface_child/main", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/iface_child/free_fn", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/iface_child/method", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/iface_child/loop", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/iface_child/module", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/iface_child/guard_taken", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/iface_child/guard_untaken", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/persp_child/main", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/persp_child/free_fn", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/persp_child/method", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/persp_child/loop", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/persp_child/module", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/persp_child/guard_taken", NESTED_RECEIVER_IN_FIELD_INIT),
-    ("field_nested_receiver/persp_child/guard_untaken", NESTED_RECEIVER_IN_FIELD_INIT),
-
-    // A frame temporary in a `while` body. Found by this matrix; not filed.
-    ("let_if_tail/plain/loop", FRAME_TEMP_PER_ITERATION),
-    ("let_if_tail/vec_child/loop", FRAME_TEMP_PER_ITERATION),
-    ("let_if_tail/grandchild/loop", FRAME_TEMP_PER_ITERATION),
-    ("let_if_tail/iface_child/loop", FRAME_TEMP_PER_ITERATION),
-    ("let_if_tail/persp_child/loop", FRAME_TEMP_PER_ITERATION),
-    ("let_match_tail/plain/loop", FRAME_TEMP_PER_ITERATION),
-    ("let_match_tail/vec_child/loop", FRAME_TEMP_PER_ITERATION),
-    ("let_match_tail/grandchild/loop", FRAME_TEMP_PER_ITERATION),
-    ("let_match_tail/iface_child/loop", FRAME_TEMP_PER_ITERATION),
-    ("let_match_tail/persp_child/loop", FRAME_TEMP_PER_ITERATION),
-    ("let_block_tail/plain/loop", FRAME_TEMP_PER_ITERATION),
-    ("let_block_tail/vec_child/loop", FRAME_TEMP_PER_ITERATION),
-    ("let_block_tail/grandchild/loop", FRAME_TEMP_PER_ITERATION),
-    ("let_block_tail/iface_child/loop", FRAME_TEMP_PER_ITERATION),
-    ("let_block_tail/persp_child/loop", FRAME_TEMP_PER_ITERATION),
-    ("array_element/plain/loop", FRAME_TEMP_PER_ITERATION),
-    ("array_element/vec_child/loop", FRAME_TEMP_PER_ITERATION),
-    ("array_element/grandchild/loop", FRAME_TEMP_PER_ITERATION),
-    ("array_element/iface_child/loop", FRAME_TEMP_PER_ITERATION),
-    ("array_element/persp_child/loop", FRAME_TEMP_PER_ITERATION),
-    ("tuple_element/plain/loop", FRAME_TEMP_PER_ITERATION),
-    ("tuple_element/vec_child/loop", FRAME_TEMP_PER_ITERATION),
-    ("tuple_element/grandchild/loop", FRAME_TEMP_PER_ITERATION),
-    ("tuple_element/iface_child/loop", FRAME_TEMP_PER_ITERATION),
-    ("tuple_element/persp_child/loop", FRAME_TEMP_PER_ITERATION),
-];
+const KNOWN_OPEN: &[(&str, &str)] = &[];
 
 /// How many cells the per-PR sample aims for.
 const TARGET_SAMPLE: usize = 60;
@@ -827,7 +580,50 @@ const POSITIONS: &[Position] = &[
         "",
         "let h = IHolder { c: make_f(1) or make2(1) };\nprintln(\"u=\", h.peek());",
     ),
+    // --- and against a `perspective(P)`-typed field --------------
+    //
+    // GH #921 A3. This shape had NO cell: the `persp_child` type
+    // axis puts a perspective field on the SUBJECT, and every field
+    // position puts the subject behind a locus- or interface-typed
+    // one, so "a factory's result stored into a perspective-typed
+    // field" was never generated. It is the one place F.39 and
+    // lowering disagreed outside the four families — the F.17 gate
+    // covered `LocusRef` and `Interface` and not `Perspective`, so
+    // the value took the GH #402 frame temporary while F.39 says the
+    // field owns it. The impl holds the subject so the type axis
+    // still bites.
+    Position {
+        id: "persp_field_factory",
+        decls: PERSP_FIELD_DECLS,
+        stmts: "let h = PHolder { r: makep() };\nprintln(\"u=\", h.peek());",
+        twin_decls: None,
+        twin_stmts: None,
+        instances: 1,
+        extra_tags: &[("D:proute", 1)],
+        needs_fallible: false,
+    },
 ];
+
+/// The declarations `persp_field_factory` needs. A second
+/// perspective, so the `persp_child` shape's own `Route` is
+/// untouched, and an impl that holds the subject so the shape axis
+/// is not vacuous for this position.
+const PERSP_FIELD_DECLS: &str = "
+perspective PRoute { fn pv() -> Int; }
+
+locus PRouteV1 : serves PRoute {
+    params { s: Subj = Subj { n: 1 }; }
+    dissolve() { println(\"D:proute\"); }
+    fn pv() -> Int { return self.s.probe(); }
+}
+
+locus PHolder {
+    params { r: perspective(PRoute) = PRouteV1 { }; }
+    fn peek() -> Int { return self.r.pv(); }
+}
+
+fn makep() -> PRouteV1 { return PRouteV1 { }; }
+";
 
 
 // ===================================================================
@@ -1490,12 +1286,12 @@ fn matrix_behind_an_untaken_guard() {
 /// generator that silently produces two cells passes every oracle.
 #[test]
 fn the_matrix_is_rectangular_and_non_vacuous() {
-    assert_eq!(POSITIONS.len(), 26, "position axis changed size");
+    assert_eq!(POSITIONS.len(), 27, "position axis changed size");
     assert_eq!(SHAPES.len(), 5, "type axis changed size");
     assert_eq!(CONTEXTS.len(), 7, "context axis changed size");
 
     let all = all_cells();
-    assert_eq!(all.len(), 26 * 5 * 7);
+    assert_eq!(all.len(), 27 * 5 * 7);
     let ids: BTreeSet<String> = all.iter().map(|c| cell_id(*c)).collect();
     assert_eq!(ids.len(), all.len(), "two cells share an id");
 
