@@ -22,7 +22,8 @@ let active  = std::json::find_bool_field(doc, "active");    // true
 
 Missing fields come back as the type's zero value (`""`, `0`,
 `false`) rather than failing — so for "is this really present?"
-semantics, check with the raw accessor or validate upstream.
+semantics, use [`string_field`](#reading-a-field-that-may-be-null)
+below, which names the shape it found.
 `find_field_raw` returns the raw substring for a field, which is
 how you reach into a nested object:
 
@@ -40,6 +41,66 @@ registry's `versions` — read each key with
 `std::json::obj_key_string(it, doc)`: it decodes escapes the same
 way `obj_value_string` does, which hand-slicing
 `doc[it.key_start..it.key_end]` silently skips.
+
+## Reading a field that may be null
+
+`find_string_field` hands back a `String` whatever the value was,
+which is convenient until the field is optional. `null` arrives as
+the four-character string `"null"` — a perfectly good name — and
+absent, empty, and a number all arrive as something a name-shaped
+field will happily accept:
+
+```hale,fragment
+let a = std::json::find_string_field("{\"owner\": null}", "owner");     // "null"  (!)
+let b = std::json::find_string_field("{\"owner\": \"null\"}", "owner"); // "null"
+let c = std::json::find_string_field("{\"owner\": \"\"}", "owner");     // ""
+let d = std::json::find_string_field("{}", "owner");                    // ""
+let e = std::json::find_string_field("{\"owner\": 7}", "owner");        // "7"
+```
+
+`string_field` answers with the shape as well as the text, so you
+decide instead of guessing:
+
+```hale,fragment
+let owner = std::json::string_field(body, "owner");
+if owner.kind == "string" {
+    println("owned by ", owner.text);
+} else if owner.kind == "null" || owner.kind == "missing" {
+    println("a root");                  // parentless — not named `null`
+} else {
+    println("owner must be a string or null");
+}
+```
+
+It returns a `std::json::JsonString`, which is two fields:
+
+- `kind` — one of `"string"`, `"null"`, `"missing"`, `"number"`,
+  `"bool"`, `"array"`, `"object"`, `"invalid"`.
+- `text` — the decoded string content (quotes stripped, escapes
+  resolved) **only** when `kind` is `"string"`. Every other kind
+  carries `""`, so forgetting to check `kind` gives you an empty
+  name rather than a plausible wrong one.
+
+`"missing"` means the document is an object with no such member.
+`"invalid"` means the document is not an object at all, or the
+member's value is not something the scanner can name (an
+unterminated string, a bare `NaN`). A key repeated inside one
+object resolves to the first one — the same member
+`find_string_field` reads.
+
+The kind is not string-specific. An `Int` or `Bool` read has the
+same coercion problem (`null` becomes `0`, anything that isn't
+`true` becomes `false`), and the same gate fixes it:
+
+```hale,fragment
+if std::json::string_field(body, "port").kind == "number" {
+    let port = std::json::find_int_field(body, "port");
+    println(port);
+}
+```
+
+`find_string_field` is unchanged and stays permissive — existing
+callers keep the behaviour they have.
 
 ## Parsing into a type
 

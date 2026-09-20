@@ -274,6 +274,7 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
     &["std", "json", "ArrayIterSpan"],
     &["std", "json", "Builder"],
     &["std", "json", "JsonFieldRange"],
+    &["std", "json", "JsonString"],
     &["std", "json", "ObjectIterSpan"],
     &["std", "lang", "Lang"],
     &["std", "lang", "Morpheme"],
@@ -539,6 +540,9 @@ pub const SURFACES: &[NsSurface] = &[
             e("obj_key_eq", EffectSet::PURE), e("obj_key_len", EffectSet::PURE), e("obj_key_string", EffectSet::PURE), e("obj_value_bool", EffectSet::PURE),
             e("obj_value_float", EffectSet::PURE), e("obj_value_int", EffectSet::PURE), e("obj_value_raw", EffectSet::PURE),
             e("obj_value_string", EffectSet::PURE), e("object_first", EffectSet::PURE), e("object_next", EffectSet::PURE),
+            // GH #719: the typed field read — a byte scan over the
+            // caller's String, like every other reader here.
+            e("string_field", EffectSet::PURE),
             e("unescape_string", EffectSet::PURE),
             // GH #754: syntax validation. Both are byte scans over
             // one immutable String with no allocation at all — the

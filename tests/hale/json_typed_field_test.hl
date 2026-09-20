@@ -1,0 +1,162 @@
+// GH #719: `std::json::string_field` tells the JSON shapes apart
+// that `find_string_field` flattens into one String.
+//
+// The reported case is a topology root: `{"owner": null}` read as
+// the four-character String "null", which is a perfectly good
+// identity name — so a parentless node adopted a parent called
+// `null`. Absent, null, "", the string "null", a number, a bool,
+// an array and an object all had to be told apart by hand at the
+// call site.
+//
+// `find_string_field` keeps its permissive contract (the last
+// block here pins it, so the DIFFERENCE is what this file
+// asserts, not just the new behaviour).
+
+fn main() {
+    // The reported shape: a root's owner is null, its path is a
+    // real string. One read answers both questions.
+    let root = "{\"owner\": null, \"path\": \"Trio\"}";
+    let owner = std::json::string_field(root, "owner");
+    std::test::assert_eq_str(owner.kind, "null", "owner: null is null");
+    std::test::assert_eq_str(owner.text, "", "and carries no text");
+    let p = std::json::string_field(root, "path");
+    std::test::assert_eq_str(p.kind, "string", "path: a real string");
+    std::test::assert_eq_str(p.text, "Trio", "with its decoded text");
+
+    // Absent is not null, and neither is an empty string.
+    let gone = std::json::string_field(root, "parent");
+    std::test::assert_eq_str(gone.kind, "missing", "no such member");
+    std::test::assert_eq_str(gone.text, "", "missing carries no text");
+    let empty = std::json::string_field("{\"owner\": \"\"}", "owner");
+    std::test::assert_eq_str(empty.kind, "string", "an empty string IS a string");
+    std::test::assert_eq_str(empty.text, "", "whose text is empty");
+
+    // The string "null" is a string, and it is not the literal.
+    let spelled = std::json::string_field("{\"owner\": \"null\"}", "owner");
+    std::test::assert_eq_str(spelled.kind, "string", "\"null\" is a string");
+    std::test::assert_eq_str(spelled.text, "null", "text is the four letters");
+
+    // The scalar shapes that used to coerce into a name.
+    let n = std::json::string_field("{\"owner\": 7}", "owner");
+    std::test::assert_eq_str(n.kind, "number", "a number");
+    std::test::assert_eq_str(n.text, "", "a number carries no text");
+    let neg = std::json::string_field("{\"owner\": -3.5e2}", "owner");
+    std::test::assert_eq_str(neg.kind, "number", "a negative float is a number");
+    let t = std::json::string_field("{\"owner\": true}", "owner");
+    std::test::assert_eq_str(t.kind, "bool", "true");
+    let f = std::json::string_field("{\"owner\": false}", "owner");
+    std::test::assert_eq_str(f.kind, "bool", "false");
+
+    // Containers. A nested object's value is an object, whatever
+    // its own members say.
+    let arr = std::json::string_field("{\"owner\": [1, 2]}", "owner");
+    std::test::assert_eq_str(arr.kind, "array", "an array");
+    std::test::assert_eq_str(arr.text, "", "an array carries no text");
+    let obj = std::json::string_field(
+        "{\"owner\": {\"name\": \"Ada\", \"id\": 3}, \"path\": \"Trio\"}", "owner"
+    );
+    std::test::assert_eq_str(obj.kind, "object", "a nested object");
+    std::test::assert_eq_str(obj.text, "", "an object carries no text");
+    // ...and the member AFTER a nested object is still readable —
+    // the cursor skips the whole subtree, it does not descend.
+    std::test::assert_eq_str(
+        std::json::string_field(
+            "{\"owner\": {\"name\": \"Ada\"}, \"path\": \"Trio\"}", "path"
+        ).text,
+        "Trio",
+        "the member after a nested object"
+    );
+
+    // Escapes decode on the way out (the GH #709 path).
+    let esc = std::json::string_field("{\"n\": \"a\\u00e9b\"}", "n");
+    std::test::assert_eq_str(esc.kind, "string", "an escaped string");
+    std::test::assert_eq_str(esc.text, "aéb", "decodes to its scalar");
+    std::test::assert_eq_int(len(esc.text), 4, "a, two bytes of e-acute, b");
+    std::test::assert_eq_str(
+        std::json::string_field("{\"n\": \"x\\\"y\\\\z\"}", "n").text,
+        "x\"y\\z",
+        "the short-form escapes too"
+    );
+
+    // A key repeated in one object: the FIRST member wins, which
+    // is what find_string_field answers as well — both walk the
+    // same top-level cursor and stop at the first match.
+    let dup = "{\"owner\": \"first\", \"owner\": \"second\"}";
+    std::test::assert_eq_str(
+        std::json::string_field(dup, "owner").text, "first", "first key wins"
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field(dup, "owner"),
+        std::json::string_field(dup, "owner").text,
+        "and the permissive helper agrees"
+    );
+    let dup_null = "{\"owner\": null, \"owner\": \"second\"}";
+    std::test::assert_eq_str(
+        std::json::string_field(dup_null, "owner").kind,
+        "null",
+        "first wins even when the first is null"
+    );
+
+    // Input that is not an object at all, and a member whose value
+    // is not a JSON value the scanner can name.
+    std::test::assert_eq_str(
+        std::json::string_field("[1, 2]", "owner").kind, "invalid", "an array document"
+    );
+    std::test::assert_eq_str(
+        std::json::string_field("\"bare\"", "owner").kind, "invalid", "a bare string"
+    );
+    std::test::assert_eq_str(
+        std::json::string_field("", "owner").kind, "invalid", "nothing at all"
+    );
+    std::test::assert_eq_str(
+        std::json::string_field("{\"owner\": \"abc}", "owner").kind,
+        "invalid",
+        "an unterminated string value"
+    );
+    std::test::assert_eq_str(
+        std::json::string_field("{\"owner\": NaN}", "owner").kind,
+        "invalid",
+        "a bare token that is not a JSON literal"
+    );
+
+    // Leading whitespace / a newline-formatted document still reads.
+    std::test::assert_eq_str(
+        std::json::string_field("  \n{\n  \"owner\" : null\n}", "owner").kind,
+        "null",
+        "whitespace around the member"
+    );
+
+    // The pinned difference. find_string_field keeps its permissive
+    // contract — every one of these answers the SAME String — and
+    // that is exactly why it could not carry the optional-owner
+    // read. Change either side and this block fails.
+    std::test::assert_eq_str(
+        std::json::find_string_field("{\"owner\": null}", "owner"),
+        "null",
+        "the permissive helper spells null as a name"
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field("{\"owner\": \"null\"}", "owner"),
+        "null",
+        "and cannot tell that apart from the string"
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field("{}", "owner"), "", "absent is empty"
+    );
+    std::test::assert_eq_str(
+        std::json::find_string_field("{\"owner\": \"\"}", "owner"),
+        "",
+        "and so is an empty string"
+    );
+    // The typed reader separates all four.
+    std::test::assert(
+        std::json::string_field("{\"owner\": null}", "owner").kind
+            != std::json::string_field("{\"owner\": \"null\"}", "owner").kind,
+        "null and \"null\" are different shapes"
+    );
+    std::test::assert(
+        std::json::string_field("{}", "owner").kind
+            != std::json::string_field("{\"owner\": \"\"}", "owner").kind,
+        "absent and empty are different shapes"
+    );
+}
