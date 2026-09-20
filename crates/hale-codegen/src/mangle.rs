@@ -226,11 +226,13 @@ pub fn mangle_with_renames_in_seed(
         .filter_map(|i| i.alias.clone())
         .filter(|a| !path_heads.contains(a))
         .collect();
+    let no_construct: HashMap<String, String> = HashMap::new();
     let mut walker = Mangler {
         renames,
         scopes: Vec::new(),
         module_aliases,
         alias_heads: HashMap::new(),
+        construct: &no_construct,
         mangling: true,
         seed,
     };
@@ -267,17 +269,221 @@ pub fn rewrite_import_alias_heads(
         return;
     }
     let no_renames: HashMap<String, String> = HashMap::new();
+    let no_construct: HashMap<String, String> = HashMap::new();
     let mut walker = Mangler {
         renames: &no_renames,
         scopes: Vec::new(),
         module_aliases: HashSet::new(),
         alias_heads: alias_heads.clone(),
+        construct: &no_construct,
         mangling: false,
         // Heads only: this pass carries no decl renames, so it is in
         // no position to decide that a group reference is unbound.
         seed: SeedBinding::default(),
     };
     walker.walk_top_decl(d);
+}
+
+/// GH #831 — resolve every CONSTRUCTION path spelled with a type
+/// alias to the declaration the alias chain ends at, program-wide,
+/// before anything lowers an expression.
+///
+/// `type Row2 = Row;` makes `Row2` a second spelling of `Row`
+/// (GH #759, spec `types.md` § "Type aliases"), and the checker
+/// follows it in one hop because it holds one expanded alias table.
+/// Codegen holds no such single point: a struct-literal path is
+/// read at roughly twenty `Expr::Struct` sites — the plain
+/// lowering, the monomorph synthesizer, the locus-instantiation
+/// paths, the mode/factory rewrites, the channel and bus-dispatch
+/// rewrites — and none of them consult the alias table. Rather than
+/// teach twenty sites the same hop (and leave the twenty-first to a
+/// future author), the alias is resolved ONCE here, so nothing
+/// downstream ever sees the alias name.
+///
+/// Three positions carry a construction path, and this pass is
+/// attached to the walker that already visits all three:
+/// `Expr::Struct` (a struct / locus / perspective literal),
+/// `Expr::Path` (an enum-variant construction, with or without a
+/// payload) and `Pattern::Constructor` (the same variant path in
+/// match position — check refuses an aliased arm as non-exhaustive
+/// only when there is no catch-all, so without this a program with
+/// a `_` arm checked clean and died at build with "constructor
+/// pattern: unknown enum").
+///
+/// `renames` is the build's cross-seed import table, which is what
+/// makes `lib::Row2 { }` resolve: the qualified spelling is a key
+/// of its own alongside the bare name.
+pub fn resolve_construction_aliases(
+    prog: &mut Program,
+    renames: &[(Vec<String>, String)],
+) {
+    let targets = construction_alias_targets(prog, renames);
+    if targets.is_empty() {
+        return;
+    }
+    let no_renames: HashMap<String, String> = HashMap::new();
+    let mut walker = Mangler {
+        renames: &no_renames,
+        scopes: Vec::new(),
+        module_aliases: HashSet::new(),
+        alias_heads: HashMap::new(),
+        construct: &targets,
+        mangling: false,
+        seed: SeedBinding::default(),
+    };
+    for item in &mut prog.items {
+        walker.walk_top_decl(item);
+    }
+}
+
+/// The table [`resolve_construction_aliases`] rewrites through:
+/// every spelling of a `type Name = Target;` alias whose chain ends
+/// at a name a construction can actually be resolved against, mapped
+/// to that name.
+///
+/// What is deliberately absent is as load-bearing as what is
+/// present — an absent row leaves the path as written, so the
+/// existing diagnostic still fires and the checker, which answers
+/// the same question from its own expanded table, agrees:
+///
+/// * a target that is not a named type (`type Thing = Int;`,
+///   `type TwoRows = [Row2; 2];`, a tuple, a fn type) — nothing is
+///   constructible with `{ }` or `::`, so `Thing { }` stays
+///   "`Thing` is not a struct type";
+/// * a target naming no declaration in the merged program;
+/// * a generic alias TEMPLATE (`type Twin<T> = ...`), which has no
+///   single target;
+/// * a chain that returns to its own name, which `check` reports
+///   with a span and this table simply drops.
+///
+/// A target that is a generic INSTANTIATION (`type IntPair =
+/// Pair<Int>;`) maps to the monomorph name codegen synthesizes
+/// (`Pair_Int`) — the same name `resolve_type_expr` gives the
+/// alias, so the two layers land on one declaration.
+fn construction_alias_targets(
+    prog: &Program,
+    renames: &[(Vec<String>, String)],
+) -> HashMap<String, String> {
+    // Every alias declaration in the program, modules included: a
+    // module shares the flat top-level namespace, so `module geo {
+    // type Row2 = Row; }` is spelled `Row2` at the use site.
+    fn collect(
+        items: &[TopDecl],
+        aliases: &mut HashMap<String, TypeExpr>,
+        declared: &mut HashSet<String>,
+    ) {
+        for item in items {
+            match item {
+                TopDecl::Type(t) => {
+                    if t.generics.is_empty() {
+                        if let TypeDeclBody::Alias(te) = &t.body {
+                            aliases
+                                .entry(t.name.name.clone())
+                                .or_insert_with(|| te.clone());
+                            continue;
+                        }
+                    }
+                    declared.insert(t.name.name.clone());
+                }
+                TopDecl::Locus(l) => {
+                    declared.insert(l.name.name.clone());
+                }
+                TopDecl::Perspective(p) => {
+                    declared.insert(p.name.name.clone());
+                }
+                TopDecl::Module(m) => collect(&m.items, aliases, declared),
+                _ => {}
+            }
+        }
+    }
+
+    let mut aliases: HashMap<String, TypeExpr> = HashMap::new();
+    let mut declared: HashSet<String> = HashSet::new();
+    collect(&prog.items, &mut aliases, &mut declared);
+    if aliases.is_empty() {
+        return HashMap::new();
+    }
+
+    // One hop of a chain: the single name this target spells, plus
+    // whether it is a generic instantiation's monomorph (which no
+    // declaration carries yet — codegen synthesizes it from the
+    // template later in this build). `None` means the target is not
+    // a construction target at all.
+    let step = |te: &TypeExpr| -> Option<(String, bool)> {
+        let TypeExpr::Named { path, generic_args, .. } = te else {
+            return None;
+        };
+        let name = if path.segments.len() == 1 {
+            path.segments[0].name.clone()
+        } else {
+            // A qualified target. The CLI's
+            // `apply_qualified_path_renames` has already collapsed
+            // any it can resolve, so what reaches here is either a
+            // stdlib path or a path this build cannot see.
+            let segs: Vec<&str> =
+                path.segments.iter().map(|s| s.name.as_str()).collect();
+            hale_stdlib::PATH_RENAMES
+                .iter()
+                .find(|(p, _)| *p == segs.as_slice())
+                .map(|(_, m)| (*m).to_string())?
+        };
+        if generic_args.is_empty() {
+            Some((name, false))
+        } else {
+            // The monomorph codegen synthesizes for the
+            // instantiation, and the `Ty` the checker resolves the
+            // alias to.
+            crate::codegen::Cx::mangle_generic_name(&name, generic_args)
+                .ok()
+                .map(|m| (m, true))
+        }
+    };
+
+    let mut out: HashMap<String, String> = HashMap::new();
+    for (name, target) in &aliases {
+        let mut seen: HashSet<String> = HashSet::new();
+        seen.insert(name.clone());
+        let mut cur = target.clone();
+        // Follow an alias-of-an-alias to the end. A chain that
+        // re-enters itself is the cyclic case `check` reports with a
+        // span; drop it here rather than loop.
+        loop {
+            let Some((next, monomorph)) = step(&cur) else { break };
+            match aliases.get(&next) {
+                Some(further) => {
+                    if !seen.insert(next) {
+                        break;
+                    }
+                    cur = further.clone();
+                }
+                None => {
+                    if monomorph || declared.contains(&next) {
+                        out.insert(name.clone(), next);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    if out.is_empty() {
+        return out;
+    }
+    // The qualified spelling of an imported alias
+    // (`lib::Row2 { }`), under the same rename table every other
+    // cross-seed reference resolves through. The alias's mangled
+    // name is already a key; this adds the way the importer spells
+    // it.
+    for (segs, mangled) in renames {
+        if let Some(target) = out.get(mangled).cloned() {
+            out.insert(segs.join("::"), target);
+        }
+    }
+    for (segs, mangled) in hale_stdlib::PATH_RENAMES {
+        if let Some(target) = out.get(*mangled).cloned() {
+            out.insert(segs.join("::"), target);
+        }
+    }
+    out
 }
 
 /// brained F.1 / 2026-05-23 — apply the cross-seed
@@ -874,6 +1080,11 @@ struct Mangler<'a> {
     /// Empty on a mangling pass, which leaves every path head to
     /// `rewrite_variant_path`'s own rule.
     alias_heads: HashMap<String, String>,
+    /// GH #831: the `type Name = Target;` table, as a CONSTRUCTION
+    /// path spells the alias → the declaration the chain ends at.
+    /// Empty on every other pass; see
+    /// [`resolve_construction_aliases`].
+    construct: &'a HashMap<String, String>,
     /// True on a mangling pass (`mangle_with_renames*`), false on the
     /// alias-head pass. Guards the one walk step that is a state
     /// change rather than a rename: marking a `claims { }` block
@@ -939,6 +1150,35 @@ impl<'a> Mangler<'a> {
                 n,
             );
         }
+    }
+
+    /// GH #831: replace the `keep` leading segments of `q` — the
+    /// part that names a TYPE — with the declaration the alias chain
+    /// spelled there ends at. A no-op on every pass but
+    /// [`resolve_construction_aliases`], and on a path the table has
+    /// no row for, which is what leaves the existing "not a struct
+    /// type" / "unresolved path" diagnostics saying what the author
+    /// wrote.
+    fn rewrite_construction_head(
+        &self,
+        q: &mut QualifiedName,
+        keep: usize,
+    ) -> bool {
+        if self.construct.is_empty() || keep == 0 || q.segments.len() < keep {
+            return false;
+        }
+        let key = q.segments[..keep]
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join("::");
+        let Some(target) = self.construct.get(&key) else {
+            return false;
+        };
+        let span = q.segments[0].span;
+        q.segments.drain(1..keep);
+        q.segments[0] = Ident { name: target.clone(), span };
+        true
     }
 
     fn rewrite_single_segment_path(&self, q: &mut QualifiedName) {
@@ -1027,6 +1267,14 @@ impl<'a> Mangler<'a> {
     /// path-rename table resolves it; only a bare identifier
     /// resolves against the free fn.
     fn rewrite_variant_path(&self, q: &mut QualifiedName) {
+        // GH #831: an enum-variant path is `Type::Variant` (or
+        // `alias::Type::Variant`) — everything but the LAST segment
+        // names the type, and may be spelled with an alias of it.
+        if q.segments.len() >= 2
+            && self.rewrite_construction_head(q, q.segments.len() - 1)
+        {
+            return;
+        }
         match q.segments.len() {
             1 => self.rewrite_ident(&mut q.segments[0].name),
             2 => {
@@ -1780,7 +2028,13 @@ impl<'a> Mangler<'a> {
                 }
             }
             Expr::Struct { path, inits, .. } => {
-                self.rewrite_single_segment_path(path);
+                // GH #831: a struct / locus / perspective literal —
+                // the WHOLE path names the type, so the whole path
+                // is the alias key.
+                let n = path.segments.len();
+                if !self.rewrite_construction_head(path, n) {
+                    self.rewrite_single_segment_path(path);
+                }
                 for i in inits {
                     self.walk_expr(&mut i.value);
                 }
