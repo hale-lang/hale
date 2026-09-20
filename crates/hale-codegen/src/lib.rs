@@ -45,10 +45,16 @@ pub mod codegen;
 pub(crate) mod form;
 pub(crate) mod locus;
 pub mod mangle;
+pub mod ownership;
 pub mod target;
 pub(crate) mod shared;
 pub(crate) mod stdlib;
 pub(crate) mod types;
+
+pub use ownership::{
+    resolve_owners, Disposition, Entry as OwnerEntry, ExprId, Owner,
+    OwnerTable, ScopeId, ScopeKind, ShadowMode, SlotId,
+};
 
 pub use codegen::{
     stdlib_doc_source, stdlib_path_renames,

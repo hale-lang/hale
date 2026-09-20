@@ -936,7 +936,7 @@ fn collect_sites_expr(
     out: &mut Vec<RawSite>,
 ) {
     match e {
-        Expr::Struct { path, inits, span } => {
+        Expr::Struct { path, inits, span, .. } => {
             if let Some(name) = path.segments.last().map(|s| &s.name) {
                 if locus_types.contains(name) {
                     out.push(RawSite {

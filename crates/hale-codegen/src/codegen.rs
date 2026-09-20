@@ -656,6 +656,11 @@ pub struct BuildOptions {
     /// for the spellings. Ignored under any sanitizer and on wasm32,
     /// exactly as the env spelling is.
     pub lto: Option<LtoMode>,
+    /// GH #921 A2: how loudly the ownership shadow speaks. `None`
+    /// reads `LOTUS_OWNER_SHADOW` (unset = off), which is what the
+    /// CLI and a corpus run use; a test passes the mode so it never
+    /// has to mutate the process environment.
+    pub owner_shadow: Option<crate::ownership::ShadowMode>,
 }
 
 /// The per-build source table for DWARF emission: each entry is one
@@ -1070,6 +1075,21 @@ pub fn build_executable_with_options(
     // with `check`, which answers the same question in one hop from
     // its own expanded table.
     crate::mangle::resolve_construction_aliases(&mut merged, import_renames);
+
+    // GH #921 A2: the ownership pre-pass, over the merged and
+    // desugared program and before anything borrows it. It numbers
+    // every locus-producing expression node (the only mutation it
+    // makes) and derives an owner for each from syntactic position,
+    // using the same fresh-factory fixpoint lowering uses — extended,
+    // in the table only, to the carrier returns that fixpoint misses.
+    // Nothing reads the table except the shadow check.
+    let fresh_locus_factories =
+        compute_fresh_locus_factories(&merged, import_renames);
+    let owner_table = crate::ownership::resolve_owners(
+        &mut merged,
+        &fresh_locus_factories,
+        import_renames,
+    );
 
     // `program_has_offthread` — THE single source of truth for "does
     // any thread cross the bus boundary in this program". It drives
@@ -1545,7 +1565,7 @@ pub fn build_executable_with_options(
         reclaim_fns: BTreeMap::new(),
         handler_reclaim_wrappers: BTreeMap::new(),
         vtables: BTreeMap::new(),
-        fresh_locus_factories: compute_fresh_locus_factories(&merged, import_renames),
+        fresh_locus_factories,
         returned_bindings: compute_returned_bindings(&merged),
         assign_moved_bindings: compute_assign_moved_bindings(&merged),
         stack_array_bindings: compute_stack_array_bindings(&merged),
@@ -1557,6 +1577,11 @@ pub fn build_executable_with_options(
         replica_index_for_next_locus_instantiation: None,
         current_instantiation_replica_index: 0,
         suppress_fresh_temp: false,
+        owner_table,
+        owner_shadow: options
+            .owner_shadow
+            .unwrap_or_else(crate::ownership::shadow_mode),
+        owner_site: None,
         or_field_owner_locus: None,
         in_fresh_temp_hook: false,
         current_fn_skip_exit_drain: false,
@@ -4790,6 +4815,19 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// filter registers as the subscription key.
     pub(crate) current_instantiation_replica_index: u64,
     pub(crate) suppress_fresh_temp: bool,
+    /// GH #921 A2: the owner every locus-producing expression was
+    /// given by the pre-pass, before lowering. Built on every compile
+    /// so the pre-pass itself is exercised; READ only by the shadow
+    /// check, which compares it with what the seven one-shot flags
+    /// decide. A3 switches the consumers over one flag at a time.
+    pub(crate) owner_table: crate::ownership::OwnerTable,
+    /// GH #921 A2: how loudly the shadow speaks (`LOTUS_OWNER_SHADOW`).
+    pub(crate) owner_shadow: crate::ownership::ShadowMode,
+    /// GH #921 A2: where the value about to be instantiated came
+    /// from. One-shot, taken at the top of
+    /// `lower_locus_instantiation` exactly like the flags it shadows,
+    /// so a nested literal does not read its parent's site.
+    pub(crate) owner_site: Option<crate::ownership::Site>,
     /// GH #853: the locus a param field being initialised holds,
     /// when that field's initialiser is an `or <substitute>` whose
     /// BOTH branches transfer into it
@@ -7431,6 +7469,241 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             _ => false,
         }
+    }
+
+    // ---------------------------------------------------------------
+    // GH #921 A2 — the shadow check
+    // ---------------------------------------------------------------
+    //
+    // Three observation points cover all seven one-shot flags, each
+    // placed where the flags are CONSUMED:
+    //
+    //   * `owner_shadow_literal` — `lower_locus_instantiation`, after
+    //     `defer_next_locus_dissolve`,
+    //     `instantiating_for_parent_field`,
+    //     `placement_for_next_locus_instantiation` and the
+    //     `returns_this_locus` / `current_user_fn_ret` spoof have all
+    //     been read;
+    //   * `owner_shadow_call` — the GH #402 hook at the top of
+    //     `lower_expr` and the GH #793 hook in `lower_or_expr`, where
+    //     `suppress_fresh_temp` and `or_field_owner_locus` are taken;
+    //   * `owner_shadow_field_init` — the params-init loop, where the
+    //     field-ownership predicates decide the owner's mask bit.
+    //
+    // Nothing here emits anything. Under `LOTUS_OWNER_SHADOW=strict` a
+    // disagreement is a `CodegenError`; under `=1` / `=log` it is one
+    // line; unset, the comparison does not run at all, so an ordinary
+    // build is byte-for-byte what it was.
+
+    /// The pre-pass's id for this node, or `Unindexed` when codegen
+    /// built the node itself (a generic-struct path rewrite, a
+    /// generic template clone) rather than the parser.
+    pub(crate) fn owner_site_for(
+        &self,
+        e: &Expr,
+    ) -> crate::ownership::Site {
+        match self.owner_table.id_of(e) {
+            Some(id) => crate::ownership::Site::Expr(id),
+            None => crate::ownership::Site::Unindexed(e.span()),
+        }
+    }
+
+    /// The same, for the statement-position locus literal arm, which
+    /// matches through `Stmt::Expr`.
+    pub(crate) fn owner_site_for_stmt(
+        &self,
+        stmt: &Stmt,
+    ) -> crate::ownership::Site {
+        match stmt {
+            Stmt::Expr(e) => self.owner_site_for(e),
+            _ => crate::ownership::Site::Unindexed(stmt.span()),
+        }
+    }
+
+    /// Hand the pre-pass's id for this node to the instantiation
+    /// about to be lowered. A site a CALLER already declared — the
+    /// bindings-transport prelude, which builds its literal itself —
+    /// is left alone: it knows more about the node than its
+    /// (absent) id does.
+    pub(crate) fn set_owner_site(&mut self, e: &Expr) {
+        match self.owner_table.id_of(e) {
+            Some(id) => {
+                self.owner_site = Some(crate::ownership::Site::Expr(id))
+            }
+            None if self.owner_site.is_none() => {
+                self.owner_site =
+                    Some(crate::ownership::Site::Unindexed(e.span()))
+            }
+            None => {}
+        }
+    }
+
+    fn owner_shadow_off(&self) -> bool {
+        self.owner_shadow == crate::ownership::ShadowMode::Off
+    }
+
+    /// One disagreement: log it, or refuse the build under `strict`.
+    fn owner_shadow_say(&self, line: String) -> Result<(), CodegenError> {
+        match self.owner_shadow {
+            crate::ownership::ShadowMode::Off => Ok(()),
+            crate::ownership::ShadowMode::Log => {
+                crate::ownership::report(&line);
+                Ok(())
+            }
+            crate::ownership::ShadowMode::Strict => {
+                Err(CodegenError::Unsupported(format!(
+                    "owner-shadow (GH #921 A2): {line}"
+                )))
+            }
+        }
+    }
+
+    /// The site of the instantiation about to be lowered, described
+    /// for a disagreement line.
+    fn owner_shadow_site_desc(
+        site: Option<crate::ownership::Site>,
+    ) -> String {
+        match site {
+            Some(crate::ownership::Site::Expr(id)) => {
+                format!("expression #{}", id.0)
+            }
+            Some(crate::ownership::Site::Unindexed(sp)) => format!(
+                "a node the pre-pass never numbered (bytes {}..{})",
+                sp.start.0, sp.end.0
+            ),
+            Some(crate::ownership::Site::Synthesized(what)) => {
+                format!("a synthesised site ({what})")
+            }
+            None => "an uninstrumented site".to_string(),
+        }
+    }
+
+    /// The instantiation half. `flags` is the disposition the seven
+    /// flags just decided for this literal.
+    pub(crate) fn owner_shadow_literal(
+        &mut self,
+        locus_name: &str,
+        site: Option<crate::ownership::Site>,
+        flags: crate::ownership::Disposition,
+    ) -> Result<(), CodegenError> {
+        if self.owner_shadow_off() {
+            return Ok(());
+        }
+        let id = match site {
+            Some(crate::ownership::Site::Expr(id)) => id,
+            // A node codegen built rather than parsed, or a
+            // synthesised instantiation that declares itself: not a
+            // missing decision, but listed so a corpus run says how
+            // many there are.
+            other => {
+                return self.owner_shadow_say(format!(
+                    "unindexed literal `{}` at {} — flags say {}",
+                    locus_name,
+                    Self::owner_shadow_site_desc(other),
+                    flags
+                ));
+            }
+        };
+        let Some(entry) = self.owner_table.entry(id) else {
+            return self.owner_shadow_say(format!(
+                "MISSING: locus `{}` is instantiated at expression #{} \
+                 and the owner table has no decision for it — flags \
+                 say {}",
+                locus_name, id.0, flags
+            ));
+        };
+        let table = self.owner_table.disposition(entry);
+        if table == flags {
+            return Ok(());
+        }
+        let line = format!(
+            "literal: table says {}, flags say {} — {}",
+            table,
+            flags,
+            self.owner_table.describe(id)
+        );
+        self.owner_shadow_say(line)
+    }
+
+    /// The factory-call half.
+    pub(crate) fn owner_shadow_call(
+        &mut self,
+        e: &Expr,
+        flags: crate::ownership::TempVerdict,
+        note: &'static str,
+    ) -> Result<(), CodegenError> {
+        if self.owner_shadow_off() {
+            return Ok(());
+        }
+        let Some(id) = self.owner_table.id_of(e) else {
+            // Codegen synthesised this call node; there is nothing to
+            // compare against and nothing was lost.
+            return Ok(());
+        };
+        let table =
+            self.owner_table.temp_verdict(self.owner_table.entry(id));
+        if table == flags {
+            return Ok(());
+        }
+        let where_ = if self.owner_table.entry(id).is_some() {
+            self.owner_table.describe(id)
+        } else {
+            format!(
+                "a call at expression #{} the table gives no owner",
+                id.0
+            )
+        };
+        let line = format!(
+            "call: table says {table}, flags say {flags} ({note}) — \
+             {where_}"
+        );
+        self.owner_shadow_say(line)
+    }
+
+    /// The field-ownership-predicate half: does the owner's
+    /// `__locus_ref_owned_mask` bit claim this initialiser's value?
+    pub(crate) fn owner_shadow_field_init(
+        &mut self,
+        owner_locus: &str,
+        field: &str,
+        e: &Expr,
+        flags_owned: bool,
+    ) -> Result<(), CodegenError> {
+        if self.owner_shadow_off() {
+            return Ok(());
+        }
+        let (table_owned, what) = match self.owner_table.id_of(e) {
+            Some(id) => (
+                matches!(
+                    self.owner_table.entry(id).map(|x| &x.owner),
+                    Some(crate::ownership::Owner::Field { .. })
+                        | Some(crate::ownership::Owner::Placement(_))
+                ),
+                self.owner_table.describe(id),
+            ),
+            // A name in field position carries no node id; GH #730's
+            // `Borrowed` rows are keyed by the field instead.
+            None => match self
+                .owner_table
+                .borrowed_entry(owner_locus, field)
+            {
+                Some(_) => (false, "a borrowed handle".to_string()),
+                None => return Ok(()),
+            },
+        };
+        if table_owned == flags_owned {
+            return Ok(());
+        }
+        let line = format!(
+            "field init `{}.{}`: table says the field {} the value, \
+             flags say it {} — {}",
+            owner_locus,
+            field,
+            if table_owned { "owns" } else { "does not own" },
+            if flags_owned { "does" } else { "does not" },
+            what
+        );
+        self.owner_shadow_say(line)
     }
 
     /// GH #383 / #793: is `binding` a local this frame must NOT
@@ -11500,6 +11773,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             span,
         };
         let locus_lit = Expr::Struct {
+            id: hale_syntax::ast::NodeId::NONE,
             path: QualifiedName {
                 segments: vec![Ident {
                     name: locus_name.to_string(),
@@ -11534,7 +11808,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.current_user_fn_ret =
             Some(Some(CodegenTy::LocusRef(locus_name.to_string())));
         let mut scope = Scope::default();
+        // GH #921 A2: codegen builds this literal; there is no source
+        // expression the pre-pass could have numbered. F.39 calls the
+        // bindings transport `Placement(entry)` (Riley's answer to
+        // its third open question), which A3 has to arrange here
+        // rather than by reading a table row.
+        self.owner_site = Some(crate::ownership::Site::Synthesized(
+            "a `bindings { T: unix(..) }` transport",
+        ));
         let result = self.lower_expr(&locus_lit, &mut scope);
+        self.owner_site = None;
         self.current_user_fn_ret = saved_ret;
         let (self_val, _self_ty) = result?;
         let self_ptr = self_val.into_pointer_value();
@@ -11888,10 +12171,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             span: locus.span,
         };
         let locus_lit = Expr::Struct {
+            id: hale_syntax::ast::NodeId::NONE,
             path: locus_path,
             inits: inits.to_vec(),
             span: locus.span,
         };
+
+        // GH #921 A2: codegen builds this literal; there is no
+        // source expression to key a table row on. Its owner is
+        // F.39's `Placement(entry)`, which A3 has to arrange here —
+        // this prelude is one of the two the #921 A3 list names as
+        // still routing through the `returns_this_locus` spoof.
+        self.owner_site = Some(crate::ownership::Site::Synthesized(
+            "a `bindings { T: adapter(..) }` prelude",
+        ));
 
         // Trigger m90 routing so the locus self_ptr is allocated
         // in the payload arena (program-lifetime). Restore the
@@ -11999,10 +12292,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             span: locus.span,
         };
         let locus_lit = Expr::Struct {
+            id: hale_syntax::ast::NodeId::NONE,
             path: locus_path,
             inits: inits.to_vec(),
             span: locus.span,
         };
+
+        // GH #921 A2: as for the adapter prelude above — a
+        // literal codegen builds, whose owner A3 arranges here.
+        self.owner_site = Some(crate::ownership::Site::Synthesized(
+            "a `bindings { T: ... codec }` prelude",
+        ));
 
         // m90 routing for program-lifetime allocation. Codec is
         // NOT pinned — its methods are pure and dispatched from
@@ -14698,7 +14998,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // a stack alloca — it must outlive _hale_start.
             self.instantiating_persistent_singleton = true;
             let scope = Scope::default();
+            // GH #921 A2: no source expression builds this one.
+            self.owner_site = Some(crate::ownership::Site::Synthesized(
+                "the @export singleton's prelude",
+            ));
             let self_ptr = self.lower_locus_instantiation(lname, &[], &scope)?;
+            self.owner_site = None;
             self.instantiating_persistent_singleton = false;
             self.defer_next_locus_dissolve = false;
             // Drop the frame WITHOUT flushing → no dissolve IR emitted.
@@ -17852,8 +18157,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // see false and a value-use of a cross-pool `I{}` is
                     // rejected there.
                     self.bare_locus_instantiation_stmt = true;
+                    // GH #921 A2: hand the pre-pass's id for THIS node
+                    // to the instantiation, which takes it like a flag.
+                    let site = self.owner_site_for_stmt(stmt);
+                    self.owner_site = Some(site);
                     let r = self.lower_locus_instantiation(name, inits, scope);
                     self.bare_locus_instantiation_stmt = false;
+                    self.owner_site = None;
                     let _ = r?;
                 } else if self.user_types.contains_key(name) {
                     // Statement-position type literal: build it,
@@ -18041,12 +18351,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             path,
                             inits,
                             span: sspan,
+                            id: sid,
                         },
                     ) => match self
                         .resolve_generic_struct_path(path, asc)
                     {
                         Some(new_path) => {
+                            // GH #921 A2: same source expression,
+                            // renamed path — it keeps its id.
                             rewritten = Expr::Struct {
+                                id: *sid,
                                 path: new_path,
                                 inits: inits.clone(),
                                 span: *sspan,
@@ -23266,7 +23580,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // declared return type as the target.
                 let rewritten;
                 let e_to_lower: &Expr = match e {
-                    Expr::Struct { path, inits, span } => {
+                    Expr::Struct { path, inits, span, id } => {
                         match self
                             .resolve_generic_struct_path_for_codegen_ty(
                                 path,
@@ -23274,7 +23588,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             )
                         {
                             Some(new_path) => {
+                                // GH #921 A2: same source
+                                // expression, renamed path — it
+                                // keeps its id.
                                 rewritten = Expr::Struct {
+                                    id: *id,
                                     path: new_path,
                                     inits: inits.clone(),
                                     span: *span,
@@ -23878,21 +24196,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let reentry = std::mem::replace(&mut self.in_fresh_temp_hook, false);
         if !reentry {
             if let Expr::Call { callee, .. } = e {
-                if let Some((lname, _)) = self
+                let factory = self
                     .callee_fn_name(callee)
-                    .and_then(|f| self.fresh_locus_factories.get(&f).cloned())
-                {
+                    .and_then(|f| self.fresh_locus_factories.get(&f).cloned());
+                if factory.is_none() {
+                    // GH #921 A2 — shadow. A call the fixpoint did not
+                    // prove fresh gets no owner from any flag; the
+                    // table may still say somebody has to reclaim it,
+                    // which is the carrier-return family.
+                    self.owner_shadow_call(
+                        e,
+                        crate::ownership::TempVerdict::Nobody,
+                        "the callee is not a proven-fresh factory",
+                    )?;
+                }
+                if let Some((lname, _)) = factory {
                     let owned_elsewhere =
                         std::mem::replace(&mut self.suppress_fresh_temp, false);
                     self.in_fresh_temp_hook = true;
                     let res = self.lower_expr(e, scope);
                     self.in_fresh_temp_hook = false;
                     let (val, ty) = res?;
+                    let mut registered_temp = false;
                     if !owned_elsewhere
                         && ty == CodegenTy::LocusRef(lname.clone())
                         && !self.deferred_dissolves.is_empty()
                         && val.is_pointer_value()
                     {
+                        registered_temp = true;
                         // NULL-inited: this expression may sit on a
                         // branch, and the flush at fn exit is
                         // unconditional — a bypassed store must
@@ -23911,6 +24242,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .expect("checked non-empty")
                             .push((slot, lname, None));
                     }
+                    // GH #921 A2 — shadow. The GH #402 slot is one
+                    // alloca per SITE with no reuse teardown, so it is
+                    // reclaimed once per FRAME even inside a loop;
+                    // that is the fourth open family (#921 A4).
+                    let (verdict, note) = if owned_elsewhere {
+                        (
+                            crate::ownership::TempVerdict::SiteOwned,
+                            "`suppress_fresh_temp` was armed",
+                        )
+                    } else if registered_temp {
+                        (
+                            crate::ownership::TempVerdict::FrameTemp {
+                                per_iteration: false,
+                            },
+                            "the GH #402 hook registered a temporary",
+                        )
+                    } else {
+                        (
+                            crate::ownership::TempVerdict::Nobody,
+                            "a proven-fresh factory, but the GH #402 \
+                             hook's guards did not fire",
+                        )
+                    };
+                    self.owner_shadow_call(e, verdict, note)?;
                     return Ok((val, ty));
                 }
             }
@@ -24819,9 +25174,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // in the inits takes its own (parent-owned) path.
                 let name = path.segments[0].name.clone();
                 self.defer_next_locus_dissolve = true;
+                self.set_owner_site(e);
                 let lowered =
                     self.lower_locus_instantiation(&name, inits, scope);
                 self.defer_next_locus_dissolve = false;
+                self.owner_site = None;
                 let ptr = lowered?;
                 Ok((ptr.into(), CodegenTy::LocusRef(name)))
             }
@@ -24852,9 +25209,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // by the enclosing fn's scope, not torn down at the
                     // end of its own expression.
                     self.defer_next_locus_dissolve = true;
+                    self.set_owner_site(e);
                     let lowered =
                         self.lower_locus_instantiation(mangled, inits, scope);
                     self.defer_next_locus_dissolve = false;
+                    self.owner_site = None;
                     let ptr = lowered?;
                     Ok((ptr.into(), CodegenTy::LocusRef(mangled.to_string())))
                 } else if self.user_types.contains_key(mangled) {
@@ -33458,7 +33817,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let prev_arena = self.current_arena_override;
         self.current_arena_override = Some(self_arena);
         self.instantiating_for_parent_field = true;
+        // GH #921 A2: a `reperspective` swap builds the new impl from
+        // the statement, not from a locus literal the pre-pass walked.
+        self.owner_site = Some(crate::ownership::Site::Synthesized(
+            "a `reperspective` swap",
+        ));
         let new_ptr = self.lower_locus_instantiation(new_locus, inits, scope)?;
+        self.owner_site = None;
         self.current_arena_override = prev_arena;
 
         // (3) Repoint the field at the live new instance.
