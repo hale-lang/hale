@@ -1,0 +1,50 @@
+// Qualified cross-seed paths written INSIDE a module (GH #854).
+//
+// Four positions, all one brace deeper than the pass that used to
+// be the only thing looking at them:
+//
+//   * a TYPE in a declaration's signature (`lib::Row` as a param
+//     and as a return) — collapsed by
+//     `apply_qualified_path_renames`, which walked top-level
+//     declarations only;
+//   * a struct LITERAL, a CALL and an enum VARIANT in a body —
+//     resolved by codegen's `mangled_for_path` at lowering, which
+//     only sees a body codegen lowers at all (GH #884);
+//   * a declaration that lives inside the LIBRARY's own module,
+//     reached through the same `lib::` alias.
+
+import "../lib-module-decls" as lib;
+
+module wrap {
+    fn row_value(r: lib::Row) -> Int {
+        return r.v;
+    }
+
+    fn make_row() -> lib::Row {
+        return lib::Row { v: 7 };
+    }
+
+    fn call_bump() -> Int {
+        return lib::bump(4);
+    }
+
+    fn variant_tag() -> Int {
+        let k = lib::Kind::Beta;
+        return match k {
+            lib::Kind::Alpha -> 0,
+            lib::Kind::Beta -> 1,
+        };
+    }
+
+    fn deep_sum() -> Int {
+        let d = lib::Deep { w: 5 };
+        return lib::deep_add(d.w);
+    }
+}
+
+fn main() {
+    println("row=", row_value(make_row()));
+    println("bump=", call_bump());
+    println("variant=", variant_tag());
+    println("deep=", deep_sum());
+}

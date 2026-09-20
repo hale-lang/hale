@@ -2147,11 +2147,11 @@ fn hot_walk_expr(e: &Expr, cx: &mut HotPathCx) {
 /// walks `program.items` and stops. A declaration-shaped check that
 /// does that silently sees half the program.
 fn walk_decls(items: &[TopDecl], f: &mut impl FnMut(&TopDecl)) {
-    for item in items {
+    // GH #884: the walk itself moved to `hale_syntax::ast` when
+    // codegen needed the same one. Same order, same yield of the
+    // module node before its contents.
+    for item in hale_syntax::ast::flat_decls(items) {
         f(item);
-        if let TopDecl::Module(m) = item {
-            walk_decls(&m.items, f);
-        }
     }
 }
 

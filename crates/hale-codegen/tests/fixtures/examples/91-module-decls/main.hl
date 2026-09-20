@@ -1,0 +1,158 @@
+// Declarations inside `module { }` (GH #884, GH #854).
+//
+// A module is a NAMESPACE, not a boundary: the resolver registers
+// what it holds under the BARE name, so every declaration below is
+// spelled from `fn main` exactly as if it had been written at the
+// top level. Codegen collected declarations from `program.items`
+// without descending, so each of these checked clean and then died
+// at build — a type as `Unsupported("expression form
+// Discriminant(12)")`, an enum variant as "unresolved path", a free
+// fn as "no free fn ... with that name is in scope".
+//
+// Nothing in the corpus declared anything inside a module, which is
+// why the check/build agreement sweep never saw it. This fixture is
+// here so it does.
+
+module geo {
+    type Point {
+        x: Int = 0;
+        y: Int = 0;
+    }
+
+    type Facing = enum { North, East, South, West };
+
+    const ORIGIN_TAG: String = "origin";
+
+    fn manhattan(p: Point) -> Int {
+        return p.x + p.y;
+    }
+}
+
+module outer {
+    // Two deep: nesting is flattened to any depth, not one level.
+    module inner {
+        type Deep {
+            v: Int = 0;
+        }
+
+        // A generic template one brace deeper: the monomorph is
+        // still discovered from the use site and synthesized.
+        fn larger<T>(a: T, b: T) -> T {
+            if a > b {
+                return a;
+            }
+            return b;
+        }
+
+        fn twice(n: Int) -> Int {
+            return n * 2;
+        }
+    }
+}
+
+module vocabulary {
+    interface Reading {
+        fn value() -> Int;
+    }
+
+    // An interface-typed param satisfied by a module-nested locus:
+    // the vtable synthesis and the dispatch site both look the
+    // contract up by its bare name.
+    fn read_through(r: Reading) -> Int {
+        return r.value();
+    }
+}
+
+module devices {
+    locus Sensor {
+        params {
+            base: Int = 10;
+        }
+
+        fn value() -> Int {
+            return self.base + 1;
+        }
+    }
+
+    locus Counter {
+        params {
+            seen: Int = 0;
+        }
+
+        fn bump() -> Int {
+            self.seen = self.seen + 1;
+            return self.seen;
+        }
+    }
+}
+
+// A module-nested topic with a module-nested publisher and
+// subscriber. The drain-elision gate reads the same declaration
+// list; a topic it cannot see is a program whose messages are
+// never drained.
+module wiring {
+    // `Point` is declared in `module geo` above and spelled bare
+    // here: the module namespaces nothing.
+    topic Ping {
+        payload: Point;
+    }
+
+    locus Listener {
+        params {
+            heard: Int = 0;
+        }
+
+        bus {
+            subscribe Ping as on_ping;
+        }
+
+        fn on_ping(p: Point) {
+            self.heard = self.heard + 1;
+            println("heard=", p.x);
+        }
+    }
+}
+
+fn facing_name(f: Facing) -> String {
+    return match f {
+        Facing::North -> "north",
+        Facing::East -> "east",
+        Facing::South -> "south",
+        Facing::West -> "west",
+    };
+}
+
+main locus App {
+    params {
+        listener: Listener = Listener { };
+    }
+
+    bus {
+        publish Ping;
+    }
+
+    run() {
+        let p = Point { x: 4, y: 5 };
+        println("manhattan=", manhattan(p));
+        println("tag=", ORIGIN_TAG);
+        println("facing=", facing_name(Facing::East));
+
+        let d = Deep { v: 21 };
+        println("twice=", twice(d.v));
+        println("larger=", larger(3, 9));
+
+        let s = Sensor { base: 40 };
+        println("value=", s.value());
+        println("through=", read_through(s));
+
+        let c = Counter { };
+        c.bump();
+        println("bump=", c.bump());
+
+        Ping <- Point { x: 7, y: 0 };
+    }
+}
+
+fn main() {
+    App { };
+}

@@ -942,7 +942,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let Some(ln) = locus_name else {
                     return false;
                 };
-                self.program.items.iter().any(|item| {
+                // GH #884: module nesting flattened — the locus
+                // this names may be declared inside a `module { }`.
+                hale_syntax::ast::flat_decls(&self.program.items).any(|item| {
                     matches!(item,
                         TopDecl::Locus(l) if l.name.name == ln
                             && l.members.iter().any(|m| matches!(m,

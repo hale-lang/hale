@@ -1121,10 +1121,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         locus_name: &str,
         iface_name: &str,
     ) -> bool {
-        let iface_methods: Vec<&str> = match self
-            .program
-            .items
-            .iter()
+        // GH #884: module nesting flattened.
+        let iface_methods: Vec<&str> = match hale_syntax::ast::flat_decls(
+            &self.program.items,
+        )
             .find_map(|item| match item {
                 TopDecl::Interface(i) if i.name.name == iface_name => {
                     Some(i.methods.iter().map(|m| m.name.name.as_str()).collect())

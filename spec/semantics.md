@@ -3517,6 +3517,63 @@ Both paths preserve the framework's vertical-only-flow: every
 failure exits through the top of the recursion, never
 laterally.
 
+## Declarations inside `module { }`
+
+`module NAME { <top_decl>* }` (grammar `module_decl`) groups
+declarations for the reader. It introduces **no namespace of its
+own**: the resolver registers a module's declarations in the
+bundle's one flat top-level scope, under their **bare** names, at
+any nesting depth. `module geo { type Point { x: Int; } }` makes
+`Point` — not `geo::Point` — the name every use site spells, two
+modules declaring the same name are the ordinary duplicate-name
+error, and the module's name is not itself a value, a type, or a
+path head.
+
+The consequence is a rule, not an implementation detail:
+
+> A declaration inside a `module { }` is **first class**. It is
+> resolved, typed, mangled, lowered and linked exactly as the same
+> declaration written at the top level.
+
+This holds for each kind: a `type` (struct, enum or alias), a
+`locus`, a `perspective`, an `interface`, a `topic`, a `const`, a
+generic template, and a free `fn`. It holds through an `import`
+in both directions: a library's module-nested declaration gets a
+mangled name and a rename-table row like any other, so the
+importer reaches it as `alias::Name`, and a qualified path the
+importer writes *inside* a module — a type in a signature, a
+call, a struct literal, an enum variant — resolves as it would at
+the top level.
+
+Two things a module still does not change, because neither is a
+name lookup:
+
+- **The entry point.** A seed's entry point is its **top-level**
+  `fn main` (or the `main locus` that one instantiates). A `fn
+  main` written inside a module is an ordinary free fn that
+  happens to be called `main`; it does not start the program.
+- **Scoping of locals.** Ordinary lexical scope is unchanged; a
+  module is not a scope.
+
+**Analysis is on the same line, one check at a time.** The rule
+above is about resolution and lowering, and it holds without
+exception. The bundle-level *checks* are being brought to it
+individually: the hot-path allocation lint and the decorator-stack
+check reach inside a module (GH #764, `verification.md`), while
+several siblings in `check.rs` still stop at the top level and are
+tracked by GH #825 — there, a declaration one brace deeper can
+escape a check the identical top-level declaration would fail.
+Effect inference is the same shape and fails closed: it qualifies a
+module-scoped subject's name but does not summarize its body, so
+the manifest reports `unclassified` ("may do anything") rather than
+a narrower set.
+
+(GH #764 for the lint; GH #884 and GH #854 for codegen's
+declaration collection, the cross-seed mangler and the pre-typecheck
+rename pass. Before those, the same program was accepted at the top
+level and either silently unanalyzed or unbuildable one brace
+deeper.)
+
 ## Cross-seed namespace resolution (v1.x-IMPORT)
 
 A file may declare `import "<path>" as <alias>;` at the top.
