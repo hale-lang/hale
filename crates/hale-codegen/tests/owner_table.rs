@@ -39,8 +39,7 @@ mod harness;
 /// The subject and the helpers every program leans on. `Subj` is a
 /// plain locus; `Holder` holds one behind a locus-typed field and
 /// `IHolder` behind an interface-typed one; `make` / `make2` are
-/// proven-fresh factories and `produce` is the carrier-return shape
-/// the shipped fixpoint does not prove.
+/// proven-fresh factories.
 const DECLS: &str = "
 locus Subj {
     params { n: Int = 0; }
@@ -445,6 +444,61 @@ fn a_receiver_inside_a_field_initialiser_is_not_the_fields() {
     );
 }
 
+/// The declarations behind the `perspective(P)`-typed field shape —
+/// `ownership_matrix.rs`'s `persp_field_factory` position, added by
+/// GH #921 A3 because no cell covered it.
+const PERSP_DECLS: &str = "
+perspective PRoute { fn pv() -> Int; }
+
+locus PRouteV1 : serves PRoute {
+    params { n: Int = 1; }
+    dissolve() { println(\"D:proute\"); }
+    fn pv() -> Int { return self.n; }
+}
+
+locus PHolder {
+    params { r: perspective(PRoute) = PRouteV1 { }; }
+    fn peek() -> Int { return self.r.pv(); }
+}
+
+fn makep() -> PRouteV1 { return PRouteV1 { }; }
+";
+
+#[test]
+fn a_factory_into_a_perspective_field_is_the_fields() {
+    // F.39 says a param field's initialiser is `Owner::Field` whether
+    // the field is locus-, interface- or perspective-typed. Lowering
+    // used to disagree for the third: the F.17 gate covered
+    // `LocusRef` and `Interface` only, so the value took the GH #402
+    // frame temporary and the owner's mask bit deliberately did not
+    // claim it. GH #921 A3 commit 1 retires that gate with
+    // `suppress_fresh_temp`, so the bit has to claim it.
+    let src = [
+        PERSP_DECLS,
+        "\nfn main() {\n    let h = PHolder { r: makep() };\n",
+        "    println(\"u=\", h.peek());\n}\n",
+    ]
+    .concat();
+    let t = table_of(&src);
+    let e = row(&t, "fn main", "param-field initialiser", "PRouteV1");
+    assert!(
+        matches!(&e.owner, Owner::Field { field, .. } if field == "r"),
+        "{:?}",
+        e.owner
+    );
+}
+
+#[test]
+fn the_shadow_is_green_on_a_factory_into_a_perspective_field() {
+    let src = [
+        PERSP_DECLS,
+        "\nfn main() {\n    let h = PHolder { r: makep() };\n",
+        "    println(\"u=\", h.peek());\n}\n",
+    ]
+    .concat();
+    agrees(&src, "persp_field_factory");
+}
+
 #[test]
 fn a_placed_field_is_a_placement_entry() {
     let src = concat!(
@@ -465,10 +519,13 @@ fn a_placed_field_is_a_placement_entry() {
 
 #[test]
 fn a_carrier_return_fn_is_a_proven_fresh_factory_in_the_table() {
-    // The whole of the 105-cell carrier-return family: the shipped
-    // `compute_fresh_locus_factories` classifies the carrier node and
-    // never its arms, so `produce` is not a factory there and its
-    // caller's binding does not own the result.
+    // The whole of the 105-cell carrier-return family.
+    // `compute_fresh_locus_factories::collect` classifies the CARRIER
+    // node and never its arms, so `produce` was not a factory and its
+    // caller's binding did not own the result. The table flattens the
+    // arms, and GH #921 A3 commit 1 folds its answer back into the
+    // map lowering reads — the seed here stays EMPTY so this asserts
+    // the table's own fixpoint and not the fold-back.
     let src = [
         DECLS,
         "\nfn produce(c: Bool) -> Subj {\n",
@@ -625,6 +682,48 @@ fn the_shadow_is_green_on_the_shapes_the_matrix_is_green_on() {
     }
 }
 
+/// GH #921 A3, commit 1 closed these: the carrier-return family
+/// (`ownership_matrix.rs`'s 105 cells) and the per-iteration frame
+/// temporary (its 25). Both were `disagrees` pins until the commit
+/// that retired `suppress_fresh_temp`; they are green shapes now, and
+/// the matrix holds their cells to it.
+#[test]
+fn the_shadow_is_green_on_the_families_commit_one_closed() {
+    let carrier = [
+        DECLS,
+        "\nfn produce(c: Bool) -> Subj {\n",
+        "    return if c { make(1) } else { make2(1) };\n}\n",
+        "fn main() { let a = produce(true); println(\"u=\", a.probe()); }\n",
+    ]
+    .concat();
+    agrees(&carrier, "carrier_return");
+
+    // The `let`-named twin of the same program — the shape the
+    // matrix's differential oracle compares against, and the one the
+    // fixpoint had to learn to resolve through a binding.
+    let carrier_twin = [
+        DECLS,
+        "\nfn produce(c: Bool) -> Subj {\n",
+        "    let t = if c { make(1) } else { make2(1) };\n    return t;\n}\n",
+        "fn main() { let a = produce(true); println(\"u=\", a.probe()); }\n",
+    ]
+    .concat();
+    agrees(&carrier_twin, "carrier_return_twin");
+
+    agrees(
+        &program_in_loop(
+            "        let c = true;\n        let a = if c { make(1) } else { make2(1) };\n        println(\"u=\", a.probe());",
+        ),
+        "frame_temp_per_iteration",
+    );
+    agrees(
+        &program_in_loop(
+            "        let xs: [Subj; 2] = [make(1), make2(1)];\n        println(\"u=\", xs[0].probe());",
+        ),
+        "composite_per_iteration",
+    );
+}
+
 #[test]
 fn the_shadow_is_green_on_a_returned_literal_and_a_returned_factory() {
     for (tag, produce) in [
@@ -642,25 +741,6 @@ fn the_shadow_is_green_on_a_returned_literal_and_a_returned_factory() {
     }
 }
 
-/// GH #921 A3, PR #913's residue — `ownership_matrix.rs`'s
-/// `CARRIER_RETURN`, 105 cells.
-#[test]
-fn family_carrier_return_disagrees() {
-    let src = [
-        DECLS,
-        "\nfn produce(c: Bool) -> Subj {\n",
-        "    return if c { make(1) } else { make2(1) };\n}\n",
-        "fn main() { let a = produce(true); println(\"u=\", a.probe()); }\n",
-    ]
-    .concat();
-    disagrees(
-        &src,
-        "carrier_return",
-        "table says owned by the site",
-        "flags say nobody",
-    );
-}
-
 /// GH #921 A3, PR #916's residue — `OR_INTO_INTERFACE_FIELD`, 35
 /// cells. The ok value and the substitute both belong to the field;
 /// `or_field_owner_locus` compares the factory's declared locus with
@@ -670,11 +750,18 @@ fn family_or_into_an_interface_field_disagrees() {
     let src = program(
         "    let h = IHolder { c: make_f(1) or make2(1) };\n    println(\"u=\", h.peek());",
     );
+    // GH #921 A3, commit 1: the SUPPRESSION half of this family is
+    // closed — the substitute is its own node and the table gave it
+    // the field's decision — so the disagreement moved to the half
+    // that is still open, the owner's `__locus_ref_owned_mask` bit.
+    // `field_init_is_fresh_factory` / `or_substitute_transfers_into_
+    // field` compare the factory's declared locus with the FIELD's,
+    // and an interface-typed field has none.
     disagrees(
         &src,
         "or_into_iface_field",
-        "table says owned by the site",
-        "flags say frame temporary",
+        "table says the field owns the value",
+        "flags say it does not",
     );
 }
 
@@ -692,37 +779,5 @@ fn family_nested_receiver_in_a_field_initialiser_disagrees() {
         "nested_receiver",
         "table says frame (per frame)",
         "flags say owner field",
-    );
-}
-
-/// Found by `ownership_matrix.rs` and not filed —
-/// `FRAME_TEMP_PER_ITERATION`, 25 cells. A GH #402 frame temporary
-/// is one alloca per SITE with no reuse teardown, so a `while` body
-/// reclaims only the last iteration's value.
-#[test]
-fn family_frame_temp_per_iteration_disagrees() {
-    let src = program_in_loop(
-        "        let c = true;\n        let a = if c { make(1) } else { make2(1) };\n        println(\"u=\", a.probe());",
-    );
-    disagrees(
-        &src,
-        "frame_temp_per_iteration",
-        "table says frame temporary (per iteration)",
-        "flags say frame temporary (per frame)",
-    );
-}
-
-/// The composite half of the same family: an ascribed array's
-/// elements take the GH #402 temporary too.
-#[test]
-fn family_frame_temp_per_iteration_disagrees_for_a_composite() {
-    let src = program_in_loop(
-        "        let xs: [Subj; 2] = [make(1), make2(1)];\n        println(\"u=\", xs[0].probe());",
-    );
-    disagrees(
-        &src,
-        "composite_per_iteration",
-        "table says frame temporary (per iteration)",
-        "flags say frame temporary (per frame)",
     );
 }

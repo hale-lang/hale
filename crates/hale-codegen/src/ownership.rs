@@ -74,13 +74,18 @@
 //! The table derives factory calls from an EXTENDED set: the one
 //! `compute_fresh_locus_factories` computes, plus every fn whose
 //! return arms are fresh once `if` / `match` / block tails are
-//! flattened. `compute_fresh_locus_factories::collect` classifies the
-//! carrier node and never its arms, which is why `return if c {
-//! make(1) } else { make(2) }` is not a factory today and its caller's
-//! binding does not own the result — the 105-cell carrier-return
-//! family. The extension lives HERE, in the table, and not in the
-//! shared function: extending the shared one would change what
-//! lowering emits, and this PR changes nothing.
+//! flattened, and every fn that hands back a BINDING of one.
+//! `compute_fresh_locus_factories::collect` classifies the carrier
+//! node and never its arms, which is why `return if c { make(1) }
+//! else { make(2) }` was not a factory and its caller's binding did
+//! not own the result — the 105-cell carrier-return family.
+//!
+//! GH #921 A3 commit 1 folds the extension back into the map lowering
+//! reads ([`OwnerTable::extended_fresh_factories`], applied in
+//! `lower_program`), so the two sides of every ownership decision are
+//! computed once and cannot drift. It lives here rather than inside
+//! `compute_fresh_locus_factories` because the flattening is the same
+//! walk the table already does to decide each arm.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -355,6 +360,52 @@ impl OwnerTable {
     /// in here and not in its map).
     pub fn extended_fresh_factory(&self, fn_name: &str) -> Option<&str> {
         self.fresh.get(fn_name).map(|s| s.as_str())
+    }
+
+    /// The whole extended set, `fn name -> locus`. GH #921 A3 folds
+    /// it back into the map lowering reads, so the carrier-return
+    /// arms are proven fresh on both sides of the decision.
+    pub fn extended_fresh_factories(
+        &self,
+    ) -> impl Iterator<Item = (&String, &String)> {
+        self.fresh.iter()
+    }
+
+    /// The row for the value an expression hands its site, looking
+    /// THROUGH the delegating shapes that do not produce a locus of
+    /// their own: an `or`'s ok value, a carrier's first arm tail, a
+    /// composite's first element. Every leaf under a delegating node
+    /// carries the same decision (the site's, demoted by
+    /// [`Decision::through_delegate`]), so the first one answers for
+    /// all of them.
+    ///
+    /// `Expr::Or` and the carriers carry no [`NodeId`] — only a
+    /// literal and a call do — so a consumer handed a field
+    /// initialiser has to reach the leaf to find the row at all.
+    pub fn leaf_entry_of(&self, e: &Expr) -> Option<&Entry> {
+        match e {
+            Expr::Struct { .. } | Expr::Call { .. } => self.entry_of(e),
+            Expr::Or { inner, .. } => self.leaf_entry_of(inner),
+            Expr::If(_) | Expr::Match(_) | Expr::Block(_) => {
+                let mut arms = Vec::new();
+                return_arms(e, &mut arms);
+                arms.first().and_then(|a| self.leaf_entry_of(a))
+            }
+            Expr::Array(parts, _) | Expr::Tuple(parts, _) => {
+                parts.first().and_then(|p| self.leaf_entry_of(p))
+            }
+            _ => None,
+        }
+    }
+
+    /// Does the row for this expression's value say an OWNING LOCUS
+    /// reclaims it — a param field's mask bit, or a placement entry?
+    /// The question the field-ownership predicates answer today.
+    pub fn field_owns(&self, e: &Expr) -> bool {
+        matches!(
+            self.leaf_entry_of(e).map(|x| &x.owner),
+            Some(Owner::Field { .. }) | Some(Owner::Placement(_))
+        )
     }
 
     pub fn len(&self) -> usize {
@@ -954,23 +1005,18 @@ fn extend_fresh_factories(
             if arms.is_empty() {
                 continue;
             }
-            let all_fresh = arms.iter().all(|a| match a {
-                Expr::Struct { path, .. } => {
-                    let segs = qname_segs(path);
-                    resolve_path(&segs, renames).as_deref() == Some(&l)
-                        || path
-                            .segments
-                            .last()
-                            .map(|s| s.name == l)
-                            .unwrap_or(false)
-                }
-                Expr::Call { callee, .. } => {
-                    callee_fn_name(callee, renames)
-                        .and_then(|n| out.get(&n).cloned())
-                        .map(|cl| cl == l)
-                        .unwrap_or(false)
-                }
-                _ => false,
+            // The binding shape: `let t = <carrier>; return t;` is the
+            // same program as `return <carrier>;` and has to be the
+            // same answer (spec/semantics.md "Dissolve timing rules"
+            // — the `let`-named and inline spellings are one
+            // program). The name is resolved through the fn's own
+            // `let`s, once, and only when it is bound exactly once and
+            // never re-assigned; anything else leaves the fn out of
+            // the set, which is the old leak and never a double free.
+            let lets = collect_lets(&f.body);
+            let assigned = assigned_names(&f.body);
+            let all_fresh = arms.iter().all(|a| {
+                arm_is_fresh(a, &l, &out, renames, &lets, &assigned, 0)
             });
             if all_fresh {
                 out.insert(f.name.name.clone(), l);
@@ -981,6 +1027,144 @@ fn extend_fresh_factories(
             break;
         }
     }
+    out
+}
+
+/// Is this return arm a value the fn freshly built?
+///
+/// A literal of the declared locus, a call to a fn already proven to
+/// build one, or a NAME bound once to either — including through a
+/// carrier, which is the `let t = if c { make(1) } else { make2(1) };
+/// return t;` spelling of the same program.
+#[allow(clippy::too_many_arguments)]
+fn arm_is_fresh(
+    a: &Expr,
+    l: &str,
+    known: &BTreeMap<String, String>,
+    renames: &[(Vec<String>, String)],
+    lets: &[(String, &Expr)],
+    assigned: &BTreeSet<String>,
+    depth: u32,
+) -> bool {
+    if depth > 4 {
+        return false;
+    }
+    match a {
+        Expr::Struct { path, .. } => {
+            let segs = qname_segs(path);
+            resolve_path(&segs, renames).as_deref() == Some(l)
+                || path
+                    .segments
+                    .last()
+                    .map(|s| s.name == l)
+                    .unwrap_or(false)
+        }
+        Expr::Call { callee, .. } => callee_fn_name(callee, renames)
+            .and_then(|n| known.get(&n).cloned())
+            .map(|cl| cl == l)
+            .unwrap_or(false),
+        Expr::Ident(i) => {
+            if assigned.contains(&i.name) {
+                return false;
+            }
+            let bound: Vec<&(String, &Expr)> =
+                lets.iter().filter(|(n, _)| *n == i.name).collect();
+            if bound.len() != 1 {
+                return false;
+            }
+            let mut inner = Vec::new();
+            return_arms(bound[0].1, &mut inner);
+            !inner.is_empty()
+                && inner.iter().all(|x| {
+                    arm_is_fresh(
+                        x,
+                        l,
+                        known,
+                        renames,
+                        lets,
+                        assigned,
+                        depth + 1,
+                    )
+                })
+        }
+        _ => false,
+    }
+}
+
+/// Every `let` in a body, as `(name, RHS)`. A name bound twice is
+/// listed twice, which [`arm_is_fresh`] treats as unresolvable.
+fn collect_lets(b: &Block) -> Vec<(String, &Expr)> {
+    let mut out = Vec::new();
+    fn go<'e>(b: &'e Block, out: &mut Vec<(String, &'e Expr)>) {
+        for s in &b.stmts {
+            match s {
+                Stmt::Let { name, value, .. } => {
+                    out.push((name.name.clone(), value))
+                }
+                Stmt::If(i) => go_if(i, out),
+                Stmt::Match(m) => {
+                    for a in &m.arms {
+                        if let MatchArmBody::Block(bb) = &a.body {
+                            go(bb, out);
+                        }
+                    }
+                }
+                Stmt::While { body, .. }
+                | Stmt::For { body, .. }
+                | Stmt::ShmWrite { body, .. }
+                | Stmt::Block(body) => go(body, out),
+                _ => {}
+            }
+        }
+    }
+    fn go_if<'e>(i: &'e IfStmt, out: &mut Vec<(String, &'e Expr)>) {
+        go(&i.then_block, out);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => go(b, out),
+            Some(ElseBranch::ElseIf(n)) => go_if(n, out),
+            None => {}
+        }
+    }
+    go(b, &mut out);
+    out
+}
+
+/// Names a body re-assigns with a bare `=`. A binding that moves
+/// between names can be reached through two of them, so it is never
+/// the fn's own fresh value.
+fn assigned_names(b: &Block) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    fn go(b: &Block, out: &mut BTreeSet<String>) {
+        for s in &b.stmts {
+            match s {
+                Stmt::Assign { target, .. } => {
+                    out.insert(target.head.name.clone());
+                }
+                Stmt::If(i) => go_if(i, out),
+                Stmt::Match(m) => {
+                    for a in &m.arms {
+                        if let MatchArmBody::Block(bb) = &a.body {
+                            go(bb, out);
+                        }
+                    }
+                }
+                Stmt::While { body, .. }
+                | Stmt::For { body, .. }
+                | Stmt::ShmWrite { body, .. }
+                | Stmt::Block(body) => go(body, out),
+                _ => {}
+            }
+        }
+    }
+    fn go_if(i: &IfStmt, out: &mut BTreeSet<String>) {
+        go(&i.then_block, out);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => go(b, out),
+            Some(ElseBranch::ElseIf(n)) => go_if(n, out),
+            None => {}
+        }
+    }
+    go(b, &mut out);
     out
 }
 

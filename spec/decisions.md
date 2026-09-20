@@ -3243,14 +3243,15 @@ multi-worker pool).
 ### F.39 — Locus ownership is resolved before lowering (the owner table)
 
 **Status: APPROVED (GH #921, 2026-09-20); shadow mode shipped (A2, PR
-#937); lowering still reads the flags until A3.** The table is
-computed on every compile and, under `LOTUS_OWNER_SHADOW`, CHECKED
-against what the seven one-shot flags decide; nothing reads it to
-decide anything yet. A3 switches the consumers over one flag per
-commit and deletes the flag. The shipped behaviour is still the flag
-set described below. The observable rules in `spec/semantics.md` §
-*Dissolve timing rules* do not change — this makes them true by
-construction.
+#937); A3 is switching the consumers over, one flag per commit.**
+Retired so far: `suppress_fresh_temp` — the frame-temporary question
+at a factory call is the table's `Owner` for that call's own node,
+and the proven-fresh-factory fixpoint counts carrier tails and
+resolves a returned binding through its own `let`, so `return if c {
+make(1) } else { make(2) }` and its `let`-named twin are both
+factories. The remaining flags still decide what they did. The
+observable rules in `spec/semantics.md` § *Dissolve timing rules* do
+not change — this makes them true by construction.
 
 **Why.** Every teardown leak and use-after-free fixed in the 2026-09-20
 sweep (#711/#812, #750, #789, #793, #815, #836, #837, #853, #871,

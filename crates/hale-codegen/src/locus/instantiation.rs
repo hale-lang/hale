@@ -2415,14 +2415,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // hands back a locus somebody else holds — but it
                     // armed the flag all the same, and the ARGUMENT's
                     // result took it and went unreclaimed.
-                    let field_owns_locus_rhs = matches!(
-                        expr,
-                        Expr::Call { .. } | Expr::Or { .. }
-                    ) && self.fresh_temp_decision_lands_on(expr)
-                        && matches!(
-                            info.fields.get(fname.as_str()).map(|(_, t)| t),
-                            Some(CodegenTy::LocusRef(_)) | Some(CodegenTy::Interface(_))
-                        );
+                    // GH #921 A3, commit 1: the F.17 gate that used
+                    // to arm `suppress_fresh_temp` here is gone. The
+                    // pre-pass walked this initialiser and gave the
+                    // value — and every branch, arm and element under
+                    // it — `Owner::Field`, so the GH #402 hook
+                    // declines the frame temporary where the value is
+                    // lowered, for the node the field NAMES and no
+                    // other (GH #837).
                     // GH #836: the other half of that decision. The
                     // gate above says the frame does not reclaim it;
                     // this says WHO does. A fresh factory's result
@@ -2442,7 +2442,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // into `lower_or_expr`, which is where the
                     // substitute would otherwise take the GH #402
                     // frame temporary this bit must not double-own.
-                    let mut or_substitute_owned = None;
                     let factory_owned_by_field = match info
                         .fields
                         .get(fname.as_str())
@@ -2450,25 +2449,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     {
                         Some(CodegenTy::LocusRef(l)) => {
                             let l = l.clone();
-                            let or_sub = self
-                                .or_substitute_transfers_into_field(expr, &l);
-                            if or_sub {
-                                or_substitute_owned = Some(l.clone());
-                            }
-                            or_sub || self.field_init_is_fresh_factory(expr, &l)
+                            self.or_substitute_transfers_into_field(expr, &l)
+                                || self
+                                    .field_init_is_fresh_factory(expr, &l)
                         }
                         _ => false,
                     };
-                    let prev_sft = self.suppress_fresh_temp;
-                    if field_owns_locus_rhs {
-                        self.suppress_fresh_temp = true;
-                    }
-                    let prev_ofo = self.or_field_owner_locus.take();
-                    self.or_field_owner_locus = or_substitute_owned;
-                    let r = self.lower_expr(expr, scope);
-                    self.or_field_owner_locus = prev_ofo;
-                    self.suppress_fresh_temp = prev_sft;
-                    let r = r?;
+                    let r = self.lower_expr(expr, scope)?;
                     self.params_init_initialized = inner_init;
                     self.in_params_default = inner_ipd;
                     self.params_init_self = inner_pis;
@@ -2507,14 +2494,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // the bare or the `or`-wrapped spelling
                             // (GH #793), for the node the default
                             // names and no other (GH #837)
-                            let field_owns_locus_rhs = matches!(
-                                e,
-                                Expr::Call { .. } | Expr::Or { .. }
-                            ) && self.fresh_temp_decision_lands_on(e)
-                                && matches!(
-                                    info.fields.get(fname.as_str()).map(|(_, t)| t),
-                                    Some(CodegenTy::LocusRef(_)) | Some(CodegenTy::Interface(_))
-                                );
+                            // GH #921 A3, commit 1: as above — the
+                            // table gave this default's value
+                            // `Owner::Field`, so no flag is armed for
+                            // it here.
                             // GH #836, at the default site: a param
                             // whose DEFAULT is a factory call is the
                             // same transfer into the same field, so
@@ -2522,7 +2505,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // GH #853, likewise: a DEFAULT that is an
                             // `or <substitute>` transfers into the
                             // same field on both branches.
-                            let mut or_substitute_owned = None;
                             let factory_owned_by_field = match info
                                 .fields
                                 .get(fname.as_str())
@@ -2530,29 +2512,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             {
                                 Some(CodegenTy::LocusRef(l)) => {
                                     let l = l.clone();
-                                    let or_sub = self
-                                        .or_substitute_transfers_into_field(
-                                            e, &l,
-                                        );
-                                    if or_sub {
-                                        or_substitute_owned = Some(l.clone());
-                                    }
-                                    or_sub
-                                        || self
-                                            .field_init_is_fresh_factory(e, &l)
+                                    self.or_substitute_transfers_into_field(
+                                        e, &l,
+                                    ) || self
+                                        .field_init_is_fresh_factory(e, &l)
                                 }
                                 _ => false,
                             };
-                            let prev_sft = self.suppress_fresh_temp;
-                            if field_owns_locus_rhs {
-                                self.suppress_fresh_temp = true;
-                            }
-                            let prev_ofo = self.or_field_owner_locus.take();
-                            self.or_field_owner_locus = or_substitute_owned;
-                            let r = self.lower_expr(e, scope);
-                            self.or_field_owner_locus = prev_ofo;
-                            self.suppress_fresh_temp = prev_sft;
-                            let r = r?;
+                            let r = self.lower_expr(e, scope)?;
                             self.in_params_default = saved_ipd;
                             let owned = !self.instantiating_for_parent_field
                                 || factory_owned_by_field;
@@ -2720,14 +2687,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // so the cascade gets `__reclaim_<Impl>` for exactly the
             // impl this instantiation built, ctor-override included.
             //
-            // A `perspective(P)` field is deliberately NOT here. The
-            // F.17 gate does not cover it, so a factory's result in
-            // that position already takes the GH #402 frame temporary
-            // and is already reclaimed once; claiming it for the
-            // owner as well would dissolve it twice.
+            // GH #921 A3, commit 1: a `perspective(P)` field is here
+            // too. It used to be deliberately excluded — the F.17
+            // gate (`field_owns_locus_rhs`) did not cover a
+            // perspective-typed field, so a factory's result in that
+            // position took the GH #402 frame temporary and claiming
+            // it for the owner as well would have dissolved it twice.
+            // That gate was `suppress_fresh_temp`'s, and the owner
+            // table replaces it with F.39's answer: a param field's
+            // initialiser is `Owner::Field` whether the field is
+            // locus-, interface- or perspective-typed. The frame now
+            // stands back for all three, so the bit has to claim all
+            // three or the perspective case is the old leak.
+            // `ownership_matrix.rs`'s `persp_field_factory` position
+            // is the shape; it had no cell before this commit.
             let owned_via_literal = owned_via_literal
-                || (matches!(declared_ty, CodegenTy::Interface(_))
-                    && owned_child_impl.is_some()
+                || (matches!(
+                    declared_ty,
+                    CodegenTy::Interface(_) | CodegenTy::Perspective(_)
+                ) && owned_child_impl.is_some()
                     && owned_child_impl
                         == match overrides.get(fname.as_str()) {
                             Some(e) => self.field_init_fresh_factory_impl(e),

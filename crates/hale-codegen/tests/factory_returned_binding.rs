@@ -207,13 +207,22 @@ fn a_factory_result_in_a_param_field_is_owned_by_the_literal() {
 /// ownership to its caller. Dissolving it here would give the caller
 /// a dead locus — which reads back as zeros rather than crashing, so
 /// it needs a value assertion and not a sanitizer.
+///
+/// GH #921 A3 commit 1 made this assertion sharper. `relay` used to
+/// fail the freshness walk, so nobody at all reclaimed its result and
+/// "`bye 7` never printed" passed for the wrong reason — the leak and
+/// the correct answer look the same from the frame that built it. The
+/// fixpoint now resolves a returned binding through its own `let`
+/// (the arms of `make_f(n) or Thing { }` are both fresh), so the
+/// CALLER's binding owns the value and reclaims it once, at the
+/// caller's scope exit. The ORDER is what says which frame did it:
+/// `bye 7` after `end` is main's flush, before `h=7` would have been
+/// `relay`'s.
 #[test]
-fn a_binding_the_fn_hands_back_is_not_dissolved_by_its_own_frame() {
+fn a_binding_the_fn_hands_back_is_reclaimed_by_its_caller() {
     let src = format!(
         "{LIB}
-        // Fails the freshness walk (its return is a binding whose
-        // initializer is an `or`, not a literal), but still hands
-        // back a locus it bound from a factory.
+        // Hands back a locus it bound from a factory through an `or`.
         fn relay(n: Int) -> Thing {{
             let c = make_f(n) or Thing {{ n: 0 }};
             return c;
@@ -226,16 +235,11 @@ fn a_binding_the_fn_hands_back_is_not_dissolved_by_its_own_frame() {
     );
     let (out, verdict) = build_and_run("returned_binding", &src);
     assert!(verdict.is_empty(), "{}\n{}", verdict, out);
-    assert!(
-        out.starts_with("h=7\nend\n"),
-        "the returned binding must reach the caller alive, not \
-         dissolved by the frame that built it: {:?}",
-        out
-    );
-    assert!(
-        !out.contains("bye 7"),
-        "`relay`'s frame tore down the value it handed back: {:?}",
-        out
+    assert_eq!(
+        out, "h=7\nend\nbye 7\n",
+        "the returned binding must reach the caller alive and be \
+         reclaimed exactly once, by the caller's scope exit — not by \
+         the frame that built it, and not by nobody"
     );
 }
 
