@@ -27,6 +27,30 @@ referenced by name — never a magic string — so the payload type
 is checked at every publish and every handler, and renaming the
 topic moves every use with it.
 
+### The payload is a record, not a value
+
+Notice that `Order` is a `type`, not a `Decimal`. That's the rule,
+not the example's taste: a delivery is a *serialized struct*, so a
+payload needs a field layout. Three things have one —
+
+- a user `type`;
+- an `enum` with at least one variant that carries a payload;
+- `BytesView`, for reading a foreign writer's frames as raw bytes.
+
+A bare `Int` does not, and the compiler says so at the
+declaration:
+
+```hale,fragment
+bus { publish "org.metrics" of type Int; }
+//                                  ^^^ `Int` is not carried on
+//                                      the bus
+```
+
+Wrap it. `type Metric { n: Int = 0; }` costs one line and buys a
+name for what's on the wire — which is what every later reader of
+that subject actually wants. *(Inside* the payload, primitives are
+exactly what its fields are made of.)
+
 ## Subscribe and publish
 
 A locus declares its bus interface in a `bus { }` block:

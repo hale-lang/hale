@@ -1,0 +1,46 @@
+// GH #800: `Float(x)` is the widening half of the cast pair
+// `spec/types.md` has specified since v1.x-11 (`Int(x)` / `Float(x)`).
+// Only the narrowing half had a codegen arm, so `hale check` accepted
+// `Float(n)` and `hale build` refused it at lowering as ``builtin
+// `Float` `` — with no source location. It is `sitofp`, the same
+// conversion `std::math::int_to_float` emits.
+
+main locus App {
+    params {
+        n: Int = 7;
+    }
+    fn half(x: Float) -> Float {
+        return x / 2.0;
+    }
+    run() {
+        // Int literal widens.
+        let a = Float(3);
+        std::test::assert(a == 3.0, "Float(3) is 3.0");
+
+        // Float argument is the identity.
+        let b = Float(2.5);
+        std::test::assert(b == 2.5, "Float(2.5) is 2.5");
+
+        // A binding, and a field — the shapes the implicit widening
+        // does not reach mid-expression.
+        let n = 5;
+        std::test::assert(Float(n) / 2.0 == 2.5, "Float(n) divides as a Float");
+        std::test::assert(self.half(Float(self.n)) == 3.5, "Float(self.n) passes as a Float");
+
+        // Negative and zero.
+        std::test::assert(Float(0 - 4) == 0.0 - 4.0, "Float of a negative Int");
+        std::test::assert(Float(0) == 0.0, "Float(0) is 0.0");
+
+        // Identical to the named spelling of the same conversion.
+        std::test::assert(Float(42) == std::math::int_to_float(42), "Float(x) is int_to_float(x)");
+
+        // Round-trips with the narrowing half.
+        std::test::assert_eq_int(Int(Float(9)), 9, "Int(Float(9)) is 9");
+        std::test::assert(Float(Int(3.9)) == 3.0, "Int truncates before Float widens");
+
+        // Two casts in one expression.
+        std::test::assert(Float(1) + Float(2) == 3.0, "casts compose in arithmetic");
+    }
+}
+
+fn main() { App { }; }

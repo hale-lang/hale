@@ -24,7 +24,7 @@ pub mod time_literal;
 pub use crate::error::{Diag, DiagKind};
 pub use crate::lexer::{lex, Token, TokenKind};
 pub use crate::parser::parse;
-pub use crate::span::{Pos, Span};
+pub use crate::span::{file_owns_offset, Pos, Span};
 
 /// Lex + parse a source string into a [`ast::Program`].
 pub fn parse_source(source: &str) -> Result<ast::Program, Vec<Diag>> {

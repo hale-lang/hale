@@ -432,6 +432,11 @@ fn no_spawn_catches_locus_instantiation() {
 /// blocking call stalls every other locus on that pool; the
 /// placement is the assertion, so the compiler says so unprompted.
 /// (This is Crumb batch-5's bug as a compile-time finding.)
+///
+/// The leaf is `std::io::stdin::read_line` and not `sleep`: GH #791
+/// took `sleep` out of this advisory's leaf set (it PARKS on an
+/// async_io pool), so a sleeping handler is no longer a positive
+/// control for it.
 #[test]
 fn async_io_placement_warns_about_blocking_without_annotation() {
     let src = r#"
@@ -439,7 +444,7 @@ fn async_io_placement_warns_about_blocking_without_annotation() {
         locus Worker {
             bus { subscribe "e" as on_e of type Ev; }
             fn on_e(e: Ev) {
-                std::time::sleep(400ms);
+                println(std::io::stdin::read_line());
             }
         }
         main locus App {
@@ -468,7 +473,7 @@ fn explicit_assertion_suppresses_the_placement_advisory() {
         locus Worker {
             bus { subscribe "e" as on_e of type Ev; }
             @no_block fn on_e(e: Ev) {
-                std::time::sleep(400ms);
+                println(std::io::stdin::read_line());
             }
         }
         main locus App {
@@ -487,6 +492,221 @@ fn explicit_assertion_suppresses_the_placement_advisory() {
         "the explicit assertion must still error: {:?}",
         ds
     );
+}
+
+// ---- GH #791: the advisory knows what parks on an async_io pool ----
+
+/// GH #791 (the regression). `std::time::sleep` on an async_io pool
+/// PARKS — PR #285's timer-only park swaps the coro out and the
+/// worker goes on draining — so it stalls nothing and the advisory
+/// must be silent. Before the fix every async handler that sleeps
+/// carried this warning, and its suggested fix (`@no_block`) is a
+/// compile error on the very same program.
+#[test]
+fn async_io_placement_is_silent_about_a_parking_sleep() {
+    let src = r#"
+        type Ev { n: Int; }
+        locus Worker {
+            bus { subscribe "e" as on_e of type Ev; }
+            fn on_e(e: Ev) {
+                std::time::sleep(400ms);
+            }
+        }
+        main locus App {
+            params { w: Worker = Worker { }; }
+            placement { w: cooperative(pool = web) where async_io; }
+            run() { std::time::sleep(10ms); }
+        }
+        fn main() { App { }; }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("stalls every other locus")),
+        "a handler that only parks must not be flagged: {:?}",
+        ds
+    );
+}
+
+/// The park exemption is per-LEAF, not per-handler: a handler that
+/// sleeps *and* blocks is still reported, and the witness path names
+/// the leaf that actually holds the worker.
+#[test]
+fn async_io_placement_names_the_blocking_leaf_past_a_park() {
+    let src = r#"
+        type Ev { n: Int; }
+        locus Worker {
+            bus { subscribe "e" as on_e of type Ev; }
+            fn on_e(e: Ev) {
+                std::time::sleep(400ms);
+                println(std::io::stdin::read_line());
+            }
+        }
+        main locus App {
+            params { w: Worker = Worker { }; }
+            placement { w: cooperative(pool = web) where async_io; }
+            run() { std::time::sleep(10ms); }
+        }
+        fn main() { App { }; }
+    "#;
+    let ds = diags_for(src);
+    let hit = ds
+        .iter()
+        .find(|m| m.contains("stalls every other locus"))
+        .unwrap_or_else(|| panic!("expected the advisory; got {:?}", ds));
+    assert!(
+        hit.contains("read_line"),
+        "the witness must name the leaf that holds the worker: {}",
+        hit
+    );
+    assert!(
+        !hit.contains("time::sleep"),
+        "…and not the one that parks: {}",
+        hit
+    );
+}
+
+/// The decision GH #791 had to make, pinned. `block` stays a
+/// property of the CALL, not of a placement: the same `sleep` on a
+/// classic pool really does hold that pool's OS thread, a locus type
+/// can be placed per-instance (F.31) on an async_io pool for one
+/// field and a classic one for another, and a free fn has no
+/// placement at all — so a fn-grained certificate cannot be
+/// placement-conditional without becoming ambiguous. `@no_block`
+/// therefore still refuses a sleeping handler. The two no longer
+/// contradict each other because the advisory no longer *suggests*
+/// `@no_block` here: it says nothing at all.
+#[test]
+fn no_block_still_refuses_a_parking_leaf() {
+    let src = r#"
+        type Ev { n: Int; }
+        locus Worker {
+            bus { subscribe "e" as on_e of type Ev; }
+            @no_block fn on_e(e: Ev) {
+                std::time::sleep(400ms);
+            }
+        }
+        main locus App {
+            params { w: Worker = Worker { }; }
+            placement { w: cooperative(pool = web) where async_io; }
+            run() { std::time::sleep(10ms); }
+        }
+        fn main() { App { }; }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        ds.iter().any(|m| m.contains("must not reach `block`")),
+        "an explicit @no_block is placement-independent and must still \
+         report the sleep: {:?}",
+        ds
+    );
+}
+
+/// The classic-pool half is untouched, and the park exemption is
+/// scoped to the async_io advisory alone.
+/// `check_cooperative_pool_blocking` keeps its own (narrower)
+/// blocking set and its own message: `tcp::recv_into` parks on an
+/// async_io pool — it is in the park list — and on a pool that is NOT
+/// `where async_io` it holds the pool's OS thread and still warns.
+/// `sleep` was never in that set (an event-driven subscriber's sleep
+/// loop is how it yields), on any pool, including `main`.
+#[test]
+fn classic_pool_blocking_warning_is_unchanged() {
+    let src = r#"
+        locus Worker {
+            params {
+                fd: Int = 0;
+                buf: std::bytes::BytesBuilder =
+                    std::bytes::BytesBuilder { initial_cap: 4096 };
+            }
+            run() {
+                let got = std::io::tcp::recv_into(self.fd, self.buf, 2048);
+            }
+        }
+        locus Napper {
+            run() {
+                std::time::sleep(400ms);
+            }
+        }
+        main locus App {
+            params {
+                w: Worker = Worker { };
+                n: Napper = Napper { };
+            }
+            placement {
+                w: cooperative(pool = web);
+                n: cooperative(pool = web);
+            }
+            run() { std::time::sleep(10ms); }
+        }
+        fn main() { App { }; }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        ds.iter().any(|m| m.contains("`std::io::tcp::recv_into`")
+            && m.contains("stalling every other locus scheduled on `web`")),
+        "a blocking run() on a classic cooperative pool must still \
+         warn: {:?}",
+        ds
+    );
+    assert!(
+        !ds.iter().any(|m| m.contains("`std::time::sleep`")),
+        "…and sleep must stay out of that set, on every pool: {:?}",
+        ds
+    );
+}
+
+/// The park list is a claim about the stdlib frontier, so it has to
+/// stay attached to it: every path in it must still be a registry
+/// row, and must still carry `block` (a row that lost the bit would
+/// make its entry dead weight, silently).
+#[test]
+fn every_parking_path_is_a_classified_blocking_row() {
+    use hale_types::stdlib_surface::{
+        effects_for, EffectSet, ASYNC_IO_PARKING,
+    };
+    for path in ASYNC_IO_PARKING {
+        let eff = effects_for(path).unwrap_or_else(|| {
+            panic!("{} parks but has no registry row", path.join("::"))
+        });
+        assert!(
+            eff.contains(EffectSet::BLOCK),
+            "{} is in the park list but no longer carries `block`",
+            path.join("::")
+        );
+    }
+}
+
+/// GH #830: same guard for the other subtraction. The classic-pool
+/// blocking lint takes the registry's `block` rows minus
+/// `COOPERATIVE_YIELDING_BLOCK_LEAVES`; an entry there that is not a
+/// classified `block` row subtracts nothing and is dead weight,
+/// silently.
+#[test]
+fn every_cooperative_yielding_leaf_is_a_classified_blocking_row() {
+    use hale_types::stdlib_surface::{
+        effects_for, holds_cooperative_worker, EffectSet,
+        COOPERATIVE_YIELDING_BLOCK_LEAVES,
+    };
+    for path in COOPERATIVE_YIELDING_BLOCK_LEAVES {
+        let eff = effects_for(path).unwrap_or_else(|| {
+            panic!(
+                "{} is carved out of the blocking lint but has no registry \
+                 row",
+                path.join("::")
+            )
+        });
+        assert!(
+            eff.contains(EffectSet::BLOCK),
+            "{} is carved out of the blocking lint but no longer carries \
+             `block`",
+            path.join("::")
+        );
+        assert!(
+            !holds_cooperative_worker(path),
+            "{} is carved out but still reports as a blocking leaf",
+            path.join("::")
+        );
+    }
 }
 
 // ---- @no_panic: disposition coverage, not leaf reachability ----

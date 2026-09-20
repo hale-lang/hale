@@ -77,6 +77,51 @@ let pair = (1, "one");
 Reach for a `type` once the grouping has meaning worth naming;
 tuples are for the throwaway case.
 
+## Aliases — a second name for a type
+
+`type Name = Type;` gives an existing type another name:
+
+```hale
+type Cents = Int;
+
+fn price_of(n: Cents) -> Cents { return n * 2; }
+
+fn main() {
+    let c: Cents = 250;
+    println(price_of(c));
+}
+```
+
+An alias is **transparent**: `Cents` *is* `Int`, not a new type
+wrapped around one. The two are interchangeable in both
+directions, with no conversion and no wrapper — so an alias buys
+you a name that reads better at the call site, and nothing else.
+
+That cuts both ways. Because the alias adds no type of its own,
+it also adds no safety: nothing stops you passing a plain `Int`
+where `Cents` is expected. If you want the compiler to keep two
+integers apart, give each a record of its own (`type Cents { v:
+Int; }`).
+
+Transparent includes *building* the value. With `type Row2 =
+Row;`, `Row2 { id: 1 }` builds a `Row` — the same record the
+target's own name builds, checked against the target's fields.
+The same goes for an enum: with `type Light2 = Light;`,
+`Light2::Red` is `Light::Red`, in a match arm as well as in an
+expression.
+
+Three small rules:
+
+* The alias has to end at a type you can build. `type Cents =
+  Int;` names a primitive, so `Cents { }` means nothing and is
+  refused — as is `[Row; 2]`, or a tuple.
+* An alias chain has to end somewhere. `type A = B; type B = A;`
+  is a type error.
+* An alias takes no type parameters of its own. `type Twin<T> =
+  Pair<T>;` is refused at the `<` with *generic type aliases are
+  not supported*; name a concrete instantiation instead (`type
+  IntPair = Pair<Int>;`), which is allowed and stays transparent.
+
 ## Enums — one of several shapes
 
 An enum is a value that is exactly one of a set of named

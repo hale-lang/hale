@@ -524,6 +524,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         disposition: &OrDisposition,
         scope: &Scope<'ctx>,
     ) -> Result<(Option<BasicValueEnum<'ctx>>, Option<CodegenTy>), CodegenError> {
+        // GH #793 — does this `or` hand back a proven-fresh factory's
+        // locus? Decided from the AST BEFORE the inner call is
+        // lowered, for two reasons. `suppress_fresh_temp` (the
+        // "owner already decided" signal) is one-shot, and the first
+        // fresh-factory call reached during lowering consumes it —
+        // for an `or` expression that would be an ARGUMENT of the
+        // inner call rather than the value this expression produces,
+        // so the flag has to be taken here, on the outermost node it
+        // was set for. And taking it only when this node is itself a
+        // fresh factory call keeps every other `or` — the vast
+        // majority — reading exactly as it did.
+        let inner_fresh_locus: Option<String> = match inner {
+            Expr::Call { callee, .. } => self
+                .callee_fn_name(callee)
+                .and_then(|f| self.fresh_locus_factories.get(&f).cloned())
+                .map(|(l, _)| l),
+            _ => None,
+        };
+        let ok_owned_elsewhere = if inner_fresh_locus.is_some() {
+            std::mem::replace(&mut self.suppress_fresh_temp, false)
+        } else {
+            self.suppress_fresh_temp
+        };
+        // GH #853 — and when this `or` IS a param-field initialiser
+        // whose branches all transfer into the field, the same is
+        // true of the substitute. The field's mask bit claims
+        // whichever value was built, so a substitute that also took
+        // the GH #402 frame temporary would be dissolved twice:
+        // once by the frame, at the enclosing fn's exit, with the
+        // owner still pointing at it, and once by the owner's
+        // cascade. Taken on the same node and for the same reason as
+        // the flag above — one-shot, outermost `or`.
+        let field_owner_locus = self.or_field_owner_locus.take();
         let call = self.lower_fallible_call(inner, scope)?;
         let func = self
             .current_fn
@@ -556,6 +589,58 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 _ => None,
             };
+        // GH #793: an `or`-wrapped factory call still produces a locus
+        // somebody has to reclaim, and nothing did.
+        //
+        // `let c = std::process::spawn("sleep\n30") or raise;` left the
+        // child running with PPID 1 after the program exited, its pipe
+        // fds open and its handle's arena abandoned — and the same for
+        // any factory-returned locus, because the `or` wrapper hides
+        // the call from BOTH rules that hand a factory result an owner:
+        // the binding-scoped one at `Stmt::Let` (GH #383) and the
+        // unbound-temporary one in `lower_expr` (GH #402), each of
+        // which matches on `Expr::Call` and sees an `Expr::Or`.
+        //
+        // The owner is registered here, on the OK branch, because that
+        // is the only place where the value is unambiguously the inner
+        // call's. The err branch either diverges (`raise` / `fail`) or
+        // substitutes a DIFFERENT value that already has its own owner
+        // (an unowned literal registers itself — GH #814; a fresh
+        // factory call in that position takes a temp — GH #402), so a
+        // slot written only on this branch dissolves exactly the value
+        // that was actually produced, exactly once. The slot is
+        // NULL-initialized in the entry block, which is what makes the
+        // never-stored err path a skip at the flush rather than a
+        // teardown of stack garbage.
+        if let (Some(CodegenTy::LocusRef(lname)), Some(v), Some(fresh_l)) =
+            (&call.success_ty, &ok_v_opt, &inner_fresh_locus)
+        {
+            if fresh_l == lname
+                && !ok_owned_elsewhere
+                && !self.deferred_dissolves.is_empty()
+                && v.is_pointer_value()
+            {
+                let lname = lname.clone();
+                let ptr = v.into_pointer_value();
+                let slot = self.deferred_dissolve_slot_alloca(&lname)?;
+                // GH #815: the slot is one alloca per SITE, so a site
+                // inside a loop rewrites it every iteration and the
+                // scope-exit flush would only ever find the LAST
+                // result. Control reaching here again is the proof the
+                // previous occupant is dead — reclaim it before the
+                // store overwrites the only record of it.
+                if !self.loops.is_empty() {
+                    self.emit_deferred_slot_reuse_teardown(slot, &lname)?;
+                }
+                self.builder
+                    .build_store(slot, ptr)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.deferred_dissolves
+                    .last_mut()
+                    .expect("checked non-empty")
+                    .push((slot, lname, None));
+            }
+        }
         let ok_end_bb = self
             .builder
             .get_insert_block()
@@ -644,6 +729,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     } else {
                         rhs
                     };
+                    // GH #853: the field owns this branch's value
+                    // too, so the substitute does not ALSO become a
+                    // frame temporary. Armed only for a substitute
+                    // that hands back the named value itself — a
+                    // proven-fresh factory call, or a nested `or`
+                    // around one, which re-arms the field-owner slot
+                    // so the recursion makes the same decision for
+                    // ITS substitute. A locus literal there needs
+                    // nothing: it consumes the parent-field flag and
+                    // is already the field's.
+                    let sub_owned_by_field = field_owner_locus
+                        .as_deref()
+                        .map(|l| self.or_branch_transfers_into_field(rhs, l))
+                        .unwrap_or(false);
+                    let prev_sft = self.suppress_fresh_temp;
+                    let prev_ofo = self.or_field_owner_locus.take();
+                    if sub_owned_by_field
+                        && !matches!(rhs, Expr::Struct { .. })
+                    {
+                        self.suppress_fresh_temp = true;
+                        if matches!(rhs, Expr::Or { .. }) {
+                            self.or_field_owner_locus =
+                                field_owner_locus.clone();
+                        }
+                    }
                     let (sub_v, sub_ty) = if call.success_ty.is_none() {
                         // v1.x-FORM-4: Unit-success fallible (e.g.
                         // hashmap.remove / write_file). The substitute RHS
@@ -677,6 +787,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     } else {
                         self.lower_expr_opt(rhs, &sub_scope)?
                     };
+                    self.or_field_owner_locus = prev_ofo;
+                    self.suppress_fresh_temp = prev_sft;
                     // A disposer that always diverges — `or { return …; }`
                     // or `or { fail …; }` — terminates the err branch and
                     // produces NO substitute value: `lower_block_as_expr`
@@ -867,7 +979,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let Some(ln) = locus_name else {
                     return false;
                 };
-                self.program.items.iter().any(|item| {
+                // GH #884: module nesting flattened — the locus
+                // this names may be declared inside a `module { }`.
+                hale_syntax::ast::flat_decls(&self.program.items).any(|item| {
                     matches!(item,
                         TopDecl::Locus(l) if l.name.name == ln
                             && l.members.iter().any(|m| matches!(m,

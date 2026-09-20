@@ -1,0 +1,115 @@
+// Teardown cascades all the way down a locus tree (GH #750).
+//
+// A locus held as another locus's param field is parent-owned: its
+// instantiation skips the eager dissolve and is never pushed onto a
+// deferred-dissolve frame, because the owner's teardown is supposed
+// to cascade into it. That cascade used to stop one level below the
+// locus being dissolved, so a GRANDCHILD never drained, never ran
+// its dissolve() body, never had its capacity slots freed and never
+// had its arena destroyed.
+//
+// Here for the sanitizer oracle. The leak hid behind the chunk
+// pool: the grandchild's arena pointer lives inside the child's
+// arena chunk, and a destroyed arena's chunks go back to
+// `g_chunk_pool` intact, so LeakSanitizer still reached the
+// grandchild's arena through them. Building a SECOND temporary of
+// the same shape recycles that chunk and overwrites the last
+// reference — which is why the issue's reproducer is two locus
+// literals in one fn and why the first one is the one reported.
+//
+// Every shape below builds a two-deep tree twice, so the recycle
+// happens in each: an unowned literal read for a field, a
+// let-bound one, and a method receiver.
+
+type Row {
+    v: Int = 0;
+}
+
+@form(vec)
+locus Rows {
+    capacity {
+        heap rows of Row;
+    }
+}
+
+// The grandchild. Its `birth` allocates OUTSIDE its arena (the vec
+// buffer is a realloc), so the leak survives independently of the
+// arena's chunks.
+locus Leaf {
+    params {
+        rows: Rows = Rows { };
+    }
+    birth() {
+        self.rows.push(Row { v: 7 });
+    }
+    drain() {
+        println("leaf drained");
+    }
+    dissolve() {
+        println("leaf dissolved");
+    }
+    fn count() -> Int {
+        return self.rows.len();
+    }
+}
+
+locus Mid {
+    params {
+        leaf: Leaf = Leaf { };
+    }
+    drain() {
+        println("mid drained");
+    }
+    dissolve() {
+        println("mid dissolved");
+    }
+    fn total() -> Int {
+        return self.leaf.count();
+    }
+}
+
+locus Holder {
+    params {
+        m: Mid = Mid { };
+        tag: String = "x";
+    }
+    fn label() -> String {
+        return self.tag;
+    }
+}
+
+// A locus with no children at all: the control that was always
+// leak-free, kept so the fixture covers both sides.
+locus Lonely {
+    params {
+        n: Int = 0;
+    }
+    fn double() -> Int {
+        return self.n * 2;
+    }
+}
+
+fn read_twice() {
+    println("a=", Holder { tag: "hello" }.tag);
+    println("b=", Holder { tag: "again" }.tag);
+}
+
+fn call_twice() {
+    println("c=", Holder { tag: "third" }.label());
+    println("d=", Holder { tag: "fourth" }.label());
+}
+
+fn bind_once(t: String) {
+    let h = Holder { tag: t };
+    println("e=", h.tag, " total=", h.m.total());
+}
+
+fn main() {
+    read_twice();
+    call_twice();
+    // The let-bound form leaks the same way once the arena is
+    // actually recycled — two calls to one helper is enough.
+    bind_once("fifth");
+    bind_once("sixth");
+    println("f=", Lonely { n: 21 }.double());
+}

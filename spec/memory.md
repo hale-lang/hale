@@ -189,6 +189,49 @@ let h = Locus { ... };
 // Then: drain() runs (cascades), dissolve() runs, region freed.
 ```
 
+A locus a free `fn` RETURNED follows the same rule, in either
+spelling of the call:
+
+```
+let h = make_locus();                    // factory result
+let c = std::process::spawn(argv) or raise;   // fallible factory
+// Both are bound, and both live until the binding goes out of
+// scope. Then: drain() runs (cascades), dissolve() runs, region
+// freed — exactly as for a literal.
+```
+
+What makes that sound is that the binding is the only place such a
+result can come to rest: storing a locus VALUE into a locus-typed
+field is refused (see spec/semantics.md § "Reassigning a locus-typed
+field", GH #383), so no second owner can appear behind the frame's
+back. Two positions hand the handle on instead of consuming it, and
+there the frame contributes no teardown: a result written directly
+as a **field of a locus literal**, which that literal owns (F.17),
+and a binding the fn **returns**, which the caller owns. "That
+literal owns it" is a transfer the owner honours: the field's value
+goes with the owner's teardown cascade, exactly as a nested literal
+does, at the param's default site as well as the call site, and
+under a diverging `or` as well as bare (GH #836), and under `or
+<substitute>` on both branches, where the field holds whichever
+branch ran and owns it (GH #853). A call that hands back a locus it
+did not build — one of its arguments, a handle it was given —
+transfers nothing, in that position or on either branch of an `or`,
+and is left to the value's real owner.
+
+The consequence a caller can rely on: a locus that holds an
+**external** resource (a file descriptor, a child process) releases
+it in `dissolve`, so a `let`-bound `std::process::spawn` closes its
+pipes and reaps its child when the binding's scope exits (GH #793).
+Retaining such a handle *past* that scope still needs an owner that
+outlives it — a module that publishes a transfer moving the handle's
+state into an instance the owner reclaims (`std::process::adopt`) —
+because the resource's teardown follows the instance, and the
+instance follows its binding.
+
+Until GH #793 a factory-returned locus went to a program-lifetime
+arena and was never reclaimed at all. That leak is retired; a
+factory result is reclaimed by whatever consumes it.
+
 ### Unbound expressions
 
 Per design-rationale §A:
@@ -244,6 +287,33 @@ arena reclaims per dispatch), or move the allocating work into a
 child locus that dissolves per iteration. The compile-time
 analysis that surfaces this is GitHub issue #18 item 1
 (memory-bound proofs); see `spec/verification.md`.
+
+### Non-escaping fixed arrays are frame locals
+
+One value allocation is exempt: a fixed-size array literal
+(`[c; N]`) bound to a `let` whose every use inside the function
+is an element read (`t[i]`) or an element write (`t[i] = v`) is
+a **stack local** in that function's frame, not an arena
+allocation. It costs nothing at the arena and is gone when the
+function returns, so a fixed scratch table inside a helper is no
+longer per-call churn in the caller's region.
+
+The rule is deliberately narrow and one-sided — a literal `[c;
+N]` only, a `let` only, and any other use of the name
+(passing it to a function, returning it, storing it in a field
+or a form, publishing it, aliasing it with a second `let`,
+iterating it with `for`) puts the array back on the arena path.
+Two further limits keep the frame bounded: the element must be
+a scalar (`Int`, `Float`, `Bool`, `Duration`, `Decimal`, an
+enum), and one function's array literals may take at most
+**8 KiB** of frame in total. 8 KiB is one eighth of a
+cooperative-pool coroutine stack, and whether a given function
+runs on one is not knowable at its definition, so the cap holds
+everywhere. An array past the cap keeps the arena.
+
+This is a placement rule, not a semantic one: the values, the
+indexing, and the reclamation order a program can observe are
+unchanged.
 
 ## Bookkeeping reclamation (per-arena defrag)
 
@@ -651,13 +721,32 @@ that instantiated them. m82 changed the *let-bound* case:
 `let h = LocusName { ... }` now defers dissolve to the
 enclosing fn's scope-exit flush instead of the struct-literal
 boundary, so the user-visible binding stays valid for
-subsequent method calls. GH #710 extends the same deferral to a
-literal in *receiver* position (`LocusName { ... }.method()`) —
-the call is that literal's handle, so the eager path would have
-destroyed the receiver's arena before the method it is the
-receiver of ran. Long-lived loci (with `bus subscribe`)
+subsequent method calls. GH #710, then GH #711 / #812, extend
+the same deferral to a literal in any *expression* position —
+receiver (`LocusName { ... }.method()`), call argument
+(`serve(LocusName { ... })`), field read
+(`LocusName { ... }.field`), operand. The expression consuming
+the literal is its handle, so the eager path destroyed the
+arena before the method it is the receiver of ran, before the
+field it is read for was loaded, and before a callee that
+retained it was done with it. Long-lived loci (with `bus subscribe`)
 continue to defer regardless of binding shape. See
 `spec/semantics.md` "Dissolve timing rules" for the full rule.
+
+A deferred entry's slot is one entry-block alloca per
+instantiation *site*, and so is the locus struct it points at,
+so a site inside a **loop** rewrites both every iteration. The
+instantiation therefore reclaims the slot's previous occupant
+before overwriting it — the same per-entry spine the flush
+emits, guarded by the slot's NULL sentinel so the first pass is
+a no-op — and the flush still owns the last instance. A loop's
+residency is one instance, not one per iteration (GH #815). The
+same applies to a `let` bound to a locus-returning factory,
+whose binding alloca *is* its dissolve slot, and to the
+fallible spelling `let h = make(...) or raise;`, whose slot is
+written on the `or`'s ok branch only (GH #793) — except where
+the binding is returned or `=`-moved: those keep the leak rather
+than risk freeing a value another name still holds.
 
 The F.4 cascade still falls out structurally — children
 dissolve before their parent, regardless of which mechanism
@@ -935,6 +1024,23 @@ never escapes the handler). A subscriber on the same thread as
 its publisher, or a payload with no owned fields, is unaffected
 (no wire cell, no subregion).
 
+**"The instant the handler returns" includes parks (GH #781,
+2026-09-19).** On a `where async_io` pool the handler runs on a
+coroutine, so its return may come after any number of parks — and
+until this fix the delivery's payload was only sound up to the point
+the coro *first yielded*, not to the point the handler returned: the
+drain's stack cell (which the handler's pointer aimed into) was
+overwritten by the next dequeue, while the spilled heap payload and
+the subregion were never reclaimed at all on that path. All of a
+delivery's payload storage — the cell's inline bytes, a spilled heap
+payload, and the per-delivery subregion above — therefore belongs to
+the coro, is released exactly once when the handler returns, and is
+never shared with another delivery. The single-owner rule (§ cell
+stores) is what makes that sufficient: a handler that keeps payload
+data past its own return has deep-copied it into the locus arena, so
+reclaiming the delivery's storage at return can never orphan
+retained state.
+
 **Phase-2 (4) `g_bus_payload_arena` reclaim investigation
 (2026-05-19; superseded by Phase-3 Task 9).**
 The handoff posed: "should `lotus_bus_dispatch_wire`'s
@@ -1109,6 +1215,28 @@ reclaim on a real-world long-running workload:
      larger one-off chunks bypass the pool and free via
      libc directly. `LOTUS_CHUNK_POOL_STATS=1` dumps the
      per-thread counters at exit.
+
+     **Recycling hides use-after-free, so instrumented
+     builds turn it off.** A recycled chunk hands the SAME
+     bytes back out, so a load from an arena that was
+     destroyed reads memory the process still owns:
+     AddressSanitizer never sees a `free` and reports
+     nothing. `LOTUS_NO_CHUNK_POOL=1` makes
+     `lotus_arena_destroy` really `free()` each chunk and
+     every chunk request really `malloc()`, so an arena
+     use-after-free surfaces as a `heap-use-after-free`
+     with the free stack and the read stack. It covers the
+     coroutine free-list on the same grounds — a released
+     coro keeps its 64 KiB stack for the next handler — and
+     is the state the ASan corpus oracle runs in. A
+     sanitizer build (`LOTUS_ASAN=1`, `LOTUS_UBSAN=1`)
+     defaults it ON via `-DLOTUS_NO_CHUNK_POOL_DEFAULT=1`
+     in the runtime cflags, so no instrumented run has to
+     ask; the env var overrides that default in both
+     directions (`=1` on an ordinary build, `=0` under a
+     sanitizer). Ordinary builds are unaffected: recycling
+     is the shipped allocator behavior, and turning it off
+     costs a `malloc`/`free` pair per arena chunk.
 
   3. **`lotus_str_clone` / `lotus_bytes_clone` skip
      optimizations.** Two cases pass through without

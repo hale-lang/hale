@@ -1229,6 +1229,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ),
                 None,
             );
+            // GH #782: the recording's payload blob for this
+            // publish. Every C dispatch flavor calls this at its
+            // publish site; the baked direct-dispatch loop has no C
+            // dispatch fn to host it, so it is emitted inline, in
+            // the same obs-gated block and BEFORE the publish probe
+            // (the callee peeks the ingress redispatch mark that
+            // lotus_obs_bus_publish consumes). The callee's own
+            // first line is the recording gate
+            // (`!lotus_obs_recording && !lotus_replay_active` →
+            // return 0), so an observed-but-unrecorded run writes
+            // nothing and an unobserved one never reaches the call.
+            // declare i64 @lotus_obs_record_publish_payload(
+            //     ptr subject, ptr payload, i64 size, i32 raw_struct)
+            self.module.add_function(
+                "lotus_obs_record_publish_payload",
+                i64_t.fn_type(
+                    &[
+                        ptr_t.into(),
+                        ptr_t.into(),
+                        i64_t.into(),
+                        self.context.i32_type().into(),
+                    ],
+                    false,
+                ),
+                None,
+            );
         }
         // Dormant-cost gate for the note above (bench regression,
         // 2026-07-28): an i32 the obs TU sets to 1 when LOTUS_OBS
@@ -2177,6 +2203,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module.add_function(
             "lotus_test_passes",
+            i64_t.fn_type(&[], false),
+            None,
+        );
+        // GH #717: the recorded-failure latch. The assert sets it
+        // instead of calling exit(1); the call-site check reads it
+        // and routes out through main's teardown.
+        self.module.add_function(
+            "lotus_test_note_fail",
+            void_t.fn_type(&[], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_test_failed",
             i64_t.fn_type(&[], false),
             None,
         );

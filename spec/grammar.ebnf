@@ -871,13 +871,21 @@ contract_fn       = "fn" , IDENTIFIER , [ generic_params ] ,
 
 (* === 11. Type declarations ==================================== *)
 
-type_decl         = "type" , IDENTIFIER , [ generic_params ] , "=" ,
-                    type_expr , ";"
+type_decl         = "type" , IDENTIFIER , "=" , type_expr , ";"
                   | "type" , IDENTIFIER , [ generic_params ] , "{" ,
                     { struct_field } , "}"
                   | "type" , IDENTIFIER , [ generic_params ] , "=" ,
                     "enum" , "{" , enum_variant , { "," , enum_variant } , "}" , ";"
                   ;
+
+(* The first alternative is the ALIAS form: a second spelling of an
+   existing type, transparent everywhere a type is written — see
+   `types.md` § Type aliases. `enum` is a contextual keyword here,
+   which is what distinguishes the third alternative from the
+   first; it lexes as an ordinary identifier everywhere else. The
+   alias form takes no `generic_params`: the target must be a
+   concrete type expression (it may be a generic *instantiation*,
+   `type Names = Vec<String>;`). GH #759. *)
 
 struct_field      = IDENTIFIER , ":" , type_expr , [ "=" , expression ] ,
                     [ field_tag ] , ";" ;

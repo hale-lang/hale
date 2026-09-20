@@ -281,9 +281,15 @@ same call either way; the substrate picks the parking lowering at
 the syscall boundary. This is how you get async-style throughput
 without async-style function coloring.
 
+A bus handler on such a pool keeps its payload across a park: park on
+a read, a `sleep`, or a subprocess drain in the middle of a handler,
+and the payload parameter still reads what it read at entry — it is
+that delivery's own until the handler returns, no matter how many
+other deliveries the pool starts in between.
+
 ## The compiler checks your placement
 
-Two placement mistakes are caught for you, because both the
+These placement mistakes are caught for you, because both the
 placement and the locus's shape are known at compile time:
 
 - **A subscriber that blocks its own delivery is an error.** A
@@ -299,15 +305,26 @@ placement and the locus's shape are known at compile time:
   fine; it's the blocking call that kills delivery.)
 - **A blocking call on a cooperative pool is a warning.** Even when
   the locus *isn't* a subscriber, a blocking `run()` (a blocking
-  `recv`/`accept`, a subprocess `run`) on a pool that isn't `where
-  async_io` holds the pool's thread and stalls everything else
-  scheduled there. The compiler warns and suggests `pinned` (own
-  thread) or `where async_io` (parks). For blocking I/O gateways,
-  `pinned` is the prescribed shape. This warning follows the call
+  `recv`/`accept`, a line read from stdin or a file, an `http`
+  request, a subprocess `run`) on a pool that isn't `where async_io`
+  holds the pool's thread and stalls everything else scheduled there.
+  The compiler warns and suggests `pinned` (own thread) or `where
+  async_io` (parks). For blocking I/O gateways, `pinned` is the
+  prescribed shape. This warning follows the call
   graph: a `run()` that blocks indirectly — through a helper fn or a
   `self.method` it calls — is flagged too, naming the offending call.
   (The dead-receiver *error* above stays direct-call-only, so it
   never widens onto an indirect path.)
+
+  "Blocking" here means exactly what the effect system means by it:
+  the stdlib calls classified `block`, the same set `@no_block` and
+  the `.hale.effects` manifest (`hale check --dump-effects-manifest`)
+  read. There is one
+  deliberate exception — `std::time::sleep`, which the compiler
+  chunks into ≤100 ms slices and drains the pool's bus queue between
+  them. A sleeping locus keeps its pool serviced, which is why
+  "handlers plus a `sleep` loop" is the event-driven shape both of
+  these diagnostics point you at.
 - **An orphan bus topic is a warning.** In a complete program (one
   with a `main` locus), a topic or subject wired to only one end —
   published with nobody subscribed, or subscribed with nobody
@@ -326,16 +343,65 @@ placement and the locus's shape are known at compile time:
   self-republish errors; one guarded by an `if` is a terminating
   state machine and is left alone.)
 - **An unthrottled publish loop is a warning.** A `while true` loop
-  that publishes with no `yield`, `time::sleep`/`tick`, input-pacing
-  `recv`, or `break`/`return` floods the bus — the producer has no
-  backpressure, so cells pile up without bound. Pace the loop, drive
-  it from an input, or `yield` to let the subscriber drain. (Bounded
-  loops are never flagged; any flow-control point clears it.)
+  that publishes with no `yield`, `time::sleep`/`tick`, an
+  input-pacing blocking call, or `break`/`return` floods the bus —
+  the producer has no backpressure, so cells pile up without bound.
+  Pace the loop, drive it from an input, or `yield` to let the
+  subscriber drain. (Bounded loops are never flagged; any
+  flow-control point clears it.) "Input-pacing" is the same blocking
+  set as the warning above, so a loop driven by a line off stdin is
+  paced exactly as one driven by a blocking `recv`.
 - **A subject payload type-mismatch is an error.** If two sites
   publish/subscribe the same literal subject string with different
   `of type` payloads, a subscriber would decode the wrong type at
   runtime — rejected. (Declared `topic`s are already unified by their
   declaration, so this only affects ad-hoc literal subjects.)
+- **A `pinned` placement in a loop is an error.** A locus whose
+  `placement { }` pins a field can't be instantiated inside a `while`
+  or `for` body. `pinned` gives that field its own OS thread, and the
+  record used to join it is one slot per instantiation *site* — a
+  second pass over the site overwrites it, so only the last thread is
+  ever joined and the earlier ones are orphaned with their memory
+  still live. Placement describes a *static* topology (a core, a NUMA
+  node, `replicas = K`): one thread per entry, for the program's
+  life. Instantiate it once, outside the loop. A loop that calls a
+  *function* holding the literal is fine — each call joins its own
+  thread before it returns:
+
+  ```hale
+  fn boot() { App { }; }          // fine: one thread per call, joined
+
+  fn main() {
+      let mut i = 0;
+      while i < 3 { App { }; i = i + 1; }   // error: three orphans
+      return 0;
+  }
+  ```
+- **A placement entry a factory hands you is an error.** A placement
+  attaches to the locus *literal* written for the field. A factory
+  call hands back a locus that has already been born and run inside
+  the factory, so there is nothing left to place — the entry would
+  be silently dropped, and the field would run wherever an unplaced
+  field runs. Write the literal in the field:
+
+  ```hale
+  main locus App {
+      params {
+          a: Worker = make_worker();   // error: nothing carries `a: pinned`
+          b: Worker = Worker { };      // fine: this literal is placed
+      }
+      placement {
+          a: pinned;
+          b: pinned;
+      }
+  }
+  ```
+
+  The same holds at the instantiation site for a field declared
+  without a default: `App { a: Worker { } }` carries the entry,
+  `App { a: make_worker() }` does not. If the factory did setup
+  work, move it into the locus's own `params` defaults or its
+  `birth()`.
 
 It also enforces the **single-threaded-method invariant**: a locus's
 methods may only be called on the thread that owns its pool, so a

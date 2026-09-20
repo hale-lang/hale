@@ -3029,7 +3029,12 @@ The grammar in v0 does **not** specify:
 - **Pattern guards beyond `if`.** Match arms support `if` guards;
   more sophisticated pattern logic awaits a future version.
 - **First-class modules.** `module IDENTIFIER { ... }` is in the
-  grammar but module loading semantics are not specified.
+  grammar and its declarations are first class — typed, analyzed,
+  lowered and mangled exactly as top-level ones (`semantics.md`
+  § "Declarations inside `module { }`"). What is *not* specified
+  is a module NAMESPACE: a module introduces no scope of its own,
+  so there is no `geo::Point` spelling, no per-module export
+  control, and no module loading.
 Each of these is a known extension point. Closing them off in v0
 keeps the spec tractable; opening them later is a non-breaking
 addition.

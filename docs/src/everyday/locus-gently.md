@@ -137,6 +137,38 @@ You instantiate it once and dispatch through it. When three or
 more related free functions show up, this is usually the tidier
 home for them.
 
+### What about `module`?
+
+There is a `module NAME { ... }` block, and it does less than the
+word suggests. It groups declarations **for the reader** and
+introduces no namespace: whatever you declare inside it is
+registered under its plain name, so you spell it the same way
+from anywhere in the file.
+
+```hale
+module geo {
+    type Point { x: Int = 0; y: Int = 0; }
+
+    fn manhattan(p: Point) -> Int { return p.x + p.y; }
+}
+
+fn main() {
+    let p = Point { x: 4, y: 5 };   // `Point`, never `geo::Point`
+    println(manhattan(p));          // 9
+}
+```
+
+Everything else follows from that. A declaration one brace
+deeper is an ordinary declaration: it typechecks, compiles, and
+is reported on identically — the hot-path lint reaches into it,
+a bus topic declared in it routes, a library's module-nested type
+is reachable across an `import` as `lib::Point`, and two modules
+declaring the same name is the same duplicate-name error as two
+top-level ones. The one thing a module does *not* hold is the
+program's entry point: `fn main` has to be at the top level.
+
+If you want a namespace, the namespace locus above is the tool.
+
 ## A rule worth meeting early
 
 Hale has one structural commitment that shapes everything above:

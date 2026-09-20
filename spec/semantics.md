@@ -360,13 +360,14 @@ completes, so by then every child has been born.
 
 ### Dissolve timing rules
 
-Four shapes, three timings (m82 — "locus all the way down";
-receiver position added by GH #710):
+Five shapes, three timings (m82 — "locus all the way down";
+expression position generalized from receivers to every
+position by GH #711 / #812):
 
 - **Statement-position literal** (`LocusName { ... };`, no
-  binding and no method call on it): birth → run → drain →
-  dissolve all fire at the statement boundary. Fire-and-forget.
-  The handle is discarded.
+  binding and nothing done with the value): birth → run →
+  drain → dissolve all fire at the statement boundary.
+  Fire-and-forget. The handle is discarded.
 - **Let-bound literal** (`let h = LocusName { ... };`): birth
   + run + drain fire at the construction site. Dissolve is
   **deferred to the enclosing fn's scope-exit flush**. The
@@ -375,16 +376,82 @@ receiver position added by GH #710):
   `let s = Stream { conn_fd: fd }; s.send(msg) or raise;` work — `s`
   stays valid for the method call because dissolve hasn't
   fired yet.
-- **Receiver-position literal** (`LocusName { ... }.method()`):
-  the call is the handle, so the literal has **the same timing as
-  a let-bound one** — dissolve is deferred to the enclosing fn's
-  scope-exit flush. The receiver and its whole child tree are
-  therefore alive for the entire call, including any allocation
-  churn or drain point inside it. `Queries { j: Journal { } }.count()`
-  and `let q = Queries { j: Journal { } }; q.count();` are the same
-  program. This holds in statement position too
-  (`LocusName { ... }.method();`): a literal that a method is
-  called on is never torn down at the literal's own boundary.
+- **Expression-position literal** (a literal used as a value:
+  a method receiver `LocusName { ... }.method()`, a call
+  argument `serve(LocusName { ... })`, a field read
+  `LocusName { ... }.field`, an operand): the expression that
+  consumes it is the handle, so the literal has **the same
+  timing as a let-bound one** — dissolve is deferred to the
+  enclosing fn's scope-exit flush. Naming the literal with
+  `let` first and using it inline are the same program, in
+  every position. In particular the literal is alive for the
+  entire call it is the receiver or argument of, including any
+  allocation churn or drain point inside it, and for as long as
+  a callee that retains it holds on to it. This holds in
+  statement position too (`LocusName { ... }.method();`): only
+  a literal whose value is *discarded* is torn down at the
+  literal's own boundary.
+- **Factory result** (`let h = make(...);`, or the call used
+  directly as a value — `serve(make(...))`): the locus is built
+  inside the callee and handed back, so the expression that
+  consumes the handle is its owner, with **the same timing as a
+  let-bound literal**. A binding owns what it names; a call
+  result nothing names is owned by the enclosing fn's scope. What
+  a binding names is the expression written **at that position**,
+  not a factory call nested inside it: in `let x = combine(a,
+  make());` — and in `return combine(a, make());`, where the
+  caller is the owner — the binding (or the caller) owns
+  `combine`'s result, and `make`'s is a result nothing names,
+  owned by the enclosing fn's scope and reclaimed at its exit
+  (GH #837). An `if`, a `match` or a block written **as a value**
+  is not the value either: it hands back one arm's, and exactly
+  one arm runs — so the rule applies **per path**, to each arm's
+  tail expression, which is what is written at that position on
+  the path that produces it. `return if c { make(1) } else {
+  make(2) };` hands the caller whichever arm ran, and the frame
+  that built it reclaims neither; `let x = if c { make(1) } else
+  { make(2) };` reclaims whichever arm ran exactly once, at the
+  enclosing fn's scope exit. A factory call anywhere else inside
+  such a carrier — in the condition, in the scrutinee, in a
+  statement before a block's tail — is a result nothing names,
+  reclaimed at that scope's exit like any other. An **ascribed
+  array or tuple** literal is likewise what the site names, never
+  one of its elements: `let xs: [Thing; 2] = [make(1),
+  make(2)];` names the array, and each element's result is one
+  nothing names, reclaimed at the enclosing fn's scope exit
+  (GH #883). This
+  is the same rule in the **fallible** spelling, where the call
+  is reached through `or` — `let c = std::process::spawn(argv)
+  or raise;` is reclaimed exactly as `let h = make(argv);` is,
+  and so is `or <substitute>`, where whichever branch produced
+  the value is the branch that gives it an owner (GH #793). Two
+  positions are excluded, because there the handle is *handed
+  on* rather than consumed: a result written directly as a locus-
+  or interface-typed **field of a locus literal**, which the
+  literal owns (F.17), and a binding the enclosing fn **returns**,
+  which the caller owns — dissolving either would free a value
+  another owner still holds. The first of those two is an
+  ownership *transfer*, not an exemption: `Router { quick:
+  make(5) }` is the same program as `Router { quick: Quick { } }`
+  — the field's value is reclaimed by the owner's teardown
+  cascade, at the owner's timing, whether the field is written at
+  the call site or as the param's **default**, and whether the
+  call is bare or reached through a *diverging* `or` (`or raise`,
+  `or fail`), where the factory's result is the only value the
+  field can hold (GH #836). `or <substitute>` transfers on **both
+  branches**: the field holds whichever branch ran and owns that
+  value, so `Router { quick: make_f(5) or make2() }` reclaims
+  exactly the locus that was built, once, from the owner's cascade
+  — the substitute is not *also* a temporary of the frame that
+  built the owner, which would flush it at that frame's exit with
+  the field still pointing at it (GH #853). The claim needs every
+  branch to transfer: a proven-fresh factory call of the field's
+  own locus, a locus literal, or a nested `or` of those. A call in
+  that position that transfers nothing is excluded exactly as an
+  external handle is — one that returns a locus it did *not* build
+  (one of its arguments, a handle it was given), and an `or` whose
+  ok value or substitute is such a call — and the value is left to
+  its real owner.
 - **Long-lived** (locus has `bus subscribe`): always deferred,
   irrespective of binding shape — the locus must stay alive to
   receive published events between birth and the enclosing
@@ -396,12 +463,105 @@ the F.4 depth-first cascade. The reason: a later-created
 locus may depend on an earlier-created one, so the later one
 must dissolve first.
 
-The deferred-dissolve mechanism is fn-level, not block-level,
-in v0. Loops that bind a locus per iteration — or that call a
-method on a fresh literal per iteration — accumulate dissolves
-until fn exit. Per-iteration cleanup uses a helper free fn whose
-return is the per-iteration boundary (see `handle_one_connection`
-in `stdlib/io_tcp.hl`).
+Whichever of the four shapes applies, the timing is the
+timing of the **whole owned tree**, not of one level of it.
+A locus held as another locus's param field never has a
+teardown of its own — its instantiation is parent-owned, and
+the owner's teardown cascades into it (F.29). That cascade
+runs to the leaves: a grandchild's `drain()`, its `dissolve()`
+body, its capacity slots and **its arena** are the owner's
+responsibility just as a child's are, at exactly the moment
+the owner's timing fires. Every level's arena is destroyed,
+none outlives the owner, and the count of live arenas a
+finished program leaves behind is zero. "Constructed by the
+owner" covers both spellings of construction: a nested literal
+(`Mid { leaf: Leaf { } }`) and a factory call whose result the
+field takes (`Mid { leaf: make_leaf() }`, in the
+diverging-`or` spelling too, and as a param default). A field
+the owner did NOT construct (`Mid { leaf: shared }`, an
+external handle passed in; or a call that hands back a locus
+somebody else built) is excluded at whatever depth it appears,
+and is torn down once by its real owner, at its owner's timing.
+
+**What the field is DECLARED as does not change any of this.**
+A param typed by a *contract* — an `interface` the child
+satisfies (`params { j: Counter = Churner { } }`) or a
+`perspective(P)` the child serves (`params { router:
+perspective(Router) = RouterV1 { } }`) — holds a parent-owned
+child exactly as a locus-typed param does, and the cascade
+reaches it and everything under it. Which locus satisfies the
+contract is a per-instantiation choice: a designation written
+at the literal (`Gateway { router: RouterV2 { } }`) overrides
+one written as the param's default, and the child torn down is
+the one that was actually constructed. Both spellings of
+construction reach an `interface`-typed param: `Queries { j:
+make_churner() }` — in the diverging-`or` spelling too — is the
+same transfer as `Queries { j: Churner { } }`, because the
+factory's declared return names the impl, and the child
+reclaimed is the impl the factory built rather than the one the
+param's default names (GH #895). A `reperspective` swap
+does not change it either — the swap replaces code and keeps
+state, so the holder still owns the impl its designation built.
+
+A locus literal written inside the initializer of a param that
+**cannot hold a locus** is not an ownership transfer, because
+there is no field for the owner to cascade from. In `Lonely { n:
+Queries { }.total() }` the `Queries` literal is an ordinary
+expression-position literal, owned by the enclosing fn's scope
+and reclaimed by its scope-exit flush, exactly as it would be
+written on a line of its own.
+
+A deferred dissolve is scoped to the enclosing **fn**, not to
+the enclosing block — a `let` is readable for the rest of the
+fn, including after the loop that bound it — but a locus
+created in a **loop** is reclaimed when its slot is reused, and
+only the last one at scope exit. Control arriving at the same
+instantiation a second time is the end of the previous
+instance's life: it is torn down there, with the same
+`drain → dissolve → arena reclaim` the scope-exit flush runs,
+before the new one takes its place. This holds for both
+spellings — `let h = L { };` and a fresh literal used as a
+value — and for a `let` bound to a locus-returning factory, so
+a loop's residency is one instance, not one per iteration. A
+locus that ESCAPES the iteration is unaffected, because it
+never had a slot here to begin with: a literal written directly
+as another locus's param field is parent-owned, and so are an
+`accept`'d child and a locus the fn returns. A handle the loop
+passes *in* to an owner (`Keeper { held: h }`) keeps its own
+slot and is reclaimed here — the owner's cascade steps over a
+field it did not construct, as it always did (F.29).
+
+Each instantiation reclaims its own previous instance, where
+it stands, so within one iteration the reclaims run in
+instantiation order — the reverse of the LIFO order the
+scope-exit flush uses. Two loci bound in the same iteration are
+independent; a `dissolve()` body that reads a sibling handle it
+does not own sees the sibling's next instance.
+
+**Every exit path flushes independently, and a `return` takes
+nothing away from the others.** A fn — `fn main` included — may
+leave through an early `return`, through a later `return`, or by
+falling off the end. Each of those paths dissolves everything the
+fn owns *at that point*, in reverse instantiation order, and the
+paths do not interact: a `return` in the middle of a body does
+not shorten the set the fall-through exit dissolves. So in
+
+```hale
+fn main() {
+    let a = Noisy { tag: "a" };
+    if bad_usage { return 2; }   // dissolves `a`, then exits 2
+    let b = Noisy { tag: "b" };
+}                                // dissolves `b`, then `a`
+```
+
+the guarded exit dissolves `a`, and the ordinary exit — the one
+taken when the guard does *not* fire — dissolves `b` and then
+`a`. A locus bound only inside the branch that returns is listed
+on the other paths too but was never instantiated there, so those
+paths skip it: it dissolves exactly once, on the one path that
+built it. `return f()` evaluates `f` before any teardown begins,
+and a locus `f` itself bound is dissolved by `f`'s own exit
+(GH #789).
 
 ### `terminate`
 
@@ -982,13 +1142,34 @@ the leak was the safety mechanism. Every attempt to give those loci
 a real lifetime produced either a use-after-free or silently wrong
 values.
 
-Two remedies, both existing shapes:
+Three remedies, all existing shapes:
 
 - **Assign a literal** — construction in place, the lifecycle
   transition above, unambiguously owned by the field.
 - **Route membership through `accept(c: L)`** — parent/child
   ownership, which is the language's answer for "this locus holds
   that one" whenever the child is not a `params` field.
+- **Transfer the STATE, not the instance** — where a locus is a
+  *handle* over an external resource, the module that owns the
+  resource may publish a transfer operation that writes the handle's
+  state into the instance the field already holds and leaves the
+  source at its not-acquired sentinels. That is not a locus store at
+  all: no second instance enters the field, and the disarmed source's
+  own teardown releases nothing. `std::process::adopt(dest, src)`
+  (GH #716) is the shipped instance — the pid and three pipe fds of a
+  spawned `Child` move into the field, whatever the field held is
+  released first, and the source is disarmed. The first two remedies
+  cannot reach that case: the resource is acquired by a syscall inside
+  a factory, so there is no literal to write and `accept()` cannot
+  adopt what a free fn built.
+
+  This is a **module-provided** operation, not a language feature.
+  The language does not gain move semantics: the transfer is ordinary
+  field assignment written inside the module that defines the handle,
+  and it is sound only because that module knows what "one owner"
+  means for its resource (which descriptors, whose teardown, in which
+  order). A locus with no external resource has nothing to transfer
+  and needs none of this.
 
 This is the same principle as the no-locus-return rule on methods
 (`fn get() -> SomeLocus` is rejected): **a locus is structure, not
@@ -2397,6 +2578,73 @@ main locus App {
     the program's main thread, whose affinity belongs to the
     operator. Thread affinity only; pool workers own no arena to
     node-bind (handler scratch lives in each locus's own arena).
+17. **A `pinned` placement forbids a loop (error).** A locus whose
+    `placement { }` block pins any field may not be instantiated
+    inside a loop body — a `while` / `for` at any nesting depth, in
+    a free fn, a locus method or a lifecycle hook. `pinned` gives
+    its field its own OS thread, spawned during the placing locus's
+    params-init and joined at the instantiating scope's exit, and
+    the join record (the deferred-dissolve slot plus the thread
+    handle beside it) is one slot per instantiation *site*: a second
+    pass over the site overwrites the record of the first, so only
+    the LAST instance is joined and arena-destroyed and every
+    earlier pinned thread is orphaned with its arena still live.
+    Placement names static resources — a core, a NUMA node,
+    `replicas = K` — one thread per entry for the program's life, so
+    a per-iteration thread is a category error rather than a
+    reclaim policy to pick. `placement { }` is main-only (rule 1),
+    so the shape this rejects is the deployment root booted once per
+    iteration. The fix is to instantiate it once outside the loop;
+    a loop that *calls a fn* holding the literal is unaffected and
+    correct (each call joins its own thread at that fn's exit), and
+    the rule is positional on that literal, so it is not a rule
+    about the whole call graph. Codegen keeps a matching refusal for
+    embedders that bypass the checker. (GH #826, 2026-09-20.)
+18. **Every entry is consumed by exactly one instantiation
+    (error).** A placement entry is carried by the locus LITERAL
+    lowered for its field, and by nothing else: the thread class,
+    the cooperative pool and the NUMA node all ride an override that
+    the next `T { }` takes. So a placed field whose value arrives
+    any other way — a factory call, a fallible call, a conditional,
+    a reference to an instance somebody else built — leaves the
+    entry untaken, and the next field's turn through the params-init
+    loop resets it. Nothing is placed and nothing is said. That
+    shape is rejected at the initialiser, with the literal form
+    spelled out. The entry's value is the init written at the
+    instantiation site when the literal supplies one, and the
+    `params` default otherwise, so both spellings are checked — and
+    a default every site overrides is dead text, not a dropped
+    placement. The entry is not applied after the fact because there
+    is nothing left to place: the pinned path does not mark an
+    instance, it spawns a thread that runs the locus's whole
+    lifecycle — birth, `run()`, the mailbox loop, drain, dissolve —
+    and a factory's literal has already run birth and `run()` (and
+    registered its subscriptions against the global queue) before
+    the value returns. Scope matches rule 17's: an imported seed's
+    main locus is renamed `__lib_*`, is not the deployment root, and
+    its entries never reach the plan. Codegen keeps a matching
+    refusal for embedders that bypass the checker. (GH #890,
+    2026-09-20.)
+
+19. **Uncarriable bus payload (error).** An `of type T` clause on a
+    `publish` / `subscribe` must name a type the bus can carry — a
+    user `type`, an enum with a payload variant, or `BytesView`
+    (§ *Bus subscription dispatch* → *Payload type*, below, has the
+    full statement of what the wire carries). A primitive, a tuple,
+    an array, `bounded[T; N]` or a no-payload enum is rejected at
+    the clause's own span. Before this rule `of type Int` checked
+    clean and
+    could not be lowered: codegen refused the publish
+    (`bus send payload must be a user-type or has-payload enum
+    value`) and the subscribe (`m60 requires a TypeRef, has-payload
+    Enum, or BytesView`), unlocated and from another layer. A
+    payload type the bundle cannot *resolve* — a qualified path into
+    a seed it does not hold, a generic instantiation, a name nothing
+    declares — is left alone: the rule is about what the bus
+    carries, not about which names are in scope. A `topic`'s
+    `payload:` is under the same contract, but the checker does not
+    desugar topics (lowering does), so that half is still diagnosed
+    during lowering. (GH #876, 2026-09-20.)
 
 ### Single-threaded-method invariant
 
@@ -2630,6 +2878,15 @@ is just `xs.get(0) or …`; a stage-less sum can be written
 `*_into` names belong to this vocabulary — unlike bare `into`, no
 plausible user facade carries them (2026-08-11).
 
+Every stage and terminal above is recognized only **after a `.`**,
+so a free `fn map(...)` / `fn first(...)` / `fn count(...)` is
+admissible and is called as written. The exceptions are the
+names the compiler claims at a BARE call site — `sum`, `prod`,
+`min`, `max` among them — which a free `fn` may not take; see
+[`tokens.md` § Built-in identifiers](tokens.md) for the full set,
+the rule and the diagnostic. A locus method may still carry any
+of them (2026-09-20, GH #863 / GH #880).
+
 ## Bus subscription dispatch
 
 A `bus { subscribe SUBJECT as HANDLER of type T; }` declaration
@@ -2652,17 +2909,34 @@ If HANDLER panics:
 - The subscription itself is *not* removed; future messages
   continue to dispatch.
 
-### Payload type — primitives + nested structs + String
+### Payload type — what a subject may carry
 
-The wire format supports primitives (`Int`, `Float`, `Bool`,
-`Decimal`, `Duration`, `Time`, `String`), `Bytes`, and
-**nested user struct types** (`type T { ... }`) recursively
-composed. A bus payload may carry a struct whose fields are
-primitives, Strings, Bytes, or other nested structs, at any
-depth. Serialize walks the field tree in declaration order;
-deserialize allocates each nested struct in the lazy global
-payload arena and recurses. Arrays, tuples, and enums as bus
-payload fields are post-v1 polish.
+A subject's payload type — `T` in `of type T`, or a `topic`'s
+`payload:` — must be one of exactly three things:
+
+- a user `type` (`type T { ... }`);
+- an `enum` with at least one variant that carries a payload,
+  which travels as that enum's storage struct;
+- `BytesView` (`std::bytes::BytesView`), the raw-frame path: the
+  payload is not typed at all, and the handler receives a bounded
+  view over each record. This is how a foreign writer's ring is
+  consumed.
+
+A delivery is a *serialized struct*, so the payload needs a field
+layout: `of type Int` has none, and neither does a tuple, an
+array, or a no-payload enum. An `of type` clause naming one is
+rejected at typecheck, at the clause (rule 18 above); a `topic`
+whose `payload:` names one is refused during lowering.
+
+**Within** a payload, the wire format supports primitives (`Int`,
+`Float`, `Bool`, `Decimal`, `Duration`, `Time`, `String`),
+`Bytes`, and **nested user struct types** recursively composed. A
+bus payload may carry a struct whose fields are primitives,
+Strings, Bytes, or other nested structs, at any depth. Serialize
+walks the field tree in declaration order; deserialize allocates
+each nested struct in the lazy global payload arena and recurses.
+Arrays, tuples, and enums as bus payload *fields* are post-v1
+polish.
 
 ## Closure-test evaluation
 
@@ -3396,6 +3670,63 @@ boundary events at the implicit main locus's root:
 Both paths preserve the framework's vertical-only-flow: every
 failure exits through the top of the recursion, never
 laterally.
+
+## Declarations inside `module { }`
+
+`module NAME { <top_decl>* }` (grammar `module_decl`) groups
+declarations for the reader. It introduces **no namespace of its
+own**: the resolver registers a module's declarations in the
+bundle's one flat top-level scope, under their **bare** names, at
+any nesting depth. `module geo { type Point { x: Int; } }` makes
+`Point` — not `geo::Point` — the name every use site spells, two
+modules declaring the same name are the ordinary duplicate-name
+error, and the module's name is not itself a value, a type, or a
+path head.
+
+The consequence is a rule, not an implementation detail:
+
+> A declaration inside a `module { }` is **first class**. It is
+> resolved, typed, mangled, lowered and linked exactly as the same
+> declaration written at the top level.
+
+This holds for each kind: a `type` (struct, enum or alias), a
+`locus`, a `perspective`, an `interface`, a `topic`, a `const`, a
+generic template, and a free `fn`. It holds through an `import`
+in both directions: a library's module-nested declaration gets a
+mangled name and a rename-table row like any other, so the
+importer reaches it as `alias::Name`, and a qualified path the
+importer writes *inside* a module — a type in a signature, a
+call, a struct literal, an enum variant — resolves as it would at
+the top level.
+
+Two things a module still does not change, because neither is a
+name lookup:
+
+- **The entry point.** A seed's entry point is its **top-level**
+  `fn main` (or the `main locus` that one instantiates). A `fn
+  main` written inside a module is an ordinary free fn that
+  happens to be called `main`; it does not start the program.
+- **Scoping of locals.** Ordinary lexical scope is unchanged; a
+  module is not a scope.
+
+**Analysis is on the same line, one check at a time.** The rule
+above is about resolution and lowering, and it holds without
+exception. The bundle-level *checks* are being brought to it
+individually: the hot-path allocation lint and the decorator-stack
+check reach inside a module (GH #764, `verification.md`), while
+several siblings in `check.rs` still stop at the top level and are
+tracked by GH #825 — there, a declaration one brace deeper can
+escape a check the identical top-level declaration would fail.
+Effect inference is the same shape and fails closed: it qualifies a
+module-scoped subject's name but does not summarize its body, so
+the manifest reports `unclassified` ("may do anything") rather than
+a narrower set.
+
+(GH #764 for the lint; GH #884 and GH #854 for codegen's
+declaration collection, the cross-seed mangler and the pre-typecheck
+rename pass. Before those, the same program was accepted at the top
+level and either silently unanalyzed or unbuildable one brace
+deeper.)
 
 ## Cross-seed namespace resolution (v1.x-IMPORT)
 

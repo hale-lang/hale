@@ -145,12 +145,12 @@ fn byte_view_scan_scales_linearly() {
             println(label, " count=", counted, " ns=", best);
         }
         fn main() {
-            let one = std::str::repeat("abcdefgh", 131072);
-            let two = std::str::repeat("abcdefgh", 262144);
-            let four = std::str::repeat("abcdefgh", 524288);
-            best_of_nine(one, "mib1");
-            best_of_nine(two, "mib2");
-            best_of_nine(four, "mib4");
+            let one = std::str::repeat("abcdefgh", 1048576);
+            let two = std::str::repeat("abcdefgh", 2097152);
+            let four = std::str::repeat("abcdefgh", 4194304);
+            best_of_nine(one, "sz8");
+            best_of_nine(two, "sz16");
+            best_of_nine(four, "sz32");
         }
     "#;
     let (stdout, status) = build_and_run("byte_view_scaling", src);
@@ -174,13 +174,13 @@ fn byte_view_scan_scales_linearly() {
     };
 
     // Every byte was actually visited — 'e' is one byte in eight.
-    assert_eq!(read("mib1", "count="), 131072, "1 MiB scan visited 1 MiB");
-    assert_eq!(read("mib2", "count="), 262144, "2 MiB scan visited 2 MiB");
-    assert_eq!(read("mib4", "count="), 524288, "4 MiB scan visited 4 MiB");
+    assert_eq!(read("sz8", "count="), 1048576, "8 MiB scan visited 8 MiB");
+    assert_eq!(read("sz16", "count="), 2097152, "16 MiB scan visited 16 MiB");
+    assert_eq!(read("sz32", "count="), 4194304, "32 MiB scan visited 32 MiB");
 
-    let ns1 = read("mib1", "ns=");
-    let ns2 = read("mib2", "ns=");
-    let ns4 = read("mib4", "ns=");
+    let ns1 = read("sz8", "ns=");
+    let ns2 = read("sz16", "ns=");
+    let ns4 = read("sz32", "ns=");
     assert!(
         ns1 > 0 && ns2 > 0 && ns4 > 0,
         "monotonic clock gave a non-positive span: {} / {} / {}",
@@ -194,19 +194,22 @@ fn byte_view_scan_scales_linearly() {
     // cost and still far below the minutes a quadratic scan needs.
     assert!(
         ns4 < 5_000_000_000,
-        "4 MiB scan took {} ns — a linear scan is microseconds, so this \
+        "32 MiB scan took {} ns — a linear scan is a millisecond, so this \
          is the quadratic shape #720 reported",
         ns4
     );
 
-    // Shape: 4x the input for well under 6x the time. Measured 3.9x
-    // (29 / 57 / 114 us); the quadratic form is 16x or worse, so 6x
-    // sits between the two with room for a noisy box on both sides —
-    // the point of the bound is to separate O(n) from O(n^2), not to
-    // police a constant factor.
+    // Shape: 4x the input for under 10x the time. Measured 3.9x
+    // locally (29 / 57 / 114 us at 1/2/4 MiB); the quadratic form is
+    // 16x or worse. The sizes are 8/16/32 MiB so the fastest-of-nine
+    // is hundreds of microseconds and a shared CI runner's jitter is a
+    // small fraction of it — the first cut at 1/2/4 MiB and 6x read
+    // 7.1x on one runner and passed on the next. The point of the
+    // bound is to separate O(n) from O(n^2), not to police a constant
+    // factor.
     assert!(
-        ns4 < ns1 * 6,
-        "4 MiB ({} ns) should cost well under 6x 1 MiB ({} ns) — 2 MiB \
+        ns4 < ns1 * 10,
+        "32 MiB ({} ns) should cost under 10x 8 MiB ({} ns) — 16 MiB \
          was {} ns; a per-access cost that grows with the input is back",
         ns4,
         ns1,

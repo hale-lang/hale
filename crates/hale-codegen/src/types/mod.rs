@@ -73,6 +73,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if generic_args.is_empty() && path.segments.len() == 1 =>
             {
                 let name = &path.segments[0].name;
+                // GH #759: a `type Name = T;` alias is transparent —
+                // it has no LLVM type of its own, so a use of the
+                // name lowers as the target. Checked FIRST: the
+                // alias name is also in `pending_type_names` (the
+                // forward-ref pre-pass records every `type` decl),
+                // and that branch would otherwise hand back a
+                // record-by-pointer `TypeRef` for what is spelled
+                // `Int`.
+                if let Some(target) = self.user_type_aliases.get(name) {
+                    let target = target.clone();
+                    return self.type_expr_to_codegen_ty(&target);
+                }
                 if self.user_loci.contains_key(name)
                     || self.pending_locus_names.contains(name)
                 {
@@ -167,6 +179,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     ))
                 })?;
                 let mangled: &str = &mangled_owned;
+                // GH #759: transparent through a renamed alias too.
+                if let Some(target) = self.user_type_aliases.get(mangled) {
+                    let target = target.clone();
+                    return self.type_expr_to_codegen_ty(&target);
+                }
                 if self.user_loci.contains_key(mangled)
                     || self.pending_locus_names.contains(mangled)
                 {
@@ -316,8 +333,65 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// GH #759: does following `name`'s alias chain re-enter a name
+    /// it already visited? Pass A0 drops such aliases so the
+    /// transparent-resolution hop in `type_expr_to_codegen_ty`
+    /// always terminates. `check` is what reports the cycle.
+    pub(crate) fn alias_chain_is_cyclic(&self, name: &str) -> bool {
+        fn names_in(t: &TypeExpr, out: &mut Vec<String>) {
+            match t {
+                TypeExpr::Named { path, generic_args, .. } => {
+                    if path.segments.len() == 1 {
+                        out.push(path.segments[0].name.clone());
+                    }
+                    for a in generic_args {
+                        names_in(a, out);
+                    }
+                }
+                TypeExpr::Array { elem, .. }
+                | TypeExpr::Bounded { elem, .. } => names_in(elem, out),
+                TypeExpr::Projection { inner, .. } => names_in(inner, out),
+                TypeExpr::Tuple(parts, _) => {
+                    for p in parts {
+                        names_in(p, out);
+                    }
+                }
+                TypeExpr::Function { params, ret, .. } => {
+                    for p in params {
+                        names_in(p, out);
+                    }
+                    if let Some(r) = ret {
+                        names_in(r, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut seen: Vec<String> = vec![name.to_string()];
+        let mut stack: Vec<String> = vec![name.to_string()];
+        while let Some(cur) = stack.pop() {
+            let Some(target) = self.user_type_aliases.get(&cur) else {
+                continue;
+            };
+            let mut refs: Vec<String> = Vec::new();
+            names_in(target, &mut refs);
+            for r in refs {
+                if !self.user_type_aliases.contains_key(&r) {
+                    continue;
+                }
+                if seen.iter().any(|s| *s == r) {
+                    return true;
+                }
+                seen.push(r.clone());
+                stack.push(r);
+            }
+        }
+        false
+    }
+
     /// Pass A0: declare a user `type` decl as an LLVM struct type.
-    /// Aliases and enums are not yet lowered — only struct bodies.
+    /// Enums register a tag table; an ALIAS declares nothing (its
+    /// uses lower as the target — GH #759).
     /// No defaults are expected (the language requires struct
     /// literals to provide every field at the call site).
     pub(crate) fn declare_user_type(&mut self, t: &TypeDecl) -> Result<(), CodegenError> {
@@ -336,11 +410,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let struct_fields = match &t.body {
             TypeDeclBody::Struct(fs) => fs,
+            // GH #759: an alias declares no type of its own. Its
+            // target was recorded in `user_type_aliases` in pass
+            // A0, and every use of the name lowers through that —
+            // there is nothing to declare here.
             TypeDeclBody::Alias(_) => {
-                return Err(CodegenError::Unsupported(format!(
-                    "type alias `{}`: codegen v0 only lowers struct types",
-                    t.name.name
-                )));
+                return Ok(());
             }
             TypeDeclBody::Enum(variants) => {
                 // m47 + payloads: register the enum's variants
@@ -1046,10 +1121,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         locus_name: &str,
         iface_name: &str,
     ) -> bool {
-        let iface_methods: Vec<&str> = match self
-            .program
-            .items
-            .iter()
+        // GH #884: module nesting flattened.
+        let iface_methods: Vec<&str> = match hale_syntax::ast::flat_decls(
+            &self.program.items,
+        )
             .find_map(|item| match item {
                 TopDecl::Interface(i) if i.name.name == iface_name => {
                     Some(i.methods.iter().map(|m| m.name.name.as_str()).collect())

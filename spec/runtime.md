@@ -154,7 +154,24 @@ the model: runtime is automatic; stdlib is explicit.
   outer locus's own drain. The subsequent dissolve cascade
   runs the outer's `closures → dissolve` body next, then per
   child `closures → dissolve → arena_destroy`, then outer's
-  arena_destroy. Pinned-thread tail still skips the cascade
+  arena_destroy. **The walk is recursive, to the leaves**: a
+  child's own `LocusRef` fields drain before the child does
+  and are dissolved (and their arenas destroyed) before the
+  child's arena, which holds their structs. Every level's
+  gate is that level's own ownership mask, so a subtree handed
+  in from outside is skipped wherever it appears and is torn
+  down once, by its real owner.
+  A param field typed by a **contract** rather than by the
+  child's locus — an `interface` slot, a `perspective(P)`
+  handle — carries an owned child on the same terms, and the
+  cascade reaches it: the declared type names no impl, so the
+  instantiation records the child's `__reclaim_<Impl>` in a
+  synthetic per-field slot and the cascade runs that whole
+  spine (drain → dissolve → arena reclaim) through it, under
+  the same ownership-mask gate. The consequence users can
+  check is arena residency: no locus arena, at any depth and
+  behind any field type, survives its owner.
+  Pinned-thread tail still skips the cascade
   per the v1 trade-off. An `accept`'d child is reclaimed on its
   OWN run-completion / `terminate` when it is a flow (see
   "Per-child reclamation" below) rather than waiting for the
@@ -786,6 +803,24 @@ lock) and drained at pool teardown, so a busy async pool retains up
 to 64 × 64 KiB (~4 MiB) of coro stacks at steady state. Transparent
 to user code — a pure allocation optimization, no behavior change.
 
+**A handler's payload is its own until it returns, across parks**
+(GH #781, 2026-09-19). The storage a delivery's payload lives in
+belongs to the coroutine that runs the handler, for the whole
+invocation: the cell's inline payload bytes are copied into the coro
+when it starts, a spilled heap payload and the wire path's
+per-delivery subregion transfer to it, and all three are released
+once the handler *returns* — however many parks later. So a handler
+that parks on a `sleep`, a socket read, or a subprocess drain and
+then reads its payload parameter again reads what it read at entry;
+concurrent deliveries to the same subscriber never share payload
+storage. This did not hold before: the drain dequeued each cell into
+a stack local and handed the handler a pointer into it, so a parked
+handler returned to a frame the next dequeue had already reused, and
+every parked delivery read the LAST published value (the same
+mechanism leaked a >512-byte spilled payload per park). Pinned
+subscribers were never affected — a mailbox cell outlives the
+handler it dispatches, which has no coro to park on.
+
 Typecheck rules:
 
 - All placement entries on the same named cooperative pool must
@@ -1146,6 +1181,21 @@ control plane; the data plane stays in C:
   parked accept/recv, joins the serve thread, destroys the
   transport. The husk entry stays in the remote table for
   `lotus_bus_remote_destroy_all` to free uniformly.
+- **When that dissolve runs (GH #893).** The transport's struct
+  is allocated for the program's lifetime (the payload arena, so
+  it outlives `fn main`'s subregion) but it is OWNED by `fn
+  main`: the prelude registers it on main's deferred-dissolve
+  frame, before any user statement, so it is that frame's first
+  entry and the reverse-order flush tears it down LAST — after
+  every user locus has dissolved (a `dissolve()`-body publish
+  still reaches the wire), after the main-exit ingress quiesce
+  and cooperative-pool join the exit path sequences ahead of the
+  flush, and before the global arena destroy and
+  `lotus_bus_queue_destroy`. `lotus_bus_remote_destroy_all` then
+  finds the entry already reclaimed — transport NULL, serve
+  thread joined — and frees only the husk. Program-lifetime
+  ALLOCATION and no OWNER are separate questions; a transport
+  answers the first without the second.
 
 Publish fanout is untouched — realized entries land in the same
 `g_bus_remote_entries` table the fanout walks.
@@ -1773,16 +1823,24 @@ ids: main = 1, cooperative pool workers = 16 + registration
 index, pinned locus threads = 64 + obs instance id; threads with
 no stable identity (ingress readers) get run-unique anonymous
 ids, never a shared fallback. Payload bytes are captured once per
-queued publish under a **stable subject hash** (manifest topic
-ids are registration-order and racing publishers register in
-either order). Flags: bit 0 = external wire ingress; bit 1 = raw
+publish — **every dispatch flavor, queued or synchronous direct**
+— under a **stable subject hash** (manifest topic ids are
+registration-order and racing publishers register in either
+order). Flags: bit 0 = external wire ingress; bit 1 = raw
 in-process struct bytes — an ABI snapshot (String/Bytes fields
 are pointers, padding is uninitialized) that consumers must
 compare by size only; canonical per-topic recording codecs are
 the staged fix. Wire captures are canonical bytes, unflagged.
-The synchronous direct-dispatch flavors deliberately capture
-nothing: a closed-world same-thread call cannot carry external
-input, and re-execution re-derives its payloads.
+The direct-dispatch flavors — the devirtualized same-thread call
+that replaces the enqueue, in both its baked-inline and helper
+forms — record through the same writer, at the same publish site,
+in the same framing. They used to capture nothing, on the
+reasoning that a closed-world same-thread call carries no
+external input and re-execution re-derives its payloads: it does
+re-derive them, which is precisely why `--diff` can compare them,
+and a fully direct-dispatched workload recorded none to compare.
+The capture sits behind the same recording gate as the publish
+probe, so an unrecorded run writes nothing and pays nothing.
 
 **Input journal (Phase 3).** Under recording, every user-facing
 nondeterministic read is journaled per consumer as ONE unified
@@ -2007,6 +2065,33 @@ divergence fails `--diff` through the verdict. `--at <n>` stops
 consumer); `--at <consumer-id>:<ordinal>` is the stable
 multi-consumer form. Replay implies observation (identity rides
 the obs machinery).
+
+**What a match reports — coverage, per category (GH #728).** A
+match is only as strong as the categories the recording carries
+observations for, so the success report names all five and states,
+for each, either the count it compared or that the category was
+**not exercised** and why: public bus events (with their consumer
+count), payloads, queued consumes, async schedule steps, journal
+reads. A category with no recorded observations is never printed
+as a compared zero — "0 consumes across 0 consumers" read as a
+verified queued delivery schedule when the workload
+direct-dispatched every delivery and no queued schedule existed
+to verify (and the same template asserted payload identity for a
+recording with no payload blobs). Direct dispatch stays valid and
+is named as such: its deliveries are compared, as public bus
+events, and its payloads are compared with them — a
+direct-dispatched publish records its payload blob like any other
+(above), so `payloads` is a compared category for such a
+workload, not an unexercised one. Coverage is derived from the recording the comparator
+walks and gated on the same async-capability bit, so the report
+cannot claim a category `diff` skipped. `--json` (strict replay
+with `--diff`) prints the same verdict machine-readably —
+`result`, `ring_records`, `recorded_prefix_only`, and per category
+`compared`, `count`, `consumers`, `not_exercised_because`. Success
+semantics are unchanged: a divergence in any compared category
+still fails, and a diverged verdict carries the reason with no
+per-category counts (the comparison stopped at the first
+difference).
 
 Two honest limits, stated rather than implied: the recorded
 interleaving is reproduced per consumer, not globally — cross-

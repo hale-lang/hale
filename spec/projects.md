@@ -190,7 +190,33 @@ The compiler tries three locations in order; the first hit wins:
    upward from the importer that contains a `Cargo.toml`.
 
 If none of the three locations resolve, the build fails with a
-diagnostic listing all three search paths.
+**located** diagnostic at the import's path literal — the file,
+line and column of the `import` that names nothing, with the three
+search paths as the message body (2026-09-20, GH #860). It is a
+finding about the program like any other, so every channel carries
+it: a record under `hale check --json` / `hale verify --json`, the
+located line with a caret under the path in text mode, and the same
+located line from `build`, `run` and `test`, which have no
+machine-readable channel. (Before #860 it was a sentence on stderr
+plus a bare non-zero exit, so `--json` answered an unresolvable
+import with an empty stream.)
+
+A path that DOES resolve — to a directory with no `.hl` files in
+it, or to a file that will not open — is an `"io error"` record
+about that path instead: the import was resolved, and what failed
+was reading what it named.
+
+**A library's identity is its seed directory.** `main.hl` is a
+seed's entry file, not a library of its own, so a rule-1 hit on a
+`main.hl` resolves as rule 2 against the directory around it:
+`import "../lib/main"` and `import "../lib"` name the **same**
+library — one file set, one `lib_id`, one set of mangled symbols —
+and an importer that uses one spelling in one of its files and the
+other spelling in another gets one library under both aliases. Any
+other single file is a library of its own under rule 1, bringing
+in that file and nothing else. The one exception is a `main.hl`
+in the importer's own directory, which stays a rule-1 single-file
+library: a seed does not import itself.
 
 ### Mangling scheme
 
@@ -207,8 +233,10 @@ __lib_<lib_id>_<file_stem>_<name>
   root (the nearest ancestor directory containing `hale.toml`
   or `Cargo.toml`). Two consumers importing the same lib
   produce the same `lib_id` regardless of which alias each
-  consumer chose. Non-identifier characters in the path collapse
-  to `_`; runs of underscores collapse to one.
+  consumer chose, and regardless of which of the two spellings
+  of "Resolution order" above each consumer wrote. Non-identifier
+  characters in the path collapse to `_`; runs of underscores
+  collapse to one.
 - **`<file_stem>`** is the basename of the source file the decl
   lives in, sans `.hl`. So two files in the same library can
   share a decl name without colliding.
@@ -321,6 +349,29 @@ down (`app → A → B`) and across A's multiple files. (This is the
 rule below still holds — the *app* cannot name `b::Thing` unless
 it imports B itself.)
 
+**A qualified type is checked like a local one.** In a WHOLE
+program — one where every `import` is resolved, which is what
+`hale check <dir>`, `build`, `run` and `test` hand the checker —
+`lib::Thing` in any annotation position (`let`, fn parameter, fn
+return, struct field, `params` field, a `capacity` slot, an alias
+target) denotes the imported declaration and is typed as it. The
+annotation constrains what may fill it, the same way a locally
+declared type does: `let t: lib::Thing = "x";` is a located type
+error naming `lib::Thing`, and field and method access through the
+binding resolves against the imported declaration. Two aliases for
+one library are one type, because the declaration they name is one
+declaration.
+
+Two things stay permissive, both because the declaration genuinely
+is not in the bundle: a path whose head no seed of the bundle
+resolved (the tolerance the rule above is stated against), and a
+check of a single FILE of a multi-file seed, where the `import`
+line may live in a sibling — one file is not a whole program, the
+same boundary the unbound-identifier rule draws. (GH #833: until
+then the annotation typed as unknown, so nothing was checked
+against it and the mismatch surfaced at build, unlocated, or not
+at all.)
+
 **No re-exports.** B's decls are not visible to A's importers
 unless they declare their own dependency on B. The `<lib_id>`
 in B's mangled prefix is derived from B's canonical path, NOT
@@ -354,6 +405,25 @@ diagnostics show. Until GH #746 the table was flat: the last
 binding registered won, both seeds resolved to one library, and
 nothing reported it (`hale check` passed and the binary computed
 the wrong value).
+
+**A reference must name an alias its own seed declares.** The
+guarantee above holds in both directions, so a qualified path whose
+head is an import alias that some *other* seed of the build declares
+— and this one does not — is a check error located at the path,
+naming the seed that does declare it. This closes the other half of
+the flat-table hole: a seed that imported nothing at all could write
+`u::f()` and have the one table answer it out of an importer's row,
+so a library silently called whatever library its app happened to
+spell `u` (and the same library, compiled from a different app,
+called something else). Until GH #762 that was accepted in silence
+whenever the alias was uncontested, and reported only when two seeds
+contested it.
+
+Exempt from the rule: `std::`, the bundled namespace no seed
+imports, and a head naming one of the seed's own declarations
+(`Color::Red` is an enum variant, not an alias). A head NO seed in
+the build declares is refused where it always was, at build —
+nothing resolves through it either way.
 
 One seed whose own files disagree — the same alias bound to two
 libraries inside a single namespace — resolves to one of them, as
@@ -510,10 +580,22 @@ End-to-end coverage lives in
 
 ## Build flags + environment
 
+A flag may stand on either side of the target: the first argument
+that is not a flag IS the target, so `hale build --dev app.hl` and
+`hale build app.hl --dev` are one command (2026-09-20, GH #861;
+before it `build`'s flag parsing started at argv[3] and a flag in
+front of the target was read as the target itself). Value-taking
+flags — `--link`, `--csrc`, `--target`, `--target-cpu`,
+`--target-cache` — take the next argument as their value, so that
+argument is never mistaken for the target. `hale run` follows the
+same rule up to the target and then stops: everything after the
+target is the PROGRAM's argv, which is why `run`'s own `--observe`
+goes in front of it.
+
 | Surface | Effect |
 |---|---|
 | `hale build --dev` / `HALE_DEV=1` | Latency mode: LLVM O1 pipeline + Less machine codegen instead of the O3/`target-cpu=native` release default. For edit-build-run loops. |
-| `hale check --json` | NDJSON diagnostics on stdout, one object per line (`file`/`line`/`col`/`severity`/`kind`/`message`, plus `related`: an array of `{file, line, col, note}` secondary locations, present only when a diagnostic has them — e.g. a duplicate name's previous declaration; 2026-08-11) — editor/LSP consumption. `hale check` runs in ~10 ms on the largest apps. |
+| `hale check --json` | NDJSON diagnostics on stdout, one object per line (`file`/`line`/`col`/`severity`/`kind`/`message`, plus `related`: an array of `{file, line, col, note}` secondary locations, present only when a diagnostic has them — e.g. a duplicate name's previous declaration; 2026-08-11) — editor/LSP consumption. EVERY finding that fails the command is a record, including a lexical or syntactic one: a file that does not parse — the target's own or any file reached through an `import` — emits one record per diagnostic, `"kind":"parse error"` (or `"lex error"`), at that file's own line and column (2026-09-19, GH #777; before it the parse path printed text to stderr and left `--json` empty, so a gate saw a non-zero exit with nothing explaining it). An input that could not be READ is a record too, `"kind":"io error"`, `"file"` the path it is about and `"message"` the OS error, at `"line":0,"col":0` — no position, because there is no text to have a position in: a target that does not exist, a `.hl` file of the seed that will not open, a file of the import graph that will not open (2026-09-20, GH #806; these printed a sentence on stderr and left the stream empty, an environment failure wearing the same shape as a crash). An `import` that resolves to NOTHING is a located record like any other finding, `"kind":"type error"` at the line and column of the path literal that names nothing, with the three search paths tried in its `message` (2026-09-20, GH #860; it was the last failure on this path still reported only as a sentence on stderr). An empty stream therefore means a clean seed, and nothing else does. `hale verify --json` is the same stream under the stricter gate. `hale check` runs in ~10 ms on the largest apps. |
 | `HALE_TIME=1` | Per-phase build wall times on stderr (front-end+codegen, llvm-passes, obj-emit, emit+link). |
 | `--no-warn-unbounded-alloc` | Opts a run out of the default-on memory-bound survey (see verification.md). |
 | `hale check --sealable` | Reports which loci could take `@sealed` and what it would cost: per locus, the sites outside it that read or write its `params`. Empty means sealing is a no-op. The survey reruns the real check against an all-sealed clone rather than approximating the rule, so it cannot disagree with the checker. |

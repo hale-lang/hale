@@ -1538,5 +1538,531 @@ fn pre_phase6_artifact_diff_skips_schedule_comparison() {
         "both layers must state the coverage limitation:\n{}",
         stderr
     );
+    // GH #728: the coverage report must state it too — a match on an
+    // artifact with no recorded schedule says nothing about schedules.
+    assert!(
+        stdout.contains("async schedule steps:")
+            && stdout.contains(
+                "not exercised: this recording predates \
+                 async-schedule support"
+            ),
+        "the match report must name the skipped schedule \
+         category:\n{}",
+        stdout
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- GH #728: what a successful --diff actually compared ----------
+//
+// `--diff` used to report every match with one template that named
+// the consume count alone ("0 consumes across 0 consumers; canonical
+// payloads identical, …"). Two claims in that sentence were wrong for
+// a direct-dispatch workload: zero queued consumes read as a VERIFIED
+// queued delivery schedule when no queued schedule existed to verify,
+// and "canonical payloads identical" was printed for a recording with
+// zero payload blobs. These tests pin the report to the categories
+// the comparator actually walked.
+
+/// Publisher and subscriber in one tree on one thread: every delivery
+/// is synchronous direct dispatch, so the recording carries public
+/// bus events with NO queued consume stream behind them.
+///
+/// GH #782: it DOES carry the payload blobs. The direct flavors used
+/// to be the one publish path that recorded none, so a fully
+/// direct-dispatched workload replayed with `payloads: not exercised`
+/// — the report was honest, the recording was short.
+const DIRECT_DISPATCH: &str = r#"
+type Ping { n: Int = 0; }
+
+locus Sink {
+    params { seen: Int = 0; }
+    bus { subscribe "dd.ping" as on_p of type Ping; }
+    fn on_p(p: Ping) { self.seen = self.seen + 1; }
+}
+
+main locus App {
+    params { s: Sink = Sink { }; }
+    bus { publish "dd.ping" of type Ping; }
+    run() {
+        let mut i = 0;
+        while i < 10 {
+            "dd.ping" <- Ping { n: i };
+            i = i + 1;
+        }
+        println("published");
+    }
+}
+
+fn main() { App { }; }
+"#;
+
+/// The value the coverage report gives one category, e.g.
+/// `20 across 1 consumer (…)` or `not exercised: …`.
+fn coverage_line(stdout: &str, label: &str) -> String {
+    let want = format!("{}:", label);
+    for l in stdout.lines() {
+        if let Some(rest) = l.trim_start().strip_prefix(&want) {
+            return rest.trim().to_string();
+        }
+    }
+    panic!("no `{}` category in the report:\n{}", label, stdout);
+}
+
+/// The count a COMPARED category reports (panics when the category
+/// was not exercised — that is a different assertion).
+fn coverage_count(stdout: &str, label: &str) -> usize {
+    let v = coverage_line(stdout, label);
+    v.split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .parse()
+        .unwrap_or_else(|_| {
+            panic!(
+                "`{}` reports `{}`, not a compared count:\n{}",
+                label, v, stdout
+            )
+        })
+}
+
+/// The invariant behind the issue: no category may be reported as
+/// compared over zero observations. Either it was exercised (count
+/// >= 1) or the report says it was not.
+fn assert_no_empty_category_claims(stdout: &str) {
+    for l in stdout.lines() {
+        if !l.starts_with("  ") {
+            continue;
+        }
+        let Some((label, rest)) = l.trim_start().split_once(": ") else {
+            continue;
+        };
+        let rest = rest.trim();
+        if rest.starts_with("not exercised") {
+            continue;
+        }
+        let n: usize = rest
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .parse()
+            .unwrap_or_else(|_| {
+                panic!(
+                    "category `{}` reports `{}`:\n{}",
+                    label, rest, stdout
+                )
+            });
+        assert!(
+            n > 0,
+            "category `{}` claims a comparison over zero \
+             observations:\n{}",
+            label,
+            stdout
+        );
+    }
+}
+
+/// The JSON body of one category object (they carry no nested
+/// objects, so the first `}` closes them).
+fn json_category(json: &str, key: &str) -> String {
+    let k = format!("\"{}\":{{", key);
+    let start = json
+        .find(&k)
+        .unwrap_or_else(|| panic!("no `{}` in:\n{}", key, json))
+        + k.len();
+    let end = json[start..]
+        .find('}')
+        .unwrap_or_else(|| panic!("unterminated `{}` in:\n{}", key, json));
+    json[start..start + end].to_string()
+}
+
+#[test]
+fn direct_dispatch_match_names_the_unexercised_queued_schedule() {
+    let dir = workdir("cov_direct");
+    let prog = dir.join("dd.hl");
+    std::fs::write(&prog, DIRECT_DISPATCH).unwrap();
+    let rec = record(&dir, &prog);
+
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&prog)
+        .arg("--diff")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay --diff");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && stdout.contains("replay matches"),
+        "replay failed:\n{}\n{}",
+        stdout,
+        stderr
+    );
+
+    // The events that WERE compared stay named and counted: 10
+    // publishes, each with its deliver, all direct-dispatched.
+    assert!(
+        coverage_count(&stdout, "public bus events") >= 20,
+        "direct dispatch must still report its compared public bus \
+         events:\n{}",
+        stdout
+    );
+    // GH #782: and the ten payloads behind those ten publishes. A
+    // direct call has the payload in hand at the publish site, so
+    // there is nothing to excuse here — `not exercised` for this
+    // category was a missing record, not an absent observation.
+    assert_eq!(
+        coverage_count(&stdout, "payloads"),
+        10,
+        "every direct-dispatch publish must record its payload \
+         blob:\n{}",
+        stdout
+    );
+    // The schedule that was NOT is named as not exercised, and says
+    // direct dispatch is why — not a bare "0 consumes".
+    let queued = coverage_line(&stdout, "queued consumes");
+    assert!(
+        queued.starts_with("not exercised") && queued.contains("direct"),
+        "a match with no queued consumers must say the queued \
+         schedule was not exercised, and why: `{}`\n{}",
+        queued,
+        stdout
+    );
+    assert!(
+        coverage_line(&stdout, "async schedule steps")
+            .starts_with("not exercised"),
+        "no async pool here:\n{}",
+        stdout
+    );
+    assert_no_empty_category_claims(&stdout);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_queued_consumer_reports_the_consumes_it_compared() {
+    let dir = workdir("cov_queued");
+    let prog = dir.join("demo.hl");
+    std::fs::write(&prog, JOURNALED).unwrap();
+    let rec = record(&dir, &prog);
+
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&prog)
+        .arg("--diff")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay --diff");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && stdout.contains("replay matches"),
+        "replay failed:\n{}\n{}",
+        stdout,
+        stderr
+    );
+    // A pinned publisher into a main-tree sink: 20 queued
+    // deliveries, one consumer, and the rand reads journaled.
+    assert_eq!(
+        coverage_count(&stdout, "queued consumes"),
+        20,
+        "the queued schedule's compared consumes:\n{}",
+        stdout
+    );
+    assert!(
+        coverage_line(&stdout, "queued consumes")
+            .contains("across 1 consumer"),
+        "the consumer count belongs on the queued line:\n{}",
+        stdout
+    );
+    assert!(
+        coverage_count(&stdout, "journal reads") >= 20,
+        "the journaled rand reads were compared:\n{}",
+        stdout
+    );
+    assert_no_empty_category_claims(&stdout);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An async pool's recorded scheduling steps are their own category,
+/// and a match reports how many of them it compared.
+#[cfg(target_os = "linux")]
+#[test]
+fn async_schedule_steps_are_reported_as_compared() {
+    let dir = workdir("cov_async");
+    let prog = dir.join("as.hl");
+    std::fs::write(&prog, ASYNC_PROG).unwrap();
+    let rec = record(&dir, &prog);
+
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&prog)
+        .arg("--diff")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay --diff");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("replay matches"),
+        "replay failed:\n{}\n{}",
+        stdout,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        coverage_count(&stdout, "async schedule steps") >= 1,
+        "an async_io pool's schedule was compared and must be \
+         counted:\n{}",
+        stdout
+    );
+    assert_no_empty_category_claims(&stdout);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// GH #782: the direct-dispatch payload records are not decoration —
+/// `--diff` compares them, and a corrupted one fails. Same mutation
+/// the queued fixture uses, against the recording of a workload with
+/// no queue in it at all. Before the fix this test could not even be
+/// written: `mutate_first_payload` returns false on a recording with
+/// no payload blob, which is exactly what this program produced.
+#[test]
+fn a_mutated_direct_dispatch_payload_is_detected() {
+    let dir = workdir("cov_direct_mutated");
+    let prog = dir.join("dd.hl");
+    std::fs::write(&prog, DIRECT_DISPATCH).unwrap();
+    let rec = record(&dir, &prog);
+    let mut buf = std::fs::read(&rec).unwrap();
+    assert!(
+        mutate_first_payload(&mut buf),
+        "a direct-dispatch recording must carry a payload blob to \
+         mutate — with none, `--diff` compares no payload bytes for \
+         this workload at all (GH #782)"
+    );
+    let bad = dir.join("mutated.halerec");
+    std::fs::write(&bad, &buf).unwrap();
+
+    let out = hale()
+        .arg("replay")
+        .arg(&bad)
+        .arg(&prog)
+        .arg("--diff")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay --diff");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && stderr.contains("replay DIVERGED"),
+        "a mutated direct-dispatch payload must fail \
+         --diff:\nstdout:{}\nstderr:{}",
+        String::from_utf8_lossy(&out.stdout),
+        stderr
+    );
+    assert!(
+        stderr.contains("payload"),
+        "the divergence must name the payload that differs:\n{}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Corrupt the first payload blob so the recording disagrees with
+/// what a faithful replay produces. Returns false when the recording
+/// carries no payload blob at all.
+fn mutate_first_payload(buf: &mut [u8]) -> bool {
+    let hlen = u32::from_le_bytes(buf[12..16].try_into().unwrap()) as usize;
+    let mut end = buf.len();
+    if &buf[end - 16..end - 8] == b"HALEEND0" {
+        end -= 16;
+    }
+    let mut off = hlen;
+    while off + 8 <= end {
+        let tag = u32::from_le_bytes(buf[off..off + 4].try_into().unwrap());
+        if tag == 0 {
+            off += 24;
+            continue;
+        }
+        let size =
+            u64::from_le_bytes(buf[off + 24..off + 32].try_into().unwrap())
+                as usize;
+        if tag == 1 {
+            if size > 0 {
+                // canonical bytes: flip one.
+                buf[off + 32] ^= 0xff;
+            } else {
+                // A raw in-process struct stores metadata only, so
+                // move the declared size (flags bits 32..63).
+                let c = u64::from_le_bytes(
+                    buf[off + 16..off + 24].try_into().unwrap(),
+                );
+                buf[off + 16..off + 24].copy_from_slice(
+                    &c.wrapping_add(1u64 << 32).to_le_bytes(),
+                );
+            }
+            return true;
+        }
+        off += 32 + ((size + 7) & !7);
+    }
+    false
+}
+
+/// Coverage reporting must not soften failure: a compared category
+/// that disagrees still fails, and `--json` says so.
+#[test]
+fn a_mutated_recording_still_fails_and_json_says_diverged() {
+    let dir = workdir("cov_mutated");
+    let prog = dir.join("demo.hl");
+    std::fs::write(&prog, JOURNALED).unwrap();
+    let rec = record(&dir, &prog);
+    let mut buf = std::fs::read(&rec).unwrap();
+    assert!(
+        mutate_first_payload(&mut buf),
+        "the recording should carry a payload blob to mutate"
+    );
+    let bad = dir.join("mutated.halerec");
+    std::fs::write(&bad, &buf).unwrap();
+
+    let out = hale()
+        .arg("replay")
+        .arg(&bad)
+        .arg(&prog)
+        .arg("--diff")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay --diff");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && stderr.contains("replay DIVERGED"),
+        "a mutated payload must still fail --diff:\nstdout:{}\nstderr:{}",
+        String::from_utf8_lossy(&out.stdout),
+        stderr
+    );
+
+    let out = hale()
+        .arg("replay")
+        .arg(&bad)
+        .arg(&prog)
+        .arg("--diff")
+        .arg("--json")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay --diff --json");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !out.status.success()
+            && stdout.contains("\"result\":\"diverged\""),
+        "--json must carry the divergence verdict:\nstdout:{}\nstderr:{}",
+        stdout,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // A divergence stops at the first difference, so the JSON must
+    // NOT hand out per-category counts for it.
+    assert!(
+        !stdout.contains("\"categories\""),
+        "a diverged verdict must not claim category coverage:\n{}",
+        stdout
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn json_coverage_carries_the_same_counts_and_flags() {
+    let dir = workdir("cov_json");
+    let prog = dir.join("dd.hl");
+    std::fs::write(&prog, DIRECT_DISPATCH).unwrap();
+    let rec = record(&dir, &prog);
+
+    let human = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&prog)
+        .arg("--diff")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay --diff");
+    let human_out = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        human.status.success(),
+        "human replay failed:\n{}",
+        human_out
+    );
+
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&prog)
+        .arg("--diff")
+        .arg("--json")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay --diff --json");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("\"result\":\"match\""),
+        "--json match verdict:\nstdout:{}\nstderr:{}",
+        stdout,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let json = stdout
+        .lines()
+        .find(|l| l.starts_with('{'))
+        .expect("a JSON object line");
+
+    let public = json_category(json, "public_bus_events");
+    assert!(
+        public.contains("\"compared\":true")
+            && public.contains(&format!(
+                "\"count\":{}",
+                coverage_count(&human_out, "public bus events")
+            )),
+        "the machine-readable count must match the human one: `{}`\n{}",
+        public,
+        human_out
+    );
+    // GH #782: the payload category is compared on the direct path
+    // too, and the machine-readable side has to say so — a consumer
+    // gating on `compared` would otherwise skip a real comparison.
+    let payloads = json_category(json, "payloads");
+    assert!(
+        payloads.contains("\"compared\":true")
+            && payloads.contains(&format!(
+                "\"count\":{}",
+                coverage_count(&human_out, "payloads")
+            )),
+        "direct-dispatch payloads are compared, and --json must \
+         carry the same count: `{}`\n{}",
+        payloads,
+        human_out
+    );
+    let queued = json_category(json, "queued_consumes");
+    assert!(
+        queued.contains("\"compared\":false")
+            && queued.contains("\"count\":0")
+            && queued.contains("\"not_exercised_because\""),
+        "an unexercised category must be flagged, with the reason: `{}`",
+        queued
+    );
+    let async_steps = json_category(json, "async_schedule_steps");
+    assert!(
+        async_steps.contains("\"compared\":false"),
+        "no async pool in this program: `{}`",
+        async_steps
+    );
+
+    // `--json` reports the --diff verdict; without --diff there is
+    // none to report.
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&prog)
+        .arg("--json")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay --json");
+    assert_eq!(out.status.code(), Some(2), "--json without --diff");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("pass --diff"),
+        "say what to do:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

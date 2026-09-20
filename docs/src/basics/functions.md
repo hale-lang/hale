@@ -123,4 +123,58 @@ of them starts to feel like a coherent vocabulary, the
 how to gather them onto a locus. For now: a free function per
 piece of work.
 
+## Calling a name nothing declares
+
+`hale check <directory>` holds a call to the same standard as a
+read: the callee has to name something. A misspelled call is an
+error at the call, not a mystery from the backend later:
+
+```text
+main.hl:12:14: type error: call to `celcius_to_f`: no free fn,
+generic fn or fn-pointer binding with that name is in scope —
+did you mean `celsius_to_f`?
+```
+
+"Something" means a free function, a generic function, a
+fn-pointer binding — or one of the handful of *builtins* the
+compiler answers itself, which you can call without declaring
+anything: `len`, `to_string`, the two numeric casts `Int` /
+`Float`, the printers (`print`, `println`, `eprint`, `eprintln`),
+`abs` / `min` / `max`, `starts_with` / `contains`, and the
+`bounded` collection intrinsics. Those are not magic names to
+memorise — you'll meet each one where it's useful — but they are
+why `len(s)` needs no import.
+
+The list is short on purpose, and it is exact: a name that is not
+on it and not declared is refused here, at the call, rather than
+somewhere in the backend. A capitalised name that *looks* like a
+conversion is not one — `String(x)` is not a cast, it is a call to
+nothing. Use `to_string(x)` to render a value and
+`std::str::parse_int` / `parse_float` to read one back.
+
+The rule has a flip side: a free function may not *take* one of
+those names. The compiler answers `abs(x)`, `len(s)`, `min(a, b)`,
+`print(…)` and the rest at the call site, before it looks at what
+your program declares, so a `fn abs(...)` of your own could never
+be the one that runs — and until this was refused, it wasn't: the
+program built and printed the builtin's answer. Now the
+declaration is refused where you wrote it:
+
+```hale,fragment
+fn abs(a: Int) -> Int { return 0 - a; }    // error, at `abs`
+```
+
+> `` `abs` is a built-in call form and cannot name a fn; rename it ``
+
+Rename it (`abs_of`, `magnitude`) and everything works. A
+*method* may still be called any of them — a method is reached
+through a receiver, `b.len()`, which no builtin claims, which is
+why the standard library's own ring buffer can declare `fn len()`.
+The exact set lives in `spec/tokens.md` § *Built-in identifiers*.
+
+Like the unknown-identifier rule, this one wants the whole
+program, so it's on for `hale check <directory>`. One file of a
+multi-file project checked on its own stays permissive: it may
+well be calling something its sibling declares.
+
 Next: [Control flow](./control-flow.md).

@@ -245,7 +245,7 @@ holds up every other locus on the pool:
 
 ```
 `Worker::on_e` is placed on the async_io pool `web`, whose single worker
-it shares — but it reaches Worker::on_e -> nap [std::time::sleep …].
+it shares — but it reaches Worker::on_e -> slurp [std::io::stdin::read_line].
 A blocking call here stalls every other locus on `web` until it returns.
 ```
 
@@ -253,12 +253,39 @@ That's a warning, not an error: a locus that owns its pool may block
 on purpose. Writing `@no_block` on the handler says "I mean it" and
 upgrades the check to an enforced error.
 
+### What parks doesn't stall
+
+Waiting is only a stall if it holds the worker, and on an `async_io`
+pool some waits don't: the runtime swaps the coro out and the worker
+goes on draining. Those calls are **not** flagged by this advisory:
+
+- `std::time::sleep` — a timer-only park;
+- `std::io::tcp::{accept_one, recv_into, recv_stamped_into}` and the
+  raw-fd `__recv` / `__recv_bytes`;
+- `std::io::udp::{recv, recv_with_source, recv_into}`;
+- `std::io::tls::{recv_into, recv_stamped_into}`.
+
+A sleeping handler on an `async_io` pool is the *prescribed* shape, so
+it says nothing. Everything else still holds the worker and still
+warns — opening a connection (`tcp::connect`, `tls::connect`,
+`tls::upgrade`, and so `std::http::*`), reading a file or stdin, and
+`std::process::{run, wait, read_stdout, read_stderr}`.
+
+The `block` class itself does not move: `sleep` still carries it
+everywhere, because the same call on a classic pool really does hold
+that pool's OS thread — and the same locus type can be placed on an
+async_io pool for one field and a classic pool for another. So
+`@no_block`, which is a claim about the *call graph* and not about a
+placement, still refuses a handler that sleeps. The two agree because
+the advisory no longer suggests `@no_block` for a call that parks: it
+says nothing at all.
+
 ## The classes
 
 | class | covers | example |
 |---|---|---|
 | `syscall` | the kernel: filesystem, sockets, processes, terminal, stdio — including `println` | `std::io::fs::read_file` |
-| `block` | waits, holding its thread (or, on an `async_io` pool, its worker's turn) | `std::http::get` |
+| `block` | waits, holding its thread (on an `async_io` pool, see "What parks doesn't stall" above) | `std::http::get` |
 | `time` | *reading* a clock | `std::time::monotonic_ns` |
 | `entropy` | *reading* randomness | `std::rand::next_int` |
 | `env` | *reading* the environment or argv | `std::env::var` |

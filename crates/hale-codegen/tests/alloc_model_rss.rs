@@ -35,6 +35,19 @@ fn model_has_unbounded_site(src: &str) -> bool {
         .any(|s| s.verdict() == SiteVerdict::AccumulatesUnbounded)
 }
 
+/// Build the program, run it, and return the resident megabytes it
+/// reported for ITSELF (the `/proc/self/statm` line it prints; see
+/// `harness::statm_resident_bytes`).
+///
+/// `std::process::rss_bytes()` cannot be used for this: a spawned
+/// program inherits its parent's RSS high-water mark through
+/// fork+exec, so every reading below clamped to the libtest
+/// harness's own footprint — which under `cargo test` is several
+/// in-process LLVM builds at once. That made the three gap
+/// assertions go red on a loaded machine (the flat control read
+/// ~135 MB instead of ~4 MB, collapsing an 80 MB gap to 55) and the
+/// two "stays flat" assertions pass vacuously (both sides clamped
+/// to the same floor, difference 0). See GH #772.
 fn build_and_rss(name: &str, src: &str) -> i64 {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_alloc_rss_{}", name));
@@ -43,11 +56,11 @@ fn build_and_rss(name: &str, src: &str) -> i64 {
     let _ = std::fs::remove_file(&bin);
     assert!(output.status.success(), "{} crashed: {:?}", name, output.status);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
+    let statm = stdout
         .lines()
-        .find(|l| l.starts_with("final_rss_mb="))
-        .and_then(|l| l.trim_start_matches("final_rss_mb=").trim().parse().ok())
-        .unwrap_or_else(|| panic!("no final_rss_mb in {} stdout: {:?}", name, stdout))
+        .find_map(|l| l.strip_prefix("rss_statm="))
+        .unwrap_or_else(|| panic!("no rss_statm in {} stdout: {:?}", name, stdout));
+    harness::statm_resident_bytes(statm) / 1048576
 }
 
 /// A struct allocated directly every iteration of a (model-unbounded)
@@ -81,8 +94,8 @@ const ACCUMULATING: &str = r#"
         let s = work(3000000);
         print("sum=");
         println(s);
-        print("final_rss_mb=");
-        println(std::process::rss_bytes() / 1048576);
+        print("rss_statm=");
+        println(std::io::fs::read_file("/proc/self/statm") or "");
     }
 "#;
 
@@ -101,8 +114,8 @@ const FLAT: &str = r#"
         let s = work();
         print("sum=");
         println(s);
-        print("final_rss_mb=");
-        println(std::process::rss_bytes() / 1048576);
+        print("rss_statm=");
+        println(std::io::fs::read_file("/proc/self/statm") or "");
     }
 "#;
 
@@ -122,11 +135,13 @@ fn model_unbounded_verdict_matches_growing_rss() {
     );
 
     // Runtime side: RSS confirms the verdicts. Assert *relative* to the
-    // control — the runtime's baseline arena differs by build config (the
-    // test's build_executable sits tens of MB above the optimized CLI
-    // build), so an absolute bound is fragile. What's invariant is that
-    // the 2M accumulated structs add tens of MB over the identical
-    // alloc-free loop.
+    // control — what's invariant is that the 3M accumulated structs add
+    // tens of MB over the identical alloc-free loop, not any particular
+    // total. (The "the test's build_executable sits tens of MB above the
+    // optimized CLI build" this comment used to claim was not a build
+    // difference at all: it was the harness's own RSS, inherited by the
+    // spawned program through fork+exec. Measured the same way, both
+    // builds' floor is ~4 MB. GH #772.)
     let acc_rss = build_and_rss("accumulating", ACCUMULATING);
     let flat_rss = build_and_rss("flat", FLAT);
 
@@ -135,8 +150,8 @@ fn model_unbounded_verdict_matches_growing_rss() {
         "negative control RSS implausibly high ({}MB) — runtime baseline regression?",
         flat_rss
     );
-    // 3M × an 8-field (~64-byte) struct ≈ 190 MB of accumulation, well
-    // past the test build's ~50 MB baseline arena.
+    // 3M × an 8-field (~64-byte) struct ≈ 190 MB of accumulation (187
+    // measured 2026-09-20) against a ~4 MB alloc-free control.
     assert!(
         acc_rss >= flat_rss + 80,
         "model-flagged accumulating loop should add >80MB over the \
@@ -177,7 +192,7 @@ const INPLACE_FIELD_WRITE: &str = r#"
                 i = i + 1;
             }
             print("sum="); println(self.sink);
-            print("final_rss_mb="); println(std::process::rss_bytes() / 1048576);
+            print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
         }
     }
     fn main() { Acc { }; }
@@ -200,7 +215,7 @@ const ARRAY_FIELD_REPLACE: &str = r#"
                 i = i + 1;
             }
             print("sum="); println(self.sink);
-            print("final_rss_mb="); println(std::process::rss_bytes() / 1048576);
+            print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
         }
     }
     fn main() { Acc { }; }
@@ -239,7 +254,8 @@ fn store_latest_field_replace_grows_inplace_stays_flat() {
     // Threshold recalibrated 2026-07-01: pre-inline the gap was ~76 MB
     // (scratch literal + a persisted copy per trip in the locus arena);
     // inline arrays removed the ~35 MB persist component, leaving the
-    // scratch-literal growth (~42 MB under the test harness build).
+    // scratch-literal growth. Measured self-RSS 2026-09-20: 96 MB of
+    // replace against a 4 MB in-place baseline.
     assert!(
         replace_rss >= inplace_rss + 25,
         "store-latest field replace should add >25MB over the in-place \
@@ -259,9 +275,9 @@ fn store_latest_field_replace_grows_inplace_stays_flat() {
 // geometric doubling buffer (cap*2) with the element memcpy'd in, so the
 // vec genuinely accumulates with the push count. This ties that verdict to
 // measured RSS so a future change that wrongly treats a vec insert as
-// bounded gets a red test. (Element is a 32-byte struct for a clean signal
-// above the test build's ~50 MB baseline; the loop bound `self.n` is
-// runtime, so loop-ranking can't prove it bounded.)
+// bounded gets a red test. (Element is a 32-byte struct; the loop bound
+// `self.n` is runtime, so loop-ranking can't prove it bounded. Measured
+// self-RSS 2026-09-20: 210 MB of pushes against a 4 MB control.)
 
 const VEC_PUSH_GROWS: &str = r#"
     type Cell { a: Int; b: Int; c: Int; d: Int; }
@@ -275,7 +291,7 @@ const VEC_PUSH_GROWS: &str = r#"
                 i = i + 1;
             }
             print("len="); println(self.buf.len());
-            print("final_rss_mb="); println(std::process::rss_bytes() / 1048576);
+            print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
         }
     }
     fn main() { W { }; }
@@ -292,7 +308,7 @@ const VEC_PUSH_CONTROL: &str = r#"
             let mut i = 0;
             while i < self.n { self.sink = self.sink + i; i = i + 1; }
             print("sum="); println(self.sink);
-            print("final_rss_mb="); println(std::process::rss_bytes() / 1048576);
+            print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
         }
     }
     fn main() { W { }; }
@@ -311,8 +327,9 @@ fn collection_insert_growth_matches_rss() {
         "the no-push control must not be flagged"
     );
 
-    // Runtime side: the vec accumulates ~150 MB over 3M pushes of a 32-byte
-    // cell; the control sits at the floor. Assert relative to the control.
+    // Runtime side: the vec accumulates ~210 MB over 3M pushes of a 32-byte
+    // cell; the control sits at the ~4 MB floor. Assert relative to the
+    // control.
     let grow_rss = build_and_rss("vec_push_grows", VEC_PUSH_GROWS);
     let ctrl_rss = build_and_rss("vec_push_control", VEC_PUSH_CONTROL);
 
@@ -357,7 +374,7 @@ const HASHMAP_SMALL_REPLACE: &str = r#"
         run() {
             let mut i = 0;
             while i < self.n { self.record(i); i = i + 1; }
-            print("final_rss_mb="); println(std::process::rss_bytes() / 1048576);
+            print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
         }
     }
     fn main() { Acc { }; }
@@ -377,7 +394,7 @@ const HASHMAP_SMALL_CONTROL: &str = r#"
             let mut i = 0;
             while i < self.n { self.record(i); i = i + 1; }
             print("sink="); println(self.sink);
-            print("final_rss_mb="); println(std::process::rss_bytes() / 1048576);
+            print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
         }
     }
     fn main() { Acc { }; }
@@ -403,7 +420,7 @@ const STRUCT_REPLACE: &str = r#"
             let mut i = 0;
             while i < self.n { self.record(i); i = i + 1; }
             print("last="); println(self.st.s);
-            print("final_rss_mb="); println(std::process::rss_bytes() / 1048576);
+            print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
         }
     }
     fn main() { Rec { }; }
@@ -421,7 +438,7 @@ const STRUCT_REPLACE_CONTROL: &str = r#"
             let mut i = 0;
             while i < self.n { self.record(i); i = i + 1; }
             print("sink="); println(self.sink);
-            print("final_rss_mb="); println(std::process::rss_bytes() / 1048576);
+            print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
         }
     }
     fn main() { Rec { }; }
@@ -434,7 +451,8 @@ fn self_field_struct_replace_churn_recycles_stays_flat() {
     // store runs in a `record` METHOD so the retire flush fires at its
     // activation boundary. Pre-fix the old clones accumulated for the
     // locus lifetime (~30 B/store → tens of MB over the control);
-    // post-fix every replaced clone recycles.
+    // post-fix every replaced clone recycles (measured 2026-09-20: 5 MB
+    // of churn against a 4 MB control).
     let churn_rss = build_and_rss("struct_replace", STRUCT_REPLACE);
     let ctrl_rss = build_and_rss("struct_replace_control", STRUCT_REPLACE_CONTROL);
 
@@ -456,7 +474,8 @@ fn hashmap_small_value_replace_churn_recycles_stays_flat() {
     // 1M replaces of short values over 100 keys. Pre-fix (< 16 B blocks
     // dropped at flush) the churn grew ~40 MB over the control; post-fix the
     // out-of-band small-block freelist recycles every replaced clone, so the
-    // churn sits within allocator noise of the no-set control.
+    // churn sits within allocator noise of the no-set control (measured
+    // 2026-09-20: 5 MB against 4 MB).
     let churn_rss = build_and_rss("hashmap_small_replace", HASHMAP_SMALL_REPLACE);
     let ctrl_rss = build_and_rss("hashmap_small_control", HASHMAP_SMALL_CONTROL);
 

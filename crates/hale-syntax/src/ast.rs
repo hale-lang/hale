@@ -36,6 +36,14 @@ pub struct Import {
     pub path: String,
     pub alias: Option<String>,
     pub span: Span,
+    /// GH #860: the span of the PATH LITERAL alone, inside `span`.
+    ///
+    /// `span` covers the whole statement, `import` keyword through
+    /// `;`, which is the right underline for "this statement is
+    /// malformed" and the wrong one for "this path names nothing":
+    /// an unresolvable import is about the string the author typed,
+    /// so the caret belongs under it.
+    pub path_span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -113,6 +121,72 @@ impl TopDecl {
             TopDecl::Group(g) => g.span,
             TopDecl::Claims(c) => c.span,
             TopDecl::Constitution(c) => c.span,
+        }
+    }
+}
+
+/// Every declaration in `items`, with `module { … }` nesting
+/// flattened to any depth.
+///
+/// A module is a NAMESPACE, not a boundary: `resolve` registers a
+/// module's declarations under their BARE names, so a `type`, an
+/// enum, a `locus` or a `fn` one brace deeper is an ordinary member
+/// of the bundle, spelled the same way at every use site. Any pass
+/// that collects declarations by kind reads this rather than
+/// `items.iter()` — the top-level-only shape is what made the same
+/// program analyzed at the top level and invisible one brace deeper
+/// (GH #764 the hot-path lint, GH #825 the checker's bundle-level
+/// checks, GH #884 / GH #854 codegen's declaration collection and
+/// the mangler).
+///
+/// The `TopDecl::Module` node itself is yielded, immediately before
+/// its contents, so a consumer that wants the module node still
+/// sees one; a consumer matching on a declaration kind ignores it.
+pub fn flat_decls(items: &[TopDecl]) -> FlatDecls<'_> {
+    FlatDecls { stack: vec![items.iter()] }
+}
+
+/// The iterator [`flat_decls`] returns.
+pub struct FlatDecls<'a> {
+    stack: Vec<std::slice::Iter<'a, TopDecl>>,
+}
+
+impl<'a> Iterator for FlatDecls<'a> {
+    type Item = &'a TopDecl;
+
+    fn next(&mut self) -> Option<&'a TopDecl> {
+        loop {
+            let top = self.stack.last_mut()?;
+            match top.next() {
+                Some(d) => {
+                    if let TopDecl::Module(m) = d {
+                        self.stack.push(m.items.iter());
+                    }
+                    return Some(d);
+                }
+                None => {
+                    self.stack.pop();
+                }
+            }
+        }
+    }
+}
+
+/// [`flat_decls`] for a pass that REWRITES declarations in place.
+///
+/// The module node is descended into rather than handed to `f`,
+/// which is what keeps the walk to one mutable borrow at a time. A
+/// rewrite pass has no use for the module node itself: a module
+/// carries no name a use site can spell and nothing but its items.
+pub fn for_each_decl_mut(
+    items: &mut [TopDecl],
+    f: &mut impl FnMut(&mut TopDecl),
+) {
+    for item in items {
+        if let TopDecl::Module(m) = item {
+            for_each_decl_mut(&mut m.items, f);
+        } else {
+            f(item);
         }
     }
 }
@@ -2977,4 +3051,36 @@ pub fn unscoped_alias(head: &str) -> &str {
         Some((author, _)) => author,
         None => head,
     }
+}
+
+/// GH #774: the spelling an imported seed's claim group reference is
+/// bound to when NO declaration in that seed answers it.
+///
+/// A claim's vocabulary is its own seed's (spec `verification.md`).
+/// The import rename table only holds the names a seed DECLARES, so
+/// a reference nothing in the seed declares used to travel through
+/// the merge exactly as written — and an importer that happened to
+/// declare a group of that name captured it, so the defining seed's
+/// "unknown group" error disappeared and the law was evaluated
+/// against a stranger's group. Binding the reference to its seed at
+/// the merge keeps it unresolved in EVERY build: an undeclared group
+/// is an error wherever the seed is compiled from.
+///
+/// The marker is a name, not a side table, for the same reason the
+/// scoped alias above is: it survives the merge without anyone
+/// remembering to carry it. `$` cannot occur in an identifier, so the
+/// sentinel is unspeakable in user source AND the author's spelling
+/// is recoverable from the spelling itself — which is what keeps a
+/// synthesized `__lib_…` out of the diagnostic (the demangle map is
+/// keyed off real renames and would have nothing to say about one).
+pub fn unbound_group_sentinel(seed_id: &str, name: &str) -> String {
+    format!("__unbound${}${}", name, seed_id)
+}
+
+/// The author's spelling inside an [`unbound_group_sentinel`], or
+/// `None` for any other name.
+pub fn unbound_group_name(raw: &str) -> Option<&str> {
+    raw.strip_prefix("__unbound$")
+        .and_then(|rest| rest.split_once('$'))
+        .map(|(name, _)| name)
 }

@@ -452,43 +452,7 @@ fn check_and_publish(
         let mut diags =
             hale_types::check_bundle_opts_whole_program(&bundle, false);
         diags.extend(hale_types::unbounded_alloc_warnings(&bundle, true));
-        for d in &diags {
-            let off = d.span.start.as_usize() as u32;
-            for (base, path, len) in &file_bases {
-                if off >= *base && off < base.saturating_add(*len) {
-                    if let Some(src) = sources.get(path) {
-                        let local = d.clone().shifted(base.wrapping_neg());
-                        let mut v = diag_to_lsp(&local, src);
-                        // Related spans (downstream handoff,
-                        // 2026-08-11) resolve from the UN-shifted
-                        // diagnostic — each may live in a different
-                        // file than the primary — and publish as
-                        // `relatedInformation`, which clients render
-                        // as a clickable second location.
-                        let rel: Vec<Value> = d
-                            .related
-                            .iter()
-                            .filter_map(|(rspan, label)| {
-                                related_to_lsp(
-                                    *rspan,
-                                    label,
-                                    &file_bases,
-                                    &sources,
-                                )
-                            })
-                            .collect();
-                        if !rel.is_empty() {
-                            v["relatedInformation"] = json!(rel);
-                        }
-                        per_file
-                            .entry(path.clone())
-                            .or_default()
-                            .push(v);
-                    }
-                    break;
-                }
-            }
-        }
+        place_checker_diags(&diags, &file_bases, &sources, &mut per_file);
     }
 
     for (path, diags) in per_file {
@@ -500,6 +464,55 @@ fn check_and_publish(
                 "diagnostics": diags
             }),
         );
+    }
+}
+
+/// Demultiplex whole-program (merged-bundle) diagnostics back to the
+/// seed files they were raised in, appending each to that file's
+/// publish list.
+///
+/// The window is [`hale_syntax::file_owns_offset`], which owns its
+/// one-past-the-last-byte position. GH #805: this loop tested
+/// `off < base + len`, so a diagnostic positioned at a file's END —
+/// where an end-of-file span sits — matched no window and was
+/// dropped without a trace, and the editor showed nothing for a
+/// program `hale check` rejects. Parse diagnostics never reach here
+/// (they are kept per-file and un-shifted), which is why the hole
+/// only ever swallowed checker findings.
+fn place_checker_diags(
+    diags: &[hale_syntax::Diag],
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &BTreeMap<PathBuf, String>,
+    per_file: &mut BTreeMap<PathBuf, Vec<Value>>,
+) {
+    for d in diags {
+        let off = d.span.start.as_usize() as u32;
+        for (base, path, len) in file_bases {
+            if !hale_syntax::file_owns_offset(*base, *len, off) {
+                continue;
+            }
+            if let Some(src) = sources.get(path) {
+                let local = d.clone().shifted(base.wrapping_neg());
+                let mut v = diag_to_lsp(&local, src);
+                // Related spans (downstream handoff, 2026-08-11)
+                // resolve from the UN-shifted diagnostic — each may
+                // live in a different file than the primary — and
+                // publish as `relatedInformation`, which clients
+                // render as a clickable second location.
+                let rel: Vec<Value> = d
+                    .related
+                    .iter()
+                    .filter_map(|(rspan, label)| {
+                        related_to_lsp(*rspan, label, file_bases, sources)
+                    })
+                    .collect();
+                if !rel.is_empty() {
+                    v["relatedInformation"] = json!(rel);
+                }
+                per_file.entry(path.clone()).or_default().push(v);
+            }
+            break;
+        }
     }
 }
 
@@ -536,9 +549,9 @@ fn related_to_lsp(
     sources: &BTreeMap<PathBuf, String>,
 ) -> Option<Value> {
     let off = rspan.start.as_usize() as u32;
-    let (base, path, _) = file_bases
-        .iter()
-        .find(|(base, _, len)| off >= *base && off < base.saturating_add(*len))?;
+    let (base, path, _) = file_bases.iter().find(|(base, _, len)| {
+        hale_syntax::file_owns_offset(*base, *len, off)
+    })?;
     let src = sources.get(path)?;
     let local = rspan.shifted(base.wrapping_neg());
     let (sl, sc) = offset_to_lsp_pos(src, local.start.as_usize());
@@ -1657,22 +1670,31 @@ fn hover_text(
     Some(text)
 }
 
-pub fn sig_ty_str(t: &hale_types::stdlib_surface::SigTy) -> &'static str {
+pub fn sig_ty_str(t: &hale_types::stdlib_surface::SigTy) -> String {
     use hale_types::stdlib_surface::SigTy::*;
     match t {
-        Int => "Int",
-        Uint => "Uint",
-        Float => "Float",
-        Bool => "Bool",
-        Str => "String",
-        Bytes => "Bytes",
-        BytesMut => "Bytes",
-        Decimal => "Decimal",
-        Duration => "Duration",
-        Time => "Time",
-        Unit => "()",
-        Any => "…",
-        _ => "…",
+        Int => "Int".to_string(),
+        Uint => "Uint".to_string(),
+        Float => "Float".to_string(),
+        Bool => "Bool".to_string(),
+        Str => "String".to_string(),
+        Bytes => "Bytes".to_string(),
+        BytesMut => "Bytes".to_string(),
+        Decimal => "Decimal".to_string(),
+        Duration => "Duration".to_string(),
+        Time => "Time".to_string(),
+        Unit => "()".to_string(),
+        Any => "…".to_string(),
+        // GH #771: a struct return/param carries the MANGLED name
+        // the checker unifies on (`__JsonString`); hover and the
+        // generated reference are read by people, who write the
+        // public path. Reverse the rename table rather than showing
+        // either the mangled name or the old `…`.
+        Named(n) => hale_stdlib::PATH_RENAMES
+            .iter()
+            .find(|(_, target)| target == n)
+            .map(|(path, _)| path.join("::"))
+            .unwrap_or_else(|| (*n).to_string()),
     }
 }
 
@@ -1771,7 +1793,7 @@ fn merged_span_to_location(
 ) -> Option<Value> {
     let off = span.start.as_usize() as u32;
     for (base, path, len) in &analysis.file_bases {
-        if off >= *base && off < base.saturating_add(*len) {
+        if hale_syntax::file_owns_offset(*base, *len, off) {
             let src = analysis.sources.get(path)?;
             let local_start = span.start.as_usize() - *base as usize;
             let local_end =
@@ -2178,4 +2200,140 @@ fn alloc_summary(
         "leakSites": sites,
         "text": hale_types::dump_alloc_summary(&bundle),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const A_SRC: &str = "locus A {\n    params { n: Int = 0; }\n}\n";
+    const B_SRC: &str = "fn main() {\n    let x = 1;\n}\n";
+
+    /// The two-file seed the server builds for every document
+    /// event: bases spaced `len + 1` apart, each file's own text
+    /// beside it.
+    fn seed() -> (Vec<(u32, PathBuf, u32)>, BTreeMap<PathBuf, String>) {
+        let a = PathBuf::from("/seed/a.hl");
+        let b = PathBuf::from("/seed/b.hl");
+        let la = A_SRC.len() as u32;
+        let lb = B_SRC.len() as u32;
+        let bases = vec![(0, a.clone(), la), (la + 1, b.clone(), lb)];
+        let mut sources = BTreeMap::new();
+        sources.insert(a, A_SRC.to_string());
+        sources.insert(b, B_SRC.to_string());
+        (bases, sources)
+    }
+
+    fn empty_publish(
+        bases: &[(u32, PathBuf, u32)],
+    ) -> BTreeMap<PathBuf, Vec<Value>> {
+        bases.iter().map(|(_, p, _)| (p.clone(), Vec::new())).collect()
+    }
+
+    /// GH #805: a checker diagnostic positioned at a file's END —
+    /// the one-past-the-last-byte position an end-of-file span
+    /// carries — is published against THAT file, with a range the
+    /// editor can place. The half-open window matched no file, so
+    /// the diagnostic was dropped on the floor: nothing published,
+    /// nothing logged, for a program the CLI refuses.
+    #[test]
+    fn a_diagnostic_at_a_files_end_is_published_against_that_file() {
+        let (bases, sources) = seed();
+        let eof = A_SRC.len();
+        let d = hale_syntax::Diag::ty(
+            hale_syntax::Span::new(eof, eof),
+            "something at the end of a.hl",
+        );
+        let mut per_file = empty_publish(&bases);
+        place_checker_diags(&[d], &bases, &sources, &mut per_file);
+
+        let published = &per_file[&PathBuf::from("/seed/a.hl")];
+        assert_eq!(
+            published.len(),
+            1,
+            "the EOF-positioned diagnostic must reach a.hl: {:?}",
+            per_file
+        );
+        assert!(
+            per_file[&PathBuf::from("/seed/b.hl")].is_empty(),
+            "and must not be attributed to the next file"
+        );
+        // Three lines of text, so the position past the last byte
+        // is the start of the (empty) fourth — 0-based line 3.
+        // Zero-width spans are widened by one column so the
+        // squiggle is visible.
+        assert_eq!(published[0]["range"]["start"]["line"], 3);
+        assert_eq!(published[0]["range"]["start"]["character"], 0);
+        assert_eq!(published[0]["range"]["end"]["line"], 3);
+        assert_eq!(published[0]["range"]["end"]["character"], 1);
+        assert_eq!(published[0]["severity"], 1);
+    }
+
+    /// The boundary the inclusive end must not steal: the next
+    /// file's FIRST byte is its own, not the previous file's
+    /// one-past-the-end. Bases are spaced `len + 1` for exactly
+    /// this reason.
+    #[test]
+    fn the_next_files_first_byte_still_belongs_to_the_next_file() {
+        let (bases, sources) = seed();
+        let b_base = A_SRC.len() + 1;
+        let d = hale_syntax::Diag::ty(
+            hale_syntax::Span::new(b_base, b_base + 5),
+            "at the first byte of b.hl",
+        );
+        let mut per_file = empty_publish(&bases);
+        place_checker_diags(&[d], &bases, &sources, &mut per_file);
+
+        assert!(
+            per_file[&PathBuf::from("/seed/a.hl")].is_empty(),
+            "a.hl's window must end one byte before b.hl's base: {:?}",
+            per_file
+        );
+        let published = &per_file[&PathBuf::from("/seed/b.hl")];
+        assert_eq!(published.len(), 1, "{:?}", per_file);
+        assert_eq!(published[0]["range"]["start"]["line"], 0);
+        assert_eq!(published[0]["range"]["start"]["character"], 0);
+    }
+
+    /// A span in no file at all — the embedded stdlib parses at
+    /// base 0 with its own coordinate space — is still placed
+    /// nowhere rather than attributed to whichever seed file it
+    /// numerically collides with.
+    #[test]
+    fn a_span_past_every_window_is_placed_nowhere() {
+        let (bases, sources) = seed();
+        let past = A_SRC.len() + 1 + B_SRC.len() + 1;
+        let d = hale_syntax::Diag::ty(
+            hale_syntax::Span::new(past, past + 4),
+            "from outside the seed",
+        );
+        let mut per_file = empty_publish(&bases);
+        place_checker_diags(&[d], &bases, &sources, &mut per_file);
+        assert!(per_file.values().all(|v| v.is_empty()), "{:?}", per_file);
+    }
+
+    /// A related location at a file's end resolves the same way —
+    /// the second location is what makes a two-place diagnostic
+    /// clickable, and it went through its own copy of the window.
+    #[test]
+    fn a_related_location_at_a_files_end_resolves() {
+        let (bases, sources) = seed();
+        let eof = A_SRC.len();
+        let rel = related_to_lsp(
+            hale_syntax::Span::new(eof, eof),
+            "declared here",
+            &bases,
+            &sources,
+        )
+        .expect("an end-of-file related span must resolve to its file");
+        assert!(
+            rel["location"]["uri"]
+                .as_str()
+                .unwrap_or("")
+                .ends_with("a.hl"),
+            "{}",
+            rel
+        );
+        assert_eq!(rel["location"]["range"]["start"]["line"], 3);
+    }
 }

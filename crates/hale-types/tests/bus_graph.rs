@@ -495,12 +495,34 @@ fn yielding_publish_loop_is_ok() {
 #[test]
 fn input_driven_publish_loop_is_ok() {
     // A blocking recv paces the loop — publish rate follows input.
+    // GH #829: the buffer is a real `BytesBuilder` (hoisted out of
+    // the loop, as the recv_into idiom wants). Passing `0` there was
+    // a program `hale check` accepted and `hale build` refused.
     let msgs = check(&flood_src(
-        "while true { let n = std::io::tcp::recv_into(0, 0, 64); Beat <- Tick { n: 1 }; }",
+        "let b = std::bytes::BytesBuilder { initial_cap: 64 }; \
+         while true { let n = std::io::tcp::recv_into(0, b, 64); Beat <- Tick { n: 1 }; }",
     ));
     assert!(
         !msgs.iter().any(|m| m.contains(BACKPRESSURE)),
         "an input-paced publish loop must not warn; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn stdin_driven_publish_loop_is_ok() {
+    // GH #830: "input-pacing" is the registry's `block` rows, so a
+    // line read off stdin paces the loop exactly as a blocking
+    // `recv` does. Under the old hand list of 11 paths this drew the
+    // flood warning — whose own suggested fix ("drive it from an
+    // input") was what the program already did.
+    let msgs = check(&flood_src(
+        "while true { let line = std::io::stdin::read_line(); \
+         Beat <- Tick { n: 1 }; }",
+    ));
+    assert!(
+        !msgs.iter().any(|m| m.contains(BACKPRESSURE)),
+        "a stdin-paced publish loop must not warn; got: {:?}",
         msgs
     );
 }

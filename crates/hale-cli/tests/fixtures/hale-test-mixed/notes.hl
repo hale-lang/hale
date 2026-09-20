@@ -1,5 +1,13 @@
 // NOT a `_test.hl` file — the runner must ignore this during
 // directory discovery even though it is valid Hale.
-fn helper() -> int {
+//
+// GH #877: it said that before and was not. `-> int` is the
+// lowercase spelling of `Int`, which named no type: the file
+// typechecked (an unresolvable bare name resolved to `Unknown`)
+// and `hale build` refused it with `unknown type name 'int' in
+// signature`, which is why it carried a row in
+// `check_build_divergences.txt`. Spelled `Int`, the claim in the
+// first line is true and the row is retired.
+fn helper() -> Int {
     return 99;
 }

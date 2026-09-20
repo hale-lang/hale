@@ -1,0 +1,40 @@
+// The adopting entrypoint. It declares the vocabulary the policy
+// seed's constitution names, adopts the constitution, and must check
+// clean — this is the shape an environment matrix is built on.
+import "../seed-policy" as policy;
+
+@sealed
+locus SessionSigner {
+    params {
+        key: Int = 40961;
+    }
+    @effects(is: { secret_use })
+    fn stamp(room: Int) -> Int {
+        return room * 31 + self.key % 997;
+    }
+}
+
+locus Bystander {
+    params {
+        idle: Int = 0;
+    }
+    fn tick() {
+        self.idle = self.idle + 1;
+    }
+}
+
+group guests = { Bystander };
+
+main locus Lodge {
+    params {
+        b: Bystander = Bystander { };
+        s: SessionSigner = SessionSigner { };
+    }
+    claims {
+        adopt House;
+    }
+    run() {
+        self.b.tick();
+        println("idle ", self.b.idle, " ", self.s.stamp(1));
+    }
+}

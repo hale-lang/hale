@@ -1,0 +1,133 @@
+// GH #781: a handler on a cooperative (async_io) subscriber owns its
+// payload for the whole invocation — across a park.
+//
+// The parking handler reads its payload twice, once at entry and once
+// after `std::time::sleep` (which parks the coro on an async_io pool),
+// and reports both. Before the fix every parked delivery read the LAST
+// published value after its park: the drain dequeued each cell into a
+// stack local and handed the handler a pointer into it, so the frame
+// died at the park and the next dequeue reused the slot. `before` was
+// therefore right and `after` was 3 four times over — the shape the
+// issue reports.
+//
+// A pinned subscriber receiving the same publishes is the control: it
+// never parks, so its cell outlives its handler and it always read
+// each payload correctly.
+//
+// Resume ORDER is not asserted: a parked cooperative handler resumes
+// when its park completes, and the runtime's parked list is walked
+// most-recent-first. What is asserted is per-delivery ownership (after
+// == before for every delivery) and that all four payloads arrived
+// distinct (the mask), which is exactly what aliasing destroys.
+
+type Job {
+    n: Int = 0;
+}
+
+topic Jobs {
+    payload: Job;
+    subject: "t781.job";
+}
+
+type Seen {
+    who: String = "";
+    before: Int = 0;
+    after: Int = 0;
+}
+
+topic Seens {
+    payload: Seen;
+    subject: "t781.seen";
+}
+
+// Parks mid-handler, then reads its payload again.
+locus Parker {
+    bus {
+        subscribe Jobs as on_job;
+        publish Seens;
+    }
+    fn on_job(j: Job) {
+        let before = j.n;
+        std::time::sleep(12ms);
+        Seens <- Seen { who: "parked", before: before, after: j.n };
+    }
+}
+
+// Same subscription, no park: the control.
+locus Prompt {
+    bus {
+        subscribe Jobs as on_job;
+        publish Seens;
+    }
+    fn on_job(j: Job) {
+        let before = j.n;
+        Seens <- Seen { who: "pinned", before: before, after: j.n };
+    }
+}
+
+main locus App {
+    params {
+        p: Parker = Parker { };
+        q: Prompt = Prompt { };
+        parked_count: Int = 0;
+        parked_owned: Int = 0;
+        parked_mask: Int = 0;
+        pinned_count: Int = 0;
+        pinned_owned: Int = 0;
+        pinned_mask: Int = 0;
+    }
+    placement {
+        p: cooperative(pool = io) where async_io;
+        q: pinned(core = 1);
+    }
+    bus {
+        publish Jobs;
+        subscribe Seens as on_seen;
+    }
+    fn bit(n: Int) -> Int {
+        if n == 0 { return 1; }
+        if n == 1 { return 2; }
+        if n == 2 { return 4; }
+        if n == 3 { return 8; }
+        return 0;
+    }
+    fn on_seen(s: Seen) {
+        if s.who == "parked" {
+            self.parked_count = self.parked_count + 1;
+            if s.after == s.before {
+                self.parked_owned = self.parked_owned + 1;
+            }
+            self.parked_mask = self.parked_mask + self.bit(s.after);
+        } else {
+            self.pinned_count = self.pinned_count + 1;
+            if s.after == s.before {
+                self.pinned_owned = self.pinned_owned + 1;
+            }
+            self.pinned_mask = self.pinned_mask + self.bit(s.after);
+        }
+    }
+    run() {
+        let mut i = 0;
+        while i < 4 {
+            Jobs <- Job { n: i };
+            i = i + 1;
+        }
+        std::time::sleep(600ms);
+        std::test::assert_eq_int(self.parked_count, 4,
+            "every publish reached the parking handler");
+        std::test::assert_eq_int(self.parked_owned, 4,
+            "the payload read after the park is the payload read at entry");
+        std::test::assert_eq_int(self.parked_mask, 15,
+            "all four payloads survived their park, distinct");
+        std::test::assert_eq_int(self.pinned_count, 4,
+            "every publish reached the pinned handler");
+        std::test::assert_eq_int(self.pinned_owned, 4,
+            "the pinned control reads one payload per delivery");
+        std::test::assert_eq_int(self.pinned_mask, 15,
+            "and sees all four, distinct");
+    }
+}
+
+fn main() {
+    App { };
+}

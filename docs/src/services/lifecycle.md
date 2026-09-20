@@ -126,24 +126,95 @@ And this is why work that needs its siblings to exist belongs in
 the **main locus's** `run()`, not a child's — main's `run()` starts
 only once every child has been born.
 
+## A locus can't hold one of itself
+
+A params field is where a locus keeps its children, so this looks
+like it should be a linked list:
+
+```hale,fragment
+params { n: Int = 0; next: Node = Node { n: 1 }; }   // won't compile
+```
+
+It isn't one. The `Node` that default builds leaves *its* `next` to
+the same default, which builds another, and nothing ends the chain
+— not even the call site, because `Node { next: ... }` needs a
+`Node` to hand over and building one asks the same question again.
+The compiler says so at the param:
+
+```text
+param `next` of `Node` defaults to a `Node`; a locus cannot contain
+itself by value - every one the default builds needs another, and
+no locus literal can end the chain.
+```
+
+The same error covers a ring through two or three types, and names
+it (`Alpha` -> `Beta` -> `Alpha`). A locus holding a *different*
+locus is the ordinary parent/child shape and is untouched.
+
+What to write instead: take the child from the caller
+(`next: Node;`, supplied at the literal), keep a collection of them
+in a [form](../systems/forms.md) or a `capacity` slot, or hold a
+plain value rather than a locus. A locus is a live thing — an
+arena, a lifecycle, maybe a thread of its own — so a self-similar
+*chain* of them is almost always a collection wearing the wrong
+clothes.
+
 ## When does a locus dissolve?
 
 This is the one piece of bookkeeping worth internalizing,
 because it's how Hale frees resources without a `defer` or a
 `finally`:
 
-- **Statement position** (`Ticker { };` — no binding, nothing
-  called on it): the locus runs its whole lifecycle right there
-  and tears down at the end of the statement. Fire-and-forget.
+- **Statement position** (`Ticker { };` — no binding, and the
+  value is discarded): the locus runs its whole lifecycle right
+  there and tears down at the end of the statement.
+  Fire-and-forget.
 - **`let`-bound** (`let t = Ticker { };`): it's born and runs,
   but **dissolve is deferred to the end of the enclosing
   function's scope**. The binding stays usable for method calls
   until then.
-- **A literal you call a method on** (`Ticker { }.tick()`): the
-  call is the handle, so it behaves exactly like the `let` form —
-  born before the call, dissolved at the end of the enclosing
-  function. `Queries { j: Journal { } }.count()` and the two-line
-  version that names it are the same program.
+- **A literal you *use*** — as a method receiver
+  (`Ticker { }.tick()`), as an argument (`serve(Ticker { })`),
+  for a field read (`Ticker { }.every_ms`): the expression that
+  consumes it is the handle, so it behaves exactly like the
+  `let` form — born before the expression runs, dissolved at the
+  end of the enclosing function. Writing it inline and naming it
+  with `let` first are the same program, whichever position it
+  is in. That is what lets you hand a fresh locus to a service
+  that keeps it: `serve(Provider { })` is as safe as
+  `let p = Provider { }; serve(p);`.
+- **A locus a function hands back** (`let t = make_ticker();`, or
+  the call used directly — `serve(make_ticker())`): whatever
+  consumes the handle owns it, so it behaves like the two above.
+  That owner is the expression *in that position*, and a factory
+  call nested deeper inside it is a handle of its own:
+  `let x = combine(a, make_ticker());` binds `combine`'s result to
+  `x`, while `make_ticker()`'s result is one nothing names — the
+  enclosing function owns that one and releases it at scope exit.
+  A **fallible** factory is reached through `or`, and that changes
+  nothing: `let c = std::process::spawn(argv) or raise;` closes
+  the child's pipes and reaps it when the scope exits, just as a
+  literal would. The two places the frame stays out of it are the
+  places the handle is *handed on* rather than consumed — written
+  straight into another locus's field (`Router { quick: make("q") }`,
+  which the router owns and reclaims with itself, exactly as it
+  would a `Quick { }` written there) and `return`ed to your caller
+  (who owns it).
+- **A locus an `if`, a `match` or a block hands back** (`return if
+  hot { fast_path() } else { make_ticker() };`): those forms have
+  no value of their own — they pass along one arm's, and exactly
+  one arm runs — so ownership is decided **per path**. Each arm's
+  last expression is what is written "in that position" on the
+  path that produces it, and the rule above applies to it
+  unchanged: returned, it is the caller's on every path; bound
+  with `let`, it is released at the enclosing function's scope
+  exit on every path. A factory called somewhere else inside the
+  form — in the condition, in the scrutinee, in a statement
+  before a block's last expression — is a handle of its own, and
+  the enclosing function releases it. An **ascribed array or
+  tuple** is the same story one level out: `let ts: [Ticker; 2] =
+  [make_ticker(), make_ticker()];` names the array, and each
+  element is a handle the enclosing function releases.
 - **Long-lived** (the locus subscribes to the bus, or its `run()`
   hasn't returned): it stays alive until its scope exits,
   regardless of binding — it has to, to keep receiving messages.
@@ -153,28 +224,121 @@ fire-and-forget. When several `let`-bound loci share a scope,
 they dissolve in reverse order of creation (the later one, which
 may depend on the earlier, goes first).
 
-**The scope is the enclosing function, not the enclosing block.** A
-`let` inside a loop body therefore doesn't dissolve per iteration — the
-whole run accumulates and releases at once when the function returns:
+Whichever line you're on, the timing is the timing of the **whole
+tree** the locus owns. A locus you write as another locus's param
+field has no teardown moment of its own — it's the owner's, and so
+is the one *it* holds, all the way down. That holds however you
+wrote it: a nested literal (`Mid { leaf: Leaf { } }`), a factory
+call (`Mid { leaf: make_leaf() }`, including `make_leaf() or
+raise`), and a param whose **default** is one, are the same
+program. An `or` with a **substitute** is too, on both branches:
+`Mid { leaf: make_leaf_f() or backup_leaf() }` reclaims whichever
+leaf was actually built, once, with the owner — the substitute is
+the field's, not a leftover of the function that built the owner,
+which is what let a `Mid` you `return` outlive its own leaf. When the
+owner goes, every level's `drain()` has run (deepest first), every
+level's `dissolve()` body has run (outermost first) and every
+level's arena is gone. The exception is a handle you pass *in* —
+`Mid { leaf: shared }` borrows `shared`, so the cascade steps over
+it at whatever depth it sits, and `shared` is released once, by the
+scope that made it. A call that hands back a locus it didn't build
+is the same borrow, written as a call.
+
+**How the field is declared doesn't change the answer.** A param
+typed by an `interface` the child satisfies, or by a
+`perspective(P)` it serves, holds an owned child on the same terms
+as a locus-typed param — the cascade reaches it and everything
+under it:
+
+```hale,fragment
+locus Queries {
+    params { j: Counter = Churner { }; }   // an interface slot
+}
+locus Gateway {
+    params { router: perspective(Router) = RouterV1 { }; }
+}
+```
+
+Both children go when their holder goes, and so does whatever they
+hold. Designating a different impl at the literal (`Gateway { router:
+RouterV2 { } }`) reclaims the one you actually built.
+
+A factory reads the same way in an interface slot — `Queries { j:
+make_churner() }`, `make_churner() or raise` included. The
+function's declared return names the impl, so the holder reclaims
+exactly what the factory built, whether or not that is the impl the
+param's default names.
+
+One shape that is *not* a transfer: a locus written inside the
+initializer of a param that can't hold a locus. In `Lonely { n:
+Queries { }.total() }` the `Queries` is just an expression — it has
+no field to live in — so it belongs to the enclosing function's
+scope, exactly as if you had written it on a line of its own.
+
+**The scope is the enclosing function, not the enclosing block** — a
+`let` is readable for the rest of the function, including after the
+loop that bound it. But a locus created **in a loop** is reclaimed
+when the next iteration reaches the same line:
 
 ```hale,fragment
 while i < steps {
     let m = zeros(rows, cols);   // a fresh arena every iteration…
     i = i + 1;
-}                                // …none of them reclaimed yet
+}                                // …each one released as the next
+                                 //    replaces it; the last at return
 ```
 
-That's fine for a bounded loop and a real problem for a long-running
-one. Both spellings behave identically here — a factory call allocates
-just as a `Matrix { }` literal would — and the compiler warns about
-each of them. The fixes are to hoist one instance out of the loop and
-refill it, or to move the iteration's work into a helper function,
-whose return is the per-iteration boundary.
+Coming back round to that line is the end of the previous `m`'s life:
+it runs its `drain()` and `dissolve()` and gives back its arena before
+the new one takes its place, and the function's exit releases the last
+one — so `m` is still readable after the loop. The loop holds one
+instance at a time, not `steps` of them. Both spellings behave
+identically — a factory call, a `Matrix { }` literal and a literal you
+merely *use* (`Matrix { }.trace()`, `sum(Matrix { })`) all get the
+same boundary.
 
-Dropping the binding only helps when nothing is called on the result:
-a bare `Matrix { };` statement is reclaimed where it stands, but
-`Matrix { }.trace()` is a method call, so its receiver lives to the end
-of the function exactly as the binding did.
+Each line reclaims its own previous instance, where it stands, so two
+loci bound in one iteration are released in the order they were
+written — the reverse of the newest-first order at function exit. They
+are independent either way; it only shows if one's `dissolve()` reads
+a handle it borrowed from the other, which would see the next
+iteration's instance.
+
+The compiler still warns about the shape, because a fresh arena per
+iteration is real work in a hot loop even when it is reclaimed. To
+spend nothing, hoist one instance out of the loop and refill it.
+
+Dropping the binding changes *where* the reclaim lands, not whether
+one happens: a bare `Matrix { };` statement is reclaimed at the
+statement, while `Matrix { }.trace()` and `sum(Matrix { })` both *use*
+the literal, so each lives to the top of the next iteration — and the
+last of them to the end of the function — exactly as the binding did.
+
+### Early `return` is an exit, not a shortcut
+
+"The end of the enclosing function" means *whichever* way the
+function ends. A guard that returns early tears down everything
+alive at that point, and it takes nothing away from the ordinary
+exit:
+
+```hale,fragment
+let store = Store { path: dir };
+if std::env::args_count() < 2 {
+    println("usage: report <name>");
+    return 2;                     // dissolves `store`, exits 2
+}
+let report = Report { store: store };
+                                  // ordinary exit: `report`, then `store`
+```
+
+Both endings are complete. The guarded one dissolves `store`; the
+one taken when the guard does *not* fire dissolves `report` and
+then `store`, newest first as always. A locus bound only inside
+the branch that returns dissolves on that branch alone — the other
+endings never built it, so there is nothing for them to release.
+
+This holds in `fn main` too, which matters because `main` is where
+usage checks and flag guards live.
 
 ### Replacing a locus held in a field
 

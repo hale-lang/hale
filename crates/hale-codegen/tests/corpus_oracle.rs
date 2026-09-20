@@ -27,6 +27,19 @@
 //!                        catch heap-overflow, use-after-free, and
 //!                        leaks at exit.
 //!
+//! GH #816: the sanitizer oracle used to be structurally blind to
+//! the use-after-free class it exists for. `lotus_arena_destroy`
+//! returned a dying arena's chunks to a thread-local pool with
+//! their bytes intact, so a load from a destroyed arena read memory
+//! the process still owned — valid to ASan, which never saw a
+//! `free`. Four arena use-after-frees (GH #710, #750, #711, #812)
+//! passed this gate. The instrumented build now defaults the
+//! recycling off (`LOTUS_NO_CHUNK_POOL`, compiled in by the ASan
+//! cflags and restated on the child's env below), so those reads
+//! are reported as `heap-use-after-free` with the free stack and
+//! the read stack. The plain pass keeps the pooled allocator —
+//! that is the allocator users run.
+//!
 //! Fixtures are discovered at runtime, so a new example under
 //! `tests/fixtures/examples/` is covered automatically — no
 //! manifest to keep in sync.
@@ -134,8 +147,48 @@ const EXPECTED_INTERPRETER_ONLY: &[&str] = &[];
 /// pinned locus's lifetime-arena teardown was the trigger here.)
 /// Fixed by zero-initializing `via_mmap`/`mmap_size` in prefill.
 ///
-/// Empty == the goal reached. Any leak/UAF/overflow now hard-fails.
+/// Empty == the goal reached for the closure class. The second
+/// quarantine below (GH #871) is a different, newly-visible set.
 const KNOWN_CLOSURE_LEAKS: &[&str] = &[];
+
+/// GH #871 — leaks the chunk pool was hiding from LeakSanitizer,
+/// which GH #816's `LOTUS_NO_CHUNK_POOL` made visible. Tracked, not
+/// caused, by #816: `LOTUS_ARENA_RESIDENCY=1` reports these arenas
+/// live at exit on an ORDINARY build with the pool on and nothing
+/// from #816 in play, so they leak on `main` today and always did.
+///
+/// The masking is the leak-side twin of the use-after-free one. A
+/// pooled chunk is a live `malloc` block reachable from
+/// `g_chunk_pool` (a `__thread` array, which LSan takes as a root),
+/// and it still holds the dead arena's bytes — including a pointer
+/// to a `lotus_arena_t` nobody destroyed. That makes the arena
+/// "reachable" and unreported. Free the chunk instead and the same
+/// allocation is a direct leak.
+///
+/// Eight of the nine lose exactly one 216-byte `lotus_arena_t` with
+/// `chunks=0` — a locus whose `lotus_arena_destroy` never ran, which
+/// allocated nothing, so only the header is lost.
+/// `87-temp-locus-receiver` is the substantial one at 592416 bytes
+/// in 27 allocations: every param-field CHILD locus of a literal in
+/// `main` (four `Churner`s and their `Rows` `@form(vec)` children)
+/// survives the program. A plain `let`-bound locus in `main` is
+/// reclaimed, so this is the child arm of that teardown, not "loci
+/// in main leak".
+///
+/// QUARANTINED FOR LEAKS ONLY. A `heap-use-after-free`, an
+/// overflow, a crash or a hang in one of these is still a hard
+/// failure — a name on this list must not become a hole in the gate
+/// #816 exists to sharpen.
+///
+/// Empty == the goal reached for this class too. GH #871 (PR #894)
+/// fixed eight of the nine by making the teardown cascade reach
+/// contract-typed param fields; GH #893 fixed the ninth,
+/// `85-bindings-unix`, by giving the `bindings { }` transport an
+/// owner on `fn main`'s deferred-dissolve frame instead of leaving
+/// it on the m90 `returns_this_locus` path, which allocates for the
+/// program's lifetime and then owns nothing. The list stays as the
+/// seat for the next one.
+const LEAKS_UNMASKED_BY_NO_CHUNK_POOL: &[&str] = &[];
 
 /// Per-fixture wall-clock budget. Demos finish in well under a
 /// second; the budget is generous so a slow CI box doesn't flake,
@@ -184,6 +237,16 @@ fn runnable_fixtures() -> Vec<(String, PathBuf)> {
     out
 }
 
+/// Is this run the instrumented pass? `build_executable` reads
+/// `LOTUS_ASAN` at codegen time to decide the runtime cflags + link
+/// flags, so the same variable is what tells the harness whether the
+/// binary it just built is an ASan binary.
+fn asan_enabled() -> bool {
+    std::env::var("LOTUS_ASAN")
+        .map(|v| v == "1" || v == "true" || v == "TRUE")
+        .unwrap_or(false)
+}
+
 enum RunResult {
     /// Completed within the deadline; carries exit code (None if
     /// killed by a signal), the signal number if any, and stderr.
@@ -205,8 +268,8 @@ fn run_with_deadline(bin: &Path, deadline: Duration) -> RunResult {
     let out_file = File::create(&out_path).expect("create stdout file");
     let err_file = File::create(&err_path).expect("create stderr file");
 
-    let mut child = Command::new(bin)
-        .stdin(Stdio::null())
+    let mut cmd = Command::new(bin);
+    cmd.stdin(Stdio::null())
         .stdout(out_file)
         .stderr(err_file)
         // LeakSanitizer detects leaks at exit (no-op on a non-ASAN
@@ -214,9 +277,22 @@ fn run_with_deadline(bin: &Path, deadline: Duration) -> RunResult {
         // non-zero *with* their stderr banner rather than raising
         // SIGABRT — the banner lets the sanitizer oracle classify
         // (and the abnormal-exit fixture stays exempt by exit code).
-        .env("ASAN_OPTIONS", "detect_leaks=1")
-        .spawn()
-        .expect("spawn fixture binary");
+        .env("ASAN_OPTIONS", "detect_leaks=1");
+    if asan_enabled() {
+        // GH #816: make the arena's chunk recycling stop hiding
+        // use-after-free from the sanitizer — a destroyed arena's
+        // chunks go back to libc, so a load from one is a real
+        // heap-use-after-free instead of a valid read of memory we
+        // kept. The instrumented build already defaults this on
+        // (`-DLOTUS_NO_CHUNK_POOL_DEFAULT=1` in the ASan cflags);
+        // stating it here keeps the oracle's guarantee legible at
+        // the place the guarantee is made, and holds even if a
+        // fixture binary is somehow built without those cflags.
+        // NOT set on the plain pass: the non-instrumented oracle
+        // should run the allocator users actually get.
+        cmd.env("LOTUS_NO_CHUNK_POOL", "1");
+    }
+    let mut child = cmd.spawn().expect("spawn fixture binary");
 
     let start = Instant::now();
     let result = loop {
@@ -266,6 +342,51 @@ fn stderr_has_sanitizer_error(stderr: &str) -> bool {
         || stderr.contains("LeakSanitizer")
         || stderr.contains("ThreadSanitizer")
         || stderr.contains("detected memory leaks")
+}
+
+/// Is this report ONLY a leak? A quarantine entry excuses leaks and
+/// nothing else, so the question has to be asked of the report
+/// rather than of the fixture name.
+///
+/// The distinction is in the banner, not the summary: every ASan /
+/// TSan finding opens with `ERROR: AddressSanitizer: <kind>` or
+/// `ERROR: ThreadSanitizer: <kind>`, while a leak opens with
+/// `ERROR: LeakSanitizer: detected memory leaks` and only mentions
+/// AddressSanitizer in its trailing `SUMMARY:` line. Matching the
+/// banner keeps a `heap-use-after-free` in a quarantined fixture a
+/// hard failure — which is the whole point of GH #816.
+fn sanitizer_error_is_leak_only(stderr: &str) -> bool {
+    !stderr.contains("ERROR: AddressSanitizer:")
+        && !stderr.contains("ERROR: ThreadSanitizer:")
+}
+
+/// GH #816: a quarantined fixture is excused its LEAK and nothing
+/// else. Worth a test of its own because the failure mode is
+/// silence — a name on the list swallowing a use-after-free would
+/// give back exactly the blindness #816 removed, and the corpus run
+/// that would notice takes an ASan build to reach. Real banners,
+/// trimmed: the leak's only mention of AddressSanitizer is its
+/// SUMMARY line, which is precisely the trap.
+#[test]
+fn a_quarantine_excuses_leaks_and_nothing_else() {
+    let leak = "==1==ERROR: LeakSanitizer: detected memory leaks\n\
+         Direct leak of 216 byte(s) in 1 object(s) allocated from:\n\
+         SUMMARY: AddressSanitizer: 216 byte(s) leaked in 1 allocation(s).\n";
+    let uaf = "==1==ERROR: AddressSanitizer: heap-use-after-free on \
+         address 0x5310000008c0 at pc 0x5c699376abe8\n\
+         READ of size 8 at 0x5310000008c0 thread T0\n\
+         SUMMARY: AddressSanitizer: heap-use-after-free\n";
+    let overflow = "==1==ERROR: AddressSanitizer: heap-buffer-overflow \
+         on address 0x502000000110\n";
+    assert!(stderr_has_sanitizer_error(leak));
+    assert!(sanitizer_error_is_leak_only(leak), "a leak is a leak");
+    for report in [uaf, overflow] {
+        assert!(stderr_has_sanitizer_error(report));
+        assert!(
+            !sanitizer_error_is_leak_only(report),
+            "a quarantined fixture must still FAIL on this report:\n{report}"
+        );
+    }
 }
 
 enum Outcome {
@@ -339,7 +460,9 @@ fn check_fixture(name: &str, main_hl: &Path, deadline: Duration) -> Outcome {
                     .take(3)
                     .collect::<Vec<_>>()
                     .join(" | ");
-                if KNOWN_CLOSURE_LEAKS.contains(&name) {
+                let quarantined = KNOWN_CLOSURE_LEAKS.contains(&name)
+                    || LEAKS_UNMASKED_BY_NO_CHUNK_POOL.contains(&name);
+                if quarantined && sanitizer_error_is_leak_only(&stderr) {
                     return Outcome::Quarantined(snippet);
                 }
                 let full: String = stderr.lines().take(12).collect::<Vec<_>>().join("\n");
@@ -443,11 +566,13 @@ fn report(
         }
     }
     // Known, tracked leaks — loud, but not a gate failure (see
-    // KNOWN_CLOSURE_LEAKS). The point is to keep them visible until
-    // the closure epoch-fire reclaim is fixed and the set is empty.
+    // KNOWN_CLOSURE_LEAKS and LEAKS_UNMASKED_BY_NO_CHUNK_POOL). The
+    // point is to keep them visible until each set is empty. Only
+    // LEAKS land here: any other sanitizer finding in a quarantined
+    // fixture is a failure above.
     if !quarantined.is_empty() {
         eprintln!(
-            "\n⚠ {} KNOWN leak(s) quarantined (closure epoch-fire reclaim — fix pending):",
+            "\n⚠ {} KNOWN leak(s) quarantined (tracked — GH #871):",
             quarantined.len()
         );
         for (name, reason) in &quarantined {
@@ -480,9 +605,7 @@ fn corpus_terminates_and_exits_clean() {
 #[test]
 #[ignore = "ASAN build: opt in with LOTUS_ASAN=1 (dedicated CI job)"]
 fn corpus_clean_under_asan() {
-    let on = std::env::var("LOTUS_ASAN")
-        .map(|v| v == "1" || v == "true" || v == "TRUE")
-        .unwrap_or(false);
+    let on = asan_enabled();
     if !on {
         eprintln!("skipping: set LOTUS_ASAN=1 to build the corpus under AddressSanitizer");
         return;

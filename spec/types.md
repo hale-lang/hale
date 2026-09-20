@@ -52,8 +52,91 @@ the lifetime contract.
 | Tuple | `(A, B, C)` | Fixed-size heterogeneous |
 | Struct | `type Foo { x: Int; y: Int = 0; }` | Named record. Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time. |
 | Enum | `type Foo = enum { A, B(int) };` | Tagged union (sum type) |
+| Alias | `type Thing = Int;` | A second SPELLING of a type, not a new type. See § "Type aliases". |
 | Function | `fn(A, B) -> C` | First-class function values |
 | Generic | `Foo<T>` | Parametric over type T |
+
+## Type aliases
+
+`type Name = Type;` declares an **alias**: a second spelling of an
+existing type.
+
+```hale
+type Thing = Int;
+type Row2  = Row;
+type Names = Vec<String>;
+type Span  = (Int, Int);
+```
+
+An alias is **transparent**, not nominal. It is replaced by its
+target wherever a type is written, so the alias and its target are
+**the same type** — they unify in both directions, share every
+field, and dispatch to the same methods:
+
+```hale
+type Thing = Int;
+
+fn bump(t: Thing) -> Thing { return t + 1; }
+
+fn main() {
+    let t: Thing = 3;      // an Int
+    let u: Int = bump(t);  // and back, with no conversion
+}
+```
+
+The consequences are all one rule:
+
+* **Structural, never nominal.** An alias declares no type of its
+  own, so nothing attaches to the alias name. `type Held =
+  Holder;` names the locus `Holder`; `held.method()` is
+  `Holder`'s method. There is no way to give an alias behaviour
+  its target does not have — for a distinct type with its own
+  methods, declare a locus or a struct.
+* **Transparent in every type position**: `let` ascriptions,
+  struct fields, `params`, function parameters and return types,
+  `capacity` cell types (the form's `indexed_by` resolves to the
+  target's field), generic arguments, and nested shapes (`[Row2;
+  2]`, `(Thing, Thing)`).
+* **An alias chains.** `type A = B; type B = Int;` makes `A` an
+  `Int`. A chain that returns to a name it already visited names
+  nothing and is a type error:
+
+  ```text
+  main.hl:1:1: type error: type alias `A` is cyclic — an alias
+  chain must end at a declared type
+  ```
+
+  A chain that ends at a bare name nothing declares is refused the
+  same way, at the target rather than at every use of the alias
+  (see "Bare type names" below).
+
+* **Transparent in construction too.** A struct, locus or
+  perspective literal, and an enum-variant path, may be spelled
+  with the alias name: with `type Row2 = Row;`, `Row2 { id: 1 }`
+  builds a `Row`, and with `type C2 = Color;`, `C2::Red` is
+  `Color::Red` — both where a variant is constructed and where it
+  is matched. Construction resolves the name through the alias
+  chain to the declaration it ends at, so the value's type, its
+  fields and its methods are the target's; the alias adds nothing
+  and forgives nothing (a field the target does not declare is
+  still an error). A literal whose alias target is not a
+  declaration is still refused — nothing is constructible from
+  `type Thing = Int;` or `type TwoRows = [Row; 2];`:
+
+  ```text
+  main.hl:5:13: type error: `Thing` is not a struct type
+  ```
+
+* **The alias form takes no generic parameters.** `type Twin<T> =
+  Pair<T>;` is not supported — the alias target must be a
+  concrete type expression (which may itself be a generic
+  *instantiation*, as `type Names = Vec<String>;` is). The parser
+  refuses the parameter list, at the `<`:
+
+  ```text
+  main.hl:1:10: parse error: generic type aliases are not
+  supported; write the concrete alias `type Name = Pair<Int>;`
+  ```
 
 ## Projection-class types
 
@@ -401,6 +484,12 @@ for the narrowing direction (LLVM `fptosi` / `sitofp`):
 - **The `Int(x)` / `Float(x)` casts** — the idiomatic in-language
   form. `Int(f)` narrows a `Float` to an `Int` (truncates toward
   zero); the cast is opt-in, so there is no silent `Float → Int`.
+  `Float(i)` widens an `Int` to a `Float` (`sitofp`). Each is the
+  identity on its own type, and rejects any other argument type.
+  They are the only two casts: there is no `String(x)`, `Bool(x)`,
+  `Bytes(x)`, `Decimal(x)` or `Duration(x)` — those names are types.
+  Rendering is `to_string(x)`, and reading a value back out of text
+  is `std::str::parse_*`.
 - **`std::math::int_to_float(i: Int) -> Float` and
   `std::math::float_to_int(f: Float) -> Int`** (WS3.1)
   — the named-function spelling, callable in any expression
@@ -636,6 +725,27 @@ goes through the same field-access lowering as any other
 LocusRef receiver. Synthetic fields (`self.db.k_max`,
 `self.db.draining`) work on non-self receivers too (B14 / G31).
 
+**A locus may not contain itself by value (GH #813).** A param
+default that *constructs* the locus it belongs to — directly, or
+around a cycle through other loci — is an error at the param
+("param `next` of `Node` defaults to a `Node`; a locus cannot
+contain itself by value"). Every instance the default builds needs
+another, and no call site can end the chain: `Node { next: ... }`
+needs a `Node` to hand over, and building one asks the same
+question again. The rule is over locus LITERALS in a default, and a
+literal's own supplied fields count — a default that spells out
+every param of the locus it builds expands no default of its own
+and is not a cycle. A **call** in a default (`next: Node = make()`)
+is not a containment edge: the checker cannot tell a factory that
+builds a fresh locus from an accessor handing back one somebody
+else owns, and lowering a call terminates either way (that program
+compiles, and recurses at run time like any other unbounded
+recursion). A cycle whose loci live in different files of one seed
+is reported when the seed is checked together, since a single file
+holds no declaration for its sibling's types. Codegen enforces the
+same rule for itself, as an `Unsupported` error, so a path that
+bypasses the checker terminates too.
+
 ## `inferred` params
 
 Per F.3: a param declared `: inferred` (instead of `= value`)
@@ -664,17 +774,51 @@ syntax and don't take `self` (it's implicit).
 
 A call whose callee is a bare identifier must name something: a
 local binding (a fn pointer), a free `fn`, a generic `fn`, or one of
-the builtins the compiler answers itself (`len`, `to_string`, `hex`,
-the printers, `abs` / `min` / `max`, the `bounded` intrinsics, the
-casts). When a **whole seed** is checked (`hale check <directory>`,
-which is what a build compiles and what the organization's gate
-runs), any other bare callee is a type error — `call to X: no free
-fn, generic fn or fn-pointer binding with that name is in scope`,
-with a did-you-mean over the program's fns — rather than an
-`Unknown` that `hale build` refuses later. One file checked alone,
-or a partial program a harness assembles, keeps the permissive
-reading: it may call what a sibling file defines (dna/FRICTION.md
-F.18).
+the builtins the compiler answers itself. That set is exactly:
+
+| group | names |
+| --- | --- |
+| length and rendering | `len`, `to_string` |
+| the numeric casts | `Int`, `Float` |
+| the printers | `print`, `println`, `eprint`, `eprintln` |
+| the numeric trio | `abs`, `min`, `max` |
+| the string predicates | `starts_with`, `contains` |
+| the `bounded` intrinsics | `push`, `at`, `set`, `count`, `clear`, `truncate` |
+| accumulators, inside a closure assertion | `count`, `mean` |
+| the explicit-epoch closure surface | `check_closures` |
+
+(`sum(x)` and `prod(x)` are accumulator vocabulary too, but the
+parser gives them their own syntax rather than a call, so they are
+never a bare callee. `__fmt`, the desugaring of `f"{x:spec}"`, is
+the compiler's own and is not written by hand.)
+
+When a **whole seed** is checked (`hale check <directory>`, which is
+what a build compiles and what the organization's gate runs), any
+other bare callee is a type error — `call to X: no free fn, generic
+fn or fn-pointer binding with that name is in scope`, with a
+did-you-mean over the program's fns — rather than an `Unknown` that
+`hale build` refuses later. One file checked alone, or a partial
+program a harness assembles, keeps the permissive reading: it may
+call what a sibling file defines (dna/FRICTION.md F.18).
+
+The list is a contract in **both** directions, and neither is
+optional.
+
+**A name the compiler answers must be exempt from the rule.** A
+builtin the rule does not know about turns the admission gate into a
+refusal of correct code — `hale check` red, `hale run` fine — which
+is strictly worse than the late diagnostic the rule exists to
+replace (GH #779).
+
+**A name the rule exempts must be one the compiler answers.** An
+exemption for a name nothing lowers is the divergence the rule was
+written to remove, moved inside the rule: `hale check` accepts the
+call, and `hale build` refuses it at lowering, without a source
+location. The list is therefore exactly the set above and carries no
+aspirational entries — a name is on it when codegen dispatches it,
+not when it looks like it should (GH #800). The compiler tests both
+directions over its whole program corpus rather than trusting the
+list.
 
 ### Bare identifiers
 
@@ -704,6 +848,44 @@ One file of a multi-file seed, checked alone (`hale check
 
 A bare unknown CALLEE reports the call diagnostic above and not this
 one — one mistake, one message (GH #721).
+
+### Bare type names
+
+And the same rule holds in TYPE position. A bare name written where a
+type is expected must name a declaration: a primitive, a `type`
+(struct, enum or alias), a `locus`, an `interface`, a `perspective`,
+a generic parameter of the declaration being checked, or one of the
+types the compiler synthesizes for its own channels (`IoError`,
+`ParseError`, `CryptoError`, `IndexError`, `KeyError`, `EmptyError`,
+`CapacityError`, `BusUnmatchedKey`, `ClosureViolation`). In a whole
+program — the same set of callers as above — any other bare name is a
+type error at its own span:
+
+```text
+main.hl:1:16: type error: unknown type `int`: no type, enum, locus,
+interface or alias with that name is declared — did you mean `Int`?
+```
+
+The rule holds in every annotation position: a `fn` parameter and
+return, a `fallible(E)` payload, a struct field, an enum variant's
+payload, an alias target, a `const` ascription, a locus `params`
+field, a `capacity` cell type, a lifecycle / mode / `on_failure`
+parameter, and a `let` ascription — including inside the compound
+forms, so the name in `[Row; 4]`, `(Int, Row)`, `bounded[Row; 8]`,
+`fn(Row) -> Row` and `Rich<Row>` is checked as well.
+
+Before this, an unresolvable bare type name resolved to `Unknown`,
+which is permissive everywhere, so `fn helper() -> int` typechecked
+and then failed in the backend as `unknown type name 'int' in
+signature` — no location, and the annotation had silenced every check
+that would have used it (GH #877).
+
+A QUALIFIED name (`lib::Thing`, `std::text::Sink`) is NOT subject to
+this rule. It resolves against the bundle's import-rename table, which
+only a caller that merged the imported seeds has, so a tool holding
+one seed without them keeps the permissive reading for paths (GH
+#803 / #833). One file of a multi-file seed, checked alone, keeps it
+for bare names too: the sibling it did not see may declare the type.
 
 ## Contract subsumption
 

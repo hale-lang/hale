@@ -318,7 +318,8 @@ fn valid_scans_a_megabyte_within_a_wall_bound() {
 
             // Allocation: a row-shaped gate, 200,000 times.
             let row = "{\"seq\":1,\"kind\":\"k\",\"body\":\"b\"}";
-            let before = std::process::rss_bytes();
+            print("before_statm=");
+            println(std::io::fs::read_file("/proc/self/statm") or "");
             let mut r = 0;
             let mut gated = 0;
             while r < 200000 {
@@ -327,9 +328,16 @@ fn valid_scans_a_megabyte_within_a_wall_bound() {
                 r = r + 1;
             }
             println("gated=", gated);
-            println("rss_growth=", std::process::rss_bytes() - before);
+            print("after_statm=");
+            println(std::io::fs::read_file("/proc/self/statm") or "");
         }
     "#;
+    // The growth is a difference between the program's own
+    // /proc/self/statm reads, not `std::process::rss_bytes()`: that
+    // one is `getrusage(RUSAGE_SELF).ru_maxrss`, which a spawned
+    // program inherits from its parent through fork+exec, so under
+    // the test harness both readings clamped to the harness's own
+    // footprint and the difference was always 0 (GH #772).
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("hale_test_stdlib_json_valid_scaling");
     build_executable(&program, &bin).expect("build");
@@ -360,18 +368,20 @@ fn valid_scans_a_megabyte_within_a_wall_bound() {
     assert!(stdout.contains("deep_len=1200129"), "nested length; got: {:?}", stdout);
     assert!(stdout.contains("deep_valid=true"), "nested verdict; got: {:?}", stdout);
     assert!(stdout.contains("gated=400000"), "gate verdicts; got: {:?}", stdout);
-    let growth: i64 = stdout
-        .lines()
-        .find_map(|l| l.strip_prefix("rss_growth="))
-        .expect("the program prints its RSS growth")
-        .trim()
-        .parse()
-        .expect("RSS growth is a number");
+    let read = |key: &str| -> i64 {
+        let line = stdout
+            .lines()
+            .find_map(|l| l.strip_prefix(key))
+            .unwrap_or_else(|| panic!("missing {} in stdout: {:?}", key, stdout));
+        harness::statm_resident_bytes(line)
+    };
+    let growth = read("after_statm=") - read("before_statm=");
     assert!(
         growth < 4 * 1024 * 1024,
         "400,000 validator calls grew RSS by {} bytes — both fns are \
          documented to allocate nothing, and a free fn's scratch lands \
-         in the caller's arena until the caller returns",
+         in the caller's arena until the caller returns (measured \
+         2026-09-20: 68 KB)",
         growth,
     );
 }

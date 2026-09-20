@@ -255,6 +255,21 @@ tests do — leaves its law meaning exactly what it meant when the
 seed was checked on its own, and a group of the same name in the
 importing seed is never substituted for it.
 
+That holds for a group the seed never declared, too: a claim naming
+an undeclared group is an error in the seed that wrote it, and stays
+one however the seed is imported. An importing seed that happens to
+declare `group guests = { … };` does not answer another seed's
+`guests` — the error you saw checking the seed alone is the error the
+closing build reports, naming the group you wrote. The same goes for
+a library-tier `claims { }` block, and for a `constitution` in a seed
+that declares its own `main locus`.
+
+A `constitution` in a seed with **no** main is the exception, and the
+one place an open name is deliberate: that seed closes no world, so
+its clauses are adopted somewhere else and each adopting entrypoint
+declares the vocabulary — see
+[One law, many entrypoints](#one-law-many-entrypoints).
+
 Every entry is `name: form;`. The **name is the contract of
 record** — it is what the diagnostic, the CI check, the review
 policy, and the topology artifact cite — and it must be unique
@@ -754,6 +769,14 @@ same seed that declares both the constitution and its groups — then
 the vocabulary arrives with the law. An entrypoint that deliberately
 lacks a component writes the empty group explicitly, which is a line
 a reviewer can see rather than an absence they must infer.
+
+Leaving a name for the adopter to answer is the job of a **policy
+seed** — one that declares no `main locus`, so it closes no world and
+someone else always adopts its clauses. A constitution written in a
+seed that *does* declare `main locus` is adopted by that main and
+nobody else, so its vocabulary is that seed's own: a name it leaves
+undeclared is its error, and importing the seed does not let an
+importer's same-named group answer it.
 
 ### Provenance, not annotation
 

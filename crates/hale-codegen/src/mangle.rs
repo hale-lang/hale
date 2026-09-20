@@ -1,8 +1,11 @@
 //! v1.x-IMPORT PR2: auto-mangler for imported library seeds.
 //!
-//! Rewrites a parsed library Program's top-level decl names and
-//! every use-site that resolves to one of those decls so the
-//! library's symbols don't collide with the importer's. Shape
+//! Rewrites a parsed library Program's decl names — at the top
+//! level and inside any `module { }`, which is a namespace sharing
+//! the seed's one flat symbol table rather than a boundary
+//! (GH #884) — and every use-site that resolves to one of those
+//! decls, so the library's symbols don't collide with the
+//! importer's. Shape
 //! mirrors the hand-spelled `__StdLangMorpheme` / `__MoaBraidId`
 //! prefixes the std and moa seeds carry today — same flat-namespace
 //! discipline, but generated per imported library so users don't
@@ -46,7 +49,11 @@ use hale_syntax::ast::*;
 /// rename map.
 pub fn mangle_program(prog: &mut Program, alias: &str, file_stem: &str) {
     let mut renames: HashMap<String, String> = HashMap::new();
-    for item in &prog.items {
+    // GH #884: `module { }` nesting flattened — a module is a
+    // namespace, and the resolver registers what it holds under the
+    // bare name, so a module-nested decl is a seed symbol like any
+    // other and must be mangled like one.
+    for item in flat_decls(&prog.items) {
         if let Some(n) = top_decl_name(item) {
             renames.insert(n.to_string(), mangled(alias, file_stem, n));
         }
@@ -84,7 +91,12 @@ pub fn build_seed_renames(
 ) -> HashMap<String, String> {
     let mut out: HashMap<String, String> = HashMap::new();
     for (stem, prog) in programs {
-        for item in &prog.items {
+        // GH #884: module-nested decls are seed symbols too — see
+        // `mangle_program`. Without a row here the importer's
+        // `lib::Name` has nothing to resolve to, and the decl
+        // reaches the merged program under its bare name, where it
+        // can collide with the importer's own.
+        for item in flat_decls(&prog.items) {
             // Stage-2 FFI (2026-05-22): `@ffi("c") fn name(...)`
             // declarations must keep the literal `name` as their
             // LLVM symbol — the linker resolves against C glue
@@ -136,7 +148,11 @@ pub fn seed_path_heads(programs: &[(String, &Program)]) -> HashSet<String> {
 }
 
 fn collect_path_heads(prog: &Program, out: &mut HashSet<String>) {
-    for item in &prog.items {
+    // GH #884: a type declared inside a `module { }` heads a
+    // qualified path exactly as a top-level one does — the resolver
+    // gives both the same bare name — so the module-alias exemption
+    // has to be decided against it too.
+    for item in flat_decls(&prog.items) {
         if let TopDecl::Type(t) = item {
             out.insert(t.name.name.clone());
         }
@@ -152,20 +168,66 @@ fn collect_path_heads(prog: &Program, out: &mut HashSet<String>) {
 /// Path heads default to this file's own type declarations; a
 /// multi-file seed should call `mangle_with_renames_in_seed` with
 /// `seed_path_heads` over the whole bundle.
+///
+/// The seed has no identity here, so a claim group reference this
+/// seed never declares is left as written (GH #774): binding it to
+/// its seed needs a seed id, which only the import resolver has.
 pub fn mangle_with_renames(prog: &mut Program, renames: &HashMap<String, String>) {
     let mut heads: HashSet<String> = HashSet::new();
     collect_path_heads(prog, &mut heads);
-    mangle_with_renames_in_seed(prog, renames, &heads);
+    mangle_with_renames_in_seed(
+        prog,
+        renames,
+        &heads,
+        SeedBinding::default(),
+    );
+}
+
+/// GH #774: does any file of this seed declare a `main locus`? See
+/// [`SeedBinding::declares_main`]. Seed-wide for the same reason
+/// `seed_path_heads` is: a seed's files share one namespace and one
+/// world.
+pub fn seed_declares_main(programs: &[(String, &Program)]) -> bool {
+    programs.iter().any(|(_, prog)| {
+        prog.items.iter().any(
+            |item| matches!(item, TopDecl::Locus(l) if l.is_main),
+        )
+    })
+}
+
+/// GH #774: what the mangler needs to know about the seed as a
+/// WHOLE to bind a claim group reference no declaration in it
+/// answers. Seed-wide, like `seed_path_heads`, because the file
+/// carrying a claim need not be the file carrying the main.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SeedBinding<'a> {
+    /// The stable identity of the seed being mangled — the same
+    /// `lib_id` the mangled prefixes are built from. Empty means "no
+    /// seed identity", which leaves an unbound reference as written.
+    pub seed_id: &'a str,
+    /// Does this seed declare a `main locus`? Then it closes a world
+    /// and its `constitution`s can only be adopted by that main, so
+    /// their vocabulary is this seed's. A seed with no main is a
+    /// POLICY seed: spec `verification.md` "Groups are not implied"
+    /// makes its constitution's group vocabulary the adopting
+    /// entrypoint's to declare, and binding it would break that.
+    pub declares_main: bool,
 }
 
 /// `mangle_with_renames` with the seed's path heads supplied by the
 /// caller (`seed_path_heads` over every file in the bundle) so the
 /// module-alias exemption is decided against the whole seed's type
 /// names, not just this file's.
+///
+/// GH #774: `seed` binds a claim group reference NO declaration in
+/// this seed answers to the seed that wrote it
+/// (`unbound_group_sentinel`) instead of letting it travel as
+/// written, so an importer's same-named group cannot capture it.
 pub fn mangle_with_renames_in_seed(
     prog: &mut Program,
     renames: &HashMap<String, String>,
     path_heads: &HashSet<String>,
+    seed: SeedBinding<'_>,
 ) {
     if renames.is_empty() {
         return;
@@ -180,12 +242,15 @@ pub fn mangle_with_renames_in_seed(
         .filter_map(|i| i.alias.clone())
         .filter(|a| !path_heads.contains(a))
         .collect();
+    let no_construct: HashMap<String, String> = HashMap::new();
     let mut walker = Mangler {
         renames,
         scopes: Vec::new(),
         module_aliases,
         alias_heads: HashMap::new(),
+        construct: &no_construct,
         mangling: true,
+        seed,
     };
     for item in &mut prog.items {
         walker.walk_top_decl(item);
@@ -220,14 +285,221 @@ pub fn rewrite_import_alias_heads(
         return;
     }
     let no_renames: HashMap<String, String> = HashMap::new();
+    let no_construct: HashMap<String, String> = HashMap::new();
     let mut walker = Mangler {
         renames: &no_renames,
         scopes: Vec::new(),
         module_aliases: HashSet::new(),
         alias_heads: alias_heads.clone(),
+        construct: &no_construct,
         mangling: false,
+        // Heads only: this pass carries no decl renames, so it is in
+        // no position to decide that a group reference is unbound.
+        seed: SeedBinding::default(),
     };
     walker.walk_top_decl(d);
+}
+
+/// GH #831 — resolve every CONSTRUCTION path spelled with a type
+/// alias to the declaration the alias chain ends at, program-wide,
+/// before anything lowers an expression.
+///
+/// `type Row2 = Row;` makes `Row2` a second spelling of `Row`
+/// (GH #759, spec `types.md` § "Type aliases"), and the checker
+/// follows it in one hop because it holds one expanded alias table.
+/// Codegen holds no such single point: a struct-literal path is
+/// read at roughly twenty `Expr::Struct` sites — the plain
+/// lowering, the monomorph synthesizer, the locus-instantiation
+/// paths, the mode/factory rewrites, the channel and bus-dispatch
+/// rewrites — and none of them consult the alias table. Rather than
+/// teach twenty sites the same hop (and leave the twenty-first to a
+/// future author), the alias is resolved ONCE here, so nothing
+/// downstream ever sees the alias name.
+///
+/// Three positions carry a construction path, and this pass is
+/// attached to the walker that already visits all three:
+/// `Expr::Struct` (a struct / locus / perspective literal),
+/// `Expr::Path` (an enum-variant construction, with or without a
+/// payload) and `Pattern::Constructor` (the same variant path in
+/// match position — check refuses an aliased arm as non-exhaustive
+/// only when there is no catch-all, so without this a program with
+/// a `_` arm checked clean and died at build with "constructor
+/// pattern: unknown enum").
+///
+/// `renames` is the build's cross-seed import table, which is what
+/// makes `lib::Row2 { }` resolve: the qualified spelling is a key
+/// of its own alongside the bare name.
+pub fn resolve_construction_aliases(
+    prog: &mut Program,
+    renames: &[(Vec<String>, String)],
+) {
+    let targets = construction_alias_targets(prog, renames);
+    if targets.is_empty() {
+        return;
+    }
+    let no_renames: HashMap<String, String> = HashMap::new();
+    let mut walker = Mangler {
+        renames: &no_renames,
+        scopes: Vec::new(),
+        module_aliases: HashSet::new(),
+        alias_heads: HashMap::new(),
+        construct: &targets,
+        mangling: false,
+        seed: SeedBinding::default(),
+    };
+    for item in &mut prog.items {
+        walker.walk_top_decl(item);
+    }
+}
+
+/// The table [`resolve_construction_aliases`] rewrites through:
+/// every spelling of a `type Name = Target;` alias whose chain ends
+/// at a name a construction can actually be resolved against, mapped
+/// to that name.
+///
+/// What is deliberately absent is as load-bearing as what is
+/// present — an absent row leaves the path as written, so the
+/// existing diagnostic still fires and the checker, which answers
+/// the same question from its own expanded table, agrees:
+///
+/// * a target that is not a named type (`type Thing = Int;`,
+///   `type TwoRows = [Row2; 2];`, a tuple, a fn type) — nothing is
+///   constructible with `{ }` or `::`, so `Thing { }` stays
+///   "`Thing` is not a struct type";
+/// * a target naming no declaration in the merged program;
+/// * a generic alias TEMPLATE (`type Twin<T> = ...`), which has no
+///   single target;
+/// * a chain that returns to its own name, which `check` reports
+///   with a span and this table simply drops.
+///
+/// A target that is a generic INSTANTIATION (`type IntPair =
+/// Pair<Int>;`) maps to the monomorph name codegen synthesizes
+/// (`Pair_Int`) — the same name `resolve_type_expr` gives the
+/// alias, so the two layers land on one declaration.
+fn construction_alias_targets(
+    prog: &Program,
+    renames: &[(Vec<String>, String)],
+) -> HashMap<String, String> {
+    // Every alias declaration in the program, modules included: a
+    // module shares the flat top-level namespace, so `module geo {
+    // type Row2 = Row; }` is spelled `Row2` at the use site.
+    fn collect(
+        items: &[TopDecl],
+        aliases: &mut HashMap<String, TypeExpr>,
+        declared: &mut HashSet<String>,
+    ) {
+        for item in items {
+            match item {
+                TopDecl::Type(t) => {
+                    if t.generics.is_empty() {
+                        if let TypeDeclBody::Alias(te) = &t.body {
+                            aliases
+                                .entry(t.name.name.clone())
+                                .or_insert_with(|| te.clone());
+                            continue;
+                        }
+                    }
+                    declared.insert(t.name.name.clone());
+                }
+                TopDecl::Locus(l) => {
+                    declared.insert(l.name.name.clone());
+                }
+                TopDecl::Perspective(p) => {
+                    declared.insert(p.name.name.clone());
+                }
+                TopDecl::Module(m) => collect(&m.items, aliases, declared),
+                _ => {}
+            }
+        }
+    }
+
+    let mut aliases: HashMap<String, TypeExpr> = HashMap::new();
+    let mut declared: HashSet<String> = HashSet::new();
+    collect(&prog.items, &mut aliases, &mut declared);
+    if aliases.is_empty() {
+        return HashMap::new();
+    }
+
+    // One hop of a chain: the single name this target spells, plus
+    // whether it is a generic instantiation's monomorph (which no
+    // declaration carries yet — codegen synthesizes it from the
+    // template later in this build). `None` means the target is not
+    // a construction target at all.
+    let step = |te: &TypeExpr| -> Option<(String, bool)> {
+        let TypeExpr::Named { path, generic_args, .. } = te else {
+            return None;
+        };
+        let name = if path.segments.len() == 1 {
+            path.segments[0].name.clone()
+        } else {
+            // A qualified target. The CLI's
+            // `apply_qualified_path_renames` has already collapsed
+            // any it can resolve, so what reaches here is either a
+            // stdlib path or a path this build cannot see.
+            let segs: Vec<&str> =
+                path.segments.iter().map(|s| s.name.as_str()).collect();
+            hale_stdlib::PATH_RENAMES
+                .iter()
+                .find(|(p, _)| *p == segs.as_slice())
+                .map(|(_, m)| (*m).to_string())?
+        };
+        if generic_args.is_empty() {
+            Some((name, false))
+        } else {
+            // The monomorph codegen synthesizes for the
+            // instantiation, and the `Ty` the checker resolves the
+            // alias to.
+            crate::codegen::Cx::mangle_generic_name(&name, generic_args)
+                .ok()
+                .map(|m| (m, true))
+        }
+    };
+
+    let mut out: HashMap<String, String> = HashMap::new();
+    for (name, target) in &aliases {
+        let mut seen: HashSet<String> = HashSet::new();
+        seen.insert(name.clone());
+        let mut cur = target.clone();
+        // Follow an alias-of-an-alias to the end. A chain that
+        // re-enters itself is the cyclic case `check` reports with a
+        // span; drop it here rather than loop.
+        loop {
+            let Some((next, monomorph)) = step(&cur) else { break };
+            match aliases.get(&next) {
+                Some(further) => {
+                    if !seen.insert(next) {
+                        break;
+                    }
+                    cur = further.clone();
+                }
+                None => {
+                    if monomorph || declared.contains(&next) {
+                        out.insert(name.clone(), next);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    if out.is_empty() {
+        return out;
+    }
+    // The qualified spelling of an imported alias
+    // (`lib::Row2 { }`), under the same rename table every other
+    // cross-seed reference resolves through. The alias's mangled
+    // name is already a key; this adds the way the importer spells
+    // it.
+    for (segs, mangled) in renames {
+        if let Some(target) = out.get(mangled).cloned() {
+            out.insert(segs.join("::"), target);
+        }
+    }
+    for (segs, mangled) in hale_stdlib::PATH_RENAMES {
+        if let Some(target) = out.get(*mangled).cloned() {
+            out.insert(segs.join("::"), target);
+        }
+    }
+    out
 }
 
 /// brained F.1 / 2026-05-23 — apply the cross-seed
@@ -253,6 +525,31 @@ pub fn rewrite_import_alias_heads(
 /// (`model::frob(x)` etc.) continue to lower via the codegen
 /// `mangled_for_path` machinery — those don't need to round-
 /// trip through the type checker.
+///
+/// GH #854 — where this pass is and is NOT load-bearing, since
+/// "it walks top-level declarations only" reads like a hole in
+/// all four directions and is one in exactly one:
+///
+/// * **Declaration signatures, at any module depth** — this pass,
+///   and only this pass. A fn signature, a struct field, a
+///   `params` entry, a `capacity` slot, an alias target, a bus
+///   payload, a `serves` clause, a `bindings` topic. The
+///   top-level-only walk left every one of them unresolved inside
+///   `module { }`; the `TopDecl::Module` arm below closes that.
+/// * **A type annotation in a BODY** (`let x: lib::T`) — the
+///   RESOLVER's, since PR #851 / GH #833. `KnownNames` carries the
+///   same rename table and `resolve_type_expr` consults it, so the
+///   type of an annotation no longer depends on which positions a
+///   walk happens to reach. Widening this pass into bodies would
+///   duplicate that answer, not complete it.
+/// * **A qualified CALL, struct literal or enum variant in a
+///   body** (`lib::f()`, `lib::T { }`, `lib::E::V`) — codegen's
+///   `mangled_for_path`, at lowering. This pass never collapsed
+///   them anywhere, top level included; the corpus's import
+///   fixtures are all body-position literals and calls.
+/// * **The same three inside a module body** — the same
+///   `mangled_for_path`, once codegen lowers module-nested
+///   declarations at all (GH #884, this change).
 ///
 /// The `renames` list comes from `hale_cli::ImportRenames`
 /// (Vec<(Vec<String>, String)>): each entry is
@@ -559,7 +856,17 @@ impl<'a> QualifiedRenameApplier<'a> {
                     }
                 }
             }
-            TopDecl::Module(_) => {}
+            // GH #854: a module is a namespace, not a boundary —
+            // its declarations carry TypeExprs (a signature, a
+            // struct field, a `params` entry, a bus payload) that
+            // may be spelled `alias::Name` exactly as a top-level
+            // one's can, and the same pass has to collapse them or
+            // the checker sees a qualified path it cannot resolve.
+            TopDecl::Module(m) => {
+                for it in &mut m.items {
+                    self.walk_top_decl(it);
+                }
+            }
             TopDecl::Target(_) => {
                 // FUv0.8.2 #7: target capability blocks carry
                 // no TypeExprs the import-rename pass needs
@@ -648,7 +955,17 @@ impl<'a> QualifiedRenameApplier<'a> {
                 }
                 self.rewrite_sends_in_block(&mut lc.body);
             }
+            // GH #854: a mode DOES take typed params — the grammar
+            // is `mode bulk(n: Int) -> T { }` and the full mangler
+            // walks them (`walk_fn_like`). This arm rewrote `ret`
+            // only, so `mode bulk(t: lib::Thing)` reached the
+            // checker still spelled qualified while every sibling
+            // arm's params were collapsed. Not intentional; the
+            // arm is now the same shape as `Fn` and `Failure`.
             LocusMember::Mode(md) => {
+                for p in &mut md.params {
+                    self.rewrite_type_expr(&mut p.ty);
+                }
                 if let Some(r) = &mut md.ret {
                     self.rewrite_type_expr(r);
                 }
@@ -824,12 +1141,22 @@ struct Mangler<'a> {
     /// Empty on a mangling pass, which leaves every path head to
     /// `rewrite_variant_path`'s own rule.
     alias_heads: HashMap<String, String>,
+    /// GH #831: the `type Name = Target;` table, as a CONSTRUCTION
+    /// path spells the alias → the declaration the chain ends at.
+    /// Empty on every other pass; see
+    /// [`resolve_construction_aliases`].
+    construct: &'a HashMap<String, String>,
     /// True on a mangling pass (`mangle_with_renames*`), false on the
     /// alias-head pass. Guards the one walk step that is a state
     /// change rather than a rename: marking a `claims { }` block
     /// library-tier, which is true of an imported seed's block and
     /// false of the closing seed's.
     mangling: bool,
+    /// GH #774: what the seed being mangled is, for binding a claim
+    /// group reference no declaration in it answers to the seed that
+    /// wrote it. Default (no identity) on every pass that has none,
+    /// which leaves such a reference as written.
+    seed: SeedBinding<'a>,
 }
 
 impl<'a> Mangler<'a> {
@@ -855,6 +1182,66 @@ impl<'a> Mangler<'a> {
             *n = new_name.clone();
         }
     }
+    /// GH #774: a GROUP reference in claim position.
+    ///
+    /// Same rename as any other intra-seed reference, plus the case
+    /// the rename table cannot cover: a name NO declaration in this
+    /// seed answers. Left as written it is a bare name in the merged
+    /// program, so an importer that declares a group of that name
+    /// captures it — the defining seed's "unknown group" error turns
+    /// into a law evaluated against a stranger's group. Binding it to
+    /// this seed keeps it unresolved in every build. The sentinel is
+    /// unspeakable in user source and carries the author's spelling,
+    /// so the diagnostic still names the group the author wrote.
+    ///
+    /// `bind` is false on the one claim surface whose vocabulary is
+    /// deliberately somebody else's: a POLICY seed's `constitution`
+    /// (see `SeedBinding::declares_main`).
+    fn rewrite_group_ident(&self, n: &mut String, bind: bool) {
+        if self.is_shadowed(n) {
+            return;
+        }
+        if let Some(new_name) = self.renames.get(n) {
+            *n = new_name.clone();
+            return;
+        }
+        if bind && !self.seed.seed_id.is_empty() {
+            *n = hale_syntax::ast::unbound_group_sentinel(
+                self.seed.seed_id,
+                n,
+            );
+        }
+    }
+
+    /// GH #831: replace the `keep` leading segments of `q` — the
+    /// part that names a TYPE — with the declaration the alias chain
+    /// spelled there ends at. A no-op on every pass but
+    /// [`resolve_construction_aliases`], and on a path the table has
+    /// no row for, which is what leaves the existing "not a struct
+    /// type" / "unresolved path" diagnostics saying what the author
+    /// wrote.
+    fn rewrite_construction_head(
+        &self,
+        q: &mut QualifiedName,
+        keep: usize,
+    ) -> bool {
+        if self.construct.is_empty() || keep == 0 || q.segments.len() < keep {
+            return false;
+        }
+        let key = q.segments[..keep]
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>()
+            .join("::");
+        let Some(target) = self.construct.get(&key) else {
+            return false;
+        };
+        let span = q.segments[0].span;
+        q.segments.drain(1..keep);
+        q.segments[0] = Ident { name: target.clone(), span };
+        true
+    }
+
     fn rewrite_single_segment_path(&self, q: &mut QualifiedName) {
         if q.segments.len() == 1 {
             self.rewrite_ident(&mut q.segments[0].name);
@@ -941,6 +1328,14 @@ impl<'a> Mangler<'a> {
     /// path-rename table resolves it; only a bare identifier
     /// resolves against the free fn.
     fn rewrite_variant_path(&self, q: &mut QualifiedName) {
+        // GH #831: an enum-variant path is `Type::Variant` (or
+        // `alias::Type::Variant`) — everything but the LAST segment
+        // names the type, and may be spelled with an alias of it.
+        if q.segments.len() >= 2
+            && self.rewrite_construction_head(q, q.segments.len() - 1)
+        {
+            return;
+        }
         match q.segments.len() {
             1 => self.rewrite_ident(&mut q.segments[0].name),
             2 => {
@@ -981,7 +1376,19 @@ impl<'a> Mangler<'a> {
                 // declaration name participates in the rename table.
                 self.rewrite_ident(&mut r.name.name);
             }
-            TopDecl::Module(_) => {}
+            // GH #884: the seed's module-nested declarations are
+            // renamed, and their bodies' references rewritten, like
+            // every other declaration the seed makes — they share
+            // the seed's one flat namespace (`build_seed_renames`
+            // gave them a row for the same reason). The rename pass
+            // (GH #831's `resolve_construction_aliases`) and the
+            // alias-head pass ride this walker too, so both reach
+            // inside a module from here.
+            TopDecl::Module(m) => {
+                for it in &mut m.items {
+                    self.walk_top_decl(it);
+                }
+            }
             TopDecl::Target(t) => {
                 // FUv0.8.2 #7: rewrite the target name only —
                 // capability paths are structural identifiers,
@@ -1028,13 +1435,29 @@ impl<'a> Mangler<'a> {
                 if self.mangling {
                     cb.lib_tier = true;
                 }
-                self.rewrite_claim_entry_idents(&mut cb.entries);
+                // GH #774: a library-tier block swears about ITSELF
+                // and its own boundary, so a group it does not
+                // declare is its own error and nobody else's to
+                // answer.
+                self.rewrite_claim_entry_idents(&mut cb.entries, true);
             }
             // GH #409: a constitution can live in an imported seed
             // — that is the point of it — so its references resolve
             // through the same table.
             TopDecl::Constitution(cd) => {
-                self.rewrite_claim_entry_idents(&mut cd.entries);
+                // GH #774: and only a seed that closes a world binds
+                // what the table cannot answer. A constitution in a
+                // seed with a `main locus` can be adopted by nothing
+                // but that main, so its vocabulary is this seed's; a
+                // POLICY seed's constitution is adopted elsewhere,
+                // and spec `verification.md` ("Groups are not
+                // implied") makes those groups the adopting
+                // entrypoint's to declare — an environment matrix
+                // binds one policy seed to entrypoints that each
+                // declare their own, some of them
+                // `{ } may_be_empty`.
+                let bind = self.seed.declares_main;
+                self.rewrite_claim_entry_idents(&mut cd.entries, bind);
             }
         }
         self.pop_scope();
@@ -1064,7 +1487,15 @@ impl<'a> Mangler<'a> {
     /// `claims { }` block — every claimset that can arrive through an
     /// import, so all of them resolve their references through the
     /// same rename table.
-    fn rewrite_claim_entry_idents(&mut self, entries: &mut [ClaimDecl]) {
+    ///
+    /// GH #774: every GROUP operand goes through
+    /// `rewrite_group_ident`, which also covers the case the rename
+    /// table cannot — a group this seed never declared.
+    fn rewrite_claim_entry_idents(
+        &mut self,
+        entries: &mut [ClaimDecl],
+        bind: bool,
+    ) {
         for e in entries {
                 match &mut e.form {
                     ClaimForm::ForbidReaches {
@@ -1075,11 +1506,11 @@ impl<'a> Mangler<'a> {
                     } => {
                         for set in [src, dst] {
                             if let ClaimSet::Group(g) = set {
-                                self.rewrite_ident(&mut g.name);
+                                self.rewrite_group_ident(&mut g.name, bind);
                             }
                         }
                         if let Some(g) = avoiding {
-                            self.rewrite_ident(&mut g.name);
+                            self.rewrite_group_ident(&mut g.name, bind);
                         }
                     }
                     ClaimForm::OnlyEdges {
@@ -1087,8 +1518,8 @@ impl<'a> Mangler<'a> {
                         dst,
                         grants,
                     } => {
-                        self.rewrite_ident(&mut src.name);
-                        self.rewrite_ident(&mut dst.name);
+                        self.rewrite_group_ident(&mut src.name, bind);
+                        self.rewrite_group_ident(&mut dst.name, bind);
                         for g in grants {
                             if g.topic.segments.len() == 1 {
                                 self.rewrite_ident(
@@ -1103,10 +1534,10 @@ impl<'a> Mangler<'a> {
                         }
                     }
                     ClaimForm::Bound { from, .. } => {
-                        self.rewrite_ident(&mut from.name);
+                        self.rewrite_group_ident(&mut from.name, bind);
                     }
                     ClaimForm::Require { group, topic, .. } => {
-                        self.rewrite_ident(&mut group.name);
+                        self.rewrite_group_ident(&mut group.name, bind);
                         if topic.segments.len() == 1 {
                             self.rewrite_ident(
                                 &mut topic.segments[0].name,
@@ -1118,7 +1549,7 @@ impl<'a> Mangler<'a> {
                     }
                     ClaimForm::RequireSealed { group }
                     | ClaimForm::Cover { group, .. } => {
-                        self.rewrite_ident(&mut group.name);
+                        self.rewrite_group_ident(&mut group.name, bind);
                     }
                     // Names an effect CLASS, not a group or topic;
                     // nothing to rewrite.
@@ -1284,7 +1715,10 @@ impl<'a> Mangler<'a> {
                 // keeps its defining seed's vocabulary and an
                 // importer's same-named group cannot be substituted
                 // for it.
-                self.rewrite_claim_entry_idents(&mut cb.entries);
+                //
+                // GH #774: including a group this seed never
+                // declared — main's law is about main's own world.
+                self.rewrite_claim_entry_idents(&mut cb.entries, true);
             }
         }
     }
@@ -1667,7 +2101,13 @@ impl<'a> Mangler<'a> {
                 }
             }
             Expr::Struct { path, inits, .. } => {
-                self.rewrite_single_segment_path(path);
+                // GH #831: a struct / locus / perspective literal —
+                // the WHOLE path names the type, so the whole path
+                // is the alias key.
+                let n = path.segments.len();
+                if !self.rewrite_construction_head(path, n) {
+                    self.rewrite_single_segment_path(path);
+                }
                 for i in inits {
                     self.walk_expr(&mut i.value);
                 }

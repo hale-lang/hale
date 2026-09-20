@@ -31,6 +31,22 @@ Everything the library declares is then reachable as
 misspell a field and `hale check` says so, the same as for a
 type you declared yourself.
 
+So is a qualified type written as an *annotation*. `let c:
+router::Config = "dev";` is a type error naming `router::Config`,
+and so is the same type in a parameter, a return, a struct field,
+a `params` field or a `capacity` slot — the library's declaration
+is the type, and `c.timeuot` is a misspelled field rather than
+something the checker shrugs at. Import the same library under two
+aliases and you still have one type: what `a::Config` builds fits
+where `b::Config` is wanted.
+
+The one thing to know is *when*: this needs the whole program, so
+run `hale check` on the seed (`hale check .`) rather than on a
+single file. Checking one file of a multi-file seed leaves an
+imported type opaque, because the `import` line it needs may be in
+a file you did not hand it. `build`, `run` and `test` always see
+the whole thing.
+
 `hale fetch` clones each dependency into `vendor/<name>/` and
 pins the resolved commit in `hale.lock`. Pond's "no transitive
 dependencies in v1" rule means every package your program pulls
@@ -65,7 +81,51 @@ way of type names.
 An alias also belongs to the seed that declares it: a library you
 vendor may call something `u` while your own program calls a
 different library `u`, and each `u::f()` means the one its own seed
-imported.
+imported. It follows that a seed can only use the aliases it
+declares itself — `u::f()` written in a seed with no `import … as
+u;` is a check error that names the seed which does declare `u`,
+rather than quietly borrowing that seed's import.
+
+## One library, however you spell it
+
+A library is a directory, and `main.hl` is that directory's entry
+file rather than a library of its own — so `import "../lib/main"`
+and `import "../lib"` name the same library. Both spellings see
+every file of the seed, and both resolve to one set of symbols, so
+a value your app builds as `lib::Config` is the same type the
+library's own signatures mean by it. Spell it whichever way in
+whichever file; there is one library either way.
+
+Any *other* single file is its own small library: `import
+"../lib/helper"` brings in `helper.hl` and nothing else.
+
+## When the path names nothing
+
+A path that resolves to none of those places fails the check where
+you wrote it:
+
+```text
+/tmp/app/main.hl:1:8: type error: could not resolve import `../nowhere` (tried /tmp/app/../nowhere.hl, /tmp/app/../nowhere/, and workspace-root/../nowhere/)
+    import "../nowhere" as nowhere;
+           ^^^^^^^^^^^^
+```
+
+The three paths in the message are the three places the compiler
+looked, in order, so a typo and a library you have not vendored yet
+look different at a glance. The caret is under the string itself —
+the thing to change — and the file it names is the file holding the
+`import`, which for a two-hop failure is the library's file rather
+than yours.
+
+`build`, `run` and `test` print that same line, and `hale check
+--json` carries it as one record with the file, line and column in
+it, so an editor opens the `import` rather than the top of the
+program.
+
+If the path *does* resolve but there is nothing to compile there —
+a vendored directory with no `.hl` files in it, a checkout that
+did not finish — the report names that directory instead. The
+import was found; reading what it named is what failed.
 
 ## The catalog
 

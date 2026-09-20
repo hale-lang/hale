@@ -21,11 +21,21 @@
 //
 // Failure path on each: print a diagnostic to stdout (for
 // dev visibility — stderr would also work but the surrounding
-// println machinery routes to stdout already), then call
-// std::process::exit(1) so the calling test runner sees a
-// non-zero status. Successful assertions are silent — that's
-// the design: a test program that runs to completion with
-// no output and exit 0 has passed.
+// println machinery routes to stdout already), then RECORD the
+// failure (`__note_fail`) and return. Successful assertions are
+// silent — that's the design: a test program that runs to
+// completion with no output and exit 0 has passed.
+//
+// GH #717: the failure path used to call std::process::exit(1)
+// right here, which jumped over `fn main`'s teardown — a fixture
+// that had spawned a child or created scratch it owned left both
+// behind, contaminating the next run. The assertion now records
+// the failure and returns; the check codegen emits after every
+// `std::test::assert*` call site reads the latch and leaves main
+// through main's ordinary teardown with exit code 1. The latch is
+// also what keeps "the first failure short-circuits" true now
+// that an assertion no longer terminates the process: every later
+// assertion sees it set and is a no-op.
 //
 // `assert(cond, msg)` covers the general case. The
 // `assert_eq_*` variants exist for the most common shape
@@ -41,32 +51,47 @@ fn __test_fail_trailer() {
 }
 
 fn __test_assert(cond: Bool, msg: String) {
+    // GH #717: once a failure is recorded, every later assertion is
+    // a no-op — the run has already stopped, and a second
+    // "ASSERTION FAILED" line would contradict the runner contract.
+    if std::test::__failed() != 0 {
+        return;
+    }
     if !cond {
         println("ASSERTION FAILED: ", msg);
         __test_fail_trailer();
-        std::process::exit(1);
+        std::test::__note_fail();
+        return;
     }
     std::test::__note_pass();
 }
 
 fn __test_assert_eq_int(actual: Int, expected: Int, msg: String) {
+    if std::test::__failed() != 0 {
+        return;
+    }
     if actual != expected {
         println("ASSERTION FAILED: ", msg);
         println("  expected: ", expected);
         println("  actual:   ", actual);
         __test_fail_trailer();
-        std::process::exit(1);
+        std::test::__note_fail();
+        return;
     }
     std::test::__note_pass();
 }
 
 fn __test_assert_eq_str(actual: String, expected: String, msg: String) {
+    if std::test::__failed() != 0 {
+        return;
+    }
     if actual != expected {
         println("ASSERTION FAILED: ", msg);
         println("  expected: \"", expected, "\"");
         println("  actual:   \"", actual, "\"");
         __test_fail_trailer();
-        std::process::exit(1);
+        std::test::__note_fail();
+        return;
     }
     std::test::__note_pass();
 }

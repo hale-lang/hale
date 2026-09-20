@@ -569,7 +569,17 @@ fn main() {{ App {{ }}; }}
     )
 }
 
-const BLOCKING_RUN: &str = "let n = std::io::tls::recv_into(0, 0, 64);";
+/// A blocking `run()` body.
+///
+/// GH #829: `recv_into`'s `buf` is a `std::bytes::BytesBuilder`, and
+/// the checker now says so. These fixtures used to pass `0` there —
+/// a program `hale check` accepted and `hale build` refused, which
+/// is what the whole `check_build_divergences` ratchet is against.
+/// The blocking call is the point of the fixture; the buffer just
+/// has to be real.
+const BLOCKING_RUN: &str =
+    "let b = std::bytes::BytesBuilder { initial_cap: 64 };\n\
+     let n = std::io::tls::recv_into(0, b, 64);";
 
 #[test]
 fn cooperative_nonmain_subscriber_blocking_rejected() {
@@ -712,7 +722,7 @@ fn main() {{ App {{ }}; }}
 fn cooperative_blocking_run_warns() {
     let msgs = check(&blocking_src(
         "cooperative(pool = ws)",
-        "let n = std::io::tls::recv_into(0, 0, 64);",
+        BLOCKING_RUN,
     ));
     assert!(
         msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
@@ -725,7 +735,7 @@ fn cooperative_blocking_run_warns() {
 fn pinned_blocking_run_not_warned() {
     let msgs = check(&blocking_src(
         "pinned",
-        "let n = std::io::tls::recv_into(0, 0, 64);",
+        BLOCKING_RUN,
     ));
     assert!(
         !msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
@@ -738,7 +748,7 @@ fn pinned_blocking_run_not_warned() {
 fn async_io_blocking_run_not_warned() {
     let msgs = check(&blocking_src(
         "cooperative(pool = ws) where async_io",
-        "let n = std::io::tls::recv_into(0, 0, 64);",
+        BLOCKING_RUN,
     ));
     assert!(
         !msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
@@ -763,7 +773,8 @@ fn blocking_inside_while_loop_warns() {
     // the full-recursion walk into loop bodies.
     let msgs = check(&blocking_src(
         "cooperative(pool = ws)",
-        "while true { let n = std::io::tls::recv_into(0, 0, 64); }",
+        "let b = std::bytes::BytesBuilder { initial_cap: 64 };\n\
+         while true { let n = std::io::tls::recv_into(0, b, 64); }",
     ));
     assert!(
         msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
@@ -784,12 +795,13 @@ fn blocking_via_free_fn_helper_warns() {
     // run() itself has no stdlib blocking op — it calls a free fn
     // that does. The interprocedural walk must still warn.
     let src = r#"
-fn pump(fd: Int) -> Int {
-    return std::io::tcp::recv_into(fd, 0, 64);
+fn pump(fd: Int, buf: std::bytes::BytesBuilder) -> Int {
+    return std::io::tcp::recv_into(fd, buf, 64);
 }
 
 locus Gateway {
-    run() { let n = pump(0); }
+    params { buf: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 64 }; }
+    run() { let n = pump(0, self.buf); }
 }
 
 main locus App {
@@ -814,7 +826,8 @@ fn blocking_via_self_method_warns() {
     // method call graph must propagate the block to run().
     let src = r#"
 locus Gateway {
-    fn pull() { let n = std::io::tcp::recv_into(0, 0, 64); }
+    params { buf: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 64 }; }
+    fn pull() { let n = std::io::tcp::recv_into(0, self.buf, 64); }
     run() { self.pull(); }
 }
 
@@ -839,11 +852,12 @@ fn blocking_via_transitive_free_fn_warns() {
     // run() -> outer() -> inner() (blocks). Two hops; the fixpoint
     // must taint `outer` from `inner`, then flag run()'s `outer()`.
     let src = r#"
-fn inner(fd: Int) -> Int { return std::io::tcp::recv_into(fd, 0, 64); }
-fn outer(fd: Int) -> Int { return inner(fd); }
+fn inner(fd: Int, buf: std::bytes::BytesBuilder) -> Int { return std::io::tcp::recv_into(fd, buf, 64); }
+fn outer(fd: Int, buf: std::bytes::BytesBuilder) -> Int { return inner(fd, buf); }
 
 locus Gateway {
-    run() { let n = outer(0); }
+    params { buf: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 64 }; }
+    run() { let n = outer(0, self.buf); }
 }
 
 main locus App {
@@ -895,12 +909,13 @@ fn dead_receiver_stays_direct_only_helper_blocking_warns_not_errors() {
     let src = r#"
 type Tick { n: Int; }
 
-fn pump(fd: Int) -> Int { return std::io::tcp::recv_into(fd, 0, 64); }
+fn pump(fd: Int, buf: std::bytes::BytesBuilder) -> Int { return std::io::tcp::recv_into(fd, buf, 64); }
 
 locus Gateway {
+    params { buf: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 64 }; }
     bus { subscribe "tick" as on_tick of type Tick; }
     fn on_tick(t: Tick) { }
-    run() { let n = pump(0); }
+    run() { let n = pump(0, self.buf); }
 }
 
 locus Feed {
@@ -929,6 +944,179 @@ fn main() { App { }; }
         msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
         "blocking via a helper on a cooperative subscriber must still warn; \
          got: {:?}",
+        msgs
+    );
+}
+
+// ---------------------------------------------------------------
+// GH #830: the lint's leaf set is the effects registry's `block`
+// classification, not a hand list. It used to be a hand list of 11
+// paths, so a `run()` that blocked through `io::stdin::read_line`,
+// `io::file::read_line`, `udp::recv`, `std::http::get`,
+// `tcp::connect` or `process::read_stdout` warned only if it ALSO
+// touched one of the 11.
+// ---------------------------------------------------------------
+
+/// The 11 paths the hand list named, kept as a pin: every one must
+/// still be a blocking leaf under the derived set. Seven of them
+/// (`tcp::{recv_into, recv_stamped_into, __recv, __recv_bytes,
+/// __accept_one}`, `tls::{recv_into, recv_stamped_into}`) are also
+/// in `ASYNC_IO_PARKING` — which is exactly why this lint does NOT
+/// subtract the park list: it never looks at an async_io placement
+/// (the walk `continue`s on the `where async_io` constraint), and on
+/// a classic pool those leaves take their blocking path.
+#[test]
+fn the_eleven_hand_listed_paths_are_still_blocking_leaves() {
+    use hale_types::stdlib_surface::holds_cooperative_worker;
+    for p in [
+        vec!["std", "io", "tcp", "recv_into"],
+        vec!["std", "io", "tcp", "recv_stamped_into"],
+        vec!["std", "io", "tcp", "__recv"],
+        vec!["std", "io", "tcp", "__recv_bytes"],
+        vec!["std", "io", "tcp", "__accept_one"],
+        vec!["std", "io", "tls", "recv_into"],
+        vec!["std", "io", "tls", "recv_stamped_into"],
+        vec!["std", "io", "tls", "recv_bytes"],
+        vec!["std", "process", "run"],
+        vec!["std", "process", "wait"],
+        vec!["std", "process", "__wait_pid"],
+    ] {
+        assert!(
+            holds_cooperative_worker(&p),
+            "{} was a blocking leaf before the registry derivation and must \
+             stay one",
+            p.join("::")
+        );
+    }
+}
+
+/// The omissions GH #830 names, now covered by the same derivation.
+#[test]
+fn the_registry_block_rows_the_hand_list_omitted_are_leaves_now() {
+    use hale_types::stdlib_surface::holds_cooperative_worker;
+    for p in [
+        vec!["std", "io", "stdin", "read_line"],
+        vec!["std", "io", "stdin", "read_byte"],
+        vec!["std", "io", "stdin", "read_line_status"],
+        vec!["std", "io", "file", "read_line"],
+        vec!["std", "io", "udp", "recv"],
+        vec!["std", "io", "udp", "recv_into"],
+        vec!["std", "io", "udp", "recv_with_source"],
+        vec!["std", "http", "get"],
+        vec!["std", "http", "post"],
+        vec!["std", "http", "request"],
+        vec!["std", "io", "tcp", "connect"],
+        vec!["std", "io", "tcp", "accept_one"],
+        vec!["std", "io", "tls", "upgrade"],
+        vec!["std", "process", "read_stdout"],
+        vec!["std", "process", "read_stderr"],
+    ] {
+        assert!(
+            holds_cooperative_worker(&p),
+            "{} carries `block` in the registry and must be a blocking leaf",
+            p.join("::")
+        );
+    }
+}
+
+/// A pure / non-blocking row is not a leaf, and neither is the one
+/// deliberate exclusion.
+#[test]
+fn non_blocking_rows_and_the_sleep_carve_out_are_not_leaves() {
+    use hale_types::stdlib_surface::holds_cooperative_worker;
+    for p in [
+        // `sleep` carries `block` but a cooperative pool slices it
+        // into ≤100ms chunks and drains the bus between them.
+        vec!["std", "time", "sleep"],
+        vec!["std", "time", "monotonic"],
+        vec!["std", "io", "tcp", "send"],
+        vec!["std", "str", "len"],
+        vec!["println"],
+        vec!["std", "io", "udp", "send"],
+    ] {
+        assert!(
+            !holds_cooperative_worker(&p),
+            "{} must not be a blocking leaf",
+            p.join("::")
+        );
+    }
+}
+
+#[test]
+fn cooperative_stdin_read_warns() {
+    // The regression GH #830 asks for: a classic-pool `run()` that
+    // blocks ONLY through stdin. Under the hand list this was silent.
+    let msgs = check(&blocking_src(
+        "cooperative(pool = io)",
+        "while true { let line = std::io::stdin::read_line(); }",
+    ));
+    assert!(
+        msgs.iter().any(|m| m.contains(BLOCKS_WARN)
+            && m.contains("std::io::stdin::read_line")),
+        "a classic-pool run() reading stdin must warn; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn cooperative_udp_recv_warns() {
+    let msgs = check(&blocking_src(
+        "cooperative(pool = net)",
+        "while true { let b = std::io::udp::recv(0, 64); }",
+    ));
+    assert!(
+        msgs.iter().any(|m| m.contains(BLOCKS_WARN)
+            && m.contains("std::io::udp::recv")),
+        "a classic-pool run() on udp::recv must warn; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn async_io_udp_recv_not_warned() {
+    // #828's park list: `udp::recv` parks on an async_io pool. Here
+    // the silence comes from the placement walk skipping `where
+    // async_io` outright — which is why this lint must not subtract
+    // the park list a second time.
+    let msgs = check(&blocking_src(
+        "cooperative(pool = net) where async_io",
+        "while true { let b = std::io::udp::recv(0, 64); }",
+    ));
+    assert!(
+        !msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
+        "udp::recv parks on async_io; must not warn: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn cooperative_http_get_warns() {
+    let msgs = check(&blocking_src(
+        "cooperative(pool = api)",
+        "while true { let r = std::http::get(\"http://h/\"); }",
+    ));
+    assert!(
+        msgs.iter()
+            .any(|m| m.contains(BLOCKS_WARN) && m.contains("std::http::get")),
+        "a classic-pool run() making an http request must warn; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn cooperative_sleep_loop_not_warned() {
+    // The prescribed event-driven shape, and the fix BOTH blocking
+    // diagnostics name. `sleep` carries `block` in the registry, so
+    // a naive "every block row" leaf set would have the lint flag
+    // its own advice.
+    let msgs = check(&blocking_src(
+        "cooperative(pool = ws)",
+        "while true { std::time::sleep(50ms); }",
+    ));
+    assert!(
+        !msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
+        "a sliced `time::sleep` loop keeps the pool's bus drain \
+         serviced; must not warn: {:?}",
         msgs
     );
 }
@@ -1632,9 +1820,10 @@ fn dead_receiver_error_suppresses_starvation_warning() {
 type Tick { n: Int; }
 
 locus Gateway {
+    params { buf: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 64 }; }
     bus { subscribe "tick" as on_tick of type Tick; }
     fn on_tick(t: Tick) { }
-    run() { while true { let n = std::io::tls::recv_into(0, 0, 64); } }
+    run() { while true { let n = std::io::tls::recv_into(0, self.buf, 64); } }
 }
 
 locus Feed {
@@ -1664,6 +1853,559 @@ fn main() { App { }; }
     assert!(
         !msgs.iter().any(|m| m.contains(STARVED)),
         "the starvation warning is suppressed when the error already fired: {:?}",
+        msgs
+    );
+}
+
+// === GH #826: a pinned placement forbids a loop ====================
+//
+// A `pinned` entry gives its field its own OS thread; the join record
+// (the deferred-dissolve slot and the `pthread_t` beside it) is one
+// alloca per instantiation SITE, so a site inside a loop overwrites it
+// every iteration and the scope-exit flush joins only the LAST
+// instance — every earlier thread is orphaned with its arena live.
+// `placement { }` is main-only, so the reachable shape is the main
+// locus itself instantiated inside a loop.
+
+/// The GH #826 rejection, keyed on a substring stable across message
+/// edits.
+const PINNED_LOOP: &str = "is instantiated inside a loop, but its";
+
+/// Error-severity messages only. The hot-path lint WARNS about the
+/// same literal, so a message-only assertion could not tell a
+/// rejection from an advisory.
+fn errors(src: &str) -> Vec<String> {
+    let prog = parse_source(src).expect("parse failed");
+    check_program(&prog)
+        .into_iter()
+        .filter(|d| d.is_error())
+        .map(|d| d.message)
+        .collect()
+}
+
+fn pinned_app(body: &str) -> String {
+    format!(
+        r#"
+locus Worker {{
+    params {{ id: Int = 0; }}
+    run() {{ }}
+}}
+
+main locus App {{
+    params {{
+        w: Worker = Worker {{ id: 1 }};
+    }}
+    placement {{
+        w: pinned;
+    }}
+}}
+
+fn main() {{
+{}
+    return 0;
+}}
+"#,
+        body
+    )
+}
+
+#[test]
+fn pinned_placement_locus_in_while_loop_rejected() {
+    let msgs = errors(&pinned_app(
+        "    let mut i = 0;\n    while i < 3 { App { }; i = i + 1; }",
+    ));
+    assert!(
+        msgs.iter().any(|m| m.contains(PINNED_LOOP)
+            && m.contains("`App`")
+            && m.contains("`w`")),
+        "expected the GH #826 rejection naming the locus and the pinned \
+         field, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn pinned_placement_locus_in_for_loop_rejected() {
+    let msgs = errors(&pinned_app("    for i in 0..3 { App { }; }"));
+    assert!(
+        msgs.iter().any(|m| m.contains(PINNED_LOOP)),
+        "a `for` body is a loop body too: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn pinned_placement_let_bound_in_loop_rejected() {
+    let msgs = errors(&pinned_app(
+        "    let mut i = 0;\n    while i < 3 { let a = App { }; i = i + 1; }",
+    ));
+    assert!(
+        msgs.iter().any(|m| m.contains(PINNED_LOOP)),
+        "a `let`-bound instantiation takes the same per-site slot: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn pinned_placement_in_nested_block_in_loop_rejected() {
+    let msgs = errors(&pinned_app(
+        "    let mut i = 0;\n    while i < 3 {\n        if i > 0 {\n            App { };\n        }\n        i = i + 1;\n    }",
+    ));
+    assert!(
+        msgs.iter().any(|m| m.contains(PINNED_LOOP)),
+        "loop depth survives an inner block: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn pinned_placement_in_locus_method_loop_rejected() {
+    // The loop lives in a locus method body, not a free fn — the
+    // walker has to reach locus members and module-nested decls, not
+    // just top-level `TopDecl::Fn` (GH #825: a check that stops at the
+    // top level sees half the program).
+    let src = r#"
+locus Worker {
+    params { id: Int = 0; }
+    run() { }
+}
+
+locus Driver {
+    fn spin() {
+        let mut i = 0;
+        while i < 3 {
+            App { };
+            i = i + 1;
+        }
+    }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { id: 1 };
+        d: Driver = Driver { };
+    }
+    placement {
+        w: pinned;
+    }
+}
+
+fn main() { App { }; return 0; }
+"#;
+    let msgs = errors(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(PINNED_LOOP)),
+        "a loop inside a locus method is a loop: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn pinned_placement_outside_a_loop_is_clean() {
+    let msgs = errors(&pinned_app("    App { };\n    App { };"));
+    assert!(
+        !msgs.iter().any(|m| m.contains(PINNED_LOOP)),
+        "two straight-line sites are two slots — both are joined: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn cooperative_placement_in_a_loop_is_clean() {
+    // The control that isolates `pinned`: a cooperative field spawns
+    // no thread of its own, and GH #815 already reclaims the whole
+    // tree per iteration.
+    let src = r#"
+locus Worker {
+    params { id: Int = 0; }
+    run() { }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { id: 1 };
+    }
+    placement {
+        w: cooperative(pool = io);
+    }
+}
+
+fn main() {
+    let mut i = 0;
+    while i < 3 { App { }; i = i + 1; }
+    return 0;
+}
+"#;
+    let msgs = errors(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(PINNED_LOOP)),
+        "only `pinned` spawns the per-instance thread: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn no_placement_block_in_a_loop_is_clean() {
+    let src = r#"
+locus Worker {
+    params { id: Int = 0; }
+    run() { }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { id: 1 };
+    }
+}
+
+fn main() {
+    let mut i = 0;
+    while i < 3 { App { }; i = i + 1; }
+    return 0;
+}
+"#;
+    let msgs = errors(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(PINNED_LOOP)),
+        "no placement block, no pinned thread: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn factory_called_in_a_loop_is_not_flagged() {
+    // The literal is not in a loop, so the pinned entry is flushed at
+    // `boot`'s own fn exit and every call joins its own thread
+    // (verified under LSan). The check is positional on purpose: this
+    // shape is the fix, not a hole.
+    let src = r#"
+locus Worker {
+    params { id: Int = 0; }
+    run() { }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { id: 1 };
+    }
+    placement {
+        w: pinned;
+    }
+}
+
+fn boot() { App { }; }
+
+fn main() {
+    let mut i = 0;
+    while i < 3 { boot(); i = i + 1; }
+    return 0;
+}
+"#;
+    let msgs = errors(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(PINNED_LOOP)),
+        "a fn call in a loop is not a locus literal in a loop: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn pinned_loop_diagnostic_points_at_the_placement_entry() {
+    let src = pinned_app(
+        "    let mut i = 0;\n    while i < 3 { App { }; i = i + 1; }",
+    );
+    let prog = parse_source(&src).expect("parse failed");
+    let diag = check_program(&prog)
+        .into_iter()
+        .find(|d| d.is_error() && d.message.contains(PINNED_LOOP))
+        .expect("GH #826 rejection");
+    let (rspan, label) = diag
+        .related
+        .first()
+        .cloned()
+        .expect("the rejection carries the placement entry");
+    assert!(
+        label.contains("pinned") && label.contains("`w`"),
+        "related label names the placed field: {:?}",
+        label
+    );
+    let text = &src[rspan.start.as_usize()..rspan.end.as_usize()];
+    assert!(
+        text.contains("pinned"),
+        "related span should cover the placement entry, covers {:?}",
+        text
+    );
+}
+
+// === GH #890: a placement entry no instantiation consumes ========
+//
+// A placement entry reaches codegen as an override on the NEXT locus
+// LITERAL lowered for its field. A factory call lowers none — the
+// literal is inside the factory, already born and run by the time the
+// value comes back — so the entry sat untaken until the next field's
+// turn through the params-init loop reset it: no thread, no pool, no
+// diagnostic. The A/B in the issue differed only in the default's
+// spelling, and the factory spelling had one fewer `pthread_create`
+// call site in the binary and ran in strict declaration order.
+//
+// The rule is not factory-shaped: EVERY entry must be consumed by
+// exactly one instantiation, whether the value comes from the params
+// default or from the init at the instantiation site.
+
+const UNCONSUMED: &str = "names a field no locus literal initialises";
+
+#[test]
+fn placement_over_a_factory_default_is_rejected() {
+    let src = r#"
+locus Worker { run() { } }
+
+fn make_worker() -> Worker { Worker { } }
+
+main locus App {
+    params {
+        a: Worker = make_worker();
+        b: Int = 7;
+    }
+    placement {
+        a: pinned;
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = errors(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(UNCONSUMED)),
+        "a factory default carries no placement: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn placement_over_a_locus_literal_default_stays_clean() {
+    // The control half of the issue's A/B: the same program with the
+    // default spelled as the literal. This one honours the entry.
+    let src = r#"
+locus Worker { run() { } }
+
+fn make_worker() -> Worker { Worker { } }
+
+main locus App {
+    params {
+        a: Worker = Worker { };
+        b: Int = 7;
+    }
+    placement {
+        a: pinned;
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = errors(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(UNCONSUMED)),
+        "a locus-literal default consumes the entry: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn placement_over_a_factory_supplied_at_the_site_is_rejected() {
+    // The other half of the backstop. The field has no default, so the
+    // value — and the placement with it — comes from the init at the
+    // instantiation site. A call there drops the entry exactly as a
+    // factory default does.
+    let src = r#"
+locus Worker { run() { } }
+
+fn make_worker() -> Worker { Worker { } }
+
+main locus App {
+    params {
+        a: Worker;
+        b: Int = 7;
+    }
+    placement {
+        a: pinned;
+    }
+}
+
+fn main() { App { a: make_worker() }; }
+"#;
+    let msgs = errors(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(UNCONSUMED)),
+        "a call at the instantiation site carries no placement: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn placement_over_a_literal_supplied_at_the_site_stays_clean() {
+    // Its control: a no-default placed field IS honoured when the site
+    // writes the literal, and that shape must keep working.
+    let src = r#"
+locus Worker { run() { } }
+
+main locus App {
+    params {
+        a: Worker;
+        b: Int = 7;
+    }
+    placement {
+        a: pinned;
+    }
+}
+
+fn main() { App { a: Worker { } }; }
+"#;
+    let msgs = errors(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(UNCONSUMED)),
+        "a literal at the instantiation site consumes the entry: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn a_default_every_site_overrides_is_not_a_dropped_placement() {
+    // The default is dead text here — every instantiation supplies the
+    // field with a literal, so the entry IS consumed and the default's
+    // spelling never reaches codegen. Flagging it would be a false
+    // positive.
+    let src = r#"
+locus Worker { run() { } }
+
+fn make_worker() -> Worker { Worker { } }
+
+main locus App {
+    params {
+        a: Worker = make_worker();
+        b: Int = 7;
+    }
+    placement {
+        a: pinned;
+    }
+}
+
+fn main() { App { a: Worker { } }; }
+"#;
+    let msgs = errors(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(UNCONSUMED)),
+        "an overridden default is not a dropped entry: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn cooperative_pool_over_a_factory_default_is_rejected() {
+    // The drop is not pinned-only: the parallel pool override rides
+    // the same slot, so `cooperative(pool = X)` over a factory-built
+    // field silently leaves the locus on main.
+    let src = r#"
+locus Worker { run() { } }
+
+fn make_worker() -> Worker { Worker { } }
+
+main locus App {
+    params {
+        a: Worker = make_worker();
+    }
+    placement {
+        a: cooperative(pool = io);
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let msgs = errors(src);
+    assert!(
+        msgs.iter().any(|m| m.contains(UNCONSUMED)),
+        "a pool entry over a factory default is dropped too: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn unconsumed_placement_diagnostic_points_at_the_entry() {
+    let src = r#"
+locus Worker { run() { } }
+
+fn make_worker() -> Worker { Worker { } }
+
+main locus App {
+    params {
+        a: Worker = make_worker();
+    }
+    placement {
+        a: pinned;
+    }
+}
+
+fn main() { App { }; }
+"#;
+    let prog = parse_source(src).expect("parse failed");
+    let diag = check_program(&prog)
+        .into_iter()
+        .find(|d| d.is_error() && d.message.contains(UNCONSUMED))
+        .expect("GH #890 rejection");
+    assert!(
+        diag.message.contains("a: Worker = Worker { };"),
+        "the message spells the literal form: {:?}",
+        diag.message
+    );
+    let primary = &src[diag.span.start.as_usize()..diag.span.end.as_usize()];
+    assert_eq!(
+        primary, "make_worker()",
+        "the primary span covers the initialiser that drops the entry"
+    );
+    let (rspan, label) = diag
+        .related
+        .first()
+        .cloned()
+        .expect("the rejection carries the placement entry");
+    assert!(
+        label.contains("`a`") && label.contains("placed"),
+        "related label names the placed field: {:?}",
+        label
+    );
+    let text = &src[rspan.start.as_usize()..rspan.end.as_usize()];
+    assert!(
+        text.contains("pinned"),
+        "related span should cover the placement entry, covers {:?}",
+        text
+    );
+}
+
+#[test]
+fn an_imported_seeds_main_placement_is_not_flagged() {
+    // An imported seed's main locus is renamed `__lib_*` and is not
+    // the deployment root: `collect_main_placement` filters it, so its
+    // entries never reach the plan and flagging them (as a drop the
+    // author could fix) would be a false positive. The same scope rule
+    // rule 17's check uses.
+    let src = r#"
+locus Worker { run() { } }
+
+fn make_worker() -> Worker { Worker { } }
+
+main locus __lib_App {
+    params {
+        a: Worker = make_worker();
+    }
+    placement {
+        a: pinned;
+    }
+}
+
+fn main() { }
+"#;
+    let msgs = errors(src);
+    assert!(
+        !msgs.iter().any(|m| m.contains(UNCONSUMED)),
+        "an imported seed's main is not the deployment root: {:?}",
         msgs
     );
 }

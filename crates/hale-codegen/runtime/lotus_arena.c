@@ -500,6 +500,58 @@ static __thread lotus_arena_chunk_t *
     g_chunk_pool[LOTUS_CHUNK_POOL_CAP];
 static __thread int g_chunk_pool_count = 0;
 
+/* LOTUS_NO_CHUNK_POOL (GH #816) — sanitizer-visibility knob.
+ *
+ * Recycling a chunk hands the SAME bytes back out: a load from an
+ * arena that was destroyed reads memory the process still owns, so
+ * AddressSanitizer never sees a `free` and never reports the
+ * use-after-free. That is not a theoretical gap — GH #710, #750,
+ * #711 and #812 were all arena use-after-free and the ASan corpus
+ * oracle was silent on every one of them. The #812 shape
+ * (`Holder { tag: "hello" }.tag`, the field loaded after the
+ * literal's teardown) produced no sanitizer output at all, only a
+ * wrong answer once a second literal in the same statement claimed
+ * the recycled chunk; the #711 shape aborted inside glibc's
+ * `pthread_mutex_lock` (the dying arena's own lock read out of
+ * reclaimed storage) instead of naming the fault.
+ *
+ * With this knob set, `lotus_arena_destroy` really `free()`s each
+ * chunk and every chunk request really `malloc()`s, so the
+ * allocator's redzones + quarantine are in play and an arena UAF
+ * surfaces as a `heap-use-after-free` with both stacks — where it
+ * was freed and where it was read.
+ *
+ * Default OFF: recycling is a real hot-path win (the per-method
+ * scratch open/destroy cycle runs at ~6 kHz on a busy dispatch
+ * loop) and nothing about a production build should change. It
+ * defaults ON in ASan builds instead, via
+ * `-DLOTUS_NO_CHUNK_POOL_DEFAULT=1` in the sanitizer cflags
+ * (`crates/hale-codegen/src/codegen.rs`), so no ASan test has to
+ * remember to ask for it. `LOTUS_NO_CHUNK_POOL` overrides the
+ * compile-time default in BOTH directions: `=1` disables recycling
+ * on an ordinary build (useful for bisecting a suspected UAF
+ * without a sanitizer rebuild), `=0` restores it under ASan.
+ *
+ * Read once in a constructor, before main and before any Hale
+ * allocation, so the check on the release path is a plain load of
+ * an already-settled static — the same shape as
+ * LOTUS_GLIBC_ARENA_MAX below. */
+#ifndef LOTUS_NO_CHUNK_POOL_DEFAULT
+#define LOTUS_NO_CHUNK_POOL_DEFAULT 0
+#endif
+
+static int g_no_chunk_pool = LOTUS_NO_CHUNK_POOL_DEFAULT;
+
+__attribute__((constructor))
+static void lotus_no_chunk_pool_init(void) {
+    const char *env = getenv("LOTUS_NO_CHUNK_POOL");
+    if (env && env[0]) {
+        g_no_chunk_pool = (env[0] != '0');
+    }
+}
+
+static inline int lotus_no_chunk_pool(void) { return g_no_chunk_pool; }
+
 /* LOTUS_CHUNK_POOL_STATS — when set, every chunk
  * acquire / release tallies into per-thread counters that
  * dump to stderr at process exit. Useful for diagnosing
@@ -1186,6 +1238,13 @@ static int lotus_chunk_pool_prefill_count(void) {
 static void lotus_chunk_pool_prefill_if_needed(void) {
     if (g_chunk_pool_prefilled) return;
     g_chunk_pool_prefilled = 1;
+    /* GH #816: with recycling off nothing ever comes back to the
+     * pool, so a prefill would only park 32 chunks that are handed
+     * out once and then freed — and every one of them would sit in
+     * the pool at thread exit looking like a live allocation. Skip
+     * it; the pool stays empty for the whole run, which is what
+     * makes the pop below unreachable. */
+    if (lotus_no_chunk_pool()) return;
     int target = lotus_chunk_pool_prefill_count();
     while (g_chunk_pool_count < target) {
         lotus_arena_chunk_t *c = (lotus_arena_chunk_t *)
@@ -1412,7 +1471,14 @@ static lotus_arena_chunk_t *lotus_arena_new_chunk_for(
     }
     lotus_chunk_pool_prefill_if_needed();
     /* Pool only the common-case default chunk size. Mixing
-     * sizes in one freelist would force a scan per pop. */
+     * sizes in one freelist would force a scan per pop.
+     *
+     * GH #816: no explicit `lotus_no_chunk_pool()` guard here on
+     * purpose — with the knob set the prefill is skipped and
+     * `lotus_arena_release_chunk` never stores, so the count is
+     * zero for the life of the thread and this test already fails.
+     * Keeping the hot path a single load-and-branch matters more
+     * than restating the knob. */
     if (cap == LOTUS_ARENA_CHUNK_BYTES && g_chunk_pool_count > 0) {
         lotus_arena_chunk_t *c =
             g_chunk_pool[--g_chunk_pool_count];
@@ -1518,6 +1584,17 @@ static void lotus_arena_release_chunk(lotus_arena_chunk_t *c) {
      * an mmap'd region. */
     if (c->via_mmap) {
         munmap(c, c->mmap_size);
+        return;
+    }
+    /* GH #816: the whole point of the knob. Hand the chunk back to
+     * libc so its bytes leave our control — a later load from this
+     * destroyed arena is then a real heap-use-after-free that ASan
+     * reports with the free stack AND the read stack, instead of a
+     * silent read of memory we quietly kept. Ahead of the pool
+     * predicate so the overflow counter stays meaningful (it means
+     * "the pool was full", not "the pool is off"). */
+    if (lotus_no_chunk_pool()) {
+        free(c);
         return;
     }
     if (c->cap == LOTUS_ARENA_CHUNK_BYTES
@@ -7566,6 +7643,27 @@ typedef struct lotus_coro {
     void             *handler;
     void             *self_ptr;
     void             *payload_ptr;
+    /* GH #781: the delivery's payload storage, OWNED by this coro for
+     * the whole handler invocation — across any number of parks. The
+     * drain dequeues a cell into a stack local and hands the handler a
+     * pointer at it; when the handler parks, that frame is gone and the
+     * next dequeue reuses the same stack slot, so a resumed handler read
+     * whatever the LAST delivery put there (every delivery saw the last
+     * published value). So a coro takes its own copy of an inline
+     * payload here, and takes over the cell's heap buffer and its
+     * per-delivery subregion (the wire path's, see
+     * lotus_bus_cell_materialize) — all three released in
+     * lotus_coro_payload_dispose once the handler has returned, which is
+     * also where the parked-coro payload leak the Slice-1 comment
+     * promised to "tighten later" goes away.
+     *
+     * `payload_inline` is 16-aligned for the same reason the cell's is:
+     * a payload may carry an i128 / Decimal field the handler reads with
+     * an aligned SSE move. The attribute raises the whole struct's
+     * alignment, so the malloc'd coro slot keeps the buffer aligned. */
+    void             *payload_heap;
+    void             *payload_region;
+    size_t            payload_size;
     /* GH #296: the delivery's recording identity, copied from the
      * cell at coro creation; consumed by the thunk's consume stamp. */
     uint64_t          rec_pub_id;
@@ -7588,6 +7686,10 @@ typedef struct lotus_coro {
      * chain (when this coro is waiting on epoll) and the pool's
      * free-list of reusable coro slots (later). */
     struct lotus_coro *next;
+    /* GH #781: the owned copy of an inline delivery payload. Last
+     * member so the 16-byte alignment costs no interior padding. */
+    char              payload_inline[LOTUS_PAYLOAD_INLINE]
+                          __attribute__((aligned(16)));
 } lotus_coro_t;
 #endif /* LOTUS_HAVE_ASYNC_IO */
 
@@ -8157,8 +8259,44 @@ static void lotus_coro_thunk(void) {
     setcontext(&g_current_pool_tls->drain_ctx);
 }
 
+/* GH #781: release the delivery payload storage this coro OWNS. Called
+ * at every point a coro is finished with — handler returned (release) or
+ * abandoned at pool shutdown (free) — which is the only place that
+ * knows the handler will not read the payload again. Idempotent: the
+ * fields are cleared, so a coro released to the free-list and later
+ * freed at teardown disposes exactly once.
+ *
+ * This is the same post-handler reclamation the non-parking drains do
+ * inline (`free(cell->payload_heap)` + `lotus_arena_destroy(
+ * cell->payload_region)`), moved to where a PARKED handler's lifetime
+ * actually ends. */
+static void lotus_coro_payload_dispose(lotus_coro_t *c) {
+    if (c->payload_heap) {
+        free(c->payload_heap);
+        c->payload_heap = NULL;
+    }
+    if (c->payload_region) {
+        lotus_arena_destroy(c->payload_region);
+        c->payload_region = NULL;
+    }
+    c->payload_ptr  = NULL;
+    c->payload_size = 0;
+}
+
 static void lotus_coro_free(lotus_coro_t *c) {
     if (!c) return;
+    /* A coro freed here either completed (release already disposed its
+     * payload) or is being ABANDONED mid-handler at pool shutdown. In
+     * the abandon case the heap buffer is plainly ours to free; the
+     * per-delivery subregion is deliberately NOT destroyed — the handler
+     * is frozen mid-flight and the subscriber arena's own teardown
+     * reclaims it, while destroying it from here would push chunks back
+     * into a parent arena the dissolve cascade may already have taken
+     * down. */
+    if (c->payload_heap) {
+        free(c->payload_heap);
+        c->payload_heap = NULL;
+    }
     if (c->stack) free(c->stack);
     free(c);
 }
@@ -8175,9 +8313,7 @@ static void lotus_coro_free(lotus_coro_t *c) {
  * Worker-thread-only: the free-list is touched solely by this pool's
  * worker (this alloc + lotus_coro_release on completion), so no lock. */
 static lotus_coro_t *lotus_coro_alloc(lotus_coop_pool_t *p,
-                                       void *handler,
-                                       void *self_ptr,
-                                       void *payload_ptr) {
+                                       lotus_bus_cell_t *cell) {
     lotus_coro_t *c = NULL;
     if (p->free_head) {
         /* Reuse: pop a slot; keep its stack + stack_size. */
@@ -8195,9 +8331,15 @@ static lotus_coro_t *lotus_coro_alloc(lotus_coop_pool_t *p,
     c->done        = 0;
     c->park_deadline_ns = 0;
     c->park_timed_out   = 0;
-    c->handler     = handler;
-    c->self_ptr    = self_ptr;
-    c->payload_ptr = payload_ptr;
+    c->handler     = cell->handler;
+    c->self_ptr    = cell->self_ptr;
+    /* Payload ownership is taken only once this slot is certain to run
+     * the handler (below): on a failure path the CELL still owns its
+     * heap buffer and region, and the caller reclaims them. */
+    c->payload_ptr    = NULL;
+    c->payload_heap   = NULL;
+    c->payload_region = NULL;
+    c->payload_size   = 0;
     c->saved_caller_arena = NULL;
     c->next        = NULL;
     if (getcontext(&c->ctx) != 0) {
@@ -8210,6 +8352,30 @@ static lotus_coro_t *lotus_coro_alloc(lotus_coop_pool_t *p,
     c->ctx.uc_stack.ss_size = c->stack_size;
     c->ctx.uc_link          = &p->drain_ctx;
     makecontext(&c->ctx, lotus_coro_thunk, 0);
+    /* GH #781: this slot WILL run the handler, so take ownership of the
+     * delivery's payload now. A heap payload and the wire path's
+     * per-delivery subregion transfer as-is (the caller drops its
+     * references); an INLINE payload is COPIED into the coro, because the
+     * cell it came from is a drain stack local that dies the moment this
+     * handler parks — and the next dequeue reuses that slot, which is why
+     * every parked delivery used to read the last published value.
+     * Ownership ends in lotus_coro_payload_dispose, after the handler has
+     * returned however many parks later. */
+    c->payload_heap   = cell->payload_heap;
+    c->payload_region = cell->payload_region;
+    c->payload_size   = cell->payload_size;
+    if (cell->payload_size == 0) {
+        c->payload_ptr = NULL;
+    } else if (cell->payload_heap) {
+        c->payload_ptr = cell->payload_heap;
+    } else {
+        size_t n = cell->payload_size;
+        if (n > LOTUS_PAYLOAD_INLINE) n = LOTUS_PAYLOAD_INLINE;
+        memcpy(c->payload_inline, cell->payload_inline, n);
+        c->payload_ptr = (void *)c->payload_inline;
+    }
+    cell->payload_heap   = NULL;
+    cell->payload_region = NULL;
     return c;
 }
 
@@ -8219,7 +8385,20 @@ static lotus_coro_t *lotus_coro_alloc(lotus_coop_pool_t *p,
  * Worker-thread-only (see lotus_coro_alloc). */
 static void lotus_coro_release(lotus_coop_pool_t *p, lotus_coro_t *c) {
     if (!c) return;
-    if (p->free_count < LOTUS_CORO_FREELIST_MAX) {
+    /* GH #781: the handler has returned, so the delivery's payload dies
+     * here — the one point that holds for a coro that parked any number
+     * of times as well as for one that ran straight through. */
+    lotus_coro_payload_dispose(c);
+    /* GH #816: the coro free-list is the chunk pool's shape one
+     * level up — a released slot keeps its 64 KiB stack and hands
+     * the same bytes to the next handler, so a pointer into a
+     * finished handler's frame reads live memory and no sanitizer
+     * fires. Under the no-pool knob a completed coro is freed
+     * outright (the same path a full free-list already takes), so
+     * ASan owns the stack and the struct the moment the handler
+     * returns. `lotus_coro_alloc`'s reuse arm needs no guard: the
+     * list is then always empty. */
+    if (!lotus_no_chunk_pool() && p->free_count < LOTUS_CORO_FREELIST_MAX) {
         c->next = p->free_head;
         p->free_head = c;
         p->free_count++;
@@ -8427,34 +8606,30 @@ static int lotus_async_start_cell(lotus_coop_pool_t *p,
      * downstream handoff 2026-07-15). Completes before the coro is
      * created, so the TLS struct buffer can't be aliased by a park. */
     if (!lotus_bus_cell_materialize(cell_copy)) return 1;
-    void *payload_ptr = NULL;
-    if (cell_copy->payload_size > 0) {
-        payload_ptr = cell_copy->payload_heap
-            ? cell_copy->payload_heap
-            : (void *)cell_copy->payload_inline;
-    }
     /* Keep the live counter monotone past any replay-assigned slot
      * ordinal so post-tape live starts stay in a disjoint range. */
     if (p->coro_birth_seq <= ord) p->coro_birth_seq = ord + 1;
     lotus_async_rec_step(LOTUS_REC_ASYNC_START, cell_copy->rec_pub_id);
-    /* Heap payload outlives the cell on the dispatch path; we copy
-     * the pointer into the coro so the thunk can read it. The free
-     * happens after the coro returns (parked or not). For Slice 1
-     * we conservatively leak heap payloads on coro-park because
-     * the coro retains the pointer until it resumes-and-completes.
-     * Tighten in Slice 3 when blocking I/O is wired up and the
-     * leak shape becomes observable. */
-    lotus_coro_t *c =
-        lotus_coro_alloc(p, cell_copy->handler, cell_copy->self_ptr,
-                         payload_ptr);
-    if (c) {
-        c->rec_pub_id = cell_copy->rec_pub_id;
-        c->birth_ord = ord;
-    }
+    /* GH #781: the coro takes OWNERSHIP of the payload — an inline one is
+     * copied into the coro, a heap one and the per-delivery region move
+     * across — so the handler's payload is its own for the whole
+     * invocation, across any number of parks, and is released exactly
+     * once (lotus_coro_payload_dispose, from lotus_coro_release). `cell_copy`
+     * is a drain stack local the next dequeue overwrites; nothing may point
+     * into it past this call. */
+    lotus_coro_t *c = lotus_coro_alloc(p, cell_copy);
     if (!c) {
-        /* OOM on coro alloc — fall back to direct invocation. The
-         * handler runs on the worker's stack; if it parks via
-         * `park_on_fd`, the call returns -1 (no current coro). */
+        /* OOM on coro alloc — fall back to direct invocation, which keeps
+         * the cell's payload (alloc took nothing) alive for the whole
+         * handler because this frame outlives it. The handler runs on the
+         * worker's stack; if it parks via `park_on_fd`, the call returns
+         * -1 (no current coro). */
+        void *payload_ptr = NULL;
+        if (cell_copy->payload_size > 0) {
+            payload_ptr = cell_copy->payload_heap
+                ? cell_copy->payload_heap
+                : (void *)cell_copy->payload_inline;
+        }
         lotus_bus_note_consume(cell_copy->self_ptr,
                                cell_copy->rec_pub_id);
         ((lotus_handler_fn)cell_copy->handler)(
@@ -8464,19 +8639,15 @@ static int lotus_async_start_cell(lotus_coop_pool_t *p,
             lotus_arena_destroy(cell_copy->payload_region);
         return 1;
     }
+    c->rec_pub_id = cell_copy->rec_pub_id;
+    c->birth_ord = ord;
     g_current_coro_tls = c;
     swapcontext(&p->drain_ctx, &c->ctx);
     g_current_coro_tls = NULL;
     lotus_current_caller_arena = NULL;   /* drain baseline */
-    if (c->done) {
-        if (cell_copy->payload_heap) free(cell_copy->payload_heap);
-        if (cell_copy->payload_region)
-            lotus_arena_destroy(cell_copy->payload_region);
-        lotus_coro_release(p, c);
-    }
-    /* If c is not done (it parked), the cell's payload_heap and
-     * payload_region are retained by the coro and freed when it
-     * resumes-and-completes (Slice 3 wiring). */
+    if (c->done) lotus_coro_release(p, c);
+    /* If c is not done (it parked), it still owns its payload — the
+     * resume site that finally sees `done` releases it. */
     return 1;
 }
 
@@ -17855,6 +18026,20 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
     lotus_bus_static_bucket_t *b =
         (id < g_bus_static_bucket_count) ? &g_bus_static_buckets[id] : NULL;
     size_t delivered = 0;
+    /* GH #782: the recording's payload blob, under the SAME gate
+     * and in the same order as every other flavor (before the
+     * publish probe — the recorder peeks the ingress redispatch
+     * mark that lotus_obs_bus_publish consumes). Without it a fully
+     * direct-dispatched workload recorded zero payloads and
+     * `hale replay --diff` compared none. raw_struct = 1 mirrors
+     * the sibling flat path in lotus_bus_dispatch_static: one
+     * writer, one framing. The returned pub_id is unused — it
+     * identifies a queue cell for the enqueue record, and the
+     * direct call IS the delivery. */
+    if (lotus_obs_record_publish_payload && lotus_obs_live &&
+        (lotus_obs_recording || lotus_replay_active)) {
+        (void)lotus_obs_record_publish_payload(subject, payload, size, 1);
+    }
     /* iris handoff-5 P17: the direct flavors were probe-less — a
      * subject on this path was invisible to observation (no topic
      * registration, no counters, no BUS records). Publish once,
@@ -22387,6 +22572,20 @@ int64_t lotus_spsc_read(const void *seg_base, const void *desc,
 static int64_t g_test_passes = 0;
 void lotus_test_note_pass(void) { g_test_passes++; }
 int64_t lotus_test_passes(void) { return g_test_passes; }
+
+/* GH #717: the recorded-failure latch. A failing std::test assert
+ * used to call exit(1) from inside the assertion, which jumped
+ * over `fn main`'s teardown — children a fixture spawned stayed
+ * alive and scratch a fixture owned survived into the next run.
+ * The assert now RECORDS the failure here and returns; the
+ * call-site check emitted by codegen reads the latch and leaves
+ * main through main's ordinary teardown with exit code 1. The
+ * latch is also what makes "the first failure short-circuits"
+ * hold once assertions no longer terminate the process: every
+ * later assert sees it set and is a no-op. */
+static int g_test_failed = 0;
+void lotus_test_note_fail(void) { g_test_failed = 1; }
+int64_t lotus_test_failed(void) { return (int64_t)g_test_failed; }
 
 double lotus_math_nan(void) {
     return (double)NAN;

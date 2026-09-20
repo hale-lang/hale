@@ -2,8 +2,9 @@
 //!
 //! Async subprocess via `spawn` / `wait` / `kill` / `write_stdin` /
 //! `read_stdout` / `read_stderr`. The `Child` locus's dissolve()
-//! reaps any unwaited child (TERM → wait 100ms → KILL → waitpid)
-//! so the parent doesn't leak zombies on scope exit.
+//! reaps any unwaited child (TERM → wait 100ms → KILL → waitpid),
+//! for a handle that an owner reclaims — see `dissolve_reaps_unwaited_child`
+//! for which handles those are.
 //!
 //! Tests:
 //!
@@ -15,8 +16,10 @@
 //! 4. `kill` against a long-running `sleep 60` returns promptly
 //!    (within ~200ms grace; well under the 60s the child would
 //!    otherwise run).
-//! 5. dissolve() at scope exit reaps an unwaited child (the
-//!    process group is gone after the surrounding fn returns).
+//! 5. an owner's dissolve reaps an unwaited child — the pid is gone
+//!    after the program exits, checked from outside it — for both
+//!    ways a handle comes to rest: moved into a field with `adopt`,
+//!    and named by a plain `let` at the factory call (GH #793).
 //!
 //! Resolves pond/subprocess FRICTION "no-async-child-lifecycle"
 //! and pond/agent/sandbox FRICTION "no-supervised-subprocess".
@@ -165,35 +168,54 @@ fn kill_on_long_running_returns_promptly() {
     );
 }
 
+/// True while `pid` is still a `sleep` in the process table — either
+/// running or a zombie nobody reaped. The `comm` field of procfs's
+/// per-process status line is the right place to look: a zombie keeps
+/// its comm but has an EMPTY command line, so a command-line check
+/// reads an unreaped child as gone. A recycled pid running something
+/// else reads as gone too, which is the conservative direction.
+fn sleep_alive(pid: &str) -> bool {
+    let p = std::path::Path::new("/proc").join(pid).join("stat");
+    match std::fs::read_to_string(&p) {
+        Ok(line) => line.contains("(sleep)"),
+        Err(_) => false,
+    }
+}
+
 #[test]
 fn dissolve_reaps_unwaited_child() {
-    // When the scope owning a Child exits without calling
-    // wait(), dissolve() must kill + reap so we don't leak a
-    // zombie. The test:
-    //   1. Build a binary whose main spawns a long-running
-    //      child but doesn't wait.
-    //   2. The binary exits.
-    //   3. After the parent dies, the child should be gone
-    //      (reaped by dissolve, OR killed by parent's process-
-    //      group exit + reaped by init — either is fine; the
-    //      contract is "no zombies").
+    // A Child whose owner is reclaimed must be killed + reaped by
+    // that owner's dissolve, so nothing is left running once the
+    // program is gone.
     //
-    // The Rust harness can't easily inspect /proc for zombies
-    // owned by a now-dead parent. Instead we focus on the
-    // measurable outcome: the Hale program itself exits
-    // promptly (within a couple seconds, not 60s blocked
-    // waiting for sleep) — that *is* dissolve() running before
-    // process exit and reaping.
+    // This test used to assert only that the program exited promptly
+    // — "which *is* dissolve() running before process exit and
+    // reaping". It is not: a program that spawns and never waits
+    // exits promptly whether or not anything reaped, so the
+    // assertion held vacuously while `sleep 60` was left ORPHANED.
+    // The claim is now checked where it is observable: from outside,
+    // after the parent is gone.
+    //
+    // The shape here is the one that has an owner by MOVE (GH #716):
+    // the handle goes into a locus's `params` field with
+    // `std::process::adopt`, and the owner's dissolve tears it down.
+    // The other shape — a handle only `let`-bound from the factory —
+    // is `dissolve_reaps_a_let_bound_child` below; it did not reap
+    // until GH #793, and this test's original form could not have
+    // caught either (it asserted only that the program exited).
     let src = r#"
-        fn helper() {
-            // sleep 60 spawned inside this fn. helper() returns
-            // immediately, triggering Child's scope-exit dissolve
-            // (m82) which kills + reaps.
-            let _c = std::process::spawn("sleep\n60") or raise;
+        locus Job {
+            params { child: std::process::Child = std::process::Child { }; }
+            fn start(argv: String) {
+                let spawned = std::process::spawn(argv) or std::process::Child { };
+                std::process::adopt(self.child, spawned);
+            }
+            fn pid() -> Int { return self.child.pid; }
         }
         fn main() {
-            helper();
-            println("returned");
+            let j = Job { };
+            j.start("sleep\n30");
+            println(j.pid());
         }
     "#;
     let start = Instant::now();
@@ -206,10 +228,73 @@ fn dissolve_reaps_unwaited_child() {
         status,
         stderr
     );
+    let pid = stdout.trim();
     assert!(
-        stdout.contains("returned"),
-        "expected returned marker; got: {:?}",
+        pid.parse::<i64>().map(|n| n > 0).unwrap_or(false),
+        "expected the spawned pid on stdout; got: {:?}",
         stdout
+    );
+    // The parent has exited. The child must not still be running.
+    assert!(
+        !sleep_alive(pid),
+        "the child ({}) outlived the program — the owner's dissolve \
+         did not kill + reap it",
+        pid
+    );
+    // And the teardown must not block on the child's own 30s.
+    assert!(
+        elapsed.as_secs() < 10,
+        "dissolve-driven reap took {:?}, expected < 10s",
+        elapsed
+    );
+}
+
+#[test]
+fn dissolve_reaps_a_let_bound_child() {
+    // The plainest spelling there is — one `let`, no owner named —
+    // and the one GH #793 reported: the `sleep 30` was still in the
+    // process table with PPID 1 after the program exited, and the
+    // handle's arena and three pipe fds went with it.
+    //
+    // The cause was not `Child`-specific. A factory-returned locus is
+    // owned by the binding that names it (GH #383), and an unbound
+    // one by the frame (GH #402) — but both rules match on
+    // `Expr::Call`, and a FALLIBLE factory is reached through `or`,
+    // which is an `Expr::Or`. `spawn` is fallible, as is every
+    // factory that opens a descriptor, so the shape that most needs
+    // reclaiming was the shape neither rule saw.
+    //
+    // Checked from outside the program for the same reason as the
+    // adopt-shaped test above: `comm`, not the command line — a
+    // zombie keeps its comm and has an empty cmdline, so a cmdline
+    // check reads an unreaped child as gone.
+    let src = r#"
+        fn main() {
+            let c = std::process::spawn("sleep\n30") or raise;
+            println(c.pid);
+        }
+    "#;
+    let start = Instant::now();
+    let (stdout, stderr, status) =
+        build_and_run("dissolve_reaps_let_bound", src);
+    let elapsed = start.elapsed();
+    assert!(
+        status.success(),
+        "non-zero exit: {:?}, stderr: {}",
+        status,
+        stderr
+    );
+    let pid = stdout.trim();
+    assert!(
+        pid.parse::<i64>().map(|n| n > 0).unwrap_or(false),
+        "expected the spawned pid on stdout; got: {:?}",
+        stdout
+    );
+    assert!(
+        !sleep_alive(pid),
+        "the let-bound child ({}) outlived the program — the \
+         binding's scope did not kill + reap it (GH #793)",
+        pid
     );
     assert!(
         elapsed.as_secs() < 10,

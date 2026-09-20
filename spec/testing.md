@@ -202,7 +202,67 @@ offending file's own line and column, with the same exit status and
 on: `check` never reports success on a tree `build` would refuse
 (2026-09-19, GH #765; before it, an imported seed that failed to parse
 left its declarations silently absent and both commands answered
-clean).
+clean). The `--json` half of that contract reached the target's OWN
+files on the same day (GH #777): the parse path predated the JSON
+reporting path and printed text to stderr, so a syntactic failure in
+the seed being checked exited non-zero with an empty stream — a gate
+saw a failure with nothing explaining it. Every parse diagnostic is
+now a record like any other.
+
+An input that could not be READ answers the same way. A target that
+is not there, a `.hl` file of the seed that will not open, a file of
+the import graph that will not open: each is one record,
+`"kind":"io error"`, naming the path with the OS error as its
+message and no position — `"line":0,"col":0`, because a file that
+never opened has no text to be positioned in (2026-09-20, GH #806;
+before it these printed a sentence on stderr and left `--json`
+empty, so an environment failure and a crash were the same thing to
+a gate). The text rendering is unchanged, and so is every command
+without a machine-readable channel.
+
+The **position** is not command-scoped. Every command that resolves
+imports — `build`, `run`, `test`, `bench`, `replay`, as well as
+`check` and `verify` — reports a diagnostic from an imported file as
+`path:line:col: kind: message` with the offending source line and a
+caret, at that file's OWN line and column. Each file of an import
+graph is parsed at its own virtual base so the merged spans stay
+globally unique; un-shifting by that base is part of reporting, not a
+property of one command's reporting path (2026-09-20, GH #775; before
+it, the commands with no `--json` channel rendered the bundle offset
+against the file's own text, so the file name and the message were
+right and the line and column were not).
+
+Nor is the **path**. A diagnostic names its file by the file's
+canonical path — absolute, symlinks resolved, with no `.` or `..`
+component — in the text rendering, in a `note:` secondary location,
+and in the `file` field of a `--json` record (the positionless
+`io error` record above included), from every command, for the
+target's own files and for every file reached through an `import`
+alike. That is one string per file rather than
+one per channel, which is what a consumer joining the two needs:
+`check` used to print the canonical path an imported file was
+recorded under while `build`, `run` and `test` printed it as the
+resolver reached it (`/abs/app/../lib/second.hl`), and the target's
+own files were named exactly as the command line spelled them, `..`
+and all (2026-09-20, GH #822).
+
+Nor is the **kind** of failure. A refusal raised by CODEGEN rather
+than by the front end — a construct the checker accepts and the
+backend does not support, a missing toolchain component the program
+needs — is a located diagnostic like any other whenever it carries a
+span: `path:line:col: codegen error: message`, with the offending
+source line and a caret, from `build`, `run`, `test`, `bench` and
+`replay` alike, byte for byte the same line from each. A codegen
+refusal with no span to point at prints `codegen error: message` and
+nothing else, from all of them. These commands have no
+machine-readable channel, so this is a text contract only; `check`
+never reaches codegen and is unaffected (2026-09-20, GH #848; before
+it only `build` used the span, and the rest printed the error's Rust
+debug form — `UnsupportedAt("…", Span { start: Pos(55), end:
+Pos(60) })` — so `hale run` could refuse a program without naming a
+line to open). `bench` names the bench file itself, not the temporary
+copy with the synthesized driver appended that it actually compiles
+and then deletes.
 
 ## `hale bench` — the Layer-3 runner
 
@@ -298,8 +358,7 @@ language's stdlib includes test primitives.
 
 ### v0.1 (sealed m87, m88)
 
-Three primitives, all written purely in Hale (composing
-`std::process::exit`):
+Three primitives, all written purely in Hale:
 
 ```hale
 fn main() {
@@ -317,10 +376,57 @@ The test-runner contract is exit-code based:
   still pass.
 - **Fail** = non-zero exit code with `ASSERTION FAILED: <msg>`
   (and, for `assert_eq_*`, `expected: X / actual: Y`) on
-  stdout. The first failure short-circuits — `std::process::exit`
-  terminates immediately.
+  stdout. The first failure short-circuits.
 
 A `.hl` test program is just an ordinary Hale binary.
+
+#### What runs after a failed assertion (GH #717)
+
+A failing assertion prints its diagnostic, **records** the failure
+and returns. It does not terminate the process from inside the
+assertion. What happens next is fixed:
+
+1. **Nothing else in the test body runs.** Control leaves `fn main`
+   at the failing assertion's call site. Every later
+   `std::test::assert*` is also a no-op against the recorded
+   failure, so there is never a second `ASSERTION FAILED` line and
+   never a second diagnostic.
+2. **`fn main`'s ordinary teardown runs**, exactly as it does on a
+   normal return: cooperative-pool workers are joined, the bus
+   queue is drained, and every locus `let`-bound in `main` before
+   the failing assertion dissolves — reverse declaration order,
+   child cascade, `dissolve()` bodies and all (`spec/memory.md`
+   § Lifetime rules, § Drain cascade). A locus born *after* the
+   failing assertion never existed and is skipped.
+3. **The process then exits non-zero** (code 1), so the exit-code
+   contract above is unchanged.
+
+That is the whole mechanism. It is **not** exception unwinding: a
+failed assertion is not a value, not catchable, and does not
+propagate through arbitrary frames. Two consequences follow, and
+they are the contract, not accidents:
+
+- A test that must release something — a subprocess it spawned,
+  scratch state it created, a socket, a lock file — releases it in
+  the `dissolve()` of a locus the test `let`-binds in `main`. That
+  is the supported cleanup route, and it cleans only what the test
+  owns. There is no runner-owned cleanup hook, and none is needed.
+- An assertion that fails *outside* `main`'s own frame — inside a
+  free `fn`, a locus method, an `on_failure` body — has no main
+  teardown to return through and still terminates the process
+  immediately with code 1. Put the assertions that guard owned
+  resources in `main`.
+
+**Process kill is a separate case.** `SIGKILL` (and a hard crash)
+cannot be intercepted by anything: no `dissolve()` runs, no atexit
+handler runs, and a child or scratch directory the program owned
+outlives it. That is a property of the platform, not of the
+assertion path — a test whose resources must survive a `kill -9`
+of the runner needs an external reaper (a process group, a cgroup,
+a supervising harness), and Hale does not provide one. A failed
+assertion and a `return` from `main` run the dissolve cascade; a
+runtime panic runs atexit-registered cleanup but not the cascade;
+`SIGKILL` runs nothing at all.
 
 ### The compiler's own Hale-language suite
 

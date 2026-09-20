@@ -18,6 +18,17 @@ Most checks run in the bundle-level passes of
 ones run in `crates/hale-types/src/resolve.rs`; cell slot-of-origin is
 a codegen-time check. Each entry names the enforcing pass.
 
+**Every bundle-level check applies inside `module { … }`, at any
+nesting depth** (GH #825, 2026-09-20). A module is a NAMESPACE, not an
+analysis boundary — the resolver registers a module's declarations
+under their bare names, so a fn, locus, topic or `bindings` entry one
+brace deeper is an ordinary member of the bundle. Findings carry the
+same message, the same span and the same severity as the identical
+declaration written at the top level, and whole-bundle facts (the
+at-most-one-`main` count, the pool map seeded from the `main` locus's
+placement block, the transport-bound topic set, the `@form`
+sync-discipline index) count module-nested declarations too.
+
 ## Concurrency & placement safety
 
 The bus + cooperative-pool model is the substrate; these checks keep a
@@ -27,16 +38,45 @@ program's placement coherent with how the runtime dispatches.
 |---|---|---|---|
 | **Single-threaded-method invariant** | a *direct* cross-pool method call (`self.field.method()` where `field` is placed on a different pool) — it would run the callee's method on the wrong thread | error | `check_placement_single_thread` |
 | **Dead bus receiver** | a non-`main` cooperative locus that subscribes to the bus *and* makes a blocking call in `run()` — the blocking call monopolizes the pool thread so the dispatch never delivers and its handlers never fire | error | `check_cooperative_pool_blocking` |
-| **Blocking call on a cooperative pool** | a blocking `run()` (`recv`/`accept`, `process::run`) on a pool that isn't `where async_io` — it holds the pool's OS thread and stalls co-scheduled loci. Follows the call graph: blocking reached through a helper fn or `self.method` is flagged too | warning | `check_cooperative_pool_blocking` |
+| **Blocking call on a cooperative pool** | a blocking `run()` (`recv`/`accept`, a stdin or file read, an `http` request, `process::run`) on a pool that isn't `where async_io` — it holds the pool's OS thread and stalls co-scheduled loci. Follows the call graph: blocking reached through a helper fn or `self.method` is flagged too | warning | `check_cooperative_pool_blocking` |
 | **Cooperative pool starvation** | two or more loci on one cooperative pool (not `where async_io`) whose `run()` bodies statically never return (terminal `while` with no exit — `while true`, `while !self.draining`, or a never-assigned Bool flag) — the pool runs each `run()` to completion in birth order, so the later `run()` bodies never start. Covers fields with no placement entry (they default to pool `main`) and the main locus's own `run()`, which begins only after params-init | warning | `check_cooperative_pool_blocking` |
 | **Nested long-running child** | a non-`main` locus holding a params field of a locus type whose `run()` doesn't return — the canonical fix is hoisting it to a `main` sibling with its own placement | error | `check_nested_long_running_child` |
 | **Unowned subscriber locus** | a bus-subscribing locus instantiated *non-owned* inside another locus's method/handler body — it dissolves at that scope's exit, so its subscription can never fire (overridable with `--allow-unowned-subscriber`) | error | `check_unowned_subscriber_locus` |
+| **Pinned placement in a loop** | a locus whose `placement { }` pins a field, instantiated inside a loop body — the pinned thread's join record is one slot per instantiation site, so every iteration but the last is orphaned with its arena live. A loop that *calls a fn* holding the literal is fine (each call joins its own thread) | error | `check_pinned_locus_in_loop` |
+| **Unconsumed placement entry** | a `placement { }` entry whose field is initialised by anything but a locus literal (a factory call, a conditional, a reference to an instance built elsewhere) — the entry rides an override the next literal takes, so nothing consumes it and the stated placement is silently dropped. Checked against the init at the instantiation site when the literal supplies one, and the `params` default otherwise | error | `check_placement_entry_consumed` |
 
 The dead-receiver error is deliberately **direct-call-only** (its
 call-graph surface is not widened), while the blocking *warning* is
 interprocedural — the high-stakes diagnostic stays precise. See
 `spec/semantics.md` type-check rules 7–8 and
 `docs/src/services/concurrency.md`.
+
+**What counts as "blocking" for both** is the effects registry's
+`block` classification — the same rows the effect assertions and the
+`.hale.effects` manifest read (`stdlib_surface::SURFACES`) — and not a
+list kept beside it. So `io::stdin::*`, `io::file::read_line`,
+`io::udp::recv*`, `std::http::*`, `tcp::connect` / `accept_one`,
+`tls::connect` / `upgrade` and `process::read_stdout` /
+`read_stderr` are blocking leaves here because they are `block` rows
+there; classifying a new stdlib leaf `block` puts it in this lint the
+same day.
+
+One `block` row is carved out, because on a cooperative pool it does
+not hold the worker for the wait: **`std::time::sleep`**, which the
+lowering chunks into ≤100 ms slices and drains the pool's bus queue
+between them. That slicing is what makes "handlers plus a
+`time::sleep` loop" the prescribed event-driven shape — the shape
+both diagnostics above name as the fix — so counting it would have
+the lint flag its own advice.
+
+This is a *different* subtraction from the async_io park exemption
+below (`ASYNC_IO_PARKING`, GH #791). That one is the async_io-pool
+rule: those leaves swap the coro out, which needs the pool's event
+loop. `check_cooperative_pool_blocking` never looks at an async_io
+placement — it skips the entry on the `where async_io` constraint
+before reading a single call — so on every placement it does look at,
+a park-capable leaf takes its blocking path and really does hold the
+thread.
 
 ## Bus-graph property checks
 
@@ -48,7 +88,7 @@ it. (GitHub issue #18 item 4.)
 | **Orphan topic / subject** | a declared `topic` or literal subject wired to only one end — published with no subscriber, subscribed with no publisher, or used by neither | warning | `check_bus_graph` |
 | **Cross-locus bus cycle** | a publish→subscribe→publish loop spanning ≥2 loci — the cell hops via the cooperative queue and can spin / livelock | warning | `check_bus_cycles` |
 | **Intra-locus re-entrant cycle** | an *unconditional* self-republish loop within one locus — intra-locus self-dispatch is a direct synchronous call, so it recurses on one thread without bound (stack overflow) | error | `check_bus_cycles` |
-| **Bus backpressure** | a publish inside an unbounded `while true` loop with no flow-control or exit point (`yield` / `sleep`/`tick` / input-pacing `recv` / `break`/`return`) — floods the bus without bound | warning | `check_bus_backpressure` |
+| **Bus backpressure** | a publish inside an unbounded `while true` loop with no flow-control or exit point (`yield` / `sleep`/`tick` / an input-pacing blocking call / `break`/`return`) — floods the bus without bound | warning | `check_bus_backpressure` |
 | **Subject type-mismatch** | two sites on the same literal subject string declaring different `of type` payloads — a subscriber would decode the wrong type | error | `check_bus_subject_types` |
 | **Routing-key fallback rules** | an `on_unmatched: fallback` topic with no `where key == _` subscriber, or a `where key == _` filter on a non-fallback topic | error | `check_phase3_fallback_subscribers` |
 | **Topic parent-chain cycle** | a topic hierarchy that loops (`topic A : B; topic B : A`) | error | `finalize_topic_chain` (resolve) |
@@ -61,6 +101,14 @@ intra-locus cycle error counts only *unconditional* sends as edges: a
 self-republish guarded by `if`/`match`/loop is a terminating state
 machine, not unbounded recursion, and is left alone. See
 `spec/semantics.md` type-check rules 9–10.
+
+The backpressure check's "input-pacing blocking call" is the *same*
+leaf set as the pool-blocking lint above — the registry's `block`
+rows minus `std::time::sleep`, which it counts separately as a
+throttle along with `std::time::tick`. So a `while true { let line =
+std::io::stdin::read_line(); … <- … }` loop is paced by its input and
+is not flagged, on the same footing as a loop driven by a blocking
+`recv`.
 
 ## Claims — domain requirements as checked sentences (GH #382, phase 1)
 
@@ -783,7 +831,20 @@ resolve through — so a claim means one thing whether its seed is
 checked directly or through an import, and an importer's group of the
 same name is never substituted for the declaration the claim was
 written against. Resolution never *widens*: a name no declaration
-answers is still an unknown-group error, never an empty set.
+answers is still an unknown-group error, never an empty set — and
+(GH #774) an undeclared group is an error in the seed that WROTE the
+claim regardless of what an importer declares. A group reference
+nothing in its own seed answers is bound to that seed at the merge,
+so an importer's same-named group cannot answer it and the error
+cannot disappear downstream; the diagnostic names the group the
+author wrote. This holds for an inline main-locus claim, for a
+library-tier block (both of which swear about their own seed's
+boundary), and for a `constitution` declared by a seed that itself
+declares `main locus` — such a constitution can be adopted by
+nothing but that main. A POLICY seed's constitution is the one
+exception, and by design: it closes no world, so its group
+vocabulary is the adopting entrypoint's to declare (below, "Groups
+are not implied").
 
 ## Constitutions — one authored claimset, many closed worlds (GH #409)
 
@@ -824,7 +885,13 @@ as if written there. Authoring is shared, evaluation is not.
   `may_be_empty` applies only to a group that is declared and
   resolves to zero members. An entrypoint lacking a component
   therefore writes `group thing = { } may_be_empty;` rather than
-  omitting the declaration.
+  omitting the declaration. This is what a POLICY seed is — a seed
+  that declares no `main locus`, so its constitutions are adopted
+  elsewhere and their open names are the adopter's to answer. A
+  constitution declared by a seed that DOES declare `main locus` can
+  be adopted by nothing but that main, so its vocabulary is its own
+  seed's and an undeclared name there is that seed's error wherever
+  it is compiled from (GH #774, above).
 
 ### Identity
 
@@ -1617,6 +1684,21 @@ assume the others in a build:
   `time_from_unix(n)` is deterministic while `monotonic_ns()` is not;
   `http::parse_request` is pure while `http::get` is blocking I/O.
 
+  **A classification is a property of the call, never of a
+  placement** (GH #791). `block` means "this waits", and the registry
+  row says so unconditionally: `std::time::sleep` carries `block` on
+  every pool, because on a classic pool it really does hold that
+  pool's OS thread. It has to be unconditional — a locus TYPE is
+  placed per *instance* (F.31), so the same method can run on an
+  async_io pool for one field and a classic pool for another, and a
+  free fn has no placement at all; a fn-grained certificate that
+  depended on placement would have no single answer. So `@no_block`
+  refuses a handler that sleeps even where that sleep parks, and the
+  `.hale.effects` manifest reports `block` there. Where the worker
+  *is* held is a question about a placement, and the one check that
+  knows a placement — the placement-implied advisory below — is the
+  one place that answers it.
+
   **Incompleteness fails closed, in both of its forms.** An entry
   present but *unclassified* is treated as may-do-anything and
   violates every assertion. So is a `std::` path with **no registry
@@ -1684,8 +1766,9 @@ assume the others in a build:
 
     **What the estimate rests on** (#326, examined 2026-08-03). Frames
     are estimated from declared shapes: 32 bytes of call overhead, 8
-    per parameter, 8 per local. That unit is close to right *because
-    of Hale's memory model, not by luck* — fixed arrays, structs and
+    per parameter, 8 per local — except an array local, charged its
+    declared extent (`N × width(elem)`). That unit is close to right
+    *because of Hale's memory model, not by luck* — structs and
     string/bytes buffers are arena-allocated, so a local is a pointer
     and almost nothing but scalars is ever on the stack. The same
     estimator in C would be wrong by orders of magnitude. The premise
@@ -1693,6 +1776,14 @@ assume the others in a build:
     precisely because it is load-bearing: if a shape ever became
     stack-allocated, the estimate would silently under-count by the
     size of that shape.
+
+    That is not hypothetical — it happened once. GH #767 moved a
+    non-escaping `[c; N]` literal onto the frame (see
+    `spec/memory.md`), which is why an array is now charged its extent
+    rather than a pointer's 8 bytes. The charge is unconditional: an
+    array that still takes the arena path is over-charged, which is
+    the safe direction for a bound whose contract is "the real frame
+    is no larger than this".
 
     Inlining, the other obvious worry, cuts the safe way: the model
     charges `CALL_OVERHEAD` per level of call depth and inlining
@@ -2048,6 +2139,29 @@ assume the others in a build:
   is engaged, and the enforced error replaces it). This is the class
   of bug that shipped as a downstream latency mystery — a sleeping
   handler holding an engine pool — now visible at compile time.
+
+  **The leaf set is `block` minus what parks** (GH #791, 2026-09-20).
+  Waiting stalls co-scheduled loci only if it holds the worker, and
+  on an `async_io` pool some waits do not: the runtime swaps the coro
+  out and the drain loop continues. Those leaves — `std::time::sleep`
+  (the timer-only park), `io::tcp::{accept_one, recv_into,
+  recv_stamped_into, __accept_one, __recv, __recv_bytes}`,
+  `io::udp::{recv, __recv, recv_with_source, recv_into}` and
+  `io::tls::{recv_into, recv_stamped_into}` — are exempt from THIS
+  advisory (`stdlib_surface::ASYNC_IO_PARKING`, enumerated from the
+  park lowering, each entry naming its runtime primitive). Everything
+  else still warns, including the calls that open a connection
+  (`tcp::connect`, `tls::connect`, `tls::upgrade`, and so
+  `std::http::*`), file and stdin reads, `tls::recv_bytes` (a plain
+  `SSL_read`; only the `recv_into` family got the park) and
+  `std::process::{run, wait, read_stdout, read_stderr}`. The
+  exemption is per-LEAF: a handler that both sleeps and blocks is
+  still reported, with the witness naming the blocking leaf.
+
+  Without this, the fix for the bug above (the timer-only sleep park)
+  turned its own reproducer into a correct program that the advisory
+  still flagged — and the fix it suggested, `@no_block`, is a compile
+  error on that program.
 - **Hot-path allocation lint — default-on advisory** (2026-07-16). Two
   loop-scoped anti-patterns get a **warning** (never a build failure), so
   the allocation-free shape is the path of least resistance rather than
@@ -2073,6 +2187,15 @@ assume the others in a build:
   parent dissolves, so a parent whose `run()` loops forever (literal
   `while true` — the deliberately narrow daemon signal) grows
   O(accepted children). Run-to-exit accept examples stay silent.
+
+  **The lint reaches inside `module { … }`** (GH #764, 2026-09-20). A
+  module is a NAMESPACE, not an analysis boundary: the resolver
+  registers a module's declarations under their bare names, so a fn or
+  a locus method one brace deeper is an ordinary member of the bundle.
+  Its bodies are walked, and its findings carry the same severity, as
+  if it had been written at the top level — including the `@hot`
+  promotion to a hard error. (Before #764 the lint stopped at the top
+  level, so wrapping a program in a module silenced it.)
 - **`@hot` — hot-path certification** (Gap D, 2026-07-17). The layered
   escalation between the default advisory and `@budget`'s counted
   ceiling: `@hot fn` certifies "this is a 10k/s-class path" and (a)

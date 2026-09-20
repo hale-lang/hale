@@ -31,12 +31,27 @@ That is fixed structurally: every test builds through
 `harness::unique_bin` (pid + process-local counter), and
 `harness_paths_are_unique.rs` fails the build if a new test
 rolls its own. Ports come from `harness::free_port()` rather
-than the hand-maintained 57xxx/47xxx registry. Serial runs still
+than the hand-maintained 57xxx/47xxx registry. No test mutates
+the process environment either — a build knob travels on
+`hale_codegen::BuildOptions` (`dump_ir`, `asan`, `no_bus_devirt`,
+`no_ownership_bubble`, `lto`) or, for a child, on `Command::env`,
+and the same guard file refuses a new `set_var` outside
+`harness::set_build_env_var` (GH #843). Serial runs still
 work, they are just slower and no longer buy anything:
 
 ```sh
 # one integration test in hale-codegen
 cargo test --release -p hale-codegen --test topic_phase2
+```
+
+The DNA domain proof runs the same way, and its **slices may run
+in parallel** — each slice's leftover-process guard blames only
+the processes its own fixtures started, so a neighbouring slice,
+or another checkout's DNA run on the same box, cannot fail it
+(GH #872):
+
+```sh
+cargo test -p hale-cli --test dna_native_suite
 ```
 
 The repo also tests the language *in* the language:
@@ -52,6 +67,24 @@ transcribed into a Rust substring match, and it gets typechecked
 the checker). Keep assertions about *compiler output* — diagnostics,
 IR shape, leak counts — in Rust.
 
+Memory bugs have their own gate. The compiled-corpus oracle
+(`crates/hale-codegen/tests/corpus_oracle.rs`) runs every example
+fixture under exit, deadline and AddressSanitizer oracles:
+
+```sh
+LOTUS_ASAN=1 cargo test --release -p hale-codegen \
+    --test corpus_oracle -- --ignored --test-threads=1
+```
+
+An ASan build turns the arena's chunk recycling OFF
+(`LOTUS_NO_CHUNK_POOL`, defaulted on by the sanitizer cflags —
+GH #816). Without that, `lotus_arena_destroy` hands a dying
+arena's chunks back out with their bytes intact, so a
+use-after-free reads memory the process still owns and the
+sanitizer says nothing — which is how four of them shipped. Set
+`LOTUS_NO_CHUNK_POOL=1` on an ordinary build to chase a suspected
+one without a sanitizer rebuild.
+
 Codegen requires **LLVM 18** dev libs with `llvm-config-18` on
 PATH (or `LLVM_SYS_180_PREFIX` set); `inkwell` is pinned to
 `llvm18-0`. LLVM 17 / 19 / 20 will not link.
@@ -60,9 +93,16 @@ To spot-check a compiler change against a real `.hl` program
 without installing:
 
 ```sh
-cargo run -p hale-cli --bin hale -- run path/to/prog.hl
-cargo run -p hale-cli --bin hale -- build path/to/prog.hl
+cargo build --release          # the WHOLE workspace
+./target/release/hale run path/to/prog.hl
+./target/release/hale build path/to/prog.hl
 ```
+
+**Build the workspace, not `-p hale-cli`.** `std::ts` links against
+`libhale_ts_shim.a`, produced by the `hale-ts-shim` crate — and
+`crate-type = ["staticlib"]` means no crate can declare a Cargo
+dependency on it, so `cargo build -p hale-cli` never builds it and
+the resulting `hale` refuses every `std::ts` program (GH #808).
 
 The in-tree `.hl` corpus lives at
 `crates/hale-codegen/tests/fixtures/examples/` (the broadest

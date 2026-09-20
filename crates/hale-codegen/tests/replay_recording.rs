@@ -204,13 +204,18 @@ fn recording_is_lossless_under_wrap_pressure() {
             && p.raw_size > 0),
         "raw struct captures must be metadata-only"
     );
-    // Phase 2: one payload blob per QUEUED publish (the 32 seeds —
-    // App's publishes route through the arena fanout). Fan's 64
-    // derived publishes take the synchronous intra-tree desugar,
-    // which deliberately captures nothing: a closed-world
-    // same-thread call cannot carry external input, and replay
-    // re-derives its payloads by re-execution. None marked ingress.
-    assert_eq!(r.payloads.len(), 32, "queued-publish payloads lost");
+    // One payload blob per publish — all 96, not just App's 32
+    // queued seeds. Fan's 64 derived publishes dispatch
+    // synchronously (direct call, no cell), and used to capture
+    // nothing on the theory that a closed-world same-thread call
+    // carries no external input and replay re-derives its payloads.
+    // It does re-derive them — which is exactly why `--diff` should
+    // compare them, and could not (GH #782). None marked ingress.
+    assert_eq!(
+        r.payloads.len(),
+        CASCADE_PUBLISH,
+        "publish payloads lost"
+    );
 
 
     let publishes = r
@@ -361,6 +366,67 @@ fn two_recordings_of_a_single_pool_program_are_identical() {
     let _ = std::fs::remove_file(&bin);
     let _ = std::fs::remove_file(&rec_a);
     let _ = std::fs::remove_file(&rec_b);
+}
+
+/// GH #782 — a publish records its payload whatever flavor
+/// dispatched it.
+///
+/// CASCADE splits across two of them. `det.seed` has a republishing
+/// (non-quiet) subscriber, so it takes the deferred static enqueue;
+/// `det.derived` has two quiet, flat, same-thread handlers, so it
+/// takes the direct-call HELPER — no queue, no cell, the handler
+/// runs at the publish point. Only the first half recorded payload
+/// blobs: this program's artifact carried 32 of them for 96
+/// publishes, and `hale replay --diff` therefore compared payload
+/// bytes for a third of the run while reporting a clean match. A
+/// fully direct-dispatched program recorded none at all and its
+/// report said `payloads: not exercised`.
+///
+/// The exact equality is the point (the P20 lesson at the top of
+/// this file): `> 0` would have passed on the broken recorder,
+/// because the enqueued half was always captured.
+#[test]
+fn every_dispatch_flavor_records_its_publish_payload() {
+    let bin = build("payloads", CASCADE);
+    let rec = rec_path("payloads");
+    run_recorded(&bin, &rec, &[]);
+    let r = obs::read_recording(&rec).expect("parse recording");
+    assert!(r.clean, "the recorded run must finalize cleanly");
+    assert_eq!(
+        r.payloads.len(),
+        CASCADE_PUBLISH,
+        "one payload blob per publish — the direct-dispatched \
+         `det.derived` half is {} of them",
+        CASCADE_PUBLISH - 32
+    );
+    // One writer, one framing: an in-process struct is a raw ABI
+    // snapshot either way — metadata only, declared size in
+    // `raw_size`, no bytes stored (an ABI snapshot would carry
+    // heap pointers and padding). The direct path must not teach
+    // the replay reader a second shape.
+    for p in &r.payloads {
+        assert!(
+            p.flags & 2 != 0 && p.bytes.is_empty() && p.raw_size > 0,
+            "payload {:#x} is not a raw in-process snapshot: \
+             flags {:#x}, {} bytes, declared {}",
+            p.pub_id,
+            p.flags,
+            p.bytes.len(),
+            p.raw_size
+        );
+    }
+    // Every blob carries a distinct publish identity — 96 records
+    // of one publish would satisfy the count above.
+    let mut ids: Vec<u64> = r.payloads.iter().map(|p| p.pub_id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(
+        ids.len(),
+        CASCADE_PUBLISH,
+        "payload blobs must carry distinct publish ids"
+    );
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_file(&rec);
 }
 
 #[test]

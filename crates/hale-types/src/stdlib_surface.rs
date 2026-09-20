@@ -608,6 +608,11 @@ pub const SURFACES: &[NsSurface] = &[
         fns: &[
             e("__kill_escalate", EffectSet::SYSCALL), e("__pipe_read", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("__pipe_write", EffectSet::SYSCALL),
             e("__signal_pid", EffectSet::SYSCALL), e("__spawn", EffectSet::SYSCALL), e("__try_wait_pid", EffectSet::SYSCALL), e("__wait_pid", EffectSet::SYSCALL.union(EffectSet::BLOCK)),
+            // GH #716: adopt closes the outgoing handle's fds and
+            // TERM/KILL-reaps its process, so it carries the same
+            // syscall class as kill — not PURE, despite reading like
+            // an assignment.
+            e("adopt", EffectSet::SYSCALL),
             e("dump_arena_residency", EffectSet::SYSCALL), e("dump_pool_residency", EffectSet::SYSCALL),
             e("exit", EffectSet::SYSCALL), e("kill", EffectSet::SYSCALL), e("pid", EffectSet::SYSCALL), e("read_stderr", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("read_stdout", EffectSet::SYSCALL.union(EffectSet::BLOCK)),
             e("rss_bytes", EffectSet::SYSCALL), e("run", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("signal", EffectSet::SYSCALL), e("spawn", EffectSet::SYSCALL), e("try_wait", EffectSet::SYSCALL), e("wait", EffectSet::SYSCALL.union(EffectSet::BLOCK)),
@@ -951,15 +956,38 @@ pub fn unknown_fn_error(segs: &[&str]) -> Option<String> {
 // - str::builder_* / can_parse_decimal (spec lists it, dispatch
 //   doesn't implement it — flagged for the spec);
 // - everything io::fs/tcp/tls/udp/file (String-heavy tranche 2).
+//
+// GH #771: a type slot is a bare `SigTy` variant (`Str`, `Int`) OR
+// `Named("__JsonString")` — the tuple variant, written the way the
+// enum spells it. Both positions take both forms, so the rows for
+// struct-returning helpers read like every other row:
+//
+//     sig!(NS_JSON, "string_field", [Str, Str], Named("__JsonString"))
+//
+// The name is the MANGLED one, because that is the one the checker
+// sees: `resolve_type_expr` puts a user's `std::json::JsonString`
+// through `hale_stdlib::PATH_RENAMES` and the stdlib's own `type`
+// declaration IS `__JsonString`, so the two meet at the mangled
+// spelling and unify. (Diagnostics demangle it back — a wrong field
+// reads `no field `knd` on `std::json::JsonString``.) A typo here
+// would silently mean "some nominal type nobody declared", so
+// `crates/hale-types/tests/stdlib_named_returns.rs` pins every
+// `Named` name in this table against `PATH_RENAMES`.
 macro_rules! sig {
-    ($ns:expr, $name:literal, [$($p:ident),*], $ret:ident) => {
+    ($ns:expr, $name:literal,
+     [$($p:ident $(($pn:literal))?),*],
+     $ret:ident $(($rn:literal))?) => {
         FnSig { ns: $ns, name: $name,
-                params: &[$(SigTy::$p),*], ret: SigTy::$ret,
+                params: &[$(SigTy::$p $(($pn))?),*],
+                ret: SigTy::$ret $(($rn))?,
                 fallible: None }
     };
-    ($ns:expr, $name:literal, [$($p:ident),*], $ret:ident, $err:literal) => {
+    ($ns:expr, $name:literal,
+     [$($p:ident $(($pn:literal))?),*],
+     $ret:ident $(($rn:literal))?, $err:literal) => {
         FnSig { ns: $ns, name: $name,
-                params: &[$(SigTy::$p),*], ret: SigTy::$ret,
+                params: &[$(SigTy::$p $(($pn))?),*],
+                ret: SigTy::$ret $(($rn))?,
                 fallible: Some($err) }
     };
 }
@@ -981,6 +1009,7 @@ const NS_B64: &[&str] = &["text", "base64"];
 const NS_RAND: &[&str] = &["rand"];
 const NS_FS: &[&str] = &["io", "fs"];
 const NS_JSON: &[&str] = &["json"];
+const NS_HTTP: &[&str] = &["http"];
 const NS_FILE: &[&str] = &["io", "file"];
 const NS_TCP: &[&str] = &["io", "tcp"];
 const NS_TLS: &[&str] = &["io", "tls"];
@@ -1093,13 +1122,12 @@ pub const SIGS: &[FnSig] = &[
         ret: SigTy::Int,
         fallible: None,
     },
-    FnSig {
-        ns: NS_STR,
-        name: "slice",
-        params: &[SigTy::Named("__StrByteView"), SigTy::Int, SigTy::Int],
-        ret: SigTy::Str,
-        fallible: None,
-    },
+    sig!(
+        NS_STR,
+        "slice",
+        [Named("__StrByteView"), Int, Int],
+        Str
+    ),
     sig!(NS_STR, "range_copy", [Str, Int, Int, Int], Str),
     // GH #535 (DNA F.8): the flat-object json readers are Hale-source
     // stdlib fns with no rename entry, so a call typed Unknown and an
@@ -1115,6 +1143,80 @@ pub const SIGS: &[FnSig] = &[
     // with unique literal keys.
     sig!(NS_JSON, "valid", [Str], Bool),
     sig!(NS_JSON, "valid_object", [Str], Bool),
+    // GH #771: the struct-returning half of the same surface. These
+    // reach their `__json_*` implementations through a codegen
+    // DISPATCH arm rather than a `PATH_RENAMES` entry, so the
+    // "renames to a registered Hale-source fn" path in check.rs
+    // (GH #470) never fired for them and the call typed `Unknown` —
+    // which made `.knd` on a `JsonString`, and every arity or
+    // fallibility question about anything reached through one, a
+    // silent pass. Each return name is the `type` declared in
+    // `crates/hale-stdlib/hl/json.hl`; the receiver params are named
+    // too, so a swapped `(json, it)` argument pair is a located
+    // error rather than a runtime field read at the wrong offset.
+    sig!(NS_JSON, "string_field", [Str, Str], Named("__JsonString")),
+    sig!(
+        NS_JSON,
+        "array_first",
+        [Str],
+        Named("__JsonArrayIter")
+    ),
+    sig!(
+        NS_JSON,
+        "array_next",
+        [Named("__JsonArrayIter")],
+        Named("__JsonArrayIter")
+    ),
+    sig!(
+        NS_JSON,
+        "array_first_span",
+        [Str],
+        Named("__JsonArrayIterSpan")
+    ),
+    sig!(
+        NS_JSON,
+        "array_next_span",
+        [Named("__JsonArrayIterSpan"), Str],
+        Named("__JsonArrayIterSpan")
+    ),
+    sig!(
+        NS_JSON,
+        "object_first",
+        [Str],
+        Named("__JsonObjectIterSpan")
+    ),
+    sig!(
+        NS_JSON,
+        "object_next",
+        [Named("__JsonObjectIterSpan"), Str],
+        Named("__JsonObjectIterSpan")
+    ),
+    sig!(
+        NS_JSON,
+        "iter_find_field_range",
+        [Named("__JsonArrayIterSpan"), Str, Str],
+        Named("__JsonFieldRange")
+    ),
+    sig!(
+        NS_JSON,
+        "iter_find_string_field_range",
+        [Named("__JsonArrayIterSpan"), Str, Str],
+        Named("__JsonFieldRange")
+    ),
+    sig!(
+        NS_JSON,
+        "find_field_range_in",
+        [Str, Str, Int, Int],
+        Named("__JsonFieldRange")
+    ),
+    // GH #771: the one non-json member of the same class — also
+    // dispatch-routed, also a struct return.
+    sig!(
+        NS_HTTP,
+        "parse_request",
+        [Str],
+        Named("__StdHttpRequest")
+    ),
     sig!(NS_STR, "index_of", [Str, Str], Int),
     // #353: the everyday predicates. The runtime carried
     // `lotus_str_contains` / `_starts_with` all along; `ends_with` is
@@ -1263,8 +1365,21 @@ pub const SIGS: &[FnSig] = &[
     sig!(NS_TCP, "connect", [Str, Int], Int, "IoError"),
     sig!(NS_TCP, "accept_one", [Int], Int, "IoError"),
     sig!(NS_TCP, "close_fd", [Int], Int),
-    sig!(NS_TCP, "recv_into", [Int, Any, Int], Int),
-    sig!(NS_TCP, "recv_stamped_into", [Int, Any, Int], Int),
+    // GH #829: the `buf` slot is not polymorphic — the lowering
+    // (`lower_recv_into_common`) accepts exactly one codegen type,
+    // `LocusRef("__StdBytesBytesBuilder")`, and refuses everything
+    // else with a spanless "buf must be std::bytes::BytesBuilder".
+    // `Any` here made `recv_into(0, 0, 64)` a check-clean program
+    // that does not build. Named by the mangled spelling, which is
+    // what both `resolve_type_expr` (through `PATH_RENAMES`) and the
+    // stdlib's own `locus __StdBytesBytesBuilder` produce.
+    sig!(NS_TCP, "recv_into", [Int, Named("__StdBytesBytesBuilder"), Int], Int),
+    sig!(
+        NS_TCP,
+        "recv_stamped_into",
+        [Int, Named("__StdBytesBytesBuilder"), Int],
+        Int
+    ),
     sig!(NS_TCP, "last_recv_kernel_ns", [], Int),
     sig!(NS_TCP, "last_recv_user_ns", [], Int),
     sig!(NS_TCP, "set_nodelay", [Int, Bool], Unit, "IoError"),
@@ -1273,12 +1388,23 @@ pub const SIGS: &[FnSig] = &[
     sig!(NS_TLS, "upgrade", [Int, Str, Bool], Int, "IoError"),
     sig!(NS_TLS, "send_bytes", [Int, Bytes], Int),
     sig!(NS_TLS, "recv_bytes", [Int, Int], Bytes),
-    sig!(NS_TLS, "recv_into", [Int, Any, Int], Int),
+    sig!(NS_TLS, "recv_into", [Int, Named("__StdBytesBytesBuilder"), Int], Int),
+    // GH #829: `tls::recv_stamped_into` is dispatched by codegen
+    // through the same `lower_recv_into_common` and is named by the
+    // surface table, but had no signature row at all — so neither
+    // its arity nor its buffer was checked. The family is only
+    // closed if every member of it is.
+    sig!(
+        NS_TLS,
+        "recv_stamped_into",
+        [Int, Named("__StdBytesBytesBuilder"), Int],
+        Int
+    ),
     sig!(NS_TLS, "close", [Int], Int),
     sig!(NS_UDP, "bind", [Str, Int], Int, "IoError"),
     sig!(NS_UDP, "send", [Int, Str, Int, Any], Unit, "IoError"),
     sig!(NS_UDP, "recv", [Int, Int], Bytes, "IoError"),
-    sig!(NS_UDP, "recv_into", [Int, Any, Int], Int),
+    sig!(NS_UDP, "recv_into", [Int, Named("__StdBytesBytesBuilder"), Int], Int),
     sig!(NS_UDP, "close", [Int], Int),
     sig!(NS_UDP, "recv_with_source", [Int, Int], Bytes, "IoError"),
     sig!(NS_UDP, "join_group", [Int, Str, Str], Unit, "IoError"),
@@ -1358,4 +1484,108 @@ pub fn effects_for(segs: &[&str]) -> Option<EffectSet> {
         .iter()
         .find(|e| e.name == name)
         .map(|e| e.effects)
+}
+
+/// GH #791: the `block`-classified stdlib leaves that **park** on a
+/// `where async_io` cooperative pool instead of holding its worker.
+///
+/// The `block` classification in [`SURFACES`] is a property of the
+/// CALL — "this waits" — and stays placement-independent: the same
+/// `sleep` on a classic pool really does hold that pool's OS thread.
+/// What depends on placement is whether waiting *stalls anyone
+/// else*. On an async_io pool these leaves swap the coro out and the
+/// worker goes on draining, so the placement-implied advisory
+/// (`effects::placement_implied_diags`) must not count them — it
+/// used to, which made every async handler that sleeps carry a
+/// warning whose suggested fix (`@no_block`) is a compile error on
+/// the correct program.
+///
+/// Enumerated from the park lowering, not guessed. Each entry's
+/// lowering reaches a runtime primitive that calls
+/// `lotus_coop_park_on_fd{,_deadline}` or
+/// `lotus_time_sleep_park_try` when `lotus_io_on_async_io_pool()`,
+/// and has no blocking fallback on that path:
+///
+/// | path | runtime primitive |
+/// |---|---|
+/// | `std::time::sleep` | `lotus_time_sleep_park_try` (timer-only park, PR #285) |
+/// | `std::io::tcp::accept_one`, `__accept_one` | `lotus_tcp_accept_one` |
+/// | `std::io::tcp::__recv` | `lotus_tcp_recv_str` |
+/// | `std::io::tcp::__recv_bytes` | `lotus_tcp_recv_bytes` |
+/// | `std::io::tcp::recv_into` | `lotus_tcp_recv_into` |
+/// | `std::io::tcp::recv_stamped_into` | `lotus_tcp_recv_stamped` |
+/// | `std::io::udp::recv`, `__recv`, `recv_with_source` | `lotus_udp_recvfrom_async` |
+/// | `std::io::udp::recv_into` | `lotus_udp_recv_into` |
+/// | `std::io::tls::recv_into` | `lotus_tls_recv_into` |
+/// | `std::io::tls::recv_stamped_into` | `lotus_tls_recv_stamped_into` |
+///
+/// Deliberately ABSENT, and each for a reason read off the runtime:
+/// `tcp::connect` / `__connect` (`lotus_tcp_connect` — a blocking
+/// `connect(2)`, no park path), `tls::connect` / `upgrade` (blocking
+/// handshake), `tls::recv_bytes` (a plain `SSL_read`; only the
+/// `recv_into` family got the async_io park), `io::file` /
+/// `io::stdin` reads (regular files and the tty are not epoll-park
+/// targets here), `std::process::{run, wait, read_stdout,
+/// read_stderr}` and `std::http::*` (which reaches `connect`).
+/// These still stall the worker, so they still warn.
+pub const ASYNC_IO_PARKING: &[&[&str]] = &[
+    &["std", "io", "tcp", "__accept_one"],
+    &["std", "io", "tcp", "__recv"],
+    &["std", "io", "tcp", "__recv_bytes"],
+    &["std", "io", "tcp", "accept_one"],
+    &["std", "io", "tcp", "recv_into"],
+    &["std", "io", "tcp", "recv_stamped_into"],
+    &["std", "io", "tls", "recv_into"],
+    &["std", "io", "tls", "recv_stamped_into"],
+    &["std", "io", "udp", "__recv"],
+    &["std", "io", "udp", "recv"],
+    &["std", "io", "udp", "recv_into"],
+    &["std", "io", "udp", "recv_with_source"],
+    &["std", "time", "sleep"],
+];
+
+/// Does this stdlib path park (rather than hold the worker) when it
+/// runs on a `where async_io` cooperative pool? See
+/// [`ASYNC_IO_PARKING`].
+pub fn parks_on_async_io(segs: &[&str]) -> bool {
+    ASYNC_IO_PARKING.iter().any(|p| *p == segs)
+}
+
+/// GH #830: the `block`-classified leaves that, on a CLASSIC (non-
+/// `async_io`) cooperative pool, do **not** hold the pool's worker
+/// for the whole wait — so blocking there stalls nobody and is not
+/// a finding for `check_cooperative_pool_blocking`.
+///
+/// This is a different subtraction from [`ASYNC_IO_PARKING`], and
+/// deliberately so. The park list is the *async_io-pool* rule: those
+/// leaves swap the coro out, which only happens when the pool has an
+/// event loop. `check_cooperative_pool_blocking` never looks at an
+/// async_io pool — the placement walk `continue`s on the `where
+/// async_io` constraint before it reads a single call — so on every
+/// placement it *does* look at, a parking leaf takes its blocking
+/// path and really does hold the thread. Subtracting the park list
+/// there would delete `tcp::recv_into`, `tls::recv_into`,
+/// `udp::recv` and five more from the lint, which is the whole
+/// shape the lint exists to catch.
+///
+/// One entry, read off the lowering rather than guessed:
+///
+/// | path | why it yields |
+/// |---|---|
+/// | `std::time::sleep` | `lower_time_sleep` chunks the sleep into ≤100ms slices and drains the pool's bus queue between them, so a sleeping locus keeps the queue serviced ~10×/s |
+///
+/// That slicing is what makes "handlers plus a `time::sleep` loop"
+/// the *prescribed* event-driven shape — the shape both blocking
+/// diagnostics name as the fix — so counting `sleep` as a stall
+/// would have the lint flag its own advice.
+pub const COOPERATIVE_YIELDING_BLOCK_LEAVES: &[&[&str]] =
+    &[&["std", "time", "sleep"]];
+
+/// Does this stdlib path hold a classic cooperative pool's OS thread
+/// for the duration of its wait? The registry's `block` rows minus
+/// [`COOPERATIVE_YIELDING_BLOCK_LEAVES`] — one classification, not a
+/// second hand list (GH #830).
+pub fn holds_cooperative_worker(segs: &[&str]) -> bool {
+    effects_for(segs).is_some_and(|e| e.contains(EffectSet::BLOCK))
+        && !COOPERATIVE_YIELDING_BLOCK_LEAVES.iter().any(|p| *p == segs)
 }

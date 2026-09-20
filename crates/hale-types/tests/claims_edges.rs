@@ -347,14 +347,15 @@ fn only_edges_is_directional() {
 #[test]
 fn a_wildcard_edge_into_the_target_fails_closed() {
     let src = r#"
+        type Ev { n: Int = 0; }
         locus A {
-            bus { publish "log.app" of type Int; }
-            fn go(n: Int) { "log.app" <- n; }
+            bus { publish "log.app" of type Ev; }
+            fn go(n: Int) { "log.app" <- Ev { n: n }; }
         }
         locus B {
             params { t: Int = 0; }
-            bus { subscribe "log.**" as on_log of type Int; }
-            fn on_log(n: Int) { self.t = self.t + n; }
+            bus { subscribe "log.**" as on_log of type Ev; }
+            fn on_log(e: Ev) { self.t = self.t + e.n; }
         }
         group a_side = { A };
         group b_side = { B };
