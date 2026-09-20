@@ -160,7 +160,11 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
     .unwrap();
     let settled = wait_for(&app, 90, "review.settled", "m1");
     let told = wait_for(&app, 60, "github.commented", "m1");
-    trace::sleep("after the comment landed", Duration::from_secs(1));
+    // the settlement pushes the genome; wait for that rather than for a
+    // fixed second, so the assertion below reads a finished push
+    trace::wait_until("the genome reached origin", Duration::from_secs(30), Duration::from_millis(250), || {
+        git(&["rev-parse", "main"], &bare) == cand
+    });
     let rows = journal(&app);
     let log = std::fs::read_to_string(bin.join("gh.log")).unwrap_or_default();
     let origin_main = git(&["rev-parse", "main"], &bare);
@@ -259,7 +263,11 @@ fn the_same_rows_come_from_the_file_forge_and_the_profile_names_it() {
     std::fs::write(app.join(".hale/dna/forge/1.verdicts"), format!("octocat approve {cand}\n")).unwrap();
     let settled = wait_for(&app, 90, "review.settled", "m1");
     let told = wait_for(&app, 60, "github.commented", "m1");
-    trace::sleep("after the comment landed", Duration::from_secs(1));
+    // the comment itself is the last thing written; wait for it rather
+    // than for a fixed second
+    trace::wait_until("the settlement reached the forge", Duration::from_secs(30), Duration::from_millis(250), || {
+        std::fs::read_to_string(app.join(".hale/dna/forge/1.comments")).unwrap_or_default().contains("review m1 settled: approve")
+    });
     let rows = journal(&app);
     stop(&mut host);
     let dump: Vec<String> = rows.iter().map(|(k, e, b)| format!("{k} {e} {}", b.chars().take(90).collect::<String>())).collect();

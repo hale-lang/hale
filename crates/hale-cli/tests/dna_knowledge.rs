@@ -494,9 +494,14 @@ fn init_writes_compose_and_dev_runs_the_knowledge_service_that_tails_the_record(
     }
     let proposed = wait_row(&app, 60, "concern.proposed", "org/knowing/echo");
     // ---- K3: the projections and ranking, from the service
-    trace::sleep("before reading the projections", Duration::from_millis(500));
+    // the service tails the record; wait for the third concern to reach
+    // it rather than for a fixed half second
+    let mut signals = String::new();
+    trace::wait_until("the service counted three concerns", Duration::from_secs(30), Duration::from_millis(250), || {
+        signals = body(&http(kport, "GET /signals HTTP/1.0\r\nHost: x\r\n\r\n"));
+        signals.contains("\"count\": 3")
+    });
     let structure = body(&http(kport, "GET /structure HTTP/1.0\r\nHost: x\r\n\r\n"));
-    let signals = body(&http(kport, "GET /signals HTTP/1.0\r\nHost: x\r\n\r\n"));
     let ranked = body(&http(kport, "GET /context?target=org%2Fknowing%2Fmailer&budget=1&query=retry%20the%20mail%20send HTTP/1.0\r\nHost: x\r\n\r\n"));
     let rows = journal(&app);
     let (ok, reviews) = hale(&["dna", "review"], &app, &[]);

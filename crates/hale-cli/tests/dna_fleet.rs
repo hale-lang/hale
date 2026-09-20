@@ -124,10 +124,13 @@ impl Fleet {
             let _ = p.wait();
         }
         // the pid that ran `hale dna run` / `hale node` was the host itself
-        // (it execs in place), so nothing of ours keeps ticking after the kill
-        trace::sleep("after kill, before the pgrep check", Duration::from_millis(300));
-        let left = Command::new("pgrep").args(["-f", &format!("host (run|node) {}", self.d.display())]).output().map(|o| String::from_utf8_lossy(&o.stdout).lines().count()).unwrap_or(0);
-        assert_eq!(left, 0, "host processes survived their shim's death");
+        // (it execs in place), so nothing of ours keeps ticking after the
+        // kill. Wait for the table to be clear rather than for a fixed
+        // moment: quicker when it already is, and not a flake when a
+        // loaded runner takes longer than one.
+        let survivors = || Command::new("pgrep").args(["-f", &format!("host (run|node) {}", self.d.display())]).output().map(|o| String::from_utf8_lossy(&o.stdout).lines().count()).unwrap_or(0);
+        trace::wait_until("the host processes went with their shim", Duration::from_secs(10), Duration::from_millis(300), || survivors() == 0);
+        assert_eq!(survivors(), 0, "host processes survived their shim's death");
         for f in ["org.pid", "app.pid"] {
             if let Ok(pid) = std::fs::read_to_string(self.app.join(".hale/dna").join(f)) {
                 let _ = Command::new("kill").args(["-9", pid.trim()]).status();
