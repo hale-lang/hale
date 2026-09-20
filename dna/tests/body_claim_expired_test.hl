@@ -1,0 +1,80 @@
+// dna/tests/body_claim_expired_test.hl — a forced claim takes the lease
+// of a body that is gone, however long it has been gone.
+//
+// A body that died a second ago holds a live lease; one that died a
+// minute ago holds an expired one. `hale dna body claim --force` took the
+// first and, for the second, only reported that the lease had expired —
+// so an operator whose reading and claim straddled the TTL was told to
+// ask again (a CI runner did exactly that, and the ledger test failed on
+// it). Both are a body that is gone; a forced claim takes both. Without
+// --force an expired lease is reported, as the status line reports it,
+// and left to `hale dna run`.
+//
+// The lease is planted in the record already expired, so nothing here
+// waits on a clock.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn in_dir(dir: String, cache: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off XDG_CACHE_HOME=\"$1\" && shift && exec \"$@\"\nsh\n" + dir + "\n" + cache + "\n" + argv);
+}
+
+@unbounded
+fn rows(repo: String, kind: String) -> Int {
+    let j = dna::GitJournal { repo: repo };
+    let mut n = 0;
+    let mut i = 0;
+    while i < j.revision() {
+        if j.read(i).kind == kind { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+main locus App {
+    run() {
+        let scratch = "/tmp/dna-claimexpired-" + to_string(std::process::pid());
+        std::io::fs::mkdir(scratch) or discard;
+        dna::reap_on_exit(scratch);
+        let cache = scratch + "/cache";
+        std::io::fs::mkdir(cache) or discard;
+        let made = in_dir(scratch, cache, toolchain() + "\ndna\nnew\nclaimed");
+        std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
+        let a = scratch + "/claimed";
+        let g1 = in_dir(a, cache, "git\nconfig\nuser.name\noperator");
+        let g2 = in_dir(a, cache, "git\nconfig\nuser.email\nop@dna");
+        let g3 = in_dir(a, cache, "git\nadd\n-A");
+        let g4 = in_dir(a, cache, "git\ncommit\n-q\n-m\nthe app");
+
+        // a body that ran this record and died a minute ago: its lease is
+        // in the record, present and expired
+        let r = dna::GitRecord { repo: a };
+        let gone = "gone@elsewhere:/tmp/its/clone";
+        let planted = r.swap("lease/body", gone + "\n3\n" + to_string(std::time::now() - 60) + "\n1", "");
+        std::test::assert(planted, "an expired lease is planted in the record");
+
+        let status = in_dir(a, cache, toolchain() + "\ndna\nbody");
+        std::test::assert(std::str::contains(status.stdout, "stale: " + gone) && std::str::contains(status.stdout, "expired"), "the status says the body is gone and its lease expired: " + status.stdout + status.stderr);
+
+        // without --force: said so, taken by nobody
+        let plain = in_dir(a, cache, toolchain() + "\ndna\nbody\nclaim");
+        std::test::assert(std::str::contains(plain.stdout + plain.stderr, "expired"), "a plain claim says the lease expired: " + plain.stdout + plain.stderr);
+        std::test::assert(std::str::contains(r.cell("lease/body").text, "\n1"), "and leaves the lease as it was");
+        std::test::assert_eq_int(rows(a, "body.claimed"), 0, "claiming nothing");
+
+        // with --force: taken, like the lease of a body that died a second ago
+        let forced = in_dir(a, cache, toolchain() + "\ndna\nbody\nclaim\n--force\n--as\nriley");
+        std::test::assert_eq_int(forced.code, 0, "the forced claim succeeds: " + forced.stdout + forced.stderr);
+        std::test::assert(std::str::contains(forced.stdout, "body.claimed, forced") && std::str::contains(forced.stdout, gone), "and says whose lease it took: " + forced.stdout);
+        std::test::assert(std::str::contains(r.cell("lease/body").text, "\n0"), "the lease is released in the record");
+        std::test::assert_eq_int(rows(a, "body.claimed"), 1, "and the claim is a row, in the claimant's name");
+        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+    }
+}
+
+fn main() { App { }; }
