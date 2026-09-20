@@ -275,6 +275,33 @@ struct QualifiedRenameApplier<'a> {
 }
 
 impl<'a> QualifiedRenameApplier<'a> {
+    /// GH #724: canonicalize an `Ident` that carries a QUALIFIED path
+    /// joined by `::` — the shape the parser gives a `serves
+    /// lib::Routing` clause, a `perspective(lib::Routing)` slot type
+    /// and a `reperspective self.f as lib::Impl` target (and, since
+    /// GH #527 B6, a `bindings { }` entry's topic). Collapses to the
+    /// mangled single name the imported declaration ends up at, so
+    /// the checker resolves it exactly as it resolves a same-seed
+    /// perspective. A path with no rename entry is LEFT AS WRITTEN,
+    /// so the checker's `serves unknown perspective` / `unknown
+    /// perspective` diagnostic still cites the path the author typed
+    /// (a nested alias, a typo).
+    fn rewrite_joined_ident(&self, id: &mut Ident) {
+        if !id.name.contains("::") {
+            return;
+        }
+        let segs: Vec<String> =
+            id.name.split("::").map(|s| s.to_string()).collect();
+        for (key, mangled) in self.renames {
+            if key.len() == segs.len()
+                && key.iter().zip(segs.iter()).all(|(k, p)| k == p)
+            {
+                id.name = mangled.clone();
+                return;
+            }
+        }
+    }
+
     /// #334 / #332: canonicalize a QUALIFIED topic reference the same
     /// way a qualified type path is canonicalized.
     ///
@@ -361,6 +388,11 @@ impl<'a> QualifiedRenameApplier<'a> {
                     }
                 }
             }
+            // GH #724: `reperspective self.f as lib::Impl;` — the new
+            // implementation may be an imported locus.
+            Stmt::Reperspective { impl_name, .. } => {
+                self.rewrite_joined_ident(impl_name)
+            }
             Stmt::If(i) => self.rewrite_sends_in_if(i),
             Stmt::While { body, .. } | Stmt::For { body, .. } => {
                 self.rewrite_sends_in_block(body)
@@ -373,9 +405,13 @@ impl<'a> QualifiedRenameApplier<'a> {
     fn rewrite_type_expr(&self, t: &mut TypeExpr) {
         match t {
             TypeExpr::Primitive(_, _) => {}
-            // Phase 2a: `perspective(P)` is a single-name ref; the
-            // qualified-path applier only rewrites 2+ segment paths.
-            TypeExpr::Perspective { .. } => {}
+            // Phase 2a: `perspective(P)` names its contract with one
+            // Ident. GH #724: that Ident may carry a qualified path
+            // joined by `::` (`perspective(lib::Routing)`) — collapse
+            // it like any other cross-seed reference.
+            TypeExpr::Perspective { name, .. } => {
+                self.rewrite_joined_ident(name)
+            }
             TypeExpr::Named { path, generic_args, .. } => {
                 if path.segments.len() >= 2 {
                     let path_segs: Vec<String> = path
@@ -428,6 +464,14 @@ impl<'a> QualifiedRenameApplier<'a> {
     fn walk_top_decl(&mut self, d: &mut TopDecl) {
         match d {
             TopDecl::Locus(l) => {
+                // GH #724: `locus L : serves lib::Routing` — the
+                // contract can be an imported perspective. Collapse
+                // the alias path here, before typecheck, so
+                // conformance is checked against the real contract
+                // instead of failing as an unknown perspective.
+                for sv in &mut l.serves {
+                    self.rewrite_joined_ident(sv);
+                }
                 for m in &mut l.members {
                     self.walk_locus_member(m);
                 }
