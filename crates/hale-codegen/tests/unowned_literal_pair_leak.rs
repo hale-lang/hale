@@ -231,9 +231,12 @@ fn let_bound_form_leaks_too() {
 }
 
 /// A hot loop building a temporary per iteration: the unbounded
-/// version of the leak. Each iteration's whole tree is reclaimed
-/// where it stands, so the count is exactly the iteration count and
-/// (under ASan) nothing accumulates.
+/// version of the leak. The bare-statement literal is the one
+/// spelling still torn down eagerly, where it stands (GH #711 made
+/// every EXPRESSION-position literal fn-scope-owned like `let`, and
+/// GH #815 tracks per-iteration reclaim for that spelling), so its
+/// whole tree is reclaimed each iteration: the count is exactly the
+/// iteration count and (under ASan) nothing accumulates.
 #[test]
 fn per_iteration_temporary_reclaims_its_whole_tree() {
     let out = run(
@@ -243,7 +246,8 @@ fn per_iteration_temporary_reclaims_its_whole_tree() {
             fn spin() {
                 let mut i = 0;
                 while i < 32 {
-                    println("t=", Holder { tag: "loop" }.tag);
+                    Holder { tag: "loop" };
+                    println("t=loop");
                     i = i + 1;
                 }
             }
@@ -338,9 +342,11 @@ fn an_externally_provided_grandchild_dissolves_exactly_once() {
     assert_eq!(count(&out, "leaf dissolved"), 1, "got:\n{out}");
     assert_eq!(count(&out, "mid dissolved"), 1, "got:\n{out}");
     assert_eq!(count(&out, "holder dissolved"), 1, "got:\n{out}");
-    // The holder's cascade skips the borrowed `m`, so `m` (and the
-    // leaf it borrowed in turn) outlive the literal and are torn
-    // down by their own owners at fn-scope exit.
+    // The literal is fn-scope-owned (GH #711), so all three are torn
+    // down at fn-scope exit, after `done`: the holder first, whose
+    // cascade skips the borrowed `m`; then `m` and the leaf it
+    // borrowed in turn, each by its own owner, in reverse
+    // declaration order.
     let lines: Vec<&str> = out.lines().collect();
     let at = |needle: &str| {
         lines
@@ -348,7 +354,7 @@ fn an_externally_provided_grandchild_dissolves_exactly_once() {
             .position(|l| *l == needle)
             .unwrap_or_else(|| panic!("missing {needle:?} in:\n{out}"))
     };
-    assert!(at("holder dissolved") < at("done"), "got:\n{out}");
-    assert!(at("done") < at("mid dissolved"), "got:\n{out}");
+    assert!(at("done") < at("holder dissolved"), "got:\n{out}");
+    assert!(at("holder dissolved") < at("mid dissolved"), "got:\n{out}");
     assert!(at("mid dissolved") < at("leaf dissolved"), "got:\n{out}");
 }
