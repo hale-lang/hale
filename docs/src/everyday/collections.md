@@ -335,8 +335,9 @@ Yes. Every stage and terminal on this page is recognized only after
 a `.`, so a free `fn map(...)`, `fn count(...)` or `fn first(...)`
 is an ordinary function and is called as written.
 
-Four names are the exception — `sum`, `prod`, `min` and `max` —
-because the compiler answers them at a *bare* call site, before it
+`sum`, `prod`, `min` and `max` are the exception — they, and the
+other bare builtins (`abs`, `len`, `to_string`, the printers …),
+are answered by the compiler at a *bare* call site, before it
 looks at your program:
 
 ```hale,fragment
@@ -348,7 +349,10 @@ fn sum(a: Int) -> Int { return a + 1; }    // error, at `sum`
 `sum(x)` and `prod(x)` are the closure-test accumulators, and
 `min(a, b)` / `max(a, b)` are the arithmetic builtins, so a function
 of that name could never be the one that runs. Rename it — `sum_of`,
-`clamp_min` — and everything works.
+`clamp_min` — and everything works. `spec/tokens.md` §
+*Built-in identifiers* has the exact set; the
+*[Functions](../basics/functions.md)* chapter has the same rule
+from the caller's side.
 
 A *method* can still be called any of them, because a method is
 reached through a receiver and no builtin claims that position:

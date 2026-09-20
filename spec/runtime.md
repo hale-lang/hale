@@ -160,7 +160,18 @@ the model: runtime is automatic; stdlib is explicit.
   child's arena, which holds their structs. Every level's
   gate is that level's own ownership mask, so a subtree handed
   in from outside is skipped wherever it appears and is torn
-  down once, by its real owner. Pinned-thread tail still skips the cascade
+  down once, by its real owner.
+  A param field typed by a **contract** rather than by the
+  child's locus — an `interface` slot, a `perspective(P)`
+  handle — carries an owned child on the same terms, and the
+  cascade reaches it: the declared type names no impl, so the
+  instantiation records the child's `__reclaim_<Impl>` in a
+  synthetic per-field slot and the cascade runs that whole
+  spine (drain → dissolve → arena reclaim) through it, under
+  the same ownership-mask gate. The consequence users can
+  check is arena residency: no locus arena, at any depth and
+  behind any field type, survives its owner.
+  Pinned-thread tail still skips the cascade
   per the v1 trade-off. An `accept`'d child is reclaimed on its
   OWN run-completion / `terminate` when it is a flow (see
   "Per-child reclamation" below) rather than waiting for the

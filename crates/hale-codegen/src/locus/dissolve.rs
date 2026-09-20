@@ -56,6 +56,21 @@ pub(crate) trait LocusDissolve<'ctx> {
         CodegenError,
     >;
 
+    /// GH #871: the cascade arm for a param field that holds an
+    /// owned child WITHOUT naming its type — an `interface` slot or
+    /// a `perspective(P)` handle. Runs the child's whole teardown
+    /// spine through the `__reclaim_<Impl>` pointer the
+    /// instantiation recorded in `__owned_child_reclaim_<f>`.
+    fn emit_owned_contract_child_reclaim(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        fname: &str,
+        field_idx: u32,
+        via_fat_pointer: bool,
+    ) -> Result<(), CodegenError>;
+
     /// Phase-2 (3) drain cascade. Per spec/runtime.md: "drain()
     /// cascades depth-first; children first, then self." Walks
     /// LocusRef-typed param fields in declaration order and calls
@@ -331,10 +346,6 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             .collect();
         field_entries.sort_by_key(|(_, idx, _)| *idx);
         for (fname, field_idx, field_ty) in field_entries {
-            let inner_name = match field_ty {
-                CodegenTy::LocusRef(n) => n,
-                _ => continue,
-            };
             // F.31 Phase 3b: skip cascade for pinned-placed fields.
             if is_main_locus
                 && matches!(
@@ -344,6 +355,41 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             {
                 continue;
             }
+            // GH #871: a field typed by a CONTRACT — an `interface`
+            // or a `perspective(P)` — holds a parent-owned child
+            // just as a `LocusRef` field does, and this walk used to
+            // step straight over it because the declared type is not
+            // `LocusRef`. Nothing else tore those children down: the
+            // literal took `lower_locus_instantiation`'s
+            // `parent_owns_via_field` no-op branch (so no frame owns
+            // it) and the owner's cascade never looked at the field.
+            // `Queries { j: Churner { } }` lost the `Churner` AND
+            // the `Rows` `@form(vec)` under it; every perspective
+            // holder lost its designated impl.
+            //
+            // The teardown is an indirect call because the impl is
+            // chosen per instantiation, not per owner type — see
+            // `owned_child_reclaim_field_idxs`.
+            if matches!(
+                field_ty,
+                CodegenTy::Interface(_) | CodegenTy::Perspective(_)
+            ) {
+                let via_fat_pointer =
+                    matches!(field_ty, CodegenTy::Interface(_));
+                self.emit_owned_contract_child_reclaim(
+                    info,
+                    self_ptr,
+                    locus_name,
+                    &fname,
+                    field_idx,
+                    via_fat_pointer,
+                )?;
+                continue;
+            }
+            let inner_name = match field_ty {
+                CodegenTy::LocusRef(n) => n,
+                _ => continue,
+            };
             let inner_info = match self.user_loci.get(&inner_name).cloned() {
                 Some(i) => i,
                 None => continue, // shouldn't happen for a typed field
@@ -542,6 +588,194 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             .build_conditional_branch(owned, then_bb, after_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok((Some(then_bb), Some(after_bb)))
+    }
+
+    /// GH #871: tear down the owned child behind a contract-typed
+    /// param field.
+    ///
+    /// The `LocusRef` arm of the cascade can emit a static
+    /// `__dissolve` / `__reclaim` chain because the field's declared
+    /// type IS the child's type. An `interface` slot and a
+    /// `perspective(P)` handle name a contract instead, and which
+    /// locus satisfies it is an instantiation-site decision
+    /// (`Gateway { router: RouterV2 { } }` over a `= RouterV1 { }`
+    /// default). The cascade, though, is emitted once per OWNER
+    /// type — inside `__reclaim_<Owner>`, inside the deferred-frame
+    /// teardown, inside every eager-dissolve site. So the
+    /// instantiation records the child's `__reclaim_<Impl>` in
+    /// `__owned_child_reclaim_<f>` and this emits the indirect call.
+    ///
+    /// Three guards, all runtime: the F.29 owned-bit (a child handed
+    /// in from outside belongs to its own owner and is left alone),
+    /// a null reclaim pointer (the field was never initialized from
+    /// a literal on this path) and a null child pointer. The spine
+    /// itself is idempotent — `__reclaim_<L>` latches on a NULL
+    /// `__arena` — so a second pass over the same field is a no-op
+    /// rather than a double free.
+    ///
+    /// Ordering note: the `LocusRef` arm splits a child's teardown
+    /// in two, drain via `emit_locus_field_drains` before the
+    /// owner's own drain and the rest after its dissolve body. A
+    /// contract child gets the whole spine here, drain included, at
+    /// the second point: its type is not known at the first one, and
+    /// the reclaim entry point is the one indirection recorded.
+    fn emit_owned_contract_child_reclaim(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        fname: &str,
+        field_idx: u32,
+        via_fat_pointer: bool,
+    ) -> Result<(), CodegenError> {
+        let reclaim_slot_idx =
+            match info.owned_child_reclaim_field_idxs.get(fname) {
+                Some(&i) => i,
+                // No slot means the field can't hold an owned child
+                // (declare_locus_struct allots one per interface /
+                // perspective param). Nothing to do.
+                None => return Ok(()),
+            };
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let func = self.current_fn.expect("current_fn set");
+        // F.29 ownership gate, same as the LocusRef arm.
+        let (owned_then_bb, owned_after_bb) = self
+            .emit_locus_field_owned_branch(
+                info,
+                self_ptr,
+                locus_name,
+                fname,
+                "cascade.contract",
+            )?;
+        let owned_after_bb = match (owned_then_bb, owned_after_bb) {
+            (Some(then_bb), Some(after_bb)) => {
+                self.builder.position_at_end(then_bb);
+                Some(after_bb)
+            }
+            // Unreachable in practice: the slot and the bit are
+            // allotted by the same filter. Emitting the body
+            // ungated would be wrong, so bail instead.
+            _ => return Ok(()),
+        };
+        let reclaim_ptr_slot = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                reclaim_slot_idx,
+                &format!("{}.{}.contract.reclaim.ptr", locus_name, fname),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let reclaim_fp = self
+            .builder
+            .build_load(
+                ptr_t,
+                reclaim_ptr_slot,
+                &format!("{}.{}.contract.reclaim", locus_name, fname),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        let held_slot = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                field_idx,
+                &format!("{}.{}.contract.gep", locus_name, fname),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let held = self
+            .builder
+            .build_load(
+                ptr_t,
+                held_slot,
+                &format!("{}.{}.contract.load", locus_name, fname),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        let fp_null = self
+            .builder
+            .build_is_null(
+                reclaim_fp,
+                &format!("{}.{}.contract.fp.null", locus_name, fname),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let held_null = self
+            .builder
+            .build_is_null(
+                held,
+                &format!("{}.{}.contract.held.null", locus_name, fname),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let skip = self
+            .builder
+            .build_or(
+                fp_null,
+                held_null,
+                &format!("{}.{}.contract.skip", locus_name, fname),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let do_bb = self.context.append_basic_block(
+            func,
+            &format!("cascade.contract.{}.do", fname),
+        );
+        let done_bb = self.context.append_basic_block(
+            func,
+            &format!("cascade.contract.{}.done", fname),
+        );
+        self.builder
+            .build_conditional_branch(skip, done_bb, do_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(do_bb);
+        // An interface field holds a `{data, vtable}` fat pointer
+        // (allocated in THIS locus's arena, which is destroyed after
+        // this cascade, so the read is in bounds); `data` is the
+        // impl's self pointer. A perspective field holds that self
+        // pointer directly — dispatch goes through the program-global
+        // slot, so the field is there for ownership alone.
+        let child = if via_fat_pointer {
+            let fat_ty = self.iface_fat_struct_ty();
+            let data_gep = self
+                .builder
+                .build_struct_gep(
+                    fat_ty,
+                    held,
+                    0,
+                    &format!("{}.{}.contract.data.gep", locus_name, fname),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_load(
+                    ptr_t,
+                    data_gep,
+                    &format!("{}.{}.contract.data", locus_name, fname),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value()
+        } else {
+            held
+        };
+        let reclaim_ty =
+            self.context.void_type().fn_type(&[ptr_t.into()], false);
+        self.builder
+            .build_indirect_call(
+                reclaim_ty,
+                reclaim_fp,
+                &[child.into()],
+                &format!("{}.{}.contract.reclaim.call", locus_name, fname),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(done_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(done_bb);
+        if let Some(after_bb) = owned_after_bb {
+            self.builder
+                .build_unconditional_branch(after_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(after_bb);
+        }
+        Ok(())
     }
 
     /// Phase-2 (3) drain cascade. Per spec/runtime.md: "drain()

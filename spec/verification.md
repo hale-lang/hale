@@ -18,6 +18,17 @@ Most checks run in the bundle-level passes of
 ones run in `crates/hale-types/src/resolve.rs`; cell slot-of-origin is
 a codegen-time check. Each entry names the enforcing pass.
 
+**Every bundle-level check applies inside `module { … }`, at any
+nesting depth** (GH #825, 2026-09-20). A module is a NAMESPACE, not an
+analysis boundary — the resolver registers a module's declarations
+under their bare names, so a fn, locus, topic or `bindings` entry one
+brace deeper is an ordinary member of the bundle. Findings carry the
+same message, the same span and the same severity as the identical
+declaration written at the top level, and whole-bundle facts (the
+at-most-one-`main` count, the pool map seeded from the `main` locus's
+placement block, the transport-bound topic set, the `@form`
+sync-discipline index) count module-nested declarations too.
+
 ## Concurrency & placement safety
 
 The bus + cooperative-pool model is the substrate; these checks keep a
@@ -31,6 +42,7 @@ program's placement coherent with how the runtime dispatches.
 | **Cooperative pool starvation** | two or more loci on one cooperative pool (not `where async_io`) whose `run()` bodies statically never return (terminal `while` with no exit — `while true`, `while !self.draining`, or a never-assigned Bool flag) — the pool runs each `run()` to completion in birth order, so the later `run()` bodies never start. Covers fields with no placement entry (they default to pool `main`) and the main locus's own `run()`, which begins only after params-init | warning | `check_cooperative_pool_blocking` |
 | **Nested long-running child** | a non-`main` locus holding a params field of a locus type whose `run()` doesn't return — the canonical fix is hoisting it to a `main` sibling with its own placement | error | `check_nested_long_running_child` |
 | **Unowned subscriber locus** | a bus-subscribing locus instantiated *non-owned* inside another locus's method/handler body — it dissolves at that scope's exit, so its subscription can never fire (overridable with `--allow-unowned-subscriber`) | error | `check_unowned_subscriber_locus` |
+| **Pinned placement in a loop** | a locus whose `placement { }` pins a field, instantiated inside a loop body — the pinned thread's join record is one slot per instantiation site, so every iteration but the last is orphaned with its arena live. A loop that *calls a fn* holding the literal is fine (each call joins its own thread) | error | `check_pinned_locus_in_loop` |
 
 The dead-receiver error is deliberately **direct-call-only** (its
 call-graph surface is not widened), while the blocking *warning* is

@@ -1126,12 +1126,41 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             }
         }
 
+        // GH #871: append one synthetic `__owned_child_reclaim_<f>:
+        // ptr` per param field that can hold a locus without naming
+        // one — an `interface` slot or a `perspective(P)` handle.
+        // The field itself carries the child (a fat pointer for an
+        // interface, the impl's self pointer for a perspective), but
+        // not the child's TYPE, and the teardown cascade is emitted
+        // once per owner type while the impl is chosen per
+        // instantiation. The instantiation stores the child's
+        // `__reclaim_<Impl>` here; the cascade loads it. Zero (the
+        // zero-init) means "no owned child" and the cascade skips.
+        // Same per-field-append shape as `__owner_for_<I>` above, so
+        // only loci with such a field pay for it; appended after the
+        // frequency-permuted user window, so layout tuning is
+        // untouched.
+        let mut owned_child_reclaim_field_idxs: BTreeMap<String, u32> =
+            BTreeMap::new();
+        for (fname, _) in defaults.iter() {
+            if let Some((_, ty)) = fields.get(fname) {
+                if matches!(
+                    ty,
+                    CodegenTy::Interface(_) | CodegenTy::Perspective(_)
+                ) {
+                    owned_child_reclaim_field_idxs.insert(fname.clone(), idx);
+                    llvm_field_tys.push(ptr_t.into());
+                    idx += 1;
+                }
+            }
+        }
+
         let struct_ty = self
             .context
             .opaque_struct_type(&format!("locus.{}", l.name.name));
         struct_ty.set_body(&llvm_field_tys, false);
 
-        // F.29 follow-up: assign bit positions for LocusRef-typed
+        // F.29 follow-up: assign bit positions for locus-carrying
         // param fields in declaration order. The cascade emitters
         // use these bits to discriminate parent-owned children
         // (default-init OR locus-literal override) from externally
@@ -1140,13 +1169,27 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         // double-dissolved by the parent's teardown alongside
         // their real owner's teardown. `defaults` is in
         // declaration order; we filter for fields whose codegen
-        // type is `LocusRef`.
+        // type can hold a locus.
+        //
+        // GH #871: `interface` and `perspective(P)` fields hold a
+        // parent-owned child exactly as a `LocusRef` field does —
+        // `Queries { j: Churner { } }` and `Gateway { router:
+        // RouterV1 { } }` are the same ownership transfer — so they
+        // take a bit too. Without one they had no ownership signal
+        // at all, and the cascade skipped them unconditionally:
+        // every such child (and its whole subtree) survived its
+        // owner's teardown.
         let mut locus_ref_bit_per_field: BTreeMap<String, u32> =
             BTreeMap::new();
         let mut next_bit: u32 = 0;
         for (fname, _) in defaults.iter() {
             if let Some((_, ty)) = fields.get(fname) {
-                if matches!(ty, CodegenTy::LocusRef(_)) {
+                if matches!(
+                    ty,
+                    CodegenTy::LocusRef(_)
+                        | CodegenTy::Interface(_)
+                        | CodegenTy::Perspective(_)
+                ) {
                     locus_ref_bit_per_field.insert(fname.clone(), next_bit);
                     next_bit += 1;
                 }
@@ -1154,7 +1197,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         }
         if next_bit > 64 {
             return Err(CodegenError::Unsupported(format!(
-                "locus `{}` declares more than 64 LocusRef-typed \
+                "locus `{}` declares more than 64 locus-carrying \
                  param fields ({}); the `__locus_ref_owned_mask` \
                  bitmask only carries 64 bits",
                 l.name.name, next_bit
@@ -1199,6 +1242,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 slot_borrowed_mask_field_idx,
                 locus_ref_owned_mask_field_idx,
                 locus_ref_bit_per_field,
+                owned_child_reclaim_field_idxs,
                 recpool_field_idx,
                 recpool_release_pool_field_idx,
                 recpool_release_kind_field_idx,

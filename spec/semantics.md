@@ -445,17 +445,41 @@ A locus held as another locus's param field never has a
 teardown of its own — its instantiation is parent-owned, and
 the owner's teardown cascades into it (F.29). That cascade
 runs to the leaves: a grandchild's `drain()`, its `dissolve()`
-body, its capacity slots and its arena are the owner's
+body, its capacity slots and **its arena** are the owner's
 responsibility just as a child's are, at exactly the moment
-the owner's timing fires. "Constructed by the owner" covers
-both spellings of construction: a nested literal (`Mid { leaf:
-Leaf { } }`) and a factory call whose result the field takes
-(`Mid { leaf: make_leaf() }`, in the diverging-`or` spelling
-too, and as a param default). A field the owner did NOT
-construct (`Mid { leaf: shared }`, an external handle passed in;
-or a call that hands back a locus somebody else built) is
-excluded at whatever depth it appears, and is torn down once by
-its real owner, at its owner's timing.
+the owner's timing fires. Every level's arena is destroyed,
+none outlives the owner, and the count of live arenas a
+finished program leaves behind is zero. "Constructed by the
+owner" covers both spellings of construction: a nested literal
+(`Mid { leaf: Leaf { } }`) and a factory call whose result the
+field takes (`Mid { leaf: make_leaf() }`, in the
+diverging-`or` spelling too, and as a param default). A field
+the owner did NOT construct (`Mid { leaf: shared }`, an
+external handle passed in; or a call that hands back a locus
+somebody else built) is excluded at whatever depth it appears,
+and is torn down once by its real owner, at its owner's timing.
+
+**What the field is DECLARED as does not change any of this.**
+A param typed by a *contract* — an `interface` the child
+satisfies (`params { j: Counter = Churner { } }`) or a
+`perspective(P)` the child serves (`params { router:
+perspective(Router) = RouterV1 { } }`) — holds a parent-owned
+child exactly as a locus-typed param does, and the cascade
+reaches it and everything under it. Which locus satisfies the
+contract is a per-instantiation choice: a designation written
+at the literal (`Gateway { router: RouterV2 { } }`) overrides
+one written as the param's default, and the child torn down is
+the one that was actually constructed. A `reperspective` swap
+does not change it either — the swap replaces code and keeps
+state, so the holder still owns the impl its designation built.
+
+A locus literal written inside the initializer of a param that
+**cannot hold a locus** is not an ownership transfer, because
+there is no field for the owner to cascade from. In `Lonely { n:
+Queries { }.total() }` the `Queries` literal is an ordinary
+expression-position literal, owned by the enclosing fn's scope
+and reclaimed by its scope-exit flush, exactly as it would be
+written on a line of its own.
 
 A deferred dissolve is scoped to the enclosing **fn**, not to
 the enclosing block — a `let` is readable for the rest of the
@@ -2524,6 +2548,28 @@ main locus App {
     the program's main thread, whose affinity belongs to the
     operator. Thread affinity only; pool workers own no arena to
     node-bind (handler scratch lives in each locus's own arena).
+17. **A `pinned` placement forbids a loop (error).** A locus whose
+    `placement { }` block pins any field may not be instantiated
+    inside a loop body — a `while` / `for` at any nesting depth, in
+    a free fn, a locus method or a lifecycle hook. `pinned` gives
+    its field its own OS thread, spawned during the placing locus's
+    params-init and joined at the instantiating scope's exit, and
+    the join record (the deferred-dissolve slot plus the thread
+    handle beside it) is one slot per instantiation *site*: a second
+    pass over the site overwrites the record of the first, so only
+    the LAST instance is joined and arena-destroyed and every
+    earlier pinned thread is orphaned with its arena still live.
+    Placement names static resources — a core, a NUMA node,
+    `replicas = K` — one thread per entry for the program's life, so
+    a per-iteration thread is a category error rather than a
+    reclaim policy to pick. `placement { }` is main-only (rule 1),
+    so the shape this rejects is the deployment root booted once per
+    iteration. The fix is to instantiate it once outside the loop;
+    a loop that *calls a fn* holding the literal is unaffected and
+    correct (each call joins its own thread at that fn's exit), and
+    the rule is positional on that literal, so it is not a rule
+    about the whole call graph. Codegen keeps a matching refusal for
+    embedders that bypass the checker. (GH #826, 2026-09-20.)
 
 ### Single-threaded-method invariant
 
@@ -2759,12 +2805,12 @@ plausible user facade carries them (2026-08-11).
 
 Every stage and terminal above is recognized only **after a `.`**,
 so a free `fn map(...)` / `fn first(...)` / `fn count(...)` is
-admissible and is called as written. The exceptions are the four
+admissible and is called as written. The exceptions are the
 names the compiler claims at a BARE call site — `sum`, `prod`,
-`min`, `max` — which a free `fn` may not take; see
-[`tokens.md` § Built-in identifiers](tokens.md) for the rule and
-the diagnostic. A locus method may still carry any of them
-(2026-09-20, GH #863).
+`min`, `max` among them — which a free `fn` may not take; see
+[`tokens.md` § Built-in identifiers](tokens.md) for the full set,
+the rule and the diagnostic. A locus method may still carry any
+of them (2026-09-20, GH #863 / GH #880).
 
 ## Bus subscription dispatch
 

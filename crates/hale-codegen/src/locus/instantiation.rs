@@ -741,8 +741,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // as a parent's param field, bubbled to a same-tower owner —
         // never gets one (its owner reclaims it, and its struct does
         // not live in this frame's entry block), and a pinned locus
-        // returns through its own branch above. `defer_for_let` and
-        // subscription-bearing loci are what remain.
+        // returns through its own branch above — which, since GH #826,
+        // refuses to be lowered inside a loop at all, so its slot is
+        // never reused and nothing is left for this arm to reclaim.
+        // `defer_for_let` and subscription-bearing loci are what remain.
         let reused_deferred_slot = if self_is_entry_hoisted
             && !self.loops.is_empty()
             && !self.deferred_dissolves.is_empty()
@@ -1920,6 +1922,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_store(lrom_ptr, zero_mask)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
+        // GH #871: same rule for the per-field
+        // `__owned_child_reclaim_<f>` slots — NULL before the loop
+        // so a field the parent does not own leaves the cascade
+        // nothing to call, and the stores the loop makes survive it.
+        {
+            let ptr_t_zero = self.context.ptr_type(AddressSpace::default());
+            for (fname, idx) in info.owned_child_reclaim_field_idxs.iter() {
+                let slot = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        self_ptr,
+                        *idx,
+                        &format!(
+                            "{}.{}.__owned_child_reclaim.ptr",
+                            locus_name, fname
+                        ),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(slot, ptr_t_zero.const_null())
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+        }
         let prev_arena_override = self.current_arena_override;
         self.current_arena_override = Some(new_arena.into_pointer_value());
         // F.31 (2026-05-23): if we're instantiating the main
@@ -2223,8 +2249,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 continue;
             }
+            // GH #871: arm the parent-owned flag only for a field
+            // that can actually HOLD the locus the flag hands over.
+            //
+            // The flag is consumed by the first locus literal
+            // lowered while it is set, and that literal is then
+            // parent-owned: no eager dissolve, its struct allocated
+            // in the owner's arena, and — the part that bites — never
+            // pushed onto a deferred-dissolve frame, because the
+            // owner's cascade is supposed to reach it. For an `Int`
+            // (or `String`, or any other non-locus) field the owner
+            // has nowhere to put it, so the cascade never can:
+            // `Lonely { n: Queries { j: Churner { } }.total() }` left
+            // the whole `Queries` tree alive at exit, while the same
+            // literal written as a statement or a `let` is reclaimed.
+            // Arming on the DECLARED FIELD TYPE keeps the transfer
+            // exactly where an owner exists; everywhere else the
+            // literal stays an ordinary expression-position temporary
+            // owned by the enclosing fn scope (GH #711 / #814).
+            let field_can_hold_locus = match info.fields.get(fname.as_str())
+            {
+                Some((_, ty)) => matches!(
+                    ty,
+                    CodegenTy::LocusRef(_)
+                        | CodegenTy::Interface(_)
+                        | CodegenTy::Perspective(_)
+                ),
+                // Can't happen (declare_locus_struct declares every
+                // param); keep the old behavior if it ever does.
+                None => true,
+            };
             let prev_field_flag = self.instantiating_for_parent_field;
-            self.instantiating_for_parent_field = true;
+            self.instantiating_for_parent_field = field_can_hold_locus;
             // 2026-05-24: if THIS locus is m90-routed to payload
             // arena, route each child literal there too. Child's
             // own `lower_locus_instantiation` consumes the flag
@@ -2431,6 +2487,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get(fname)
                 .cloned()
                 .expect("field declared by declare_locus_struct");
+            // GH #871: which locus is about to land in this field,
+            // when the field's declared type doesn't say? Set by the
+            // two coercion branches below — an interface slot and a
+            // perspective handle both take a concrete `LocusRef` and
+            // erase its name. The teardown cascade needs that name to
+            // pick a `__reclaim_<Impl>`, and it is only knowable here,
+            // at the instantiation, so we record the fn pointer in the
+            // owner's per-field slot once the value is stored.
+            let mut owned_child_impl: Option<String> = None;
             // 2026-05-16 — locus → interface coercion at struct/
             // locus literal init. Mirrors the call-site coercion in
             // lower_fn_call so a stateful locus can flow into an
@@ -2441,6 +2506,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 CodegenTy::LocusRef(l),
             ) = (&declared_ty, &val_ty)
             {
+                owned_child_impl = Some(l.clone());
                 let fat = self.coerce_to_interface(
                     val.into_pointer_value(),
                     l,
@@ -2458,6 +2524,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // — so every holder of `perspective(P)` dispatches to
                 // it. The field itself stores the impl self_ptr for
                 // ownership / teardown (the impl is an owned child).
+                owned_child_impl = Some(impl_locus.clone());
                 let impl_self = val.into_pointer_value();
                 let vtable =
                     self.ensure_perspective_vtable(impl_locus, persp)?;
@@ -2622,6 +2689,42 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.builder
                         .build_store(mask_ptr, new_mask)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                // GH #871: and, for an interface / perspective field,
+                // record WHICH locus the bit is about. The cascade is
+                // emitted once per owner type and the field's declared
+                // type names a contract, not an impl, so the teardown
+                // call has to be an indirect one through this slot.
+                if let (Some(impl_name), Some(&slot_idx)) = (
+                    owned_child_impl.as_ref(),
+                    info.owned_child_reclaim_field_idxs.get(fname.as_str()),
+                ) {
+                    if let Some(reclaim) =
+                        self.reclaim_fns.get(impl_name).copied()
+                    {
+                        let slot = self
+                            .builder
+                            .build_struct_gep(
+                                info.struct_ty,
+                                self_ptr,
+                                slot_idx,
+                                &format!(
+                                    "{}.{}.__owned_child_reclaim.set.ptr",
+                                    locus_name, fname
+                                ),
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?;
+                        self.builder
+                            .build_store(
+                                slot,
+                                reclaim.as_global_value().as_pointer_value(),
+                            )
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?;
+                    }
                 }
             }
             // Finding 4: this field's slot is now stored — later
@@ -3450,6 +3553,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 return Err(CodegenError::Unsupported(format!(
                     "pinned locus `{}` declares closures; cross-thread closure \
                      routing not yet supported",
+                    locus_name
+                )));
+            }
+            // GH #826 backstop. This branch's join record — the
+            // deferred-dissolve slot below and the `pthread_t`
+            // alloca it carries — is ONE alloca per instantiation
+            // SITE, hoisted to the fn's entry block. A site inside a
+            // loop rewrites both every iteration, so the scope-exit
+            // flush joins and arena-destroys only the LAST instance
+            // and every earlier pinned thread is orphaned with its
+            // arena live (GH #815's per-iteration slot reclaim
+            // deliberately steps over a pinned entry: reclaiming it
+            // means joining the previous thread).
+            //
+            // `check_pinned_locus_in_loop` rejects the shape with a
+            // located diagnostic, so nothing that runs the checker
+            // reaches this. `build_executable` does NOT run the
+            // checker, and neither does a direct codegen embedder —
+            // refuse there rather than emit the leak.
+            if !self.loops.is_empty() {
+                return Err(CodegenError::Unsupported(format!(
+                    "pinned locus `{}` is instantiated inside a loop; its \
+                     thread's join record is one slot per site, so every \
+                     iteration but the last would be orphaned with its arena \
+                     live. Instantiate it once outside the loop (see \
+                     spec/semantics.md § Placement block rule 17)",
                     locus_name
                 )));
             }
@@ -5050,6 +5179,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.builder
                 .build_store(mask_slot, i64_t.const_int(0, false))
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        // GH #871: NULL the per-field owned-child reclaim slots too.
+        // The zero mask above already keeps the cascade away from
+        // them, but a wire-built child's struct comes off the bump
+        // allocator uninitialized and a stale pointer in a slot the
+        // cascade indirect-calls is not a thing to leave lying
+        // around.
+        for (fname, idx) in child_info.owned_child_reclaim_field_idxs.iter() {
+            store_ptr_field(
+                self,
+                *idx,
+                null.into(),
+                &format!("xpool.{}.owned_child_reclaim.set", fname),
+            )?;
         }
 
         // Deserialize the marshaled params into I's param slots. The

@@ -14,6 +14,13 @@
 //! GH #817 finished that job for the rest of the CLI: `--help` /
 //! `-h` as the first argument after ANY subcommand prints that
 //! subcommand's usage and exits 0.
+//!
+//! GH #861 brought `build` and `run` the rest of the way: their
+//! flags were reachable only AFTER the target, because the target
+//! was always argv[2] and `parse_build_options` read from argv[3].
+//! The same file also holds the two usage-drift guards — every
+//! dispatched subcommand is listed, and each command's flag block
+//! sits under the command it belongs to.
 
 use std::process::Command;
 
@@ -201,7 +208,7 @@ fn dump_topology_never_overwrites_the_target() {
 const SUBCOMMANDS: &[&str] = &[
     "bench", "build", "check", "dna", "doc", "fetch", "fleet", "fmt",
     "init", "inputs", "iris", "lex", "lsp", "mcp", "model", "node",
-    "parse", "replay", "run", "test", "topology", "verify",
+    "parse", "replay", "run", "targets", "test", "topology", "verify",
 ];
 
 #[test]
@@ -296,8 +303,9 @@ fn the_top_level_help_still_lists_the_commands() {
 
 /// Only the FIRST argument after the subcommand. Further along,
 /// `--help` belongs to whatever is parsing there: `check` answers it
-/// wherever it appears, and `build` — whose flags follow the target
-/// — still calls it an unknown flag rather than guessing.
+/// wherever it appears, and `build` — which takes real flags on
+/// either side of its target (GH #861) — still calls it an unknown
+/// flag rather than guessing.
 #[test]
 fn help_after_the_target_keeps_its_own_meaning() {
     let path = write_tmp("help_after", OK_SRC);
@@ -319,4 +327,210 @@ fn help_after_the_target_keeps_its_own_meaning() {
         "and it says so: {}",
         out
     );
+}
+
+// ---------------------------------------------------------------
+// GH #861: usage drift, and flags on either side of the target
+// ---------------------------------------------------------------
+
+/// `hale build`'s flags were reachable only AFTER the target: the
+/// target was always argv[2] and `parse_build_options` read from
+/// argv[3], so `hale build --dev app.hl` died with `not a file or
+/// directory: --dev` while `hale check --json app.hl` was fine.
+/// Both orders now name the same command.
+#[test]
+fn build_takes_flags_on_either_side_of_the_target() {
+    let path = write_tmp("flagorder", OK_SRC);
+    // `hale build app.hl` -> `./app`: the basename, minus `.hl`.
+    let bin = path.with_extension("");
+
+    for args in [
+        vec!["build".to_string(), "--dev".into(), path.display().to_string()],
+        vec!["build".to_string(), path.display().to_string(), "--dev".into()],
+        // A value-taking flag must not donate its value to the
+        // target: without the arity, `native` — the first argument
+        // that does not start with `-` — would be the target.
+        vec![
+            "build".to_string(),
+            "--target".into(),
+            "native".into(),
+            path.display().to_string(),
+        ],
+    ] {
+        let _ = std::fs::remove_file(&bin);
+        let owned: Vec<&std::ffi::OsStr> =
+            args.iter().map(|a| a.as_ref()).collect();
+        let (out, code) = hale(&owned);
+        assert_eq!(code, 0, "`hale {}` must build: {}", args.join(" "), out);
+        assert!(
+            !out.contains("not a file or directory"),
+            "the flag was read as the target: {}",
+            out
+        );
+        assert!(
+            bin.is_file(),
+            "`hale {}` emitted no binary: {}",
+            args.join(" "),
+            out
+        );
+    }
+
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// `hale run`'s own flags go before the target, because everything
+/// after it is the program's argv. A flag `run` does not have is
+/// named rather than taken for the target — `run` builds with the
+/// default options, so silently accepting a `hale build` flag here
+/// would be a flag that reads as honored and is not.
+#[test]
+fn run_names_a_flag_it_does_not_have() {
+    let path = write_tmp("runflag", OK_SRC);
+    let (out, code) =
+        hale(&["run".as_ref(), "--dev".as_ref(), path.as_os_str()]);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(code, 2, "an unknown `run` flag is a usage error: {}", out);
+    assert!(out.contains("--dev"), "name the offender: {}", out);
+    assert!(
+        !out.contains("not a file or directory"),
+        "and not as a path: {}",
+        out
+    );
+}
+
+/// The subcommands `fn main` dispatches, read out of the dispatch
+/// itself so this test cannot be the thing that goes stale. Two
+/// shapes: the `if cmd == "name"` early returns, and the arms of the
+/// trailing `match cmd.as_str()`.
+fn dispatched_subcommands() -> Vec<String> {
+    const SRC: &str = include_str!("../src/main.rs");
+    let start = SRC
+        .find("fn main() -> ExitCode {")
+        .expect("hale-cli's `fn main` — the dispatch this test reads");
+    let body = &SRC[start..];
+    // A top-level `}` at column 0 ends the function; everything
+    // inside it is indented.
+    let body = &body[..body.find("\n}\n").expect("the end of `fn main`")];
+
+    let mut names: Vec<String> = Vec::new();
+    let mut rest = body;
+    while let Some(i) = rest.find("cmd == \"") {
+        let after = &rest[i + "cmd == \"".len()..];
+        let end = after.find('"').expect("a closing quote");
+        names.push(after[..end].to_string());
+        rest = &after[end..];
+    }
+    let m = body
+        .find("match cmd.as_str() {")
+        .expect("the trailing dispatch match");
+    for line in body[m..].lines() {
+        let t = line.trim_start();
+        let Some(r) = t.strip_prefix('"') else { continue };
+        let Some(q) = r.find('"') else { continue };
+        if r[q + 1..].trim_start().starts_with("=>") {
+            names.push(r[..q].to_string());
+        }
+    }
+    // `--version` / `--help` and their word spellings are not
+    // subcommands: the usage lists them in its own block at the
+    // bottom.
+    names.retain(|n| !n.starts_with('-') && n != "version" && n != "help");
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Is this the usage line for `cmd`? (`    hale build <file.hl …`)
+fn is_usage_line(line: &str, cmd: &str) -> bool {
+    line.trim_start()
+        .strip_prefix("hale ")
+        .and_then(|r| r.strip_prefix(cmd))
+        .is_some_and(|r| r.is_empty() || r.starts_with(' '))
+}
+
+/// The continuation lines directly under a command's usage line —
+/// the block a reader takes for that command's flags.
+fn flag_block_after(help: &str, cmd: &str) -> String {
+    let mut lines = help.lines().skip_while(|l| !is_usage_line(l, cmd));
+    lines.next();
+    lines
+        .take_while(|l| {
+            let t = l.trim_start();
+            t.starts_with('[') || t.starts_with('-')
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `hale node` had been dispatched since GH #566 and appeared in no
+/// usage at all — a subcommand you could only find by reading
+/// `main.rs`; so had `hale targets`. The list is derived from the
+/// dispatch, so the next one cannot go missing quietly, and it must
+/// agree with the set `every_subcommand_answers_help` drives: one
+/// list of subcommands, checked from both ends.
+#[test]
+fn usage_lists_every_dispatched_subcommand() {
+    let dispatched = dispatched_subcommands();
+    assert!(
+        dispatched.len() > 15,
+        "the source scan found almost nothing — it has stopped \
+         reading the dispatch and this test proves nothing: {:?}",
+        dispatched
+    );
+    let (help, code) = hale_in_scratch("dispatch", &["--help".as_ref()]);
+    assert_eq!(code, 0, "`hale --help` must succeed: {}", help);
+    for cmd in &dispatched {
+        assert!(
+            help.lines().any(|l| is_usage_line(l, cmd)),
+            "`hale {}` is dispatched but `hale --help` never lists \
+             it: {}",
+            cmd,
+            help
+        );
+    }
+    let mut answering: Vec<&str> = SUBCOMMANDS.to_vec();
+    answering.sort();
+    let dispatched: Vec<&str> =
+        dispatched.iter().map(String::as_str).collect();
+    assert_eq!(
+        dispatched, answering,
+        "the dispatch and the `--help` set must be the same list"
+    );
+    let _ = std::fs::remove_dir_all(scratch_dir("dispatch"));
+}
+
+/// `replay`'s flag block was indented under the `hale dna` line, so
+/// `--feed`, `--at` and the three `--allow-*` read as `dna`'s — the
+/// one command whose flags nobody could look up, listed against the
+/// one command that does not take them.
+#[test]
+fn replay_flags_are_listed_under_replay() {
+    let (help, code) =
+        hale_in_scratch("replayflags", &["--help".as_ref()]);
+    assert_eq!(code, 0, "`hale --help` must succeed: {}", help);
+    let under_replay = flag_block_after(&help, "replay");
+    for flag in [
+        "--diff",
+        "--json",
+        "--at",
+        "--feed",
+        "--allow-unmatched-feed",
+        "--allow-live-effects",
+        "--allow-unverified-model",
+        "--allow-truncated",
+    ] {
+        assert!(
+            under_replay.contains(flag),
+            "`{}` must be listed under `hale replay`: {}",
+            flag,
+            help
+        );
+    }
+    assert!(
+        !flag_block_after(&help, "dna").contains("--feed"),
+        "replay's flags must not read as `hale dna`'s: {}",
+        help
+    );
+    let _ = std::fs::remove_dir_all(scratch_dir("replayflags"));
 }
