@@ -106,10 +106,23 @@ The consequences are all one rule:
   chain must end at a declared type
   ```
 
-* **The alias is not a constructor.** A struct literal names the
-  declaring type: write `Row { id: 1 }`, not `Row2 { id: 1 }`.
-  Construction through the alias name is refused with ``
-  `Row2` is not a struct type ``.
+* **Transparent in construction too.** A struct, locus or
+  perspective literal, and an enum-variant path, may be spelled
+  with the alias name: with `type Row2 = Row;`, `Row2 { id: 1 }`
+  builds a `Row`, and with `type C2 = Color;`, `C2::Red` is
+  `Color::Red` — both where a variant is constructed and where it
+  is matched. Construction resolves the name through the alias
+  chain to the declaration it ends at, so the value's type, its
+  fields and its methods are the target's; the alias adds nothing
+  and forgives nothing (a field the target does not declare is
+  still an error). A literal whose alias target is not a
+  declaration is still refused — nothing is constructible from
+  `type Thing = Int;` or `type TwoRows = [Row; 2];`:
+
+  ```text
+  main.hl:5:13: type error: `Thing` is not a struct type
+  ```
+
 * **The alias form takes no generic parameters.** `type Twin<T> =
   Pair<T>;` is not supported — the alias target must be a
   concrete type expression (which may itself be a generic

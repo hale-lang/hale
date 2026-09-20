@@ -5,6 +5,7 @@ crates/hale-cli/tests/replay_cli.rs#6
 crates/hale-cli/tests/replay_cli.rs#7
 crates/hale-cli/tests/topology_graph_cli.rs#13
 crates/hale-codegen/tests/cross_seed_imports.rs#1
+crates/hale-codegen/tests/cross_seed_imports.rs#7
 crates/hale-codegen/tests/f22_as_parent_for_surface.rs#3
 crates/hale-codegen/tests/f22_capacity_acceptance.rs#4
 crates/hale-codegen/tests/f22_capacity_dispatch.rs#3

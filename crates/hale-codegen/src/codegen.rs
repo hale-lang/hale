@@ -1005,6 +1005,16 @@ pub fn build_executable_with_options(
     // the merged AST so `-> ()` and "no return type" are the same
     // program everywhere downstream.
     normalize_unit_return_annotations(&mut merged.items);
+    // GH #831: and normalize the other spelling nothing downstream
+    // should have to know about. `type Row2 = Row;` makes `Row2` a
+    // second spelling of `Row` in every TYPE position (GH #759); the
+    // CONSTRUCTION positions — `Row2 { }`, `Row2::Variant` — are read
+    // at roughly twenty `Expr::Struct` / variant-path sites in the
+    // lowering, none of which hold the alias table. Resolving the
+    // alias ONCE on the merged AST is what keeps `build` agreeing
+    // with `check`, which answers the same question in one hop from
+    // its own expanded table.
+    crate::mangle::resolve_construction_aliases(&mut merged, import_renames);
 
     // `program_has_offthread` — THE single source of truth for "does
     // any thread cross the bus boundary in this program". It drives

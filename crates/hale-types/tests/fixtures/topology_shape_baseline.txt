@@ -413,6 +413,7 @@ crates/hale-codegen/tests/cross_seed_imports.rs#2 89a7431e3e28532a
 crates/hale-codegen/tests/cross_seed_imports.rs#3 f2c1228edb650960
 crates/hale-codegen/tests/cross_seed_imports.rs#4 d4e741f73d4026f0
 crates/hale-codegen/tests/cross_seed_imports.rs#5 7d5cf57defcf548e
+crates/hale-codegen/tests/cross_seed_imports.rs#7 f2c1228edb650960
 crates/hale-codegen/tests/cross_seed_locus_arg.rs#0 0bf5244b2cba771c
 crates/hale-codegen/tests/cross_seed_locus_arg.rs#1 0bf5244b2cba771c
 crates/hale-codegen/tests/cross_seed_locus_arg.rs#2 a3ae8b631fccba11
@@ -1576,7 +1577,12 @@ crates/hale-types/tests/topology_projection.rs#7 43fedbac6dfcd680
 crates/hale-types/tests/topology_projection.rs#8 9987dee9f11ab32a
 crates/hale-types/tests/topology_projection.rs#9 e2f9e2e579bb0933
 crates/hale-types/tests/type_alias.rs#0 865d341109268295
-crates/hale-types/tests/type_alias.rs#4 b6ed763b6434263e
+crates/hale-types/tests/type_alias.rs#10 b6ed763b6434263e
+crates/hale-types/tests/type_alias.rs#3 f2c1228edb650960
+crates/hale-types/tests/type_alias.rs#5 f2c1228edb650960
+crates/hale-types/tests/type_alias.rs#6 f2c1228edb650960
+crates/hale-types/tests/type_alias.rs#7 c1e3a8ccf59d1190
+crates/hale-types/tests/type_alias.rs#8 865d341109268295
 crates/hale-types/tests/violate.rs#0 8bef0857136a5c1f
 crates/hale-types/tests/violate.rs#1 d85d74c1f266771b
 crates/hale-types/tests/violate.rs#10 d85d74c1f266771b

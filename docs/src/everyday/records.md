@@ -103,11 +103,18 @@ where `Cents` is expected. If you want the compiler to keep two
 integers apart, give each a record of its own (`type Cents { v:
 Int; }`).
 
+Transparent includes *building* the value. With `type Row2 =
+Row;`, `Row2 { id: 1 }` builds a `Row` — the same record the
+target's own name builds, checked against the target's fields.
+The same goes for an enum: with `type Light2 = Light;`,
+`Light2::Red` is `Light::Red`, in a match arm as well as in an
+expression.
+
 Three small rules:
 
-* A struct literal names the declaring type. With `type Row2 =
-  Row;` you still write `Row { id: 1 }` — `Row2 { id: 1 }` is
-  refused.
+* The alias has to end at a type you can build. `type Cents =
+  Int;` names a primitive, so `Cents { }` means nothing and is
+  refused — as is `[Row; 2]`, or a tuple.
 * An alias chain has to end somewhere. `type A = B; type B = A;`
   is a type error.
 * An alias takes no type parameters of its own. `type Twin<T> =
