@@ -139,6 +139,15 @@ struct Parser {
     /// `fail` lexes and parses as an ordinary identifier (so
     /// `let fail = 0;` outside a fallible body stays admissible).
     in_fallible_body: bool,
+    /// GH #725: reserved words this parse has already reported as a
+    /// name. A word written where a name belongs is ONE authoring
+    /// mistake, but it is read back at every use site (`self.epoch`,
+    /// a call to the misnamed fn, the loop that reads the local), so
+    /// repeating the diagnostic per occurrence buries the one line
+    /// that says what to rename. The first occurrence — the
+    /// declaration, in ordinary source order — is reported; later
+    /// occurrences of the SAME word recover silently.
+    reserved_as_name: Vec<&'static str>,
 }
 
 impl Parser {
@@ -152,6 +161,7 @@ impl Parser {
             effect_defs: Vec::new(),
             domains: Vec::new(),
             in_fallible_body: false,
+            reserved_as_name: Vec::new(),
         }
     }
 
@@ -281,6 +291,48 @@ impl Parser {
         ))
     }
 
+    /// GH #725: the one diagnostic for a reserved word written where
+    /// a name belongs. It names the word, the declaration context it
+    /// was written in, and where it is — `spec/tokens.md` § Reserved
+    /// words is the canonical list, and Hale has no escaped-identifier
+    /// form, so renaming is the only fix.
+    ///
+    /// Returns `true` the first time a given word is reported and
+    /// `false` afterwards, so a caller can tell "reported here" from
+    /// "already said, recover quietly" (see `reserved_as_name`).
+    fn reserved_word_as_name(
+        &mut self,
+        kw: &'static str,
+        span: Span,
+        what: &str,
+    ) -> bool {
+        if self.reserved_as_name.contains(&kw) {
+            return false;
+        }
+        self.reserved_as_name.push(kw);
+        self.diags
+            .push(Diag::parse(span, reserved_name_message(kw, what)));
+        true
+    }
+
+    /// Reserved-word recovery for a DECLARATION name (GH #725):
+    /// record the one located diagnostic, then carry on with the
+    /// keyword's own spelling as the name so the rest of the
+    /// declaration — and the rest of the file — still parses. The
+    /// recovered tree is never handed back ([`parse`] fails whenever
+    /// `diags` is non-empty), so this buys diagnostic locality only:
+    /// the author sees the reserved word where they wrote it instead
+    /// of the wreckage the abandoned declaration causes downstream.
+    fn expect_decl_name(&mut self, what: &str) -> Result<Ident, Diag> {
+        if let Some(kw) = self.peek().keyword_lexeme() {
+            let span = self.peek_token().span;
+            self.reserved_word_as_name(kw, span, what);
+            self.bump();
+            return Ok(Ident { name: kw.to_string(), span });
+        }
+        self.expect_ident(what)
+    }
+
     fn expect_ident(&mut self, what: &str) -> Result<Ident, Diag> {
         match self.peek().clone() {
             TokenKind::Ident(name) => {
@@ -291,21 +343,13 @@ impl Parser {
             other => {
                 let span = self.peek_token().span;
                 if let Some(kw) = other.keyword_lexeme() {
-                    let category = match other {
-                        TokenKind::Birth
-                        | TokenKind::Accept
-                        | TokenKind::Run
-                        | TokenKind::Drain
-                        | TokenKind::Dissolve
-                        | TokenKind::OnFailure => "a reserved lifecycle keyword",
-                        _ => "a reserved keyword",
-                    };
+                    // GH #725: the same sentence the recovering path
+                    // (`expect_decl_name`) emits — a position that
+                    // cannot resynchronize still says what to rename.
+                    self.reserved_as_name.push(kw);
                     return Err(Diag::parse(
                         span,
-                        format!(
-                            "expected {}, but `{}` is {} in Hale — pick another name",
-                            what, kw, category
-                        ),
+                        reserved_name_message(kw, what),
                     ));
                 }
                 Err(Diag::parse(
@@ -322,7 +366,15 @@ impl Parser {
     /// (notably `closure` on a `ClosureViolation` value). The
     /// post-`.` position is unambiguous, so admitting reserved
     /// words here is always safe.
-    fn expect_member_name(&mut self) -> Result<Ident, Diag> {
+    ///
+    /// `what` names the position for the diagnostic — a struct-decl
+    /// body declares "a field", a post-`.` access reads "a field or
+    /// method". A reserved word that `try_member_keyword_as_name`
+    /// does NOT admit (e.g. `rich`, `restart`) gets the GH #725
+    /// reserved-word sentence and recovers with the keyword's own
+    /// spelling, so the surrounding `type` body or expression keeps
+    /// parsing and the author sees one error at the word they wrote.
+    fn expect_member_name(&mut self, what: &str) -> Result<Ident, Diag> {
         if let Some(name) = try_member_keyword_as_name(self.peek()) {
             let span = self.peek_token().span;
             self.bump();
@@ -336,9 +388,14 @@ impl Parser {
             }
             other => {
                 let span = self.peek_token().span;
+                if let Some(kw) = other.keyword_lexeme() {
+                    self.reserved_word_as_name(kw, span, what);
+                    self.bump();
+                    return Ok(Ident { name: kw.to_string(), span });
+                }
                 Err(Diag::parse(
                     span,
-                    format!("expected member name, got {:?}", other),
+                    format!("expected {}, got {:?}", what, other),
                 ))
             }
         }
@@ -2945,14 +3002,14 @@ impl Parser {
 
     fn parse_interface_decl(&mut self) -> Result<InterfaceDecl, Diag> {
         let kw = self.expect(TokenKind::Interface, "interface")?;
-        let name = self.expect_ident("interface name")?;
+        let name = self.expect_decl_name("interface name")?;
         self.expect(TokenKind::LBrace, "{")?;
         let mut methods = Vec::new();
         while !matches!(self.peek(), TokenKind::RBrace) {
             // Each method: `fn name(params...) -> ret;` — bodyless.
             // Default methods (with bodies) are deferred.
             let kw_fn = self.expect(TokenKind::Fn, "fn")?;
-            let mname = self.expect_ident("method name")?;
+            let mname = self.expect_decl_name("method name")?;
             self.expect(TokenKind::LParen, "(")?;
             let mut params = Vec::new();
             if !matches!(self.peek(), TokenKind::RParen) {
@@ -2998,7 +3055,7 @@ impl Parser {
             self.bump();
         }
         let kw = self.expect(TokenKind::Locus, "locus")?;
-        let name = self.expect_ident("locus name")?;
+        let name = self.expect_decl_name("locus name")?;
         // m63: optional `<K, V, ...>` generic param list right
         // after the locus name. Same shape as fn / type generic
         // params — codegen monomorphizes on use sites.
@@ -4584,7 +4641,7 @@ impl Parser {
     }
 
     fn parse_param_decl(&mut self) -> Result<ParamDecl, Diag> {
-        let name = self.expect_ident("param name")?;
+        let name = self.expect_decl_name("params field name")?;
         let ty = if self.eat(&TokenKind::Colon) {
             // Could be inferred or a type expression. Check next.
             if self.at(&TokenKind::Inferred) {
@@ -4984,7 +5041,7 @@ impl Parser {
             self.bump();
             secret = true;
         }
-        let name = self.expect_ident("parameter name")?;
+        let name = self.expect_decl_name("parameter name")?;
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
         let default = if self.eat(&TokenKind::Eq) {
@@ -5272,7 +5329,7 @@ impl Parser {
 
     fn parse_perspective_decl(&mut self) -> Result<PerspectiveDecl, Diag> {
         let kw = self.expect(TokenKind::Perspective, "perspective")?;
-        let name = self.expect_ident("perspective name")?;
+        let name = self.expect_decl_name("perspective name")?;
         let generics = self.parse_generic_params_opt()?;
         self.expect(TokenKind::LBrace, "{")?;
         let mut members = Vec::new();
@@ -5314,7 +5371,7 @@ impl Parser {
 
     fn parse_type_decl(&mut self) -> Result<TypeDecl, Diag> {
         let kw = self.expect(TokenKind::Type, "type")?;
-        let name = self.expect_ident("type name")?;
+        let name = self.expect_decl_name("type name")?;
         let generics = self.parse_generic_params_opt()?;
 
         // Three forms:
@@ -5377,7 +5434,7 @@ impl Parser {
         // inside a struct-decl body the parsing position is
         // unambiguous, so reserving these words at field-name
         // position would just block useful patterns.
-        let name = self.expect_member_name()?;
+        let name = self.expect_member_name("field name")?;
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
         let default = if self.eat(&TokenKind::Eq) {
@@ -5438,7 +5495,7 @@ impl Parser {
     }
 
     fn parse_generic_param(&mut self) -> Result<GenericParam, Diag> {
-        let name = self.expect_ident("generic param name")?;
+        let name = self.expect_decl_name("generic param name")?;
         let bound = if self.eat(&TokenKind::Colon) {
             Some(self.parse_type_expr()?)
         } else {
@@ -5450,7 +5507,7 @@ impl Parser {
 
     fn parse_const_decl(&mut self) -> Result<ConstDecl, Diag> {
         let kw = self.expect(TokenKind::Const, "const")?;
-        let name = self.expect_ident("const name")?;
+        let name = self.expect_decl_name("const name")?;
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
         self.expect(TokenKind::Eq, "=")?;
@@ -5491,7 +5548,7 @@ impl Parser {
         allow_bodyless: bool,
     ) -> Result<FnDecl, Diag> {
         let kw = self.expect(TokenKind::Fn, "fn")?;
-        let name = self.expect_ident("function name")?;
+        let name = self.expect_decl_name("function name")?;
         let generics = self.parse_generic_params_opt()?;
         self.expect(TokenKind::LParen, "(")?;
         let mut params = Vec::new();
@@ -5826,7 +5883,7 @@ impl Parser {
         let mut span = first.span;
         let mut segments = vec![first];
         while self.eat(&TokenKind::ColonColon) {
-            let next = self.expect_member_name()?;
+            let next = self.expect_member_name("name after `::`")?;
             span = span.merge(next.span);
             segments.push(next);
         }
@@ -6125,12 +6182,12 @@ impl Parser {
         // Tuple destructure form: `let (a, b) = expr;`.
         if self.at(&TokenKind::LParen) {
             self.bump();
-            let mut names = vec![self.expect_ident("variable name")?];
+            let mut names = vec![self.expect_decl_name("variable name")?];
             while self.eat(&TokenKind::Comma) {
                 if self.at(&TokenKind::RParen) {
                     break;
                 }
-                names.push(self.expect_ident("variable name")?);
+                names.push(self.expect_decl_name("variable name")?);
             }
             self.expect(TokenKind::RParen, ")")?;
             let ty = if self.eat(&TokenKind::Colon) {
@@ -6149,7 +6206,7 @@ impl Parser {
                 span: kw.span.merge(semi.span),
             });
         }
-        let name = self.expect_ident("variable name")?;
+        let name = self.expect_decl_name("variable name")?;
         let ty = if self.eat(&TokenKind::Colon) {
             Some(self.parse_type_expr()?)
         } else {
@@ -6405,7 +6462,7 @@ impl Parser {
 
     fn parse_for_stmt(&mut self) -> Result<Stmt, Diag> {
         let kw = self.expect(TokenKind::For, "for")?;
-        let name = self.expect_ident("loop variable")?;
+        let name = self.expect_decl_name("loop variable")?;
         self.expect(TokenKind::In, "in")?;
         let iter = self.parse_expr()?;
         let body = self.parse_block()?;
@@ -6777,7 +6834,7 @@ impl Parser {
                         self.bump();
                         Ident { name: n.to_string(), span }
                     } else {
-                        self.expect_member_name()?
+                        self.expect_member_name("field or method name")?
                     };
                     let span = expr.span().merge(name.span);
                     // Chain terminal `each { ... }` (2026-08-04):
@@ -6814,7 +6871,7 @@ impl Parser {
                 }
                 TokenKind::ColonColon => {
                     self.bump();
-                    let name = self.expect_member_name()?;
+                    let name = self.expect_member_name("name after `::`")?;
                     let span = expr.span().merge(name.span);
                     expr = Expr::Path2 {
                         receiver: Box::new(expr),
@@ -7024,10 +7081,32 @@ impl Parser {
                     Ok(Expr::Path(qn))
                 }
             }
-            other => Err(Diag::parse(
-                span,
-                format!("expected expression, got {:?}", other),
-            )),
+            other => {
+                // GH #725: a reserved word this parse ALREADY
+                // reported as a name is read back here — the body of
+                // the declaration that named it (`return tier + 1;`,
+                // `println("{}", where)`). The mistake has been
+                // stated once, at the declaration; re-stating it at
+                // every use is the cascade the author had to dig
+                // through. Take it as the identifier it was meant to
+                // be and keep parsing. Never for a word that has not
+                // been reported: a keyword in expression position
+                // with no misnamed declaration behind it is a
+                // different mistake and keeps its own message.
+                if let Some(kw) = other.keyword_lexeme() {
+                    if self.reserved_as_name.contains(&kw) {
+                        self.bump();
+                        return Ok(Expr::Ident(Ident {
+                            name: kw.to_string(),
+                            span,
+                        }));
+                    }
+                }
+                Err(Diag::parse(
+                    span,
+                    format!("expected expression, got {:?}", other),
+                ))
+            }
         }
     }
 
@@ -7052,7 +7131,17 @@ impl Parser {
             TokenKind::RBrace => true,
             TokenKind::Ident(_) => matches!(self.peek_at(2), TokenKind::Colon),
             other => {
-                try_member_keyword_as_name(other).is_some()
+                // GH #725: and a reserved word this parse already
+                // reported as a name — the type it belongs to was
+                // declared with that field, so the literal that
+                // fills it must still read as a literal. Otherwise
+                // one bad field declaration resurrects exactly the
+                // `expected ;, got LBrace` misdirection above at
+                // every construction site.
+                let recovered = other
+                    .keyword_lexeme()
+                    .is_some_and(|kw| self.reserved_as_name.contains(&kw));
+                (try_member_keyword_as_name(other).is_some() || recovered)
                     && matches!(self.peek_at(2), TokenKind::Colon)
             }
         }
@@ -7083,7 +7172,7 @@ impl Parser {
         // v1.x-8: parity with parse_struct_field — admit
         // framework keywords as field names in struct literals
         // so `Cmd { run: my_fn }` parses.
-        let name = self.expect_member_name()?;
+        let name = self.expect_member_name("field name")?;
         self.expect(TokenKind::Colon, ":")?;
         let value = self.parse_expr()?;
         let span = name.span.merge(value.span());
@@ -7190,7 +7279,21 @@ impl Parser {
                         t.span = shift_span(t.span, start, end);
                     }
                     let mut sub = Parser::new(tokens);
-                    let expr = sub.parse_expr().map_err(|d| {
+                    // GH #725: the sub-parser recovers from a
+                    // reserved word used as a name by RECORDING a
+                    // diagnostic and returning a placeholder, so its
+                    // `diags` are load-bearing — dropping them would
+                    // let `f"{x.restart}"` parse silently. Carry the
+                    // already-reported set in (so a word named once
+                    // in the enclosing file isn't re-reported inside
+                    // an interpolation) and carry both back out.
+                    sub.reserved_as_name =
+                        std::mem::take(&mut self.reserved_as_name);
+                    let parsed = sub.parse_expr();
+                    self.reserved_as_name =
+                        std::mem::take(&mut sub.reserved_as_name);
+                    self.diags.append(&mut sub.diags);
+                    let expr = parsed.map_err(|d| {
                         Diag::parse(
                             // The inner diag's span is already
                             // shifted; keep it, so the caret lands on
@@ -7387,6 +7490,47 @@ fn bin_op_bp(op: BinOp) -> (u8, u8) {
     }
 }
 
+/// GH #725: the sentence for a reserved word written where a name
+/// belongs. `what` is the declaration context the parser was in
+/// ("params field name", "variable name", ...), so the message says
+/// both which word is reserved and what the author was declaring.
+/// The lifecycle words get a parenthetical because a `let run = ...`
+/// is usually a collision with the lifecycle vocabulary rather than
+/// with syntax. `spec/tokens.md` § Reserved words is the canonical
+/// list; Hale has no escaped-identifier form, so renaming is the
+/// only fix and the message says so instead of leaving the author
+/// hunting for an escape.
+fn reserved_name_message(kw: &str, what: &str) -> String {
+    // The call sites spell the context as "<thing> name" so the
+    // non-keyword fallback can read "expected param name, got ...".
+    // Here the sentence already says "name", so drop the suffix.
+    let thing = what.strip_suffix(" name").unwrap_or(what);
+    let article = match thing.as_bytes().first() {
+        Some(b'a') | Some(b'e') | Some(b'i') | Some(b'o') | Some(b'u') => "an",
+        _ => "a",
+    };
+    let kind = if matches!(
+        kw,
+        "birth"
+            | "accept"
+            | "release"
+            | "run"
+            | "drain"
+            | "dissolve"
+            | "on_failure"
+    ) {
+        "a reserved word (a lifecycle keyword)"
+    } else {
+        "a reserved word"
+    };
+    format!(
+        "`{}` is {} and cannot name {} {}; rename it (Hale has no \
+         escaped-identifier form — spec/tokens.md lists every \
+         reserved word)",
+        kw, kind, article, thing
+    )
+}
+
 /// If the given keyword token is one we permit as an identifier
 /// in expression / path / member position, return its textual
 /// name. Otherwise None.
@@ -7541,17 +7685,20 @@ fn main() {
     #[test]
     fn let_with_lifecycle_keyword_names_the_keyword() {
         let errs = parse_str("fn main() { let accept = 1; }").unwrap_err();
+        assert_eq!(errs.len(), 1, "one diagnostic; got: {errs:?}");
         let msg = &errs[0].message;
         assert!(msg.contains("`accept`"), "got: {msg}");
-        assert!(msg.contains("reserved lifecycle keyword"), "got: {msg}");
+        assert!(msg.contains("a lifecycle keyword"), "got: {msg}");
+        assert!(msg.contains("cannot name a variable"), "got: {msg}");
     }
 
     #[test]
     fn let_with_reserved_keyword_names_the_keyword() {
         let errs = parse_str("fn main() { let match = 1; }").unwrap_err();
+        assert_eq!(errs.len(), 1, "one diagnostic; got: {errs:?}");
         let msg = &errs[0].message;
         assert!(msg.contains("`match`"), "got: {msg}");
-        assert!(msg.contains("is a reserved keyword"), "got: {msg}");
+        assert!(msg.contains("is a reserved word"), "got: {msg}");
         assert!(!msg.contains("lifecycle"), "got: {msg}");
     }
 

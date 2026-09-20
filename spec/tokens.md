@@ -42,6 +42,29 @@ simplifies tooling.
   - `SCREAMING_SNAKE_CASE` for constants.
 - Reserved words (see below) are not legal identifiers.
 
+There is **no escaped-identifier form**: a reserved word cannot be
+spelled as a name by quoting, prefixing or backslashing it. The only
+fix for a collision is a different name.
+
+A reserved word written where a name belongs — a `params` field, a
+local, a `fn` / method / parameter, a struct field, a locus or type
+name — is a parse error reported **once, at the word**, naming the
+word and the declaration it was written in:
+
+```text
+work.hl:8:9: parse error: `epoch` is a reserved word and cannot name
+a params field; rename it (Hale has no escaped-identifier form —
+spec/tokens.md lists every reserved word)
+```
+
+The parser then resumes as if the declaration had been named, so the
+rest of the file still parses and the one error is not followed by the
+consequences of the abandoned declaration (a later `}` reported as a
+stray token, a literal of the type reported as a block, the same word
+reported again at every use site). Every use of the SAME word as a
+name after the first is part of that one mistake and is not reported
+again. This section is the canonical list the diagnostic points at.
+
 ## Reserved words (keywords)
 
 ### Declaration keywords
@@ -149,6 +172,7 @@ sibling), not a per-locus annotation.
 
 ```
 closure         epoch           persists_through    resets_on
+resets_per_epoch
 ```
 
 `approx` and `within` are **contextual keywords**, recognized

@@ -67,6 +67,45 @@ file of a multi-file seed on its own stays permissive — that file
 legitimately reads a `const` its sibling declares, and the checker
 cannot see the sibling.
 
+## Some ordinary words are reserved
+
+Hale's keywords are ordinary English: `epoch`, `where`, `rich`,
+`tier`, `capacity`, `release`, `restart`, `run`, `drain`, `on`,
+`of`, `publish`. They are good words, which is exactly why they
+are easy to reach for as a name — and they are not available as
+one:
+
+```hale,fragment
+params { epoch: Int = 0; }        // no
+let where = 3;                    // no
+fn restart() { }                  // no
+```
+
+The compiler says so at the word, once, naming what you were
+declaring:
+
+```text
+work.hl:8:9: parse error: `epoch` is a reserved word and cannot
+name a params field; rename it (Hale has no escaped-identifier
+form — spec/tokens.md lists every reserved word)
+        epoch: Int = 0;
+        ^^^^^
+```
+
+There is no way to escape or quote a reserved word into a name.
+Rename it — `epoch_id`, `where_clause`, `restart_now` — and
+nothing else about the program changes. Every use of the same
+word further down is part of that one mistake, so you get one
+error, not one per line, and the rest of the file still parses
+normally.
+
+The full list lives in `spec/tokens.md`. A word being a keyword
+somewhere does not always make it unavailable everywhere: a few
+are recognized only in position (`mode`, `pool`, `with`, `seed`
+are free as names), and a few of the hard ones are deliberately
+admitted as *field* names, so `type Cmd { run: Int; tier: Int; }`
+is fine even though `let run = 1;` is not.
+
 ## The primitive types
 
 These are the scalar types built into the language:
