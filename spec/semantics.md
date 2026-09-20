@@ -2600,6 +2600,31 @@ main locus App {
     the rule is positional on that literal, so it is not a rule
     about the whole call graph. Codegen keeps a matching refusal for
     embedders that bypass the checker. (GH #826, 2026-09-20.)
+18. **Every entry is consumed by exactly one instantiation
+    (error).** A placement entry is carried by the locus LITERAL
+    lowered for its field, and by nothing else: the thread class,
+    the cooperative pool and the NUMA node all ride an override that
+    the next `T { }` takes. So a placed field whose value arrives
+    any other way — a factory call, a fallible call, a conditional,
+    a reference to an instance somebody else built — leaves the
+    entry untaken, and the next field's turn through the params-init
+    loop resets it. Nothing is placed and nothing is said. That
+    shape is rejected at the initialiser, with the literal form
+    spelled out. The entry's value is the init written at the
+    instantiation site when the literal supplies one, and the
+    `params` default otherwise, so both spellings are checked — and
+    a default every site overrides is dead text, not a dropped
+    placement. The entry is not applied after the fact because there
+    is nothing left to place: the pinned path does not mark an
+    instance, it spawns a thread that runs the locus's whole
+    lifecycle — birth, `run()`, the mailbox loop, drain, dissolve —
+    and a factory's literal has already run birth and `run()` (and
+    registered its subscriptions against the global queue) before
+    the value returns. Scope matches rule 17's: an imported seed's
+    main locus is renamed `__lib_*`, is not the deployment root, and
+    its entries never reach the plan. Codegen keeps a matching
+    refusal for embedders that bypass the checker. (GH #890,
+    2026-09-20.)
 
 18. **Uncarriable bus payload (error).** An `of type T` clause on a
     `publish` / `subscribe` must name a type the bus can carry — a

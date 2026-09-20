@@ -568,6 +568,12 @@ pub fn check_bundle_scoped(
     // thread but the last and leaks its arena. Placement describes a
     // static topology; the loop is rejected.
     check_pinned_locus_in_loop(bundle, top, &mut diags);
+    // GH #890: a placement entry is carried by the locus LITERAL
+    // lowered for its field and by nothing else, so a field built any
+    // other way (a factory call the commonest) leaves the entry
+    // untaken and it is silently dropped. Every entry must be
+    // consumed by exactly one instantiation.
+    check_placement_entry_consumed(bundle, &mut diags);
     // Pool affinity (2026-08-12): `cooperative(pool = X, cores/…)`
     // entries naming one pool must agree, and affinity on the main
     // pool has no thread to bind.
@@ -3948,6 +3954,346 @@ fn pinned_walk_expr(e: &Expr, cx: &mut PinnedLoopCx) {
             match disposition {
                 OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
                     pinned_walk_expr(e, cx)
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+/// GH #890: a `placement { }` entry no instantiation consumes.
+///
+/// A placement entry is carried to codegen as an override on the
+/// NEXT locus instantiation lowered for that field
+/// (`placement_for_next_locus_instantiation`, plus the parallel pool
+/// and NUMA-node overrides). A locus LITERAL takes it; nothing else
+/// does. So a field whose value arrives any other way — a factory
+/// call, a fallible call, a conditional, a reference to an instance
+/// somebody else built — leaves the override untaken, and the next
+/// field's turn through the params-init loop resets it. No thread is
+/// spawned, no pool is joined, and nothing is said: the entry the
+/// author wrote is silently dropped.
+///
+/// Applying the entry after the fact is not available. The pinned
+/// path is not "mark this instance pinned" but "spawn a pthread that
+/// runs the whole lifecycle — birth, run, the mailbox loop, drain,
+/// dissolve — on it", and a factory's literal has already run birth
+/// and run() (and registered its subscriptions against the global
+/// queue) before the value returns. There is nothing left to place.
+/// So the entry is refused at its source instead, pointing at the
+/// literal form that does carry it.
+///
+/// The rule is the backstop the issue asks for rather than a
+/// factory-shaped special case: EVERY entry must be consumed by
+/// exactly one instantiation. The value the entry places is the
+/// instantiation-site init when the literal supplies one and the
+/// params default otherwise, so both spellings are checked — and a
+/// default every site overrides is dead text, not a dropped
+/// placement.
+///
+/// Scope mirrors `collect_main_placement` (and rule 17's check): an
+/// imported seed's main locus is renamed `__lib_*` and is not the
+/// deployment root, so its entries never reach the plan and flagging
+/// them would be a false positive.
+fn check_placement_entry_consumed(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    let mut main: Option<&LocusDecl> = None;
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| {
+            if let TopDecl::Locus(l) = item {
+                if l.is_main && !l.name.name.starts_with("__lib_") {
+                    main = Some(l);
+                }
+            }
+        });
+    }
+    let Some(main) = main else { return };
+    let Some(pb) = main.members.iter().find_map(|m| match m {
+        LocusMember::Placement(pb) => Some(pb),
+        _ => None,
+    }) else {
+        return;
+    };
+    let Some(params) = main.members.iter().find_map(|m| match m {
+        LocusMember::Params(p) => Some(p),
+        _ => None,
+    }) else {
+        return;
+    };
+
+    // Every instantiation of the main locus in the bundle, as the
+    // field inits it writes. `fn main() { App { }; }` is the usual
+    // one and supplies nothing, but a params field declared without a
+    // default is supplied here, and that init is what carries the
+    // placement.
+    let mut cx = PlacementSiteCx {
+        main: main.name.name.as_str(),
+        sites: Vec::new(),
+    };
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| match item {
+            TopDecl::Fn(fd) => placement_site_walk_block(&fd.body, &mut cx),
+            TopDecl::Locus(l) => {
+                for member in &l.members {
+                    if let Some(body) = locus_member_body(member) {
+                        placement_site_walk_block(body, &mut cx);
+                    }
+                }
+            }
+            _ => {}
+        });
+    }
+    let sites = cx.sites;
+
+    for entry in &pb.entries {
+        let field = entry.field.name.as_str();
+        // Unknown / non-locus fields are `check_placement_block`'s to
+        // report; saying it twice helps nobody.
+        let Some(param) = params.params.iter().find(|p| p.name.name == field)
+        else {
+            continue;
+        };
+        // The literal form to suggest: the declared type as written
+        // (a stdlib locus is a qualified path, and its literal is
+        // spelled the same way), or `T` when the type is inferred
+        // from the default and there is nothing to quote.
+        let ty_name = match &param.ty {
+            Some(TypeExpr::Named { path, .. })
+                if !path.segments.is_empty() =>
+            {
+                path.segments
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::")
+            }
+            _ => "T".to_string(),
+        };
+
+        // The site inits for this field, and whether any site leaves
+        // the field to its default.
+        let mut overrides: Vec<&Expr> = Vec::new();
+        let mut any_site_takes_default = false;
+        for inits in &sites {
+            match inits.iter().find(|i| i.name.name == field) {
+                Some(init) => overrides.push(&init.value),
+                None => any_site_takes_default = true,
+            }
+        }
+        for init in overrides {
+            if matches!(init, Expr::Struct { .. }) {
+                continue;
+            }
+            diags.push(placement_unconsumed_diag(
+                field,
+                &ty_name,
+                init,
+                entry.span,
+                true,
+            ));
+        }
+        // The default is live when some site omits the field — and
+        // when the bundle instantiates the main locus nowhere at all
+        // (a library seed checked on its own: the default is the only
+        // initialiser there is).
+        if !(any_site_takes_default || sites.is_empty()) {
+            continue;
+        }
+        let ParamInit::Value(default) = &param.init else {
+            // No default and no site init: the missing-required-param
+            // rule owns that program, not this one.
+            continue;
+        };
+        if matches!(default, Expr::Struct { .. }) {
+            continue;
+        }
+        diags.push(placement_unconsumed_diag(
+            field,
+            &ty_name,
+            default,
+            entry.span,
+            false,
+        ));
+    }
+}
+
+/// The GH #890 diagnostic, for an initialiser written at an
+/// instantiation site (`at_site`) or in the params default.
+fn placement_unconsumed_diag(
+    field: &str,
+    ty_name: &str,
+    init: &Expr,
+    entry_span: Span,
+    at_site: bool,
+) -> Diag {
+    let shape = match init {
+        Expr::Call { .. } => "a call",
+        Expr::Or { .. } => "a fallible call",
+        Expr::If(_) | Expr::Match(_) => "a conditional",
+        Expr::Ident(_) | Expr::Path(_) | Expr::Field { .. }
+        | Expr::Path2 { .. } | Expr::Index { .. } | Expr::KwSelf(_) => {
+            "a reference to an instance built elsewhere"
+        }
+        _ => "an expression that is not a locus literal",
+    };
+    Diag::ty(
+        init.span(),
+        format!(
+            "placement entry `{}` names a field no locus literal \
+             initialises: {} is {}. A placement is carried by the locus \
+             LITERAL lowered for the field — a factory's literal is \
+             lowered inside the factory, out of this entry's reach — so \
+             the entry would be silently dropped and `{}` would run \
+             wherever an unplaced field runs. Write the literal {} \
+             (`{}`), and move the factory's other work into the locus's \
+             own params or `birth()`.",
+            field,
+            if at_site {
+                format!("the value supplied for `{}` here", field)
+            } else {
+                format!("`{}`'s default", field)
+            },
+            shape,
+            field,
+            if at_site { "at this site" } else { "in the field" },
+            if at_site {
+                format!("{}: {} {{ }}", field, ty_name)
+            } else {
+                format!("{}: {} = {} {{ }};", field, ty_name, ty_name)
+            },
+        ),
+    )
+    .with_related(entry_span, format!("`{}` is placed here", field))
+}
+
+/// Collects the field inits of every literal of the main locus.
+/// Same AST coverage `pinned_walk_*` has, without rule 17's loop
+/// bookkeeping — a placement site is positional in neither sense.
+struct PlacementSiteCx<'a> {
+    /// The bundle's main locus name. `placement { }` is main-only
+    /// (rule 1) and an imported main is renamed `__lib_*`, so a
+    /// single-segment name is the whole surface — the same reasoning
+    /// rule 17's walk uses.
+    main: &'a str,
+    sites: Vec<&'a [StructInit]>,
+}
+
+fn placement_site_walk_block<'a>(
+    b: &'a Block,
+    cx: &mut PlacementSiteCx<'a>,
+) {
+    for s in &b.stmts {
+        placement_site_walk_stmt(s, cx);
+    }
+    if let Some(t) = &b.tail {
+        placement_site_walk_expr(t, cx);
+    }
+}
+
+fn placement_site_walk_if<'a>(i: &'a IfStmt, cx: &mut PlacementSiteCx<'a>) {
+    placement_site_walk_expr(&i.cond, cx);
+    placement_site_walk_block(&i.then_block, cx);
+    if let Some(eb) = &i.else_block {
+        match eb.as_ref() {
+            ElseBranch::Else(b) => placement_site_walk_block(b, cx),
+            ElseBranch::ElseIf(i2) => placement_site_walk_if(i2, cx),
+        }
+    }
+}
+
+fn placement_site_walk_match<'a>(
+    m: &'a MatchStmt,
+    cx: &mut PlacementSiteCx<'a>,
+) {
+    placement_site_walk_expr(&m.scrutinee, cx);
+    for arm in &m.arms {
+        if let Some(g) = &arm.guard {
+            placement_site_walk_expr(g, cx);
+        }
+        match &arm.body {
+            MatchArmBody::Expr(e) => placement_site_walk_expr(e, cx),
+            MatchArmBody::Block(b) => placement_site_walk_block(b, cx),
+        }
+    }
+}
+
+fn placement_site_walk_stmt<'a>(s: &'a Stmt, cx: &mut PlacementSiteCx<'a>) {
+    match s {
+        Stmt::While { cond, body, .. } => {
+            placement_site_walk_expr(cond, cx);
+            placement_site_walk_block(body, cx);
+        }
+        Stmt::For { iter, body, .. } => {
+            placement_site_walk_expr(iter, cx);
+            placement_site_walk_block(body, cx);
+        }
+        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+            placement_site_walk_expr(value, cx)
+        }
+        Stmt::Assign { value, .. } => placement_site_walk_expr(value, cx),
+        Stmt::If(i) => placement_site_walk_if(i, cx),
+        Stmt::Match(m) => placement_site_walk_match(m, cx),
+        Stmt::Return(Some(e), _) => placement_site_walk_expr(e, cx),
+        Stmt::Fail { value, .. } => placement_site_walk_expr(value, cx),
+        Stmt::Expr(e) => placement_site_walk_expr(e, cx),
+        _ => {}
+    }
+}
+
+fn placement_site_walk_expr<'a>(e: &'a Expr, cx: &mut PlacementSiteCx<'a>) {
+    match e {
+        Expr::Struct { path, inits, .. } => {
+            let segs: Vec<&str> =
+                path.segments.iter().map(|s| s.name.as_str()).collect();
+            if segs.len() == 1 && segs[0] == cx.main {
+                cx.sites.push(inits.as_slice());
+            }
+            for init in inits {
+                placement_site_walk_expr(&init.value, cx);
+            }
+        }
+        Expr::Call { callee, args, .. } => {
+            placement_site_walk_expr(callee, cx);
+            for a in args {
+                placement_site_walk_expr(a, cx);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            placement_site_walk_expr(left, cx);
+            placement_site_walk_expr(right, cx);
+        }
+        Expr::Unary { operand, .. } => placement_site_walk_expr(operand, cx),
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
+            placement_site_walk_expr(receiver, cx)
+        }
+        Expr::Index { receiver, index, .. } => {
+            placement_site_walk_expr(receiver, cx);
+            placement_site_walk_expr(index, cx);
+        }
+        Expr::Tuple(es, _) | Expr::Array(es, _) => {
+            for e in es {
+                placement_site_walk_expr(e, cx);
+            }
+        }
+        Expr::Sum(e, _) | Expr::Prod(e, _) => placement_site_walk_expr(e, cx),
+        Expr::Approx { left, right, tolerance, .. } => {
+            placement_site_walk_expr(left, cx);
+            placement_site_walk_expr(right, cx);
+            placement_site_walk_expr(tolerance, cx);
+        }
+        Expr::Range { lo, hi, .. } => {
+            placement_site_walk_expr(lo, cx);
+            placement_site_walk_expr(hi, cx);
+        }
+        Expr::ArrayRepeat { val, .. } => placement_site_walk_expr(val, cx),
+        Expr::Block(b) => placement_site_walk_block(b, cx),
+        Expr::If(i) => placement_site_walk_if(i, cx),
+        Expr::Match(m) => placement_site_walk_match(m, cx),
+        Expr::Or { inner, disposition, .. } => {
+            placement_site_walk_expr(inner, cx);
+            match disposition {
+                OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
+                    placement_site_walk_expr(e, cx)
                 }
                 _ => {}
             }
