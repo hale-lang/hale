@@ -118,6 +118,7 @@ fn a_lex_error_span_is_shifted_by_base_exactly_once() {
             base as usize + src.len()
         );
     }
+}
 
 /// GH #725: a parse diagnostic's span is shifted ONCE. It is built
 /// from a token whose span this function already shifted, so the
