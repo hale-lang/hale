@@ -1,4 +1,3 @@
-crates/hale-cli/tests/fixtures/hale-test-mixed/notes.hl
 crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl
 crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl
 crates/hale-cli/tests/fixtures/xseed-claims/lib/delta/d.hl

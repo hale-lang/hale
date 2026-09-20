@@ -106,6 +106,10 @@ The consequences are all one rule:
   chain must end at a declared type
   ```
 
+  A chain that ends at a bare name nothing declares is refused the
+  same way, at the target rather than at every use of the alias
+  (see "Bare type names" below).
+
 * **Transparent in construction too.** A struct, locus or
   perspective literal, and an enum-variant path, may be spelled
   with the alias name: with `type Row2 = Row;`, `Row2 { id: 1 }`
@@ -844,6 +848,44 @@ One file of a multi-file seed, checked alone (`hale check
 
 A bare unknown CALLEE reports the call diagnostic above and not this
 one — one mistake, one message (GH #721).
+
+### Bare type names
+
+And the same rule holds in TYPE position. A bare name written where a
+type is expected must name a declaration: a primitive, a `type`
+(struct, enum or alias), a `locus`, an `interface`, a `perspective`,
+a generic parameter of the declaration being checked, or one of the
+types the compiler synthesizes for its own channels (`IoError`,
+`ParseError`, `CryptoError`, `IndexError`, `KeyError`, `EmptyError`,
+`CapacityError`, `BusUnmatchedKey`, `ClosureViolation`). In a whole
+program — the same set of callers as above — any other bare name is a
+type error at its own span:
+
+```text
+main.hl:1:16: type error: unknown type `int`: no type, enum, locus,
+interface or alias with that name is declared — did you mean `Int`?
+```
+
+The rule holds in every annotation position: a `fn` parameter and
+return, a `fallible(E)` payload, a struct field, an enum variant's
+payload, an alias target, a `const` ascription, a locus `params`
+field, a `capacity` cell type, a lifecycle / mode / `on_failure`
+parameter, and a `let` ascription — including inside the compound
+forms, so the name in `[Row; 4]`, `(Int, Row)`, `bounded[Row; 8]`,
+`fn(Row) -> Row` and `Rich<Row>` is checked as well.
+
+Before this, an unresolvable bare type name resolved to `Unknown`,
+which is permissive everywhere, so `fn helper() -> int` typechecked
+and then failed in the backend as `unknown type name 'int' in
+signature` — no location, and the annotation had silenced every check
+that would have used it (GH #877).
+
+A QUALIFIED name (`lib::Thing`, `std::text::Sink`) is NOT subject to
+this rule. It resolves against the bundle's import-rename table, which
+only a caller that merged the imported seeds has, so a tool holding
+one seed without them keeps the permissive reading for paths (GH
+#803 / #833). One file of a multi-file seed, checked alone, keeps it
+for bare names too: the sibling it did not see may declare the type.
 
 ## Contract subsumption
 

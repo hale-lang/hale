@@ -531,6 +531,7 @@ pub fn check_bundle_scoped(
             strict_callees,
             strict_idents,
             or_value_discarded: false,
+            generic_params: Vec::new(),
             generic_fns,
             generic_types,
             bound_topics: &bound_topics,
@@ -6823,6 +6824,12 @@ struct Checker<'a> {
     /// args must match the substituted params — and the call types
     /// as the SUBSTITUTED return instead of Unknown.
     generic_fns: BTreeMap<String, &'a FnDecl>,
+    /// GH #877: the generic parameters of the declaration being
+    /// checked — a fn's `<T>`, a generic `type`'s. They name no
+    /// top-level declaration and resolve to `Ty::Unknown` by design,
+    /// so the unknown-bare-type-name rule has to know them to avoid
+    /// reporting `T` as a typo.
+    generic_params: Vec<String>,
     /// M3 stage 3 tranche 2: generic TYPE templates (name → decl).
     /// Mangled monomorph literals (`Box_Int { ... }`) resolve
     /// against these — previously "unknown type" at typecheck,
@@ -6924,6 +6931,9 @@ impl<'a> Checker<'a> {
             TopDecl::Locus(l) => self.check_locus(l),
             TopDecl::Fn(f) => self.check_fn(f, None),
             TopDecl::Const(c) => {
+                // GH #877: the ascription is an annotation like any
+                // other.
+                self.check_type_annotation(&c.ty);
                 let want = resolve_type_expr(&c.ty, self.known);
                 let got = self.check_expr(&c.value);
                 if !want.assignable_from(&got) {
@@ -6943,10 +6953,49 @@ impl<'a> Checker<'a> {
                     self.check_top_decl(item);
                 }
             }
-            TopDecl::Type(_) | TopDecl::Perspective(_) => {
+            TopDecl::Type(t) => {
                 // Structure already validated by resolver; field
                 // types are checked when something instantiates
                 // them via struct literal.
+                //
+                // GH #877: except that a field whose type names
+                // nothing is never checked by a literal — the field
+                // types as `Unknown`, which accepts every
+                // initializer, and the program dies at lowering with
+                // `unknown type name in signature`. The declaration
+                // is where the name is written, so it is where the
+                // rule fires. The type's own generic parameters are
+                // in scope for its fields.
+                let prev_generics = std::mem::replace(
+                    &mut self.generic_params,
+                    t.generics
+                        .iter()
+                        .map(|g| g.name.name.clone())
+                        .collect(),
+                );
+                match &t.body {
+                    TypeDeclBody::Struct(fields) => {
+                        for f in fields {
+                            self.check_type_annotation(&f.ty);
+                        }
+                    }
+                    TypeDeclBody::Enum(variants) => {
+                        for v in variants {
+                            for te in &v.fields {
+                                self.check_type_annotation(te);
+                            }
+                        }
+                    }
+                    TypeDeclBody::Alias(te) => {
+                        self.check_type_annotation(te);
+                    }
+                }
+                self.generic_params = prev_generics;
+            }
+            TopDecl::Perspective(_) => {
+                // Structure already validated by resolver; the
+                // contract's method signatures are checked against
+                // the serving locus at `serves` conformance.
             }
             TopDecl::Interface(_) => {
                 // Interface declarations are pure type-level —
@@ -8212,9 +8261,20 @@ impl<'a> Checker<'a> {
             }
         }
 
+        // GH #877: `locus Cache<K, V>`'s parameters are in scope for
+        // every annotation its members write — a `params` field, a
+        // method signature, a capacity slot. They name no
+        // declaration by design (codegen monomorphizes at the use
+        // site), so the unknown-bare-type-name rule has to hold them
+        // while the members are walked.
+        let prev_generics = std::mem::replace(
+            &mut self.generic_params,
+            decl.generics.iter().map(|g| g.name.name.clone()).collect(),
+        );
         for member in &decl.members {
             self.check_locus_member(member);
         }
+        self.generic_params = prev_generics;
 
         self.current_locus = prev;
     }
@@ -9774,6 +9834,16 @@ impl<'a> Checker<'a> {
                 // and a param `n`, a default written `n` takes the
                 // const — so an unresolved bare name is a genuine
                 // unknown identifier, and `check_expr` reports it.
+                // GH #877: every param's declared type, whether or
+                // not it carries a default — an undeclared name here
+                // typed the field `Unknown`, which accepts every
+                // store and every read, and the locus died at
+                // lowering with no span.
+                for p in &pb.params {
+                    if let Some(te) = &p.ty {
+                        self.check_type_annotation(te);
+                    }
+                }
                 for p in &pb.params {
                     let ParamInit::Value(init) = &p.init else {
                         continue;
@@ -9952,6 +10022,10 @@ impl<'a> Checker<'a> {
                 self.in_lifecycle = true;
                 self.locals.push();
                 for p in &lc.params {
+                    // GH #877: `accept(c: Chld)` names the child
+                    // locus; an undeclared name is the same typo in
+                    // the same position.
+                    self.check_type_annotation(&p.ty);
                     let ty = resolve_type_expr(&p.ty, self.known);
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
@@ -9963,6 +10037,7 @@ impl<'a> Checker<'a> {
                 self.in_lifecycle = true;
                 self.locals.push();
                 for p in &md.params {
+                    self.check_type_annotation(&p.ty);
                     let ty = resolve_type_expr(&p.ty, self.known);
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
@@ -10016,6 +10091,7 @@ impl<'a> Checker<'a> {
                 self.in_on_failure = true;
                 self.locals.push();
                 for p in &fd.params {
+                    self.check_type_annotation(&p.ty);
                     let ty = resolve_type_expr(&p.ty, self.known);
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
@@ -10280,6 +10356,8 @@ impl<'a> Checker<'a> {
                             .with_related(prev, "first declared here"),
                         );
                     }
+                    // GH #877: the cell type is an annotation too.
+                    self.check_type_annotation(&slot.elem_ty);
                     let elem_ty = resolve_type_expr(&slot.elem_ty, self.known);
                     let kind_word = match slot.kind {
                         CapacitySlotKind::Pool => "pool",
@@ -10449,6 +10527,26 @@ impl<'a> Checker<'a> {
         if locus.is_some() {
             self.current_locus = locus;
         }
+        // GH #877: the signature's own type names, before anything
+        // resolves them to `Ty::Unknown`. The generic parameters are
+        // in scope for the whole declaration — the signature AND the
+        // `let x: T` annotations in the body — so they are pushed
+        // here and restored on both exits. A method of a generic
+        // locus ADDS to the locus's parameters rather than replacing
+        // them: `locus Cache<K, V> { fn map<T>(k: K) -> T }` has
+        // three in scope.
+        let prev_generics = self.generic_params.clone();
+        self.generic_params
+            .extend(decl.generics.iter().map(|g| g.name.name.clone()));
+        for p in &decl.params {
+            self.check_type_annotation(&p.ty);
+        }
+        if let Some(ret) = &decl.ret {
+            self.check_type_annotation(ret);
+        }
+        if let Some(payload) = &decl.fallible {
+            self.check_type_annotation(payload);
+        }
         // Stage-1 FFI (2026-05-22): @ffi fn declarations validate
         // their parameter and return types against the FFI-portable
         // type set, then skip body verification (the body is a
@@ -10554,6 +10652,7 @@ impl<'a> Checker<'a> {
                 }
             }
             self.current_locus = prev_locus;
+            self.generic_params = prev_generics;
             return;
         }
         // v1.x-FORM-1: push fallible_ctx if this fn is fallible.
@@ -10582,6 +10681,7 @@ impl<'a> Checker<'a> {
         self.fallible_ctx = prev_fallible;
         self.return_ctx = prev_return;
         self.current_locus = prev_locus;
+        self.generic_params = prev_generics;
     }
 
     fn check_block(&mut self, block: &Block) {
@@ -10734,6 +10834,9 @@ impl<'a> Checker<'a> {
                 let got = self.check_expr_addressed(value);
                 let bound = match ty {
                     Some(te) => {
+                        // GH #877: the one annotation that lives in a
+                        // body.
+                        self.check_type_annotation(te);
                         let want = resolve_type_expr(te, self.known);
                         if !want.assignable_from(&got) {
                             self.diags.push(Diag::ty(
@@ -10757,6 +10860,12 @@ impl<'a> Checker<'a> {
             }
             Stmt::LetTuple { is_mut, names, ty, value, .. } => {
                 let got = self.check_expr_addressed(value);
+                // GH #877: `let (a, b): (Int, Strng) = ...` — the
+                // annotation is a tuple type expression, walked the
+                // same way.
+                if let Some(te) = ty {
+                    self.check_type_annotation(te);
+                }
                 let elem_tys: Vec<Ty> = match (&got, ty) {
                     (Ty::Tuple(parts), _) if parts.len() == names.len() => {
                         parts.clone()
@@ -12400,6 +12509,169 @@ impl<'a> Checker<'a> {
         let tops: Vec<&str> =
             self.top.symbols.keys().map(|k| k.as_str()).collect();
         closest_bare_name(name, &tops).map(|h| h.to_string())
+    }
+
+    /// GH #877: a BARE type name in an annotation that names no
+    /// declaration.
+    ///
+    /// `resolve_type_expr` maps an unresolvable single-segment name
+    /// to `Ty::Unknown`, which is permissive everywhere — so `fn
+    /// helper() -> int` (the lowercase spelling of `Int`) passed
+    /// `hale check` with `ok: 1 file(s) typechecked` and then died in
+    /// codegen as `unknown type name 'int' in signature`: late, from
+    /// another layer, and with no source location. Same frontier as
+    /// GH #803 / #833, opposite answer, because the two names are not
+    /// the same case.
+    ///
+    /// A QUALIFIED name keeps its tolerance and is not touched here.
+    /// `lib::Thing` resolves only when the bundle carries the build's
+    /// import renames, so a tool holding one seed WITHOUT its imports
+    /// (the LSP's per-directory bundle) must not squiggle it. A bare
+    /// name has no such escape: the only thing that can declare it is
+    /// a declaration in the bundle.
+    ///
+    /// Gated on `strict_idents` for the reason the bare-IDENTIFIER
+    /// rule is: one file of a multi-file seed, checked alone, reads
+    /// declarations its siblings make, and a type is no different
+    /// from a `const` there. `hale check <dir>` and every build path
+    /// hold the whole program and hold the rule.
+    fn check_type_annotation(&mut self, te: &TypeExpr) {
+        if !self.strict_idents {
+            return;
+        }
+        match te {
+            TypeExpr::Named { path, generic_args, span } => {
+                // A generic argument is an annotation in its own
+                // right: `[Box<Strng>; 2]` is the same typo.
+                for arg in generic_args {
+                    self.check_type_annotation(arg);
+                }
+                if path.segments.len() != 1 {
+                    return;
+                }
+                let name = &path.segments[0].name;
+                if self.type_name_is_declared(name) {
+                    return;
+                }
+                let hint = self
+                    .closest_type_name(name)
+                    .map(|h| format!(" — did you mean `{}`?", h))
+                    .unwrap_or_default();
+                self.diags.push(Diag::ty(
+                    *span,
+                    format!(
+                        "unknown type `{}`: no type, enum, locus, \
+                         interface or alias with that name is \
+                         declared{}",
+                        name, hint
+                    ),
+                ));
+            }
+            TypeExpr::Projection { inner, .. } => {
+                self.check_type_annotation(inner);
+            }
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => {
+                self.check_type_annotation(elem);
+            }
+            TypeExpr::Tuple(parts, _) => {
+                for p in parts {
+                    self.check_type_annotation(p);
+                }
+            }
+            TypeExpr::Function { params, ret, .. } => {
+                for p in params {
+                    self.check_type_annotation(p);
+                }
+                if let Some(r) = ret {
+                    self.check_type_annotation(r);
+                }
+            }
+            // A primitive is resolved by the parser. `perspective(P)`
+            // names a contract, not a type expression's bare name —
+            // its own resolution rules are #724's, unchanged.
+            TypeExpr::Primitive(_, _) | TypeExpr::Perspective { .. } => {}
+        }
+    }
+
+    /// GH #877: does this bare name end at something a type
+    /// annotation may spell?
+    ///
+    /// The answer must be at least as permissive as codegen's, or the
+    /// rule refuses programs `hale build` accepts. The table it
+    /// resolves against (`known`) is rebuilt from the top scope, so
+    /// it carries user loci / types / enums / perspectives, every
+    /// alias target, and the whole Hale-source stdlib surface
+    /// (GH #470) — but not interfaces (registered as their own
+    /// symbol), not the compiler-synthesized types, and not the
+    /// generic parameters in scope. Each of those is asked for
+    /// separately below.
+    fn type_name_is_declared(&self, name: &str) -> bool {
+        if self.known.contains_key(name)
+            || self.known.alias_target(name).is_some()
+            || SYNTHESIZED_TYPE_NAMES.contains(&name)
+            || self.generic_params.iter().any(|g| g == name)
+            || self.generic_types.contains_key(name)
+        {
+            return true;
+        }
+        if matches!(
+            self.top.lookup(name),
+            Some(
+                TopSymbol::Locus(_)
+                    | TopSymbol::Type(_)
+                    | TopSymbol::Perspective(_)
+                    | TopSymbol::Interface(_)
+                    | TopSymbol::Topic(_)
+                    | TopSymbol::RingLayout(_)
+            )
+        ) {
+            return true;
+        }
+        // `Box_Int` written out: the mangled monomorph name a
+        // generic instantiation resolves to, which codegen
+        // synthesizes from the template.
+        self.resolve_generic_monomorph(name).is_some()
+    }
+
+    /// Nearest spelling to `name` among the things a type annotation
+    /// could have meant: the primitives first — `int` for `Int` is
+    /// the headline case — then the program's declared type names
+    /// and the generic parameters in scope. Mangled stdlib symbols
+    /// (`__StdHttpRouter`) are excluded: they are not spellable in
+    /// source, so suggesting one would be advice that cannot be
+    /// taken.
+    fn closest_type_name(&self, name: &str) -> Option<String> {
+        let mut cands: Vec<&str> =
+            hale_syntax::parser::PRIMITIVE_TYPE_NAMES.to_vec();
+        if let Some(hit) = closest_bare_name(name, &cands) {
+            return Some(hit.to_string());
+        }
+        cands.clear();
+        cands.extend(
+            self.known
+                .keys()
+                .map(|k| k.as_str())
+                .filter(|k| !k.starts_with("__")),
+        );
+        cands.extend(self.generic_params.iter().map(|g| g.as_str()));
+        cands.extend(SYNTHESIZED_TYPE_NAMES.iter().copied());
+        cands.extend(
+            self.top
+                .symbols
+                .iter()
+                .filter(|(_, s)| {
+                    matches!(
+                        s,
+                        TopSymbol::Locus(_)
+                            | TopSymbol::Type(_)
+                            | TopSymbol::Perspective(_)
+                            | TopSymbol::Interface(_)
+                    )
+                })
+                .map(|(k, _)| k.as_str())
+                .filter(|k| !k.starts_with("__")),
+        );
+        closest_bare_name(name, &cands).map(|h| h.to_string())
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Ty {
@@ -15322,6 +15594,35 @@ fn locus_has_unsynchronized_state(
     }
     None
 }
+
+/// GH #877: the type names the COMPILER declares, which therefore
+/// name something even when no declaration in the bundle does.
+///
+/// Codegen synthesizes each of these unconditionally (`codegen.rs`'s
+/// builtin-type declarations; `CapacityError` in `form/bounded.rs`),
+/// so a signature naming one lowers. The resolver injects most of
+/// them into the top scope as well — `IoError`, `ParseError`,
+/// `CryptoError`, `IndexError`, `KeyError`, `EmptyError`,
+/// `CapacityError` are there unconditionally since 2026-07-29, and
+/// `BusUnmatchedKey` only when a topic declares `on_unmatched: fail`
+/// — but `ClosureViolation`, the `on_failure` error payload, is
+/// injected nowhere and has always resolved to `Ty::Unknown`.
+///
+/// Listing all of them keeps the unknown-bare-type-name rule at
+/// least as permissive as codegen: an entry that the top scope
+/// already carries is simply redundant, while a missing one would
+/// refuse a program `hale build` accepts.
+const SYNTHESIZED_TYPE_NAMES: &[&str] = &[
+    "BusUnmatchedKey",
+    "CapacityError",
+    "ClosureViolation",
+    "CryptoError",
+    "EmptyError",
+    "IndexError",
+    "IoError",
+    "KeyError",
+    "ParseError",
+];
 
 /// The bare names codegen answers itself when they resolve to no user
 /// fn. A call to any other unbound bare name is refused by `hale
