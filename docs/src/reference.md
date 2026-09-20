@@ -54,6 +54,8 @@ diagnostic's meaning, go there.
 | `hale bench` | run `*_bench.hl` (ns/op, allocs/op) |
 | `hale doc` | API reference from `///` comments |
 | `hale fleet` | compose topology artifacts across binaries: `check` / `dump` / `sign` / `attest` / `keygen` |
+| `hale node <name>` | express a fleet plan's instances on one machine, from the record |
+| `hale targets` | the targets this compiler can name, and which of them it can build |
 | `hale lsp` | the language server, in the compiler binary |
 | `hale mcp` | the MCP server, in the compiler binary |
 
@@ -62,6 +64,13 @@ its own flags, its input shape and where its output goes. `hale build
 --help` is where the built binary's path is written down — `build` has
 no `-o`, so a file target becomes `./app` and a directory target becomes
 `myapp/myapp`, inside the directory.
+
+Flags may stand on either side of the target. The first argument that
+is not a flag is the target, so `hale build --dev app.hl` and `hale
+build app.hl --dev` are the same command, as they already were for
+`check`. `run` follows the same rule up to the target and then stops:
+everything after it is the program's own argv, which is why `hale run
+--observe app.hl` puts the flag in front.
 
 `check` and `verify` follow every `import`, so a parse failure anywhere
 in the import graph — a library you import, or one it imports — fails
