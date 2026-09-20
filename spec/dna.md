@@ -2217,7 +2217,9 @@ authority.
   record refuses ends that Mutation before it began: no summary row, no
   worktree, no effect under that id, and the request is held the same
   way — a refused write is no outcome, and the Work and Task do not
-  settle on it. **The kind decides whose change
+  settle on it. The summary row (`mutation.proposed`) after the request
+  row is compatibility: refused, it is counted and said, and the
+  Mutation proceeds on its request row. **The kind decides whose change
   it is.** A plan of kind `organism` is a change to the organism
   itself, and that is class `organization` whatever the plan called
   it: it is expressed from the organism's seed and assessed under the
@@ -2250,7 +2252,12 @@ authority.
   alone: nothing of the Task resumes past it. A Mutation with only its
   request row was in flight — the stop fell between the two rows — and
   fails like one only proposed; its id is counted at the restart and
-  never minted again. `task.resumed` is an event of a restart,
+  never minted again. A Mutation's recovery is derived from every row
+  it has, from its first — its request row, or its proposal when no
+  request names it: one whose last word is the request, the proposal,
+  an open worktree or a located file was in flight and fails, once;
+  one with a candidate, a Review or an outcome after them is left to
+  that, whether or not its summary row landed. `task.resumed` is an event of a restart,
   never a state: a resumed Task not yet settled is still pending, it
   settles like any other, and a restart that stopped between its
   `task.resumed` and the dispatch leaves it to be resumed again at the

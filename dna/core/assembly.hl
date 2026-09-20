@@ -2406,6 +2406,13 @@ locus Dna {
             return id + ": refused: the record would not take the Mutation's request (" + xr.error + ")";
         }
         let x0 = self.journal.append(self.journal.revision(), "mutation.proposed", id, "task " + task_id + " " + change_class + ": " + objective + " (" + target + ") at " + base);
+        if !x0.ok {
+            // the summary is compatibility: the Mutation exists by its
+            // request row and recovery reads every row it has; the refusal
+            // is counted and said, and the Mutation proceeds on its request
+            self.record_refusals = self.record_refusals + 1;
+            self.membrane.notify("record", id + ": the record would not take the Mutation's summary row (" + x0.error + "); it proceeds on its request row");
+        }
         let lease = self.gateway.take(id, "dna", now);
         let opened = self.gateway.open(self.journal, id, base, lease.token, now);
         if !opened.ok { return self.mutation_failed(id, "worktree: " + opened.refused); }
@@ -2926,25 +2933,14 @@ locus Dna {
         let mut i = 0;
         while i < n {
             let e = self.journal.read(i);
-            // card 14: a Mutation whose request row is its only row — the
-            // organization stopped between the request and the proposal —
-            // was in flight as surely as one only proposed
-            if e.kind == "mutation.requested" {
-                let mut proposed = false;
-                let mut k = i + 1;
-                while k < n {
-                    if self.journal.read(k).kind == "mutation.proposed" && self.journal.read(k).entity == e.entity { proposed = true; }
-                    k = k + 1;
-                }
-                if !proposed {
-                    self.settle_task_of(e.entity, "failed", "in flight when the organization stopped");
-                    let x = self.journal.append(self.journal.revision(), "mutation.failed", e.entity, "in flight (requested) when the organization stopped; nothing resumes an attempt");
-                    let y = self.gateway.workspaces.remove(e.entity);
-                }
-            }
-            if e.kind == "mutation.proposed" {
+            // A Mutation's recovery is derived from every row it has, from
+            // its first: its request row (card 14) — or, from before that
+            // row, its proposal, when no request names it. The summary row
+            // is compatibility: its absence is not the absence of progress.
+            let first = e.kind == "mutation.requested" || (e.kind == "mutation.proposed" && !self.has_row("mutation.requested", e.entity));
+            if first {
                 let id = e.entity;
-                let mut last = "proposed";
+                let mut last = e.kind[9..len(e.kind)];
                 let mut removed = false;
                 let mut k = i + 1;
                 while k < n {
@@ -2955,8 +2951,12 @@ locus Dna {
                     }
                     k = k + 1;
                 }
-                // `mutation.worktree … removed` is the worktree GONE, not opened
-                if last == "proposed" || (last == "worktree" && !removed) || last == "located" {
+                // in flight: nothing past the request, the proposal, an open
+                // worktree (`mutation.worktree … removed` is the worktree
+                // GONE, not opened) or a located file. A candidate, a Review,
+                // an outcome — or an earlier failure — after them is the
+                // Mutation's own state, and this fails nothing twice
+                if last == "requested" || last == "proposed" || (last == "worktree" && !removed) || last == "located" {
                     self.settle_task_of(id, "failed", "in flight when the organization stopped");
                     let x = self.journal.append(self.journal.revision(), "mutation.failed", id, "in flight (" + last + ") when the organization stopped; nothing resumes an attempt");
                     let y = self.gateway.workspaces.remove(id);
@@ -2964,6 +2964,18 @@ locus Dna {
             }
             i = i + 1;
         }
+    }
+    // Whether the journal holds a row of `kind` for `entity`, anywhere.
+    @unbounded
+    fn has_row(kind: String, entity: String) -> Bool {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == kind && e.entity == entity { return true; }
+            i = i + 1;
+        }
+        return false;
     }
     fn status() -> String {
         let b = std::json::Builder { };

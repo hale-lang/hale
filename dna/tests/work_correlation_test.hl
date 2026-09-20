@@ -35,11 +35,12 @@ const WB: String = "t2/wf1/s0/w1";
 const WC: String = "t5/wf1/s0/w0";
 const WD: String = "t6/wf1/s0/w0";
 const WE: String = "t7/wf1/s0/w0";
+const WF: String = "t9/wf1/s0/w0";
 
 // A record that refuses the first row of one kind: the association
 // write the review's probes refuse.
 locus Refusing {
-    params { inner: dna::MemJournal = dna::MemJournal { }; refuse_kind: String = ""; refused: Bool = false; }
+    params { inner: dna::Journal = dna::MemJournal { }; refuse_kind: String = ""; refused: Bool = false; }
     fn refresh() -> Bool { return self.inner.refresh(); }
     fn revision() -> Int { return self.inner.revision(); }
     fn head() -> String { return self.inner.head(); }
@@ -76,6 +77,8 @@ main locus App {
         ledger: dna::MemJournal = dna::MemJournal { };
         seeded: dna::GitJournal = dna::GitJournal { };
         plan_refused: dna::Dna = dna::Dna { };
+        summary_refused: dna::Dna = dna::Dna { };
+        summary_restarted: dna::Dna = dna::Dna { };
         request_refused: dna::Dna = dna::Dna { };
         seed_mode: String = "one"; // "one": every row into `seeded`; "two": the record's rows into `record`, the day's into `ledger`
         lead: dna::Leader = dna::Leader {
@@ -218,6 +221,14 @@ main locus App {
         self.row("task.pending", "t7", "routed");
         let g = dna::WorkBinding { task_id: "t7", work_id: WE, attempt_id: WE + "/a0", attempt_no: 0, step_id: "t7/wf1/s0", objective: "a seventh", target: "main.hl", requires: "edit", data_class: "confidential" };
         self.row("task.planned", "t7", plan_for(g));
+        // t9: one Work planned; its Mutation m8 has its request row and its summary and nothing after them — in flight
+        self.row("intent.offered", "i9", "a ninth");
+        self.row("task.born", "t9", "i9: a ninth");
+        self.row("task.pending", "t9", "routed");
+        let h = dna::WorkBinding { task_id: "t9", work_id: WF, attempt_id: WF + "/a0", attempt_no: 0, step_id: "t9/wf1/s0", objective: "a ninth", target: "", requires: "edit", data_class: "internal" };
+        self.row("task.planned", "t9", plan_for(h));
+        self.row("mutation.requested", "m8", requested_by(h, "a ninth"));
+        self.row("mutation.proposed", "m8", "task t9 docs: a ninth (main.hl) at 0000000000000000000000000000000000000000");
     }
     fn check_restart(label: String, d: dna::Dna) {
         let j = d.journal;
@@ -265,6 +276,9 @@ main locus App {
         std::test::assert_eq_int(self.rows(j, "task.resumed", "t6"), 0, label + ": t6 is not resumed");
         std::test::assert_eq_int(self.rows(j, "mutation.proposed", "m9"), 0, label + ": and m9 was never proposed by the restart");
         std::test::assert_eq_str(d.task_of_mutation("m9"), "t6", label + ": a Mutation with only its request row still names its Task");
+        // t9: a Mutation with its request row and its summary, and nothing after them, was in flight: failed once, its Task with it
+        std::test::assert_eq_int(self.rows(j, "mutation.failed", "m8"), 1, label + ": m8, requested and proposed and nothing after, failed once — not once per row");
+        std::test::assert_eq_str(d.task_state("t9"), "failed", label + ": t9 settled failed with it");
         // t7: the editor is asked under the ask's data class, never `internal`: a
         // confidential ask goes to the private backend, whose scripted answer
         // is its own name — and that name is what the editor wrote
@@ -317,6 +331,11 @@ main locus App {
         std::test::assert(self.at(j, "mutation.requested", "m1") < self.at(j, "mutation.proposed", "m1"), "the request row precedes the proposal");
         std::test::assert_eq_int(self.rows(j, "task.planned", ""), 2, "and nothing else was planned");
 
+        // the live organism leaves the bus before the restarts: every
+        // organism hears every routed request, and a live one with a leader
+        // would plan and work another's ask
+        self.live = dna::Dna { };
+
         // ---- a restart over the shapes a stopped organism leaves
         let repo2 = self.repo_at(base + "-restart");
         self.seeded = dna::GitJournal { repo: repo2, author: "dna" };
@@ -341,6 +360,36 @@ main locus App {
         };
         std::time::sleep(3000ms);
         self.check_restart("one memory", self.restarted);
+        // ---- (re-review) a second recovery over the same record fails
+        //      nothing twice: what failed stays failed once, what awaits its
+        //      review is left alone, what was edited and failed by its editor
+        //      keeps its one failure
+        self.restarted = dna::Dna {
+            journal: dna::GitJournal { repo: repo2 },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo2, root: repo2 + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo2 }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo2 }, scratch: repo2 + "/.hale/dna/scratch", repo: repo2 },
+            editor: dna::SourceEditor {
+                models: dna::ModelRouter {
+                    quick: dna::FakeModel { name: "quick", answer: DOCUMENTED, answer_role: "edit" },
+                    deep: dna::FakeModel { name: "deep", answer: "clarity +" },
+                    private: dna::LocalFakeModel { }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
+            genome_seed: "app", org_seed: "org", planned: true, org_id: "corr-restart" // the same organism, its next incarnation
+        };
+        std::time::sleep(3000ms);
+        let j2 = self.restarted.journal;
+        std::test::assert_eq_int(self.rows(j2, "mutation.failed", "m9"), 1, "a request-only Mutation fails once, not once per recovery");
+        std::test::assert_eq_int(self.rows(j2, "mutation.failed", "m8"), 1, "a request-and-summary Mutation in flight fails once, not once per recovery");
+        std::test::assert_eq_int(self.rows(j2, "mutation.failed", "m13"), 1, "a Mutation its editor failed keeps its one failure");
+        std::test::assert_eq_int(self.rows(j2, "mutation.failed", "m10") + self.rows(j2, "mutation.failed", "m11") + self.rows(j2, "mutation.failed", "m12"), 0, "Mutations awaiting their review are left alone");
+        std::test::assert_eq_int(self.rows(j2, "task.resumed", "t2") + self.rows(j2, "task.resumed", "t4") + self.rows(j2, "task.resumed", "t5"), 3, "and nothing is resumed again: each Work's Mutation is in the record");
+        std::test::assert(self.restarted.rehydrated >= 2, "the pending reviews are restored: " + to_string(self.restarted.rehydrated));
         // ---- a plan is taken for the Work AND the Task it names: in this
         //      organism no leader serves, so a new ask waits for its plan; a
         //      plan naming the Work under another Task is not its plan, and
@@ -369,7 +418,7 @@ main locus App {
         self.seed_mode = "two";
         self.seed();
         self.put(self.record, "ledger.adopted", "ledger", "{\"routing\": 1, \"checkpoint\": \"probe\", \"rows\": 0}");
-        std::test::assert(self.ledger.revision() > 0 && self.rows(self.record, "mutation.requested", "") == 2, "the day's rows went to the ledger, the Mutations' to the record");
+        std::test::assert(self.ledger.revision() > 0 && self.rows(self.record, "mutation.requested", "") == 3, "the day's rows went to the ledger, the Mutations' to the record");
         self.split = dna::Dna {
             journal: dna::RoutedJournal { record: self.record, ledger: self.ledger },
             gateway: dna::MutationGateway {
@@ -392,7 +441,64 @@ main locus App {
         std::test::assert(self.at(self.split.journal, "mutation.requested", "m1") < self.at(self.split.journal, "task.born", "t2"), "the split view reads the record's Mutation before the ledger's birth");
         self.check_restart("two memories", self.split);
 
-        let rm = sh("rm\n-rf\n" + repo + "\n" + repo2 + "\n" + repo3);
+        // ---- (re-review) the summary row is compatibility: a Mutation whose
+        //      request landed and whose summary the record refused runs its
+        //      pipeline — candidate, Review — and a restart derives its
+        //      recovery from every row it has: the Review is restored, the
+        //      Mutation is not failed for lacking its summary, no second
+        //      Mutation is minted, nothing is resumed
+        let repo4 = self.repo_at(base + "-summary");
+        self.summary_refused = dna::Dna {
+            journal: Refusing { inner: dna::GitJournal { repo: repo4 }, refuse_kind: "mutation.proposed" },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo4, root: repo4 + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo4 }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo4 }, scratch: repo4 + "/.hale/dna/scratch", repo: repo4 },
+            editor: dna::SourceEditor {
+                models: dna::ModelRouter {
+                    quick: dna::FakeModel { name: "quick", answer: DOCUMENTED, answer_role: "edit" },
+                    deep: dna::FakeModel { name: "deep", answer: "clarity +" }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
+            genome_seed: "app", org_seed: "org", org_id: "summary"
+        };
+        let ts = self.summary_refused.ask(dna::Intent { id: "is", outcome: "document main.hl", from: "riley" }, dna::Knobs { routed: true, requires: "edit" });
+        std::time::sleep(3000ms);
+        let js = self.summary_refused.journal;
+        std::test::assert_eq_int(self.rows(js, "mutation.requested", "m1"), 1, "m1's request row landed");
+        std::test::assert_eq_int(self.rows(js, "mutation.proposed", "m1"), 0, "and its summary was refused");
+        std::test::assert_eq_int(self.summary_refused.record_refusals, 1, "which is counted");
+        std::test::assert_eq_int(self.rows(js, "review.requested", "review:m1"), 1, "the pipeline ran on the authoritative row to its Review: " + self.body_of(js, "mutation.failed", "m1"));
+        std::test::assert_eq_int(self.rows(js, "mutation.failed", "m1"), 0, "nothing failed it");
+        self.summary_refused = dna::Dna { };
+        self.summary_restarted = dna::Dna {
+            journal: dna::GitJournal { repo: repo4 },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo4, root: repo4 + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo4 }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo4 }, scratch: repo4 + "/.hale/dna/scratch", repo: repo4 },
+            editor: dna::SourceEditor {
+                models: dna::ModelRouter {
+                    quick: dna::FakeModel { name: "quick", answer: DOCUMENTED, answer_role: "edit" },
+                    deep: dna::FakeModel { name: "deep", answer: "clarity +" }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
+            genome_seed: "app", org_seed: "org", org_id: "summary-restarted"
+        };
+        std::time::sleep(3000ms);
+        let jr = self.summary_restarted.journal;
+        std::test::assert_eq_int(self.summary_restarted.rehydrated, 1, "the restart restores m1's Review");
+        std::test::assert_eq_int(self.rows(jr, "mutation.failed", "m1"), 0, "recovery does not fail a candidate already awaiting review for lacking its summary");
+        std::test::assert_eq_int(self.rows(jr, "mutation.requested", ""), 1, "and mints no second Mutation");
+        std::test::assert_eq_int(self.rows(jr, "task.resumed", ts), 0, "nor resumes the Task: its Work's Mutation is in the record");
+
+        let rm = sh("rm\n-rf\n" + repo + "\n" + repo2 + "\n" + repo3 + "\n" + repo4);
 
         // ---- (review) the binding carries the whole request: every field
         //      of it survives the row and comes back as asked
