@@ -1423,17 +1423,24 @@ pub fn build_executable_with_options(
     // like a tainted namespace ("log", "http") costs the
     // optimization, never correctness.
     let bus_inert = {
-        let user_clean = program.items.iter().all(|it| match it {
-            TopDecl::Topic(_) | TopDecl::Perspective(_) => false,
-            TopDecl::Locus(l) => l.members.iter().all(|m| match m {
-                LocusMember::Bus(_) | LocusMember::Bindings(_) => false,
-                LocusMember::Lifecycle(ld) => {
-                    ld.kind != LifecycleKind::Accept
-                }
+        // GH #884: `flat_decls`, not `items.iter()` — a topic, a
+        // perspective or a locus with a `bus` block inside a
+        // `module { }` fell through the catch-all as clean, which
+        // would elide the drains for a program that does have bus
+        // surface. Tier 1 is the conservative gate; it has to see
+        // every declaration the resolver sees.
+        let user_clean = hale_syntax::ast::flat_decls(&program.items)
+            .all(|it| match it {
+                TopDecl::Topic(_) | TopDecl::Perspective(_) => false,
+                TopDecl::Locus(l) => l.members.iter().all(|m| match m {
+                    LocusMember::Bus(_) | LocusMember::Bindings(_) => false,
+                    LocusMember::Lifecycle(ld) => {
+                        ld.kind != LifecycleKind::Accept
+                    }
+                    _ => true,
+                }),
                 _ => true,
-            }),
-            _ => true,
-        });
+            });
         if !user_clean {
             false
         } else {
@@ -2962,7 +2969,10 @@ fn compute_returned_bindings(
     }
 
     let mut m: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for item in &program.items {
+    // GH #884: module nesting flattened — the fn and the mode this
+    // keys by are lowered whatever their brace depth, so the facts
+    // they are looked up under have to be computed at that depth too.
+    for item in hale_syntax::ast::flat_decls(&program.items) {
         match item {
             TopDecl::Fn(f) => {
                 let mut set = BTreeSet::new();
@@ -3110,7 +3120,8 @@ fn compute_assign_moved_bindings(
             m.insert(key, set);
         }
     };
-    for item in &program.items {
+    // GH #884: module nesting flattened, for the reason above.
+    for item in hale_syntax::ast::flat_decls(&program.items) {
         match item {
             TopDecl::Fn(f) => record(f.name.name.clone(), &f.body),
             // Locus frames use the `{locus}.{member}` LLVM name
@@ -3468,7 +3479,8 @@ fn compute_stack_array_bindings(
             }
         }
     };
-    for item in &program.items {
+    // GH #884: module nesting flattened, for the reason above.
+    for item in hale_syntax::ast::flat_decls(&program.items) {
         match item {
             TopDecl::Fn(f) => {
                 record(f.name.name.clone(), &f.params, &f.body)
@@ -3781,7 +3793,10 @@ fn compute_fresh_locus_factories(
     let mut out: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
     loop {
         let mut added = false;
-        for item in &program.items {
+        // GH #884: module nesting flattened — a factory fn one
+        // brace deeper is lowered and called like any other, so it
+        // has to enter the same fixpoint.
+        for item in hale_syntax::ast::flat_decls(&program.items) {
             let TopDecl::Fn(f) = item else { continue };
             if out.contains_key(&f.name.name) {
                 continue;
@@ -3985,7 +4000,9 @@ fn resolve_qualified_bus_subjects(
             _ => {}
         }
     }
-    for item in &mut program.items {
+    // GH #884: module nesting flattened — a qualified bus subject
+    // written one brace deeper names the same topic.
+    hale_syntax::ast::for_each_decl_mut(&mut program.items, &mut |item| {
         if let TopDecl::Locus(l) = item {
             for m in &mut l.members {
                 match m {
@@ -4021,7 +4038,7 @@ fn resolve_qualified_bus_subjects(
         } else if let TopDecl::Fn(fd) = item {
             walk_block(&mut fd.body, import_renames);
         }
-    }
+    });
 }
 
 
@@ -5315,8 +5332,10 @@ fn fnptr_numeric_param_set(params: &[Param]) -> BTreeSet<String> {
 fn compute_nonalloc_free_fns(
     items: &[TopDecl],
 ) -> (BTreeSet<String>, BTreeSet<String>) {
-    let fns: Vec<&FnDecl> = items
-        .iter()
+    // GH #884: module nesting flattened — a module-nested free fn
+    // is declared and lowered like any other, and the fixpoint is
+    // keyed by the bare name the call site spells.
+    let fns: Vec<&FnDecl> = hale_syntax::ast::flat_decls(items)
         .filter_map(|it| match it {
             TopDecl::Fn(f) if f.fallible.is_none() && f.ffi.is_none() => Some(f),
             _ => None,
@@ -5427,7 +5446,9 @@ fn compute_elidable_methods(
     // Program-wide `type` struct numeric-scalar field map — lets a method's
     // `s.value` (scalar field of a struct param) classify as numeric.
     let structs = &struct_numeric_field_map(items);
-    for it in items {
+    // GH #884: module nesting flattened, as in
+    // `compute_nonalloc_free_fns`.
+    for it in hale_syntax::ast::flat_decls(items) {
         let TopDecl::Locus(l) = it else { continue };
         // Candidates: gate-1-eligible (scalar/Unit return), non-fallible,
         // non-FFI `fn` methods. Heap-returning methods are never elidable and
@@ -9406,6 +9427,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
 
         // Locate fn main.
+        //
+        // GH #884: this one stays TOP-LEVEL-ONLY, and is the only
+        // declaration lookup in codegen that does. `main` is not a
+        // symbol resolved by name from a use site — it is the
+        // seed's entry point, and every other layer reads it as a
+        // top-level property of the file: `desugar`'s auto-wrap
+        // splices the synthesized `main locus` at main's INDEX in
+        // `program.items` (a module-nested one has no such index),
+        // `hale bench` classifies a seed by it, and
+        // `check_build_divergences.txt` lists the library seeds
+        // that have none. A `fn main` inside `module { }` is an
+        // ordinary free fn named `main`; promoting it to the entry
+        // point here would make codegen the only layer that
+        // thinks so.
         let main_found = self
             .program
             .items
@@ -9421,11 +9456,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // needs no `fn main` — the loader drives `_hale_start` +
                 // the exports. Synthesize an empty `main` to satisfy the
                 // rest of lowering; it's emitted but never called.
+                // GH #884: module nesting flattened — an `@export`
+                // fn or locus is lowered at any depth, so the
+                // "this wasm module has entry points of its own"
+                // test has to see the same set.
                 let has_exports = self.is_wasm
-                    && self.program.items.iter().any(|item| {
-                        matches!(item, TopDecl::Fn(f) if f.export)
-                            || matches!(item, TopDecl::Locus(l) if l.export)
-                    });
+                    && hale_syntax::ast::flat_decls(&self.program.items).any(
+                        |item| {
+                            matches!(item, TopDecl::Fn(f) if f.export)
+                                || matches!(item, TopDecl::Locus(l) if l.export)
+                        },
+                    );
                 if !has_exports {
                     return Err(CodegenError::Unsupported(
                         "program has no `fn main()`".to_string(),
@@ -9501,7 +9542,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // codegen layer uses this in two places: signature lowering
         // (`Interface(name)` in CodegenTy) and Phase-B vtable
         // synthesis (lazy lookup of method order from the AST).
-        for item in &self.program.items {
+        // GH #884: module nesting flattened — an interface declared
+        // inside a `module { }` is referenced by its bare name.
+        for item in hale_syntax::ast::flat_decls(&self.program.items) {
             if let TopDecl::Interface(i) = item {
                 self.user_interfaces.insert(i.name.name.clone());
             }
@@ -9536,15 +9579,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // params, fn signatures, and struct literals can reference
         // them by name regardless of source order. Plain data
         // records — no methods, no lifecycle.
-        let type_decls: Vec<TypeDecl> = self
-            .program
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                TopDecl::Type(t) => Some(t.clone()),
-                _ => None,
-            })
-            .collect();
+        //
+        // GH #884: `flat_decls`, not `items.iter()`. A module is a
+        // NAMESPACE, not a lowering boundary — `resolve` registers
+        // `module geo { type Point { … } }` as plain `Point`, so a
+        // program using it checks clean; with the top-level-only
+        // filter here codegen had no such type and the literal died
+        // as `Unsupported("expression form Discriminant(12)")`.
+        let type_decls: Vec<TypeDecl> =
+            hale_syntax::ast::flat_decls(&self.program.items)
+                .filter_map(|item| match item {
+                    TopDecl::Type(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .collect();
 
         // m61 / m61b: discover generic instantiations referenced
         // anywhere in the program, synthesize a concrete
@@ -9579,15 +9627,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Loci with non-empty `generics` get registered here so
         // discovery can route their TypeExpr uses through the
         // same walker as generic types.
-        let raw_locus_decls: Vec<LocusDecl> = self
-            .program
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                TopDecl::Locus(l) => Some(l.clone()),
-                _ => None,
-            })
-            .collect();
+        // GH #884: module nesting flattened, as for `type_decls`.
+        let raw_locus_decls: Vec<LocusDecl> =
+            hale_syntax::ast::flat_decls(&self.program.items)
+                .filter_map(|item| match item {
+                    TopDecl::Locus(l) => Some(l.clone()),
+                    _ => None,
+                })
+                .collect();
         let generic_locus_decls: BTreeMap<String, LocusDecl> = raw_locus_decls
             .iter()
             .filter(|l| !l.generics.is_empty())
@@ -9906,15 +9953,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         // Pass B: declare every user-defined function so call sites
         // can refer to fns declared later in the file.
-        let user_fn_decls: Vec<FnDecl> = self
-            .program
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                TopDecl::Fn(f) if f.name.name != "main" => Some(f.clone()),
-                _ => None,
-            })
-            .collect();
+        // GH #884: module nesting flattened — a fn declared inside
+        // a `module { }` is called by its bare name, so it has to
+        // be declared and lowered like a top-level one.
+        let user_fn_decls: Vec<FnDecl> =
+            hale_syntax::ast::flat_decls(&self.program.items)
+                .filter_map(|item| match item {
+                    TopDecl::Fn(f) if f.name.name != "main" => Some(f.clone()),
+                    _ => None,
+                })
+                .collect();
         for f in &user_fn_decls {
             self.declare_user_fn(f)?;
         }
@@ -9941,15 +9989,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // work because the mangler has already rewritten both the
         // const's own name and the consumer's `lib::FOO` path to
         // the same `__lib_..._FOO` symbol before this pass runs.
-        let user_const_decls: Vec<ConstDecl> = self
-            .program
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                TopDecl::Const(c) => Some(c.clone()),
-                _ => None,
-            })
-            .collect();
+        // GH #884: module nesting flattened, as for the fns above.
+        let user_const_decls: Vec<ConstDecl> =
+            hale_syntax::ast::flat_decls(&self.program.items)
+                .filter_map(|item| match item {
+                    TopDecl::Const(c) => Some(c.clone()),
+                    _ => None,
+                })
+                .collect();
         for c in &user_const_decls {
             // Scalar-literal fast path: same shape as locus-param
             // `params { ... }` defaults — value lowers to a
@@ -10677,7 +10724,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn collect_shm_ring_subjects(&mut self) {
         let mut wire_subjects: BTreeMap<String, String> = BTreeMap::new();
         Self::collect_topic_wire_subjects(&self.program.items, &mut wire_subjects);
-        let main_locus = self.program.items.iter().find_map(|item| match item {
+        let main_locus = hale_syntax::ast::flat_decls(&self.program.items)
+            .find_map(|item| match item {
             TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") => Some(l),
             _ => None,
         });
@@ -10687,7 +10735,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // codegen). For now require single-segment TypeExpr;
         // post-v1 can widen.
         let mut topic_payload: BTreeMap<String, String> = BTreeMap::new();
-        for item in &self.program.items {
+        for item in hale_syntax::ast::flat_decls(&self.program.items) {
             if let TopDecl::Topic(t) = item {
                 if let TypeExpr::Named { path, generic_args, .. } = &t.payload {
                     if path.segments.len() == 1 && generic_args.is_empty() {
@@ -10719,7 +10767,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // the subscriber register can build the
                         // descriptor. None → native ring.
                         let layout_decl = layout.as_ref().and_then(|lid| {
-                            self.program.items.iter().find_map(|it| match it {
+                            hale_syntax::ast::flat_decls(&self.program.items)
+                                .find_map(|it| match it {
                                 TopDecl::RingLayout(r) if r.name.name == lid.name => {
                                     Some(r.clone())
                                 }
@@ -10751,7 +10800,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// match that (and the pre-desugar `Topic` form defensively).
     fn bundle_publishes_topic(&self, wire_subject: &str) -> bool {
         use hale_syntax::ast::{BusMember, BusSubject, LocusMember};
-        self.program.items.iter().any(|item| {
+        hale_syntax::ast::flat_decls(&self.program.items).any(|item| {
             let TopDecl::Locus(l) = item else { return false };
             l.members.iter().any(|m| {
                 let LocusMember::Bus(bus) = m else { return false };
@@ -10777,7 +10826,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn collect_routing_key_subjects(&mut self) {
         let mut wire_subjects: BTreeMap<String, String> = BTreeMap::new();
         Self::collect_topic_wire_subjects(&self.program.items, &mut wire_subjects);
-        for item in &self.program.items {
+        for item in hale_syntax::ast::flat_decls(&self.program.items) {
             if let TopDecl::Topic(t) = item {
                 // GH #255 phase 2: record on_full-fail capacities.
                 if let (Some((cap, _)), Some(_)) =
@@ -10822,7 +10871,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             &self.program.items,
             &mut wire_subjects2,
         );
-        for item in &self.program.items {
+        for item in hale_syntax::ast::flat_decls(&self.program.items) {
             let TopDecl::Locus(l) = item else { continue };
             for member in &l.members {
                 let LocusMember::Bus(bb) = member else { continue };
@@ -10923,7 +10972,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// locus's default schedule_class, which is now Cooperative
     /// for every user locus per the F.31 spec amendment).
     fn collect_main_placement(&mut self) {
-        let main_locus = self.program.items.iter().find_map(|item| match item {
+        let main_locus = hale_syntax::ast::flat_decls(&self.program.items)
+            .find_map(|item| match item {
             TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") => Some(l),
             _ => None,
         });
@@ -11149,7 +11199,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Locate the (single) main locus, if any. Multiple-mains
         // would have errored in typecheck; we defensively pick the
         // first match here.
-        let main_locus = self.program.items.iter().find_map(|item| match item {
+        let main_locus = hale_syntax::ast::flat_decls(&self.program.items)
+            .find_map(|item| match item {
             TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") => Some(l.clone()),
             _ => None,
         });
@@ -11250,7 +11301,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // onto a foreign ring name — wrong either way.)
                         if let Some(lid) = layout {
                             if self.bundle_publishes_topic(&subject) {
-                                let decl = self.program.items.iter().find_map(
+                                let decl = hale_syntax::ast::flat_decls(
+                                    &self.program.items,
+                                )
+                                .find_map(
                                     |it| match it {
                                         TopDecl::RingLayout(r)
                                             if r.name.name == lid.name =>
@@ -11295,7 +11349,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // TypeExpr::Path resolving in user_types).
                         // Primitive-typed shm_ring payloads are
                         // post-v1.
-                        let topic_decl = self.program.items.iter().find_map(|it| match it {
+                        let topic_decl = hale_syntax::ast::flat_decls(
+                            &self.program.items,
+                        )
+                        .find_map(|it| match it {
                             TopDecl::Topic(t) if t.name.name == entry.topic.name => Some(t),
                             _ => None,
                         }).ok_or_else(|| CodegenError::Unsupported(format!(
@@ -12148,7 +12205,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     pub(crate) fn synthesize_codec_thunks_for_main_bindings(
         &mut self,
     ) -> Result<(), CodegenError> {
-        let main_locus = self.program.items.iter().find_map(|item| match item {
+        let main_locus = hale_syntax::ast::flat_decls(&self.program.items)
+            .find_map(|item| match item {
             TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") => Some(l.clone()),
             _ => None,
         });
@@ -12240,7 +12298,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &self,
         topic_name: &str,
     ) -> Result<String, CodegenError> {
-        let topic_decl = self.program.items.iter().find_map(|item| match item {
+        let topic_decl = hale_syntax::ast::flat_decls(&self.program.items)
+            .find_map(|item| match item {
             TopDecl::Topic(t) if t.name.name == topic_name => Some(t),
             _ => None,
         }).ok_or_else(|| CodegenError::Unsupported(format!(
@@ -13666,7 +13725,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         seen: &mut BTreeSet<String>,
         requests: &mut Vec<(String, Vec<TypeExpr>)>,
     ) -> Result<(), CodegenError> {
-        for item in &program.items {
+        // GH #884: module nesting flattened — a generic
+        // instantiation written one brace deeper needs the same
+        // monomorph synthesized, and the `TopDecl::Module` arm
+        // below is now "already descended into" rather than
+        // "skipped".
+        for item in hale_syntax::ast::flat_decls(&program.items) {
             match item {
                 TopDecl::Type(t) if t.generics.is_empty() => {
                     match &t.body {
@@ -13750,9 +13814,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )?;
                 }
                 TopDecl::Perspective(_) | TopDecl::Module(_) => {
-                    /* Perspective / Module type-bearing positions
-                     * could grow into this when those features
-                     * land in v0.1 codegen. */
+                    /* Perspective type-bearing positions could grow
+                     * into this when that feature lands in v0.1
+                     * codegen. A Module carries nothing of its own:
+                     * GH #884 made the loop above flatten it, so its
+                     * declarations have already been visited as
+                     * themselves by the time this arm sees the node. */
                 }
                 TopDecl::Interface(_) => {
                     /* Interface declarations have no body to walk
@@ -14531,14 +14598,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(), CodegenError> {
         let has_export_fn = user_fn_decls.iter().any(|f| f.export);
         // The persistent singleton: `@export locus L { ... }` (at most one).
-        let export_locus_name: Option<String> = self
-            .program
-            .items
-            .iter()
-            .find_map(|it| match it {
-                TopDecl::Locus(l) if l.export => Some(l.name.name.clone()),
-                _ => None,
-            });
+        // GH #884: module nesting flattened — `@export locus` is
+        // lowered at any depth, so the wrapper synthesis finds it
+        // at any depth.
+        let export_locus_name: Option<String> =
+            hale_syntax::ast::flat_decls(&self.program.items)
+                .find_map(|it| match it {
+                    TopDecl::Locus(l) if l.export => Some(l.name.name.clone()),
+                    _ => None,
+                });
         if !has_export_fn && export_locus_name.is_none() {
             return Ok(());
         }
@@ -14728,10 +14796,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .unwrap_or_default();
             // Methods declared `fallible(E)` can't be exported (v1 — the
             // host has no error channel); they stay internal.
-            let fallible_methods: std::collections::BTreeSet<String> = self
-                .program
-                .items
-                .iter()
+            // GH #884: module nesting flattened.
+            let fallible_methods: std::collections::BTreeSet<String> =
+                hale_syntax::ast::flat_decls(&self.program.items)
                 .find_map(|it| match it {
                     TopDecl::Locus(l) if l.name.name == lname => Some(
                         l.members
@@ -16505,7 +16572,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // `fallible` (the parser doesn't accept it on modes),
         // so we'd miss them naturally.
         let fd_opt: Option<FnDecl> =
-            self.program.items.iter().find_map(|item| match item {
+            hale_syntax::ast::flat_decls(&self.program.items)
+                .find_map(|item| match item {
                 TopDecl::Locus(l) if l.name.name == locus_name => l
                     .members
                     .iter()
@@ -29592,10 +29660,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             params: Vec<Param>,
             ret: Option<TypeExpr>,
         }
-        let sig: MethodSig = self
-            .program
-            .items
-            .iter()
+        // GH #884: module nesting flattened.
+        let sig: MethodSig = hale_syntax::ast::flat_decls(&self.program.items)
             .find_map(|item| match item {
                 TopDecl::Locus(l) if l.name.name == cs.locus_name => l
                     .members
@@ -30055,10 +30121,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ret: Option<TypeExpr>,
             fallible: Option<TypeExpr>,
         }
-        let sig: MethodSig = self
-            .program
-            .items
-            .iter()
+        // GH #884: module nesting flattened.
+        let sig: MethodSig = hale_syntax::ast::flat_decls(&self.program.items)
             .find_map(|item| match item {
                 TopDecl::Locus(l) if l.name.name == locus_name => l
                     .members
@@ -30705,10 +30769,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
-        let iface_decl = self
-            .program
-            .items
-            .iter()
+        // GH #884: module nesting flattened.
+        let iface_decl = hale_syntax::ast::flat_decls(&self.program.items)
             .find_map(|item| match item {
                 TopDecl::Interface(i) if i.name.name == iface_name => {
                     Some(i.clone())
@@ -30899,10 +30961,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
     ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
         // Contract method order + the target method's signature.
-        let persp_decl = self
-            .program
-            .items
-            .iter()
+        // GH #884: module nesting flattened.
+        let persp_decl = hale_syntax::ast::flat_decls(&self.program.items)
             .find_map(|item| match item {
                 TopDecl::Perspective(p) if p.name.name == persp_name => {
                     Some(p.clone())
@@ -32681,10 +32741,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Find the interface decl in the AST so we can pull method
         // order. Method bodies are not allowed (no defaults at v0);
         // signatures-only is exactly what we need.
-        let iface_methods: Vec<String> = self
-            .program
-            .items
-            .iter()
+        // GH #884: module nesting flattened.
+        let iface_methods: Vec<String> =
+            hale_syntax::ast::flat_decls(&self.program.items)
             .find_map(|item| match item {
                 TopDecl::Interface(i) if i.name.name == iface_name => Some(
                     i.methods.iter().map(|m| m.name.name.clone()).collect(),
@@ -32809,9 +32868,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &self,
         persp_name: &str,
     ) -> Result<Vec<String>, CodegenError> {
-        self.program
-            .items
-            .iter()
+        // GH #884: module nesting flattened.
+        hale_syntax::ast::flat_decls(&self.program.items)
             .find_map(|item| match item {
                 TopDecl::Perspective(p) if p.name.name == persp_name => Some(
                     p.members

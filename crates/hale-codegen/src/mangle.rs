@@ -1,8 +1,11 @@
 //! v1.x-IMPORT PR2: auto-mangler for imported library seeds.
 //!
-//! Rewrites a parsed library Program's top-level decl names and
-//! every use-site that resolves to one of those decls so the
-//! library's symbols don't collide with the importer's. Shape
+//! Rewrites a parsed library Program's decl names — at the top
+//! level and inside any `module { }`, which is a namespace sharing
+//! the seed's one flat symbol table rather than a boundary
+//! (GH #884) — and every use-site that resolves to one of those
+//! decls, so the library's symbols don't collide with the
+//! importer's. Shape
 //! mirrors the hand-spelled `__StdLangMorpheme` / `__MoaBraidId`
 //! prefixes the std and moa seeds carry today — same flat-namespace
 //! discipline, but generated per imported library so users don't
@@ -46,7 +49,11 @@ use hale_syntax::ast::*;
 /// rename map.
 pub fn mangle_program(prog: &mut Program, alias: &str, file_stem: &str) {
     let mut renames: HashMap<String, String> = HashMap::new();
-    for item in &prog.items {
+    // GH #884: `module { }` nesting flattened — a module is a
+    // namespace, and the resolver registers what it holds under the
+    // bare name, so a module-nested decl is a seed symbol like any
+    // other and must be mangled like one.
+    for item in flat_decls(&prog.items) {
         if let Some(n) = top_decl_name(item) {
             renames.insert(n.to_string(), mangled(alias, file_stem, n));
         }
@@ -84,7 +91,12 @@ pub fn build_seed_renames(
 ) -> HashMap<String, String> {
     let mut out: HashMap<String, String> = HashMap::new();
     for (stem, prog) in programs {
-        for item in &prog.items {
+        // GH #884: module-nested decls are seed symbols too — see
+        // `mangle_program`. Without a row here the importer's
+        // `lib::Name` has nothing to resolve to, and the decl
+        // reaches the merged program under its bare name, where it
+        // can collide with the importer's own.
+        for item in flat_decls(&prog.items) {
             // Stage-2 FFI (2026-05-22): `@ffi("c") fn name(...)`
             // declarations must keep the literal `name` as their
             // LLVM symbol — the linker resolves against C glue
@@ -136,7 +148,11 @@ pub fn seed_path_heads(programs: &[(String, &Program)]) -> HashSet<String> {
 }
 
 fn collect_path_heads(prog: &Program, out: &mut HashSet<String>) {
-    for item in &prog.items {
+    // GH #884: a type declared inside a `module { }` heads a
+    // qualified path exactly as a top-level one does — the resolver
+    // gives both the same bare name — so the module-alias exemption
+    // has to be decided against it too.
+    for item in flat_decls(&prog.items) {
         if let TopDecl::Type(t) = item {
             out.insert(t.name.name.clone());
         }
@@ -510,6 +526,31 @@ fn construction_alias_targets(
 /// `mangled_for_path` machinery — those don't need to round-
 /// trip through the type checker.
 ///
+/// GH #854 — where this pass is and is NOT load-bearing, since
+/// "it walks top-level declarations only" reads like a hole in
+/// all four directions and is one in exactly one:
+///
+/// * **Declaration signatures, at any module depth** — this pass,
+///   and only this pass. A fn signature, a struct field, a
+///   `params` entry, a `capacity` slot, an alias target, a bus
+///   payload, a `serves` clause, a `bindings` topic. The
+///   top-level-only walk left every one of them unresolved inside
+///   `module { }`; the `TopDecl::Module` arm below closes that.
+/// * **A type annotation in a BODY** (`let x: lib::T`) — the
+///   RESOLVER's, since PR #851 / GH #833. `KnownNames` carries the
+///   same rename table and `resolve_type_expr` consults it, so the
+///   type of an annotation no longer depends on which positions a
+///   walk happens to reach. Widening this pass into bodies would
+///   duplicate that answer, not complete it.
+/// * **A qualified CALL, struct literal or enum variant in a
+///   body** (`lib::f()`, `lib::T { }`, `lib::E::V`) — codegen's
+///   `mangled_for_path`, at lowering. This pass never collapsed
+///   them anywhere, top level included; the corpus's import
+///   fixtures are all body-position literals and calls.
+/// * **The same three inside a module body** — the same
+///   `mangled_for_path`, once codegen lowers module-nested
+///   declarations at all (GH #884, this change).
+///
 /// The `renames` list comes from `hale_cli::ImportRenames`
 /// (Vec<(Vec<String>, String)>): each entry is
 /// `(["alias", "Name"], "__lib_<alias>_<stem>_Name")`.
@@ -815,7 +856,17 @@ impl<'a> QualifiedRenameApplier<'a> {
                     }
                 }
             }
-            TopDecl::Module(_) => {}
+            // GH #854: a module is a namespace, not a boundary —
+            // its declarations carry TypeExprs (a signature, a
+            // struct field, a `params` entry, a bus payload) that
+            // may be spelled `alias::Name` exactly as a top-level
+            // one's can, and the same pass has to collapse them or
+            // the checker sees a qualified path it cannot resolve.
+            TopDecl::Module(m) => {
+                for it in &mut m.items {
+                    self.walk_top_decl(it);
+                }
+            }
             TopDecl::Target(_) => {
                 // FUv0.8.2 #7: target capability blocks carry
                 // no TypeExprs the import-rename pass needs
@@ -904,7 +955,17 @@ impl<'a> QualifiedRenameApplier<'a> {
                 }
                 self.rewrite_sends_in_block(&mut lc.body);
             }
+            // GH #854: a mode DOES take typed params — the grammar
+            // is `mode bulk(n: Int) -> T { }` and the full mangler
+            // walks them (`walk_fn_like`). This arm rewrote `ret`
+            // only, so `mode bulk(t: lib::Thing)` reached the
+            // checker still spelled qualified while every sibling
+            // arm's params were collapsed. Not intentional; the
+            // arm is now the same shape as `Fn` and `Failure`.
             LocusMember::Mode(md) => {
+                for p in &mut md.params {
+                    self.rewrite_type_expr(&mut p.ty);
+                }
                 if let Some(r) = &mut md.ret {
                     self.rewrite_type_expr(r);
                 }
@@ -1315,7 +1376,19 @@ impl<'a> Mangler<'a> {
                 // declaration name participates in the rename table.
                 self.rewrite_ident(&mut r.name.name);
             }
-            TopDecl::Module(_) => {}
+            // GH #884: the seed's module-nested declarations are
+            // renamed, and their bodies' references rewritten, like
+            // every other declaration the seed makes — they share
+            // the seed's one flat namespace (`build_seed_renames`
+            // gave them a row for the same reason). The rename pass
+            // (GH #831's `resolve_construction_aliases`) and the
+            // alias-head pass ride this walker too, so both reach
+            // inside a module from here.
+            TopDecl::Module(m) => {
+                for it in &mut m.items {
+                    self.walk_top_decl(it);
+                }
+            }
             TopDecl::Target(t) => {
                 // FUv0.8.2 #7: rewrite the target name only —
                 // capability paths are structural identifiers,

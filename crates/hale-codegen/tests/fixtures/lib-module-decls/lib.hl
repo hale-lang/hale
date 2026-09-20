@@ -1,0 +1,28 @@
+// A library seed whose declarations live partly inside a module
+// (GH #884, GH #854).
+//
+// A module is a namespace, not a boundary, so a seed's module-nested
+// declarations share its one flat symbol table: they are mangled
+// like the top-level ones, get a row in the per-build rename table,
+// and the importer spells them `lib::Deep` exactly as it spells
+// `lib::Row`.
+
+type Row {
+    v: Int = 0;
+}
+
+type Kind = enum { Alpha, Beta };
+
+fn bump(n: Int) -> Int {
+    return n + 1;
+}
+
+module nested {
+    type Deep {
+        w: Int = 0;
+    }
+
+    fn deep_add(n: Int) -> Int {
+        return n + 10;
+    }
+}

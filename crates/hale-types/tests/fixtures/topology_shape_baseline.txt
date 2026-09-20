@@ -565,6 +565,7 @@ crates/hale-codegen/tests/fixtures/examples/87-temp-locus-receiver/main.hl 16381
 crates/hale-codegen/tests/fixtures/examples/88-async-handler-payload/main.hl 35fece95d337b084
 crates/hale-codegen/tests/fixtures/examples/89-nested-locus-teardown/main.hl 10752f290e4e7986
 crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions/main.hl 530c777d0fe0f765
+crates/hale-codegen/tests/fixtures/examples/91-module-decls/main.hl e433cc0599156f87
 crates/hale-codegen/tests/fixtures/examples/claim-forms.hl fc7429933db197c9
 crates/hale-codegen/tests/fixtures/examples/constitutions.hl 3e28431eef6c20e2
 crates/hale-codegen/tests/fixtures/examples/docs-server/main.hl 1c46881b16096baf
@@ -902,6 +903,14 @@ crates/hale-codegen/tests/mirror_ring.rs#0 f21a527aa7a90794
 crates/hale-codegen/tests/mirror_ring.rs#1 f2c1228edb650960
 crates/hale-codegen/tests/missing_ts_shim.rs#0 865d341109268295
 crates/hale-codegen/tests/missing_ts_shim.rs#1 f2c1228edb650960
+crates/hale-codegen/tests/module_decls.rs#0 f2c1228edb650960
+crates/hale-codegen/tests/module_decls.rs#1 865d341109268295
+crates/hale-codegen/tests/module_decls.rs#2 bed84855e18dadf4
+crates/hale-codegen/tests/module_decls.rs#3 865d341109268295
+crates/hale-codegen/tests/module_decls.rs#4 f2c1228edb650960
+crates/hale-codegen/tests/module_decls.rs#5 06275eefe8969f6c
+crates/hale-codegen/tests/module_decls.rs#6 8e9ab37deede98cd
+crates/hale-codegen/tests/module_decls.rs#9 f559439edf093aeb
 crates/hale-codegen/tests/multi_file_build.rs#1 59b52d815a9785d5
 crates/hale-codegen/tests/multi_file_build.rs#3 0a8aacc95650aae4
 crates/hale-codegen/tests/nested_long_lived_child.rs#0 477865f8b91baeea

@@ -371,6 +371,16 @@ call_through  does={alloc}
 churn  does={alloc}
 main  does={syscall,alloc}
 serve  does={alloc}
+### 91-module-decls
+App::run  does={syscall,publish,alloc}
+devices::Counter::bump  does={unclassified}
+devices::Sensor::value  does={unclassified}
+geo::manhattan  does={unclassified}
+main  does={alloc}
+outer::inner::larger  does={unclassified}
+outer::inner::twice  does={unclassified}
+vocabulary::read_through  does={unclassified}
+wiring::Listener::on_ping  does={unclassified}
 ### docs-server
 __docs_dir  does={env}
 __render_doc  does={syscall,env,alloc}

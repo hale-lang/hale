@@ -2219,11 +2219,11 @@ fn hot_walk_expr(e: &Expr, cx: &mut HotPathCx) {
 /// closure is higher-ranked over it and nothing it sees can be
 /// stored.
 fn walk_decls<'a>(items: &'a [TopDecl], f: &mut impl FnMut(&'a TopDecl)) {
-    for item in items {
+    // GH #884: the walk itself moved to `hale_syntax::ast` when
+    // codegen needed the same one. Same order, same yield of the
+    // module node before its contents.
+    for item in hale_syntax::ast::flat_decls(items) {
         f(item);
-        if let TopDecl::Module(m) = item {
-            walk_decls(&m.items, f);
-        }
     }
 }
 

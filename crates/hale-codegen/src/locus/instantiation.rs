@@ -4183,10 +4183,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // (parent_on_failure == null) still call exit(1) per the
         // existing F.27 contract — same panic-with-diagnostic as
         // a regular violate.
-        let birth_check_decls: Vec<BirthCheckDecl> = self
-            .program
-            .items
-            .iter()
+        // GH #884: module nesting flattened — the locus being
+        // instantiated may be declared inside a `module { }`.
+        let birth_check_decls: Vec<BirthCheckDecl> =
+            hale_syntax::ast::flat_decls(&self.program.items)
             .find_map(|item| match item {
                 TopDecl::Locus(l) if l.name.name == locus_name => {
                     Some(
