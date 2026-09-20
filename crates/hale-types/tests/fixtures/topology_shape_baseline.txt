@@ -1371,6 +1371,7 @@ crates/hale-types/tests/hot_path_alloc.rs#17 b1f059c2b92900ae
 crates/hale-types/tests/hot_path_alloc.rs#18 ab273330600fc920
 crates/hale-types/tests/hot_path_alloc.rs#19 234c5f1f87e43729
 crates/hale-types/tests/hot_path_alloc.rs#20 7e39a961fbd87bc6
+crates/hale-types/tests/hot_path_alloc.rs#22 2a8a2d9bbe3bd5fb
 crates/hale-types/tests/hot_path_alloc.rs#4 234c5f1f87e43729
 crates/hale-types/tests/hot_path_alloc.rs#6 234c5f1f87e43729
 crates/hale-types/tests/hot_path_alloc.rs#7 8b5c9b6ca27eb054

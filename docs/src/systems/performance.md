@@ -146,6 +146,11 @@ These are advisory warnings, not build failures:
   everywhere. Only the **`let`-bound** form warns: an unbound factory
   result is reclaimed at the statement, which is why "drop the binding
   if you're only passing the value on" is one of the suggested fixes.
+
+  A `module { … }` hides none of this. A module is a namespace, not an
+  analysis boundary, so a fn or a locus method declared inside one —
+  however deeply nested — is checked exactly as if it sat at the top
+  level, with the same findings and the same `@hot` severity.
 - One structural warning: **`accept` without `release` on a locus whose
   `run()` loops forever**. Without a `release(c: C)` declaration every
   accepted child is *resident* — it lives until the accepting locus
