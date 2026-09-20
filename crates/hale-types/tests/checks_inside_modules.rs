@@ -304,6 +304,63 @@ fn main() { App { }; }
     );
 }
 
+// ---- compute_pool_of_locus_type / check_placement_single_thread ----
+//
+// The F.31 single-threaded-method invariant: a direct
+// `self.<field>.method()` call whose receiver is placed on another
+// pool is a hard error, because cross-pool coordination goes through
+// the bus. The whole layer hangs off finding the `main locus`, and
+// that lookup stopped at the top level — so a main locus inside a
+// module produced an EMPTY pool map, which every caller reads as
+// "nothing placed here" and returns on.
+
+const CROSS_POOL_CALL: &str = "\
+locus DB {
+    fn query() { }
+}
+
+main locus App {
+    params {
+        db: DB = DB { };
+    }
+    placement {
+        db: pinned;
+    }
+    run() {
+        self.db.query();
+    }
+}
+";
+
+#[test]
+fn cross_pool_call_inside_a_module_is_flagged() {
+    assert_module_matches_top_level(
+        CROSS_POOL_CALL,
+        "cross-pool method call",
+    );
+}
+
+#[test]
+fn a_module_nested_main_locus_still_seeds_the_pool_map() {
+    // `compute_pool_of_locus_type` is `pub` and is re-run outside
+    // this pass (sync inference, the pre-codegen finalization), so
+    // an empty map is not just a missing diagnostic — it is a
+    // different answer to "where does this locus run".
+    let nested = format!("{}\n{}", in_module(CROSS_POOL_CALL), MAIN);
+    let prog = parse_source(&nested).expect("parse");
+    let mut programs = std::collections::BTreeMap::new();
+    programs.insert(String::new(), &prog);
+    let bundle = hale_types::Bundle::new(programs);
+    let (top, _) = hale_types::resolve::build_top_scope(&bundle);
+    let pools = hale_types::check::compute_pool_of_locus_type(&bundle, &top);
+    assert!(
+        pools.contains_key("App") && pools.contains_key("DB"),
+        "a module-nested main locus must still seed the pool map; \
+         got: {:?}",
+        pools
+    );
+}
+
 #[test]
 fn a_module_nested_advisory_stays_a_warning() {
     // Severity is part of the contract: reaching inside a module

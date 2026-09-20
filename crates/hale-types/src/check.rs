@@ -3125,15 +3125,21 @@ pub fn compute_pool_of_locus_type(
     bundle: &Bundle<'_>,
     top: &TopScope,
 ) -> BTreeMap<String, PoolId> {
+    // GH #825: `main locus` inside a `module { … }` is still the
+    // program's main locus — the resolver keys `TopScope` by the bare
+    // name and codegen finds it the same way. A lookup that stops at
+    // the top level returns an EMPTY map for such a program, and
+    // every caller reads an empty map as "no placement to reason
+    // about" and returns early: the whole F.31 layer switched off.
     let mut main_locus: Option<&LocusDecl> = None;
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 if l.is_main {
                     main_locus = Some(l);
                 }
             }
-        }
+        });
     }
     let Some(main) = main_locus else {
         return BTreeMap::new();
@@ -3281,13 +3287,13 @@ fn check_placement_single_thread(
     // walk's `enclosing_locus`; re-locate it (cheap).
     let mut main_locus: Option<&LocusDecl> = None;
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 if l.is_main {
                     main_locus = Some(l);
                 }
             }
-        }
+        });
     }
     let _main = main_locus;
 
@@ -3320,7 +3326,7 @@ fn check_placement_single_thread(
     let mut cross_pool_safe_loci: BTreeSet<String> = BTreeSet::new();
     let mut form_bearing_loci: BTreeSet<String> = BTreeSet::new();
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 if let Some(form) = &l.form {
                     form_bearing_loci.insert(l.name.name.clone());
@@ -3329,7 +3335,7 @@ fn check_placement_single_thread(
                     }
                 }
             }
-        }
+        });
     }
 
     // F.32-1∞ (2026-05-25): pre-compute sync inference for
@@ -3344,7 +3350,7 @@ fn check_placement_single_thread(
     );
 
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 let caller_pool = pool_of_locus_type.get(&l.name.name);
                 for member in &l.members {
@@ -3362,7 +3368,7 @@ fn check_placement_single_thread(
                     }
                 }
             }
-        }
+        });
     }
 }
 
