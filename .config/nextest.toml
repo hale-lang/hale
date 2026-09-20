@@ -38,14 +38,15 @@ test-group = 'shared-fixture-dir'
 filter = 'binary(dna_native_suite)'
 slow-timeout = { period = "60s", terminate-after = 15 }
 # The suite is sliced (2026-09-19) so CI's hash partition spreads it,
-# and the slices that land on one partition run beside each other
-# (2026-09-20): ports are picked free per fixture, and each slice now
+# and the slices that land on one job run beside each other
+# (2026-09-20): ports are picked free per fixture, and each slice
 # creates its own knowledge database out of the job's DSN rather than
-# sharing the one database the job names. Two at a time, not all of
-# them — a runner has 4 cores and every fixture builds and boots an
-# organism, so more contention would widen the bounded waits the
-# fixtures already run scaled (GH #795). Each slice keeps the
-# 15-minute allowance above.
+# sharing the one database the job names. Four at a time: the suite
+# has CI jobs of its own (`dna` in tests.yml), so nothing else
+# competes for the runner's four cores, and every fixture builds and
+# boots an organism, so more than one per core would widen the
+# bounded waits the fixtures already run scaled (GH #795). Each slice
+# keeps the 15-minute allowance above.
 test-group = 'dna-fixtures'
 
 [[profile.default.overrides]]
@@ -57,5 +58,5 @@ test-group = 'serial-udp'
 
 [test-groups]
 shared-fixture-dir = { max-threads = 1 }
-dna-fixtures = { max-threads = 2 }
+dna-fixtures = { max-threads = 4 }
 serial-udp = { max-threads = 1 }

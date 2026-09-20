@@ -21,16 +21,19 @@ fn repo_root() -> PathBuf {
 /// takes every SLICES-th fixture of the sorted listing and runs them in
 /// turn, as `hale test <dir>` did.
 ///
-/// Two of the slices that land on one partition run beside each other
-/// (the `dna-fixtures` test group in `.config/nextest.toml`): ports are
-/// already picked free per fixture, and the knowledge database a slice
-/// hands its fixtures is now the slice's own (`SliceKnowledgeDb`), so
-/// nothing but the runner is shared. Two rather than all of them
-/// because every fixture builds and boots an organism on a 4-core
-/// runner, and a fixture's bounded waits are what pays for contention
-/// (GH #795). One wedged fixture still ends in a named failure within
-/// the group's timeout.
-const SLICES: usize = 8;
+/// The slices that land on one job run beside each other, four at a
+/// time (the `dna-fixtures` test group in `.config/nextest.toml`):
+/// ports are already picked free per fixture, and the knowledge
+/// database a slice hands its fixtures is now the slice's own
+/// (`SliceKnowledgeDb`), so nothing but the runner is shared. Four
+/// because the suite has CI jobs of its own (`dna` in tests.yml) on
+/// 4-core runners, and every fixture builds and boots an organism, so
+/// one per core is where a fixture's bounded waits stop paying for
+/// contention (GH #795). Sixteen slices of ~5 fixtures rather than
+/// eight of ~10, so the hash partition over the slice tests spreads
+/// them evenly across two jobs. One wedged fixture still ends in a
+/// named failure within the group's timeout.
+const SLICES: usize = 16;
 
 fn fixture_files() -> Vec<PathBuf> {
     let dir = repo_root().join("dna/tests");
@@ -379,6 +382,8 @@ macro_rules! fixture_slices {
 fixture_slices! {
     dna_fixtures_slice_0 => 0, dna_fixtures_slice_1 => 1, dna_fixtures_slice_2 => 2, dna_fixtures_slice_3 => 3,
     dna_fixtures_slice_4 => 4, dna_fixtures_slice_5 => 5, dna_fixtures_slice_6 => 6, dna_fixtures_slice_7 => 7,
+    dna_fixtures_slice_8 => 8, dna_fixtures_slice_9 => 9, dna_fixtures_slice_10 => 10, dna_fixtures_slice_11 => 11,
+    dna_fixtures_slice_12 => 12, dna_fixtures_slice_13 => 13, dna_fixtures_slice_14 => 14, dna_fixtures_slice_15 => 15,
 }
 
 /// The slice's own knowledge database is reached by editing exactly the
