@@ -274,6 +274,7 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
     &["std", "json", "ArrayIterSpan"],
     &["std", "json", "Builder"],
     &["std", "json", "JsonFieldRange"],
+    &["std", "json", "JsonString"],
     &["std", "json", "ObjectIterSpan"],
     &["std", "lang", "Lang"],
     &["std", "lang", "Morpheme"],
@@ -298,6 +299,7 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
     &["std", "process", "Child"],
     &["std", "process", "ProcessOutput"],
     &["std", "source", "Walk"],
+    &["std", "str", "ByteView"],
     &["std", "str", "ParseError"],
     &["std", "tagged", "Accumulator"],
     &["std", "term", "RawMode"],
@@ -539,7 +541,15 @@ pub const SURFACES: &[NsSurface] = &[
             e("obj_key_eq", EffectSet::PURE), e("obj_key_len", EffectSet::PURE), e("obj_key_string", EffectSet::PURE), e("obj_value_bool", EffectSet::PURE),
             e("obj_value_float", EffectSet::PURE), e("obj_value_int", EffectSet::PURE), e("obj_value_raw", EffectSet::PURE),
             e("obj_value_string", EffectSet::PURE), e("object_first", EffectSet::PURE), e("object_next", EffectSet::PURE),
+            // GH #719: the typed field read — a byte scan over the
+            // caller's String, like every other reader here.
+            e("string_field", EffectSet::PURE),
             e("unescape_string", EffectSet::PURE),
+            // GH #754: syntax validation. Both are byte scans over
+            // one immutable String with no allocation at all — the
+            // uniqueness table is a fixed local array — so PURE is
+            // the honest class, not ALLOC.
+            e("valid", EffectSet::PURE), e("valid_object", EffectSet::PURE),
         ],
         open_prefixes: &[],
     },
@@ -633,6 +643,11 @@ pub const SURFACES: &[NsSurface] = &[
         fns: &[
             e("builder_append", EffectSet::PURE), e("builder_finish", EffectSet::PURE), e("builder_len", EffectSet::PURE),
             e("builder_new", EffectSet::PURE), e("byte_at_unchecked", EffectSet::PURE),             e("can_parse_float", EffectSet::PURE), e("can_parse_int", EffectSet::PURE), e("clone", EffectSet::PURE), e("from_bytes", EffectSet::PURE),
+            // GH #720 — ByteView byte scanning. All three are pure:
+            // `bytes_view` is one strlen, `byte_at` a bounds-checked
+            // load, `slice` / `range_copy` an arena copy of a range
+            // the caller already bounded.
+            e("byte_at", EffectSet::PURE), e("bytes_view", EffectSet::PURE), e("range_copy", EffectSet::PURE), e("slice", EffectSet::PURE),
             e("index_of", EffectSet::PURE), e("contains", EffectSet::PURE), e("split_into", EffectSet::PURE), e("join", EffectSet::PURE), e("cp_count", EffectSet::PURE), e("cp_at", EffectSet::PURE), e("cp_size", EffectSet::PURE), e("starts_with", EffectSet::PURE), e("ends_with", EffectSet::PURE), e("lower", EffectSet::PURE), e("pad_left", EffectSet::PURE), e("pad_right", EffectSet::PURE), e("parse_decimal", EffectSet::PURE),
             e("parse_float", EffectSet::PURE), e("parse_int", EffectSet::PURE), e("range_eq", EffectSet::PURE), e("range_parse_decimal", EffectSet::PURE),
             e("range_parse_int", EffectSet::PURE), e("repeat", EffectSet::PURE), e("replace", EffectSet::PURE), e("substring", EffectSet::PURE), e("trim", EffectSet::PURE),
@@ -789,12 +804,106 @@ fn edit_distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+// GH #722: the advice strings. One per operation, shared by every
+// spelling of it, so a new row cannot invent a call shape — the
+// tests pin this set and typecheck each shape.
+const LEN_OF_STRING: &str =
+    "the length of a String is the builtin `len(s)`";
+const LEN_OF_BYTES: &str = "the length of a Bytes is the builtin `len(b)`";
+const LEN_OF_ARRAY: &str = "the length of an array is the builtin `len(a)`";
+const ABS_OF: &str = "the absolute value of a number is the builtin `abs(x)`";
+const MIN_OF: &str = "the smaller of two numbers is the builtin `min(a, b)`";
+const MAX_OF: &str = "the larger of two numbers is the builtin `max(a, b)`";
+const PRINT_TO: &str = "writing to stdout is the builtin `print(x)`";
+const PRINTLN_TO: &str =
+    "writing a line to stdout is the builtin `println(x)`";
+const RENDER_AS: &str =
+    "rendering a value as a String is the builtin `to_string(x)`";
+
+/// GH #722: the conventional spellings — the `std::` path an author
+/// arriving from Rust / Go / Python / Java reaches for — of
+/// operations Hale answers with a BARE BUILTIN rather than a stdlib
+/// fn. Edit distance cannot bridge a namespace→builtin move, and
+/// left to itself it actively misleads: `std::string::len` drew
+/// "did you mean `std::ring`?" and `std::math::min` drew "did you
+/// mean `std::math::sin`?".
+///
+/// Every row's advice is a real builtin call shape at the arity the
+/// codegen dispatch enforces (`lower_len_builtin`,
+/// `lower_to_string_builtin` and `lower_math_builtin`: one arg for
+/// `len`/`to_string`/`abs`, two for `min`/`max`; the printers are
+/// variadic). Operations with NO builtin equivalent are deliberately
+/// absent — `std::json::parse`, `std::str::concat` and
+/// `std::str::to_lower` keep the plain unknown-fn diagnostic rather
+/// than gain a suggestion that is not a valid call.
+pub const BUILTIN_SPELLINGS: &[(&[&str], &str)] = &[
+    (&["std", "bytes", "len"], LEN_OF_BYTES),
+    (&["std", "cmp", "max"], MAX_OF),
+    (&["std", "cmp", "min"], MIN_OF),
+    (&["std", "fmt", "print"], PRINT_TO),
+    (&["std", "fmt", "println"], PRINTLN_TO),
+    (&["std", "io", "print"], PRINT_TO),
+    (&["std", "io", "println"], PRINTLN_TO),
+    (&["std", "io", "stdout", "print"], PRINT_TO),
+    (&["std", "io", "stdout", "println"], PRINTLN_TO),
+    (&["std", "math", "abs"], ABS_OF),
+    (&["std", "math", "max"], MAX_OF),
+    (&["std", "math", "min"], MIN_OF),
+    (&["std", "str", "from_int"], RENDER_AS),
+    (&["std", "str", "len"], LEN_OF_STRING),
+    (&["std", "str", "length"], LEN_OF_STRING),
+    (&["std", "str", "to_string"], RENDER_AS),
+    (&["std", "string", "len"], LEN_OF_STRING),
+    (&["std", "string", "length"], LEN_OF_STRING),
+    (&["std", "vec", "len"], LEN_OF_ARRAY),
+];
+
+/// GH #722: the table lookup, consulted before either did-you-mean.
+/// `None` for every path that is not a tabled spelling, so unrelated
+/// unknown functions keep their existing diagnostic.
+fn builtin_spelling_error(segs: &[&str]) -> Option<String> {
+    let advice = BUILTIN_SPELLINGS
+        .iter()
+        .find(|(path, _)| *path == segs)
+        .map(|(_, advice)| *advice)?;
+    Some(format!(
+        "`{}` is not a stdlib function; {}",
+        segs.join("::"),
+        advice
+    ))
+}
+
+/// GH #722, member half: `s.len()` / `s.length` is the same
+/// namespace→builtin move in member spelling. Returns the advice to
+/// append to an existing "no field" error, for the primitives whose
+/// length the `len` builtin actually answers — a `@form` collection
+/// has a real `.len()` method and never reaches the error site.
+pub fn builtin_member_advice(recv: &Ty, field: &str) -> Option<&'static str> {
+    if !matches!(field, "len" | "length" | "size") {
+        return None;
+    }
+    match recv {
+        Ty::Prim(PrimType::String) | Ty::Prim(PrimType::StringView) => {
+            Some(LEN_OF_STRING)
+        }
+        Ty::Prim(PrimType::Bytes) | Ty::Prim(PrimType::BytesView) => {
+            Some(LEN_OF_BYTES)
+        }
+        _ => None,
+    }
+}
+
 /// The stage-1 check: for a call whose callee is a `std::` path,
 /// return an error message when the namespace is tabled and the fn
 /// name is unknown. `None` means "fine or not our business".
 pub fn unknown_fn_error(segs: &[&str]) -> Option<String> {
     if is_locus_path(segs) {
         return None;
+    }
+    // GH #722: a conventional spelling of a builtin is answered by
+    // the explicit table, before either generic did-you-mean.
+    if let Some(msg) = builtin_spelling_error(segs) {
+        return Some(msg);
     }
     // #353 item 9: an UNTABLED namespace used to short-circuit here —
     // `lookup` returned None and the call was waved through as "not our
@@ -961,6 +1070,37 @@ pub const SIGS: &[FnSig] = &[
     ),
     sig!(NS_STR, "range_eq", [Str, Int, Int, Str], Bool),
     sig!(NS_STR, "byte_at_unchecked", [Str, Int], Int),
+    // GH #720 — the ByteView surface. The view is the struct
+    // `str_view.hl` declares, named here by the mangled name
+    // PATH_RENAMES maps `std::str::ByteView` onto, so a view built
+    // by `bytes_view` and a view annotated by hand are the same
+    // type to the checker. `range_copy` is the strlen-free
+    // substring `slice` is built on — public because a scanner
+    // that already tracks its own bounds (the JSON range walkers)
+    // wants it directly, and named `range_*` because it carries
+    // that family's caller-owns-the-bounds contract.
+    FnSig {
+        ns: NS_STR,
+        name: "bytes_view",
+        params: &[SigTy::Str],
+        ret: SigTy::Named("__StrByteView"),
+        fallible: None,
+    },
+    FnSig {
+        ns: NS_STR,
+        name: "byte_at",
+        params: &[SigTy::Named("__StrByteView"), SigTy::Int],
+        ret: SigTy::Int,
+        fallible: None,
+    },
+    FnSig {
+        ns: NS_STR,
+        name: "slice",
+        params: &[SigTy::Named("__StrByteView"), SigTy::Int, SigTy::Int],
+        ret: SigTy::Str,
+        fallible: None,
+    },
+    sig!(NS_STR, "range_copy", [Str, Int, Int, Int], Str),
     // GH #535 (DNA F.8): the flat-object json readers are Hale-source
     // stdlib fns with no rename entry, so a call typed Unknown and an
     // `or` on one slid through the checker to fail at build. Tabled,
@@ -971,6 +1111,10 @@ pub const SIGS: &[FnSig] = &[
     sig!(NS_JSON, "find_field_raw", [Str, Str], Str),
     sig!(NS_JSON, "escape_string", [Str], Str),
     sig!(NS_JSON, "unescape_string", [Str], Str),
+    // GH #754: one well-formed RFC 8259 value / a top-level object
+    // with unique literal keys.
+    sig!(NS_JSON, "valid", [Str], Bool),
+    sig!(NS_JSON, "valid_object", [Str], Bool),
     sig!(NS_STR, "index_of", [Str, Str], Int),
     // #353: the everyday predicates. The runtime carried
     // `lotus_str_contains` / `_starts_with` all along; `ends_with` is

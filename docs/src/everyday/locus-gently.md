@@ -54,6 +54,13 @@ is the constructor. Hale collapses "constructor parameters" and
 "instance fields" into one `params` block — the same way Ruby's
 `@foo` or Python's `self.foo` are just attributes.
 
+One habit from those languages doesn't carry over: there are no
+class constants. A `const` belongs at the top level, beside the
+locus, where it is in scope inside every locus of the program —
+writing one in a locus body is an error at the `const` keyword.
+A constant that each instance should carry is a `params` field
+with a default.
+
 ## `type` vs `locus`
 
 You met `type` for plain records earlier. The line between them:
@@ -78,6 +85,12 @@ These aren't rival categories — they're points on a gradient. A
 `type` is a locus that hasn't grown behavior yet. When a record
 starts accumulating methods, you promote it from `type` to
 `locus`. There is no third thing to reach for.
+
+Note the two declarations above are **siblings**. A `type` used
+by one locus still goes beside it, not inside its body: a
+top-level `type` is in scope everywhere in the program, including
+inside every locus, and there are no nested types. A `type`
+written inside a locus body is an error at the `type` keyword.
 
 ## Two everyday shapes
 

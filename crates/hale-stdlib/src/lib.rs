@@ -41,6 +41,13 @@
 pub const AP_SOURCE: &str = concat!(
     include_str!("../hl/core.hl"),
     "\n",
+    // GH #720 — std::str::ByteView. A `type` plus three free fns
+    // over `std::str::byte_at_unchecked` / `range_copy` path
+    // calls, so nothing else in the bundle has to precede it; it
+    // lands next to core.hl because other stdlib scanners are the
+    // obvious next callers.
+    include_str!("../hl/str_view.hl"),
+    "\n",
     include_str!("../hl/io_tcp.hl"),
     "\n",
     // io_udp.hl declares the `Reader` handle and references `IoError`
@@ -172,6 +179,8 @@ pub const AP_SOURCE: &str = concat!(
 /// `install.sh` binary has no stdlib checkout).
 pub const AP_FILES: &[(&str, &str)] = &[
     ("core.hl", include_str!("../hl/core.hl")),
+    // GH #720 — mirrors its position in AP_SOURCE (span math).
+    ("str_view.hl", include_str!("../hl/str_view.hl")),
     ("io_tcp.hl", include_str!("../hl/io_tcp.hl")),
     ("io_udp.hl", include_str!("../hl/io_udp.hl")),
     ("http.hl", include_str!("../hl/http.hl")),
@@ -309,6 +318,8 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "json", "ObjectIterSpan"], "__JsonObjectIterSpan"),
     (&["std", "json", "Builder"], "__StdJsonBuilder"),
     (&["std", "json", "JsonFieldRange"], "__JsonFieldRange"),
+    // GH #719: the typed field read's result shape.
+    (&["std", "json", "JsonString"], "__JsonString"),
     (&["std", "lang", "Lang"], "__StdLangLang"),
     (&["std", "lang", "Morpheme"], "__StdLangMorpheme"),
     (&["std", "log", "ConsoleSink"], "__StdLogConsoleSink"),
@@ -368,6 +379,14 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     // bindings — useful when a project also has its own
     // local error types.
     (&["std", "str", "ParseError"], "ParseError"),
+    // GH #720 — the byte-view surface. `ByteView` is the struct in
+    // str_view.hl; the three fns are its constructor and accessors,
+    // routed to their bare Hale implementations like the
+    // std::process / std::http free fns above.
+    (&["std", "str", "ByteView"], "__StrByteView"),
+    (&["std", "str", "byte_at"], "__str_byte_at"),
+    (&["std", "str", "bytes_view"], "__str_bytes_view"),
+    (&["std", "str", "slice"], "__str_slice"),
     (&["std", "tagged", "Accumulator"], "__StdTaggedAccumulator"),
     (&["std", "text", "Sink"], "__StdTextSink"),
     (&["std", "text", "StdoutSink"], "__StdTextStdoutSink"),

@@ -249,7 +249,11 @@ The block has two homes, one per tier:
   top-level form is a check error — world law belongs in main.
 
 A main locus may carry several `claims { }` blocks; their entries
-concatenate.
+concatenate. An inline claim resolves the groups it names in the
+seed that declares it, so importing a whole application — as its own
+tests do — leaves its law meaning exactly what it meant when the
+seed was checked on its own, and a group of the same name in the
+importing seed is never substituted for it.
 
 Every entry is `name: form;`. The **name is the contract of
 record** — it is what the diagnostic, the CI check, the review

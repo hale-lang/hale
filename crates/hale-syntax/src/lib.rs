@@ -32,8 +32,9 @@ pub fn parse_source(source: &str) -> Result<ast::Program, Vec<Diag>> {
     parse(tokens, source)
 }
 
-/// Lex + parse like [`parse_source`], but offset every span (and any
-/// diagnostic span) by `base` bytes. A multi-file build parses each file
+/// Lex + parse like [`parse_source`], but offset every span by `base`
+/// bytes — including the spans a diagnostic carries, which follow the
+/// token they came from. A multi-file build parses each file
 /// at a distinct `base` so the merged program's spans are globally
 /// unique — a diagnostic span can then be demultiplexed back to its
 /// originating file (its `base..base+len` range), giving the right
@@ -41,10 +42,38 @@ pub fn parse_source(source: &str) -> Result<ast::Program, Vec<Diag>> {
 /// entry file. `base` is a virtual coordinate; no combined source string
 /// is built.
 pub fn parse_source_at(source: &str, base: u32) -> Result<ast::Program, Vec<Diag>> {
+    // The LEXER works on the unshifted source, so its diagnostics have
+    // to be shifted here.
     let mut tokens =
         lex(source).map_err(|ds| ds.into_iter().map(|d| d.shifted(base)).collect::<Vec<_>>())?;
     for t in &mut tokens {
         t.span = t.span.shifted(base);
+        // An f-string's interpolation bodies carry their own byte
+        // offsets (the parser sub-parses each one and shifts the
+        // sub-parse's spans by them). They are offsets into THIS
+        // file's text, so they move with the token — otherwise every
+        // span inside `f"{x}"` in a non-first file lands `base` bytes
+        // early, i.e. in some earlier file.
+        if let TokenKind::FStringLit(parts) = &mut t.kind {
+            for p in parts {
+                if let lexer::FStringPart::Interp { start, end, .. } = p {
+                    *start += base as usize;
+                    *end += base as usize;
+                }
+            }
+        }
     }
-    parse(tokens, source).map_err(|ds| ds.into_iter().map(|d| d.shifted(base)).collect())
+    // GH #765: the PARSER's diagnostics must NOT be shifted again — it
+    // takes the tokens above, whose spans already carry `base`, and
+    // cites them. Shifting a second time put a parse error at
+    // `2 * base + local`, outside its own file's `base..base+len`
+    // range: the span demultiplexed to no file at all (an imported
+    // seed's parse error rendered with no filename, positioned against
+    // whichever source happened to be first) and a consumer that
+    // un-shifts once — `parse_files`, `hale lsp` — landed `base` bytes
+    // past the real position, so a parse error in the second or later
+    // file of a seed pointed at the wrong line.
+    // (GH #725 found the same double shift independently, from the
+    // reserved-word cascade: the same one-line fix.)
+    parse(tokens, source)
 }

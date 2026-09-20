@@ -37,6 +37,11 @@ test-group = 'shared-fixture-dir'
 # failure.
 filter = 'binary(dna_native_suite)'
 slow-timeout = { period = "60s", terminate-after = 15 }
+# The suite is sliced (2026-09-19) so CI's hash partition spreads it;
+# the slices that land on one partition still run one at a time —
+# fixtures start live hosts on free ports and share one knowledge
+# database — and each slice keeps the 15-minute allowance above.
+test-group = 'dna-fixtures'
 
 [[profile.default.overrides]]
 # UDP tests hardcode multicast groups (239.255.x) + ports; two running
@@ -47,4 +52,5 @@ test-group = 'serial-udp'
 
 [test-groups]
 shared-fixture-dir = { max-threads = 1 }
+dna-fixtures = { max-threads = 1 }
 serial-udp = { max-threads = 1 }
