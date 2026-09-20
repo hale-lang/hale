@@ -19,9 +19,15 @@ name: macos
 # Kept in its own workflow so it runs on push/PR without gating the
 # Linux-only required checks in tests.yml.
 
+# One run per commit. A push to a PR branch used to trigger this
+# twice — once as `push` (every branch) and once as `pull_request`
+# — in two concurrency groups, so neither cancelled the other:
+# 140 of 140 pull_request runs over 2026-09-18..20 had a twin push
+# run on the same SHA. Push runs are for main only now; a branch
+# gets its run through its PR.
 on:
   push:
-    branches: ['**']
+    branches: [main]
     # A prose change cannot alter what the macOS build produces. This
     # is a whole-workflow filter rather than the `scope` job
     # `tests.yml` uses, because there is one job here and nothing to
