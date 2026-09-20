@@ -1657,22 +1657,31 @@ fn hover_text(
     Some(text)
 }
 
-pub fn sig_ty_str(t: &hale_types::stdlib_surface::SigTy) -> &'static str {
+pub fn sig_ty_str(t: &hale_types::stdlib_surface::SigTy) -> String {
     use hale_types::stdlib_surface::SigTy::*;
     match t {
-        Int => "Int",
-        Uint => "Uint",
-        Float => "Float",
-        Bool => "Bool",
-        Str => "String",
-        Bytes => "Bytes",
-        BytesMut => "Bytes",
-        Decimal => "Decimal",
-        Duration => "Duration",
-        Time => "Time",
-        Unit => "()",
-        Any => "…",
-        _ => "…",
+        Int => "Int".to_string(),
+        Uint => "Uint".to_string(),
+        Float => "Float".to_string(),
+        Bool => "Bool".to_string(),
+        Str => "String".to_string(),
+        Bytes => "Bytes".to_string(),
+        BytesMut => "Bytes".to_string(),
+        Decimal => "Decimal".to_string(),
+        Duration => "Duration".to_string(),
+        Time => "Time".to_string(),
+        Unit => "()".to_string(),
+        Any => "…".to_string(),
+        // GH #771: a struct return/param carries the MANGLED name
+        // the checker unifies on (`__JsonString`); hover and the
+        // generated reference are read by people, who write the
+        // public path. Reverse the rename table rather than showing
+        // either the mangled name or the old `…`.
+        Named(n) => hale_stdlib::PATH_RENAMES
+            .iter()
+            .find(|(_, target)| target == n)
+            .map(|(path, _)| path.join("::"))
+            .unwrap_or_else(|| (*n).to_string()),
     }
 }
 
