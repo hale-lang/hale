@@ -105,6 +105,23 @@ pub fn demangle_imports(
     }
 }
 
+/// One path-rename key as the author wrote it: the head unscoped
+/// (GH #746), the rest verbatim.
+fn display_path(segs: &[String]) -> String {
+    let mut out = String::new();
+    for (i, seg) in segs.iter().enumerate() {
+        if i > 0 {
+            out.push_str("::");
+        }
+        if i == 0 {
+            out.push_str(hale_syntax::ast::unscoped_alias(seg));
+        } else {
+            out.push_str(seg);
+        }
+    }
+    out
+}
+
 /// The rename table `demangle_imports` applies (imports ∪ stdlib
 /// PATH_RENAMES, `__`-prefixed only, longest-mangled-first) —
 /// shared with the model builder's stdlib-absorption displays
@@ -114,7 +131,9 @@ pub(crate) fn demangle_table(
 ) -> Vec<(String, String)> {
     let mut table: Vec<(String, String)> = import_renames
         .iter()
-        .map(|(segs, mangled)| (mangled.clone(), segs.join("::")))
+        // GH #746: a key's head may be a SCOPED alias (`u$0`); a
+        // diagnostic shows the alias the author wrote.
+        .map(|(segs, mangled)| (mangled.clone(), display_path(segs)))
         .chain(hale_stdlib::PATH_RENAMES.iter().map(
             |(segs, mangled)| (mangled.to_string(), segs.join("::")),
         ))

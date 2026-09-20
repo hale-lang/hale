@@ -38,6 +38,15 @@ of the type. There's no separate "constant" concept for locals —
 program constants use `const NAME: T = ...;` and are written
 `SCREAMING_SNAKE_CASE`.)
 
+`const` is **top-level only**: it goes beside your `locus` and
+`fn` declarations, not inside a locus body. A top-level `const`
+is already in scope inside every locus of the program, so that
+is where a shared constant belongs; if each instance should
+carry its own value, that's a `params` field with a default
+(`params { limit: Int = 7; }`, read as `self.limit`). A `const`
+written inside a locus body is an error at the `const` keyword,
+saying both.
+
 Shadowing — declaring a second `let x` in the same scope — is
 not allowed. Pick a new name. The language would rather you say
 what you mean than quietly reuse a name for a different value.
