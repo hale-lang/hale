@@ -547,6 +547,9 @@ pub fn check_bundle_scoped(
     //   - bindings entries reference declared topics
     //   - duplicate bindings for the same topic are forbidden
     check_main_and_bindings(bundle, top, &mut diags);
+    // GH #911 (B6): and the entry point is top-level only, which the
+    // build path has always assumed and check did not say.
+    check_entry_point_placement(bundle, &mut diags);
     // Phase 3 routing-keys (2026-05-25): bundle-level checks
     //   - `on_unmatched: fallback` topics must have at least one
     //     `where key == _` subscriber program-wide.
@@ -5624,6 +5627,49 @@ fn check_phase3_fallback_subscribers(
                 name
             ),
         ));
+    }
+}
+
+/// GH #911 (B6): the entry point is TOP-LEVEL only.
+///
+/// A module is a namespace and not an analysis boundary, so nearly
+/// every declaration means the same thing one brace deeper (GH #825,
+/// GH #884). The entry point is the exception `spec/semantics.md`
+/// § "Declarations inside `module { }`" names: codegen looks for
+/// `fn main` in `program.items` and nowhere else — a module-nested
+/// one is not the program's entry point, and promoting it there
+/// would make codegen the only layer that thinks so.
+///
+/// What it was NOT is a reason for `check` to stay quiet. A seed whose
+/// only `fn main` sits inside a module checked clean and then failed
+/// to build with codegen's spanless `program has no `fn main()``, so
+/// the two layers disagreed about a program (the ruling on GH #911,
+/// 2026-09-20). They agree here instead, with the position of the
+/// declaration that has to move.
+fn check_entry_point_placement(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    fn walk(items: &[TopDecl], module: Option<&str>, diags: &mut Vec<Diag>) {
+        for item in items {
+            match item {
+                TopDecl::Fn(f) if f.name.name == "main" => {
+                    let Some(m) = module else { continue };
+                    diags.push(Diag::ty(
+                        f.name.span,
+                        format!(
+                            "the entry point must be top-level: a `fn \
+                             main` inside `module {}` does not start the \
+                             program — move it out of the module, or \
+                             rename it if it is an ordinary function",
+                            m
+                        ),
+                    ));
+                }
+                TopDecl::Module(m) => walk(&m.items, Some(&m.name.name), diags),
+                _ => {}
+            }
+        }
+    }
+    for program in bundle.programs.values() {
+        walk(&program.items, None, diags);
     }
 }
 

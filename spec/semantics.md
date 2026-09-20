@@ -3721,8 +3721,19 @@ name lookup:
 
 - **The entry point.** A seed's entry point is its **top-level**
   `fn main` (or the `main locus` that one instantiates). A `fn
-  main` written inside a module is an ordinary free fn that
-  happens to be called `main`; it does not start the program.
+  main` written inside a module does not start the program — and is
+  **refused**, by `hale check` as well as by the build, with a
+  located error at the declaration:
+
+  ```text
+  main.hl:2:8: type error: the entry point must be top-level: a `fn main` inside `module inner` does not start the program — move it out of the module, or rename it if it is an ordinary function
+  ```
+
+  Reading it as an ordinary free fn named `main` was the
+  alternative, and it made a seed whose only `fn main` was one
+  brace deeper check clean and then fail to build (codegen's
+  spanless `program has no fn main()`). The two layers say the same
+  thing now (2026-09-20, GH #911).
 - **Scoping of locals.** Ordinary lexical scope is unchanged; a
   module is not a scope.
 
@@ -3736,15 +3747,16 @@ One declaration is not admissible inside a module at all:
   main.hl:2:5: parse error: `target` is a program-level declaration; move it to the top level
   ```
 
-  Every consumer of a target reads `program.items` — the checker's
-  capability gate, the wasm-entry detection in `desugar`, the
-  stdlib gating — so one declared inside a module used to be
-  silently INERT: the same program that was gated at the top level
-  reported `ok` one brace deeper. Honouring it at any depth instead
-  would have changed what the build does rather than what a
-  diagnostic says, which is why the refusal was taken (2026-09-20,
-  GH #901). The grammar's `module_decl` excludes `target_decl` for
-  the same reason.
+  Every consumer of a target reads
+  `program.items` — the checker's capability gate, the wasm-entry
+  detection in `desugar`, the stdlib gating — so one declared
+  inside a module used to be silently INERT: the same program that
+  was gated at the top level reported `ok` one brace deeper.
+  Honouring it at any depth instead would have changed what the
+  build does rather than what a diagnostic says, which is why the
+  refusal was taken (2026-09-20, GH #901). The grammar's
+  `module_decl = "module" , IDENTIFIER , "{" , { top_decl } , "}"`
+  is therefore read with `target_decl` excluded.
 
 **Analysis is on the same line, one check at a time.** The rule
 above is about resolution and lowering, and it holds without

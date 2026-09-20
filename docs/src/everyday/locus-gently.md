@@ -166,14 +166,16 @@ is reachable across an `import` as `lib::Point`, and two modules
 declaring the same name is the same duplicate-name error as two
 top-level ones.
 
-Two things a module does *not* hold:
+Two things a module does *not* hold, and it says so rather than
+quietly doing nothing with them:
 
-- The program's **entry point**: `fn main` has to be at the top
-  level.
+- The program's **entry point**. `fn main` has to be at the top
+  level, and a `fn main` inside a module is an error: *the entry
+  point must be top-level* — move it out, or rename it if it was
+  meant to be an ordinary function.
 - A **`target wasm { }`** block, which is a build directive for the
-  whole program rather than a declaration. One inside a module is
-  an error — *`target` is a program-level declaration; move it to
-  the top level* — rather than a line that quietly does nothing.
+  whole program rather than a declaration: *`target` is a
+  program-level declaration; move it to the top level.*
 
 If you want a namespace, the namespace locus above is the tool.
 
