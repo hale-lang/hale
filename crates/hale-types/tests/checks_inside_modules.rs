@@ -642,6 +642,54 @@ fn main() { App { }; }
     );
 }
 
+// ---- the `or wait` bound-topic set (GH #255) ------------------------
+//
+// Not on GH #825's list, and the only one of these that fails the
+// OTHER way: every walk above loses a finding when it stops at the
+// top level, this one INVENTS one. `or wait` is legal exactly when
+// the topic has a transport binding, and a `bindings { }` block the
+// prelude cannot see reads as "no transport" — so a correct program
+// with its binding one brace deeper did not compile.
+
+const OR_WAIT_ON_A_BOUND_TOPIC: &str = "\
+type E { n: Int = 0; }
+
+topic Evt {
+    payload: E;
+    subject: \"evt\";
+}
+
+main locus App {
+    params { n: Int = 0; }
+    bindings {
+        Evt: unix(\"/tmp/hale-825-evt.sock\", role: listen);
+    }
+    bus { publish Evt; }
+    run() {
+        Evt <- E { n: 1 } or wait;
+    }
+}
+";
+
+#[test]
+fn or_wait_accepts_a_module_nested_binding() {
+    let (flat, nested) = control_and_nested(
+        OR_WAIT_ON_A_BOUND_TOPIC,
+        "`or wait` requires the topic",
+    );
+    assert!(
+        flat.is_empty(),
+        "the top-level control is legal and must be accepted: {:?}",
+        flat
+    );
+    assert!(
+        nested.is_empty(),
+        "a `bindings` block inside a module still binds the topic, so \
+         the same `or wait` is still legal: {:?}",
+        nested
+    );
+}
+
 #[test]
 fn a_module_nested_advisory_stays_a_warning() {
     // Severity is part of the contract: reaching inside a module

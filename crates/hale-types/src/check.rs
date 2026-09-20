@@ -438,10 +438,17 @@ pub fn check_bundle_scoped(
     });
     // GH #255: bundle-wide set of transport-bound topic names,
     // for the `or wait` legality check at publish sites.
+    //
+    // GH #825: this one fails the other way. Every other walk in the
+    // issue loses a finding when it stops at the top level; this one
+    // INVENTS one — a binding it cannot see reads as "this topic has
+    // no transport", so a legal `or wait` is REFUSED. A correct
+    // program with its `bindings { }` block one brace deeper did not
+    // compile.
     let mut bound_topics: std::collections::BTreeSet<String> =
         std::collections::BTreeSet::new();
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 for member in &l.members {
                     if let LocusMember::Bindings(bb) = member {
@@ -451,7 +458,7 @@ pub fn check_bundle_scoped(
                     }
                 }
             }
-        }
+        });
     }
     // GH #724: aliases of imports this bundle never resolved. Empty on
     // every CLI path (the merge strips `imports`); populated only for a
