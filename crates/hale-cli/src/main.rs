@@ -2563,6 +2563,68 @@ impl ImportDiag {
     }
 }
 
+/// GH #860: the `import` that names nothing, as a LOCATED
+/// diagnostic under its path literal.
+///
+/// The resolver printed `could not resolve import "..."` and
+/// returned a bare `Err(())`, which left the `errors` vector empty:
+/// after GH #806 it was the last failure on the check path still
+/// answering `--json` with an empty stream and exit 1. It is not an
+/// io failure — nothing was opened, so there is no OS error to
+/// report — and the statement HAS a span, so it belongs in
+/// [`ImportDiag::Located`] like an imported file's parse error, and
+/// every channel renders it with no new path: `render_diag_json`
+/// under `--json`, `render_located` in text, [`ImportDiag::render`]
+/// on `build` / `run` / `test`.
+///
+/// The importing FILE is recovered from the span through the
+/// file-base table rather than passed in, because one call resolves
+/// the UNION of a seed's imports (`collect_checkable`, and the
+/// directory forms of `build` and `run`): the importer is
+/// per-import, and the span is the only thing that knows which file
+/// an import was written in.
+///
+/// `sources` is filled in when the owning file is missing from it.
+/// A library file's text is inserted only AFTER its own imports are
+/// followed, so an unresolvable import INSIDE a library would
+/// otherwise reach `check` with a file window and no text to resolve
+/// a position against — and `render_located` would fall back to
+/// rendering it against whatever source came first.
+fn unresolved_import_diag(
+    path_span: hale_syntax::Span,
+    message: String,
+    fallback: IoDiag,
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &mut BTreeMap<PathBuf, String>,
+) -> ImportDiag {
+    let off = path_span.start.as_usize() as u32;
+    for (base, path, len) in file_bases {
+        if !hale_syntax::file_owns_offset(*base, *len, off) {
+            continue;
+        }
+        let source = match sources.get(path) {
+            Some(s) => s.clone(),
+            None => match fs::read_to_string(path) {
+                Ok(s) => {
+                    sources.insert(path.clone(), s.clone());
+                    s
+                }
+                // The file was read once already to be parsed; if it
+                // will not open now, the positionless record is
+                // still a record.
+                Err(_) => break,
+            },
+        };
+        return ImportDiag::Located {
+            file: path.clone(),
+            base: *base,
+            diag: hale_syntax::Diag::ty(path_span, message),
+            source,
+        };
+    }
+    ImportDiag::Io(fallback)
+}
+
 /// Render every import diagnostic in `errors` to stderr, one per
 /// line-group, and hand back the failing exit code.
 fn report_import_diags(errors: &[ImportDiag]) -> ExitCode {
@@ -2663,16 +2725,37 @@ fn resolve_imports(
         let target = match resolve_import(importer_dir, workspace_root, &imp.path) {
             Some(t) => t,
             None => {
-                eprintln!(
-                    "could not resolve import \"{}\": tried {}/{}.hl, {}/{}/, \
-                     and workspace-root/{}/",
-                    imp.path,
+                // GH #860: the three places the resolver looked,
+                // which is what makes the failure actionable — the
+                // same list it printed on stderr, now the body of a
+                // diagnostic positioned under the path literal.
+                let tried = format!(
+                    "tried {}/{}.hl, {}/{}/, and workspace-root/{}/",
                     importer_dir.display(),
                     imp.path,
                     importer_dir.display(),
                     imp.path,
                     imp.path,
                 );
+                errors.push(unresolved_import_diag(
+                    imp.path_span,
+                    format!(
+                        "could not resolve import `{}` ({})",
+                        imp.path, tried
+                    ),
+                    // The sentence the `eprintln!` printed, for the
+                    // case no file window owns the span (there is
+                    // none: every import comes from a parsed file).
+                    IoDiag::target(
+                        importer_dir,
+                        format!(
+                            "could not resolve import \"{}\": {}",
+                            imp.path, tried
+                        ),
+                    ),
+                    file_bases,
+                    sources,
+                ));
                 return Err(());
             }
         };
