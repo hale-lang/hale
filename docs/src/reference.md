@@ -56,3 +56,8 @@ diagnostic's meaning, go there.
 | `hale fleet` | compose topology artifacts across binaries: `check` / `dump` / `sign` / `attest` / `keygen` |
 | `hale lsp` | the language server, in the compiler binary |
 | `hale mcp` | the MCP server, in the compiler binary |
+
+`check` and `verify` follow every `import`, so a parse failure anywhere
+in the import graph — a library you import, or one it imports — fails
+them both, reported at that file's own line and column. Neither ever
+reports success on a tree `hale build` would refuse.

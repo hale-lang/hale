@@ -44,3 +44,78 @@ fn render_located_unshifts_to_file_line_col() {
         out
     );
 }
+
+/// GH #765: a PARSE ERROR's span is shifted by `base` exactly once.
+///
+/// The error arm used to shift twice — the parser is handed tokens
+/// whose spans already carry `base` and cites them, and the result was
+/// then `.shifted(base)` again. A parse diagnostic therefore landed at
+/// `2 * base + local`, outside its own file's `base..base + len`
+/// window, and every consumer that demultiplexes by that window lost
+/// it: an imported seed's parse error rendered with no filename at all,
+/// positioned against whichever source happened to be first. A
+/// consumer that un-shifts once — `parse_files`, `hale lsp` — landed
+/// `base` bytes late, which is why a parse error in the second or later
+/// file of a seed pointed at the wrong line.
+#[test]
+fn a_parse_error_span_is_shifted_by_base_exactly_once() {
+    // Missing `;` before the closing brace.
+    let src = "fn double(x: Int) -> Int { return x * 2 }\n";
+    let base = 5000u32;
+    let d0 = parse_source(src).expect_err("must not parse");
+    let db = parse_source_at(src, base).expect_err("must not parse at base");
+    assert_eq!(d0.len(), db.len(), "same diagnostics either way");
+    for (a, b) in d0.iter().zip(db.iter()) {
+        assert_eq!(a.message, b.message);
+        assert_eq!(
+            b.span.start.as_usize(),
+            a.span.start.as_usize() + base as usize,
+            "parse-error span must carry `base` once, not twice"
+        );
+        // Inside this file's window, so a merged build can demultiplex
+        // it back to the file it came from.
+        let off = b.span.start.as_usize();
+        assert!(
+            off >= base as usize && off < base as usize + src.len(),
+            "offset {} must fall in {}..{}",
+            off,
+            base,
+            base as usize + src.len()
+        );
+    }
+    // And the location a renderer recovers is the file's own.
+    let rendered = db[0].render_located("lib/main.hl", src, base);
+    assert!(
+        rendered.starts_with("lib/main.hl:1:41: parse error:"),
+        "got: {:?}",
+        rendered
+    );
+}
+
+/// The LEXER's diagnostics still need the shift — it reads the
+/// unshifted source, so its spans are file-local until this function
+/// moves them. Same window invariant.
+#[test]
+fn a_lex_error_span_is_shifted_by_base_exactly_once() {
+    // An unterminated string literal is a LEX error, not a parse error.
+    let src = "fn main() { println(\"oops); }\n";
+    let base = 5000u32;
+    let d0 = parse_source(src).expect_err("must not lex");
+    let db = parse_source_at(src, base).expect_err("must not lex at base");
+    assert_eq!(d0.len(), db.len());
+    for (a, b) in d0.iter().zip(db.iter()) {
+        assert_eq!(
+            b.span.start.as_usize(),
+            a.span.start.as_usize() + base as usize,
+            "lex-error span must carry `base` once"
+        );
+        let off = b.span.start.as_usize();
+        assert!(
+            off >= base as usize && off < base as usize + src.len(),
+            "offset {} must fall in {}..{}",
+            off,
+            base,
+            base as usize + src.len()
+        );
+    }
+}

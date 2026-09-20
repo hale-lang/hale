@@ -41,10 +41,22 @@ pub fn parse_source(source: &str) -> Result<ast::Program, Vec<Diag>> {
 /// entry file. `base` is a virtual coordinate; no combined source string
 /// is built.
 pub fn parse_source_at(source: &str, base: u32) -> Result<ast::Program, Vec<Diag>> {
+    // The LEXER works on the unshifted source, so its diagnostics have
+    // to be shifted here.
     let mut tokens =
         lex(source).map_err(|ds| ds.into_iter().map(|d| d.shifted(base)).collect::<Vec<_>>())?;
     for t in &mut tokens {
         t.span = t.span.shifted(base);
     }
-    parse(tokens, source).map_err(|ds| ds.into_iter().map(|d| d.shifted(base)).collect())
+    // GH #765: the PARSER's diagnostics must NOT be shifted again — it
+    // takes the tokens above, whose spans already carry `base`, and
+    // cites them. Shifting a second time put a parse error at
+    // `2 * base + local`, outside its own file's `base..base+len`
+    // range: the span demultiplexed to no file at all (an imported
+    // seed's parse error rendered with no filename, positioned against
+    // whichever source happened to be first) and a consumer that
+    // un-shifts once — `parse_files`, `hale lsp` — landed `base` bytes
+    // past the real position, so a parse error in the second or later
+    // file of a seed pointed at the wrong line.
+    parse(tokens, source)
 }

@@ -2785,6 +2785,59 @@ fn parse_files(
     Ok((programs, sources, file_bases))
 }
 
+/// GH #765: how [`collect_checkable`] failed.
+///
+/// A bare `code` means the reason was already printed — a bad target,
+/// or a file the target itself OWNS that did not parse (`parse_files`
+/// reports those). `diags` carries findings the CALLER must render:
+/// something in the IMPORT GRAPH that did not parse, or an import that
+/// could not be resolved at all. Those have to reach the same
+/// reporting path every other check diagnostic takes, or `--json`
+/// emits nothing and the position comes out against the wrong file —
+/// the trap the pre-pass resolver comment in `run_check_impl_labelled`
+/// records. The file map travels with them because the spans are
+/// bundle-global offsets into files the caller never saw.
+struct CheckableFailure {
+    code: u8,
+    diags: Vec<hale_syntax::Diag>,
+    file_bases: Vec<(u32, PathBuf, u32)>,
+    sources: BTreeMap<PathBuf, String>,
+}
+
+impl CheckableFailure {
+    /// A failure already reported to the user.
+    fn code(code: u8) -> Self {
+        Self {
+            code,
+            diags: Vec::new(),
+            file_bases: Vec::new(),
+            sources: BTreeMap::new(),
+        }
+    }
+
+    /// Render through the same two helpers the checker's own findings
+    /// go through — so `--json` carries the offending file, line and
+    /// message, and a span resolves against the file it actually lives
+    /// in — then hand back the exit status.
+    fn report(&self) -> u8 {
+        let json_mode = std::env::args().any(|a| a == "--json");
+        for d in &self.diags {
+            if json_mode {
+                println!(
+                    "{}",
+                    render_diag_json(d, &self.file_bases, &self.sources)
+                );
+            } else {
+                eprintln!(
+                    "{}",
+                    render_located(d, &self.file_bases, &self.sources)
+                );
+            }
+        }
+        self.code
+    }
+}
+
 /// Parse a check target, resolving cross-seed imports.
 ///
 /// Returns the program map the analysis walks plus the
@@ -2804,19 +2857,19 @@ fn collect_checkable(
         ImportRenames,
         std::collections::BTreeSet<PathBuf>,
     ),
-    u8,
+    CheckableFailure,
 > {
     let files = match collect_ap_files(target) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("{}", e);
-            return Err(1);
+            return Err(CheckableFailure::code(1));
         }
     };
     // `parse_files` still reports an `ExitCode` (its other two
     // callers hand one straight back); it only ever fails with 1.
     let (programs, sources, file_bases) =
-        parse_files(&files).map_err(|_| 1u8)?;
+        parse_files(&files).map_err(|_| CheckableFailure::code(1))?;
 
     // The files the target itself owns — everything else reached
     // from here arrived through an `import`.
@@ -2843,7 +2896,7 @@ fn collect_checkable(
         Some(m) => m,
         None => {
             eprintln!("no .hl files in {}", target.display());
-            return Err(1);
+            return Err(CheckableFailure::code(1));
         }
     };
     let workspace_root = find_workspace_root(target);
@@ -2874,7 +2927,7 @@ fn collect_checkable(
         target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
     let mut alias_scopes = AliasScopes::default();
     alias_scopes.record_files(&target_scope, own.iter().cloned().collect());
-    if resolve_imports(
+    let resolve_failed = resolve_imports(
         &union_imports,
         &importer_dir,
         workspace_root.as_deref(),
@@ -2889,13 +2942,30 @@ fn collect_checkable(
         &target_scope,
         &mut alias_scopes,
     )
-    .is_err()
-    {
-        for (path, d, src) in &errors {
-            eprintln!("{}:", path.display());
-            eprintln!("  {}", d.render(src));
-        }
-        return Err(1);
+    .is_err();
+    // GH #765: `resolve_imports` reports an imported file's PARSE
+    // failure by pushing it into `errors` and continuing — it still
+    // returns Ok. This site used to test only the `Err`, so the
+    // populated vector was never read: a library that did not parse
+    // left its declarations silently absent from the merged program,
+    // the checker's tolerance for unresolved qualified references hid
+    // every consequence, and `check` / `verify` answered `ok` with exit
+    // 0 on a tree `build` refused. An admission gate built on check +
+    // verify was fail-open for any change that broke a library's
+    // syntax. The other three call sites test the vector; this is the
+    // one `check` and `verify` share.
+    //
+    // The diagnostics go back to the CALLER rather than being rendered
+    // here, so they take the same path every other check finding does
+    // — `--json` carries them, and the span resolves to the library
+    // file instead of to whichever source happened to be first.
+    if resolve_failed || !errors.is_empty() {
+        return Err(CheckableFailure {
+            code: 1,
+            diags: errors.into_iter().map(|(_, d, _)| d).collect(),
+            file_bases,
+            sources: path_sources,
+        });
     }
 
     let mut program = Program {
@@ -4231,7 +4301,11 @@ fn run_check_impl_labelled(
     let (mut programs, sources, file_bases, import_renames, own_files) =
         match collect_checkable(target) {
             Ok(x) => x,
-            Err(code) => return code,
+            // GH #765: a failure that carries diagnostics renders them
+            // here, honouring `--json` and resolving each span against
+            // the file it lives in — including a file reached only
+            // through an `import`.
+            Err(f) => return f.report(),
         };
 
     // FUv0.8.2 #4: auto-apply sync inference before typecheck so
