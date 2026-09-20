@@ -1970,6 +1970,47 @@ a tick at a time. The compiler keeps `init` / `new` / `upgrade` (they
 embed the sources), `hale fleet check` and the plan schema, and the
 exec shims. The host decides nothing.
 
+## The embedded source has a name
+
+`hale dna init` / `new` / `upgrade` materialize `vendor/dna` from the
+DNA source **embedded in the `hale` binary**, so an organism runs the
+core that binary carries and not the one in any checkout. A version
+does not identify that source — two builds of one version can embed
+different `dna/` source — so the toolchain names it (GH #726):
+`EMBEDDED_DIGEST` is a length-framed SHA-256 over the sorted `(path,
+content)` pairs of every embedded file (`dna/core`, `dna/host`,
+`dna/membrane`, `dna/ui`, `dna/knowledge`, the pinned `dna/pond`
+driver), computed when the toolchain is built. It is:
+
+- the second line of `hale --version` (`embedded dna: <first 16 hex>`;
+  the first line stays the version alone, since a provisioning script
+  reads field 2 of it);
+- all 64 digits on stdout, alone, from `hale dna --embedded-digest`,
+  and — with `--from-tree <dir>`, a checkout holding `dna/core` — the
+  digest that checkout *would* embed, by the same algorithm. Unequal
+  digests mean the binary predates the tree: what it materializes is
+  the older core, and a test of an edit to the tree measures the
+  wrong source. A missing directory is refused, never digested as a
+  smaller set;
+- the first line of `hale dna status`, with the toolchain version, and
+  a refusal to stay quiet when `vendor/dna` was materialized by
+  another build (`hale dna status --json` is unchanged: the
+  projection is the host's);
+- recorded where a materialized tree can be asked about it:
+  `vendor/dna/README.md` and `.hale/dna/embedded.digest` (`hale
+  <version>` then `embedded dna: <digest>`), both toolchain-owned and
+  git-ignored, both refreshed by `upgrade`. It is deliberately **not**
+  written into the generated organization's source: `dna/org/main.hl`
+  is project-owned source that is reviewed, diffed and read by
+  models, and a line that changes with every DNA edit belongs in
+  neither a review nor a recorded baseline.
+
+The build enforces its own snapshot: the digest is computed over the
+on-disk tree by the build script, the crate digests what the compiler
+actually embedded, and the two must agree — source edited *while* a
+build runs, or a file added without being embedded, fails the build
+rather than shipping a digest that names nothing.
+
 ## The surface
 
 `hale dna ui [project] [--port N]` serves the DNA surface in a browser
