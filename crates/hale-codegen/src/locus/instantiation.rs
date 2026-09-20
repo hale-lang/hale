@@ -741,8 +741,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // as a parent's param field, bubbled to a same-tower owner —
         // never gets one (its owner reclaims it, and its struct does
         // not live in this frame's entry block), and a pinned locus
-        // returns through its own branch above. `defer_for_let` and
-        // subscription-bearing loci are what remain.
+        // returns through its own branch above — which, since GH #826,
+        // refuses to be lowered inside a loop at all, so its slot is
+        // never reused and nothing is left for this arm to reclaim.
+        // `defer_for_let` and subscription-bearing loci are what remain.
         let reused_deferred_slot = if self_is_entry_hoisted
             && !self.loops.is_empty()
             && !self.deferred_dissolves.is_empty()
@@ -3450,6 +3452,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 return Err(CodegenError::Unsupported(format!(
                     "pinned locus `{}` declares closures; cross-thread closure \
                      routing not yet supported",
+                    locus_name
+                )));
+            }
+            // GH #826 backstop. This branch's join record — the
+            // deferred-dissolve slot below and the `pthread_t`
+            // alloca it carries — is ONE alloca per instantiation
+            // SITE, hoisted to the fn's entry block. A site inside a
+            // loop rewrites both every iteration, so the scope-exit
+            // flush joins and arena-destroys only the LAST instance
+            // and every earlier pinned thread is orphaned with its
+            // arena live (GH #815's per-iteration slot reclaim
+            // deliberately steps over a pinned entry: reclaiming it
+            // means joining the previous thread).
+            //
+            // `check_pinned_locus_in_loop` rejects the shape with a
+            // located diagnostic, so nothing that runs the checker
+            // reaches this. `build_executable` does NOT run the
+            // checker, and neither does a direct codegen embedder —
+            // refuse there rather than emit the leak.
+            if !self.loops.is_empty() {
+                return Err(CodegenError::Unsupported(format!(
+                    "pinned locus `{}` is instantiated inside a loop; its \
+                     thread's join record is one slot per site, so every \
+                     iteration but the last would be orphaned with its arena \
+                     live. Instantiate it once outside the loop (see \
+                     spec/semantics.md § Placement block rule 17)",
                     locus_name
                 )));
             }

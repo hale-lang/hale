@@ -2524,6 +2524,28 @@ main locus App {
     the program's main thread, whose affinity belongs to the
     operator. Thread affinity only; pool workers own no arena to
     node-bind (handler scratch lives in each locus's own arena).
+17. **A `pinned` placement forbids a loop (error).** A locus whose
+    `placement { }` block pins any field may not be instantiated
+    inside a loop body — a `while` / `for` at any nesting depth, in
+    a free fn, a locus method or a lifecycle hook. `pinned` gives
+    its field its own OS thread, spawned during the placing locus's
+    params-init and joined at the instantiating scope's exit, and
+    the join record (the deferred-dissolve slot plus the thread
+    handle beside it) is one slot per instantiation *site*: a second
+    pass over the site overwrites the record of the first, so only
+    the LAST instance is joined and arena-destroyed and every
+    earlier pinned thread is orphaned with its arena still live.
+    Placement names static resources — a core, a NUMA node,
+    `replicas = K` — one thread per entry for the program's life, so
+    a per-iteration thread is a category error rather than a
+    reclaim policy to pick. `placement { }` is main-only (rule 1),
+    so the shape this rejects is the deployment root booted once per
+    iteration. The fix is to instantiate it once outside the loop;
+    a loop that *calls a fn* holding the literal is unaffected and
+    correct (each call joins its own thread at that fn's exit), and
+    the rule is positional on that literal, so it is not a rule
+    about the whole call graph. Codegen keeps a matching refusal for
+    embedders that bypass the checker. (GH #826, 2026-09-20.)
 
 ### Single-threaded-method invariant
 

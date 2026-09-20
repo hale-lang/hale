@@ -340,3 +340,100 @@ fn a_factory_result_bound_in_a_loop_dissolves_every_iteration() {
     assert_eq!(count(&out, "holder dissolved"), 16, "got:\n{out}");
     assert_eq!(count(&out, "leaf dissolved"), 16, "got:\n{out}");
 }
+
+// === GH #826: the pinned residue ===================================
+//
+// One shape is excluded from the reclaim above: a PINNED locus. Its
+// deferred entry carries a `pthread_t`, so reclaiming it at slot
+// reuse means joining the previous thread — a behaviour change #815
+// deliberately left alone. `placement { }` is main-only, so the
+// reachable shape is a main locus with a pinned entry instantiated
+// inside a loop, and it leaked N-1 arenas and orphaned N-1 threads
+// (LSan: "Direct leak of N objects ... lotus_arena_create_labeled").
+//
+// `check_pinned_locus_in_loop` now rejects that program with a
+// located diagnostic. `build_executable` does NOT run the checker,
+// so codegen keeps a backstop: refuse the lowering rather than emit
+// the leak. This is that backstop.
+
+/// A main locus that pins a field, instantiated inside a loop.
+fn pinned_in_loop_src(loop_body: &str) -> String {
+    format!(
+        r#"
+        locus Worker {{
+            params {{ id: Int = 0; }}
+            run() {{ println("worker ", self.id); }}
+        }}
+
+        main locus App {{
+            params {{
+                w: Worker = Worker {{ id: 1 }};
+            }}
+            placement {{
+                w: pinned;
+            }}
+            run() {{ println("app"); }}
+        }}
+
+        fn main() {{
+            let mut i = 0;
+            while i < 4 {{
+                {}
+                i = i + 1;
+            }}
+            return 0;
+        }}
+    "#,
+        loop_body
+    )
+}
+
+#[test]
+fn codegen_refuses_a_pinned_locus_lowered_inside_a_loop() {
+    let src = pinned_in_loop_src("App { };");
+    let program = hale_syntax::parse_source(&src).expect("parse");
+    let bin = harness::unique_bin("gh826_pinned_loop");
+    let err = build_executable(&program, &bin)
+        .expect_err("a pinned locus in a loop must not build");
+    let _ = std::fs::remove_file(&bin);
+    let msg = err.to_string();
+    assert!(
+        msg.contains("pinned locus `Worker` is instantiated inside a loop"),
+        "expected the GH #826 backstop, got: {msg}"
+    );
+    assert!(
+        msg.contains("Instantiate it once outside the loop"),
+        "the backstop should name the fix: {msg}"
+    );
+}
+
+/// The control that keeps the backstop honest: the same program with
+/// the instantiation hoisted out of the loop still builds and runs.
+/// Without it, "refuses" could mean "refuses every pinned program".
+#[test]
+fn a_pinned_locus_outside_a_loop_still_builds() {
+    let src = r#"
+        locus Worker {
+            params { id: Int = 0; }
+            run() { println("worker ", self.id); }
+        }
+
+        main locus App {
+            params {
+                w: Worker = Worker { id: 1 };
+            }
+            placement {
+                w: pinned;
+            }
+            run() { println("app"); }
+        }
+
+        fn main() {
+            App { };
+            return 0;
+        }
+    "#;
+    let out = run("gh826_pinned_no_loop", src);
+    assert_eq!(count(&out, "worker 1"), 1, "got:\n{out}");
+    assert_eq!(count(&out, "app"), 1, "got:\n{out}");
+}
