@@ -144,6 +144,92 @@ pub fn prim_name(p: PrimType) -> &'static str {
     }
 }
 
+/// The primitives that may be a GENERIC ARGUMENT, in the order the
+/// diagnostic names them.
+///
+/// ## Why this is shared (GH #911 B3, #907)
+///
+/// A generic instantiation has to be given a name before it can be
+/// declared — `Box<Int>` is lowered as the monomorph `Box_Int` — and
+/// the mangler minted a token for seven primitives while the checker
+/// had no opinion at all. So `type Holder { b: Box<Bytes>; }` passed
+/// `hale check` and died at build with "primitive `Bytes` as a
+/// generic argument", late, from another layer: the check-accepts /
+/// build-refuses divergence GH #911 exists to retire.
+///
+/// Four of those (`Bytes`, `BytesView`, `BytesMut`, `StringView`) are
+/// ordinary field types everywhere else in the language, so they got
+/// tokens. `Uint` could not: it has no codegen representation in ANY
+/// storage position (spec/types.md — parser-recognized, lowering
+/// pending), so there is no monomorph to name and the checker refuses
+/// the instantiation at its span instead.
+///
+/// Both layers read THIS table — codegen for the token
+/// ([`generic_arg_mangle_token`]) and the checker for the refusal
+/// ([`generic_arg_refusal`]) — so the two cannot drift the way
+/// `BARE_BUILTIN_CALLEES` did before it was gated in both directions.
+pub const GENERIC_ARG_PRIMS: &[PrimType] = &[
+    PrimType::Int,
+    PrimType::Float,
+    PrimType::Bool,
+    PrimType::String,
+    PrimType::Duration,
+    PrimType::Decimal,
+    PrimType::Time,
+    PrimType::Bytes,
+    PrimType::BytesView,
+    PrimType::BytesMut,
+    PrimType::StringView,
+];
+
+/// The mangle token `p` contributes to a monomorph name, or `None`
+/// when no monomorph can be named for it.
+///
+/// The match is exhaustive on purpose: a new [`PrimType`] does not
+/// compile until this function answers for it, and answering it here
+/// answers it for both layers at once.
+pub fn generic_arg_mangle_token(p: PrimType) -> Option<&'static str> {
+    match p {
+        PrimType::Int
+        | PrimType::Float
+        | PrimType::Bool
+        | PrimType::String
+        | PrimType::Duration
+        | PrimType::Decimal
+        | PrimType::Time
+        | PrimType::Bytes
+        | PrimType::BytesView
+        | PrimType::BytesMut
+        | PrimType::StringView => Some(prim_name(p)),
+        // No storage representation at all (spec/types.md), so there
+        // is nothing to mangle. Add it to `GENERIC_ARG_PRIMS` the day
+        // `Uint` lowers.
+        PrimType::Uint => None,
+    }
+}
+
+/// The supported set, rendered for the diagnostic.
+pub fn generic_arg_vocabulary() -> String {
+    GENERIC_ARG_PRIMS
+        .iter()
+        .copied()
+        .map(prim_name)
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+/// The one sentence both layers print for a primitive that cannot be
+/// a generic argument — the checker at the instantiation's span, and
+/// codegen if it ever reaches the mangler anyway.
+pub fn generic_arg_refusal(p: PrimType) -> String {
+    format!(
+        "`{}` cannot be a generic argument: no monomorph name exists \
+         for it (supported: {})",
+        prim_name(p),
+        generic_arg_vocabulary()
+    )
+}
+
 /// Form K (2026-05-20): does `ty` have a fixed, statically-known
 /// memory layout suitable for zero-copy bus payload routing?
 ///

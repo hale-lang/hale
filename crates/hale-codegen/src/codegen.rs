@@ -12943,25 +12943,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Primitives use their canonical name (`Int`, `String`,
     /// ...); a non-generic Named ref uses the bare name; a
     /// generic ref recurses through `mangle_generic_name`.
+    ///
+    /// GH #911 B3 (#907): the primitive half of the vocabulary is
+    /// `hale_types::ty::GENERIC_ARG_PRIMS`, which the CHECKER also
+    /// reads — it refuses an unnameable argument at its span, so this
+    /// arm is the layer of last resort rather than the first place the
+    /// author hears about it. It used to name seven primitives while
+    /// `Bytes` / `BytesView` / `BytesMut` / `StringView` were ordinary
+    /// field types everywhere else in the language, which is why
+    /// `Box<Bytes>` checked clean and refused to build.
     fn type_expr_mangle_token(t: &TypeExpr) -> Result<String, CodegenError> {
         match t {
-            TypeExpr::Primitive(p, span) => match p {
-                PrimType::Int => Ok("Int".into()),
-                PrimType::Float => Ok("Float".into()),
-                PrimType::Bool => Ok("Bool".into()),
-                PrimType::String => Ok("String".into()),
-                PrimType::Duration => Ok("Duration".into()),
-                PrimType::Decimal => Ok("Decimal".into()),
-                PrimType::Time => Ok("Time".into()),
-                // GH #241: user-reachable — carry the arg's span.
-                other => Err(CodegenError::UnsupportedAt(
-                    format!(
-                        "primitive `{:?}` as a generic argument                          (v0 supports Int / Float / Bool / String                          / Duration / Decimal / Time)",
-                        other
-                    ),
-                    *span,
-                )),
-            },
+            TypeExpr::Primitive(p, span) => {
+                match hale_types::ty::generic_arg_mangle_token(*p) {
+                    Some(token) => Ok(token.into()),
+                    // GH #241: user-reachable — carry the arg's span.
+                    None => Err(CodegenError::UnsupportedAt(
+                        hale_types::ty::generic_arg_refusal(*p),
+                        *span,
+                    )),
+                }
+            }
             TypeExpr::Named { path, generic_args, .. }
                 if path.segments.len() == 1 =>
             {
@@ -17794,8 +17796,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 scope,
                                 name,
                             )?;
-                        } else {
+                        } else if matches!(
+                            name,
+                            "println" | "print" | "eprintln" | "eprint"
+                        ) {
                             self.lower_print_call(name, args, scope)?;
+                        } else {
+                            // GH #911 B3 (#845): every other builtin
+                            // is answered by `lower_expr`, and
+                            // statement position is the same call with
+                            // its value dropped — so lower it as an
+                            // expression and discard the result.
+                            //
+                            // This arm used to be `lower_print_call`
+                            // alone, which knows only the four
+                            // printers, so `Int(3);` / `len(s);` /
+                            // `min(1, 2);` checked clean and died at
+                            // build with "builtin `Int`" while the
+                            // same call in expression position lowered
+                            // fine. The two positions now answer the
+                            // same vocabulary, and an unknown name
+                            // gets `diagnose_unresolved_callee`'s
+                            // message instead of the printer arm's.
+                            let Stmt::Expr(call) = stmt else {
+                                unreachable!(
+                                    "matched Stmt::Expr(Expr::Call) above"
+                                )
+                            };
+                            let _ = self.lower_expr(call, scope)?;
                         }
                     }
                     Expr::Path(qn) => {
@@ -25919,6 +25947,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// ordinary fn bodies and lifecycle-method bodies. The `e`-
     /// prefixed variants route to stderr via fprintf; the bare
     /// variants stay on stdout via printf.
+    ///
+    /// GH #911 B3 (#845): the statement dispatch now names the four
+    /// printers before it calls this, and sends every other builtin
+    /// through `lower_expr`. The guard below is therefore a defence
+    /// against a future caller, not the toolchain's answer for an
+    /// unknown name — which is why it was one for so long: this
+    /// function was the statement position's fallback, so `Int(3);`
+    /// was reported as "builtin `Int`".
     fn lower_print_call(
         &mut self,
         name: &str,
