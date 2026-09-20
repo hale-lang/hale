@@ -25,8 +25,6 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable;
-
 #[path = "support/harness.rs"]
 mod harness;
 
@@ -42,16 +40,9 @@ fn unique_path(tag: &str, ext: &str) -> PathBuf {
 /// Compile `src` with the IR dumped, return the `.ll` text.
 fn build_ir(tag: &str, src: &str) -> String {
     let bin = unique_path(tag, "bin");
-    let ir = bin.with_extension("ll");
     let program = hale_syntax::parse_source(src).expect("parse");
-    // SAFETY: single test thread; no concurrent env mutation.
-    std::env::set_var("LOTUS_DUMP_IR", "1");
-    let result = build_executable(&program, &bin);
-    std::env::remove_var("LOTUS_DUMP_IR");
-    result.expect("build");
-    let text = std::fs::read_to_string(&ir).expect("read IR");
+    let text = harness::build_ir_text(&program, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
-    let _ = std::fs::remove_file(&ir);
     text
 }
 

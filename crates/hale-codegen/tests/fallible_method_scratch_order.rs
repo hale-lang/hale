@@ -57,16 +57,12 @@ fn ir_and_run(
 ) -> (String, String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(name);
-    // Set-only, never unset: every test in this binary wants it, so
-    // parallel execution cannot observe a half-applied value. The
-    // dump path derives from `bin`, which is already unique per test.
-    unsafe { std::env::set_var("LOTUS_DUMP_IR", "1") };
-    build_executable(&program, &bin).expect("build");
-    let ir = std::fs::read_to_string(bin.with_extension("ll"))
-        .expect("LOTUS_DUMP_IR should have written a .ll");
+    // GH #843: the dump is a per-build option, so it needs no
+    // "set-only, never unset" reasoning about the process
+    // environment at all.
+    let ir = harness::build_ir_text(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
-    let _ = std::fs::remove_file(bin.with_extension("ll"));
     (
         ir,
         String::from_utf8_lossy(&out.stdout).to_string(),

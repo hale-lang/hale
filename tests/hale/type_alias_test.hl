@@ -15,6 +15,19 @@
 //   5. alias of an array and of a tuple;
 //   6. alias of a LOCUS — method dispatch goes to the target, so
 //      an alias is structural, never a dispatch target of its own.
+//
+// GH #831 added the one position #759 left out — CONSTRUCTION.
+// A struct / locus literal and an enum-variant path may now be
+// spelled with the alias name, and each of the shapes below both
+// TYPECHECKS and BUILDS (`hale test` runs the checker; the day
+// only one of them agreed is what #831 was about):
+//   7. `Row2 { ... }`, and through a chain of aliases;
+//   8. an alias declared inside a `module`;
+//   9. an alias of a generic instantiation — `IntPair { ... }`
+//      builds the monomorph `Pair_Int`;
+//  10. an alias of a LOCUS as a literal;
+//  11. an alias of an ENUM, constructing a variant and matching on
+//      one.
 
 type Row { id: Int; label: String; }
 
@@ -23,9 +36,17 @@ type Pair<T> { a: T; b: T; }
 type Thing = Int;
 type Thing2 = Thing;
 type Row2 = Row;
+type Row3 = Row2;
 type IntPair = Pair<Int>;
 type TwoRows = [Row2; 2];
 type Span = (Int, Int);
+
+type Color = enum { Red, Green };
+type C2 = Color;
+
+module geo {
+    type ModRow = Row;
+}
 
 // The alias in a struct field position.
 type Wrap { inner: Thing; row: Row2; }
@@ -86,4 +107,37 @@ fn main() {
     // is structural. Nothing attaches to the alias name itself.
     let held: Held = Holder { seed: Row { id: 3, label: "three" } };
     std::test::assert_eq_str(held.label(), "three", "dispatch through a locus alias");
+
+    // 7 — GH #831: the literal itself may name the alias, and the
+    // value it builds is the TARGET's (its fields, its methods).
+    let lit = Row2 { id: 12, label: "twelve" };
+    std::test::assert_eq_str(lit.label, "twelve", "literal spelled with the alias");
+    let chained = Row3 { id: 13, label: "thirteen" };
+    std::test::assert_eq_str(chained.label, "thirteen", "literal through an alias chain");
+    let ascribed: Row = Row2 { id: 14, label: "fourteen" };
+    std::test::assert_eq_int(ascribed.id, 14, "the alias literal IS the target type");
+
+    // 8 — an alias declared inside a `module`: one flat top-level
+    // namespace, so the literal spells it bare.
+    let from_mod = ModRow { id: 15, label: "fifteen" };
+    std::test::assert_eq_str(from_mod.label, "fifteen", "alias declared in a module");
+
+    // 9 — an alias of a generic instantiation constructs the
+    // monomorph, so `IntPair { }` and `Pair_Int { }` are one type.
+    let ip: IntPair = IntPair { a: 4, b: 5 };
+    std::test::assert_eq_int(ip.a + ip.b, 9, "literal through an alias of Pair<Int>");
+
+    // 10 — an alias of a locus instantiates the locus.
+    let via_alias = Held { seed: Row2 { id: 16, label: "sixteen" } };
+    std::test::assert_eq_str(via_alias.label(), "sixteen", "locus literal through an alias");
+
+    // 11 — an alias of an enum names its variants, both where a
+    // variant is CONSTRUCTED and where it is matched.
+    let c: Color = C2::Red;
+    let mut picked = "?";
+    match c {
+        C2::Red -> { picked = "red"; },
+        C2::Green -> { picked = "green"; },
+    }
+    std::test::assert_eq_str(picked, "red", "variant path through an enum alias");
 }

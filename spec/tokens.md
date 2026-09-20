@@ -633,6 +633,47 @@ casts; the remaining primitive-type names are types and nothing
 else. `to_string(x)`, `len(x)`, `abs(x)`, `min(a, b)`, `max(a, b)`
 are similarly bare-name builtins.
 
+#### Names a free `fn` may not take (GH #863)
+
+Four of these names are **claimed at the call site**, ahead of
+any user declaration:
+
+```
+sum             prod            min             max
+```
+
+`sum(` and `prod(` have their own production at expression head
+(the closure-assertion accumulators — see
+[`semantics.md` § Closure-test evaluation](semantics.md)); `min`
+and `max` are answered by codegen's math-builtin arm before it
+consults the program's free fns. A declaration of one of these
+names could therefore never be reached, so a **free `fn` may not
+take it** — the parser refuses the declaration, at the name:
+
+    `sum` is a built-in call form and cannot name a fn; rename it
+    (every `sum(...)` call site lowers to the builtin, so the
+    declaration could never be reached …)
+
+The rule is on the **declaration**, not the name. A locus
+method, an `interface` method and a `perspective` contract `fn`
+may all still be called `sum` — they are reached through a
+receiver (`self.sum()`, `b.min(x)`), which no builtin claims.
+A `module { }` item is a free fn (its items resolve into the
+same global fn namespace) and is refused.
+
+The rest of the element-chain vocabulary (`map`, `filter`,
+`count`, `into`, `any`, `all`, `first`, `find`, `each`, `take`,
+`skip`, `enumerate`, `sort_into`, `reverse_into`,
+`group_count_into` — [`semantics.md` § Element
+chains](semantics.md)) is recognized only after a `.`, so those
+names stay available to a free `fn`.
+
+Until GH #863 the declaration was accepted and the divergence
+appeared later: `hale check` passed, `hale build` refused the
+program with an unlocated `unsupported in codegen v0`, and a
+two-arg `fn min` built and silently ran the builtin instead of
+its body.
+
 `print` and `println` are built-in functions, always in scope
 without an `import`. They write to stdout. `print` does not
 emit a trailing newline; `println` does. They accept any number

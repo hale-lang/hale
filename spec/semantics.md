@@ -396,7 +396,14 @@ position by GH #711 / #812):
   inside the callee and handed back, so the expression that
   consumes the handle is its owner, with **the same timing as a
   let-bound literal**. A binding owns what it names; a call
-  result nothing names is owned by the enclosing fn's scope. This
+  result nothing names is owned by the enclosing fn's scope. What
+  a binding names is the expression written **at that position**,
+  not a factory call nested inside it: in `let x = combine(a,
+  make());` — and in `return combine(a, make());`, where the
+  caller is the owner — the binding (or the caller) owns
+  `combine`'s result, and `make`'s is a result nothing names,
+  owned by the enclosing fn's scope and reclaimed at its exit
+  (GH #837). This
   is the same rule in the **fallible** spelling, where the call
   is reached through `or` — `let c = std::process::spawn(argv)
   or raise;` is reclaimed exactly as `let h = make(argv);` is,
@@ -2749,6 +2756,15 @@ is just `xs.get(0) or …`; a stage-less sum can be written
 `xs.sort_into(sorted)` is their natural spelling, and the compound
 `*_into` names belong to this vocabulary — unlike bare `into`, no
 plausible user facade carries them (2026-08-11).
+
+Every stage and terminal above is recognized only **after a `.`**,
+so a free `fn map(...)` / `fn first(...)` / `fn count(...)` is
+admissible and is called as written. The exceptions are the four
+names the compiler claims at a BARE call site — `sum`, `prod`,
+`min`, `max` — which a free `fn` may not take; see
+[`tokens.md` § Built-in identifiers](tokens.md) for the rule and
+the diagnostic. A locus method may still carry any of them
+(2026-09-20, GH #863).
 
 ## Bus subscription dispatch
 

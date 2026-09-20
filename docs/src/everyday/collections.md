@@ -329,6 +329,37 @@ Operations that need to see every element before producing any — sorting,
 grouping — can't be part of a fused pass. Those write into storage you
 supply, and the allocation shows up where you can see it.
 
+### Can I name my own function `map`?
+
+Yes. Every stage and terminal on this page is recognized only after
+a `.`, so a free `fn map(...)`, `fn count(...)` or `fn first(...)`
+is an ordinary function and is called as written.
+
+Four names are the exception — `sum`, `prod`, `min` and `max` —
+because the compiler answers them at a *bare* call site, before it
+looks at your program:
+
+```hale,fragment
+fn sum(a: Int) -> Int { return a + 1; }    // error, at `sum`
+```
+
+> `` `sum` is a built-in call form and cannot name a fn; rename it ``
+
+`sum(x)` and `prod(x)` are the closure-test accumulators, and
+`min(a, b)` / `max(a, b)` are the arithmetic builtins, so a function
+of that name could never be the one that runs. Rename it — `sum_of`,
+`clamp_min` — and everything works.
+
+A *method* can still be called any of them, because a method is
+reached through a receiver and no builtin claims that position:
+
+```hale,fragment
+locus Bucket {
+    params { total: Int = 0; }
+    fn sum() -> Int { return self.total; }    // fine
+}
+```
+
 ## Membership
 
 If the question is only *is this here*, reach for a set rather than a

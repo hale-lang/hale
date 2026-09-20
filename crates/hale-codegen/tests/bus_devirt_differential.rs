@@ -14,18 +14,18 @@
 //! SAME `g_bus_entries` rows), so deferred-FIFO ordering is preserved
 //! — this harness proves it end to end.
 //!
-//! Single-threaded by construction: the dynamic arm toggles the
+//! The dynamic arm selects its lowering with
+//! `BuildOptions::no_bus_devirt`, so the two arms are per-build and
+//! cannot leak into each other (GH #843; it used to toggle the
 //! `LOTUS_NO_BUS_DEVIRT` process env around an in-process
-//! `build_executable`, so the whole harness lives in ONE test fn (run
-//! with `--test-threads=1`, the repo default).
+//! `build_executable`, which is why the whole harness was pinned to
+//! ONE test fn).
 
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-
-use hale_codegen::build_executable;
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -136,7 +136,7 @@ fn run(bin: &Path, cwd: &Path) -> Option<RunOutcome> {
 }
 
 /// Build `src` to a unique temp binary; `devirt` selects the static
-/// (default) vs dynamic (LOTUS_NO_BUS_DEVIRT=1) lowering. Returns the
+/// (default) vs dynamic (`no_bus_devirt`) lowering. Returns the
 /// binary path; the caller deletes it. `None` ⇒ build failed (the
 /// caller records it — a build failure on either arm is a harness
 /// failure, since both arms must compile identically).
@@ -148,15 +148,17 @@ fn build(src: &str, tag: &str, devirt: bool) -> Option<PathBuf> {
         if devirt { "stat" } else { "dyn" },
         std::process::id()
     ));
-    // SAFETY: the whole harness is one test fn on one thread; no other
-    // test in this binary mutates the environment concurrently.
-    if devirt {
-        std::env::remove_var("LOTUS_NO_BUS_DEVIRT");
-    } else {
-        std::env::set_var("LOTUS_NO_BUS_DEVIRT", "1");
-    }
-    let ok = build_executable(&program, &bin).is_ok();
-    std::env::remove_var("LOTUS_NO_BUS_DEVIRT");
+    // GH #843: the control arm used to force the all-dynamic
+    // lowering by writing `LOTUS_NO_BUS_DEVIRT` into the *process*
+    // environment. It is a per-build option now, so the two arms
+    // cannot leak into each other or into a concurrent build.
+    let options = hale_codegen::BuildOptions {
+        no_bus_devirt: !devirt,
+        ..Default::default()
+    };
+    let ok =
+        hale_codegen::build_executable_with_options(&program, &bin, &[], &options)
+            .is_ok();
     if ok {
         Some(bin)
     } else {

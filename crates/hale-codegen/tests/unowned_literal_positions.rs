@@ -89,14 +89,8 @@ fn build_and_run(tag: &str, src: &str) -> (String, String) {
 fn dump_ir(tag: &str, src: &str) -> String {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin: PathBuf = harness::unique_bin(&format!("unowned_lit_ir_{}", tag));
-    let ir = bin.with_extension("ll");
-    std::env::set_var("LOTUS_DUMP_IR", "1");
-    let result = build_executable(&program, &bin);
-    std::env::remove_var("LOTUS_DUMP_IR");
-    result.expect("build");
-    let text = std::fs::read_to_string(&ir).expect("read IR");
+    let text = harness::build_ir_text(&program, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
-    let _ = std::fs::remove_file(&ir);
     text
 }
 

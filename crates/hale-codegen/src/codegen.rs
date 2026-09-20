@@ -612,6 +612,40 @@ pub struct BuildOptions {
     /// strings. Meaningful only together with `model_hash`; harness
     /// callers leave it empty and every row reads 0 as before.
     pub obs_entity_ids: Vec<hale_model::obs_ids::ObsEntityId>,
+
+    // === GH #843: build knobs that used to be TEST-ONLY env vars ===
+    //
+    // Each of the five below is read from `LOTUS_*` when the option
+    // is left at its default, so the CLI and the shell keep the
+    // exact behavior they had. What changed is that a *test* asking
+    // for one no longer has to mutate the process environment:
+    // `std::env::set_var` is global to the process and is UB when
+    // another thread reads the environment concurrently, which under
+    // `cargo test` (libtest runs tests as threads in ONE process) is
+    // every other codegen test building at the same time.
+    /// Write the PRE-optimization LLVM IR to this path.
+    ///
+    /// Default `None` falls back to `LOTUS_DUMP_IR` being set in the
+    /// environment, which dumps to `output_path.with_extension("ll")`
+    /// — the CLI/shell spelling. The IR-shape tests pass the path.
+    pub dump_ir: Option<std::path::PathBuf>,
+    /// Force the all-dynamic bus lowering: the devirtualization plans
+    /// come out empty. The differential harness's control arm.
+    /// OR-ed with `LOTUS_NO_BUS_DEVIRT`.
+    pub no_bus_devirt: bool,
+    /// Force the pre-#2 ownership lowering: both bubble plans and the
+    /// forwarding sets come out empty, so the build declares no
+    /// threading fields and stitches nothing. OR-ed with
+    /// `LOTUS_NO_OWNERSHIP_BUBBLE`.
+    pub no_ownership_bubble: bool,
+    /// Build with AddressSanitizer and skip the O3 module pipeline,
+    /// so a leak/UAF report carries accurate frames. OR-ed with
+    /// `LOTUS_ASAN`.
+    pub asan: bool,
+    /// LTO flavor. `None` reads `LOTUS_LTO`; see [`LtoMode::parse`]
+    /// for the spellings. Ignored under any sanitizer and on wasm32,
+    /// exactly as the env spelling is.
+    pub lto: Option<LtoMode>,
 }
 
 /// The per-build source table for DWARF emission: each entry is one
@@ -698,19 +732,30 @@ fn env_flag(name: &str) -> bool {
 /// `thin` -> ThinLTO: per-module summaries drive cross-module import,
 /// then each module is optimized in PARALLEL. Most of full LTO's
 /// inlining wins at a fraction of the link cost.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LtoMode {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LtoMode {
+    #[default]
     Off,
     Thin,
     Full,
 }
 
-fn lto_mode() -> LtoMode {
-    match std::env::var("LOTUS_LTO").unwrap_or_default().as_str() {
-        "thin" | "THIN" | "Thin" => LtoMode::Thin,
-        "1" | "true" | "TRUE" | "full" | "FULL" => LtoMode::Full,
-        _ => LtoMode::Off,
+impl LtoMode {
+    /// The spellings `LOTUS_LTO` (and `BuildOptions::lto`) accept.
+    /// Anything unrecognized — including the empty string an unset
+    /// variable produces — is [`LtoMode::Off`], never an error and
+    /// never a silent upgrade to some flavor.
+    pub fn parse(s: &str) -> LtoMode {
+        match s {
+            "thin" | "THIN" | "Thin" => LtoMode::Thin,
+            "1" | "true" | "TRUE" | "full" | "FULL" => LtoMode::Full,
+            _ => LtoMode::Off,
+        }
     }
+}
+
+fn lto_mode() -> LtoMode {
+    LtoMode::parse(std::env::var("LOTUS_LTO").unwrap_or_default().as_str())
 }
 
 /// One-shot probe: is `ld.lld` on PATH? The non-LTO link uses it
@@ -1005,6 +1050,16 @@ pub fn build_executable_with_options(
     // the merged AST so `-> ()` and "no return type" are the same
     // program everywhere downstream.
     normalize_unit_return_annotations(&mut merged.items);
+    // GH #831: and normalize the other spelling nothing downstream
+    // should have to know about. `type Row2 = Row;` makes `Row2` a
+    // second spelling of `Row` in every TYPE position (GH #759); the
+    // CONSTRUCTION positions — `Row2 { }`, `Row2::Variant` — are read
+    // at roughly twenty `Expr::Struct` / variant-path sites in the
+    // lowering, none of which hold the alias table. Resolving the
+    // alias ONCE on the merged AST is what keeps `build` agreeing
+    // with `check`, which answers the same question in one hop from
+    // its own expanded table.
+    crate::mangle::resolve_construction_aliases(&mut merged, import_renames);
 
     // `program_has_offthread` — THE single source of truth for "does
     // any thread cross the bus boundary in this program". It drives
@@ -1068,7 +1123,7 @@ pub fn build_executable_with_options(
         std::collections::BTreeMap<String, u32>,
         std::collections::BTreeSet<String>,
         std::collections::BTreeMap<String, Vec<(String, String)>>,
-    ) = if env_flag("LOTUS_NO_BUS_DEVIRT") {
+    ) = if options.no_bus_devirt || env_flag("LOTUS_NO_BUS_DEVIRT") {
         (
             std::collections::BTreeMap::new(),
             std::collections::BTreeSet::new(),
@@ -1200,7 +1255,8 @@ pub fn build_executable_with_options(
         std::collections::BTreeMap<(String, String), String>,
         std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
         std::collections::BTreeMap<(String, String), String>,
-    ) = if env_flag("LOTUS_NO_OWNERSHIP_BUBBLE") {
+    ) = if options.no_ownership_bubble || env_flag("LOTUS_NO_OWNERSHIP_BUBBLE")
+    {
         (
             std::collections::BTreeMap::new(),
             std::collections::BTreeMap::new(),
@@ -1664,7 +1720,7 @@ pub fn build_executable_with_options(
     // caught. Separate from LOTUS_ASAN so the corpus-oracle ASan gate is
     // unaffected; used to validate the foreign-ring boundary hardening.
     let lotus_tsan = env_flag("LOTUS_TSAN");
-    let lotus_asan = env_flag("LOTUS_ASAN");
+    let lotus_asan = options.asan || env_flag("LOTUS_ASAN");
     let lotus_ubsan = env_flag("LOTUS_UBSAN");
     // LOTUS_LTO: opt-in LTO build. `thin` selects ThinLTO, `1`/`full`
     // selects monolithic LTO. The Hale module is emitted as
@@ -1699,7 +1755,7 @@ pub fn build_executable_with_options(
     // non-zero count (32) under off/thin/full. The whole example corpus
     // also runs byte-identical under thin (85/86; the one diff,
     // 20-pinned-core, is nondeterministic against itself).
-    let requested_lto = lto_mode();
+    let requested_lto = options.lto.unwrap_or_else(lto_mode);
     let sanitized = lotus_tsan || lotus_ubsan || lotus_asan;
     let lto_kind = if is_wasm || sanitized {
         LtoMode::Off
@@ -1709,8 +1765,17 @@ pub fn build_executable_with_options(
     let lto_active = lto_kind != LtoMode::Off;
 
     let obj_path: PathBuf = output_path.with_extension("o");
-    if std::env::var("LOTUS_DUMP_IR").is_ok() {
-        let ir_path = output_path.with_extension("ll");
+    // GH #843: `BuildOptions::dump_ir` names the file; the
+    // `LOTUS_DUMP_IR` spelling keeps its implied
+    // `output_path.with_extension("ll")`.
+    let ir_dump: Option<PathBuf> = match &options.dump_ir {
+        Some(p) => Some(p.clone()),
+        None if std::env::var("LOTUS_DUMP_IR").is_ok() => {
+            Some(output_path.with_extension("ll"))
+        }
+        None => None,
+    };
+    if let Some(ir_path) = ir_dump {
         let _ = cx.module.print_to_file(&ir_path);
     }
 
@@ -1799,9 +1864,11 @@ pub fn build_executable_with_options(
     }
 
     phase("front-end+codegen", &mut t_last);
-    let asan_diag = std::env::var("LOTUS_ASAN")
-        .map(|v| v == "1" || v == "true" || v == "TRUE")
-        .unwrap_or(false);
+    // Same predicate as `lotus_asan` above — read once there so
+    // `BuildOptions::asan` reaches BOTH halves of the diagnostic
+    // build (instrument, and skip the O3 pipeline that would move
+    // the frames the sanitizer report names).
+    let asan_diag = lotus_asan;
     if !asan_diag {
         let pb_opts = inkwell::passes::PassBuilderOptions::create();
         // Native runs the aggressive O3 module pipeline; wasm stays O2
@@ -7112,6 +7179,56 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .and_then(|f| self.fresh_locus_factories.get(&f))
             .map(|(l, _)| l == field_locus)
             .unwrap_or(false)
+    }
+
+    /// GH #837: does the expression a `let`, `return`, assignment or
+    /// field init NAMES take the `suppress_fresh_temp` decision
+    /// itself?
+    ///
+    /// The flag is one-shot and means "the value this site's
+    /// expression produces already has an owner — do not ALSO hand it
+    /// the frame temporary GH #402 gives an unowned factory result".
+    /// Nothing in the flag says which node it is about, so the taker
+    /// was whichever proven-fresh factory call lowering reached
+    /// first — and in `return combine(a, make());` that is the
+    /// ARGUMENT. `make()`'s result took the return's ownership and
+    /// nothing reclaimed it, while `combine`'s result — the value the
+    /// site actually named — was left to the rules for an ordinary
+    /// call. One value gained an owner it does not have and the other
+    /// lost the only one it could have had.
+    ///
+    /// So the site asks this before descending, and arms the flag
+    /// only for a node that can hand back the named value itself:
+    ///
+    ///   * a proven-fresh factory call — the GH #402 hook at the top
+    ///     of `lower_expr` takes the flag on that node, BEFORE
+    ///     descending into its arguments, so nested calls already see
+    ///     it clear;
+    ///   * an `or` wrapping one — `lower_or_expr` takes it on the
+    ///     outermost node (GH #793 / PR #835), which is this same fix
+    ///     for the one shape that had already bitten;
+    ///   * `if` / `match` / a block in value position, which hand
+    ///     back a nested expression's value unchanged, and where the
+    ///     flag reaches the arms exactly as it did before this rule.
+    ///     Per-ARM attribution (every arm's tail is its own named
+    ///     node, and only one of them runs) is a separate seam.
+    ///
+    /// Everything else — a call to a fn that is not a factory, a
+    /// method call, a struct literal, an operator — leaves the flag
+    /// clear, and every factory call inside it gets the frame
+    /// temporary an unowned result is supposed to get.
+    pub(crate) fn fresh_temp_decision_lands_on(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Call { callee, .. } => self
+                .callee_fn_name(callee)
+                .map(|f| self.fresh_locus_factories.contains_key(&f))
+                .unwrap_or(false),
+            Expr::Or { inner, .. } => {
+                self.fresh_temp_decision_lands_on(inner)
+            }
+            Expr::If(_) | Expr::Match(_) | Expr::Block(_) => true,
+            _ => false,
+        }
     }
 
     /// GH #383 / #793: is `binding` a local this frame must NOT
@@ -17727,10 +17844,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // the ownership DECISION, carried in the same
                 // one-shot flag: keep the suppression only when the
                 // value is not ours to reclaim.
+                //
+                // GH #837: and for the RHS node this binding NAMES,
+                // not for whichever factory call lowering reaches
+                // first. `let x = combine(make(), make());` used to
+                // hand the binding's decision to the first ARGUMENT,
+                // which left that result with no owner at all while
+                // the second argument took the frame temporary it was
+                // always going to take.
                 let rhs_is_or = matches!(value_to_lower, Expr::Or { .. });
                 let prev_sft = self.suppress_fresh_temp;
-                self.suppress_fresh_temp = !rhs_is_or
-                    || self.binding_escapes_this_frame(&name.name);
+                self.suppress_fresh_temp = (!rhs_is_or
+                    || self.binding_escapes_this_frame(&name.name))
+                    && self.fresh_temp_decision_lands_on(value_to_lower);
                 let lower_result =
                     self.lower_expr_into(value_to_lower, scope, hint_ty.as_ref());
                 self.suppress_fresh_temp = prev_sft;
@@ -18400,8 +18526,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // GH #402 hook registers the result as a temporary
                 // THIS frame owns and reclaims it at exit while the
                 // binding (and then the caller) still holds it.
+                //
+                // GH #837: the decision is about the RHS node the
+                // assignment names. `local.field = pick(a, make());`
+                // set it for the whole subtree, so `make()`'s result
+                // took the slot's ownership and went unreclaimed.
                 let assign_owns_locus_rhs = matches!(op, AssignOp::Eq)
-                    && matches!(slot_ty, CodegenTy::LocusRef(_));
+                    && matches!(slot_ty, CodegenTy::LocusRef(_))
+                    && self.fresh_temp_decision_lands_on(value);
                 let prev_sft = self.suppress_fresh_temp;
                 if assign_owns_locus_rhs {
                     self.suppress_fresh_temp = true;
@@ -22497,9 +22629,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // it as a temporary and dissolve it on the way out. Same
         // rule the returned-BINDING guard enforces for `return m;`,
         // applied to `return make(...)` .
+        //
+        // GH #837: for the node this `return` NAMES, and no other.
+        // Set unconditionally, the one-shot flag was taken by the
+        // first fresh-factory call lowering reached — in
+        // `return combine(a, make());` the ARGUMENT — so `make()`'s
+        // result was recorded as the caller's and this frame never
+        // reclaimed it, though the caller never sees it. When the
+        // returned expression is not a node that takes the decision
+        // itself, every factory call inside it is an unowned
+        // temporary this frame owns (GH #402).
         let _sft_guard = ();
         let prev_sft = self.suppress_fresh_temp;
-        self.suppress_fresh_temp = true;
+        self.suppress_fresh_temp = expr
+            .map(|e| self.fresh_temp_decision_lands_on(e))
+            .unwrap_or(false);
         let r = self.lower_return_inner(expr, scope);
         self.suppress_fresh_temp = prev_sft;
         return r;

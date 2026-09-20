@@ -2276,10 +2276,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // the registration this flag exists to stop moves
                     // from the GH #402 hook to `lower_or_expr` and
                     // F.17 reopens for fallible factories.
+                    //
+                    // GH #837: the decision belongs to the node this
+                    // field init names. `Router { quick: pick(a,
+                    // make("q")) }` is not a factory call — `pick`
+                    // hands back a locus somebody else holds — but it
+                    // armed the flag all the same, and the ARGUMENT's
+                    // result took it and went unreclaimed.
                     let field_owns_locus_rhs = matches!(
                         expr,
                         Expr::Call { .. } | Expr::Or { .. }
-                    ) && matches!(
+                    ) && self.fresh_temp_decision_lands_on(expr)
+                        && matches!(
                             info.fields.get(fname.as_str()).map(|(_, t)| t),
                             Some(CodegenTy::LocusRef(_)) | Some(CodegenTy::Interface(_))
                         );
@@ -2347,11 +2355,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // the same ownership rule for a default
                             // that is a factory call (F.17), in either
                             // the bare or the `or`-wrapped spelling
-                            // (GH #793)
+                            // (GH #793), for the node the default
+                            // names and no other (GH #837)
                             let field_owns_locus_rhs = matches!(
                                 e,
                                 Expr::Call { .. } | Expr::Or { .. }
-                            ) && matches!(
+                            ) && self.fresh_temp_decision_lands_on(e)
+                                && matches!(
                                     info.fields.get(fname.as_str()).map(|(_, t)| t),
                                     Some(CodegenTy::LocusRef(_)) | Some(CodegenTy::Interface(_))
                                 );

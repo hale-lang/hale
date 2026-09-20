@@ -52,13 +52,8 @@ fn run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
 fn build_dump_ir(name: &str, src: &str) -> String {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_form_vec_bce_{}", name));
-    std::env::set_var("LOTUS_DUMP_IR", "1");
-    build_executable(&program, &bin).expect("build");
-    std::env::remove_var("LOTUS_DUMP_IR");
-    let ll = bin.with_extension("ll");
-    let ir = std::fs::read_to_string(&ll).expect("IR dump written");
+    let ir = harness::build_ir_text(&program, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
-    let _ = std::fs::remove_file(&ll);
     ir
 }
 
