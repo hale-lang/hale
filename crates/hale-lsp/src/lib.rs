@@ -444,7 +444,13 @@ fn check_and_publish(
         // already has the bases, paths and text — there is no reason
         // to make the analyzer guess.
         bundle.sources = source_files(&file_bases, &sources);
-        let mut diags = hale_types::check_bundle_opts(&bundle, false);
+        // GH #721: the server typechecks only once the WHOLE seed
+        // parsed (above), so it holds a whole program and answers
+        // `hale check <dir>` exactly — including an identifier that
+        // binds nothing, which is a typo the editor should show while
+        // it is being typed rather than at the next build.
+        let mut diags =
+            hale_types::check_bundle_opts_whole_program(&bundle, false);
         diags.extend(hale_types::unbounded_alloc_warnings(&bundle, true));
         for d in &diags {
             let off = d.span.start.as_usize() as u32;

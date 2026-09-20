@@ -1,0 +1,111 @@
+// GH #703: a subscriber that ends while a message for it is already
+// queued. An accepted child that `terminate;`s in a handler, and a
+// parent that publishes to its accepted child and terminates in the
+// same handler, both left a queued cell whose handler then ran on the
+// freed arena — a cell carries the handler and self resolved at
+// enqueue, and quarantine only nulled the registry. Now a cell for a
+// self that ended is dropped at materialization, on its consumer's
+// thread, and the message reaches nobody, as a publish after the
+// dissolve does. A child held as a main param never crashed (its
+// subscriptions are torn down with the program); it is the control
+// that the fix changes nothing there.
+
+type Nudge { key: String = ""; }
+topic Nudges { payload: Nudge; subject: "t703.nudge"; keyed_by key; }
+type Kick { key: String = ""; }
+topic Kicks { payload: Kick; subject: "t703.kick"; keyed_by key; }
+type Life { key: String = ""; what: String = ""; }
+topic Lives { payload: Life; subject: "t703.life"; }
+
+// Ends itself on the first message it hears.
+locus Ender {
+    params { key: String = ""; heard: Int = 0; }
+    bus { subscribe Nudges as on_nudge where key == self.key; publish Lives; }
+    fn on_nudge(n: Nudge) {
+        self.heard = self.heard + 1;
+        Lives <- Life { key: self.key, what: "heard" };
+        terminate;
+    }
+    dissolve() { Lives <- Life { key: self.key, what: "dissolved" }; }
+}
+
+// Born in its owner's run(); the owner never releases it.
+locus RunOwner {
+    accept(c: Ender) { }
+    run() { Ender { key: "run-born" }; }
+}
+
+// Born in its owner's handler.
+locus HandlerOwner {
+    bus { subscribe Nudges as on_make where key == "make"; }
+    accept(c: Ender) { }
+    fn on_make(n: Nudge) { Ender { key: "handler-born" }; }
+}
+
+// A parent that nudges its child and ends in the same handler: the
+// child is reclaimed with it while the nudge is still queued.
+locus Parent {
+    params { key: String = ""; }
+    bus { subscribe Kicks as on_kick where key == self.key; publish Nudges; publish Lives; }
+    accept(c: Ender) { }
+    run() { Ender { key: self.key + ".c" }; }
+    fn on_kick(k: Kick) {
+        Nudges <- Nudge { key: self.key + ".c" };
+        terminate;
+    }
+    dissolve() { Lives <- Life { key: self.key, what: "dissolved" }; }
+}
+
+locus ParentOwner {
+    accept(p: Parent) { }
+    run() { Parent { key: "p" }; }
+}
+
+main locus App {
+    params {
+        run_owner: RunOwner = RunOwner { };
+        handler_owner: HandlerOwner = HandlerOwner { };
+        parent_owner: ParentOwner = ParentOwner { };
+        held: Ender = Ender { key: "held" };
+        lives: String = "";
+    }
+    bus { subscribe Lives as on_life; publish Nudges; publish Kicks; }
+    fn on_life(l: Life) { self.lives = self.lives + l.key + ":" + l.what + " "; }
+    @unbounded
+    fn count(item: String) -> Int {
+        let mut n = 0;
+        let mut rest = self.lives;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            if rest[0..sp] == item { n = n + 1; }
+            rest = rest[(sp + 1)..len(rest)];
+        }
+        return n;
+    }
+    run() {
+        Nudges <- Nudge { key: "make" };
+        std::time::sleep(100ms);
+        // two messages queued back to back for each ender: the first
+        // ends it; the second must reach nobody
+        Nudges <- Nudge { key: "run-born" };
+        Nudges <- Nudge { key: "run-born" };
+        Nudges <- Nudge { key: "handler-born" };
+        Nudges <- Nudge { key: "handler-born" };
+        Nudges <- Nudge { key: "held" };
+        Nudges <- Nudge { key: "held" };
+        // the parent's own kick, then its child's queued nudge
+        Kicks <- Kick { key: "p" };
+        std::time::sleep(300ms);
+        std::test::assert_eq_int(self.count("run-born:heard"), 1, "the run-born ender heard one message");
+        std::test::assert_eq_int(self.count("run-born:dissolved"), 1, "and ended once");
+        std::test::assert_eq_int(self.count("handler-born:heard"), 1, "the handler-born ender heard one message");
+        std::test::assert_eq_int(self.count("handler-born:dissolved"), 1, "and ended once");
+        std::test::assert_eq_int(self.count("held:heard"), 1, "the held ender heard one message");
+        std::test::assert_eq_int(self.count("held:dissolved"), 1, "and ended once");
+        std::test::assert_eq_int(self.count("p:dissolved"), 1, "the parent ended");
+        std::test::assert_eq_int(self.count("p.c:dissolved"), 1, "and its child with it");
+        std::test::assert_eq_int(self.count("p.c:heard"), 0, "the nudge queued for the reclaimed child reached nobody");
+    }
+}
+
+fn main() { App { }; }

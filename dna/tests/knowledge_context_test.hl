@@ -176,7 +176,7 @@ main locus App {
             k = k + 1;
         }
         std::test::assert_eq_int(self.rows("concern.raised"), 3, "three raised");
-        std::test::assert(std::str::contains(self.last("concern.raised", "org/app/echo"), "x3 severity 2"), self.last("concern.raised", "org/app/echo"));
+        std::test::assert(dna::concern_severity(self.last("concern.raised", "org/app/echo")) == 2 && std::str::contains(self.last("concern.raised", "org/app/echo"), "\"occurrence\": 3"), self.last("concern.raised", "org/app/echo"));
         std::test::assert_eq_int(self.rows("concern.proposed"), 1, "proposed once");
         let proposed = self.last("knowledge.proposed", "");
         std::test::assert(std::str::contains(proposed, "\"class\": \"concern\"") && std::str::contains(proposed, "\"author\": \"org/app/echo\"") && std::str::contains(proposed, "\"target\": \"org/app\""), "a concern by the tower rule, bound to the parent: " + proposed);

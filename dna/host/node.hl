@@ -176,6 +176,9 @@ locus Node {
     fn on_concern(c: dna::Concern) {
         let b = std::json::Builder { };
         b.begin_object();
+        // GH #689: its own id, so the answer to this concern is told from
+        // the answer to the next one from the same source
+        b.string_field("request", "c" + hex(millis()) + to_string(self.concerns_relayed));
         b.string_field("source", c.source);
         b.string_field("what", c.what);
         b.int_field("severity", c.severity);

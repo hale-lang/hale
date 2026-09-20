@@ -1,0 +1,38 @@
+// A genuinely missing group: the inline claim names `guests`, which
+// no seed declares. Resolving an imported main's claims in their own
+// seed must not make that vacuously true — the unknown-group
+// diagnostic stands, directly and through an import.
+@sealed
+locus SessionSigner {
+    params {
+        key: Int = 40961;
+    }
+    @effects(is: { secret_use })
+    fn stamp(room: Int) -> Int {
+        return room * 31 + self.key % 997;
+    }
+}
+
+locus Participant {
+    params {
+        name: String = "guest";
+        own: SessionSigner = SessionSigner { };
+    }
+    run() {
+        println("signed ", self.own.stamp(1));
+    }
+}
+
+group participants = { Participant };
+
+main locus ChatServer {
+    params {
+        ada: Participant = Participant { name: "ada" };
+    }
+    claims {
+        guests_sign_nothing: forbid reaches(guests, effects(secret_use));
+    }
+    run() {
+        std::time::sleep(10ms);
+    }
+}
