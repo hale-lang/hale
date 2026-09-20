@@ -548,6 +548,17 @@ fn describe_alloc(kind: &alloc_summary::AllocKind) -> String {
 /// is explicit — the diagnostic names both fixes. This is the
 /// Crumb batch-5 bug (a JS handler's `await sleep(400)` holding the
 /// engine pool) as a compile-time finding.
+///
+/// GH #791: the leaf set is `block` MINUS the leaves that park on an
+/// async_io pool ([`crate::stdlib_surface::ASYNC_IO_PARKING`]). This
+/// advisory is the one place in the effect engine that knows a
+/// placement, so it is the one place that can apply the park rule —
+/// and it has to, because the fix for the Crumb bug (PR #285's
+/// timer-only sleep park) turned the bug's own reproducer into a
+/// correct program that this warning still flagged, suggesting
+/// `@no_block`, which on that program is a compile error. The
+/// `block` classification itself stays placement-independent: see
+/// [`crate::stdlib_surface::ASYNC_IO_PARKING`] for why.
 fn placement_implied_diags(
     programs: &[&Program],
     summary: &AllocSummary,
@@ -630,6 +641,16 @@ fn placement_implied_diags(
                     Probe::Unresolved(name, _) => {
                         let segs: Vec<&str> = name.split("::").collect();
                         let eff = crate::stdlib_surface::effects_for(&segs)?;
+                        // GH #791: a leaf that parks here waits
+                        // WITHOUT holding the worker — the coro swaps
+                        // out and the drain keeps running — so it
+                        // stalls nobody and is not a finding. A
+                        // handler that reaches both a parking and a
+                        // genuinely blocking leaf still reports, with
+                        // the witness path naming the blocking one.
+                        if crate::stdlib_surface::parks_on_async_io(&segs) {
+                            return None;
+                        }
                         if eff.contains(EffectSet::BLOCK) {
                             Some(name.to_string())
                         } else {

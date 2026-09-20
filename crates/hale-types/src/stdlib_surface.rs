@@ -1364,3 +1364,68 @@ pub fn effects_for(segs: &[&str]) -> Option<EffectSet> {
         .find(|e| e.name == name)
         .map(|e| e.effects)
 }
+
+/// GH #791: the `block`-classified stdlib leaves that **park** on a
+/// `where async_io` cooperative pool instead of holding its worker.
+///
+/// The `block` classification in [`SURFACES`] is a property of the
+/// CALL — "this waits" — and stays placement-independent: the same
+/// `sleep` on a classic pool really does hold that pool's OS thread.
+/// What depends on placement is whether waiting *stalls anyone
+/// else*. On an async_io pool these leaves swap the coro out and the
+/// worker goes on draining, so the placement-implied advisory
+/// (`effects::placement_implied_diags`) must not count them — it
+/// used to, which made every async handler that sleeps carry a
+/// warning whose suggested fix (`@no_block`) is a compile error on
+/// the correct program.
+///
+/// Enumerated from the park lowering, not guessed. Each entry's
+/// lowering reaches a runtime primitive that calls
+/// `lotus_coop_park_on_fd{,_deadline}` or
+/// `lotus_time_sleep_park_try` when `lotus_io_on_async_io_pool()`,
+/// and has no blocking fallback on that path:
+///
+/// | path | runtime primitive |
+/// |---|---|
+/// | `std::time::sleep` | `lotus_time_sleep_park_try` (timer-only park, PR #285) |
+/// | `std::io::tcp::accept_one`, `__accept_one` | `lotus_tcp_accept_one` |
+/// | `std::io::tcp::__recv` | `lotus_tcp_recv_str` |
+/// | `std::io::tcp::__recv_bytes` | `lotus_tcp_recv_bytes` |
+/// | `std::io::tcp::recv_into` | `lotus_tcp_recv_into` |
+/// | `std::io::tcp::recv_stamped_into` | `lotus_tcp_recv_stamped` |
+/// | `std::io::udp::recv`, `__recv`, `recv_with_source` | `lotus_udp_recvfrom_async` |
+/// | `std::io::udp::recv_into` | `lotus_udp_recv_into` |
+/// | `std::io::tls::recv_into` | `lotus_tls_recv_into` |
+/// | `std::io::tls::recv_stamped_into` | `lotus_tls_recv_stamped_into` |
+///
+/// Deliberately ABSENT, and each for a reason read off the runtime:
+/// `tcp::connect` / `__connect` (`lotus_tcp_connect` — a blocking
+/// `connect(2)`, no park path), `tls::connect` / `upgrade` (blocking
+/// handshake), `tls::recv_bytes` (a plain `SSL_read`; only the
+/// `recv_into` family got the async_io park), `io::file` /
+/// `io::stdin` reads (regular files and the tty are not epoll-park
+/// targets here), `std::process::{run, wait, read_stdout,
+/// read_stderr}` and `std::http::*` (which reaches `connect`).
+/// These still stall the worker, so they still warn.
+pub const ASYNC_IO_PARKING: &[&[&str]] = &[
+    &["std", "io", "tcp", "__accept_one"],
+    &["std", "io", "tcp", "__recv"],
+    &["std", "io", "tcp", "__recv_bytes"],
+    &["std", "io", "tcp", "accept_one"],
+    &["std", "io", "tcp", "recv_into"],
+    &["std", "io", "tcp", "recv_stamped_into"],
+    &["std", "io", "tls", "recv_into"],
+    &["std", "io", "tls", "recv_stamped_into"],
+    &["std", "io", "udp", "__recv"],
+    &["std", "io", "udp", "recv"],
+    &["std", "io", "udp", "recv_into"],
+    &["std", "io", "udp", "recv_with_source"],
+    &["std", "time", "sleep"],
+];
+
+/// Does this stdlib path park (rather than hold the worker) when it
+/// runs on a `where async_io` cooperative pool? See
+/// [`ASYNC_IO_PARKING`].
+pub fn parks_on_async_io(segs: &[&str]) -> bool {
+    ASYNC_IO_PARKING.iter().any(|p| *p == segs)
+}
