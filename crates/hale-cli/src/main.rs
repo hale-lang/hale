@@ -1690,6 +1690,49 @@ fn collect_ap_files(target: &Path) -> Result<Vec<PathBuf>, String> {
 /// `alias::Name` references in user code.
 type ImportRenames = Vec<(Vec<String>, String)>;
 
+/// GH #746: who declared which import alias, so an alias can be
+/// scoped to its declaring seed the way the language scopes it.
+///
+/// An alias is seed-scoped (spec `projects.md`, "Scoped imports
+/// (A4)"): a lib's imports are reachable inside its own body only.
+/// `ImportRenames` above is one table per BUILD, keyed by the alias as
+/// written, so two seeds that spell different libs `u` used to collide
+/// in it — last row won and both seeds resolved to one lib, with no
+/// diagnostic anywhere (`hale check` passed, the binary computed the
+/// wrong value). This records the bindings as they are made; after
+/// resolution, `scope_import_aliases` gives every binder of a
+/// contested alias its own head and re-heads that seed's own
+/// references, so the one table can tell the two apart.
+#[derive(Default)]
+struct AliasScopes {
+    /// One row per import site: (declaring seed, alias, the lib the
+    /// alias names). Seeds and libs are canonical paths — the same
+    /// identity `seed_cache` and `lib_canonical_id` key off, so two
+    /// aliases for the same lib agree and never look contested.
+    bindings: Vec<(PathBuf, String, PathBuf)>,
+    /// Declaring seed -> its source files, canonical. A seed's files
+    /// share one alias namespace (they share one decl namespace), so
+    /// the rewrite applies to all of them.
+    files: BTreeMap<PathBuf, Vec<PathBuf>>,
+}
+
+impl AliasScopes {
+    fn record_binding(&mut self, seed: &Path, alias: &str, lib: &Path) {
+        self.bindings.push((
+            seed.to_path_buf(),
+            alias.to_string(),
+            lib.to_path_buf(),
+        ));
+    }
+
+    fn record_files(&mut self, seed: &Path, files: Vec<PathBuf>) {
+        self.files
+            .entry(seed.to_path_buf())
+            .or_default()
+            .extend(files);
+    }
+}
+
 /// Walk upward from `start` looking for a `Cargo.toml`; the first
 /// directory containing one is treated as the workspace root.
 /// Used for the workspace-root fallback in import resolution.
@@ -2055,6 +2098,11 @@ fn resolve_imports(
     // here and each seed's items are remapped into this table before
     // they are merged.
     effects: &mut EffectTable,
+    // GH #746: the seed whose imports these are — the canonical path
+    // of the entry target, or of the lib whose files are being
+    // followed. Every alias in `imports` is recorded against it.
+    scope_key: &Path,
+    alias_scopes: &mut AliasScopes,
 ) -> Result<(), ()> {
     // Defensive guards + env-gated tracing. The guards bound the
     // resolver's accumulators so a future bug (or pathological
@@ -2133,6 +2181,17 @@ fn resolve_imports(
                 return Err(());
             }
         };
+        // GH #746: the lib's identity, as `seed_cache` keys it — one
+        // key per lib however many aliases reach it.
+        let lib_key = match &target {
+            ImportTarget::Directory(d) => {
+                d.canonicalize().unwrap_or_else(|_| d.clone())
+            }
+            ImportTarget::SingleFile(f) => {
+                f.canonicalize().unwrap_or_else(|_| f.clone())
+            }
+        };
+        alias_scopes.record_binding(scope_key, &alias, &lib_key);
         // Parse every file in the import target into a parallel
         // (file_path, stem, source, Program) list, recording the
         // canon path in `visited` so we don't double-parse.
@@ -2208,15 +2267,7 @@ fn resolve_imports(
             // are missing. lib_canonical_id keys mangled names
             // off the canonical path, so both aliases map to the
             // same single compiled copy.
-            let cache_key = match &target {
-                ImportTarget::Directory(d) => {
-                    d.canonicalize().unwrap_or_else(|_| d.clone())
-                }
-                ImportTarget::SingleFile(f) => {
-                    f.canonicalize().unwrap_or_else(|_| f.clone())
-                }
-            };
-            if let Some(cached) = seed_cache.get(&cache_key) {
+            if let Some(cached) = seed_cache.get(&lib_key) {
                 for (name, mangled) in cached {
                     renames.push((
                         vec![alias.clone(), name.clone()],
@@ -2256,17 +2307,12 @@ fn resolve_imports(
         // declares a free fn of the alias's name.
         let seed_heads =
             hale_codegen::mangle::seed_path_heads(&stem_prog_refs);
-        {
-            let cache_key = match &target {
-                ImportTarget::Directory(d) => {
-                    d.canonicalize().unwrap_or_else(|_| d.clone())
-                }
-                ImportTarget::SingleFile(f) => {
-                    f.canonicalize().unwrap_or_else(|_| f.clone())
-                }
-            };
-            seed_cache.insert(cache_key, seed_renames.clone());
-        }
+        seed_cache.insert(lib_key.clone(), seed_renames.clone());
+        // GH #746: the lib's own files, for the alias-scoping pass.
+        alias_scopes.record_files(
+            &lib_key,
+            parsed_files.iter().map(|f| f.canon.clone()).collect(),
+        );
         if trace {
             eprintln!("[import]     build_seed_renames done (n={})", seed_renames.len());
         }
@@ -2333,6 +2379,11 @@ fn resolve_imports(
                 renames,
                 seed_cache,
                 effects,
+                // GH #746: these imports are declared by THIS lib, so
+                // its aliases are recorded against the lib, not
+                // against whoever imported it.
+                &lib_key,
+                alias_scopes,
             )?;
         }
         // Move mangled items into the merged program; stash sources.
@@ -2420,6 +2471,9 @@ fn parse_with_imports(
     // imported files get subsequent virtual bases in resolve_imports.
     let mut file_bases: Vec<(u32, PathBuf, u32)> =
         vec![(0, entry_canon.clone(), entry_source.len() as u32)];
+    // GH #746: the entry file is a seed of one, and its aliases are
+    // scoped to it like any lib's.
+    let entry_scope = entry_canon.clone();
     sources.insert(entry_canon, entry_source);
 
     let entry_imports = entry_program.imports.clone();
@@ -2430,6 +2484,8 @@ fn parse_with_imports(
     // `merged_items` and are never walked.
     let mut renames: ImportRenames = Vec::new();
     let mut seed_cache: BTreeMap<PathBuf, std::collections::HashMap<String, String>> = BTreeMap::new();
+    let mut alias_scopes = AliasScopes::default();
+    alias_scopes.record_files(&entry_scope, vec![entry_scope.clone()]);
 
     if resolve_imports(
         &entry_program.imports,
@@ -2443,6 +2499,8 @@ fn parse_with_imports(
         &mut renames,
         &mut seed_cache,
         &mut effects,
+        &entry_scope,
+        &mut alias_scopes,
     )
     .is_err()
     {
@@ -2469,6 +2527,15 @@ fn parse_with_imports(
         items: merged_items,
         span: entry_program.span,
     };
+    // GH #746: before anything resolves through the table, scope any
+    // alias two seeds bound to different libs.
+    scope_import_aliases(
+        &mut merged,
+        &mut renames,
+        &file_bases,
+        &alias_scopes,
+        &seed_cache,
+    );
     // brained F.1 (2026-05-23): rewrite `alias::Name` type
     // references in the entry program's TypeExprs to the
     // matching mangled single name. Lets the typechecker
@@ -2485,6 +2552,134 @@ fn parse_with_imports(
         imports: entry_imports,
     };
     Ok((merged, renames, sources, file_bases, ctx))
+}
+
+/// GH #746: scope an import alias to the seed that declared it, in the
+/// per-build rename table as the language scopes it in source.
+///
+/// The table is keyed by the alias as written, so two seeds that bind
+/// the same alias name to DIFFERENT libs collided in it: the last row
+/// pushed won and BOTH seeds' `alias::Name` references resolved to one
+/// lib. `hale check` passed — it resolves through the same table — and
+/// the binary computed the wrong value, silently.
+///
+/// The rule the language states is per-seed, so the fix is per-seed:
+/// each binder of a contested alias gets a head of its own (`u` ->
+/// `u$0`, `u$1`, in canonical-path order so a build is reproducible),
+/// its rows are registered under that head, and its own files'
+/// references are re-headed to match. `$` cannot occur in an
+/// identifier, so a scoped head can never collide with a user name;
+/// diagnostics demangle back to the alias the author wrote.
+///
+/// The contested plain keys are REMOVED, not left beside the scoped
+/// ones. A reference the rewrite fails to reach then fails loudly
+/// ("unknown qualified name `u::f`") instead of quietly resolving to
+/// whichever lib the table happened to hold — the failure mode this
+/// whole pass exists to end.
+///
+/// Uncontested aliases — every build until one of these appears,
+/// including the many seeds that all say `as dna` for the same lib —
+/// keep the plain head and take no rewrite at all.
+///
+/// Out of scope: one seed whose own files bind the same alias to two
+/// libs. That is a single namespace disagreeing with itself, not a
+/// build-global leak; it keeps the historical last-writer-wins
+/// reading (deterministic here, by canonical-path order).
+fn scope_import_aliases(
+    program: &mut Program,
+    renames: &mut ImportRenames,
+    file_bases: &[(u32, PathBuf, u32)],
+    scopes: &AliasScopes,
+    seed_cache: &BTreeMap<PathBuf, std::collections::HashMap<String, String>>,
+) {
+    let mut libs_of_alias: BTreeMap<&str, std::collections::BTreeSet<&Path>> =
+        BTreeMap::new();
+    for (_, alias, lib) in &scopes.bindings {
+        libs_of_alias
+            .entry(alias.as_str())
+            .or_default()
+            .insert(lib.as_path());
+    }
+    let contested: std::collections::BTreeSet<&str> = libs_of_alias
+        .iter()
+        .filter(|(_, libs)| libs.len() > 1)
+        .map(|(alias, _)| *alias)
+        .collect();
+    if contested.is_empty() {
+        return;
+    }
+    // seed -> (alias -> scoped head), and the rows each scoped head
+    // needs (the lib's `name -> mangled` map, as `seed_cache` has it).
+    let mut heads: BTreeMap<&Path, std::collections::HashMap<String, String>> =
+        BTreeMap::new();
+    let mut scoped_rows: Vec<(String, &Path)> = Vec::new();
+    for alias in &contested {
+        let mut binders: Vec<(&Path, &Path)> = scopes
+            .bindings
+            .iter()
+            .filter(|(_, a, _)| a == alias)
+            .map(|(seed, _, lib)| (seed.as_path(), lib.as_path()))
+            .collect();
+        binders.sort();
+        binders.dedup();
+        for (i, (seed, lib)) in binders.iter().enumerate() {
+            let head = format!("{}${}", alias, i);
+            heads
+                .entry(seed)
+                .or_default()
+                .insert((*alias).to_string(), head.clone());
+            scoped_rows.push((head, lib));
+        }
+    }
+    renames.retain(|(key, _)| {
+        !key.first()
+            .is_some_and(|head| contested.contains(head.as_str()))
+    });
+    for (head, lib) in &scoped_rows {
+        let Some(names) = seed_cache.get(*lib) else { continue };
+        let mut sorted: Vec<(&String, &String)> = names.iter().collect();
+        sorted.sort();
+        for (name, mangled) in sorted {
+            renames.push((vec![head.clone(), name.clone()], mangled.clone()));
+        }
+    }
+    // Re-head each seed's own references. Every file is parsed at its
+    // own virtual base, so a merged item's span says which file it
+    // came from (`locate_span`'s rule).
+    for (seed, map) in &heads {
+        let Some(files) = scopes.files.get(*seed) else { continue };
+        // `file_bases` holds the path as the caller spelled it — the
+        // entry path canonicalizes, `parse_files` (the directory
+        // paths) does not — so compare both spellings.
+        let ranges: Vec<(u32, u32)> = file_bases
+            .iter()
+            .filter(|(_, path, _)| {
+                files.contains(path)
+                    || path
+                        .canonicalize()
+                        .is_ok_and(|canon| files.contains(&canon))
+            })
+            .map(|(base, _, len)| (*base, base.saturating_add(*len)))
+            .collect();
+        if ranges.is_empty() {
+            continue;
+        }
+        for item in &mut program.items {
+            let off = item.span().start.as_usize() as u32;
+            if ranges.iter().any(|(lo, hi)| off >= *lo && off < *hi) {
+                hale_codegen::mangle::rewrite_import_alias_heads(item, map);
+            }
+        }
+    }
+    if std::env::var("HALE_IMPORT_DEBUG").is_ok() {
+        for alias in &contested {
+            eprintln!(
+                "[import] alias `{}` names {} libs; scoped per seed (GH #746)",
+                alias,
+                libs_of_alias.get(*alias).map(|l| l.len()).unwrap_or(0),
+            );
+        }
+    }
 }
 
 
@@ -2673,6 +2868,12 @@ fn collect_checkable(
     } else {
         target.parent().unwrap_or(Path::new(".")).to_path_buf()
     };
+    // GH #746: the check target is one seed; its files share one alias
+    // namespace, which is the union of imports resolved just below.
+    let target_scope =
+        target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
+    let mut alias_scopes = AliasScopes::default();
+    alias_scopes.record_files(&target_scope, own.iter().cloned().collect());
     if resolve_imports(
         &union_imports,
         &importer_dir,
@@ -2685,6 +2886,8 @@ fn collect_checkable(
         &mut renames,
         &mut seed_cache,
         &mut effects,
+        &target_scope,
+        &mut alias_scopes,
     )
     .is_err()
     {
@@ -2706,6 +2909,15 @@ fn collect_checkable(
         items: merged_items,
         span: merged.span,
     };
+    // GH #746: scope a contested alias to its declaring seed before
+    // anything resolves through the table.
+    scope_import_aliases(
+        &mut program,
+        &mut renames,
+        &file_bases,
+        &alias_scopes,
+        &seed_cache,
+    );
     // Same pre-pass `run`/`build` apply: rewrite qualified-path
     // TypeExprs to their mangled targets, so a cross-seed payload
     // type resolves instead of rendering as `?`.
@@ -5942,6 +6154,17 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         };
     }
     let mut import_errors: Vec<(PathBuf, hale_syntax::Diag, String)> = Vec::new();
+    // GH #746: the directory is one seed; its aliases are scoped to it.
+    let target_scope =
+        target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
+    let mut alias_scopes = AliasScopes::default();
+    alias_scopes.record_files(
+        &target_scope,
+        files
+            .iter()
+            .map(|f| f.canonicalize().unwrap_or_else(|_| f.clone()))
+            .collect(),
+    );
     if resolve_imports(
         &union_imports,
         target,
@@ -5954,6 +6177,8 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         &mut renames,
         &mut seed_cache,
         &mut effects,
+        &target_scope,
+        &mut alias_scopes,
     )
     .is_err()
         || !import_errors.is_empty()
@@ -5976,6 +6201,13 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     // apply sync inference before typecheck — the same pre-passes
     // `hale build <dir>` runs, so a directory `run` and `build`
     // agree.
+    scope_import_aliases(
+        &mut program,
+        &mut renames,
+        &file_bases,
+        &alias_scopes,
+        &seed_cache,
+    );
     hale_codegen::mangle::apply_qualified_path_renames(&mut program, &renames);
     hale_syntax::json_gen::generate_json_parsers(&mut program);
     // Pre-pass diags are re-raised by `check_bundle_opts` below
@@ -6099,6 +6331,18 @@ fn run_build(target: &Path) -> ExitCode {
             }
         }
         let mut import_errors: Vec<(PathBuf, hale_syntax::Diag, String)> = Vec::new();
+        // GH #746: the directory is one seed; its aliases are scoped
+        // to it.
+        let target_scope =
+            target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
+        let mut alias_scopes = AliasScopes::default();
+        alias_scopes.record_files(
+            &target_scope,
+            files
+                .iter()
+                .map(|f| f.canonicalize().unwrap_or_else(|_| f.clone()))
+                .collect(),
+        );
         if resolve_imports(
             &union_imports,
             target,
@@ -6111,6 +6355,8 @@ fn run_build(target: &Path) -> ExitCode {
             &mut renames,
             &mut seed_cache,
             &mut effects,
+            &target_scope,
+            &mut alias_scopes,
         )
         .is_err()
         {
@@ -6135,6 +6381,14 @@ fn run_build(target: &Path) -> ExitCode {
             items: merged_items,
             span: merged.span,
         };
+        // GH #746: scope a contested alias to its declaring seed.
+        scope_import_aliases(
+            &mut with_imports,
+            &mut renames,
+            &dir_file_bases,
+            &alias_scopes,
+            &seed_cache,
+        );
         // brained F.1: rewrite qualified-path TypeExprs in the
         // entry program before typecheck (see parse_with_imports
         // for the rationale).
