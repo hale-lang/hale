@@ -10,15 +10,23 @@
 //
 // 2. `std::process::spawn(argv) -> Child fallible(IoError)` plus
 //    free fns `wait` / `kill` / `write_stdin` / `read_stdout` /
-//    `read_stderr` — async lifecycle for long-running children
-//    (a build job, a TUI process, etc.). Each of these is the
-//    user-facing path-call surface; codegen routes it to the
+//    `read_stderr` / `adopt` — async lifecycle for long-running
+//    children (a build job, a TUI process, etc.). Each of these is
+//    the user-facing path-call surface; codegen routes it to the
 //    bare `__std_process_*` fn declared below (same pattern as
 //    `std::http::parse_request` → `__parse_http_request`).
 //
+//    `adopt(dest, src)` (GH #716) moves a spawned handle into a
+//    Child the caller already owns — a locus's own `params` field —
+//    so a service can retain its subprocess past the method that
+//    started it. It is the ownership transfer; `self.child =
+//    std::process::spawn(…)` is refused because a locus-typed field
+//    takes only a locus LITERAL (GH #383).
+//
 // The `Child` locus's dissolve() reaps any unwaited child
-// (TERM → wait 100ms → KILL → waitpid) so the parent doesn't
-// leak zombies on scope exit.
+// (TERM → wait 100ms → KILL → waitpid) so an owner that is
+// reclaimed doesn't leave zombies behind. See "fd cleanup and who
+// runs it" below for which handles have such an owner.
 //
 // **Argv shape.** Newline-separated String. argv[0] is the
 // executable, argv[1..] are args. Hale's array surface is
@@ -41,10 +49,36 @@
 // to a closed pipe surface EPIPE via the IoError channel instead
 // of killing the parent.
 //
-// **fd cleanup.** Child.dissolve() closes all three pipe fds and
-// reaps the process. dissolve() runs at scope exit (m82) so a
-// `let c = std::process::spawn(...) or raise;` cleans up
-// automatically when the surrounding fn returns.
+// **fd cleanup and who runs it.** Child.dissolve() closes all three
+// pipe fds and reaps the process — but it only runs for a Child some
+// owner reclaims, and a Child that a FACTORY returned has no such
+// owner. `std::process::spawn` is a free fn returning a locus, and a
+// factory-returned locus is routed to a program-lifetime arena and
+// never reclaimed (GH #383 — "the leak is the safety mechanism"), so
+// its dissolve never runs:
+//
+//   let c = std::process::spawn("sleep\n30") or raise;
+//   // …fn returns: c's dissolve does NOT run. The pipe fds stay
+//   // open, the handle's arena leaks, and the child is still
+//   // running when the program exits.
+//
+// (This block used to claim the opposite — that scope exit cleaned a
+// let-bound spawn up. It did once, under m82; #383's ownership
+// decision changed it, and the comment drifted.)
+//
+// To get teardown, the handle has to belong to something that IS
+// reclaimed — a locus's own `params` field:
+//
+//   locus Job {
+//       params { child: std::process::Child = std::process::Child { }; }
+//       fn start(argv: String) {
+//           let s = std::process::spawn(argv) or std::process::Child { };
+//           std::process::adopt(self.child, s);
+//       }
+//   }
+//
+// Now the owner's dissolve closes the pipes and reaps the child, and
+// `adopt` does the same for a handle it displaces.
 
 // User-facing capture-output struct. Returned by `std::process::run`.
 /// A finished child's exit code + captured stdout/stderr
@@ -79,8 +113,9 @@ type __StdProcessWaitOutcome {
 }
 
 // Lifecycle-bound subprocess handle. Construct via
-// `std::process::spawn(argv)`; let-bind so dissolve() runs at
-// scope exit.
+// `std::process::spawn(argv)` and move it into a Child an owner
+// reclaims — see "fd cleanup and who runs it" above; a let-bound
+// factory result is never reclaimed, so its dissolve never runs.
 //
 // Methods are absent on purpose — the two-channel rule blocks
 // locus methods from declaring `fallible(E)`, and every
@@ -90,8 +125,15 @@ type __StdProcessWaitOutcome {
 // `read_stdout` / `read_stderr`) carries the value channel.
 //
 // dissolve() is the only "method" the locus ships: it kills (TERM
-// → 100ms grace → KILL) and reaps any unwaited child so the
-// parent doesn't leak zombies on early scope exit.
+// → 100ms grace → KILL) and reaps any unwaited child so the owner
+// that reclaims this handle doesn't leak zombies.
+//
+// **One owner.** Exactly one Child instance owns a given pid + fd
+// triple, and it is the one whose dissolve closes them. To keep a
+// spawned child alive past the method that spawned it, move the
+// handle into a Child you own with `std::process::adopt` (GH #716) —
+// which disarms the source, so the ownership stays single. Copying
+// the fields out by hand leaves two armed handles and double-closes.
 /// A spawned child process handle: pid + I/O fds. `pid <= 0`
 /// is the not-running sentinel (manual construction is legal;
 /// the wait/kill family no-ops on it).
@@ -111,30 +153,141 @@ locus __StdProcessChild {
         stderr_fd: Int = -1;
     }
     dissolve() {
-        // Close pipe fds first so any blocked child read/write
-        // unsticks. close(-1) is fine — lotus_tcp_close_fd guards.
-        std::io::tcp::__close_fd(self.stdin_fd);
-        std::io::tcp::__close_fd(self.stdout_fd);
-        std::io::tcp::__close_fd(self.stderr_fd);
-        // Kill + reap any unwaited child. lotus_process_kill_escalate
-        // is idempotent — if the child was already reaped (by an
-        // explicit wait()), it returns 0 cleanly because the
-        // underlying ESRCH/ECHILD codes are mapped to success.
-        // For -1 (never spawned), we skip the call entirely so
-        // we don't synthesize a phantom IoError on a benign path.
-        // `or discard` because dissolve can't propagate via the
-        // value channel (two-channel rule) and dissolve is
-        // already a best-effort cleanup path — surfacing the
-        // error to the bus or panicking would mask the original
-        // teardown intent.
-        if self.pid > 0 {
-            std::process::__kill_escalate(self.pid) or discard;
-        }
+        // One teardown spine (GH #716): dissolve and `adopt`'s
+        // release of an outgoing handle must close and reap
+        // identically, or "exactly one owner" is only true on one
+        // of the two paths.
+        __std_process_release(self);
     }
 }
 
-// Spawn a subprocess. Returns a fully-populated Child whose
-// dissolve() owns cleanup. Surfaced as `std::process::spawn` via
+// Release everything one Child handle owns — the three pipe fds and
+// the process — and leave the handle EMPTY. The single teardown
+// spine behind both `Child.dissolve()` and `std::process::adopt`
+// (GH #716).
+//
+// Close pipe fds first so any blocked child read/write unsticks.
+// close(-1) is fine — lotus_tcp_close_fd guards. The fds are then
+// reset to -1 *before* anything else can spawn, so a second release
+// of the same handle cannot close a descriptor number the kernel
+// has since handed to another child: the close happens exactly once
+// per descriptor, at the moment this handle stops owning it.
+//
+// Kill + reap any unwaited child. lotus_process_kill_escalate is
+// idempotent — if the child was already reaped (by an explicit
+// wait()), it returns 0 cleanly because the underlying ESRCH/ECHILD
+// codes are mapped to success. For -1 (never spawned), we skip the
+// call entirely so we don't synthesize a phantom IoError on a benign
+// path. `or discard` because a teardown path can't propagate via the
+// value channel (two-channel rule) and this is already best-effort
+// cleanup — surfacing the error to the bus or panicking would mask
+// the original teardown intent.
+//
+// Internal: no `std::process::` path, so it is reachable only from
+// inside this module.
+fn __std_process_release(c: std::process::Child) {
+    std::io::tcp::__close_fd(c.stdin_fd);
+    std::io::tcp::__close_fd(c.stdout_fd);
+    std::io::tcp::__close_fd(c.stderr_fd);
+    c.stdin_fd = -1;
+    c.stdout_fd = -1;
+    c.stderr_fd = -1;
+    if c.pid > 0 {
+        std::process::__kill_escalate(c.pid) or discard;
+    }
+    c.pid = -1;
+    c.argv = "";
+}
+
+// Move a spawned handle into a Child the caller already owns —
+// typically a locus's own `params` field, so the subprocess outlives
+// the method that started it (GH #716). Surfaced as
+// `std::process::adopt`.
+//
+//   locus Job {
+//       params { child: std::process::Child = std::process::Child { }; }
+//       fn start(argv: String) {
+//           let s = std::process::spawn(argv) or std::process::Child { };
+//           std::process::adopt(self.child, s);
+//       }
+//   }
+//
+// Why this exists rather than `self.child = std::process::spawn(…)`:
+// a locus-typed field may only be assigned a locus LITERAL, because
+// a store would leave the field pointing at an instance the
+// producing frame also claims (GH #383, spec/semantics.md §
+// "Reassigning a locus-typed field"). `adopt` is not a locus store —
+// it transfers the handle's *state* into the instance the field
+// already owns, so there is never a second owner to decide between.
+//
+// Exactly one owner, at every instant:
+//
+//   1. `dest`'s outgoing handle is released first (fds closed,
+//      process TERM→KILL→reaped) while its descriptors are still
+//      open and therefore still uniquely its own — the kernel cannot
+//      have reissued those numbers to `src`, because they were not
+//      free when `src` spawned. So a re-spawn into the same field
+//      never closes the new child's pipes.
+//   2. `src`'s pid + fds move into `dest`.
+//   3. `src` is DISARMED: whenever its teardown runs — its owner's
+//      dissolve, or never at all if it is a factory result (see "fd
+//      cleanup and who runs it" above) — it sees the not-spawned
+//      sentinels and releases nothing. This is the step the
+//      hand-rolled workaround had to get right by hand, and the one
+//      whose absence double-closes: without it, handing a handle
+//      from one owner to another kills the process the second owner
+//      just took on, as soon as the first is reclaimed.
+//
+// `adopt` terminates the handle `dest` was holding. A supervisor
+// that wants the outgoing child's exit code calls
+// `wait`/`try_wait` before adopting the replacement.
+//
+// Adopting an *empty* handle (`std::process::Child { }` — what the
+// `or` disposition on a failed `spawn` hands back) is the documented
+// way to leave the field empty: `dest` is released and left at the
+// not-spawned sentinels, so a spawn failure never leaves a
+// half-constructed handle behind.
+//
+// Infallible on purpose: the release is best-effort teardown (same
+// reasoning as dissolve), so `adopt` needs no disposition and is
+// callable straight from a locus method.
+/// Move `src`'s pid + pipe fds into `dest` (a field you own),
+/// releasing whatever `dest` held and disarming `src` — the
+/// one-owner handoff for a long-lived subprocess.
+fn __std_process_adopt(dest: std::process::Child, src: std::process::Child) {
+    // Same handle already in place (including `adopt(x, x)`):
+    // releasing would close live descriptors and then disarm the
+    // only owner, stranding the process. Nothing to transfer.
+    if dest.pid == src.pid {
+        if dest.stdin_fd == src.stdin_fd {
+            return;
+        }
+    }
+    __std_process_release(dest);
+    // argv is CLONED, not aliased: the field's copy must be owned by
+    // the field (the single-owner rule for cells), not a pointer into
+    // the arena `src` was built in. Not observable today — a
+    // factory-returned locus's arena is never reclaimed (GH #383,
+    // "the leak is the safety mechanism"), so the alias survives —
+    // which is exactly why the rule has to be kept by hand here: the
+    // day those loci get a real lifetime, an aliased argv is a read
+    // of freed memory rather than a stale string.
+    dest.argv = std::str::clone(src.argv);
+    dest.pid = src.pid;
+    dest.stdin_fd = src.stdin_fd;
+    dest.stdout_fd = src.stdout_fd;
+    dest.stderr_fd = src.stderr_fd;
+    src.argv = "";
+    src.pid = -1;
+    src.stdin_fd = -1;
+    src.stdout_fd = -1;
+    src.stderr_fd = -1;
+}
+
+// Spawn a subprocess. Returns a fully-populated Child. Cleanup is
+// the owner's: move the handle into a Child something reclaims with
+// `std::process::adopt` — a factory result has no owner and its
+// dissolve never runs. Surfaced as `std::process::spawn` via
 // path-call dispatch in codegen.
 //
 // Errors:

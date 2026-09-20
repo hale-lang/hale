@@ -72,6 +72,68 @@ fn assigning_a_factory_result_into_a_locus_field_is_rejected() {
     assert!(m.contains("accept("), "must offer accept(): {}", m);
 }
 
+/// GH #716: the refusal must name the transfer that DOES exist for a
+/// `std::process::Child`. The general remedies do not reach it — the
+/// pid and the three pipe fds come out of a syscall inside a factory,
+/// so there is no literal to write and `accept()` cannot adopt what a
+/// free fn built. Without this paragraph the author's only route is
+/// the one the issue reported: copy the handle's fields across by hand
+/// and clear the original so its dissolve doesn't close the pipes,
+/// which is a double-close whenever it is written slightly wrong.
+#[test]
+fn the_refusal_names_adopt_for_a_process_child_field() {
+    let src = r#"
+        locus Job {
+            params { child: std::process::Child = std::process::Child { }; }
+            fn start(argv: String) {
+                self.child = std::process::spawn(argv) or std::process::Child { };
+            }
+        }
+        fn main() { let j = Job { }; j.start("sleep\n1"); }
+    "#;
+    assert!(fires(src), "expected the diagnostic:\n{:#?}", msgs(src));
+    let m = msgs(src)
+        .into_iter()
+        .find(|m| m.contains("ownership would be ambiguous"))
+        .expect("checked above");
+    assert!(
+        m.contains("std::process::adopt(self.child, spawned)"),
+        "must show the transfer with the author's own field name: {}",
+        m
+    );
+    assert!(
+        m.contains("empty"),
+        "must say what a failed spawn leaves behind: {}",
+        m
+    );
+}
+
+/// ...and only for that one. A user locus keeps the general message —
+/// the stdlib-handle paragraph would be advice nobody can follow.
+#[test]
+fn an_ordinary_locus_field_gets_no_adopt_advice() {
+    let src = r#"
+        locus Conn { params { url: String = ""; } }
+        locus Server {
+            params { conn: Conn = Conn { }; }
+            fn swap(u: String) {
+                let c = Conn { url: u };
+                self.conn = c;
+            }
+        }
+        fn main() { let s = Server { }; s.swap("x"); }
+    "#;
+    let m = msgs(src)
+        .into_iter()
+        .find(|m| m.contains("ownership would be ambiguous"))
+        .expect("the general refusal still fires");
+    assert!(
+        !m.contains("adopt"),
+        "a user locus has no transfer to point at: {}",
+        m
+    );
+}
+
 #[test]
 fn assigning_a_let_bound_locus_into_a_field_is_rejected() {
     // Same ambiguity via a local binding rather than a direct call.

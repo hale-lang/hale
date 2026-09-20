@@ -786,6 +786,24 @@ lock) and drained at pool teardown, so a busy async pool retains up
 to 64 × 64 KiB (~4 MiB) of coro stacks at steady state. Transparent
 to user code — a pure allocation optimization, no behavior change.
 
+**A handler's payload is its own until it returns, across parks**
+(GH #781, 2026-09-19). The storage a delivery's payload lives in
+belongs to the coroutine that runs the handler, for the whole
+invocation: the cell's inline payload bytes are copied into the coro
+when it starts, a spilled heap payload and the wire path's
+per-delivery subregion transfer to it, and all three are released
+once the handler *returns* — however many parks later. So a handler
+that parks on a `sleep`, a socket read, or a subprocess drain and
+then reads its payload parameter again reads what it read at entry;
+concurrent deliveries to the same subscriber never share payload
+storage. This did not hold before: the drain dequeued each cell into
+a stack local and handed the handler a pointer into it, so a parked
+handler returned to a frame the next dequeue had already reused, and
+every parked delivery read the LAST published value (the same
+mechanism leaked a >512-byte spilled payload per park). Pinned
+subscribers were never affected — a mailbox cell outlives the
+handler it dispatches, which has no coro to park on.
+
 Typecheck rules:
 
 - All placement entries on the same named cooperative pool must
@@ -2007,6 +2025,30 @@ divergence fails `--diff` through the verdict. `--at <n>` stops
 consumer); `--at <consumer-id>:<ordinal>` is the stable
 multi-consumer form. Replay implies observation (identity rides
 the obs machinery).
+
+**What a match reports — coverage, per category (GH #728).** A
+match is only as strong as the categories the recording carries
+observations for, so the success report names all five and states,
+for each, either the count it compared or that the category was
+**not exercised** and why: public bus events (with their consumer
+count), payloads, queued consumes, async schedule steps, journal
+reads. A category with no recorded observations is never printed
+as a compared zero — "0 consumes across 0 consumers" read as a
+verified queued delivery schedule when the workload
+direct-dispatched every delivery and no queued schedule existed
+to verify (and the same template asserted payload identity for a
+recording with no payload blobs). Direct dispatch stays valid and
+is named as such: its deliveries are compared, as public bus
+events. Coverage is derived from the recording the comparator
+walks and gated on the same async-capability bit, so the report
+cannot claim a category `diff` skipped. `--json` (strict replay
+with `--diff`) prints the same verdict machine-readably —
+`result`, `ring_records`, `recorded_prefix_only`, and per category
+`compared`, `count`, `consumers`, `not_exercised_because`. Success
+semantics are unchanged: a divergence in any compared category
+still fails, and a diverged verdict carries the reason with no
+per-category counts (the comparison stopped at the first
+difference).
 
 Two honest limits, stated rather than implied: the recorded
 interleaving is reproduced per consumer, not globally — cross-

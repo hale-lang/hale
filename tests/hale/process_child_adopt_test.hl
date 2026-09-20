@@ -1,0 +1,215 @@
+// GH #716 — a spawned `std::process::Child` moves into a locus field
+// with exactly one owner.
+//
+// A service that owns a long-lived subprocess needs the handle to
+// outlive the method that spawned it. `self.child = spawn(...)` is
+// refused (GH #383: a locus-typed field takes only a locus LITERAL,
+// because a store would leave the field and the producing frame both
+// claiming the instance), and until now the only way through was to
+// copy the pid and the three pipe fds out of the returned Child by
+// hand and then clear the original's fields so its dissolve would not
+// close the pipes — with the descriptor numbers cleared before the
+// next spawn could be handed the same ones. Every step of that is a
+// double-close or a leak if it is written slightly wrong, and it is
+// only writable at all by reaching into the handle's internals.
+//
+// `std::process::adopt(dest, src)` is the supported transfer:
+// release what `dest` held, move `src`'s pid + fds in, disarm `src`.
+//
+// What must hold, and is asserted below:
+//
+//   1. the handle survives the factory's return — try_wait and
+//      read_stdout through the field see the live child;
+//   2. `adopt(x, x)` is a no-op, not a self-release;
+//   3. a SECOND spawn into the same field leaves the second child
+//      alive AND readable — its descriptors are not closed by the
+//      first handle's teardown, which is the exact hazard the
+//      hand-rolled sequence had to sequence around;
+//   3b. a handle moved out of an owner that is then torn down stays
+//      alive and readable — the source is disarmed, so its teardown
+//      closes nothing;
+//   4. 40 spawn/adopt cycles do not leak descriptors (the numbers
+//      stay in a narrow band because each release closes exactly
+//      once and the kernel recycles them) and leave exactly ONE
+//      child process — every replaced child was terminated and
+//      reaped, not left a zombie;
+//   5. a FAILED spawn leaves the field in the documented empty
+//      state, never half-built.
+//
+// The memory side of the same claim (no leak, no use-after-free, no
+// double free) is pinned in
+// `crates/hale-codegen/tests/process_child_adopt.rs`, which runs this
+// shape under `LOTUS_ASAN=1`.
+
+locus Job {
+    params {
+        child: std::process::Child = std::process::Child { };
+        starts: Int = 0;
+    }
+
+    // The shape this issue is about: spawn inside a method, keep the
+    // handle in the field, one owner.
+    fn start(argv: String) {
+        let spawned = std::process::spawn(argv) or std::process::Child { };
+        std::process::adopt(self.child, spawned);
+        self.starts = self.starts + 1;
+    }
+
+    fn pid() -> Int { return self.child.pid; }
+    fn argv() -> String { return self.child.argv; }
+    fn in_fd() -> Int { return self.child.stdin_fd; }
+
+    fn running() -> Bool {
+        let code = std::process::try_wait(self.child) or - 2;
+        return code == -2;
+    }
+
+    // Adopting the handle the field already holds must not release
+    // it: `dest` and `src` name the same pid + fds, so there is
+    // nothing to transfer and closing would strand the process.
+    fn re_adopt_self() {
+        std::process::adopt(self.child, self.child);
+    }
+
+    // The child's stdout pipe is non-blocking, so a single read can
+    // land before the child has written. Poll up to ~2s for the
+    // expected number of bytes rather than sleeping a fixed amount
+    // and hoping.
+    fn read_at_least(n: Int) -> String {
+        let mut got = "";
+        let mut i = 0;
+        while i < 100 {
+            got = got + (std::process::read_stdout(self.child) or "");
+            if len(got) >= n {
+                return got;
+            }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+        return got;
+    }
+}
+
+// Hand a running subprocess from one owner to another. `origin` is
+// built here, so its teardown — and its Child field's with it — runs
+// at this fn's scope exit, AFTER the handle has moved. That teardown
+// must find a disarmed handle: if it still held the pid and the fds,
+// it would close the pipes and kill the process `dest` now owns. This
+// is the double-close the hand-rolled workaround had to disarm by
+// hand, and the reason `adopt` clears the source.
+fn hand_off(dest: Job, argv: String) {
+    let origin = Job { };
+    origin.start(argv);
+    std::process::adopt(dest.child, origin.child);
+}
+
+// The pids of this process's live children, as procfs reports them:
+// one pid per child, space-separated, INCLUDING un-reaped zombies.
+// Empty when the kernel was built without CONFIG_PROC_CHILDREN, which
+// is why the caller probes it against a known-live child first.
+fn own_children() -> String {
+    let path = "/proc/self/task/" + to_string(std::process::pid()) + "/children";
+    let raw = std::io::fs::read_file(path) or "";
+    return std::str::trim(raw);
+}
+
+fn main() {
+    let j = Job { };
+
+    // 1. Spawn into the field, then use the handle after the factory
+    //    that built it has returned.
+    j.start("sh\n-c\necho one; sleep 30");
+    let p1 = j.pid();
+    std::test::assert(p1 > 0, "the spawned pid landed in the field");
+    std::test::assert(
+        j.running(),
+        "try_wait through the field sees a live child after the factory returned");
+    std::test::assert_eq_str(
+        j.argv(), "sh\n-c\necho one; sleep 30",
+        "argv came across as owned bytes, not a view into the temporary's arena");
+    std::test::assert_eq_str(
+        j.read_at_least(4), "one\n",
+        "the field's stdout pipe is readable after the factory returned");
+
+    // Does procfs report children on this kernel? Probe with a child
+    // we know is alive; if not, the child-count assertions below are
+    // skipped rather than flaky.
+    let kids_work = own_children() == to_string(p1);
+    if !kids_work {
+        println("note: /proc/self/task/<tid>/children unavailable — skipping the reap-count assertions");
+    }
+
+    // 2. Re-adopting the handle already in the field is a no-op.
+    j.re_adopt_self();
+    std::test::assert_eq_int(j.pid(), p1, "self-adopt kept the handle");
+    std::test::assert(
+        j.running(),
+        "self-adopt neither closed the pipes nor killed the child");
+
+    // 3. A second spawn into the same field. The first handle's
+    //    teardown must not touch the second child's descriptors —
+    //    which is only observable by READING from the second child.
+    j.start("sh\n-c\necho two; sleep 30");
+    let p2 = j.pid();
+    std::test::assert(p2 != p1, "the second spawn replaced the handle");
+    std::test::assert(j.running(), "the second child is alive after the first's teardown");
+    std::test::assert_eq_str(
+        j.read_at_least(4), "two\n",
+        "the second child's descriptors were not closed by the first handle's teardown");
+    if kids_work {
+        std::test::assert_eq_str(
+            own_children(), to_string(p2),
+            "the replaced child was terminated AND reaped — one child, not a zombie beside it");
+    }
+
+    // 3b. The same transfer between two owners: the source owner is
+    //     torn down right after the move, and the moved handle must
+    //     survive that teardown intact.
+    hand_off(j, "sh\n-c\necho three; sleep 30");
+    let p3 = j.pid();
+    std::test::assert(p3 != p2, "the handed-off handle replaced the previous one");
+    std::test::assert(
+        j.running(),
+        "the source owner's teardown did not kill the process it handed over");
+    std::test::assert_eq_str(
+        j.read_at_least(6), "three\n",
+        "the source owner's teardown did not close the pipes it handed over");
+    std::test::assert_eq_str(
+        j.argv(), "sh\n-c\necho three; sleep 30",
+        "argv survived the source owner's arena going away");
+
+    // 4. Many cycles: descriptors are closed exactly once and
+    //    recycled, so the numbers stay in a narrow band instead of
+    //    climbing by three per spawn.
+    let base = j.in_fd();
+    std::test::assert(base > 0, "a live handle holds a real stdin descriptor");
+    let mut i = 0;
+    while i < 40 {
+        j.start("sleep\n30");
+        i = i + 1;
+    }
+    std::test::assert_eq_int(j.starts, 42, "every cycle ran");
+    std::test::assert(j.running(), "the last child of the cycle is alive");
+    std::test::assert(
+        j.in_fd() <= base + 16,
+        "40 spawn/adopt cycles did not leak descriptors (a leak climbs by 3 per cycle)");
+    if kids_work {
+        std::test::assert_eq_str(
+            own_children(), to_string(j.pid()),
+            "40 replacements left exactly one child — each outgoing handle was reaped once");
+    }
+
+    // 5. A failed spawn (empty argv is rejected before the fork)
+    //    leaves the field EMPTY: the documented partial-construction
+    //    state, not a half-built handle.
+    j.start("");
+    std::test::assert_eq_int(j.pid(), -1, "a failed spawn leaves the not-spawned sentinel");
+    std::test::assert_eq_int(j.in_fd(), -1, "...and no descriptors");
+    std::test::assert_eq_str(j.argv(), "", "...and no stale argv");
+    std::test::assert(!j.running(), "an empty field reports not running");
+    if kids_work {
+        std::test::assert_eq_str(
+            own_children(), "",
+            "adopting an empty handle released the live child too — no children left");
+    }
+}

@@ -1425,6 +1425,9 @@ pub fn build_executable_with_options(
         program_has_offthread,
         deferred_dissolves: Vec::new(),
         in_main: false,
+        main_frame_depth: usize::MAX,
+        main_dissolve_frame: None,
+        main_test_fail_bb: None,
         current_arena_override: None,
         current_user_fn_caller_arena: None,
         current_user_fn_arena: None,
@@ -3775,6 +3778,26 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// as an exit-code return (truncated to i32) when this is set,
     /// rather than the user-fn `current_user_fn_ret` path.
     in_main: bool,
+    /// GH #717: `deferred_dissolves.len()` once `main`'s own frame is
+    /// pushed. Identifies "we are at main's top frame" so a
+    /// recorded-assertion-failure branch only routes through main's
+    /// teardown when main's frame is the one that would be flushed
+    /// (an assert inside a nested frame — an `on_failure` body, a
+    /// channel body — keeps the pre-#717 immediate exit).
+    main_frame_depth: usize,
+    /// GH #717: the union of `main`'s deferred-dissolve entries, built
+    /// by `note_main_dissolve_entries` as main's frame passes through
+    /// each exit path, so the assertion-failure exit block can emit the
+    /// same teardown spine. Entries whose instantiation the failure
+    /// branch never reached have NULL self slots and are skipped by
+    /// `emit_deferred_entry_teardown`'s existing guard.
+    main_dissolve_frame:
+        Option<Vec<(PointerValue<'ctx>, String, Option<PointerValue<'ctx>>)>>,
+    /// GH #717: the lazily created `main.test_fail` block — one per
+    /// program, targeted by every `std::test::assert*` call site in
+    /// `main`, filled with main's teardown + `ret i32 1` once the
+    /// body has been lowered.
+    main_test_fail_bb: Option<BasicBlock<'ctx>>,
     /// When set, `arena_alloc` routes through this arena pointer
     /// instead of `current_self`'s arena field or the program
     /// global. Used during locus-instantiation field init so
@@ -6593,6 +6616,95 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.deferred_dissolves.push(Vec::new());
     }
 
+    /// GH #717: the call-site half of the deferred assertion failure.
+    /// A failing `std::test::assert*` no longer calls `exit(1)` from
+    /// inside the assertion — it prints `ASSERTION FAILED: <msg>`,
+    /// records the failure in the runtime latch and returns. Every
+    /// call site reads the latch immediately afterwards and leaves:
+    ///
+    /// - in `fn main`, with main's own frame current: branch to the
+    ///   one `main.test_fail` block, which runs main's ordinary
+    ///   teardown (pools joined, loci dissolved — so a child the
+    ///   fixture spawned is reaped and scratch the fixture owns is
+    ///   removed by its owner's `dissolve()`) and returns exit code 1.
+    /// - anywhere else — a helper fn, a locus method, a nested
+    ///   `on_failure` frame — `exit(1)` on the spot, exactly the
+    ///   pre-#717 behaviour. Those contexts have no main-teardown
+    ///   spine to branch to, and this is not general unwinding.
+    ///
+    /// Either way the first failure stops the run: nothing after it
+    /// executes, and the failure's first line is unchanged.
+    fn emit_test_assert_failure_check(
+        &mut self,
+    ) -> Result<(), CodegenError> {
+        let func = self
+            .current_fn
+            .expect("current_fn set while lowering a std::test assert");
+        let i64_t = self.context.i64_type();
+        let failed_fn = self
+            .module
+            .get_function("lotus_test_failed")
+            .expect("lotus_test_failed declared");
+        let recorded = self
+            .builder
+            .build_call(failed_fn, &[], "test.assert.failed")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_test_failed returns i64")
+            .into_int_value();
+        let is_fail = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                recorded,
+                i64_t.const_zero(),
+                "test.assert.is_fail",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let bail_bb = if self.in_main
+            && self.deferred_dissolves.len() == self.main_frame_depth
+        {
+            match self.main_test_fail_bb {
+                Some(bb) => bb,
+                None => {
+                    let bb = self
+                        .context
+                        .append_basic_block(func, "main.test_fail");
+                    self.main_test_fail_bb = Some(bb);
+                    bb
+                }
+            }
+        } else {
+            let bb =
+                self.context.append_basic_block(func, "test.fail.exit");
+            let resume = self.builder.get_insert_block();
+            self.builder.position_at_end(bb);
+            let exit_fn = self
+                .module
+                .get_function("exit")
+                .expect("exit declared in declare_builtins");
+            let one = self.context.i32_type().const_int(1, false);
+            self.builder
+                .build_call(exit_fn, &[one.into()], "test.fail.exit.call")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_unreachable()
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            if let Some(r) = resume {
+                self.builder.position_at_end(r);
+            }
+            bb
+        };
+        let ok_bb =
+            self.context.append_basic_block(func, "test.assert.ok");
+        self.builder
+            .build_conditional_branch(is_fail, bail_bb, ok_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(ok_bb);
+        Ok(())
+    }
+
     /// Spill a deferred-dissolve entry's self pointer into a
     /// NULL-initialized entry-block slot and return the slot.
     /// Deferred entries flush at fn exit, so a raw SSA pointer
@@ -6778,6 +6890,59 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         drain_queue: bool,
     ) -> Result<(), CodegenError> {
+        let frame = self
+            .deferred_dissolves
+            .pop()
+            .expect("flush without matching push");
+        // GH #717: main's teardown spine is now emitted from two
+        // places — this flush (the fall-through / `return` exits)
+        // and the recorded-assertion-failure exit block. Record
+        // main's own entries as they pass through so the failure
+        // block can emit the same teardown.
+        if self.in_main
+            && self.deferred_dissolves.len() + 1 == self.main_frame_depth
+        {
+            self.note_main_dissolve_entries(&frame);
+        }
+        self.emit_frame_teardown(frame, drain_queue)
+    }
+
+    /// GH #717: merge main's frame entries into the set the
+    /// assertion-failure exit block tears down.
+    ///
+    /// Main's frame passes through `flush_dissolve_frame_kind` (or the
+    /// bare pop) once per exit path, and a `return` in the middle of
+    /// `main` flushes a PREFIX of the entries and re-pushes an empty
+    /// frame — so neither "first" nor "last" is the complete set. The
+    /// frames grow in declaration order, so a union keyed on the
+    /// dominating self slot, appended in first-seen order, is the
+    /// complete set in declaration order. Re-listing an entry is
+    /// harmless anyway (each exit path is separate control flow, and
+    /// the idempotent-teardown latch NULLs an entry's arena), but the
+    /// dedup keeps the emitted block one teardown per locus.
+    fn note_main_dissolve_entries(
+        &mut self,
+        frame: &[(PointerValue<'ctx>, String, Option<PointerValue<'ctx>>)],
+    ) {
+        let acc = self.main_dissolve_frame.get_or_insert_with(Vec::new);
+        for entry in frame {
+            if !acc.iter().any(|seen| seen.0 == entry.0) {
+                acc.push(entry.clone());
+            }
+        }
+    }
+
+    /// GH #717: emit one deferred-dissolve frame's teardown IR from
+    /// an already-detached frame. Extracted from
+    /// `flush_dissolve_frame_kind` so the recorded-assertion-failure
+    /// exit block in `fn main` can emit the identical spine without
+    /// consuming main's live frame (the frame is still being filled
+    /// when the failure branch is emitted).
+    pub(crate) fn emit_frame_teardown(
+        &mut self,
+        frame: Vec<(PointerValue<'ctx>, String, Option<PointerValue<'ctx>>)>,
+        drain_queue: bool,
+    ) -> Result<(), CodegenError> {
         // m26: drain the bus queue BEFORE dissolves fire, so
         // every cooperative subscriber gets to process pending
         // cells while it's still alive. Handlers may publish
@@ -6791,19 +6956,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // empty deferred frame means no dissolve needs a pre-drain —
         // skip the per-call drain entirely. See
         // `current_fn_skip_exit_drain`.
-        let frame_statically_empty = self
-            .deferred_dissolves
-            .last()
-            .map_or(true, |f| f.is_empty());
+        let frame_statically_empty = frame.is_empty();
         if drain_queue
             && !(frame_statically_empty && self.current_fn_skip_exit_drain)
         {
             self.emit_bus_drain()?;
         }
-        let frame = self
-            .deferred_dissolves
-            .pop()
-            .expect("flush without matching push");
         // GH #255: at fn-main's scope exit this flush IS main
         // teardown — wake `or wait` parked publishers into the
         // raise path before the pinned joins below would block on
@@ -8836,6 +8994,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.current_self = None;
         self.in_main = true;
         self.push_dissolve_frame();
+        // GH #717: remember which frame is main's own, and reset the
+        // recorded-assertion-failure state for this program.
+        self.main_frame_depth = self.deferred_dissolves.len();
+        self.main_dissolve_frame = None;
+        self.main_test_fail_bb = None;
 
         // m77: pull argc/argv off main's params and hand them to
         // the C-runtime stash so std::env::args_count / arg /
@@ -9420,8 +9583,40 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Body terminated unconditionally — drop the frame
             // without emitting the dissolve calls. Any deferred
             // dissolves are unreachable.
-            let _ = self.deferred_dissolves.pop();
+            let dropped = self
+                .deferred_dissolves
+                .pop()
+                .expect("main's dissolve frame");
+            // GH #717: unreachable for the fall-through exit, but the
+            // assertion-failure block below still needs the entries.
+            self.note_main_dissolve_entries(&dropped);
         }
+        // GH #717: fill the recorded-assertion-failure exit block, if
+        // any `std::test::assert*` call site in main branched to it.
+        // Same spine as the fall-through / `return` exits above —
+        // ingress quiesce, pool join, main's dissolve cascade, arena +
+        // bus-queue destroy — then `ret 1`. Emitted last so the frame
+        // it tears down is complete: entries whose instantiation this
+        // path never reached hold a NULL self slot and are skipped.
+        // `in_main` is still set, so the flush's GH #255 wait-abort
+        // fires here too.
+        if let Some(fail_bb) = self.main_test_fail_bb.take() {
+            self.builder.position_at_end(fail_bb);
+            if !self.is_wasm {
+                self.emit_bus_ingress_quiesce()?;
+                self.emit_coop_pool_shutdown_all()?;
+            }
+            let frame = self.main_dissolve_frame.take().unwrap_or_default();
+            self.emit_frame_teardown(frame, true)?;
+            self.emit_arena_destroy()?;
+            self.emit_bus_queue_destroy()?;
+            let one = i32_t.const_int(1, false);
+            self.builder
+                .build_return(Some(&one))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        self.main_dissolve_frame = None;
+        self.main_frame_depth = usize::MAX;
         let _ = ptr_t;
         self.in_main = false;
         self.current_fn = None;
@@ -24929,6 +25124,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok(())
             }
+            // GH #717: std::test recorded-failure latch (statement).
+            ["std", "test", "__note_fail"] => {
+                let f = self
+                    .module
+                    .get_function("lotus_test_note_fail")
+                    .expect("lotus_test_note_fail declared");
+                self.builder
+                    .build_call(f, &[], "test.note_fail")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok(())
+            }
             // GH #233: __StdBusUnix*Transport lifecycle primitives.
             ["std", "bus", "__transport_reclaim"] => {
                 let _ = self.lower_std_bus_transport_handle_op(
@@ -25288,10 +25494,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(())
             }
             // m87: std::test::* assertion primitives. Each is a
-            // void-returning stdlib fn that prints diagnostic
-            // + exits 1 on failure, no-op on success. Users
-            // write tests as ordinary Hale binaries that
-            // exit 0 on pass.
+            // void-returning stdlib fn that prints a diagnostic and
+            // records the failure (GH #717 — it used to exit(1) from
+            // inside), no-op on success. Users write tests as
+            // ordinary Hale binaries that exit 0 on pass; the
+            // `emit_test_assert_failure_check` call after each one is
+            // what turns a recorded failure into a non-zero exit,
+            // through main's teardown where there is one.
             // m91: markdown → HTML (statement position rare, but
             // wired for completeness). The expression-position arm
             // below is the canonical use.
@@ -25309,7 +25518,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     args,
                     scope,
                 )?;
-                Ok(())
+                self.emit_test_assert_failure_check()
             }
             ["std", "test", "assert_eq_int"] => {
                 let _ = self.lower_user_fn_call(
@@ -25317,7 +25526,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     args,
                     scope,
                 )?;
-                Ok(())
+                self.emit_test_assert_failure_check()
             }
             ["std", "test", "assert_eq_str"] => {
                 let _ = self.lower_user_fn_call(
@@ -25325,7 +25534,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     args,
                     scope,
                 )?;
-                Ok(())
+                self.emit_test_assert_failure_check()
             }
             ["std", "str", "can_parse_int"] => {
                 let _ = self.lower_std_str_can_parse_int(args, scope)?;
@@ -25485,6 +25694,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // into.
             ["std", "process", "exit"] => {
                 self.lower_std_process_exit(args, scope)
+            }
+            // GH #716: std::process::adopt(dest, src) — move a
+            // spawned Child's pid + pipe fds into a Child the caller
+            // already owns (typically its own `params` field) and
+            // disarm the source, so exactly one handle owns the
+            // process. Non-fallible Unit, so statement position is
+            // the only position it has; the Hale-source body is
+            // `__std_process_adopt` in `hl/process.hl`.
+            ["std", "process", "adopt"] => {
+                let _ = self.lower_user_fn_call(
+                    "__std_process_adopt",
+                    args,
+                    scope,
+                )?;
+                Ok(())
             }
             // 2026-05-16: word-tokenize into a caller-supplied
             // @form(vec) of String. Replaces the ~30-line byte-
@@ -26093,6 +26317,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let v = self
                     .builder
                     .build_call(f, &[], "test.passes")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("returns i64");
+                Ok((v, CodegenTy::Int))
+            }
+            // GH #717: std::test recorded-failure latch read
+            // (expression — 0 = no failure recorded yet).
+            ["std", "test", "__failed"] => {
+                let f = self
+                    .module
+                    .get_function("lotus_test_failed")
+                    .expect("lotus_test_failed declared");
+                let v = self
+                    .builder
+                    .build_call(f, &[], "test.failed")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                     .try_as_basic_value()
                     .left()

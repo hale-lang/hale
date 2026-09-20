@@ -341,7 +341,8 @@ fn usage() {
     eprintln!("    hale iris inspect <artifact>  artifact-side inspector (drift / declared-but-silent / law)");
     eprintln!("    hale run --observe <target>   run with LOTUS_OBS=1 and an iris session beside it");
     eprintln!("    hale dna init|new|upgrade     attach the DNA to an application (vendor/dna, dna/, seeded Journal)");
-    eprintln!("        [--diff: report first divergence, fail on any]");
+    eprintln!("        [--diff: report first divergence, fail on any; per-category coverage on a match]");
+    eprintln!("        [--json (with --diff): that verdict + coverage, machine-readable]");
     eprintln!("        [--at <n> | --at <consumer-id>:<ordinal>: SIGSTOP at that consume]");
     eprintln!("        [--allow-live-effects] [--allow-unverified-model] [--allow-truncated]");
     eprintln!("        [--feed: inject the recorded ingress tape into (possibly changed) code]");
@@ -5539,18 +5540,21 @@ fn run_test(args: &[String]) -> ExitCode {
     }
 }
 
-/// `hale replay <recording> <program.hl> [--diff] [--at N]` —
-/// GH #296. Re-runs a recorded execution: the same binary (model
+/// `hale replay <recording> <program.hl> [--diff [--json]] [--at N]`
+/// — GH #296. Re-runs a recorded execution: the same binary (model
 /// identity checked against the recording header), with the
 /// runtime serving journaled inputs (time/entropy/env) and
 /// enforcing each consumer's recorded delivery order. `--diff`
-/// records the replay and reports the first divergence; `--at N`
+/// records the replay and reports the first divergence, or — on a
+/// match — which categories it compared (GH #728), with `--json`
+/// carrying the same verdict and counts machine-readably. `--at N`
 /// stops the program (SIGSTOP) at the Nth consume so a debugger
 /// can attach.
 fn run_replay(args: &[String]) -> ExitCode {
     let mut rec_arg: Option<PathBuf> = None;
     let mut prog: Option<PathBuf> = None;
     let mut diff = false;
+    let mut json = false;
     let mut at: Option<String> = None;
     let mut allow_live_effects = false;
     let mut allow_unverified = false;
@@ -5562,6 +5566,11 @@ fn run_replay(args: &[String]) -> ExitCode {
         let a = args[i].as_str();
         if a == "--diff" {
             diff = true;
+            i += 1;
+        } else if a == "--json" {
+            // GH #728: the `--diff` verdict, machine-readable —
+            // per-category coverage, not just a match/diverge bit.
+            json = true;
             i += 1;
         } else if a == "--allow-live-effects" {
             allow_live_effects = true;
@@ -5624,12 +5633,20 @@ fn run_replay(args: &[String]) -> ExitCode {
         );
         return ExitCode::from(2);
     }
+    if json && !diff {
+        eprintln!(
+            "hale replay: --json reports the --diff comparison \
+             verdict; pass --diff"
+        );
+        return ExitCode::from(2);
+    }
     let (rec_path, prog) = match (rec_arg, prog) {
         (Some(r), Some(p)) => (r, p),
         _ => {
             eprintln!(
                 "usage: hale replay <recording> <program.hl> \
-                 [--diff] [--at <n> | --at <consumer-id>:<ordinal>] \
+                 [--diff [--json]] \
+                 [--at <n> | --at <consumer-id>:<ordinal>] \
                  [--allow-live-effects] [--allow-unverified-model] \
                  [--allow-truncated] [--feed] [--allow-unmatched-feed]"
             );
@@ -6081,36 +6098,40 @@ fn run_replay(args: &[String]) -> ExitCode {
             );
         }
         if runtime_divergences > 0 {
-            eprintln!(
-                "replay DIVERGED: {} runtime divergences (see the \
-                 summary above)",
+            let msg = format!(
+                "{} runtime divergences (see the summary above)",
                 runtime_divergences
             );
+            eprintln!("replay DIVERGED: {}", msg);
+            if json {
+                println!("{}", replay::diverged_json(&msg));
+            }
             let _ = std::fs::remove_file(v);
             return ExitCode::from(1);
         }
         let result = match replay::parse(v) {
             Ok(vr) => match replay::diff(&rec, &vr, !rec.clean) {
                 None => {
-                    let consumes: usize = rec
-                        .consume_streams
-                        .iter()
-                        .map(|(_, s)| s.len())
-                        .sum();
-                    println!(
-                        "replay matches the recording: {} consumes \
-                         across {} consumers; canonical payloads \
-                         identical, raw ABI payload sizes matched \
-                         ({} ring records, {} journal reads)",
-                        consumes,
-                        rec.consume_streams.len(),
-                        rec.ring_records,
-                        rec.journal.len()
-                    );
+                    // GH #728: name the categories the match
+                    // actually compared. "0 consumes across 0
+                    // consumers" read as a verified queued schedule
+                    // when direct dispatch means there was never a
+                    // queued schedule to verify — and it said
+                    // nothing about the public bus events and
+                    // payloads that WERE compared.
+                    let cov = replay::Coverage::of(&rec);
+                    if json {
+                        println!("{}", cov.json());
+                    } else {
+                        println!("{}", cov.human());
+                    }
                     ExitCode::from(code)
                 }
                 Some(msg) => {
                     eprintln!("replay DIVERGED: {}", msg);
+                    if json {
+                        println!("{}", replay::diverged_json(&msg));
+                    }
                     ExitCode::from(1)
                 }
             },
@@ -6119,6 +6140,15 @@ fn run_replay(args: &[String]) -> ExitCode {
                     "hale replay: verification recording unreadable: {}",
                     e
                 );
+                if json {
+                    println!(
+                        "{}",
+                        replay::diverged_json(&format!(
+                            "verification recording unreadable: {}",
+                            e
+                        ))
+                    );
+                }
                 ExitCode::from(1)
             }
         };

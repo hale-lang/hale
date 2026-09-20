@@ -298,8 +298,7 @@ language's stdlib includes test primitives.
 
 ### v0.1 (sealed m87, m88)
 
-Three primitives, all written purely in Hale (composing
-`std::process::exit`):
+Three primitives, all written purely in Hale:
 
 ```hale
 fn main() {
@@ -317,10 +316,57 @@ The test-runner contract is exit-code based:
   still pass.
 - **Fail** = non-zero exit code with `ASSERTION FAILED: <msg>`
   (and, for `assert_eq_*`, `expected: X / actual: Y`) on
-  stdout. The first failure short-circuits — `std::process::exit`
-  terminates immediately.
+  stdout. The first failure short-circuits.
 
 A `.hl` test program is just an ordinary Hale binary.
+
+#### What runs after a failed assertion (GH #717)
+
+A failing assertion prints its diagnostic, **records** the failure
+and returns. It does not terminate the process from inside the
+assertion. What happens next is fixed:
+
+1. **Nothing else in the test body runs.** Control leaves `fn main`
+   at the failing assertion's call site. Every later
+   `std::test::assert*` is also a no-op against the recorded
+   failure, so there is never a second `ASSERTION FAILED` line and
+   never a second diagnostic.
+2. **`fn main`'s ordinary teardown runs**, exactly as it does on a
+   normal return: cooperative-pool workers are joined, the bus
+   queue is drained, and every locus `let`-bound in `main` before
+   the failing assertion dissolves — reverse declaration order,
+   child cascade, `dissolve()` bodies and all (`spec/memory.md`
+   § Lifetime rules, § Drain cascade). A locus born *after* the
+   failing assertion never existed and is skipped.
+3. **The process then exits non-zero** (code 1), so the exit-code
+   contract above is unchanged.
+
+That is the whole mechanism. It is **not** exception unwinding: a
+failed assertion is not a value, not catchable, and does not
+propagate through arbitrary frames. Two consequences follow, and
+they are the contract, not accidents:
+
+- A test that must release something — a subprocess it spawned,
+  scratch state it created, a socket, a lock file — releases it in
+  the `dissolve()` of a locus the test `let`-binds in `main`. That
+  is the supported cleanup route, and it cleans only what the test
+  owns. There is no runner-owned cleanup hook, and none is needed.
+- An assertion that fails *outside* `main`'s own frame — inside a
+  free `fn`, a locus method, an `on_failure` body — has no main
+  teardown to return through and still terminates the process
+  immediately with code 1. Put the assertions that guard owned
+  resources in `main`.
+
+**Process kill is a separate case.** `SIGKILL` (and a hard crash)
+cannot be intercepted by anything: no `dissolve()` runs, no atexit
+handler runs, and a child or scratch directory the program owned
+outlives it. That is a property of the platform, not of the
+assertion path — a test whose resources must survive a `kill -9`
+of the runner needs an external reaper (a process group, a cgroup,
+a supervising harness), and Hale does not provide one. A failed
+assertion and a `return` from `main` run the dissolve cascade; a
+runtime panic runs atexit-registered cleanup but not the cascade;
+`SIGKILL` runs nothing at all.
 
 ### The compiler's own Hale-language suite
 

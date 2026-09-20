@@ -982,13 +982,34 @@ the leak was the safety mechanism. Every attempt to give those loci
 a real lifetime produced either a use-after-free or silently wrong
 values.
 
-Two remedies, both existing shapes:
+Three remedies, all existing shapes:
 
 - **Assign a literal** — construction in place, the lifecycle
   transition above, unambiguously owned by the field.
 - **Route membership through `accept(c: L)`** — parent/child
   ownership, which is the language's answer for "this locus holds
   that one" whenever the child is not a `params` field.
+- **Transfer the STATE, not the instance** — where a locus is a
+  *handle* over an external resource, the module that owns the
+  resource may publish a transfer operation that writes the handle's
+  state into the instance the field already holds and leaves the
+  source at its not-acquired sentinels. That is not a locus store at
+  all: no second instance enters the field, and the disarmed source's
+  own teardown releases nothing. `std::process::adopt(dest, src)`
+  (GH #716) is the shipped instance — the pid and three pipe fds of a
+  spawned `Child` move into the field, whatever the field held is
+  released first, and the source is disarmed. The first two remedies
+  cannot reach that case: the resource is acquired by a syscall inside
+  a factory, so there is no literal to write and `accept()` cannot
+  adopt what a free fn built.
+
+  This is a **module-provided** operation, not a language feature.
+  The language does not gain move semantics: the transfer is ordinary
+  field assignment written inside the module that defines the handle,
+  and it is sound only because that module knows what "one owner"
+  means for its resource (which descriptors, whose teardown, in which
+  order). A locus with no external resource has nothing to transfer
+  and needs none of this.
 
 This is the same principle as the no-locus-return rule on methods
 (`fn get() -> SomeLocus` is rejected): **a locus is structure, not

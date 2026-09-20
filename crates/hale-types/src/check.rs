@@ -9978,6 +9978,38 @@ impl<'a> Checker<'a> {
         value: &Expr,
         span: Span,
     ) {
+        /// GH #716: a stdlib handle locus whose whole purpose is to
+        /// outlive the frame that produced it ships its own ownership
+        /// transfer, and the general remedies above do not reach it —
+        /// the pid + fds come out of a syscall inside a factory, so
+        /// there is no literal to write and `accept()` cannot adopt
+        /// what a free fn built. Name the module's transfer instead
+        /// of leaving the author to hand-copy the fields, which is
+        /// the double-close this rule exists to prevent.
+        fn handle_handoff_hint(tname: &str, field: &str) -> String {
+            let child = hale_stdlib::PATH_RENAMES
+                .iter()
+                .find(|(p, _)| *p == ["std", "process", "Child"])
+                .map(|(_, m)| *m);
+            if Some(tname) != child {
+                return String::new();
+            }
+            format!(
+                "\n\nA spawned `std::process::Child` is the exception \
+                 that has a transfer: `std::process::adopt` moves the \
+                 handle's pid and pipe fds into the Child this field \
+                 already owns, releases whatever it held, and disarms \
+                 the source so only one handle ever closes them:\n\
+                 \n    let spawned = std::process::spawn(argv) or \
+                 std::process::Child {{ }};\
+                 \n    std::process::adopt(self.{}, spawned);\n\n\
+                 A failed spawn hands back an empty Child, so adopting \
+                 it leaves the field empty rather than half-built. Do \
+                 not copy pid/fds across by hand — two armed handles \
+                 double-close.",
+                field
+            )
+        }
         // whole-field store only (`self.x = …` / `x.y = …`, one
         // segment), and the field must be locus-typed
         if target.tail.len() != 1 {
@@ -10015,8 +10047,12 @@ impl<'a> Checker<'a> {
                  field, or have the factory hand back the data and \
                  build the locus here. Same principle as the \
                  no-locus-return rule on methods: a locus is \
-                 structure, not a value to hand around.",
-                field, field, tname, tname
+                 structure, not a value to hand around.{}",
+                field,
+                field,
+                tname,
+                tname,
+                handle_handoff_hint(tname, &field)
             ),
         ));
     }
