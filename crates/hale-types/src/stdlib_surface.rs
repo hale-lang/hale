@@ -956,15 +956,38 @@ pub fn unknown_fn_error(segs: &[&str]) -> Option<String> {
 // - str::builder_* / can_parse_decimal (spec lists it, dispatch
 //   doesn't implement it — flagged for the spec);
 // - everything io::fs/tcp/tls/udp/file (String-heavy tranche 2).
+//
+// GH #771: a type slot is a bare `SigTy` variant (`Str`, `Int`) OR
+// `Named("__JsonString")` — the tuple variant, written the way the
+// enum spells it. Both positions take both forms, so the rows for
+// struct-returning helpers read like every other row:
+//
+//     sig!(NS_JSON, "string_field", [Str, Str], Named("__JsonString"))
+//
+// The name is the MANGLED one, because that is the one the checker
+// sees: `resolve_type_expr` puts a user's `std::json::JsonString`
+// through `hale_stdlib::PATH_RENAMES` and the stdlib's own `type`
+// declaration IS `__JsonString`, so the two meet at the mangled
+// spelling and unify. (Diagnostics demangle it back — a wrong field
+// reads `no field `knd` on `std::json::JsonString``.) A typo here
+// would silently mean "some nominal type nobody declared", so
+// `crates/hale-types/tests/stdlib_named_returns.rs` pins every
+// `Named` name in this table against `PATH_RENAMES`.
 macro_rules! sig {
-    ($ns:expr, $name:literal, [$($p:ident),*], $ret:ident) => {
+    ($ns:expr, $name:literal,
+     [$($p:ident $(($pn:literal))?),*],
+     $ret:ident $(($rn:literal))?) => {
         FnSig { ns: $ns, name: $name,
-                params: &[$(SigTy::$p),*], ret: SigTy::$ret,
+                params: &[$(SigTy::$p $(($pn))?),*],
+                ret: SigTy::$ret $(($rn))?,
                 fallible: None }
     };
-    ($ns:expr, $name:literal, [$($p:ident),*], $ret:ident, $err:literal) => {
+    ($ns:expr, $name:literal,
+     [$($p:ident $(($pn:literal))?),*],
+     $ret:ident $(($rn:literal))?, $err:literal) => {
         FnSig { ns: $ns, name: $name,
-                params: &[$(SigTy::$p),*], ret: SigTy::$ret,
+                params: &[$(SigTy::$p $(($pn))?),*],
+                ret: SigTy::$ret $(($rn))?,
                 fallible: Some($err) }
     };
 }
@@ -986,6 +1009,7 @@ const NS_B64: &[&str] = &["text", "base64"];
 const NS_RAND: &[&str] = &["rand"];
 const NS_FS: &[&str] = &["io", "fs"];
 const NS_JSON: &[&str] = &["json"];
+const NS_HTTP: &[&str] = &["http"];
 const NS_FILE: &[&str] = &["io", "file"];
 const NS_TCP: &[&str] = &["io", "tcp"];
 const NS_TLS: &[&str] = &["io", "tls"];
@@ -1098,13 +1122,12 @@ pub const SIGS: &[FnSig] = &[
         ret: SigTy::Int,
         fallible: None,
     },
-    FnSig {
-        ns: NS_STR,
-        name: "slice",
-        params: &[SigTy::Named("__StrByteView"), SigTy::Int, SigTy::Int],
-        ret: SigTy::Str,
-        fallible: None,
-    },
+    sig!(
+        NS_STR,
+        "slice",
+        [Named("__StrByteView"), Int, Int],
+        Str
+    ),
     sig!(NS_STR, "range_copy", [Str, Int, Int, Int], Str),
     // GH #535 (DNA F.8): the flat-object json readers are Hale-source
     // stdlib fns with no rename entry, so a call typed Unknown and an
@@ -1120,6 +1143,80 @@ pub const SIGS: &[FnSig] = &[
     // with unique literal keys.
     sig!(NS_JSON, "valid", [Str], Bool),
     sig!(NS_JSON, "valid_object", [Str], Bool),
+    // GH #771: the struct-returning half of the same surface. These
+    // reach their `__json_*` implementations through a codegen
+    // DISPATCH arm rather than a `PATH_RENAMES` entry, so the
+    // "renames to a registered Hale-source fn" path in check.rs
+    // (GH #470) never fired for them and the call typed `Unknown` —
+    // which made `.knd` on a `JsonString`, and every arity or
+    // fallibility question about anything reached through one, a
+    // silent pass. Each return name is the `type` declared in
+    // `crates/hale-stdlib/hl/json.hl`; the receiver params are named
+    // too, so a swapped `(json, it)` argument pair is a located
+    // error rather than a runtime field read at the wrong offset.
+    sig!(NS_JSON, "string_field", [Str, Str], Named("__JsonString")),
+    sig!(
+        NS_JSON,
+        "array_first",
+        [Str],
+        Named("__JsonArrayIter")
+    ),
+    sig!(
+        NS_JSON,
+        "array_next",
+        [Named("__JsonArrayIter")],
+        Named("__JsonArrayIter")
+    ),
+    sig!(
+        NS_JSON,
+        "array_first_span",
+        [Str],
+        Named("__JsonArrayIterSpan")
+    ),
+    sig!(
+        NS_JSON,
+        "array_next_span",
+        [Named("__JsonArrayIterSpan"), Str],
+        Named("__JsonArrayIterSpan")
+    ),
+    sig!(
+        NS_JSON,
+        "object_first",
+        [Str],
+        Named("__JsonObjectIterSpan")
+    ),
+    sig!(
+        NS_JSON,
+        "object_next",
+        [Named("__JsonObjectIterSpan"), Str],
+        Named("__JsonObjectIterSpan")
+    ),
+    sig!(
+        NS_JSON,
+        "iter_find_field_range",
+        [Named("__JsonArrayIterSpan"), Str, Str],
+        Named("__JsonFieldRange")
+    ),
+    sig!(
+        NS_JSON,
+        "iter_find_string_field_range",
+        [Named("__JsonArrayIterSpan"), Str, Str],
+        Named("__JsonFieldRange")
+    ),
+    sig!(
+        NS_JSON,
+        "find_field_range_in",
+        [Str, Str, Int, Int],
+        Named("__JsonFieldRange")
+    ),
+    // GH #771: the one non-json member of the same class — also
+    // dispatch-routed, also a struct return.
+    sig!(
+        NS_HTTP,
+        "parse_request",
+        [Str],
+        Named("__StdHttpRequest")
+    ),
     sig!(NS_STR, "index_of", [Str, Str], Int),
     // #353: the everyday predicates. The runtime carried
     // `lotus_str_contains` / `_starts_with` all along; `ends_with` is

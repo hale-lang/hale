@@ -102,6 +102,19 @@ if std::json::string_field(body, "port").kind == "number" {
 `find_string_field` is unchanged and stays permissive — existing
 callers keep the behaviour they have.
 
+The compiler knows what `string_field` returns, so a typo in the
+field name is a compile error rather than a silently empty read:
+
+```text
+type error: no field `knd` on `std::json::JsonString`
+            — did you mean `kind`?
+```
+
+The same is true of the cursors below (`ArrayIterSpan`,
+`ObjectIterSpan`, `JsonFieldRange`) and of `std::http::parse_request`:
+each names a real type, so wrong fields, wrong argument counts and
+wrong argument types are all caught where you wrote them.
+
 ## Parsing into a type
 
 Pulling fields one by one rescans the document per field. When you have
