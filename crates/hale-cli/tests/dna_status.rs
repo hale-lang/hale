@@ -28,6 +28,19 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     let (ok, out) = hale(&["dna", "status"], &app);
     assert!(ok, "{out}");
     assert!(out.contains("not running") && out.contains("chain verified") && out.contains("9 pending of 9") && out.contains("needs board"), "{out}");
+    // GH #726: and which DNA source the toolchain it ran carries —
+    // `vendor/dna` is that source, not the working tree's
+    assert!(
+        out.contains(&format!("embedded dna: {} (hale {})", &hale_dna::EMBEDDED_DIGEST[..16], env!("CARGO_PKG_VERSION"))),
+        "status opens with the embedded source's digest:\n{out}"
+    );
+    // a tree materialized by another build is stale, and says so
+    let prov = app.join(".hale/dna/embedded.digest");
+    let real = std::fs::read_to_string(&prov).unwrap();
+    std::fs::write(&prov, "hale 0.0.1\nembedded dna: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n").unwrap();
+    let (ok, stale) = hale(&["dna", "status"], &app);
+    assert!(ok && stale.contains("vendor/dna was materialized from 0123456789abcdef — run `hale dna upgrade`"), "a stale vendor tree is named:\n{stale}");
+    std::fs::write(&prov, real).unwrap();
     let (ok, out) = hale(&["dna", "ask", "anything"], &app);
     assert!(!ok && out.contains("not running"), "{out}");
     let (ok, out) = hale(&["dna", "history"], &app);

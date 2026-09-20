@@ -47,7 +47,17 @@ fn main() -> ExitCode {
     let cmd = &args[1];
 
     if cmd == "--version" || cmd == "-V" || cmd == "version" {
+        // The first line is the version and nothing else: the DNA
+        // fixtures, the body-provisioning script and the benchmark
+        // harness read `$2` of it.
         println!("hale {}", env!("CARGO_PKG_VERSION"));
+        // GH #726: the DNA source a binary carries is not implied by
+        // its version — two builds of one version can embed
+        // different `dna/` source, and a fixture that edited the
+        // working tree without rebuilding measures the old one. The
+        // second line names what this binary embeds
+        // (`hale dna --embedded-digest` prints all 64 hex digits).
+        println!("embedded dna: {}", hale_dna::embedded_short());
         return ExitCode::SUCCESS;
     }
     if cmd == "--help" || cmd == "-h" || cmd == "help" {
@@ -348,7 +358,7 @@ fn usage() {
     eprintln!("    hale lsp                      stdio Language Server (diagnostics)");
     eprintln!("    hale mcp                      stdio Model Context Protocol server (agent tools)");
     eprintln!();
-    eprintln!("    hale --version               print the version");
+    eprintln!("    hale --version               print the version, and the embedded DNA source's digest");
     eprintln!("    hale --help                  print this help");
 }
 
