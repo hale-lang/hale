@@ -184,26 +184,56 @@ fn iter_find_field_range_missing_field_reports_not_ok() {
 }
 
 #[test]
-fn high_volume_walk_bounded_rss() {
+fn high_volume_walk_cost_per_element_is_document_size_independent() {
     // 2026-05-26 regression guard. The original range_* impl had a
     // hidden `std::bytes::from_string(json)` inside each scan loop
     // (and inside the iter_find_string_field_range quote check),
     // which allocated a fresh Bytes copy of the entire source JSON
-    // on every call. For a downstream app's market-data L2 workload (~5 MB
-    // snapshot × 100k elements × ~5 stdlib calls per iter) that
-    // pushed peak RSS to 13+ GB on a single snapshot. The fix
+    // on every call. For a downstream app's market-data L2 workload
+    // (~5 MB snapshot × 100k elements × ~5 stdlib calls per iter)
+    // that pushed peak RSS to 13+ GB on a single snapshot. The fix
     // routed scan loops through std::str::byte_at_unchecked, which
     // takes the String pointer directly with no allocation.
     //
-    // Bound: a 50k-element walk on a 2 MB synthesized array should
-    // peak under 100 MB. (Pre-fix on the same input: GB-range and
-    // climbs linearly with iteration count.)
+    // What that regression IS, stated as a property: the walk's
+    // memory cost per ELEMENT became proportional to the DOCUMENT.
+    // So that is what this test measures. It walks the same 20k
+    // elements twice — once over a ~90 KB document, once over a
+    // ~900 KB one — and compares bytes of RSS growth per element.
+    // Post-fix the two agree (measured 467 vs 480 B/element, stable
+    // across runs and across machine load); the regression makes the
+    // second ten times the first, because each of the ~5 stdlib
+    // calls per element copies the whole document.
+    //
+    // Reshaped 2026-09-20 (GH #772). The bound this replaces —
+    // `std::process::rss_bytes() / 1048576 < 100` after a 50k-element
+    // walk — could not work, for two independent reasons:
+    //
+    //   1. `rss_bytes()` is `getrusage(RUSAGE_SELF).ru_maxrss`, which
+    //      a spawned program inherits from its parent through
+    //      fork+exec (see `harness::statm_resident_bytes`). Under
+    //      `cargo test` the parent is a libtest process running
+    //      several in-process LLVM builds, so the assertion was
+    //      reading the harness's memory: 137-145 MB observed
+    //      against a 100 MB cap on a machine where this binary's
+    //      own peak is 30 MB.
+    //   2. Even measured correctly the walk is not RSS-flat: a plain
+    //      `fn`'s per-iteration temporaries accumulate in the caller's
+    //      arena until it returns, ~470 B per element here, so "RSS
+    //      after 10k iterations ≈ after 1k" is false by construction
+    //      and 50k elements × 470 B put the true reading within a few
+    //      MB of the 100 MB line anyway.
+    //
+    // Both windows run inside one process, and every number the
+    // assertions use is a difference between two of that process's
+    // own /proc/self/statm reads, so neither machine load nor the
+    // harness's footprint can move them.
     let src = r#"
-        fn build_input() -> String {
+        fn build_input(elements: Int) -> String {
             let mut b = std::str::builder_new();
             std::str::builder_append(b, "[");
             let mut i = 0;
-            while i < 50000 {
+            while i < elements {
                 if i > 0 { std::str::builder_append(b, ","); }
                 std::str::builder_append(b, "{\"side\":\"bid\",\"price\":\"100.5\",\"size\":\"1.25\"}");
                 i = i + 1;
@@ -229,14 +259,34 @@ fn high_volume_walk_bounded_rss() {
             return n;
         }
 
+        // `passes` full walks, bracketed by the program's own
+        // residency. One unmeasured warm pass first, so first-touch
+        // page-in and the arena's initial chunk growth land outside
+        // the window.
+        fn measured_walks(json: String, passes: Int, tag: String) {
+            let _warm = walk(json);
+            print(tag);
+            print("_before_statm=");
+            println(std::io::fs::read_file("/proc/self/statm") or "");
+            let mut p = 0;
+            while p < passes {
+                let _n = walk(json);
+                p = p + 1;
+            }
+            print(tag);
+            print("_after_statm=");
+            println(std::io::fs::read_file("/proc/self/statm") or "");
+        }
+
         fn main() {
-            let json = build_input();
-            let _n = walk(json);
-            // Print peak-equivalent RSS at end-of-walk. Test asserts
-            // a bound on this value; the regression manifests as
-            // multi-GB rather than single/double-digit MB.
-            print("final_rss_mb=");
-            println(std::process::rss_bytes() / 1048576);
+            let small = build_input(2000);
+            let big = build_input(20000);
+            print("small_len="); println(len(small));
+            print("big_len="); println(len(big));
+            // 10 passes x 2k elements and 1 pass x 20k elements:
+            // the same 20k elements walked over a 10x longer document.
+            measured_walks(small, 10, "small");
+            measured_walks(big, 1, "big");
         }
     "#;
     let (stdout, status) = build_and_run("high_volume", src);
@@ -245,24 +295,65 @@ fn high_volume_walk_bounded_rss() {
         "high-volume walk crashed (probable memory leak): {:?}\nstdout: {}",
         status, stdout,
     );
-    // Parse out the final RSS line and bound it.
-    let rss_line = stdout
-        .lines()
-        .find(|l| l.starts_with("final_rss_mb="))
-        .expect(&format!("missing final_rss_mb in stdout: {:?}", stdout));
-    let rss: i64 = rss_line
-        .trim_start_matches("final_rss_mb=")
-        .trim()
-        .parse()
-        .expect(&format!("can't parse rss line: {:?}", rss_line));
-    // Pre-fix: GB-range, scales linearly with iter count. Post-fix:
-    // single-digit MB on this size. 100 MB is a generous bound that
-    // leaves headroom for cold-start / allocator-rounding noise.
+
+    let line = |key: &str| -> &str {
+        stdout
+            .lines()
+            .find_map(|l| l.strip_prefix(key))
+            .unwrap_or_else(|| panic!("missing {} in stdout: {:?}", key, stdout))
+    };
+    let num = |key: &str| -> i64 {
+        line(key)
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| panic!("can't parse {}: {} ({:?})", key, e, stdout))
+    };
+    // Bytes of resident growth per element walked. RSS is CURRENT
+    // residency, so a kernel that reclaimed pages under memory
+    // pressure can hand back a smaller second reading; that is not a
+    // leak, so the window floors at zero.
+    let cost_per_element = |tag: &str, elements: i64| -> i64 {
+        let before =
+            harness::statm_resident_bytes(line(&format!("{tag}_before_statm=")));
+        let after =
+            harness::statm_resident_bytes(line(&format!("{tag}_after_statm=")));
+        (after - before).max(0) / elements
+    };
+    let small_len = num("small_len=");
+    let big_len = num("big_len=");
+    let small_cost = cost_per_element("small", 20_000);
+    let big_cost = cost_per_element("big", 20_000);
+
+    // The shape. Same element count, 10x the document: per-element
+    // cost must not follow the document. The 4 KiB slack covers
+    // page granularity on a ~10 MB window; the regression is a 10x
+    // gap, not a 2x one.
     assert!(
-        rss < 100,
-        "50k-iter range walk exceeded 100 MB RSS ({}MB) — likely \
-         a bytes_from_string regression in a scan helper. Pre-fix \
-         this OOM'd on a downstream app at 13+ GB.",
-        rss
+        big_cost <= small_cost * 2 + 4096,
+        "the same element count over a {}x larger document ({} B vs \
+         {} B) cost {} B per element vs {} B — the walk's per-element \
+         memory is following the document size, which is the \
+         bytes_from_string-in-a-scan-helper regression (pre-fix this \
+         OOM'd a downstream handoff's L2 workload at 13+ GB).",
+        big_len / small_len,
+        big_len,
+        small_len,
+        big_cost,
+        small_cost,
+    );
+
+    // ...and the same property against the document rather than
+    // against the other window, so a regression that inflated BOTH
+    // costs equally cannot pass by symmetry. Pre-fix each element
+    // cost roughly five document copies; post-fix it is ~470 B
+    // against a 90 KB document.
+    assert!(
+        small_cost * 8 <= small_len,
+        "each walked element grew RSS by {} B on a {} B document — \
+         the per-element cost must be a small constant, not a \
+         fraction of the document (a scan helper is copying the \
+         source JSON again).",
+        small_cost,
+        small_len,
     );
 }

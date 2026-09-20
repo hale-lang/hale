@@ -311,3 +311,199 @@ fn strict_check_refuses_nothing_the_build_accepts() {
         swept
     );
 }
+
+/// One whole program per entry of `BARE_BUILTIN_CALLEES`, calling
+/// that name in the position its dispatch site serves.
+///
+/// Keep it sorted the way the table is grouped, so the two read
+/// against each other.
+const BARE_BUILTIN_PROGRAMS: &[(&str, &str)] = &[
+    // lower_expr's `Expr::Call` arms.
+    ("len", "fn main() { println(len(\"ab\")); }\n"),
+    ("to_string", "fn main() { println(to_string(7)); }\n"),
+    ("Int", "fn main() { println(Int(3.9)); }\n"),
+    ("Float", "fn main() { println(Float(3)); }\n"),
+    ("abs", "fn main() { println(abs(0 - 2)); }\n"),
+    ("min", "fn main() { println(min(1, 2)); }\n"),
+    ("max", "fn main() { println(max(1, 2)); }\n"),
+    // lower_str_predicate_builtin.
+    (
+        "starts_with",
+        "fn main() { println(starts_with(\"ab\", \"a\")); }\n",
+    ),
+    ("contains", "fn main() { println(contains(\"ab\", \"b\")); }\n"),
+    // lower_print_call's four printers.
+    ("println", "fn main() { println(\"x\"); }\n"),
+    ("print", "fn main() { print(\"x\"); }\n"),
+    ("eprintln", "fn main() { eprintln(\"x\"); }\n"),
+    ("eprint", "fn main() { eprint(\"x\"); }\n"),
+    // The explicit-epoch closure surface, statement position.
+    (
+        "check_closures",
+        "locus Ledger { params { debits: Int = 0; credits: Int = 0; }\n\
+         closure balanced { self.debits ~~ self.credits within 0; epoch explicit; }\n\
+         fn post() { self.debits = self.debits + 1; self.credits = self.credits + 1; check_closures(); } }\n\
+         main locus M { params { l: Ledger = Ledger { }; } run() { self.l.post(); } }\n\
+         fn main() { M { }; }\n",
+    ),
+    // Accumulator vocabulary inside a closure assertion.
+    (
+        "count",
+        "main locus T { params { delta: Float = 0.0; }\n\
+         closure counted { count() ~~ 1 within 0; epoch tick; }\n\
+         run() { self.delta = 1.0; } }\n\
+         fn main() { T { }; }\n",
+    ),
+    (
+        "mean",
+        "main locus T { params { delta: Float = 0.0; }\n\
+         closure mean_in_band { mean(self.delta) ~~ 0.0 within 100.0; epoch tick; }\n\
+         run() { self.delta = 1.0; } }\n\
+         fn main() { T { }; }\n",
+    ),
+    // bounded[T; N] intrinsics. `clear` / `truncate` lower direct;
+    // `push` / `at` / `set` are fallible and go through the `or`
+    // path (`try_lower_bounded_fallible_intrinsic`).
+    (
+        "clear",
+        "type B { vals: bounded[Int; 4]; }\n\
+         fn main() { let b = B { }; clear(b.vals); }\n",
+    ),
+    (
+        "truncate",
+        "type B { vals: bounded[Int; 4]; }\n\
+         fn main() { let b = B { }; println(truncate(b.vals, 1)); }\n",
+    ),
+    (
+        "push",
+        "type B { vals: bounded[Int; 4]; }\n\
+         fn main() { let b = B { }; push(b.vals, 7) or raise; }\n",
+    ),
+    (
+        "at",
+        "type B { vals: bounded[Int; 4]; }\n\
+         fn main() { let b = B { }; push(b.vals, 7) or raise; let v = at(b.vals, 0) or 0; println(v); }\n",
+    ),
+    (
+        "set",
+        "type B { vals: bounded[Int; 4]; }\n\
+         fn main() { let b = B { }; push(b.vals, 7) or raise; set(b.vals, 0, 9) or raise; }\n",
+    ),
+    // lower_fmt_builtin. Both spellings: the f-string the author
+    // writes, and the desugared call the table actually names.
+    (
+        "__fmt",
+        "fn main() { println(f\"{255:x}\"); println(__fmt(255, \"x\")); }\n",
+    ),
+];
+
+/// GH #800 — the mirror of the sweep above: a bare name the table
+/// ADMITS must be one codegen can lower.
+///
+/// #779 tested one direction (a name codegen answers must be
+/// listed) and deliberately left the other alone, so the table kept
+/// ten names with no codegen arm anywhere: `hex`, `panic`, `exit`,
+/// the six primitive-type spellings `Float` / `String` / `Bool` /
+/// `Bytes` / `Decimal` / `Duration`, and `prod`. `hale check <dir>`
+/// accepted a call to each of them and `hale build` refused it, at
+/// lowering, with no span — the check-accepts/build-refuses
+/// divergence this whole file exists to catch, sitting inside the
+/// table the file's other test reads.
+///
+/// So the table is now exact in both directions, and this is the
+/// half that keeps it exact: every entry gets a whole program that
+/// calls it, and every program must BUILD. A name added to the
+/// table without a program here fails on the set comparison; a name
+/// whose arm is removed or narrowed fails on the build.
+#[test]
+fn every_bare_builtin_callee_lowers() {
+    let tabled: BTreeSet<&str> =
+        hale_types::check::BARE_BUILTIN_CALLEES.iter().copied().collect();
+    let covered: BTreeSet<&str> =
+        BARE_BUILTIN_PROGRAMS.iter().map(|(n, _)| *n).collect();
+    assert_eq!(
+        covered.len(),
+        BARE_BUILTIN_PROGRAMS.len(),
+        "two programs for one name in BARE_BUILTIN_PROGRAMS"
+    );
+    assert_eq!(
+        tabled,
+        covered,
+        "\n`BARE_BUILTIN_CALLEES` and this file's program table name \
+         different sets.\nIn the table only (needs a program here, or \
+         it is a name `hale check` admits and nothing proves \
+         buildable): {:?}\nIn the programs only (needs an entry in \
+         `crates/hale-types/src/check.rs`): {:?}",
+        tabled.difference(&covered).collect::<Vec<_>>(),
+        covered.difference(&tabled).collect::<Vec<_>>(),
+    );
+
+    let mut failures: Vec<String> = Vec::new();
+    for (i, (name, src)) in BARE_BUILTIN_PROGRAMS.iter().enumerate() {
+        // Guards the vacuous pass: a program that lost its call
+        // during an edit would build happily and prove nothing.
+        assert!(
+            src.contains(name),
+            "the program for `{}` does not mention it:\n{}",
+            name,
+            src
+        );
+        let program = match hale_syntax::parse_source(src) {
+            Ok(p) => p,
+            Err(ds) => {
+                let msgs: Vec<&str> =
+                    ds.iter().map(|d| d.message.as_str()).collect();
+                failures.push(format!(
+                    "  `{}` does not parse: {}",
+                    name,
+                    msgs.join("; ")
+                ));
+                continue;
+            }
+        };
+        let bin = harness::unique_bin(&format!("hale_bbc_{}", i));
+        match build_executable(&program, &bin) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&bin);
+            }
+            Err(e) => {
+                failures.push(format!("  `{}` — {:?}", name, e));
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} bare name(s) that `BARE_BUILTIN_CALLEES` exempts from the \
+         F.18 strict-callee rule cannot be lowered, so `hale check \
+         <dir>` accepts a call `hale build` refuses (GH #800):\n{}\n\n\
+         Either give codegen the arm, or drop the name from \
+         `BARE_BUILTIN_CALLEES` in `crates/hale-types/src/check.rs` so \
+         the call gets the located unknown-callee diagnostic instead.",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// GH #800 — the fourth parallel list. `IMPURE_BARE_BUILTINS`
+/// (`crates/hale-types/src/purity.rs`) is consulted only for an
+/// `Expr::Ident` in callee position, so a name it lists that the
+/// compiler does not answer as a bare callee describes the purity
+/// of a call that cannot compile. Nothing forced the two to agree;
+/// this does.
+#[test]
+fn purity_bare_builtins_are_bare_callees() {
+    let callees: BTreeSet<&str> =
+        hale_types::check::BARE_BUILTIN_CALLEES.iter().copied().collect();
+    let orphans: Vec<&&str> = hale_types::purity::impure_bare_builtins()
+        .iter()
+        .filter(|n| !callees.contains(**n))
+        .collect();
+    assert!(
+        orphans.is_empty(),
+        "`IMPURE_BARE_BUILTINS` names {:?}, which `BARE_BUILTIN_CALLEES` \
+         does not — a bare call to those is refused, so their purity is \
+         the purity of a program that does not compile.",
+        orphans
+    );
+}

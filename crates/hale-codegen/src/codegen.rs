@@ -529,6 +529,15 @@ pub enum CodegenError {
     LlvmInit(String),
     LlvmEmit(String),
     Link(String),
+    /// GH #808: the program needs `libhale_ts_shim.a` (it reaches
+    /// `std::ts::*`, directly or through the stdlib) and the
+    /// staticlib is not on any of the lookup paths. Refused before
+    /// the link so the user reads "the toolchain isn't fully
+    /// built" instead of `undefined symbol: lotus_ts_parse_go`.
+    /// The span, when known, is the first `std::ts::*` call the
+    /// program lowered; the CLI renders it like a check
+    /// diagnostic.
+    MissingTsShim(String, Option<hale_syntax::Span>),
 }
 
 impl std::fmt::Display for CodegenError {
@@ -541,6 +550,7 @@ impl std::fmt::Display for CodegenError {
             CodegenError::LlvmInit(s) => write!(f, "LLVM init failed: {}", s),
             CodegenError::LlvmEmit(s) => write!(f, "LLVM emit failed: {}", s),
             CodegenError::Link(s) => write!(f, "link failed: {}", s),
+            CodegenError::MissingTsShim(s, _) => write!(f, "{}", s),
         }
     }
 }
@@ -1383,6 +1393,7 @@ pub fn build_executable_with_options(
         target: target_spec.clone(),
         wasm_exports: Vec::new(),
         native_exports: Vec::new(),
+        ts_call_span: None,
         current_instantiation_parent: None,
         instantiating_persistent_singleton: false,
         cell_owned_clone: false,
@@ -1463,6 +1474,9 @@ pub fn build_executable_with_options(
         fresh_locus_factories: compute_fresh_locus_factories(&merged, import_renames),
         returned_bindings: compute_returned_bindings(&merged),
         assign_moved_bindings: compute_assign_moved_bindings(&merged),
+        stack_array_bindings: compute_stack_array_bindings(&merged),
+        stack_array_bytes_used: BTreeMap::new(),
+        next_array_repeat_is_stack_local: false,
         model_hash: options.model_hash,
         exec_digest: options.exec_digest,
         obs_entity_ids: options.obs_entity_ids.clone(),
@@ -2035,6 +2049,28 @@ pub fn build_executable_with_options(
     // future flag can gate the link on `std::ts` actually being
     // referenced by the user program.
     let ts_shim_path = locate_ts_shim_staticlib();
+    // GH #808: without the staticlib, every surviving `lotus_ts_*`
+    // reference is an undefined symbol — and `ld.lld: undefined
+    // symbol: lotus_ts_parse_go` reads as a bug in the user's
+    // program rather than "the toolchain wasn't fully built".
+    // Refuse here instead, naming the artifact and the command
+    // that produces it, and (when a `std::ts::*` call was lowered)
+    // pointing at the source that needs it. The question is asked
+    // of the POST-pipeline module, so a program that merely merges
+    // the stdlib's `std::ts` users without calling them — they are
+    // stripped by the internalize+globaldce prepass — still links.
+    if ts_shim_path.is_none() && module_references_ts_shim(&cx.module) {
+        let msg = format!(
+            "this program uses `std::ts::*`, which needs the \
+             tree-sitter shim staticlib `libhale_ts_shim.a`; it \
+             was not found next to the `hale` binary, under \
+             `HALE_TS_SHIM_A`, or in the workspace target dir. \
+             Build the whole workspace (`cargo build --release`) \
+             — `cargo build -p hale-cli` does not produce it"
+        );
+        let _ = std::fs::remove_file(&main_input);
+        return Err(CodegenError::MissingTsShim(msg, cx.ts_call_span));
+    }
     let mut clang = Command::new("clang");
     clang
         .arg(&main_input)
@@ -2185,16 +2221,32 @@ pub fn build_executable_with_options(
     }
     if let Some(p) = ts_shim_path.as_ref() {
         clang.arg(p);
-        // Rust staticlibs depend on libdl + libm via libstd.
-        // Adding these unconditionally is harmless when no
-        // staticlib symbols are actually pulled in. macOS has no
-        // separate libdl (dlopen/dlsym are in libSystem), so `-ldl`
-        // would be "library 'dl' not found" — link it on Linux only.
-        if !target_spec.is_macos() {
-            clang.arg("-ldl");
-        }
-        clang.arg("-lm");
     }
+    // GH #808: libm and libdl are linked UNCONDITIONALLY, and last,
+    // after every object and archive that can reference them.
+    //
+    // They used to sit inside the `ts_shim_path` arm above, justified
+    // as "Rust staticlibs depend on libdl + libm via libstd" — but
+    // `std::math::*` lowers to libm calls (`tanh`, `exp`, ...) with
+    // or without the shim, so a `hale` that could not find
+    // `libhale_ts_shim.a` failed every math program with
+    // `ld.lld: error: undefined symbol: tanh`, blaming the user's
+    // program for a half-built toolchain. That comment's own
+    // argument applies here: both libs are harmless when nothing
+    // references them, so there is nothing to gate.
+    //
+    // Position matters. `--as-needed` (the default on most distros)
+    // drops a shared library that nothing pending needs AT THE POINT
+    // IT IS SEEN, so `-lm` must follow the ts-shim archive, not
+    // precede it. (`-ldl` also appears earlier, with `-lz`, for the
+    // runtime's own dlopen; a second mention is free.) macOS has no
+    // separate libdl — dlopen/dlsym are in libSystem and `-ldl`
+    // would be a hard "library 'dl' not found" — so it stays
+    // Linux-only.
+    if !target_spec.is_macos() {
+        clang.arg("-ldl");
+    }
+    clang.arg("-lm");
     // Stage-1 FFI: append the per-build link surface from
     // BuildOptions. Each `--csrc <path>` is passed as a translation
     // unit compiled alongside the runtime; each `--link <lib>`
@@ -2560,15 +2612,48 @@ if (typeof process !== "undefined" && process.versions && process.versions.node)
 }
 "#;
 
+/// GH #808: does the (post-pipeline) module still reference a
+/// `lotus_ts_*` symbol — i.e. would the emitted object need
+/// `libhale_ts_shim.a` to link?
+///
+/// `builtins.rs` DECLARES the whole `lotus_ts_*` surface in every
+/// module, so "is the declaration present" is not the question;
+/// "does anything still call it" is. Asked after
+/// `internalize + globaldce + default<O3>` has run, so a program
+/// that merely merges the stdlib's `std::ts` users (`std::source`'s
+/// walker) without reaching them answers no — which is exactly the
+/// set of programs that link fine without the shim today. An
+/// unoptimized build (`LOTUS_ASAN=1` skips the pipeline) keeps the
+/// dead bodies and therefore answers yes; that is also correct,
+/// since its object really does carry the undefined symbols.
+fn module_references_ts_shim(module: &inkwell::module::Module<'_>) -> bool {
+    use inkwell::values::BasicValue;
+    let mut f = module.get_first_function();
+    while let Some(func) = f {
+        let is_shim_symbol = func
+            .get_name()
+            .to_str()
+            .map(|n| n.starts_with("lotus_ts_"))
+            .unwrap_or(false);
+        if is_shim_symbol
+            && func.as_global_value().get_first_use().is_some()
+        {
+            return true;
+        }
+        f = func.get_next_function();
+    }
+    false
+}
+
 /// m96: find `libhale_ts_shim.a`, the staticlib produced by the
 /// sibling `hale-ts-shim` workspace crate. Returns `None` if the
-/// staticlib hasn't been built yet — the user-program link will
-/// then succeed only if the program doesn't actually call any
-/// `lotus_ts_*` symbol (the externs would resolve to undefined at
-/// link time and clang would error). std::io::fs's
-/// `__StdSourceWalk` transitively references those symbols, so a
-/// program that only touches `std::io::fs::read_file` still needs
-/// the shim.
+/// staticlib hasn't been built yet — which `cargo build -p
+/// hale-cli` never does, since nothing declares a Cargo dependency
+/// on a `crate-type = ["staticlib"]` crate. The user-program link
+/// then succeeds only if no `lotus_ts_*` reference survives into
+/// the object; GH #808 makes that case an explicit, located
+/// refusal (`module_references_ts_shim` above) rather than a
+/// linker undefined-symbol wall.
 ///
 /// Lookup order:
 ///   1. `HALE_TS_SHIM_A` env var (explicit override)
@@ -2581,6 +2666,14 @@ if (typeof process !== "undefined" && process.versions && process.versions.node)
 ///   3. Workspace `target/release/`
 ///   4. Workspace `target/debug/`
 fn locate_ts_shim_staticlib() -> Option<PathBuf> {
+    // GH #808: test-only override — force the "staticlib was never
+    // built" path so the regression tests can assert both halves of
+    // the fix (math links without the shim; `std::ts` gets a located
+    // refusal) without deleting a build artifact other tests share.
+    // Same shape as LOTUS_NO_BUS_DEVIRT / LOTUS_NO_OWNERSHIP_BUBBLE.
+    if env_flag("HALE_NO_TS_SHIM") {
+        return None;
+    }
     if let Ok(p) = std::env::var("HALE_TS_SHIM_A") {
         let pb = PathBuf::from(p);
         if pb.exists() {
@@ -2953,6 +3046,381 @@ fn compute_assign_moved_bindings(
             _ => {}
         }
     }
+    m
+}
+
+/// GH #767: most stack bytes one fn's array literals may take.
+///
+/// 8 KiB is one eighth of `LOTUS_CORO_STACK_BYTES` (the 64 KiB
+/// cooperative-pool coroutine stack in `runtime/lotus_arena.c`).
+/// Whether a fn ends up on a coro stack is not knowable here — any
+/// free fn can be reached from an `async_io` handler — so the cap has
+/// to be safe for the smallest stack in the system, not the 8 MiB
+/// pthread default. A 64 KiB table would fill a coro stack outright;
+/// that is the class that took `udp` recv down (a 64 KiB `stack_buf`
+/// smashing the coro stack, fixed in #221), and it is why this number
+/// is not the whole stack. It is a per-fn TOTAL, so three tables in
+/// one body share the budget. `[0; 1024]` of `Int` — the table in the
+/// issue — is exactly 8 KiB and fits; anything larger keeps the arena
+/// path, where growth is the caller's problem but never a SIGSEGV.
+pub(crate) const STACK_ARRAY_MAX_BYTES: u64 = 8 * 1024;
+
+/// GH #767: fill an `[c; N]` with N separate `store`s only while N is
+/// this small. Past it the fill becomes one `llvm.memset` (constant
+/// all-zero `c`) or a counted loop. 16 is where the unrolled form
+/// stops paying for itself: SLP/loop-idiom recognition still collapses
+/// runs that short, and below it the stores are the shape the rest of
+/// codegen (and the IR tests) already expect. Above it the unrolled
+/// form is pure IR bloat — `[0; 1024]` emitted 1024 stores and 2090
+/// lines of IR for one local.
+const ARRAY_FILL_UNROLL_MAX: u64 = 16;
+
+/// GH #767: per-fn set of `let` bindings whose initializer is a
+/// literal `[c; N]` and whose every use in the enclosing fn body is an
+/// element read (`t[i]`) or an element write (`t[i] = v`). Those are
+/// the bindings whose storage can live in the fn's own frame instead
+/// of an arena.
+///
+/// Why it matters: a free fn's temporaries are allocated in the
+/// CALLER's arena and are not reclaimed until the caller returns, so a
+/// fixed scratch table inside a helper is per-call churn for the whole
+/// lifetime of the loop that calls it — 1.69 GB of RSS over 200k calls
+/// in the measurement on #754.
+///
+/// Conservative by construction, and it has to be: a wrong answer here
+/// is a dangling stack pointer, not a leak. The walker whitelists the
+/// two element-access shapes and treats EVERY other occurrence of the
+/// name — a bare mention, a call argument, a `return`, a field store, a
+/// publish, a `for ... in t`, an alias `let u = t;` — as an escape. Any
+/// `Expr`/`Stmt` variant added later must be handled explicitly: both
+/// walkers match exhaustively, with no `_` arm.
+///
+/// A name bound more than once in one body, shadowed by a parameter, or
+/// re-bound by a bare `t = ...` is dropped outright rather than
+/// reasoned about. Keys follow the `{locus}.{member}` LLVM naming
+/// convention (locus/decl.rs) that `compute_returned_bindings` uses, so
+/// the `current_fn` lookup at the `let` matches; a duplicate key keeps
+/// only the INTERSECTION, so a name collision can only ever shrink the
+/// set.
+fn compute_stack_array_bindings(
+    program: &Program,
+) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    /// Every occurrence of `name` in `e` is an element access.
+    fn expr_uses_are_elementwise(e: &Expr, name: &str) -> bool {
+        match e {
+            // A bare mention hands the array's ADDRESS to whatever
+            // context it sits in. Unclassifiable — treat as escape.
+            Expr::Ident(i) => i.name != name,
+            Expr::Index { receiver, index, .. } => {
+                let recv_ok = match receiver.as_ref() {
+                    // `t[i]` yields the ELEMENT, by value. The storage
+                    // address stops here.
+                    Expr::Ident(i) if i.name == name => true,
+                    other => expr_uses_are_elementwise(other, name),
+                };
+                recv_ok && expr_uses_are_elementwise(index, name)
+            }
+            Expr::Literal(_, _) | Expr::Path(_) | Expr::KwSelf(_) => true,
+            Expr::Binary { left, right, .. }
+            | Expr::Range { lo: left, hi: right, .. } => {
+                expr_uses_are_elementwise(left, name)
+                    && expr_uses_are_elementwise(right, name)
+            }
+            Expr::Unary { operand, .. } => {
+                expr_uses_are_elementwise(operand, name)
+            }
+            Expr::Call { callee, args, .. } => {
+                expr_uses_are_elementwise(callee, name)
+                    && args
+                        .iter()
+                        .all(|a| expr_uses_are_elementwise(a, name))
+            }
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
+                expr_uses_are_elementwise(receiver, name)
+            }
+            Expr::Tuple(xs, _) | Expr::Array(xs, _) => {
+                xs.iter().all(|x| expr_uses_are_elementwise(x, name))
+            }
+            Expr::Struct { inits, .. } => inits
+                .iter()
+                .all(|si| expr_uses_are_elementwise(&si.value, name)),
+            Expr::Block(b) => block_uses_are_elementwise(b, name),
+            Expr::If(i) => if_uses_are_elementwise(i, name),
+            Expr::Match(m) => match_uses_are_elementwise(m, name),
+            Expr::Sum(x, _) | Expr::Prod(x, _) => {
+                expr_uses_are_elementwise(x, name)
+            }
+            Expr::Approx { left, right, tolerance, .. } => {
+                expr_uses_are_elementwise(left, name)
+                    && expr_uses_are_elementwise(right, name)
+                    && expr_uses_are_elementwise(tolerance, name)
+            }
+            Expr::ArrayRepeat { val, .. } => {
+                expr_uses_are_elementwise(val, name)
+            }
+            Expr::Or { inner, .. } => expr_uses_are_elementwise(inner, name),
+        }
+    }
+
+    fn if_uses_are_elementwise(i: &IfStmt, name: &str) -> bool {
+        if !expr_uses_are_elementwise(&i.cond, name)
+            || !block_uses_are_elementwise(&i.then_block, name)
+        {
+            return false;
+        }
+        match i.else_block.as_deref() {
+            None => true,
+            Some(ElseBranch::Else(b)) => block_uses_are_elementwise(b, name),
+            Some(ElseBranch::ElseIf(inner)) => {
+                if_uses_are_elementwise(inner, name)
+            }
+        }
+    }
+
+    fn match_uses_are_elementwise(m: &MatchStmt, name: &str) -> bool {
+        if !expr_uses_are_elementwise(&m.scrutinee, name) {
+            return false;
+        }
+        m.arms.iter().all(|arm| {
+            let guard_ok = arm
+                .guard
+                .as_ref()
+                .map(|g| expr_uses_are_elementwise(g, name))
+                .unwrap_or(true);
+            let body_ok = match &arm.body {
+                MatchArmBody::Expr(e) => expr_uses_are_elementwise(e, name),
+                MatchArmBody::Block(b) => block_uses_are_elementwise(b, name),
+            };
+            guard_ok && body_ok
+        })
+    }
+
+    fn stmt_uses_are_elementwise(s: &Stmt, name: &str) -> bool {
+        match s {
+            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+                expr_uses_are_elementwise(value, name)
+            }
+            Stmt::Assign { target, value, .. } => {
+                let target_ok = if target.head.name == name {
+                    // `t[i] = v` writes an element. Anything else with
+                    // `t` at the head — `t = x` (a rebind), `t.f = x` —
+                    // is not an element write.
+                    match target.tail.as_slice() {
+                        [LValueSeg::Index(ix)] => {
+                            expr_uses_are_elementwise(ix, name)
+                        }
+                        _ => false,
+                    }
+                } else {
+                    target.tail.iter().all(|seg| match seg {
+                        LValueSeg::Index(ix) => {
+                            expr_uses_are_elementwise(ix, name)
+                        }
+                        LValueSeg::Field(_) => true,
+                    })
+                };
+                target_ok && expr_uses_are_elementwise(value, name)
+            }
+            Stmt::If(i) => if_uses_are_elementwise(i, name),
+            Stmt::Match(m) => match_uses_are_elementwise(m, name),
+            // `for x in t` reads elements, but the lowering walks the
+            // storage — left out on purpose, the conservative side.
+            Stmt::For { iter, body, .. } => {
+                expr_uses_are_elementwise(iter, name)
+                    && block_uses_are_elementwise(body, name)
+            }
+            Stmt::While { cond, body, .. } => {
+                expr_uses_are_elementwise(cond, name)
+                    && block_uses_are_elementwise(body, name)
+            }
+            Stmt::Return(v, _) => v
+                .as_ref()
+                .map(|e| expr_uses_are_elementwise(e, name))
+                .unwrap_or(true),
+            Stmt::Break(_)
+            | Stmt::Continue(_)
+            | Stmt::Yield(_)
+            | Stmt::Terminate(_)
+            | Stmt::Reperspective { .. } => true,
+            Stmt::Fail { value, .. } => expr_uses_are_elementwise(value, name),
+            Stmt::Block(b) => block_uses_are_elementwise(b, name),
+            Stmt::Recovery { args, .. } => {
+                args.iter().all(|a| expr_uses_are_elementwise(a, name))
+            }
+            Stmt::Violate { payload, .. } => payload
+                .as_ref()
+                .map(|e| expr_uses_are_elementwise(e, name))
+                .unwrap_or(true),
+            Stmt::Send { subject, value, .. } => {
+                expr_uses_are_elementwise(subject, name)
+                    && expr_uses_are_elementwise(value, name)
+            }
+            Stmt::ShmWrite { max, body, .. } => {
+                expr_uses_are_elementwise(max, name)
+                    && block_uses_are_elementwise(body, name)
+            }
+            Stmt::Expr(e) => expr_uses_are_elementwise(e, name),
+        }
+    }
+
+    fn block_uses_are_elementwise(b: &Block, name: &str) -> bool {
+        b.stmts.iter().all(|s| stmt_uses_are_elementwise(s, name))
+            && b.tail
+                .as_deref()
+                .map(|t| expr_uses_are_elementwise(t, name))
+                .unwrap_or(true)
+    }
+
+    /// Candidates (a `let` whose RHS is a literal `[c; N]`) and every
+    /// other name the body binds. A name in both — a shadow, a second
+    /// `let`, a loop variable — is dropped.
+    fn collect_binders(
+        b: &Block,
+        candidates: &mut Vec<String>,
+        other: &mut BTreeSet<String>,
+    ) {
+        fn visit_if(
+            i: &IfStmt,
+            candidates: &mut Vec<String>,
+            other: &mut BTreeSet<String>,
+        ) {
+            collect_binders(&i.then_block, candidates, other);
+            match i.else_block.as_deref() {
+                None => {}
+                Some(ElseBranch::Else(bb)) => {
+                    collect_binders(bb, candidates, other)
+                }
+                Some(ElseBranch::ElseIf(inner)) => {
+                    visit_if(inner, candidates, other)
+                }
+            }
+        }
+        for s in &b.stmts {
+            match s {
+                Stmt::Let { name, value, .. } => {
+                    if matches!(value, Expr::ArrayRepeat { .. }) {
+                        candidates.push(name.name.clone());
+                    } else {
+                        other.insert(name.name.clone());
+                    }
+                }
+                Stmt::LetTuple { names, .. } => {
+                    for n in names {
+                        other.insert(n.name.clone());
+                    }
+                }
+                Stmt::For { name, body, .. } => {
+                    other.insert(name.name.clone());
+                    collect_binders(body, candidates, other);
+                }
+                Stmt::While { body, .. }
+                | Stmt::Block(body)
+                | Stmt::ShmWrite { body, .. } => {
+                    collect_binders(body, candidates, other)
+                }
+                Stmt::If(i) => visit_if(i, candidates, other),
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        if let MatchArmBody::Block(bb) = &arm.body {
+                            collect_binders(bb, candidates, other);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn qualifying(params: &[Param], body: &Block) -> BTreeSet<String> {
+        let mut candidates: Vec<String> = Vec::new();
+        let mut other: BTreeSet<String> = BTreeSet::new();
+        collect_binders(body, &mut candidates, &mut other);
+        for p in params {
+            other.insert(p.name.name.clone());
+        }
+        let mut out = BTreeSet::new();
+        for c in &candidates {
+            if other.contains(c) {
+                continue;
+            }
+            // Bound twice in one body — two `[c; N]` literals under one
+            // name. Not worth reasoning about; drop it.
+            if candidates.iter().filter(|x| *x == c).count() != 1 {
+                continue;
+            }
+            if block_uses_are_elementwise(body, c) {
+                out.insert(c.clone());
+            }
+        }
+        out
+    }
+
+    let mut m: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut record = |key: String, params: &[Param], body: &Block| {
+        let set = qualifying(params, body);
+        match m.entry(key) {
+            std::collections::btree_map::Entry::Vacant(v) => {
+                if !set.is_empty() {
+                    v.insert(set);
+                }
+            }
+            // Two declarations landed on one LLVM name. Keep only what
+            // holds for both.
+            std::collections::btree_map::Entry::Occupied(mut o) => {
+                o.get_mut().retain(|n| set.contains(n));
+            }
+        }
+    };
+    for item in &program.items {
+        match item {
+            TopDecl::Fn(f) => {
+                record(f.name.name.clone(), &f.params, &f.body)
+            }
+            TopDecl::Locus(l) => {
+                for member in &l.members {
+                    match member {
+                        LocusMember::Fn(f) => record(
+                            format!("{}.{}", l.name.name, f.name.name),
+                            &f.params,
+                            &f.body,
+                        ),
+                        LocusMember::Mode(md) => {
+                            let mode_name = match md.kind {
+                                ModeKind::Bulk => "bulk",
+                                ModeKind::Harmonic => "harmonic",
+                                ModeKind::Resolution => "resolution",
+                            };
+                            record(
+                                format!("{}.{}", l.name.name, mode_name),
+                                &[],
+                                &md.body,
+                            );
+                        }
+                        LocusMember::Lifecycle(lc) => {
+                            let lc_name = match lc.kind {
+                                LifecycleKind::Birth => "birth",
+                                LifecycleKind::Accept => "accept",
+                                LifecycleKind::Release => "release",
+                                LifecycleKind::Run => "run",
+                                LifecycleKind::Drain => "drain",
+                                LifecycleKind::Dissolve => "dissolve",
+                            };
+                            record(
+                                format!("{}.{}", l.name.name, lc_name),
+                                &lc.params,
+                                &lc.body,
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    m.retain(|_, v| !v.is_empty());
     m
 }
 
@@ -3485,6 +3953,13 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// through the internalize+globaldce prepass (they're exactly
     /// the symbols an external C caller links by name).
     pub(crate) native_exports: Vec<String>,
+    /// GH #808: span of the first `std::ts::*` call lowered in this
+    /// program. The link step uses it to point the "tree-sitter
+    /// shim staticlib not found" refusal at real user source
+    /// instead of handing the user a linker undefined-symbol wall.
+    /// `None` when no `std::ts::*` path call was lowered (the
+    /// refusal then carries no location).
+    pub(crate) ts_call_span: Option<hale_syntax::Span>,
     /// iris handoff-2 P9: the self pointer of the locus currently
     /// being INSTANTIATED, so children created during its
     /// param-init register LOCUS_BIRTH with real parentage
@@ -4149,6 +4624,25 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// must not fire on either. See `compute_assign_moved_bindings`.
     pub(crate) assign_moved_bindings:
         std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// GH #767: fn name -> the `let` bindings whose initializer is a
+    /// literal `[c; N]` that provably never escapes the fn. Those get
+    /// an entry-block `alloca` instead of an arena allocation. See
+    /// `compute_stack_array_bindings`.
+    pub(crate) stack_array_bindings:
+        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// GH #767: fn name -> stack bytes already handed to array
+    /// literals in that fn, so the per-fn cap
+    /// (`STACK_ARRAY_MAX_BYTES`) counts the whole frame and not one
+    /// array at a time. Keyed by LLVM fn name rather than reset at fn
+    /// entry so a nested body lowered mid-expression (a closure) can
+    /// never hand the outer fn a fresh budget.
+    pub(crate) stack_array_bytes_used: std::collections::BTreeMap<String, u64>,
+    /// GH #767: set by `Stmt::Let` immediately before lowering an
+    /// `Expr::ArrayRepeat` RHS that `stack_array_bindings` cleared,
+    /// consumed by the `ArrayRepeat` arm (same one-shot handshake as
+    /// `defer_next_locus_dissolve`). Nested array literals inside the
+    /// RHS keep the arena path.
+    pub(crate) next_array_repeat_is_stack_local: bool,
     /// GH #402: set while lowering an expression whose fresh-factory
     /// result already has an owner decided by the caller — a `let`'s
     /// direct RHS (the binding owns it) or a `return`'s expression
@@ -17097,6 +17591,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         self.current_arena_override = Some(caller_arena);
                     }
                 }
+                // GH #767: a literal `[c; N]` bound here, whose every
+                // use in this fn is an element access, is a frame
+                // local, not an arena allocation. Signalled one-shot to
+                // the ArrayRepeat arm the same way the locus-dissolve
+                // deferral is: whichever arm lowers the OUTERMOST
+                // repeat takes the flag, and an arm that bails before
+                // taking it aborts the whole build anyway (a zero-count
+                // repeat is the only such path).
+                self.next_array_repeat_is_stack_local =
+                    matches!(value_to_lower, Expr::ArrayRepeat { .. })
+                        && !binding_is_returned
+                        && self
+                            .current_fn
+                            .map(|f| {
+                                f.get_name().to_string_lossy().to_string()
+                            })
+                            .and_then(|fname| {
+                                self.stack_array_bindings.get(&fname)
+                            })
+                            .map(|set| set.contains(&name.name))
+                            .unwrap_or(false);
                 // GH #402: the binding decides ownership for its own
                 // RHS (below), so suppress temporary registration for
                 // the top-level call — otherwise the value would be
@@ -17125,6 +17640,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.suppress_fresh_temp = prev_sft;
                 self.current_arena_override = saved_override_for_returned;
                 self.defer_next_locus_dissolve = false;
+                self.next_array_repeat_is_stack_local = false;
                 let (mut val, mut ty) = lower_result?;
                 // GH #383: a let-bound call to a proven-fresh locus
                 // factory is owned by THIS binding, so it dissolves
@@ -18613,6 +19129,49 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 "`Int(...)` cast not supported for argument type {:?} \
                  (only Float → Int narrowing and Int identity are \
                  supported in v1)",
+                other
+            ))),
+        }
+    }
+
+    /// GH #800: lower `Float(x)` — the widening half of the pair
+    /// `spec/types.md` § "Explicit numeric conversions" has always
+    /// specified (`Int(x)` / `Float(x)`). Only the narrowing half
+    /// had an arm, so `Float(n)` — which the spec's own prose
+    /// spells — typechecked and then died at lowering as
+    /// ``builtin `Float` ``. `Int` arg lowers via `sitofp`, Float
+    /// arg is the identity; the same shape `lower_int_cast_builtin`
+    /// has in the other direction, and the same conversion
+    /// `std::math::int_to_float` emits.
+    fn lower_float_cast_builtin(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "`Float` cast expects exactly 1 argument, got {}",
+                args.len()
+            )));
+        }
+        let (v, ty) = self.lower_expr(&args[0], scope)?;
+        match ty {
+            CodegenTy::Float => Ok((v, CodegenTy::Float)),
+            CodegenTy::Int => {
+                let res = self
+                    .builder
+                    .build_signed_int_to_float(
+                        v.into_int_value(),
+                        self.context.f64_type(),
+                        "Float.cast",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((res.into(), CodegenTy::Float))
+            }
+            other => Err(CodegenError::Unsupported(format!(
+                "`Float(...)` cast not supported for argument type \
+                 {:?} (only Int → Float widening and Float identity \
+                 are supported in v1)",
                 other
             ))),
         }
@@ -22353,6 +22912,219 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(slot)
     }
 
+    /// GH #767: element types whose LLVM value is a plain scalar, so a
+    /// `t[i]` read copies the element out and the array's storage
+    /// address never leaves the fn with it. The stack path is confined
+    /// to these: a `String`/`Bytes`/`TypeRef` element is a POINTER, and
+    /// while the pointee would still be arena-resident, reasoning about
+    /// what a read hands onward is exactly the thing this analysis
+    /// refuses to do.
+    pub(crate) fn array_elem_is_scalar(t: &CodegenTy) -> bool {
+        matches!(
+            t,
+            CodegenTy::Int
+                | CodegenTy::Float
+                | CodegenTy::Bool
+                | CodegenTy::Duration
+                | CodegenTy::Decimal
+                | CodegenTy::Enum(_)
+        )
+    }
+
+    /// GH #767: `v` is a compile-time constant whose bit pattern is all
+    /// zero, so N copies of it are one `llvm.memset` of 0. `-0.0` is
+    /// deliberately excluded — its bit pattern is not zero.
+    fn is_const_zero_bits(v: BasicValueEnum<'ctx>) -> bool {
+        match v {
+            BasicValueEnum::IntValue(i) => {
+                i.is_const() && i.get_zero_extended_constant() == Some(0)
+            }
+            BasicValueEnum::FloatValue(f) => f
+                .is_const()
+                .then(|| f.get_constant())
+                .flatten()
+                .map(|(x, _)| x == 0.0 && !x.is_sign_negative())
+                .unwrap_or(false),
+            BasicValueEnum::PointerValue(p) => p.is_null(),
+            _ => false,
+        }
+    }
+
+    /// GH #767: storage + fill for a literal `[c; N]`.
+    ///
+    /// Storage is an entry-block `alloca` when `want_stack` says the
+    /// binding this literal initializes provably does not escape the fn
+    /// (`compute_stack_array_bindings`), the element is a scalar, and
+    /// the fn's stack-array budget has room; the current arena
+    /// otherwise. A free fn's arena is the CALLER's, so the arena form
+    /// of a fixed local table is per-call churn that outlives the call
+    /// — 1.69 GB of RSS over 200k calls before this.
+    ///
+    /// The fill is one `llvm.memset` when `v` is the constant all-zero
+    /// bit pattern, a counted loop past `ARRAY_FILL_UNROLL_MAX`, and N
+    /// stores below it. That part applies to the arena path too: N
+    /// unrolled stores is IR bloat wherever the storage lives.
+    ///
+    /// The entry-block alloca is load-bearing, not a tidiness choice: a
+    /// `let` inside a loop body would otherwise grow the frame once per
+    /// iteration — the same class as the per-iteration slot in #815.
+    pub(crate) fn emit_array_repeat_storage(
+        &mut self,
+        elem_ty: &CodegenTy,
+        n: u64,
+        v: BasicValueEnum<'ctx>,
+        want_stack: bool,
+        tag: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let arr_ty = self.llvm_array_storage_type(elem_ty, n);
+        let size_bytes = self.target_data.get_abi_size(&arr_ty);
+        // Every block this helper appends must belong to the fn the
+        // builder is actually writing into; `current_fn` is the same fn
+        // on every normal path, and where it is not, fall back to the
+        // shape that needs neither (unrolled stores, arena storage).
+        let host_fn = self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent());
+        let host_is_current = match (host_fn, self.current_fn) {
+            (Some(h), Some(c)) => h == c,
+            _ => false,
+        };
+
+        let mut on_stack = false;
+        if want_stack
+            && host_is_current
+            && Self::array_elem_is_scalar(elem_ty)
+            && size_bytes <= STACK_ARRAY_MAX_BYTES
+        {
+            let fname = self
+                .current_fn
+                .map(|f| f.get_name().to_string_lossy().to_string())
+                .unwrap_or_default();
+            let used = *self.stack_array_bytes_used.get(&fname).unwrap_or(&0);
+            if used + size_bytes <= STACK_ARRAY_MAX_BYTES {
+                self.stack_array_bytes_used
+                    .insert(fname, used + size_bytes);
+                on_stack = true;
+            }
+        }
+
+        let arr_ptr = if on_stack {
+            self.alloca_in_entry(arr_ty.into(), &format!("{}.slot", tag))?
+        } else {
+            let bytes = arr_ty
+                .size_of()
+                .expect("array storage type has known size");
+            self.arena_alloc(bytes, &format!("{}.alloc", tag))?
+        };
+
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+
+        if Self::is_const_zero_bits(v) {
+            // One memset. `get_abi_alignment` is the alloca's actual
+            // alignment and a lower bound on the arena's (16), so it is
+            // the safe number for both.
+            let align = self.target_data.get_abi_alignment(&arr_ty);
+            self.builder
+                .build_memset(
+                    arr_ptr,
+                    align,
+                    self.context.i8_type().const_zero(),
+                    i64_t.const_int(size_bytes, false),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            return Ok(arr_ptr);
+        }
+
+        if n > ARRAY_FILL_UNROLL_MAX {
+            if let Some(func) = host_fn {
+                let i_slot = self
+                    .alloca_in_entry(i64_t.into(), &format!("{}.fill.i", tag))?;
+                self.builder
+                    .build_store(i_slot, i64_t.const_zero())
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let cond_bb =
+                    self.context.append_basic_block(func, "array.fill.cond");
+                let body_bb =
+                    self.context.append_basic_block(func, "array.fill.body");
+                let end_bb =
+                    self.context.append_basic_block(func, "array.fill.end");
+                self.builder
+                    .build_unconditional_branch(cond_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+                self.builder.position_at_end(cond_bb);
+                let i = self
+                    .builder
+                    .build_load(i64_t, i_slot, "array.fill.i")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_int_value();
+                let more = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::ULT,
+                        i,
+                        i64_t.const_int(n, false),
+                        "array.fill.more",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_conditional_branch(more, body_bb, end_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+                self.builder.position_at_end(body_bb);
+                let slot = unsafe {
+                    self.builder
+                        .build_gep(
+                            arr_ty,
+                            arr_ptr,
+                            &[i32_t.const_int(0, false), i],
+                            "array.fill.slot",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                };
+                self.builder
+                    .build_store(slot, v)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let next = self
+                    .builder
+                    .build_int_add(
+                        i,
+                        i64_t.const_int(1, false),
+                        "array.fill.next",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(i_slot, next)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_unconditional_branch(cond_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+                self.builder.position_at_end(end_bb);
+                return Ok(arr_ptr);
+            }
+        }
+
+        for i in 0..n {
+            let slot = unsafe {
+                self.builder
+                    .build_gep(
+                        arr_ty,
+                        arr_ptr,
+                        &[i32_t.const_int(0, false), i32_t.const_int(i, false)],
+                        &format!("{}.slot{}", tag, i),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            };
+            self.builder
+                .build_store(slot, v)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        Ok(arr_ptr)
+    }
+
     /// Null-init an EXISTING entry-block ptr slot that is about to
     /// become a deferred-dissolve entry: the store goes right
     /// after the slot's alloca, so any path that bypasses the
@@ -23202,6 +23974,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // v1.x-11: explicit Float → Int narrowing.
                     self.lower_int_cast_builtin(args, scope)
                 }
+                Expr::Ident(i) if i.name == "Float" => {
+                    // GH #800: the widening half of the same pair.
+                    self.lower_float_cast_builtin(args, scope)
+                }
                 Expr::Ident(i)
                     if matches!(
                         i.name.as_str(),
@@ -23511,34 +24287,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                          ascription mechanism)".into(),
                     ));
                 }
+                // GH #767: the OUTERMOST repeat consumes the `let`'s
+                // one-shot stack-slot signal, before `val` is lowered —
+                // a nested `[[0; 4]; 8]` must not take it instead.
+                let want_stack = std::mem::take(
+                    &mut self.next_array_repeat_is_stack_local,
+                );
                 let (v, elem_ty) = self.lower_expr(val, scope)?;
-                let i32_t = self.context.i32_type();
-                let arr_ty = self.llvm_array_storage_type(&elem_ty, n);
-                let bytes = arr_ty
-                    .size_of()
-                    .expect("array storage type has known size");
-                let arr_ptr =
-                    self.arena_alloc(bytes, "array.repeat.alloc")?;
-                for i in 0..n {
-                    let slot = unsafe {
-                        self.builder
-                            .build_gep(
-                                arr_ty,
-                                arr_ptr,
-                                &[
-                                    i32_t.const_int(0, false),
-                                    i32_t.const_int(i, false),
-                                ],
-                                &format!("array.rep.slot{}", i),
-                            )
-                            .map_err(|e| {
-                                CodegenError::LlvmEmit(e.to_string())
-                            })?
-                    };
-                    self.builder
-                        .build_store(slot, v)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
+                let arr_ptr = self.emit_array_repeat_storage(
+                    &elem_ty,
+                    n,
+                    v,
+                    want_stack,
+                    "array.repeat",
+                )?;
                 Ok((arr_ptr.into(), CodegenTy::Array(Box::new(elem_ty), n)))
             }
             Expr::Tuple(parts, _) => {
@@ -23817,6 +24579,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Some(CodegenTy::Array(elem_hint, want_n)),
                 Expr::ArrayRepeat { val, count, .. },
             ) if *count == *want_n && *count > 0 => {
+                // GH #767: an ASCRIBED `let t: [Int; N] = [0; N];`
+                // lands here, not in `lower_expr`'s ArrayRepeat arm —
+                // which is the shape the issue measured. Consume the
+                // stack-slot signal the same way, before `val` lowers.
+                let want_stack = std::mem::take(
+                    &mut self.next_array_repeat_is_stack_local,
+                );
                 let (v, got) =
                     self.lower_expr_into(val, scope, Some(elem_hint.as_ref()))?;
                 if &got != elem_hint.as_ref() {
@@ -23827,33 +24596,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )));
                 }
                 let n = *count;
-                let i32_t = self.context.i32_type();
-                let arr_ty = self.llvm_array_storage_type(elem_hint, n);
-                let bytes = arr_ty
-                    .size_of()
-                    .expect("array storage type has known size");
-                let arr_ptr =
-                    self.arena_alloc(bytes, "array.repeat.coerced.alloc")?;
-                for i in 0..n {
-                    let slot = unsafe {
-                        self.builder
-                            .build_gep(
-                                arr_ty,
-                                arr_ptr,
-                                &[
-                                    i32_t.const_int(0, false),
-                                    i32_t.const_int(i, false),
-                                ],
-                                &format!("array.rep.coerced.slot{}", i),
-                            )
-                            .map_err(|e| {
-                                CodegenError::LlvmEmit(e.to_string())
-                            })?
-                    };
-                    self.builder
-                        .build_store(slot, v)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
+                let arr_ptr = self.emit_array_repeat_storage(
+                    elem_hint,
+                    n,
+                    v,
+                    want_stack,
+                    "array.repeat.coerced",
+                )?;
                 Ok((
                     arr_ptr.into(),
                     CodegenTy::Array(elem_hint.clone(), n),
@@ -24970,6 +25719,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // unknown std::* path errors with the same shape as the rest
         // of this match's catch-all.
         if segs.first() == Some(&"std") {
+            self.note_ts_call_site(&segs, qn);
             return self.lower_stdlib_path_call(&segs, args, scope);
         }
         match segs.as_slice() {
@@ -25039,6 +25789,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let segs: Vec<&str> =
             qn.segments.iter().map(|s| s.name.as_str()).collect();
         if segs.first() == Some(&"std") {
+            self.note_ts_call_site(&segs, qn);
             return self.lower_stdlib_path_call_expr(&segs, args, scope);
         }
         match segs.as_slice() {
@@ -25199,6 +25950,43 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     // in `declare_builtins` (Phase 1 stdlib section), add a match
     // arm here, and implement one `lower_std_*` method.
     // ============================================================
+
+    /// GH #808: remember where the program first reaches
+    /// `std::ts::*`. Every one of those paths lowers to a
+    /// `lotus_ts_*` extern that only `libhale_ts_shim.a` defines,
+    /// so when that staticlib is missing the link step needs a
+    /// user-source span to blame. Recording here (rather than
+    /// refusing here) keeps the refusal honest: the module's dead
+    /// stdlib is stripped by the internalize+globaldce prepass, so
+    /// only the link step knows whether a `lotus_ts_*` reference
+    /// actually survives into the object.
+    fn note_ts_call_site(&mut self, segs: &[&str], qn: &QualifiedName) {
+        if self.ts_call_span.is_some() || segs.get(1) != Some(&"ts") {
+            return;
+        }
+        // Only a span in USER code can be pointed at. The stdlib is
+        // merged from `hale_stdlib::AP_SOURCE`, a separate
+        // coordinate space that OVERLAPS user file ranges, so a
+        // span from `std::ts`'s own walker or `std::source`'s
+        // renders at a wrong line in the wrong file — the same
+        // reason `di_enter_stmt` refuses to emit debug info for
+        // those bodies, and the same test. `__lib_*` is an imported
+        // user file parsed at a real file base and does count. A
+        // program that reaches `std::ts` only through the stdlib
+        // records nothing and gets the unlocated message.
+        let in_user_code = self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .map(|f| {
+                let n = f.get_name().to_string_lossy().into_owned();
+                !n.starts_with("__") || n.starts_with("__lib_")
+            })
+            .unwrap_or(false);
+        if in_user_code {
+            self.ts_call_span = Some(qn.span);
+        }
+    }
 
     /// Statement-position dispatcher for `std::*` paths. The leading
     /// `"std"` segment is included in `segs` for symmetry with the

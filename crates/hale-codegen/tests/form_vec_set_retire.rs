@@ -11,12 +11,20 @@
 //! the deep-copy alloc consults that freelist — steady-state sets
 //! ping-pong between reused blocks.
 //!
-//! The assertion is an IN-PROGRAM RSS budget via
-//! `std::process::rss_bytes()`: after warmup, 2M churn sets may
-//! not grow peak RSS by more than 16MB (pre-fix growth at this
-//! scale: ~65MB and climbing linearly). Generous margin keeps CI
-//! load out of the verdict; the ASan corpus job covers the
-//! double-retire/UAF side.
+//! The assertion is an IN-PROGRAM RSS budget: after warmup, 2M
+//! churn sets may not grow the program's own resident set by more
+//! than 16MB (pre-fix growth at this scale: ~65MB and climbing
+//! linearly). Generous margin keeps CI load out of the verdict;
+//! the ASan corpus job covers the double-retire/UAF side.
+//!
+//! The program prints its own `/proc/self/statm` at both ends and
+//! the test does the subtraction. Not `std::process::rss_bytes()`:
+//! that is `getrusage(RUSAGE_SELF).ru_maxrss`, which a spawned
+//! program inherits from its parent through fork+exec. Under the
+//! test harness that floor sits above anything this program
+//! allocates, so both readings clamped to it and the budget was
+//! measuring a difference of zero — green whatever the churn did
+//! (GH #772).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -64,23 +72,21 @@ fn set_churn_is_flat_and_fast() {
             run() {
                 // Warmup round, then measure.
                 Setter { v: self.v, round: 0 };
-                let base = std::process::rss_bytes();
+                print("base_statm=");
+                println(std::io::fs::read_file("/proc/self/statm") or "");
                 let mut n = 1;
                 while n < 20 {
                     Setter { v: self.v, round: n };
                     n = n + 1;
                 }
-                let grown = std::process::rss_bytes() - base;
-                if grown > 16777216 {
-                    println("LEAK: rss grew ", grown, " bytes over 1.9M sets");
-                    std::process::exit(1);
-                }
+                print("grown_statm=");
+                println(std::io::fs::read_file("/proc/self/statm") or "");
                 let probe = self.v.get(7) or Ent { };
                 if probe.seq != 1960 {
                     println("BAD seq: ", probe.seq);
                     std::process::exit(1);
                 }
-                println("flat, seq ok");
+                println("seq ok");
             }
         }
         fn main() { App { }; }
@@ -90,10 +96,30 @@ fn set_churn_is_flat_and_fast() {
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        out.status.success() && stdout.contains("flat, seq ok"),
+        out.status.success() && stdout.contains("seq ok"),
         "stdout: {:?}\nstderr: {:?}",
         stdout,
         String::from_utf8_lossy(&out.stderr)
+    );
+    // The budget moved from the program to here (GH #772): the
+    // program prints its own /proc/self/statm at both ends and the
+    // comparison happens where a failure can say what it measured.
+    let read = |key: &str| -> i64 {
+        let line = stdout
+            .lines()
+            .find_map(|l| l.strip_prefix(key))
+            .unwrap_or_else(|| panic!("missing {} in stdout: {:?}", key, stdout));
+        harness::statm_resident_bytes(line)
+    };
+    let grown = read("grown_statm=") - read("base_statm=");
+    assert!(
+        grown <= 16 * 1024 * 1024,
+        "rss grew {} bytes over 1.9M sets (budget 16 MB) — replaced \
+         vec elements are being orphaned in the form owner's \
+         program-lifetime arena instead of retiring onto the reuse \
+         freelist. Pre-fix growth at this scale was ~65 MB and \
+         climbing linearly; post-fix it measures ~192 KB.",
+        grown,
     );
 }
 

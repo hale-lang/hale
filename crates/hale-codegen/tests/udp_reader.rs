@@ -125,11 +125,12 @@ fn reader_recv_loop_is_rss_flat() {
                 // Warm up (bind + any one-time growth) before sampling.
                 let mut w = 0;
                 while w < 500 {{ let dg = self.r.next() or raise; self.acc = self.acc + len(dg); w = w + 1; }}
-                let rss0 = std::process::rss_bytes();
+                print("rss0_statm=");
+                println(std::io::fs::read_file("/proc/self/statm") or "");
                 let mut n = 0;
                 while n < 40000 {{ let dg = self.r.next() or raise; self.acc = self.acc + len(dg); n = n + 1; }}
-                let rss1 = std::process::rss_bytes();
-                println("rss_growth_kb=", (rss1 - rss0) / 1024);
+                print("rss1_statm=");
+                println(std::io::fs::read_file("/proc/self/statm") or "");
                 std::process::exit(0);
             }}
         }}
@@ -160,6 +161,12 @@ fn reader_recv_loop_is_rss_flat() {
         "#,
     );
 
+    // The samples are the program's own resident set, printed as its
+    // raw /proc/self/statm line. Not `std::process::rss_bytes()`:
+    // that is `getrusage(RUSAGE_SELF).ru_maxrss`, which a spawned
+    // program inherits from its parent through fork+exec, so under
+    // the test harness rss0 and rss1 both clamped to the harness's
+    // footprint and the growth was always 0 (GH #772).
     let program = hale_syntax::parse_source(&src).expect("parse");
     let bin = unique_path("rss");
     build_executable(&program, &bin).expect("build");
@@ -167,11 +174,14 @@ fn reader_recv_loop_is_rss_flat() {
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    let growth: i64 = stdout
-        .lines()
-        .find_map(|l| l.strip_prefix("rss_growth_kb="))
-        .and_then(|v| v.trim().parse().ok())
-        .unwrap_or_else(|| panic!("no rss_growth_kb in stdout:\n{}", stdout));
+    let read = |key: &str| -> i64 {
+        let line = stdout
+            .lines()
+            .find_map(|l| l.strip_prefix(key))
+            .unwrap_or_else(|| panic!("no {} in stdout:\n{}", key, stdout));
+        harness::statm_resident_bytes(line)
+    };
+    let growth: i64 = (read("rss1_statm=") - read("rss0_statm=")) / 1024;
 
     // Reused buffer → flat RSS. A generous 4 MiB ceiling absorbs
     // allocator slack while failing hard on any per-datagram

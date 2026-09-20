@@ -32,6 +32,69 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Resident bytes out of a `/proc/self/statm` line — the memory a
+/// compiled test program actually holds, as *it* reports it.
+///
+/// The program under test prints the raw line, which costs it one
+/// statement and no helper:
+///
+/// ```text
+/// print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
+/// ```
+///
+/// and the test does the arithmetic here. `statm`'s second field is
+/// resident pages; a 4096-byte page is assumed, as everywhere else
+/// in this suite (Linux CI; the macOS job builds the workspace and
+/// smoke-tests two programs, it does not run these tests). Panics
+/// with the offending text if the line is missing or malformed —
+/// a memory test that silently stops measuring is worse than one
+/// that is red.
+///
+/// ## Why not `std::process::rss_bytes()` (GH #772)
+///
+/// `std::process::rss_bytes()` is `getrusage(RUSAGE_SELF).ru_maxrss`,
+/// and that number is **not** the program's own. `fork()` gives the
+/// child a copy-on-write duplicate of the parent's address space, so
+/// the pre-exec child's RSS high-water mark is the *parent's* RSS;
+/// `execve` then folds that mark into the new image's `ru_maxrss`
+/// (`exec_mmap()` → `setmax_mm_hiwater_rss(&tsk->signal->maxrss,
+/// old_mm)`) where it stays for the life of the process. A program
+/// spawned by a test harness therefore reports at least the
+/// harness's RSS forever after.
+///
+/// Measured with one unmodified binary: 4.7 MB standalone, 411 MB
+/// when spawned from a parent holding 400 MB. Under `cargo test`
+/// the parent is a libtest process running several in-process LLVM
+/// builds at once, which is why memory assertions in this suite
+/// moved with machine load (#772: 100 MB bound, 137–145 MB
+/// observed) and why *relative* assertions between two spawned runs
+/// collapse — both readings clamp to the same harness floor, so a
+/// gap test goes red and a "stays flat" test goes vacuously green.
+///
+/// `/proc/self/statm` is read from the new image's `mm`, so it
+/// carries none of that history. Note it is *current* RSS, not a
+/// high-water mark: have the program print it while the memory
+/// being measured is still live.
+#[allow(dead_code)]
+pub fn statm_resident_bytes(line: &str) -> i64 {
+    let value = line.trim();
+    let pages: i64 = value
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_else(|| {
+            panic!(
+                "/proc/self/statm has no second field — the program \
+                 could not read its own residency: {:?}",
+                line
+            )
+        })
+        .parse()
+        .unwrap_or_else(|e| {
+            panic!("statm resident field is not a number ({e}): {line:?}")
+        });
+    pages * 4096
+}
+
 /// A binary path no other test can collide with, in this process or
 /// any other.
 ///

@@ -627,7 +627,10 @@ Int             Float
 narrowing via `fptosi` (truncate toward zero). Int arg is the
 identity; other types reject. There is no implicit Float → Int
 conversion; the user must commit via this constructor-shaped
-call. `to_string(x)`, `len(x)`, `abs(x)`, `min(a, b)`, `max(a, b)`
+call. `Float(x)` is its widening twin — Int → Float via `sitofp`,
+Float arg the identity, other types reject. These two are the only
+casts; the remaining primitive-type names are types and nothing
+else. `to_string(x)`, `len(x)`, `abs(x)`, `min(a, b)`, `max(a, b)`
 are similarly bare-name builtins.
 
 `print` and `println` are built-in functions, always in scope
