@@ -7946,9 +7946,20 @@ impl<'a> Checker<'a> {
             }
         }
 
+        // GH #877: `locus Cache<K, V>`'s parameters are in scope for
+        // every annotation its members write — a `params` field, a
+        // method signature, a capacity slot. They name no
+        // declaration by design (codegen monomorphizes at the use
+        // site), so the unknown-bare-type-name rule has to hold them
+        // while the members are walked.
+        let prev_generics = std::mem::replace(
+            &mut self.generic_params,
+            decl.generics.iter().map(|g| g.name.name.clone()).collect(),
+        );
         for member in &decl.members {
             self.check_locus_member(member);
         }
+        self.generic_params = prev_generics;
 
         self.current_locus = prev;
     }
@@ -10205,11 +10216,13 @@ impl<'a> Checker<'a> {
         // resolves them to `Ty::Unknown`. The generic parameters are
         // in scope for the whole declaration — the signature AND the
         // `let x: T` annotations in the body — so they are pushed
-        // here and restored on both exits.
-        let prev_generics = std::mem::replace(
-            &mut self.generic_params,
-            decl.generics.iter().map(|g| g.name.name.clone()).collect(),
-        );
+        // here and restored on both exits. A method of a generic
+        // locus ADDS to the locus's parameters rather than replacing
+        // them: `locus Cache<K, V> { fn map<T>(k: K) -> T }` has
+        // three in scope.
+        let prev_generics = self.generic_params.clone();
+        self.generic_params
+            .extend(decl.generics.iter().map(|g| g.name.name.clone()));
         for p in &decl.params {
             self.check_type_annotation(&p.ty);
         }

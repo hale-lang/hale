@@ -241,6 +241,27 @@ fn a_generic_parameter_is_not_a_typo() {
     assert!(errors.is_empty(), "{errors:?}");
 }
 
+/// A generic LOCUS carries its parameters for every annotation its
+/// members write — a method signature, a `params` field, a capacity
+/// slot — and a generic method of one adds to them rather than
+/// replacing them.
+#[test]
+fn a_generic_locus_carries_its_parameters_to_its_members() {
+    let errors = all_errors(
+        "locus Cache<K, V> {\n\
+         \x20   params { cap: Int = 4; }\n\
+         \x20   capacity { pool cells of V; }\n\
+         \x20   fn put(k: K, v: V) -> Int {\n\
+         \x20       let held: V = v;\n\
+         \x20       println(k, held);\n\
+         \x20       return self.cap;\n\
+         \x20   }\n\
+         }\n\
+         fn main() { println(1); }\n",
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
 /// The names that resolve to something other than a plain user
 /// declaration, in one program: an interface (registered as its own
 /// symbol, not in the type table the resolver consults), an enum, an
