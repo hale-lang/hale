@@ -104,3 +104,23 @@ fn not_yet_struct_literal_spelled_with_the_alias_name() {
         ds
     );
 }
+
+/// GH #834 refuses the alias form's own parameter list at the
+/// parser. What it must NOT refuse is the shape one token away: an
+/// alias whose TARGET is a generic instantiation. That names a
+/// concrete type, so the alias is transparent onto the monomorph —
+/// `IntPair` and `Pair<Int>` are the same type, and the value the
+/// monomorph's own name constructs satisfies the ascription.
+#[test]
+fn alias_of_a_generic_instantiation_is_its_monomorph() {
+    let src = r#"
+        type Pair<T> { a: T; b: T; }
+        type IntPair = Pair<Int>;
+        fn total(p: IntPair) -> Int { return p.a + p.b; }
+        fn main() {
+            let p: IntPair = Pair_Int { a: 1, b: 2 };
+            println(total(p));
+        }
+    "#;
+    assert!(diags(src).is_empty(), "{:?}", diags(src));
+}
