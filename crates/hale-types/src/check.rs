@@ -2140,7 +2140,14 @@ fn hot_walk_expr(e: &Expr, cx: &mut HotPathCx) {
 /// ordinary member of the bundle everywhere except in a check that
 /// walks `program.items` and stops. A declaration-shaped check that
 /// does that silently sees half the program.
-fn walk_decls(items: &[TopDecl], f: &mut impl FnMut(&TopDecl)) {
+///
+/// The `'a` on the yielded reference is load-bearing (GH #825): most
+/// of the bundle-level checks build a name → `&LocusDecl` index in
+/// one pass and consult it in the next, so the borrow handed to the
+/// visitor has to outlive the walk. Without the named lifetime the
+/// closure is higher-ranked over it and nothing it sees can be
+/// stored.
+fn walk_decls<'a>(items: &'a [TopDecl], f: &mut impl FnMut(&'a TopDecl)) {
     for item in items {
         f(item);
         if let TopDecl::Module(m) = item {
