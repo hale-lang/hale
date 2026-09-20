@@ -1,6 +1,10 @@
 crates/hale-cli/tests/claims_artifact_unknowns.rs#0	iso	forbid reaches(a_side, b_side)	Violated	None
 crates/hale-cli/tests/claims_artifact_unknowns.rs#1	iso	forbid reaches(a_side, sinks)	Violated	None
 crates/hale-cli/tests/claims_artifact_unknowns.rs#3	iso	forbid reaches(a_side, sinks)	Uncertified	None
+crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl	guests_sign_only_via_rooms	forbid reaches(participants, effects(secret_use)) avoiding rooms	Holds	Some("Chat")
+crates/hale-cli/tests/fixtures/imported-main-claims/seed-bad/chat.hl	guests_sign_only_via_rooms	forbid reaches(participants, effects(secret_use)) avoiding rooms	Violated	None
+crates/hale-cli/tests/fixtures/imported-main-claims/seed-missing/chat.hl	guests_sign_nothing	forbid reaches(guests, effects(secret_use))	Invalid	None
+crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl	guests_sign_only_via_rooms	forbid reaches(participants, effects(secret_use)) avoiding rooms	Holds	None
 crates/hale-cli/tests/fixtures/topology/pipeline.hl	apart	forbid reaches(stores, workers) via { calls }	Holds	None
 crates/hale-cli/tests/fixtures/topology/pipeline.hl	one_writer	count publishers(topic Readings) <= 1	Holds	None
 crates/hale-cli/tests/fixtures/xseed-claims-cover-ok/app/main.hl	no_orphans	cover topic in seed(t): subscribed_by(some positions)	Invalid	None

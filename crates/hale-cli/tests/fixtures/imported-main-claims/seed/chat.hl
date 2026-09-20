@@ -1,0 +1,71 @@
+// A complete application that another seed can import: its groups
+// and its main locus's inline claim are declared together, in one
+// seed. Checked directly, the claim resolves `participants` and
+// `rooms`; checked through an import, it must resolve the SAME two
+// declarations (GH #733).
+type ChatLine {
+    room: Int;
+    who: String;
+    text: String;
+}
+
+topic RoomTalk {
+    payload: ChatLine;
+    keyed_by room;
+}
+
+@sealed
+locus SessionSigner {
+    params {
+        key: Int = 40961;
+    }
+    @effects(is: { secret_use })
+    fn stamp(room: Int) -> Int {
+        return room * 31 + self.key % 997;
+    }
+}
+
+locus Room {
+    params {
+        room: Int = 0;
+        lines: Int = 0;
+        s: SessionSigner = SessionSigner { };
+    }
+    bus {
+        subscribe RoomTalk as post where key == self.room;
+    }
+    fn post(line: ChatLine) {
+        self.lines = self.lines + 1;
+        let tag = self.s.stamp(line.room);
+        println("[room ", line.room, " #", tag, "] ", line.who, ": ", line.text);
+    }
+}
+
+locus Participant {
+    params {
+        name: String = "guest";
+        room: Int = 0;
+    }
+    bus {
+        publish RoomTalk;
+    }
+    run() {
+        RoomTalk <- ChatLine { room: self.room, who: self.name, text: "hello" };
+    }
+}
+
+group participants = { Participant };
+group rooms = { Room };
+
+main locus ChatServer {
+    params {
+        lobby: Room = Room { room: 0 };
+        ada: Participant = Participant { name: "ada", room: 0 };
+    }
+    claims {
+        guests_sign_only_via_rooms: forbid reaches(participants, effects(secret_use)) avoiding rooms;
+    }
+    run() {
+        std::time::sleep(10ms);
+    }
+}

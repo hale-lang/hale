@@ -771,6 +771,20 @@ touches imported seeds. Group and topic references inside a
 traveling block canonicalize to mangled decls exactly as group
 decls do (#334); claim names are never mangled.
 
+**An imported main's inline claims keep their own seed's groups**
+(GH #733). A `main locus`'s `claims { }` block is world law, and an
+application that another seed imports still carries that block
+through the merge: an importing test seed, or a fleet composing the
+application, closes a world in which the imported main is the only
+main, so its clauses are the law evaluated there. The group names in
+those clauses are resolved in the seed that WROTE them — the same
+import-rename table a traveling library block and a `constitution`
+resolve through — so a claim means one thing whether its seed is
+checked directly or through an import, and an importer's group of the
+same name is never substituted for the declaration the claim was
+written against. Resolution never *widens*: a name no declaration
+answers is still an unknown-group error, never an empty set.
+
 ## Constitutions — one authored claimset, many closed worlds (GH #409)
 
 A **constitution** is a named claimset declared outside any main and

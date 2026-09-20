@@ -1,0 +1,33 @@
+// The collision: this importer declares groups of its OWN named
+// `participants` and `rooms`, over two innocent loci that touch no
+// secret at all. The imported claim names the defining seed's
+// declarations, so it must still fire — before GH #733 the importer's
+// groups were substituted for them and the violated claim went quiet.
+import "../seed-bad" as chat;
+
+locus Bystander {
+    params {
+        idle: Int = 0;
+    }
+    fn tick() {
+        self.idle = self.idle + 1;
+    }
+}
+
+locus Lounge {
+    params {
+        chairs: Int = 4;
+    }
+    fn seat() {
+        self.chairs = self.chairs - 1;
+    }
+}
+
+group participants = { Bystander };
+group rooms = { Lounge };
+
+fn main() {
+    let b = Bystander { };
+    b.tick();
+    println("idle ", b.idle);
+}

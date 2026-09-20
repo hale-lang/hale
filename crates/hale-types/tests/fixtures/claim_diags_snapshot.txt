@@ -1,3 +1,9 @@
+--- crates/hale-cli/tests/fixtures/imported-main-claims/seed-bad/chat.hl ---
+Claim [1647..1673] claim `guests_sign_only_via_rooms` violated: `participants` reaches `effects(secret_use)` — witness: `Participant::run` -> `SessionSigner::stamp`
+Claim [1259..1284] claim `guests_sign_only_via_rooms`: the boundary into `effects(secret_use)` is crossed by this call
+Claim [464..477] claim `guests_sign_only_via_rooms`: the forbidden destination `SessionSigner` is declared here
+--- crates/hale-cli/tests/fixtures/imported-main-claims/seed-missing/chat.hl ---
+Claim [832..838] claim `guests_sign_nothing` names group `guests`, which is never declared. Add `group guests = { … };` at the top level.
 --- crates/hale-cli/tests/fixtures/xseed-claims/app/main.hl ---
 Claim [204..212] group member `delta::*` names no import alias — the glob form expands `import "…" as delta`, which this bundle does not declare. Unknown names are errors, never empty sets
 Claim [183..215] group `delta_wing` resolves to no declarations. A claim quantifying over an empty group holds vacuously — if the group may legitimately be empty, say `may_be_empty`

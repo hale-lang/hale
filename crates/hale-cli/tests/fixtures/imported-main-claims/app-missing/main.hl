@@ -1,0 +1,8 @@
+// Importing a seed whose inline claim names an undeclared group: the
+// unknown-group diagnostic must survive the import.
+import "../seed-missing" as chat;
+
+fn main() {
+    let p = chat::Participant { name: "lin" };
+    println(p.name);
+}
