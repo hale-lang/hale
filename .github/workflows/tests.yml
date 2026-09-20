@@ -96,6 +96,14 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       substrate: ${{ steps.classify.outputs.substrate }}
+      # The same verdict under the name the test partitions read it
+      # by: a prose-only diff runs `quick` and `docs` (below) and
+      # skips the six partitions. Prose IS tested — every ```hale
+      # block under docs/src must parse, every styleguide snippet
+      # must typecheck, `hale mcp` serves the embedded spec — but
+      # those tests live in hale-syntax, hale-types and one hale-cli
+      # binary, and `quick` + `docs` run exactly those.
+      code: ${{ steps.classify.outputs.substrate }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -143,8 +151,85 @@ jobs:
             echo "substrate=false" >> "$GITHUB_OUTPUT"
           fi
 
+  # The fast lane: everything that needs no LLVM, in about two
+  # minutes. hale-syntax, hale-types, hale-model, hale-stdlib and
+  # hale-corpus have no dependency on inkwell, so this job skips the
+  # LLVM install and the codegen build entirely and reports a parse,
+  # typecheck, model or corpus-baseline failure long before a
+  # partition has finished compiling. It runs on every diff; the
+  # partitions below run the same tests again as part of the whole.
+  quick:
+    name: quick (parse, typecheck, model)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: quick-x86_64-linux
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: cargo nextest run (LLVM-free crates)
+        run: |
+          cargo nextest run --release \
+            -p hale-syntax -p hale-types -p hale-model \
+            -p hale-stdlib -p hale-corpus
+
+  # A prose-only diff's only remaining exposure after `quick`: the
+  # `hale mcp` docs-search serves spec/*.md embedded at build time
+  # (hale-cli/build.rs), and its test asserts on that text. One
+  # binary, so one job, instead of six partitions.
+  docs:
+    name: docs (embedded spec)
+    needs: scope
+    if: needs.scope.outputs.code != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests-x86_64-linux-llvm18
+          save-if: false
+
+      - name: Install LLVM 18 + clang
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y \
+            llvm-18-dev libpolly-18-dev libzstd-dev \
+            clang-18 libclang-18-dev zlib1g-dev
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: cargo nextest run (hale mcp over the embedded spec)
+        run: |
+          cargo nextest run --release \
+            -p hale-cli --test mcp \
+            --features hale-codegen/dynamic-llvm
+
   test:
     name: test ${{ matrix.partition }}/6
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       # Don't short-circuit other partitions on first failure —
