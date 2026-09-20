@@ -288,10 +288,9 @@ fn a_factory_argument_of_a_returned_factory_is_reclaimed() {
 /// program reads clean (main's arena is destroyed at exit), which is
 /// PR #835's note and the reason this test is a method.
 ///
-/// One `#[test]` on purpose: `LOTUS_ASAN` is read by
-/// `build_executable` at codegen time and the variable is
-/// process-global, so a second test building concurrently in this
-/// process would see it.
+/// The ASan build goes through `harness::build_asan`
+/// (`BuildOptions::asan`, GH #843) — nothing here touches the
+/// process environment.
 #[test]
 fn a_factory_argument_in_a_method_frame_is_leak_clean_under_asan() {
     let src = r#"
@@ -332,10 +331,10 @@ fn a_factory_argument_in_a_method_frame_is_leak_clean_under_asan() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("fresh_temp_attr_asan");
-    std::env::set_var("LOTUS_ASAN", "1");
-    let built = build_executable(&program, &bin);
-    std::env::remove_var("LOTUS_ASAN");
-    built.expect("build");
+    // `BuildOptions::asan` through the harness — no test mutates the
+    // process environment (GH #843), and the helper checks the
+    // artifact really carries the ASan runtime.
+    harness::build_asan(&program, &bin);
     let out = Command::new(&bin)
         .env("ASAN_OPTIONS", "detect_leaks=1")
         .output()

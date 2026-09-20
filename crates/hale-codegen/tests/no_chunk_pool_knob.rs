@@ -29,11 +29,10 @@
 //! pool_size == 0` with `misses > 0` — chunks were allocated, and
 //! every one of them went back to libc.
 //!
-//! One `#[test]` on purpose: `LOTUS_ASAN` is read by
-//! `build_executable` at codegen time and the variable is
-//! process-global, so a second test building concurrently in this
-//! process would see it (same reason as
-//! `factory_returned_binding.rs`).
+//! The instrumented build goes through `harness::build_asan`
+//! (`BuildOptions::asan`, GH #843) — nothing here touches the
+//! process environment; the knob itself is exercised on the CHILD's
+//! env via `Command::env`.
 
 use std::process::Command;
 
@@ -221,10 +220,10 @@ fn no_chunk_pool_really_stops_recycling_and_asan_defaults_it_on() {
     // remember to ask. This is the half that keeps the corpus
     // oracle's guarantee from quietly lapsing.
     let asan = harness::unique_bin("no_chunk_pool_asan");
-    std::env::set_var("LOTUS_ASAN", "1");
-    let built = build_executable(&program, &asan);
-    std::env::remove_var("LOTUS_ASAN");
-    built.expect("build under ASan");
+    // `BuildOptions::asan` through the harness — no test mutates the
+    // process environment (GH #843), and the helper checks the
+    // artifact really carries the ASan runtime.
+    harness::build_asan(&program, &asan);
 
     let asan_default = stats_for(&asan, &[]);
     assert_recycling_off("an ASan build with no env set", &asan_default);
