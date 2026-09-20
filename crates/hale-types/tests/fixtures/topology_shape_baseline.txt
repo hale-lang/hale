@@ -815,6 +815,13 @@ crates/hale-codegen/tests/log_routing.rs#0 e9b3a90b0626e56f
 crates/hale-codegen/tests/log_routing.rs#1 e9b3a90b0626e56f
 crates/hale-codegen/tests/lto_modes.rs#0 865d341109268295
 crates/hale-codegen/tests/main_return_call_teardown.rs#0 c47d911d810acd9a
+crates/hale-codegen/tests/main_return_dissolve_frame.rs#0 f7f08146f24ab2d8
+crates/hale-codegen/tests/main_return_dissolve_frame.rs#1 f7f08146f24ab2d8
+crates/hale-codegen/tests/main_return_dissolve_frame.rs#2 f7f08146f24ab2d8
+crates/hale-codegen/tests/main_return_dissolve_frame.rs#3 f7f08146f24ab2d8
+crates/hale-codegen/tests/main_return_dissolve_frame.rs#4 f7f08146f24ab2d8
+crates/hale-codegen/tests/main_return_dissolve_frame.rs#5 f7f08146f24ab2d8
+crates/hale-codegen/tests/main_return_dissolve_frame.rs#6 8a523af861ebf77e
 crates/hale-codegen/tests/match_expression.rs#0 a3895c156268ffc9
 crates/hale-codegen/tests/match_expression.rs#1 52f8f1ad8fcc1be0
 crates/hale-codegen/tests/match_expression.rs#2 dfef156c23c7c29b

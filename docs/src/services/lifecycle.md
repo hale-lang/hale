@@ -176,6 +176,32 @@ a bare `Matrix { };` statement is reclaimed where it stands, but
 `Matrix { }.trace()` is a method call, so its receiver lives to the end
 of the function exactly as the binding did.
 
+### Early `return` is an exit, not a shortcut
+
+"The end of the enclosing function" means *whichever* way the
+function ends. A guard that returns early tears down everything
+alive at that point, and it takes nothing away from the ordinary
+exit:
+
+```hale,fragment
+let store = Store { path: dir };
+if std::env::args_count() < 2 {
+    println("usage: report <name>");
+    return 2;                     // dissolves `store`, exits 2
+}
+let report = Report { store: store };
+                                  // ordinary exit: `report`, then `store`
+```
+
+Both endings are complete. The guarded one dissolves `store`; the
+one taken when the guard does *not* fire dissolves `report` and
+then `store`, newest first as always. A locus bound only inside
+the branch that returns dissolves on that branch alone — the other
+endings never built it, so there is nothing for them to release.
+
+This holds in `fn main` too, which matters because `main` is where
+usage checks and flag guards live.
+
 ### Replacing a locus held in a field
 
 If a locus holds another locus in a field — say a server that

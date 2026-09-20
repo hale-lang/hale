@@ -403,6 +403,31 @@ until fn exit. Per-iteration cleanup uses a helper free fn whose
 return is the per-iteration boundary (see `handle_one_connection`
 in `stdlib/io_tcp.hl`).
 
+**Every exit path flushes independently, and a `return` takes
+nothing away from the others.** A fn — `fn main` included — may
+leave through an early `return`, through a later `return`, or by
+falling off the end. Each of those paths dissolves everything the
+fn owns *at that point*, in reverse instantiation order, and the
+paths do not interact: a `return` in the middle of a body does
+not shorten the set the fall-through exit dissolves. So in
+
+```hale
+fn main() {
+    let a = Noisy { tag: "a" };
+    if bad_usage { return 2; }   // dissolves `a`, then exits 2
+    let b = Noisy { tag: "b" };
+}                                // dissolves `b`, then `a`
+```
+
+the guarded exit dissolves `a`, and the ordinary exit — the one
+taken when the guard does *not* fire — dissolves `b` and then
+`a`. A locus bound only inside the branch that returns is listed
+on the other paths too but was never instantiated there, so those
+paths skip it: it dissolves exactly once, on the one path that
+built it. `return f()` evaluates `f` before any teardown begins,
+and a locus `f` itself bound is dissolved by `f`'s own exit
+(GH #789).
+
 ### `terminate`
 
 `terminate;` ends the current locus's lifecycle
