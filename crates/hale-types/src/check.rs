@@ -116,6 +116,32 @@ fn footprints_match(a: &[ParamInfo], b: &[ParamInfo]) -> bool {
             .all(|(x, y)| x.name == y.name && x.ty == y.ty)
 }
 
+/// GH #831 — the declaration a CONSTRUCTION path names.
+///
+/// `type Row2 = Row;` makes `Row2` a second spelling of `Row`, not a
+/// nominal type of its own (GH #759, spec `types.md` § "Type
+/// aliases"), so a struct / locus literal (`Row2 { id: 1 }`) and an
+/// enum-variant path (`Row2::V`) spelled with the alias name build
+/// the target's declaration. `build_top_scope` has already expanded
+/// every chain, so this is one hop.
+///
+/// `None` — and the caller keeps the name as written, with whatever
+/// diagnostic it already produced — when the name is not an alias,
+/// or when its target is not a NAME: nothing is constructible from
+/// `type Thing = Int;` or `type TwoRows = [Row; 2];` with `{ }` or
+/// `::`. Codegen's `resolve_construction_aliases` draws the same
+/// line over the same declarations, which is what keeps `check` and
+/// `build` from disagreeing about a literal.
+fn construction_target(top: &TopScope, name: &str) -> Option<String> {
+    match top.lookup(name) {
+        Some(TopSymbol::Type(TypeInfo {
+            kind: TypeKind::Alias(Ty::Named(target)),
+            ..
+        })) => Some(target.clone()),
+        _ => None,
+    }
+}
+
 /// True if the match arms cover every possible scrutinee
 /// value. v0 rules:
 ///   - Any arm without a guard whose pattern is wildcard `_`
@@ -191,6 +217,18 @@ fn match_is_exhaustive(scrut_ty: &Ty, arms: &[MatchArm], top: &TopScope) -> bool
                         _ => continue,
                     };
                     {
+                        // GH #831: the arm may spell the enum with
+                        // an alias of it (`type C2 = Color; C2::Red
+                        // -> ...`). An alias is a second spelling,
+                        // so the arm covers the same variant —
+                        // without this, a match whose arms all use
+                        // the alias read as covering nothing, and
+                        // one with a `_` arm checked clean and then
+                        // failed to BUILD ("constructor pattern:
+                        // unknown enum").
+                        let resolved = construction_target(top, enum_seg);
+                        let enum_seg: &str =
+                            resolved.as_deref().unwrap_or(enum_seg);
                         let matches_template_or_monomorph =
                             enum_seg == *name
                                 || enum_seg.starts_with(&mangle_prefix);
@@ -438,10 +476,17 @@ pub fn check_bundle_scoped(
     });
     // GH #255: bundle-wide set of transport-bound topic names,
     // for the `or wait` legality check at publish sites.
+    //
+    // GH #825: this one fails the other way. Every other walk in the
+    // issue loses a finding when it stops at the top level; this one
+    // INVENTS one — a binding it cannot see reads as "this topic has
+    // no transport", so a legal `or wait` is REFUSED. A correct
+    // program with its `bindings { }` block one brace deeper did not
+    // compile.
     let mut bound_topics: std::collections::BTreeSet<String> =
         std::collections::BTreeSet::new();
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 for member in &l.members {
                     if let LocusMember::Bindings(bb) = member {
@@ -451,7 +496,7 @@ pub fn check_bundle_scoped(
                     }
                 }
             }
-        }
+        });
     }
     // GH #724: aliases of imports this bundle never resolved. Empty on
     // every CLI path (the merge strips `imports`); populated only for a
@@ -486,6 +531,7 @@ pub fn check_bundle_scoped(
             strict_callees,
             strict_idents,
             or_value_discarded: false,
+            generic_params: Vec::new(),
             generic_fns,
             generic_types,
             bound_topics: &bound_topics,
@@ -516,6 +562,18 @@ pub fn check_bundle_scoped(
     // not a direct method call. See spec/types.md
     // § "Single-threaded-method invariant (F.31)".
     check_placement_single_thread(bundle, top, &mut diags);
+    // GH #826: a `pinned` placement entry gives its field an OS
+    // thread whose join record is one alloca per instantiation SITE,
+    // so instantiating the placing locus inside a loop orphans every
+    // thread but the last and leaks its arena. Placement describes a
+    // static topology; the loop is rejected.
+    check_pinned_locus_in_loop(bundle, top, &mut diags);
+    // GH #890: a placement entry is carried by the locus LITERAL
+    // lowered for its field and by nothing else, so a field built any
+    // other way (a factory call the commonest) leaves the entry
+    // untaken and it is silently dropped. Every entry must be
+    // consumed by exactly one instantiation.
+    check_placement_entry_consumed(bundle, &mut diags);
     // Pool affinity (2026-08-12): `cooperative(pool = X, cores/…)`
     // entries naming one pool must agree, and affinity on the main
     // pool has no thread to bind.
@@ -646,6 +704,11 @@ pub fn check_bundle_scoped(
     // the wrong type. Declared `topic`s are already unified by their
     // declaration; this closes the literal-subject gap.
     check_bus_subject_types(bundle, &mut diags);
+    // GH #876: the declared payload must be a type the bus can
+    // CARRY. The rule above relates two sites to each other; this one
+    // relates one site to the runtime, which takes a user type, a
+    // has-payload enum or `BytesView` and nothing else.
+    check_bus_payload_carriable(bundle, top, &known, &mut diags);
     diags
 }
 
@@ -815,19 +878,21 @@ fn check_unowned_subscriber_locus(
     if allow {
         return;
     }
+    // GH #825: a module is a namespace, not an analysis boundary —
+    // both the index and the walk flatten it.
     let mut local_loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 local_loci.insert(l.name.name.as_str(), l);
             }
-        }
+        });
     }
 
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             let TopDecl::Locus(p) = item else {
-                continue;
+                return;
             };
             // Collect this locus's bus-handler fn names. The
             // antipattern is narrow on purpose: a subscriber
@@ -851,7 +916,7 @@ fn check_unowned_subscriber_locus(
                 }
             }
             if handler_names.is_empty() {
-                continue;
+                return;
             }
             for member in &p.members {
                 let LocusMember::Fn(fd) = member else {
@@ -900,7 +965,7 @@ fn check_unowned_subscriber_locus(
                     ));
                 }
             }
-        }
+        });
     }
 }
 
@@ -2146,7 +2211,14 @@ fn hot_walk_expr(e: &Expr, cx: &mut HotPathCx) {
 /// ordinary member of the bundle everywhere except in a check that
 /// walks `program.items` and stops. A declaration-shaped check that
 /// does that silently sees half the program.
-fn walk_decls(items: &[TopDecl], f: &mut impl FnMut(&TopDecl)) {
+///
+/// The `'a` on the yielded reference is load-bearing (GH #825): most
+/// of the bundle-level checks build a name → `&LocusDecl` index in
+/// one pass and consult it in the next, so the borrow handed to the
+/// visitor has to outlive the walk. Without the named lifetime the
+/// closure is higher-ranked over it and nothing it sees can be
+/// stored.
+fn walk_decls<'a>(items: &'a [TopDecl], f: &mut impl FnMut(&'a TopDecl)) {
     // GH #884: the walk itself moved to `hale_syntax::ast` when
     // codegen needed the same one. Same order, same yield of the
     // module node before its contents.
@@ -2392,9 +2464,11 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
             _ => false,
         })
     }
+    // GH #825: a daemon-shaped locus inside a `module { … }` leaks
+    // accepted children exactly as one at the top level does.
     for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(l) = item else { continue };
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
             let mut accepts: Vec<(&LifecycleDecl, String)> = Vec::new();
             let mut releases: BTreeSet<String> = BTreeSet::new();
             let mut run_daemon = false;
@@ -2429,7 +2503,7 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                 }
             }
             if !run_daemon {
-                continue;
+                return;
             }
             for (ld, child_ty) in accepts {
                 if releases.contains(&child_ty) {
@@ -2453,7 +2527,7 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                     ),
                 ));
             }
-        }
+        });
     }
 }
 
@@ -2469,30 +2543,32 @@ fn check_cooperative_pool_blocking(
     bundle: &Bundle<'_>,
     diags: &mut Vec<Diag>,
 ) {
+    // GH #825: all three passes flatten `module { … }`. The index of
+    // free fns is what the interprocedural blocking call graph is
+    // built from, so a module-nested helper that blocks has to be in
+    // it or a top-level `run()` calling it looks clean.
     let mut local_loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
     let mut free_fns: BTreeMap<String, &Block> = BTreeMap::new();
     for program in bundle.programs.values() {
-        for item in &program.items {
-            match item {
-                TopDecl::Locus(l) => {
-                    local_loci.insert(l.name.name.as_str(), l);
-                }
-                TopDecl::Fn(f) => {
-                    free_fns.insert(f.name.name.clone(), &f.body);
-                }
-                _ => {}
+        walk_decls(&program.items, &mut |item| match item {
+            TopDecl::Locus(l) => {
+                local_loci.insert(l.name.name.as_str(), l);
             }
-        }
+            TopDecl::Fn(f) => {
+                free_fns.insert(f.name.name.clone(), &f.body);
+            }
+            _ => {}
+        });
     }
     // Interprocedural call graph for the warning path: free fns that
     // block (directly or via another blocking free fn).
     let blocking_free = blocking_free_fns(&free_fns);
 
     for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(main) = item else { continue };
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(main) = item else { return };
             if !main.is_main {
-                continue;
+                return;
             }
             // The placement block is optional: phase 1 (blocking-call
             // diagnostics) needs entries, but phase 2 (run() starvation)
@@ -2950,7 +3026,7 @@ fn check_cooperative_pool_blocking(
                     }
                 }
             }
-        }
+        });
     }
 }
 
@@ -2960,25 +3036,29 @@ fn check_nested_long_running_child(
 ) {
     // Build a name → LocusDecl index across the bundle so we can
     // resolve params-field locus types to their target body.
+    // GH #825: both passes flatten `module { … }`. The index is half
+    // the rule — a TOP-LEVEL parent holding a module-nested child
+    // resolves the child's type through it, and an index that stops
+    // at the top level answers "not long-running" for every one.
     let mut local_loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 local_loci.insert(l.name.name.as_str(), l);
             }
-        }
+        });
     }
 
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             let TopDecl::Locus(parent) = item else {
-                continue;
+                return;
             };
             if parent.is_main {
-                continue;
+                return;
             }
             if !locus_has_nontrivial_run(parent) {
-                continue;
+                return;
             }
             // Walk params fields. Each ParamDecl whose declared
             // type is a locus reference goes through the locus-
@@ -3055,7 +3135,7 @@ fn check_nested_long_running_child(
                     ));
                 }
             }
-        }
+        });
     }
 }
 
@@ -3375,15 +3455,21 @@ pub fn compute_pool_of_locus_type(
     bundle: &Bundle<'_>,
     top: &TopScope,
 ) -> BTreeMap<String, PoolId> {
+    // GH #825: `main locus` inside a `module { … }` is still the
+    // program's main locus — the resolver keys `TopScope` by the bare
+    // name and codegen finds it the same way. A lookup that stops at
+    // the top level returns an EMPTY map for such a program, and
+    // every caller reads an empty map as "no placement to reason
+    // about" and returns early: the whole F.31 layer switched off.
     let mut main_locus: Option<&LocusDecl> = None;
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 if l.is_main {
                     main_locus = Some(l);
                 }
             }
-        }
+        });
     }
     let Some(main) = main_locus else {
         return BTreeMap::new();
@@ -3452,11 +3538,14 @@ pub fn compute_pool_of_locus_type(
 ///   contradiction: the pool has one worker thread. An entry that
 ///   names the pool without an affinity is compatible with any.
 fn check_pool_affinity(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    // GH #825: `main locus` inside a `module { … }` declares the same
+    // placement block, and an affinity with no named pool is just as
+    // meaningless there.
     for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(l) = item else { continue };
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
             if !l.is_main {
-                continue;
+                return;
             }
             let mut declared: BTreeMap<String, (PinAffinity, Span)> =
                 BTreeMap::new();
@@ -3514,7 +3603,7 @@ fn check_pool_affinity(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                     }
                 }
             }
-        }
+        });
     }
 }
 
@@ -3531,13 +3620,13 @@ fn check_placement_single_thread(
     // walk's `enclosing_locus`; re-locate it (cheap).
     let mut main_locus: Option<&LocusDecl> = None;
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 if l.is_main {
                     main_locus = Some(l);
                 }
             }
-        }
+        });
     }
     let _main = main_locus;
 
@@ -3570,7 +3659,7 @@ fn check_placement_single_thread(
     let mut cross_pool_safe_loci: BTreeSet<String> = BTreeSet::new();
     let mut form_bearing_loci: BTreeSet<String> = BTreeSet::new();
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 if let Some(form) = &l.form {
                     form_bearing_loci.insert(l.name.name.clone());
@@ -3579,7 +3668,7 @@ fn check_placement_single_thread(
                     }
                 }
             }
-        }
+        });
     }
 
     // F.32-1∞ (2026-05-25): pre-compute sync inference for
@@ -3594,7 +3683,7 @@ fn check_placement_single_thread(
     );
 
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 let caller_pool = pool_of_locus_type.get(&l.name.name);
                 for member in &l.members {
@@ -3612,7 +3701,604 @@ fn check_placement_single_thread(
                     }
                 }
             }
+        });
+    }
+}
+
+/// GH #826: a locus whose `placement { }` block pins a field cannot
+/// be instantiated inside a loop.
+///
+/// `pinned` is the placement class that gives a field its OWN OS
+/// thread, spawned in the enclosing locus's params-init and joined
+/// at the instantiating scope's exit. Both halves of that bookkeeping
+/// — the deferred-dissolve slot and the `pthread_t` it joins — are
+/// ONE alloca per instantiation SITE, so a site reached a second time
+/// overwrites the record of the first: at scope exit only the LAST
+/// instance is joined and arena-destroyed, and every earlier pinned
+/// thread is orphaned with its arena still live (GH #815's per-
+/// iteration slot reclaim deliberately stepped over the pinned entry,
+/// because reclaiming it means joining the previous thread).
+///
+/// `placement { }` is `main locus`-only (rule 1), so the reachable
+/// shape is the main locus itself instantiated inside a loop —
+/// the deployment root booted once per iteration. That is a category
+/// error against the model placement describes: entries name static
+/// resources (a core, a NUMA node, `replicas = K`), one thread per
+/// entry for the program's life. Rejecting it is rule 17 rather than
+/// a per-iteration join because a per-iteration OS thread is never
+/// the intent, and because today's behaviour turns on an invisible
+/// internal path — a main locus with a bus subscription takes the
+/// deferred teardown and leaks, one without takes the eager path and
+/// happens to be clean. A rule that fires on only one of those is
+/// worse than one that rejects the shape.
+///
+/// Scope: the check is positional — it flags the locus LITERAL where
+/// it stands, in any fn, locus method, or lifecycle hook, at any loop
+/// nesting depth. A factory called in a loop (`fn boot() { App { }; }`)
+/// is not flagged and does not leak: the literal is not in a loop, so
+/// the pinned entry is flushed at the factory's own fn exit and every
+/// call joins its own thread. Hoisting the literal out of the loop —
+/// or behind a fn the loop calls — is the fix in both directions.
+fn check_pinned_locus_in_loop(
+    bundle: &Bundle<'_>,
+    top: &TopScope,
+    diags: &mut Vec<Diag>,
+) {
+    // Loci that pin at least one field. Mirrors codegen's
+    // `collect_main_placement`: an imported seed's main locus is
+    // renamed `__lib_*` and is NOT the deployment root, so its
+    // placement entries never reach the plan and never spawn a
+    // thread — flagging it would be a false positive.
+    let mut pinned_by: BTreeMap<String, (String, Span)> = BTreeMap::new();
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
+            if !l.is_main || l.name.name.starts_with("__lib_") {
+                return;
+            }
+            for m in &l.members {
+                let LocusMember::Placement(pb) = m else { continue };
+                for entry in &pb.entries {
+                    if matches!(entry.spec, PlacementSpec::Pinned { .. }) {
+                        pinned_by
+                            .entry(l.name.name.clone())
+                            .or_insert_with(|| {
+                                (entry.field.name.clone(), entry.span)
+                            });
+                    }
+                }
+            }
+        });
+    }
+    if pinned_by.is_empty() {
+        return;
+    }
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| {
+            let mut cx = PinnedLoopCx {
+                top,
+                pinned_by: &pinned_by,
+                diags: &mut *diags,
+                loop_depth: 0,
+            };
+            match item {
+                TopDecl::Fn(fd) => pinned_walk_block(&fd.body, &mut cx),
+                TopDecl::Locus(l) => {
+                    for member in &l.members {
+                        if let Some(body) = locus_member_body(member) {
+                            pinned_walk_block(body, &mut cx);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        });
+    }
+}
+
+struct PinnedLoopCx<'a> {
+    top: &'a TopScope,
+    /// locus name → (the first field it pins, that entry's span).
+    pinned_by: &'a BTreeMap<String, (String, Span)>,
+    diags: &'a mut Vec<Diag>,
+    loop_depth: u32,
+}
+
+fn pinned_walk_block(b: &Block, cx: &mut PinnedLoopCx) {
+    for s in &b.stmts {
+        pinned_walk_stmt(s, cx);
+    }
+    if let Some(t) = &b.tail {
+        pinned_walk_expr(t, cx);
+    }
+}
+
+fn pinned_walk_if(i: &IfStmt, cx: &mut PinnedLoopCx) {
+    pinned_walk_expr(&i.cond, cx);
+    pinned_walk_block(&i.then_block, cx);
+    if let Some(eb) = &i.else_block {
+        match eb.as_ref() {
+            ElseBranch::Else(b) => pinned_walk_block(b, cx),
+            ElseBranch::ElseIf(i2) => pinned_walk_if(i2, cx),
         }
+    }
+}
+
+fn pinned_walk_match(m: &MatchStmt, cx: &mut PinnedLoopCx) {
+    pinned_walk_expr(&m.scrutinee, cx);
+    for arm in &m.arms {
+        if let Some(g) = &arm.guard {
+            pinned_walk_expr(g, cx);
+        }
+        match &arm.body {
+            MatchArmBody::Expr(e) => pinned_walk_expr(e, cx),
+            MatchArmBody::Block(b) => pinned_walk_block(b, cx),
+        }
+    }
+}
+
+fn pinned_walk_stmt(s: &Stmt, cx: &mut PinnedLoopCx) {
+    match s {
+        Stmt::While { cond, body, .. } => {
+            pinned_walk_expr(cond, cx);
+            cx.loop_depth += 1;
+            pinned_walk_block(body, cx);
+            cx.loop_depth -= 1;
+        }
+        Stmt::For { iter, body, .. } => {
+            pinned_walk_expr(iter, cx);
+            cx.loop_depth += 1;
+            pinned_walk_block(body, cx);
+            cx.loop_depth -= 1;
+        }
+        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+            pinned_walk_expr(value, cx)
+        }
+        Stmt::Assign { value, .. } => pinned_walk_expr(value, cx),
+        Stmt::If(i) => pinned_walk_if(i, cx),
+        Stmt::Match(m) => pinned_walk_match(m, cx),
+        Stmt::Return(Some(e), _) => pinned_walk_expr(e, cx),
+        Stmt::Fail { value, .. } => pinned_walk_expr(value, cx),
+        Stmt::Expr(e) => pinned_walk_expr(e, cx),
+        _ => {}
+    }
+}
+
+fn pinned_walk_expr(e: &Expr, cx: &mut PinnedLoopCx) {
+    match e {
+        Expr::Struct { path, inits, span } => {
+            for init in inits {
+                pinned_walk_expr(&init.value, cx);
+            }
+            if cx.loop_depth == 0 {
+                return;
+            }
+            // A `placement { }` block lives on the bundle's own main
+            // locus, which is never reached through an import alias
+            // (an imported main is renamed `__lib_*` and filtered
+            // above), so a single-segment name is the whole surface.
+            let segs: Vec<&str> =
+                path.segments.iter().map(|s| s.name.as_str()).collect();
+            if segs.len() != 1 {
+                return;
+            }
+            if !matches!(cx.top.lookup(segs[0]), Some(TopSymbol::Locus(_))) {
+                return;
+            }
+            let Some((field, entry_span)) = cx.pinned_by.get(segs[0]) else {
+                return;
+            };
+            cx.diags.push(
+                Diag::ty(
+                    *span,
+                    format!(
+                        "locus `{}` is instantiated inside a loop, but its \
+                         `placement {{ }}` block pins field `{}` to its own \
+                         OS thread. Every iteration spawns a fresh pinned \
+                         thread while only the last one is joined, so the \
+                         earlier threads are orphaned and their arenas leak. \
+                         Placement names static resources (a core, a NUMA \
+                         node, `replicas = K`) — one thread per entry for \
+                         the program's life — so instantiate `{}` once, \
+                         outside the loop. (A loop that calls a fn holding \
+                         the literal is fine: each call joins its own \
+                         thread.)",
+                        segs[0], field, segs[0]
+                    ),
+                )
+                .with_related(
+                    *entry_span,
+                    format!("field `{}` is placed `pinned` here", field),
+                ),
+            );
+        }
+        Expr::Call { callee, args, .. } => {
+            pinned_walk_expr(callee, cx);
+            for a in args {
+                pinned_walk_expr(a, cx);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            pinned_walk_expr(left, cx);
+            pinned_walk_expr(right, cx);
+        }
+        Expr::Unary { operand, .. } => pinned_walk_expr(operand, cx),
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
+            pinned_walk_expr(receiver, cx)
+        }
+        Expr::Index { receiver, index, .. } => {
+            pinned_walk_expr(receiver, cx);
+            pinned_walk_expr(index, cx);
+        }
+        Expr::Tuple(es, _) | Expr::Array(es, _) => {
+            for e in es {
+                pinned_walk_expr(e, cx);
+            }
+        }
+        Expr::Sum(e, _) | Expr::Prod(e, _) => pinned_walk_expr(e, cx),
+        Expr::Approx { left, right, tolerance, .. } => {
+            pinned_walk_expr(left, cx);
+            pinned_walk_expr(right, cx);
+            pinned_walk_expr(tolerance, cx);
+        }
+        Expr::Range { lo, hi, .. } => {
+            pinned_walk_expr(lo, cx);
+            pinned_walk_expr(hi, cx);
+        }
+        Expr::ArrayRepeat { val, .. } => pinned_walk_expr(val, cx),
+        Expr::Block(b) => pinned_walk_block(b, cx),
+        Expr::If(i) => pinned_walk_if(i, cx),
+        Expr::Match(m) => pinned_walk_match(m, cx),
+        Expr::Or { inner, disposition, .. } => {
+            pinned_walk_expr(inner, cx);
+            match disposition {
+                OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
+                    pinned_walk_expr(e, cx)
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+/// GH #890: a `placement { }` entry no instantiation consumes.
+///
+/// A placement entry is carried to codegen as an override on the
+/// NEXT locus instantiation lowered for that field
+/// (`placement_for_next_locus_instantiation`, plus the parallel pool
+/// and NUMA-node overrides). A locus LITERAL takes it; nothing else
+/// does. So a field whose value arrives any other way — a factory
+/// call, a fallible call, a conditional, a reference to an instance
+/// somebody else built — leaves the override untaken, and the next
+/// field's turn through the params-init loop resets it. No thread is
+/// spawned, no pool is joined, and nothing is said: the entry the
+/// author wrote is silently dropped.
+///
+/// Applying the entry after the fact is not available. The pinned
+/// path is not "mark this instance pinned" but "spawn a pthread that
+/// runs the whole lifecycle — birth, run, the mailbox loop, drain,
+/// dissolve — on it", and a factory's literal has already run birth
+/// and run() (and registered its subscriptions against the global
+/// queue) before the value returns. There is nothing left to place.
+/// So the entry is refused at its source instead, pointing at the
+/// literal form that does carry it.
+///
+/// The rule is the backstop the issue asks for rather than a
+/// factory-shaped special case: EVERY entry must be consumed by
+/// exactly one instantiation. The value the entry places is the
+/// instantiation-site init when the literal supplies one and the
+/// params default otherwise, so both spellings are checked — and a
+/// default every site overrides is dead text, not a dropped
+/// placement.
+///
+/// Scope mirrors `collect_main_placement` (and rule 17's check): an
+/// imported seed's main locus is renamed `__lib_*` and is not the
+/// deployment root, so its entries never reach the plan and flagging
+/// them would be a false positive.
+fn check_placement_entry_consumed(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    let mut main: Option<&LocusDecl> = None;
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| {
+            if let TopDecl::Locus(l) = item {
+                if l.is_main && !l.name.name.starts_with("__lib_") {
+                    main = Some(l);
+                }
+            }
+        });
+    }
+    let Some(main) = main else { return };
+    let Some(pb) = main.members.iter().find_map(|m| match m {
+        LocusMember::Placement(pb) => Some(pb),
+        _ => None,
+    }) else {
+        return;
+    };
+    let Some(params) = main.members.iter().find_map(|m| match m {
+        LocusMember::Params(p) => Some(p),
+        _ => None,
+    }) else {
+        return;
+    };
+
+    // Every instantiation of the main locus in the bundle, as the
+    // field inits it writes. `fn main() { App { }; }` is the usual
+    // one and supplies nothing, but a params field declared without a
+    // default is supplied here, and that init is what carries the
+    // placement.
+    let mut cx = PlacementSiteCx {
+        main: main.name.name.as_str(),
+        sites: Vec::new(),
+    };
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| match item {
+            TopDecl::Fn(fd) => placement_site_walk_block(&fd.body, &mut cx),
+            TopDecl::Locus(l) => {
+                for member in &l.members {
+                    if let Some(body) = locus_member_body(member) {
+                        placement_site_walk_block(body, &mut cx);
+                    }
+                }
+            }
+            _ => {}
+        });
+    }
+    let sites = cx.sites;
+
+    for entry in &pb.entries {
+        let field = entry.field.name.as_str();
+        // Unknown / non-locus fields are `check_placement_block`'s to
+        // report; saying it twice helps nobody.
+        let Some(param) = params.params.iter().find(|p| p.name.name == field)
+        else {
+            continue;
+        };
+        // The literal form to suggest: the declared type as written
+        // (a stdlib locus is a qualified path, and its literal is
+        // spelled the same way), or `T` when the type is inferred
+        // from the default and there is nothing to quote.
+        let ty_name = match &param.ty {
+            Some(TypeExpr::Named { path, .. })
+                if !path.segments.is_empty() =>
+            {
+                path.segments
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::")
+            }
+            _ => "T".to_string(),
+        };
+
+        // The site inits for this field, and whether any site leaves
+        // the field to its default.
+        let mut overrides: Vec<&Expr> = Vec::new();
+        let mut any_site_takes_default = false;
+        for inits in &sites {
+            match inits.iter().find(|i| i.name.name == field) {
+                Some(init) => overrides.push(&init.value),
+                None => any_site_takes_default = true,
+            }
+        }
+        for init in overrides {
+            if matches!(init, Expr::Struct { .. }) {
+                continue;
+            }
+            diags.push(placement_unconsumed_diag(
+                field,
+                &ty_name,
+                init,
+                entry.span,
+                true,
+            ));
+        }
+        // The default is live when some site omits the field — and
+        // when the bundle instantiates the main locus nowhere at all
+        // (a library seed checked on its own: the default is the only
+        // initialiser there is).
+        if !(any_site_takes_default || sites.is_empty()) {
+            continue;
+        }
+        let ParamInit::Value(default) = &param.init else {
+            // No default and no site init: the missing-required-param
+            // rule owns that program, not this one.
+            continue;
+        };
+        if matches!(default, Expr::Struct { .. }) {
+            continue;
+        }
+        diags.push(placement_unconsumed_diag(
+            field,
+            &ty_name,
+            default,
+            entry.span,
+            false,
+        ));
+    }
+}
+
+/// The GH #890 diagnostic, for an initialiser written at an
+/// instantiation site (`at_site`) or in the params default.
+fn placement_unconsumed_diag(
+    field: &str,
+    ty_name: &str,
+    init: &Expr,
+    entry_span: Span,
+    at_site: bool,
+) -> Diag {
+    let shape = match init {
+        Expr::Call { .. } => "a call",
+        Expr::Or { .. } => "a fallible call",
+        Expr::If(_) | Expr::Match(_) => "a conditional",
+        Expr::Ident(_) | Expr::Path(_) | Expr::Field { .. }
+        | Expr::Path2 { .. } | Expr::Index { .. } | Expr::KwSelf(_) => {
+            "a reference to an instance built elsewhere"
+        }
+        _ => "an expression that is not a locus literal",
+    };
+    Diag::ty(
+        init.span(),
+        format!(
+            "placement entry `{}` names a field no locus literal \
+             initialises: {} is {}. A placement is carried by the locus \
+             LITERAL lowered for the field — a factory's literal is \
+             lowered inside the factory, out of this entry's reach — so \
+             the entry would be silently dropped and `{}` would run \
+             wherever an unplaced field runs. Write the literal {} \
+             (`{}`), and move the factory's other work into the locus's \
+             own params or `birth()`.",
+            field,
+            if at_site {
+                format!("the value supplied for `{}` here", field)
+            } else {
+                format!("`{}`'s default", field)
+            },
+            shape,
+            field,
+            if at_site { "at this site" } else { "in the field" },
+            if at_site {
+                format!("{}: {} {{ }}", field, ty_name)
+            } else {
+                format!("{}: {} = {} {{ }};", field, ty_name, ty_name)
+            },
+        ),
+    )
+    .with_related(entry_span, format!("`{}` is placed here", field))
+}
+
+/// Collects the field inits of every literal of the main locus.
+/// Same AST coverage `pinned_walk_*` has, without rule 17's loop
+/// bookkeeping — a placement site is positional in neither sense.
+struct PlacementSiteCx<'a> {
+    /// The bundle's main locus name. `placement { }` is main-only
+    /// (rule 1) and an imported main is renamed `__lib_*`, so a
+    /// single-segment name is the whole surface — the same reasoning
+    /// rule 17's walk uses.
+    main: &'a str,
+    sites: Vec<&'a [StructInit]>,
+}
+
+fn placement_site_walk_block<'a>(
+    b: &'a Block,
+    cx: &mut PlacementSiteCx<'a>,
+) {
+    for s in &b.stmts {
+        placement_site_walk_stmt(s, cx);
+    }
+    if let Some(t) = &b.tail {
+        placement_site_walk_expr(t, cx);
+    }
+}
+
+fn placement_site_walk_if<'a>(i: &'a IfStmt, cx: &mut PlacementSiteCx<'a>) {
+    placement_site_walk_expr(&i.cond, cx);
+    placement_site_walk_block(&i.then_block, cx);
+    if let Some(eb) = &i.else_block {
+        match eb.as_ref() {
+            ElseBranch::Else(b) => placement_site_walk_block(b, cx),
+            ElseBranch::ElseIf(i2) => placement_site_walk_if(i2, cx),
+        }
+    }
+}
+
+fn placement_site_walk_match<'a>(
+    m: &'a MatchStmt,
+    cx: &mut PlacementSiteCx<'a>,
+) {
+    placement_site_walk_expr(&m.scrutinee, cx);
+    for arm in &m.arms {
+        if let Some(g) = &arm.guard {
+            placement_site_walk_expr(g, cx);
+        }
+        match &arm.body {
+            MatchArmBody::Expr(e) => placement_site_walk_expr(e, cx),
+            MatchArmBody::Block(b) => placement_site_walk_block(b, cx),
+        }
+    }
+}
+
+fn placement_site_walk_stmt<'a>(s: &'a Stmt, cx: &mut PlacementSiteCx<'a>) {
+    match s {
+        Stmt::While { cond, body, .. } => {
+            placement_site_walk_expr(cond, cx);
+            placement_site_walk_block(body, cx);
+        }
+        Stmt::For { iter, body, .. } => {
+            placement_site_walk_expr(iter, cx);
+            placement_site_walk_block(body, cx);
+        }
+        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+            placement_site_walk_expr(value, cx)
+        }
+        Stmt::Assign { value, .. } => placement_site_walk_expr(value, cx),
+        Stmt::If(i) => placement_site_walk_if(i, cx),
+        Stmt::Match(m) => placement_site_walk_match(m, cx),
+        Stmt::Return(Some(e), _) => placement_site_walk_expr(e, cx),
+        Stmt::Fail { value, .. } => placement_site_walk_expr(value, cx),
+        Stmt::Expr(e) => placement_site_walk_expr(e, cx),
+        _ => {}
+    }
+}
+
+fn placement_site_walk_expr<'a>(e: &'a Expr, cx: &mut PlacementSiteCx<'a>) {
+    match e {
+        Expr::Struct { path, inits, .. } => {
+            let segs: Vec<&str> =
+                path.segments.iter().map(|s| s.name.as_str()).collect();
+            if segs.len() == 1 && segs[0] == cx.main {
+                cx.sites.push(inits.as_slice());
+            }
+            for init in inits {
+                placement_site_walk_expr(&init.value, cx);
+            }
+        }
+        Expr::Call { callee, args, .. } => {
+            placement_site_walk_expr(callee, cx);
+            for a in args {
+                placement_site_walk_expr(a, cx);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            placement_site_walk_expr(left, cx);
+            placement_site_walk_expr(right, cx);
+        }
+        Expr::Unary { operand, .. } => placement_site_walk_expr(operand, cx),
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
+            placement_site_walk_expr(receiver, cx)
+        }
+        Expr::Index { receiver, index, .. } => {
+            placement_site_walk_expr(receiver, cx);
+            placement_site_walk_expr(index, cx);
+        }
+        Expr::Tuple(es, _) | Expr::Array(es, _) => {
+            for e in es {
+                placement_site_walk_expr(e, cx);
+            }
+        }
+        Expr::Sum(e, _) | Expr::Prod(e, _) => placement_site_walk_expr(e, cx),
+        Expr::Approx { left, right, tolerance, .. } => {
+            placement_site_walk_expr(left, cx);
+            placement_site_walk_expr(right, cx);
+            placement_site_walk_expr(tolerance, cx);
+        }
+        Expr::Range { lo, hi, .. } => {
+            placement_site_walk_expr(lo, cx);
+            placement_site_walk_expr(hi, cx);
+        }
+        Expr::ArrayRepeat { val, .. } => placement_site_walk_expr(val, cx),
+        Expr::Block(b) => placement_site_walk_block(b, cx),
+        Expr::If(i) => placement_site_walk_if(i, cx),
+        Expr::Match(m) => placement_site_walk_match(m, cx),
+        Expr::Or { inner, disposition, .. } => {
+            placement_site_walk_expr(inner, cx);
+            match disposition {
+                OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
+                    placement_site_walk_expr(e, cx)
+                }
+                _ => {}
+            }
+        }
+        _ => {}
     }
 }
 
@@ -4658,8 +5344,11 @@ fn transport_satisfies(
 ///   backpressure (GH #125), so shed bounds there would
 ///   misdescribe the actual contract.
 fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    // GH #825: a `topic` and a subscriber inside a `module { … }` are
+    // ordinary bundle members — `collect_subscriber_placements`
+    // already reads them, so only these two walks were short.
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Topic(t) = item {
                 match (t.bounded, t.on_full_fail) {
                     (Some((_, bspan)), None) => diags.push(Diag::ty(
@@ -4679,12 +5368,12 @@ fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                     _ => {}
                 }
             }
-        }
+        });
     }
     let placements = crate::bus_graph::collect_subscriber_placements(bundle);
     for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(l) = item else { continue };
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
             for member in &l.members {
                 let LocusMember::Bus(bb) = member else { continue };
                 for bm in &bb.members {
@@ -4714,7 +5403,7 @@ fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                     }
                 }
             }
-        }
+        });
     }
 }
 
@@ -4745,12 +5434,22 @@ fn check_phase3_fallback_subscribers(
             return false;
         }
         let tname = &path.segments[0].name;
+        // GH #825: the payload struct can be declared in a module
+        // too, and a payload this lookup cannot find reads as "not a
+        // String key", which decides the `where key == replica` rule.
+        // First declaration wins, exactly as the nested `for` it
+        // replaces did — a second one of the same name is a
+        // duplicate the resolver reports.
+        let mut answer: Option<bool> = None;
         for program in bundle.programs.values() {
-            for item in &program.items {
+            walk_decls(&program.items, &mut |item| {
+                if answer.is_some() {
+                    return;
+                }
                 if let TopDecl::Type(td) = item {
                     if &td.name.name == tname {
                         if let TypeDeclBody::Struct(fields) = &td.body {
-                            return fields.iter().any(|f| {
+                            answer = Some(fields.iter().any(|f| {
                                 f.name.name == field
                                     && matches!(
                                         &f.ty,
@@ -4759,16 +5458,16 @@ fn check_phase3_fallback_subscribers(
                                             _,
                                         )
                                     )
-                            });
+                            }));
                         }
                     }
                 }
-            }
+            });
         }
-        false
+        answer.unwrap_or(false)
     };
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Topic(t) = item {
                 by_name.insert(
                     t.name.name.clone(),
@@ -4789,7 +5488,7 @@ fn check_phase3_fallback_subscribers(
                 key_shape_by_wire.insert(wire.clone(), key_shape);
                 by_wire.insert(wire, (t.on_unmatched, t.span));
             }
-        }
+        });
     }
 
     // Walk every subscriber. For each `where key == _` filter,
@@ -4802,8 +5501,8 @@ fn check_phase3_fallback_subscribers(
         }
     }
     for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(l) = item else { continue };
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
             for m in &l.members {
                 let LocusMember::Bus(bb) = m else { continue };
                 for bm in &bb.members {
@@ -4909,7 +5608,7 @@ fn check_phase3_fallback_subscribers(
                     }
                 }
             }
-        }
+        });
     }
     for (name, has) in &fallback_has_catchall {
         if *has {
@@ -4950,8 +5649,14 @@ fn check_main_and_bindings(
     let programs_vec: Vec<&Program> = bundle.programs.values().copied().collect();
     let purity_map = crate::purity::infer_purity_for_bundle(&programs_vec, top);
 
+    // GH #825: a `main locus` and a `bindings { }` block inside a
+    // `module { … }` are ordinary bundle members. The at-most-one-main
+    // rule in particular is a whole-bundle count, and a count that
+    // skips half the declarations is not a count.
+    // (`collect_topic_pub_sub`, which feeds role inference, already
+    // recursed — it grew its own `TopDecl::Module` arm.)
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 if l.is_main {
                     mains.push((l.name.name.clone(), l.span));
@@ -5226,7 +5931,7 @@ fn check_main_and_bindings(
                     }
                 }
             }
-        }
+        });
     }
     if mains.len() > 1 {
         for (name, span) in &mains {
@@ -6232,6 +6937,170 @@ fn check_bus_subject_types(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     }
 }
 
+/// What the bus can do with a type written in an `of type` clause.
+enum Carriage {
+    /// A field layout a cell can serialize, or the raw-frame opt-out.
+    Carried,
+    /// Resolved, and the runtime has no way to put it on the wire.
+    /// Carries the repair that fits the shape.
+    NotCarried(&'static str),
+    /// Not resolvable from this bundle, so not this check's to judge.
+    Unresolved,
+}
+
+/// GH #876: can a cell carry a payload of this type?
+///
+/// The accepted set is the runtime's, and it is small because a
+/// delivery is a serialized STRUCT: the payload needs a field layout
+/// — a user `type`, or the storage struct of an enum that has at
+/// least one variant with fields — or it opts out of typing
+/// altogether with `BytesView`, the raw-frame path a foreign ring
+/// writes. A primitive has neither: there is no `__serialize_Int`,
+/// and codegen says so (`bus/dispatch.rs`, `locus/decl.rs`).
+///
+/// [`Carriage::Unresolved`] is the permissive half, and it is
+/// deliberately where RESOLUTION stops rather than where the rule
+/// stops — this check must not turn "I cannot see that name" into "no
+/// such payload":
+///
+///   - a qualified path (`shared::Metric`) whose seed is not in this
+///     bundle, which is what a single-file check of a multi-file seed
+///     holds — `resolve_type_expr` types it `Unknown` by design;
+///   - a generic instantiation (`Box<Int>`), whose mangled monomorph
+///     is synthesized during lowering and is no bundle symbol yet;
+///   - a bare name nothing in the bundle declares, which is a missing
+///     declaration rather than an uncarriable payload, and is named
+///     as such by the rule for unknown type names.
+fn payload_carriage(
+    te: &TypeExpr,
+    top: &TopScope,
+    known: &KnownNames,
+) -> Carriage {
+    if let TypeExpr::Named { generic_args, .. } = te {
+        if !generic_args.is_empty() {
+            return Carriage::Unresolved;
+        }
+    }
+    match resolve_type_expr(te, known) {
+        // The raw-frame path: no struct type, bounded view per record.
+        Ty::Prim(PrimType::BytesView) => Carriage::Carried,
+        Ty::Named(n) => match top.symbols.get(&n) {
+            Some(TopSymbol::Type(ti)) => match &ti.kind {
+                TypeKind::Struct(_) => Carriage::Carried,
+                // A no-payload enum has no storage struct to
+                // serialize — codegen refuses it by name.
+                TypeKind::Enum(variants) => {
+                    if variants.iter().any(|v| !v.fields.is_empty()) {
+                        Carriage::Carried
+                    } else {
+                        Carriage::NotCarried(
+                            "give one variant a payload, or wrap the enum \
+                             in a user `type`",
+                        )
+                    }
+                }
+                // Aliases are transparent through
+                // `resolve_type_expr`, so this arm is unreachable in
+                // practice; judging it would be judging a name.
+                TypeKind::Alias(_) => Carriage::Unresolved,
+            },
+            // A locus, interface, perspective or topic name in
+            // payload position is a different mistake, reported
+            // elsewhere (the handler-signature rule names the
+            // topic-as-type one).
+            _ => Carriage::Unresolved,
+        },
+        Ty::Unknown => Carriage::Unresolved,
+        // Every remaining shape — the other primitives, arrays,
+        // tuples, `bounded[T; N]`, projections, fn types — reaches
+        // codegen as something other than a TypeRef and is refused
+        // there.
+        _ => Carriage::NotCarried("wrap it in a user `type`"),
+    }
+}
+
+/// GH #876: a bus subject's declared payload must be a type the bus
+/// can carry.
+///
+/// `bus { publish "org.metrics" of type Int; }` typechecked clean and
+/// could not be lowered. The publish side died with `bus send payload
+/// must be a user-type or has-payload enum value; got Int` and the
+/// subscribe side with `missing or unsupported payload type (m60
+/// requires a TypeRef, has-payload Enum, or BytesView)` — both from
+/// codegen, with no span, on a declaration that is among the first
+/// things an author writes. That is the check/build divergence class
+/// `corpus_check_build_agreement` gates, and three corpus programs
+/// carried its ratchet rows.
+///
+/// PR #458's rule compares a handler's parameter against the declared
+/// payload; it never asks whether the declared payload is a payload at
+/// all. This asks exactly that, once per `of type` clause, at the
+/// clause's own span.
+///
+/// Scope: the `of type` clause on a `publish` / `subscribe`. A
+/// `topic T { payload: Int; }` is under the same contract and is
+/// still refused during lowering, because the checker never runs
+/// `desugar_topics` (codegen does) — so a topic-ref subscribe
+/// carries no `ty` at this layer and there is nothing here to judge.
+/// Closing that half means reading `TopicDecl.payload`, which moves
+/// its own set of ratchet rows; it is deliberately not this change.
+fn check_bus_payload_carriable(
+    bundle: &Bundle<'_>,
+    top: &TopScope,
+    known: &KnownNames,
+    diags: &mut Vec<Diag>,
+) {
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
+            for m in &l.members {
+                let LocusMember::Bus(bb) = m else { continue };
+                for bm in &bb.members {
+                    let (verb, subject, ty) = match bm {
+                        BusMember::Subscribe { subject, ty, .. } => {
+                            ("subscribe", subject, ty)
+                        }
+                        BusMember::Publish { subject, ty, .. } => {
+                            ("publish", subject, ty)
+                        }
+                    };
+                    let Some(ty) = ty else { continue };
+                    // A topic ref takes its payload from the topic
+                    // declaration, and an `of type` clause on one is
+                    // already an error ("forbidden on topic refs").
+                    // Judging the stray clause too would report one
+                    // mistake twice.
+                    if !matches!(subject, BusSubject::Literal { .. }) {
+                        continue;
+                    }
+                    let Carriage::NotCarried(repair) =
+                        payload_carriage(ty, top, known)
+                    else {
+                        continue;
+                    };
+                    diags.push(Diag::ty(
+                        ty.span(),
+                        format!(
+                            "{} `{}`: a bus subject's payload must be a type \
+                             the bus can carry — a user `type`, an enum with \
+                             a payload variant, or `BytesView` \
+                             (`std::bytes::BytesView`, the raw-frame path). \
+                             `{}` is not carried on the bus: a delivery is a \
+                             serialized struct, so the payload needs a field \
+                             layout. To send one, {} and declare the subject \
+                             `of type` that.",
+                            verb,
+                            subject.canonical(),
+                            resolve_type_expr(ty, known).display(),
+                            repair,
+                        ),
+                    ));
+                }
+            }
+        });
+    }
+}
+
 fn check_bus_backpressure(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     fn walk(items: &[TopDecl], diags: &mut Vec<Diag>) {
         for item in items {
@@ -6470,6 +7339,12 @@ struct Checker<'a> {
     /// args must match the substituted params — and the call types
     /// as the SUBSTITUTED return instead of Unknown.
     generic_fns: BTreeMap<String, &'a FnDecl>,
+    /// GH #877: the generic parameters of the declaration being
+    /// checked — a fn's `<T>`, a generic `type`'s. They name no
+    /// top-level declaration and resolve to `Ty::Unknown` by design,
+    /// so the unknown-bare-type-name rule has to know them to avoid
+    /// reporting `T` as a typo.
+    generic_params: Vec<String>,
     /// M3 stage 3 tranche 2: generic TYPE templates (name → decl).
     /// Mangled monomorph literals (`Box_Int { ... }`) resolve
     /// against these — previously "unknown type" at typecheck,
@@ -6571,6 +7446,9 @@ impl<'a> Checker<'a> {
             TopDecl::Locus(l) => self.check_locus(l),
             TopDecl::Fn(f) => self.check_fn(f, None),
             TopDecl::Const(c) => {
+                // GH #877: the ascription is an annotation like any
+                // other.
+                self.check_type_annotation(&c.ty);
                 let want = resolve_type_expr(&c.ty, self.known);
                 let got = self.check_expr(&c.value);
                 if !want.assignable_from(&got) {
@@ -6590,10 +7468,49 @@ impl<'a> Checker<'a> {
                     self.check_top_decl(item);
                 }
             }
-            TopDecl::Type(_) | TopDecl::Perspective(_) => {
+            TopDecl::Type(t) => {
                 // Structure already validated by resolver; field
                 // types are checked when something instantiates
                 // them via struct literal.
+                //
+                // GH #877: except that a field whose type names
+                // nothing is never checked by a literal — the field
+                // types as `Unknown`, which accepts every
+                // initializer, and the program dies at lowering with
+                // `unknown type name in signature`. The declaration
+                // is where the name is written, so it is where the
+                // rule fires. The type's own generic parameters are
+                // in scope for its fields.
+                let prev_generics = std::mem::replace(
+                    &mut self.generic_params,
+                    t.generics
+                        .iter()
+                        .map(|g| g.name.name.clone())
+                        .collect(),
+                );
+                match &t.body {
+                    TypeDeclBody::Struct(fields) => {
+                        for f in fields {
+                            self.check_type_annotation(&f.ty);
+                        }
+                    }
+                    TypeDeclBody::Enum(variants) => {
+                        for v in variants {
+                            for te in &v.fields {
+                                self.check_type_annotation(te);
+                            }
+                        }
+                    }
+                    TypeDeclBody::Alias(te) => {
+                        self.check_type_annotation(te);
+                    }
+                }
+                self.generic_params = prev_generics;
+            }
+            TopDecl::Perspective(_) => {
+                // Structure already validated by resolver; the
+                // contract's method signatures are checked against
+                // the serving locus at `serves` conformance.
             }
             TopDecl::Interface(_) => {
                 // Interface declarations are pure type-level —
@@ -7859,9 +8776,20 @@ impl<'a> Checker<'a> {
             }
         }
 
+        // GH #877: `locus Cache<K, V>`'s parameters are in scope for
+        // every annotation its members write — a `params` field, a
+        // method signature, a capacity slot. They name no
+        // declaration by design (codegen monomorphizes at the use
+        // site), so the unknown-bare-type-name rule has to hold them
+        // while the members are walked.
+        let prev_generics = std::mem::replace(
+            &mut self.generic_params,
+            decl.generics.iter().map(|g| g.name.name.clone()).collect(),
+        );
         for member in &decl.members {
             self.check_locus_member(member);
         }
+        self.generic_params = prev_generics;
 
         self.current_locus = prev;
     }
@@ -9421,6 +10349,16 @@ impl<'a> Checker<'a> {
                 // and a param `n`, a default written `n` takes the
                 // const — so an unresolved bare name is a genuine
                 // unknown identifier, and `check_expr` reports it.
+                // GH #877: every param's declared type, whether or
+                // not it carries a default — an undeclared name here
+                // typed the field `Unknown`, which accepts every
+                // store and every read, and the locus died at
+                // lowering with no span.
+                for p in &pb.params {
+                    if let Some(te) = &p.ty {
+                        self.check_type_annotation(te);
+                    }
+                }
                 for p in &pb.params {
                     let ParamInit::Value(init) = &p.init else {
                         continue;
@@ -9599,6 +10537,10 @@ impl<'a> Checker<'a> {
                 self.in_lifecycle = true;
                 self.locals.push();
                 for p in &lc.params {
+                    // GH #877: `accept(c: Chld)` names the child
+                    // locus; an undeclared name is the same typo in
+                    // the same position.
+                    self.check_type_annotation(&p.ty);
                     let ty = resolve_type_expr(&p.ty, self.known);
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
@@ -9610,6 +10552,7 @@ impl<'a> Checker<'a> {
                 self.in_lifecycle = true;
                 self.locals.push();
                 for p in &md.params {
+                    self.check_type_annotation(&p.ty);
                     let ty = resolve_type_expr(&p.ty, self.known);
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
@@ -9663,6 +10606,7 @@ impl<'a> Checker<'a> {
                 self.in_on_failure = true;
                 self.locals.push();
                 for p in &fd.params {
+                    self.check_type_annotation(&p.ty);
                     let ty = resolve_type_expr(&p.ty, self.known);
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
@@ -9927,6 +10871,8 @@ impl<'a> Checker<'a> {
                             .with_related(prev, "first declared here"),
                         );
                     }
+                    // GH #877: the cell type is an annotation too.
+                    self.check_type_annotation(&slot.elem_ty);
                     let elem_ty = resolve_type_expr(&slot.elem_ty, self.known);
                     let kind_word = match slot.kind {
                         CapacitySlotKind::Pool => "pool",
@@ -10096,6 +11042,26 @@ impl<'a> Checker<'a> {
         if locus.is_some() {
             self.current_locus = locus;
         }
+        // GH #877: the signature's own type names, before anything
+        // resolves them to `Ty::Unknown`. The generic parameters are
+        // in scope for the whole declaration — the signature AND the
+        // `let x: T` annotations in the body — so they are pushed
+        // here and restored on both exits. A method of a generic
+        // locus ADDS to the locus's parameters rather than replacing
+        // them: `locus Cache<K, V> { fn map<T>(k: K) -> T }` has
+        // three in scope.
+        let prev_generics = self.generic_params.clone();
+        self.generic_params
+            .extend(decl.generics.iter().map(|g| g.name.name.clone()));
+        for p in &decl.params {
+            self.check_type_annotation(&p.ty);
+        }
+        if let Some(ret) = &decl.ret {
+            self.check_type_annotation(ret);
+        }
+        if let Some(payload) = &decl.fallible {
+            self.check_type_annotation(payload);
+        }
         // Stage-1 FFI (2026-05-22): @ffi fn declarations validate
         // their parameter and return types against the FFI-portable
         // type set, then skip body verification (the body is a
@@ -10201,6 +11167,7 @@ impl<'a> Checker<'a> {
                 }
             }
             self.current_locus = prev_locus;
+            self.generic_params = prev_generics;
             return;
         }
         // v1.x-FORM-1: push fallible_ctx if this fn is fallible.
@@ -10229,6 +11196,7 @@ impl<'a> Checker<'a> {
         self.fallible_ctx = prev_fallible;
         self.return_ctx = prev_return;
         self.current_locus = prev_locus;
+        self.generic_params = prev_generics;
     }
 
     fn check_block(&mut self, block: &Block) {
@@ -10381,6 +11349,9 @@ impl<'a> Checker<'a> {
                 let got = self.check_expr_addressed(value);
                 let bound = match ty {
                     Some(te) => {
+                        // GH #877: the one annotation that lives in a
+                        // body.
+                        self.check_type_annotation(te);
                         let want = resolve_type_expr(te, self.known);
                         if !want.assignable_from(&got) {
                             self.diags.push(Diag::ty(
@@ -10404,6 +11375,12 @@ impl<'a> Checker<'a> {
             }
             Stmt::LetTuple { is_mut, names, ty, value, .. } => {
                 let got = self.check_expr_addressed(value);
+                // GH #877: `let (a, b): (Int, Strng) = ...` — the
+                // annotation is a tuple type expression, walked the
+                // same way.
+                if let Some(te) = ty {
+                    self.check_type_annotation(te);
+                }
                 let elem_tys: Vec<Ty> = match (&got, ty) {
                     (Ty::Tuple(parts), _) if parts.len() == names.len() => {
                         parts.clone()
@@ -12049,6 +13026,169 @@ impl<'a> Checker<'a> {
         closest_bare_name(name, &tops).map(|h| h.to_string())
     }
 
+    /// GH #877: a BARE type name in an annotation that names no
+    /// declaration.
+    ///
+    /// `resolve_type_expr` maps an unresolvable single-segment name
+    /// to `Ty::Unknown`, which is permissive everywhere — so `fn
+    /// helper() -> int` (the lowercase spelling of `Int`) passed
+    /// `hale check` with `ok: 1 file(s) typechecked` and then died in
+    /// codegen as `unknown type name 'int' in signature`: late, from
+    /// another layer, and with no source location. Same frontier as
+    /// GH #803 / #833, opposite answer, because the two names are not
+    /// the same case.
+    ///
+    /// A QUALIFIED name keeps its tolerance and is not touched here.
+    /// `lib::Thing` resolves only when the bundle carries the build's
+    /// import renames, so a tool holding one seed WITHOUT its imports
+    /// (the LSP's per-directory bundle) must not squiggle it. A bare
+    /// name has no such escape: the only thing that can declare it is
+    /// a declaration in the bundle.
+    ///
+    /// Gated on `strict_idents` for the reason the bare-IDENTIFIER
+    /// rule is: one file of a multi-file seed, checked alone, reads
+    /// declarations its siblings make, and a type is no different
+    /// from a `const` there. `hale check <dir>` and every build path
+    /// hold the whole program and hold the rule.
+    fn check_type_annotation(&mut self, te: &TypeExpr) {
+        if !self.strict_idents {
+            return;
+        }
+        match te {
+            TypeExpr::Named { path, generic_args, span } => {
+                // A generic argument is an annotation in its own
+                // right: `[Box<Strng>; 2]` is the same typo.
+                for arg in generic_args {
+                    self.check_type_annotation(arg);
+                }
+                if path.segments.len() != 1 {
+                    return;
+                }
+                let name = &path.segments[0].name;
+                if self.type_name_is_declared(name) {
+                    return;
+                }
+                let hint = self
+                    .closest_type_name(name)
+                    .map(|h| format!(" — did you mean `{}`?", h))
+                    .unwrap_or_default();
+                self.diags.push(Diag::ty(
+                    *span,
+                    format!(
+                        "unknown type `{}`: no type, enum, locus, \
+                         interface or alias with that name is \
+                         declared{}",
+                        name, hint
+                    ),
+                ));
+            }
+            TypeExpr::Projection { inner, .. } => {
+                self.check_type_annotation(inner);
+            }
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => {
+                self.check_type_annotation(elem);
+            }
+            TypeExpr::Tuple(parts, _) => {
+                for p in parts {
+                    self.check_type_annotation(p);
+                }
+            }
+            TypeExpr::Function { params, ret, .. } => {
+                for p in params {
+                    self.check_type_annotation(p);
+                }
+                if let Some(r) = ret {
+                    self.check_type_annotation(r);
+                }
+            }
+            // A primitive is resolved by the parser. `perspective(P)`
+            // names a contract, not a type expression's bare name —
+            // its own resolution rules are #724's, unchanged.
+            TypeExpr::Primitive(_, _) | TypeExpr::Perspective { .. } => {}
+        }
+    }
+
+    /// GH #877: does this bare name end at something a type
+    /// annotation may spell?
+    ///
+    /// The answer must be at least as permissive as codegen's, or the
+    /// rule refuses programs `hale build` accepts. The table it
+    /// resolves against (`known`) is rebuilt from the top scope, so
+    /// it carries user loci / types / enums / perspectives, every
+    /// alias target, and the whole Hale-source stdlib surface
+    /// (GH #470) — but not interfaces (registered as their own
+    /// symbol), not the compiler-synthesized types, and not the
+    /// generic parameters in scope. Each of those is asked for
+    /// separately below.
+    fn type_name_is_declared(&self, name: &str) -> bool {
+        if self.known.contains_key(name)
+            || self.known.alias_target(name).is_some()
+            || SYNTHESIZED_TYPE_NAMES.contains(&name)
+            || self.generic_params.iter().any(|g| g == name)
+            || self.generic_types.contains_key(name)
+        {
+            return true;
+        }
+        if matches!(
+            self.top.lookup(name),
+            Some(
+                TopSymbol::Locus(_)
+                    | TopSymbol::Type(_)
+                    | TopSymbol::Perspective(_)
+                    | TopSymbol::Interface(_)
+                    | TopSymbol::Topic(_)
+                    | TopSymbol::RingLayout(_)
+            )
+        ) {
+            return true;
+        }
+        // `Box_Int` written out: the mangled monomorph name a
+        // generic instantiation resolves to, which codegen
+        // synthesizes from the template.
+        self.resolve_generic_monomorph(name).is_some()
+    }
+
+    /// Nearest spelling to `name` among the things a type annotation
+    /// could have meant: the primitives first — `int` for `Int` is
+    /// the headline case — then the program's declared type names
+    /// and the generic parameters in scope. Mangled stdlib symbols
+    /// (`__StdHttpRouter`) are excluded: they are not spellable in
+    /// source, so suggesting one would be advice that cannot be
+    /// taken.
+    fn closest_type_name(&self, name: &str) -> Option<String> {
+        let mut cands: Vec<&str> =
+            hale_syntax::parser::PRIMITIVE_TYPE_NAMES.to_vec();
+        if let Some(hit) = closest_bare_name(name, &cands) {
+            return Some(hit.to_string());
+        }
+        cands.clear();
+        cands.extend(
+            self.known
+                .keys()
+                .map(|k| k.as_str())
+                .filter(|k| !k.starts_with("__")),
+        );
+        cands.extend(self.generic_params.iter().map(|g| g.as_str()));
+        cands.extend(SYNTHESIZED_TYPE_NAMES.iter().copied());
+        cands.extend(
+            self.top
+                .symbols
+                .iter()
+                .filter(|(_, s)| {
+                    matches!(
+                        s,
+                        TopSymbol::Locus(_)
+                            | TopSymbol::Type(_)
+                            | TopSymbol::Perspective(_)
+                            | TopSymbol::Interface(_)
+                    )
+                })
+                .map(|(k, _)| k.as_str())
+                .filter(|k| !k.starts_with("__")),
+        );
+        closest_bare_name(name, &cands).map(|h| h.to_string())
+    }
+
     fn check_expr(&mut self, expr: &Expr) -> Ty {
         match expr {
             Expr::Literal(lit, span) => {
@@ -12080,7 +13220,12 @@ impl<'a> Checker<'a> {
                 // Color = Color::Red;` fail with `expected Color,
                 // got ?`).
                 if qn.segments.len() == 2 {
-                    let enum_name = &qn.segments[0].name;
+                    // GH #831: the head may be an alias of the enum
+                    // (`type C2 = Color; C2::Red`) — a second
+                    // spelling, so it constructs the same variant.
+                    let spelled = &qn.segments[0].name;
+                    let resolved = construction_target(self.top, spelled);
+                    let enum_name = resolved.as_ref().unwrap_or(spelled);
                     let variant_name = &qn.segments[1].name;
                     if let Some(TopSymbol::Type(TypeInfo {
                         kind: TypeKind::Enum(variants),
@@ -12677,7 +13822,11 @@ impl<'a> Checker<'a> {
                 // is permissive on Unknowns elsewhere.
                 if let Expr::Path(qn) = callee.as_ref() {
                     if qn.segments.len() == 2 {
-                        let enum_name = &qn.segments[0].name;
+                        // GH #831: through an alias of the enum too,
+                        // exactly as the payload-less form above.
+                        let spelled = &qn.segments[0].name;
+                        let resolved = construction_target(self.top, spelled);
+                        let enum_name = resolved.as_ref().unwrap_or(spelled);
                         let variant_name = &qn.segments[1].name;
                         if let Some(TopSymbol::Type(TypeInfo {
                             kind: TypeKind::Enum(variants),
@@ -12685,10 +13834,11 @@ impl<'a> Checker<'a> {
                         })) = self.top.symbols.get(enum_name)
                         {
                             if variants.iter().any(|v| v.name == *variant_name) {
+                                let enum_name = enum_name.clone();
                                 for a in args {
                                     let _ = self.check_expr(a);
                                 }
-                                return Ty::Named(enum_name.clone());
+                                return Ty::Named(enum_name);
                             }
                         }
                     }
@@ -14368,8 +15518,17 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        let name: &String =
+        let spelled: &String =
             qualified_resolved.as_ref().unwrap_or(&path.segments[0].name);
+        // GH #831: `Row2 { id: 1 }` where `type Row2 = Row;`. The
+        // alias is transparent in every type position already; a
+        // literal spelled with it builds the declaration the chain
+        // ends at. Everything below — the monomorph path, the
+        // struct / locus / perspective dispatch, the field
+        // validation — then runs against that declaration exactly as
+        // if the author had written its name.
+        let resolved_alias = construction_target(self.top, spelled);
+        let name: &String = resolved_alias.as_ref().unwrap_or(spelled);
         // M3 stage 3 tranche 2 (2026-07-02): mangled generic
         // monomorph literal (`Box_Int { ... }`). Resolve the
         // `Base_Tok[_Tok...]` shape against a generic type
@@ -14686,15 +15845,18 @@ fn check_instance_aliasing(
     bundle: &Bundle,
     diags: &mut Vec<Diag>,
 ) {
+    // GH #825: the main locus, and the aliased locus type whose
+    // state this rule asks about, are both found by name — a module
+    // changes neither.
     let mut main: Option<&LocusDecl> = None;
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 if l.is_main {
                     main = Some(l);
                 }
             }
-        }
+        });
     }
     let Some(main) = main else { return };
 
@@ -14892,11 +16054,16 @@ fn locus_has_unsynchronized_state(
     bundle: &Bundle,
     locus_ty: &str,
 ) -> Option<String> {
+    // GH #825: `forms` decides whether each field of the aliased
+    // locus is behind a `sync` discipline. A `@form` locus this walk
+    // cannot see is simply absent from the map, and an absent entry
+    // reads as "not an unsynchronized form" — so a module-nested
+    // form silenced the finding for a top-level alias too.
     let mut decl: Option<&LocusDecl> = None;
     let mut forms: BTreeMap<String, bool> = BTreeMap::new();
     for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(l) = item else { continue };
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
             if l.name.name == locus_ty {
                 decl = Some(l);
             }
@@ -14905,7 +16072,7 @@ fn locus_has_unsynchronized_state(
                     f.args.iter().any(|a| a.name.name == "sync");
                 forms.insert(l.name.name.clone(), synced);
             }
-        }
+        });
     }
     let l = decl?;
 
@@ -14942,6 +16109,35 @@ fn locus_has_unsynchronized_state(
     }
     None
 }
+
+/// GH #877: the type names the COMPILER declares, which therefore
+/// name something even when no declaration in the bundle does.
+///
+/// Codegen synthesizes each of these unconditionally (`codegen.rs`'s
+/// builtin-type declarations; `CapacityError` in `form/bounded.rs`),
+/// so a signature naming one lowers. The resolver injects most of
+/// them into the top scope as well — `IoError`, `ParseError`,
+/// `CryptoError`, `IndexError`, `KeyError`, `EmptyError`,
+/// `CapacityError` are there unconditionally since 2026-07-29, and
+/// `BusUnmatchedKey` only when a topic declares `on_unmatched: fail`
+/// — but `ClosureViolation`, the `on_failure` error payload, is
+/// injected nowhere and has always resolved to `Ty::Unknown`.
+///
+/// Listing all of them keeps the unknown-bare-type-name rule at
+/// least as permissive as codegen: an entry that the top scope
+/// already carries is simply redundant, while a missing one would
+/// refuse a program `hale build` accepts.
+const SYNTHESIZED_TYPE_NAMES: &[&str] = &[
+    "BusUnmatchedKey",
+    "CapacityError",
+    "ClosureViolation",
+    "CryptoError",
+    "EmptyError",
+    "IndexError",
+    "IoError",
+    "KeyError",
+    "ParseError",
+];
 
 /// The bare names codegen answers itself when they resolve to no user
 /// fn. A call to any other unbound bare name is refused by `hale

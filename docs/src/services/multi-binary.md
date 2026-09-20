@@ -102,7 +102,8 @@ next connection. Restart the publishing binary and it reconnects
 — the subscriber never notices. (Under the hood each binding is
 a real locus, a child of your `main` locus, whose lifecycle
 opens the transport at birth and tears it down at dissolve —
-the same shape as a custom adapter.)
+the same shape as a custom adapter. Its dissolve is the *last*
+one your program runs; see the teardown order below.)
 
 The *connect* side is the one that can genuinely lose its link —
 the peer it sends to goes away mid-run. That loss is structural:
@@ -171,6 +172,17 @@ silent peer holding its connection open can't stall your exit.
 What you should *not* read into this: it is not durability — a
 message still in the publisher when either process dies is gone,
 and `udp://` remains lossy by declaration.
+
+The binding locus itself goes last. Your `main` locus is born
+before any user statement and dissolves after every locus it
+owns, and a binding is born before *that* — so the teardown
+order at exit is: quiesce the listeners, join the cooperative
+pools, dissolve your loci innermost-first, and only then
+dissolve the bindings, closing their sockets and joining their
+serve threads. That ordering is what makes a publish from a
+`dissolve()` body still reach the wire, and it is why a binding
+is the one child whose lifetime spans your whole program rather
+than the scope it was written in.
 
 ## Talking to other languages: codecs
 

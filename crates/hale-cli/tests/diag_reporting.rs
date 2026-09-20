@@ -56,6 +56,23 @@
 //! them name the right file; none of them is a join key, and
 //! `check --json`'s `file` field is used as one. Every renderer now
 //! spells a path the one way — absolute, canonical, `..`-free.
+//!
+//! GH #860 closes the family: an `import` that names nothing was the
+//! last failure on the check path still reported by an `eprintln!`
+//! plus a bare `Err(())` — no record, exit 1. Nothing was opened, so
+//! it is not an io failure, and the statement HAS a span: it is a
+//! located diagnostic under the path literal now, carried in
+//! `ImportDiag::Located` like an imported file's parse error and
+//! rendered by every channel with no new path.
+//!
+//! GH #848 is the family's last member and the one failure that is
+//! not the front end's: a program the CHECKER accepts and codegen
+//! refuses. A `CodegenError` carries a span, and only `build` ever
+//! used it — `run`, `test`, `bench` and `replay` printed the error
+//! with `{:?}`, so the reader got `UnsupportedAt("…", Span { start:
+//! Pos(55), end: Pos(60) })` and no line to open. All five now
+//! report through one helper, so the located line is the same
+//! string whichever command found it.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -997,5 +1014,414 @@ fn verify_json_reports_an_unreadable_input_too() {
     let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
     assert_eq!(lines.len(), 1, "exactly one record: {}", stdout);
     assert_io_record(lines[0], "not_here.hl");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// GH #860: the last empty-stream shape on the check path. An import
+// that names NOTHING printed `could not resolve import "..."` on
+// stderr and returned a bare failure — no record, exit 1 — because
+// the resolver reported it before the errors vector existed. It is
+// not an io failure (nothing was opened, so there is no OS error to
+// report) and the `import` statement has a span, so it is a located
+// diagnostic under its path literal on every channel: a record under
+// `--json`, the located line and caret in text, and the same line
+// from `build` / `run`, which have no other channel.
+
+/// `<tmp>/app/main.hl` importing `"../nowhere"`, which is not there.
+/// The `import` is the first line, so every channel must say `1:8` —
+/// column 8 is the opening quote of the path literal, the string the
+/// diagnostic is about.
+fn unresolvable_seed(tag: &str) -> PathBuf {
+    let d = seed_dir(tag);
+    std::fs::create_dir_all(d.join("app")).expect("mkdir app");
+    std::fs::write(
+        d.join("app").join("main.hl"),
+        "import \"../nowhere\" as nowhere;\n\nfn main() {\n    \
+         println(\"x\");\n}\n",
+    )
+    .unwrap();
+    d
+}
+
+/// The located prefix every command prints for that seed.
+const UNRESOLVABLE_LOCATED: &str =
+    "main.hl:1:8: type error: could not resolve import `../nowhere`";
+
+#[test]
+fn an_unresolvable_import_is_one_located_record() {
+    let d = unresolvable_seed("import860json");
+    let app = d.join("app");
+
+    let (stdout, stderr, code) = hale_check(&["--json"], &app);
+    assert_eq!(code, 1, "the tree is refused:\n{stderr}");
+    assert!(
+        !stdout.trim().is_empty(),
+        "--json must not answer an unresolvable import with an empty \
+         stream (stderr was: {})",
+        stderr
+    );
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 1, "exactly one record: {}", stdout);
+    let v: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("stdout is NDJSON");
+    assert_eq!(v["severity"], "error", "got: {}", lines[0]);
+    assert_ne!(
+        v["kind"], "io error",
+        "an import that names nothing is a diagnostic about the \
+         program, not an unreadable input: {}",
+        lines[0]
+    );
+    assert_eq!(v["line"], 1, "the `import` line: {}", lines[0]);
+    assert_eq!(v["col"], 8, "the path literal's own column: {}", lines[0]);
+    assert_eq!(
+        v["file"].as_str().unwrap(),
+        app.join("main.hl")
+            .canonicalize()
+            .expect("the importer exists")
+            .display()
+            .to_string(),
+        "the record names the file that holds the `import`: {}",
+        lines[0]
+    );
+    let msg = v["message"].as_str().unwrap();
+    assert!(
+        msg.contains("could not resolve import `../nowhere`"),
+        "the record names the import string: {}",
+        lines[0]
+    );
+    assert!(
+        msg.contains("tried") && msg.contains("nowhere.hl"),
+        "the places the resolver looked are the body of the message: \
+         {}",
+        lines[0]
+    );
+    assert!(
+        stderr.trim().is_empty(),
+        "under --json the report belongs on stdout: {}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_unresolvable_import_prints_a_located_line_and_caret() {
+    let d = unresolvable_seed("import860text");
+    let app = d.join("app");
+
+    let (stdout, stderr, code) = hale_check(&[], &app);
+    assert_eq!(code, 1, "the tree is refused:\n{stderr}");
+    assert!(
+        stdout.trim().is_empty(),
+        "text mode writes no stdout: {}",
+        stdout
+    );
+    assert!(
+        stderr.contains(UNRESOLVABLE_LOCATED),
+        "text mode positions it in the importing file:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("import \"../nowhere\" as nowhere;")
+            && stderr.contains('^'),
+        "with the source line and a caret under the path:\n{}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// `build` and `run` have no machine-readable channel, and reach the
+/// resolver by two roads: a directory target resolves the union of
+/// its files' imports and reports through `report_import_diags`, a
+/// single-file target through `parse_with_imports`'s `Err`. Both used
+/// to print the positionless sentence.
+#[test]
+fn build_and_run_locate_an_unresolvable_import() {
+    let d = unresolvable_seed("import860build");
+    let app = d.join("app");
+
+    for (shape, target) in
+        [("<dir>", app.clone()), ("<file>", app.join("main.hl"))]
+    {
+        for cmd in ["build", "run"] {
+            let (_, stderr, code) = hale_cmd(cmd, &[], &target);
+            assert_eq!(
+                code, 1,
+                "{cmd} {shape} must refuse the tree:\n{stderr}"
+            );
+            assert!(
+                stderr.contains(UNRESOLVABLE_LOCATED),
+                "{cmd} {shape} must position it like check does:\n{stderr}"
+            );
+            assert!(
+                stderr.contains('^'),
+                "{cmd} {shape} cuts the caret too:\n{stderr}"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// `verify` shares the reporting path, so a discipline gate built on
+/// it reads the record rather than an empty stream and a bare exit 1.
+#[test]
+fn verify_json_reports_an_unresolvable_import_too() {
+    let d = unresolvable_seed("import860verify");
+
+    let (stdout, _, code) = hale_cmd("verify", &["--json"], &d.join("app"));
+    assert_ne!(code, 0, "verify refuses the tree");
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 1, "exactly one record: {}", stdout);
+    let v: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("stdout is NDJSON");
+    assert_eq!(v["line"], 1, "the `import` line: {}", lines[0]);
+    assert_eq!(v["col"], 8, "the path literal's own column: {}", lines[0]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The importer is per-IMPORT, not per-call: one call resolves the
+/// union of a seed's imports, and a library's own imports are
+/// resolved a hop further in. The record must name the file that
+/// holds the `import` — here the library's, parsed at a non-zero
+/// virtual base, whose text reaches the check reporting path only
+/// because the diagnostic puts it there (a library's source is
+/// inserted into the map only AFTER its own imports are followed,
+/// which for this one never happens).
+#[test]
+fn an_unresolvable_import_inside_a_library_names_the_library_file() {
+    let d = seed_dir("import860lib");
+    std::fs::create_dir_all(d.join("lib")).expect("mkdir lib");
+    std::fs::create_dir_all(d.join("app")).expect("mkdir app");
+    std::fs::write(
+        d.join("lib").join("main.hl"),
+        "import \"../nowhere\" as nowhere;\n\nfn greet() -> String {\n    \
+         return \"hi\";\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("app").join("main.hl"),
+        "import \"../lib\" as lib;\n\nfn main() {\n    \
+         println(lib::greet());\n}\n",
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = hale_check(&["--json"], &d.join("app"));
+    assert_eq!(code, 1, "the tree is refused:\n{stderr}");
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 1, "exactly one record: {}", stdout);
+    let v: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("stdout is NDJSON");
+    assert_eq!(
+        v["file"].as_str().unwrap(),
+        d.join("lib")
+            .join("main.hl")
+            .canonicalize()
+            .expect("the library file exists")
+            .display()
+            .to_string(),
+        "the `import` that cannot be resolved is the library's: {}",
+        lines[0]
+    );
+    assert_eq!(v["line"], 1, "its own line, un-shifted: {}", lines[0]);
+    assert_eq!(v["col"], 8, "its own column: {}", lines[0]);
+
+    // And the text channel resolves the same base.
+    let (_, stderr, code) = hale_check(&[], &d.join("app"));
+    assert_eq!(code, 1);
+    assert!(
+        stderr.contains(UNRESOLVABLE_LOCATED)
+            && stderr.contains("import \"../nowhere\" as nowhere;"),
+        "the library's own line and caret:\n{}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The neighbouring shape, pinned so the two stay distinguishable: a
+/// path that DOES resolve, to a directory with no `.hl` files in it,
+/// is a GH #806 io record about that directory — the import target
+/// was found, and what failed was collecting files from it. It has
+/// been a record since #806; only the import that resolves to
+/// nothing at all was still an empty stream.
+#[test]
+fn an_import_of_a_directory_with_no_hl_files_is_one_record() {
+    let d = seed_dir("import860empty");
+    std::fs::create_dir_all(d.join("app")).expect("mkdir app");
+    std::fs::create_dir_all(d.join("empty")).expect("mkdir empty");
+    std::fs::write(
+        d.join("app").join("main.hl"),
+        "import \"../empty\" as e;\n\nfn main() {\n    \
+         println(\"x\");\n}\n",
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = hale_check(&["--json"], &d.join("app"));
+    assert_eq!(code, 1, "the tree is refused:\n{stderr}");
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 1, "exactly one record: {}", stdout);
+    let v = assert_io_record(lines[0], "empty");
+    assert!(
+        v["message"]
+            .as_str()
+            .unwrap()
+            .contains("contains no .hl files"),
+        "it says what was wrong with the directory: {}",
+        lines[0]
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ── GH #848: one located codegen error, whichever command compiles ──
+
+/// A program `hale check` accepts and codegen refuses, with the
+/// refusal carrying the offending generic argument's own span:
+/// `Bytes` is not one of the primitives v0 can mangle into a generic
+/// instantiation's name. Line 6, column 12 is `Bytes` in `Box<Bytes>`.
+///
+/// (An ordinary string literal, not a raw one, on purpose:
+/// `hale-corpus` harvests `r#"…"#` program literals out of the test
+/// sources, and a program that checks clean and will not build would
+/// land in the committed check/build divergence list for no gain.)
+const UNSUPPORTED_GENERIC_ARG: &str = "type Box<T> {\n    \
+     item: T;\n}\n\ntype Holder {\n    b: Box<Bytes>;\n}\n\n\
+     fn main() {\n    println(\"boxed\");\n}\n";
+
+/// The bench twin: same declarations, same line 6, but a `bench_*`
+/// fn instead of a `main` (the runner synthesizes the driver and
+/// refuses a bench file that brings its own `main`).
+const UNSUPPORTED_GENERIC_ARG_BENCH: &str = "type Box<T> {\n    \
+     item: T;\n}\n\ntype Holder {\n    b: Box<Bytes>;\n}\n\n\
+     fn bench_nothing() {\n    println(\"\");\n}\n";
+
+/// The located prefix — `file:line:col` — of the one codegen error,
+/// from whichever stream the command reports on.
+fn located_codegen(what: &str, out: &str) -> String {
+    out.lines()
+        .find(|l| l.contains(": codegen error:"))
+        .and_then(|l| l.split(": codegen error:").next())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| {
+            panic!("no located codegen error from {what}:\n{out}")
+        })
+}
+
+/// Neither the error's Rust variant nor its span may reach the
+/// reader: `UnsupportedAt("…", Span { start: Pos(55), … })` is what
+/// every command but `build` used to print.
+fn assert_no_debug_formatting(what: &str, out: &str) {
+    assert!(
+        !out.contains("Span {"),
+        "{what} printed a debug-formatted span:\n{out}"
+    );
+    assert!(
+        !out.contains("UnsupportedAt"),
+        "{what} printed the error's Rust variant name:\n{out}"
+    );
+}
+
+#[test]
+fn build_run_and_test_locate_one_codegen_error_identically() {
+    let d = seed_dir("codegen848");
+    let f = d.join("boxed.hl");
+    std::fs::write(&f, UNSUPPORTED_GENERIC_ARG).unwrap();
+
+    // The premise: the checker is clean, so this reaches the error
+    // path of every command that compiles and of no command that
+    // does not.
+    let (_, check_err, check_code) = hale_check(&[], &f);
+    assert_eq!(check_code, 0, "check accepts it:\n{check_err}");
+
+    let (_, build_err, build_code) = hale_cmd("build", &[], &f);
+    let (_, run_err, run_code) = hale_cmd("run", &[], &f);
+    // An explicitly named file is run whatever its suffix, so all
+    // three commands compile the SAME bytes.
+    let (test_out, _, test_code) = hale_cmd("test", &[], &f);
+    assert_eq!(build_code, 1, "build refuses it:\n{build_err}");
+    assert_eq!(run_code, 1, "run refuses it:\n{run_err}");
+    assert_eq!(test_code, 1, "test refuses it:\n{test_out}");
+
+    let from_build = located_codegen("build", &build_err);
+    assert!(
+        from_build.ends_with("boxed.hl:6:12"),
+        "the position is the generic argument's own: {from_build}"
+    );
+    for (what, out) in [("run", &run_err), ("test", &test_out)] {
+        assert_eq!(
+            located_codegen(what, out),
+            from_build,
+            "{what} must name the file, line and column exactly as \
+             build does\nbuild:\n{build_err}\n{what}:\n{out}"
+        );
+    }
+    for (what, out) in
+        [("build", &build_err), ("run", &run_err), ("test", &test_out)]
+    {
+        assert_no_debug_formatting(what, out);
+        assert!(
+            out.contains("b: Box<Bytes>;") && out.contains('^'),
+            "{what} must cut the snippet and caret from the source \
+             too:\n{out}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn bench_locates_a_codegen_error_in_the_bench_file() {
+    let d = seed_dir("codegen848bench");
+    let f = d.join("boxed_bench.hl");
+    std::fs::write(&f, UNSUPPORTED_GENERIC_ARG_BENCH).unwrap();
+
+    let (_, stderr, code) = hale_cmd("bench", &[], &f);
+    assert_eq!(code, 1, "bench refuses it:\n{stderr}");
+    assert_no_debug_formatting("bench", &stderr);
+    let prefix = located_codegen("bench", &stderr);
+    assert!(
+        prefix.ends_with("boxed_bench.hl:6:12"),
+        "bench names the bench file at the offending position — not \
+         the driver copy it compiles and deletes:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn replay_locates_a_codegen_error_too() {
+    let d = seed_dir("codegen848replay");
+    let hello = d.join("hello.hl");
+    std::fs::write(&hello, "fn main() {\n    println(\"hi\");\n}\n")
+        .unwrap();
+    let rec = d.join("hello.halerec");
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("run")
+        .arg(&hello)
+        .env("LOTUS_OBS_RECORD", &rec)
+        .output()
+        .expect("record a hello program");
+    assert!(
+        out.status.success() && rec.is_file(),
+        "recording failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let f = d.join("boxed.hl");
+    std::fs::write(&f, UNSUPPORTED_GENERIC_ARG).unwrap();
+    // `--feed` re-executes CHANGED code against a recorded ingress
+    // tape, so it is the one way onto replay's build path with a
+    // program the recording did not come from — which is what a
+    // program that cannot compile necessarily is.
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("replay")
+        .arg(&rec)
+        .arg(&f)
+        .arg("--feed")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("run hale replay");
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(1), "replay refuses it:\n{stderr}");
+    assert_no_debug_formatting("replay", &stderr);
+    assert!(
+        located_codegen("replay", &stderr).ends_with("boxed.hl:6:12"),
+        "replay locates it like every other command:\n{stderr}"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }

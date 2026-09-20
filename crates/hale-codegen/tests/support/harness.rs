@@ -27,10 +27,117 @@
 //! convention, and `harness_paths_are_unique.rs` fails the build if a
 //! test reintroduces a hand-rolled temp path.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// The one lock any test-process environment mutation is taken
+/// under. See [`set_build_env_var`].
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// Build `program` to `bin` with the PRE-optimization LLVM IR dumped
+/// beside it, and hand back the IR text. The `.ll` is removed; the
+/// binary is left in place, because several callers also run it.
+///
+/// ## Why this exists (GH #843)
+///
+/// Every IR-shape test in this suite used to wrap its build in
+/// `std::env::set_var("LOTUS_DUMP_IR", "1")` / `remove_var`. The
+/// environment is a process-global, and mutating it while another
+/// thread reads it is undefined behavior — which under `cargo test`
+/// (libtest runs tests as *threads* in one process) is every
+/// concurrent build in the same binary, each of which reads
+/// `LOTUS_DUMP_IR`, `LOTUS_LTO`, `LOTUS_ASAN` and friends. Worse
+/// than the UB, the effect was *visible*: whichever test set the var
+/// turned the dump on for every build racing it, and whichever test
+/// removed it first turned the dump off under a test that was still
+/// building — so an IR assertion could fail on a missing `.ll` with
+/// nothing wrong in the compiler. Only nextest's process-per-test
+/// hid it.
+///
+/// `BuildOptions::dump_ir` asks for the same dump through the API,
+/// so the request is scoped to one build.
+#[allow(dead_code)]
+pub fn build_ir_text(
+    program: &hale_syntax::ast::Program,
+    bin: &Path,
+) -> Result<String, hale_codegen::CodegenError> {
+    let ll = bin.with_extension("ll");
+    let options = hale_codegen::BuildOptions {
+        dump_ir: Some(ll.clone()),
+        ..Default::default()
+    };
+    hale_codegen::build_executable_with_options(program, bin, &[], &options)?;
+    let text = std::fs::read_to_string(&ll)
+        .expect("BuildOptions::dump_ir should have written the .ll");
+    let _ = std::fs::remove_file(&ll);
+    Ok(text)
+}
+
+/// Build `program` to `bin` with AddressSanitizer instrumentation
+/// (`BuildOptions::asan`), and check the artifact really carries it.
+///
+/// The check is not ceremony. Every ASan test in this suite asserts
+/// the *absence* of leak / UAF / overflow text in the run's output,
+/// so a build that quietly came out uninstrumented passes all of
+/// them — which is exactly what a change to *how* the knob is
+/// requested could introduce without any test going red (GH #843,
+/// where the knob moved off `LOTUS_ASAN` in the process
+/// environment). An instrumented binary links the ASan runtime, so
+/// its symbols are in the image.
+#[allow(dead_code)]
+pub fn build_asan(program: &hale_syntax::ast::Program, bin: &Path) {
+    let options = hale_codegen::BuildOptions {
+        asan: true,
+        ..Default::default()
+    };
+    hale_codegen::build_executable_with_options(program, bin, &[], &options)
+        .expect("asan build");
+    const MARKER: &[u8] = b"__asan_init";
+    let image = std::fs::read(bin).expect("read the built binary");
+    assert!(
+        image.windows(MARKER.len()).any(|w| w == MARKER),
+        "the build was asked for AddressSanitizer but {} carries no \
+         ASan runtime symbols — every `nothing was reported` \
+         assertion downstream would pass vacuously",
+        bin.display()
+    );
+}
+
+/// The ONE place in this suite that mutates the test process's
+/// environment, and the reason `harness_paths_are_unique.rs` refuses
+/// a `set_var` anywhere else (GH #843).
+///
+/// Every other build knob a test needs is a `BuildOptions` field.
+/// The exception is a knob read by a free function several frames
+/// below `build_executable_with_options`, with no options in scope —
+/// today that is `HALE_NO_TS_SHIM`, read by
+/// `locate_ts_shim_staticlib()`, which `missing_ts_shim.rs` must
+/// force to miss.
+///
+/// Two properties make it as safe as a process-global can be:
+///
+///   * every caller is serialized on `ENV_LOCK`, and holds the
+///     returned guard across the build that reads the variable, so
+///     no two tests can be mid-mutation at once; and
+///   * the variable is **set, never unset**. A set/unset pair is
+///     what makes a concurrent reader observe a value the test that
+///     wrote it never intended; a write-once value cannot. The cost
+///     is that the knob stays on for the rest of the test binary,
+///     which is why it belongs only to knobs whose whole test file
+///     wants them.
+///
+/// It is still a process-global write: prefer a `BuildOptions` field
+/// whenever the knob can reach one.
+#[allow(dead_code)]
+#[must_use = "hold the guard across the build that reads the variable"]
+pub fn set_build_env_var(key: &str, value: &str) -> MutexGuard<'static, ()> {
+    let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var(key, value);
+    guard
+}
 
 /// Resident bytes out of a `/proc/self/statm` line — the memory a
 /// compiled test program actually holds, as *it* reports it.

@@ -152,6 +152,26 @@ conversion is not one — `String(x)` is not a cast, it is a call to
 nothing. Use `to_string(x)` to render a value and
 `std::str::parse_int` / `parse_float` to read one back.
 
+The rule has a flip side: a free function may not *take* one of
+those names. The compiler answers `abs(x)`, `len(s)`, `min(a, b)`,
+`print(…)` and the rest at the call site, before it looks at what
+your program declares, so a `fn abs(...)` of your own could never
+be the one that runs — and until this was refused, it wasn't: the
+program built and printed the builtin's answer. Now the
+declaration is refused where you wrote it:
+
+```hale,fragment
+fn abs(a: Int) -> Int { return 0 - a; }    // error, at `abs`
+```
+
+> `` `abs` is a built-in call form and cannot name a fn; rename it ``
+
+Rename it (`abs_of`, `magnitude`) and everything works. A
+*method* may still be called any of them — a method is reached
+through a receiver, `b.len()`, which no builtin claims, which is
+why the standard library's own ring buffer can declare `fn len()`.
+The exact set lives in `spec/tokens.md` § *Built-in identifiers*.
+
 Like the unknown-identifier rule, this one wants the whole
 program, so it's on for `hale check <directory>`. One file of a
 multi-file project checked on its own stays permissive: it may

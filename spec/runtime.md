@@ -160,7 +160,18 @@ the model: runtime is automatic; stdlib is explicit.
   child's arena, which holds their structs. Every level's
   gate is that level's own ownership mask, so a subtree handed
   in from outside is skipped wherever it appears and is torn
-  down once, by its real owner. Pinned-thread tail still skips the cascade
+  down once, by its real owner.
+  A param field typed by a **contract** rather than by the
+  child's locus — an `interface` slot, a `perspective(P)`
+  handle — carries an owned child on the same terms, and the
+  cascade reaches it: the declared type names no impl, so the
+  instantiation records the child's `__reclaim_<Impl>` in a
+  synthetic per-field slot and the cascade runs that whole
+  spine (drain → dissolve → arena reclaim) through it, under
+  the same ownership-mask gate. The consequence users can
+  check is arena residency: no locus arena, at any depth and
+  behind any field type, survives its owner.
+  Pinned-thread tail still skips the cascade
   per the v1 trade-off. An `accept`'d child is reclaimed on its
   OWN run-completion / `terminate` when it is a flow (see
   "Per-child reclamation" below) rather than waiting for the
@@ -1170,6 +1181,21 @@ control plane; the data plane stays in C:
   parked accept/recv, joins the serve thread, destroys the
   transport. The husk entry stays in the remote table for
   `lotus_bus_remote_destroy_all` to free uniformly.
+- **When that dissolve runs (GH #893).** The transport's struct
+  is allocated for the program's lifetime (the payload arena, so
+  it outlives `fn main`'s subregion) but it is OWNED by `fn
+  main`: the prelude registers it on main's deferred-dissolve
+  frame, before any user statement, so it is that frame's first
+  entry and the reverse-order flush tears it down LAST — after
+  every user locus has dissolved (a `dissolve()`-body publish
+  still reaches the wire), after the main-exit ingress quiesce
+  and cooperative-pool join the exit path sequences ahead of the
+  flush, and before the global arena destroy and
+  `lotus_bus_queue_destroy`. `lotus_bus_remote_destroy_all` then
+  finds the entry already reclaimed — transport NULL, serve
+  thread joined — and frees only the husk. Program-lifetime
+  ALLOCATION and no OWNER are separate questions; a transport
+  answers the first without the second.
 
 Publish fanout is untouched — realized entries land in the same
 `g_bus_remote_entries` table the fanout walks.

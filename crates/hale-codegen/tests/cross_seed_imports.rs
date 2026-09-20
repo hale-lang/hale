@@ -607,3 +607,77 @@ fn bus_handler_name_shadowed_by_top_level_fn_resolves() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("seen=5 free=42"), "got: {stdout:?}");
 }
+
+/// GH #831: a literal spelled with an imported seed's type ALIAS.
+///
+/// `type Row2 = Row;` makes `Row2` a second spelling of `Row`, and
+/// an importer spells it `lib::Row2`. Codegen resolves the alias
+/// once on the merged AST (`mangle::resolve_construction_aliases`),
+/// which is where the cross-seed spelling has to be understood: the
+/// alias's own declaration is mangled to `__lib_<alias>_<stem>_Row2`
+/// while the literal's path is still `["lib", "Row2"]`, so the
+/// per-build rename table is what joins the two. Before the fix this
+/// build failed with "`__lib_lib_thing_Row2` is not a struct type".
+///
+/// The variant path beside it is the same rule one position over:
+/// `lib::C2::Red` is three segments whose first TWO name the type.
+#[test]
+fn an_imported_alias_can_be_spelled_in_a_literal() {
+    let lib_src = r#"
+        type Row { id: Int = 0; label: String = ""; }
+        type Row2 = Row;
+        type Color = enum { Red, Green };
+        type C2 = Color;
+        fn describe(c: Color) -> String {
+            let mut out = "?";
+            match c {
+                Color::Red -> { out = "red"; },
+                Color::Green -> { out = "green"; },
+            }
+            return out;
+        }
+    "#;
+    let consumer_src = r#"
+        fn main() {
+            let r = lib::Row2 { id: 7, label: "seven" };
+            let c = lib::C2::Red;
+            println("id=", r.id, " label=", r.label, " c=", lib::describe(c));
+        }
+    "#;
+    let alias = "lib";
+    let mut lib_prog = parse_source(lib_src).expect("parse lib");
+    let seed_renames = {
+        let stem_refs: Vec<(String, &Program)> =
+            vec![("thing".to_string(), &lib_prog)];
+        mangle::build_seed_renames(&stem_refs, alias)
+    };
+    let renames: Vec<(Vec<String>, String)> = seed_renames
+        .iter()
+        .map(|(name, mangled)| {
+            (vec![alias.to_string(), name.clone()], mangled.clone())
+        })
+        .collect();
+    mangle::mangle_with_renames(&mut lib_prog, &seed_renames);
+    let mut consumer = parse_source(consumer_src).expect("parse consumer");
+    consumer.imports.clear();
+    consumer.items.extend(lib_prog.items);
+    let bin = harness::unique_bin(&format!(
+        "hale_imported_alias_literal_{}",
+        std::process::id()
+    ));
+    build_executable_with_imports(&consumer, &bin, &renames)
+        .expect("build consumer + lib");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(
+        out.status.success(),
+        "exit: {:?} stderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("id=7 label=seven c=red"),
+        "got: {stdout:?}"
+    );
+}

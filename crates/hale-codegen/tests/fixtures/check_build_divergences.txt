@@ -1,12 +1,10 @@
-crates/hale-cli/tests/fixtures/hale-test-mixed/notes.hl
 crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl
 crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl
-crates/hale-cli/tests/fixtures/xseed-claims/lib/delta/d.hl
-crates/hale-cli/tests/fixtures/xseed-claims/lib/gamma/g.hl
 crates/hale-cli/tests/replay_cli.rs#5
 crates/hale-cli/tests/replay_cli.rs#6
 crates/hale-cli/tests/topology_graph_cli.rs#13
 crates/hale-codegen/tests/cross_seed_imports.rs#1
+crates/hale-codegen/tests/cross_seed_imports.rs#7
 crates/hale-codegen/tests/f22_as_parent_for_surface.rs#3
 crates/hale-codegen/tests/f22_capacity_acceptance.rs#4
 crates/hale-codegen/tests/f22_capacity_dispatch.rs#3
@@ -38,6 +36,5 @@ crates/hale-types/tests/generic_call_check.rs#3
 crates/hale-types/tests/generic_call_check.rs#5
 crates/hale-types/tests/model_builder.rs#12
 crates/hale-types/tests/model_builder.rs#22
-crates/hale-types/tests/model_builder.rs#24
 crates/hale-types/tests/model_costs.rs#3
 crates/hale-types/tests/ownership_graph.rs#7

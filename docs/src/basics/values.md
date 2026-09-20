@@ -67,6 +67,28 @@ file of a multi-file seed on its own stays permissive — that file
 legitimately reads a `const` its sibling declares, and the checker
 cannot see the sibling.
 
+## A type name that isn't declared is an error too
+
+The same rule holds where a *type* is written. The one that catches
+everybody is capitalization — Hale's primitives are `Int`, `Float`,
+`String`, not `int`, `float`, `string`:
+
+```text
+main.hl:1:16: type error: unknown type `int`: no type, enum, locus,
+interface or alias with that name is declared — did you mean `Int`?
+fn helper() -> int {
+               ^^^
+```
+
+It is reported wherever the name is written: a parameter, a return
+type, a struct field, a `params` field, a `let` ascription. Same
+whole-program rule as above, and the same permissive reading for one
+file of a multi-file seed — a sibling may declare the type.
+
+A name with a `::` in it (`lib::Thing`, `std::text::Sink`) is not
+held to this: it names something in another seed, which the checker
+can only see once the whole seed is in front of it.
+
 ## Some ordinary words are reserved
 
 Hale's keywords are ordinary English: `epoch`, `where`, `rich`,

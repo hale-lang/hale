@@ -289,7 +289,7 @@ other deliveries the pool starts in between.
 
 ## The compiler checks your placement
 
-Two placement mistakes are caught for you, because both the
+These placement mistakes are caught for you, because both the
 placement and the locus's shape are known at compile time:
 
 - **A subscriber that blocks its own delivery is an error.** A
@@ -356,6 +356,52 @@ placement and the locus's shape are known at compile time:
   `of type` payloads, a subscriber would decode the wrong type at
   runtime — rejected. (Declared `topic`s are already unified by their
   declaration, so this only affects ad-hoc literal subjects.)
+- **A `pinned` placement in a loop is an error.** A locus whose
+  `placement { }` pins a field can't be instantiated inside a `while`
+  or `for` body. `pinned` gives that field its own OS thread, and the
+  record used to join it is one slot per instantiation *site* — a
+  second pass over the site overwrites it, so only the last thread is
+  ever joined and the earlier ones are orphaned with their memory
+  still live. Placement describes a *static* topology (a core, a NUMA
+  node, `replicas = K`): one thread per entry, for the program's
+  life. Instantiate it once, outside the loop. A loop that calls a
+  *function* holding the literal is fine — each call joins its own
+  thread before it returns:
+
+  ```hale
+  fn boot() { App { }; }          // fine: one thread per call, joined
+
+  fn main() {
+      let mut i = 0;
+      while i < 3 { App { }; i = i + 1; }   // error: three orphans
+      return 0;
+  }
+  ```
+- **A placement entry a factory hands you is an error.** A placement
+  attaches to the locus *literal* written for the field. A factory
+  call hands back a locus that has already been born and run inside
+  the factory, so there is nothing left to place — the entry would
+  be silently dropped, and the field would run wherever an unplaced
+  field runs. Write the literal in the field:
+
+  ```hale
+  main locus App {
+      params {
+          a: Worker = make_worker();   // error: nothing carries `a: pinned`
+          b: Worker = Worker { };      // fine: this literal is placed
+      }
+      placement {
+          a: pinned;
+          b: pinned;
+      }
+  }
+  ```
+
+  The same holds at the instantiation site for a field declared
+  without a default: `App { a: Worker { } }` carries the entry,
+  `App { a: make_worker() }` does not. If the factory did setup
+  work, move it into the locus's own `params` defaults or its
+  `birth()`.
 
 It also enforces the **single-threaded-method invariant**: a locus's
 methods may only be called on the thread that owns its pool, so a

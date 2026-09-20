@@ -36,6 +36,14 @@ pub struct Import {
     pub path: String,
     pub alias: Option<String>,
     pub span: Span,
+    /// GH #860: the span of the PATH LITERAL alone, inside `span`.
+    ///
+    /// `span` covers the whole statement, `import` keyword through
+    /// `;`, which is the right underline for "this statement is
+    /// malformed" and the wrong one for "this path names nothing":
+    /// an unresolvable import is about the string the author typed,
+    /// so the caret belongs under it.
+    pub path_span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]

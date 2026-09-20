@@ -16,8 +16,6 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use hale_codegen::build_executable;
-
 #[path = "support/harness.rs"]
 mod harness;
 
@@ -75,18 +73,11 @@ fn layout_binding_emits_layout_register_call() {
     "#;
 
     let bin = unique_path("layout", "bin");
-    let ir = bin.with_extension("ll");
     let program = hale_syntax::parse_source(src).expect("parse");
 
-    std::env::set_var("LOTUS_DUMP_IR", "1");
-    let result = build_executable(&program, &bin);
-    std::env::remove_var("LOTUS_DUMP_IR");
-    result.expect("build");
-
-    let ir_text = std::fs::read_to_string(&ir).expect("read IR");
+    let ir_text = harness::build_ir_text(&program, &bin).expect("build");
 
     let _ = std::fs::remove_file(&bin);
-    let _ = std::fs::remove_file(&ir);
 
     assert!(
         ir_text.contains("lotus_bus_register_subscriber_shm_ring_layout"),
@@ -138,17 +129,10 @@ fn layout_publisher_emits_producer_register_and_publish() {
     "#;
 
     let bin = unique_path("producer", "bin");
-    let ir = bin.with_extension("ll");
     let program = hale_syntax::parse_source(src).expect("parse");
 
-    std::env::set_var("LOTUS_DUMP_IR", "1");
-    let result = build_executable(&program, &bin);
-    std::env::remove_var("LOTUS_DUMP_IR");
-    result.expect("build");
-
-    let ir_text = std::fs::read_to_string(&ir).expect("read IR");
+    let ir_text = harness::build_ir_text(&program, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
-    let _ = std::fs::remove_file(&ir);
 
     assert!(
         ir_text.contains("lotus_bus_register_shm_ring_layout"),

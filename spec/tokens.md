@@ -618,8 +618,9 @@ B               c               sigma           phi
 k_max           span_max
 sum             prod            min             max
 length          empty
-print           println
+print           println         eprint          eprintln
 to_string       len             abs
+starts_with     contains        check_closures
 Int             Float
 ```
 
@@ -630,8 +631,81 @@ conversion; the user must commit via this constructor-shaped
 call. `Float(x)` is its widening twin — Int → Float via `sitofp`,
 Float arg the identity, other types reject. These two are the only
 casts; the remaining primitive-type names are types and nothing
-else. `to_string(x)`, `len(x)`, `abs(x)`, `min(a, b)`, `max(a, b)`
-are similarly bare-name builtins.
+else. `to_string(x)`, `len(x)`, `abs(x)`, `min(a, b)`, `max(a, b)`,
+`starts_with(s, p)` and `contains(s, p)` are similarly bare-name
+builtins, as is `check_closures()` at statement position.
+
+#### Names a free `fn` may not take (GH #863, GH #880)
+
+These names are **claimed at the call site**, ahead of any user
+declaration:
+
+```
+sum             prod            min             max
+abs             to_string       Int             Float
+len             starts_with     contains
+print           println         eprint          eprintln
+check_closures  __fmt
+```
+
+`sum(` and `prod(` have their own production at expression head
+(the closure-assertion accumulators — see
+[`semantics.md` § Closure-test evaluation](semantics.md)).
+`min`, `max`, `abs`, `to_string`, `Int`, `Float`, `len`,
+`starts_with` and `contains` are answered by a call-expression
+arm that matches the callee name before it consults the
+program's free fns. `check_closures` is answered the same way at
+statement position. `__fmt` is what an f-string interpolation
+desugars into.
+
+A declaration of one of those names could therefore never be
+reached, so a **free `fn` may not take it** — the parser refuses
+the declaration, at the name:
+
+    `abs` is a built-in call form and cannot name a fn; rename it
+    (every `abs(...)` call site lowers to the builtin, so the
+    declaration could never be reached …)
+
+The four printers are claimed for the opposite reason, and it is
+the stronger one: they resolve through the program's fns *first*,
+and the Hale-source standard library is merged into the **same
+global fn namespace**. A `fn print(a: Int)` therefore captures
+the library's own `print("…")` calls, and a program that never
+mentions `print` again fails to build with ``fn `print` arg 0
+type mismatch: expected Int, got String``. Whether a given
+printer is reachable that way is an accident of what the library
+happens to call today, so all four are claimed.
+
+The rule is on the **declaration**, not the name. A locus
+method, an `interface` method and a `perspective` contract `fn`
+may all still be called `sum`, `len` or `contains` — they are
+reached through a receiver (`self.sum()`, `b.len()`), which no
+builtin claims, and the standard library's own `mirror_ring.hl`
+and `bytes_builder.hl` declare `fn len()`. A `module { }` item
+is a free fn (its items resolve into the same global fn
+namespace) and is refused.
+
+Everything else in this section's table stays available to a
+free `fn`. `B`, `c`, `sigma`, `phi`, `k_max`, `span_max`,
+`length` and `empty` are conventionally reserved but no call
+site dispatches on them. The `bounded[T; N]` intrinsics
+(`count`, `clear`, `truncate`, `push`, `at`, `set`) and the
+accumulator vocabulary (`count`, `mean`) are recognized only
+when the argument IS a `bounded` receiver, or inside a closure
+assertion. The rest of the element-chain vocabulary (`map`,
+`filter`, `into`, `any`, `all`, `first`, `find`, `each`, `take`,
+`skip`, `enumerate`, `sort_into`, `reverse_into`,
+`group_count_into` — [`semantics.md` § Element
+chains](semantics.md)) is recognized only after a `.`.
+
+Until GH #863 / GH #880 the declaration was accepted and the
+divergence appeared later, in one of two shapes. `hale check`
+passed and `hale build` refused the program with an unlocated
+`unsupported in codegen v0` (`len`, `starts_with`, `contains`,
+`print`, `eprintln`, `check_closures`, `__fmt`); or the program
+BUILT and silently ran the builtin instead of the body — a wrong
+answer with no diagnostic anywhere (`abs`, `to_string`, `Int`,
+`Float`, and a two-arg `min` / `max`).
 
 `print` and `println` are built-in functions, always in scope
 without an `import`. They write to stdout. `print` does not

@@ -17,25 +17,26 @@
 //!      call site and the command that builds the staticlib.
 //!
 //! `HALE_NO_TS_SHIM=1` forces the lookup to miss, so these run in
-//! a fully-built workspace. It is process-global, so both tests
-//! take one mutex and set the same value; nothing here ever unsets
-//! it.
+//! a fully-built workspace. It is read by
+//! `locate_ts_shim_staticlib()`, a free function with no
+//! `BuildOptions` in scope, so it is the one knob in this suite that
+//! still travels through the process environment — via
+//! `harness::set_build_env_var`, the single allow-listed mutation
+//! (GH #843). Both tests take that one mutex and set the same value;
+//! nothing here ever unsets it.
 
 use std::process::Command;
-use std::sync::Mutex;
 
 use hale_codegen::{build_executable, CodegenError};
 
 #[path = "support/harness.rs"]
 mod harness;
 
-static SHIM_OFF: Mutex<()> = Mutex::new(());
-
-/// Run `f` with the shim lookup forced to `None`. Serialized so
-/// the `set_var` never races a concurrent read in the sibling test.
+/// Run `f` with the shim lookup forced to `None`. Serialized on the
+/// harness's `ENV_LOCK`, held for the whole of `f`, so the write
+/// never races a concurrent read in the sibling test.
 fn without_ts_shim<R>(f: impl FnOnce() -> R) -> R {
-    let _guard = SHIM_OFF.lock().unwrap_or_else(|e| e.into_inner());
-    std::env::set_var("HALE_NO_TS_SHIM", "1");
+    let _guard = harness::set_build_env_var("HALE_NO_TS_SHIM", "1");
     f()
 }
 

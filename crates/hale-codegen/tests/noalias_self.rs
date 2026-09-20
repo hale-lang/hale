@@ -4,7 +4,6 @@
 //! AND all params by-value scalars. Modes participate via the
 //! elidable fixpoint under their synthetic names.
 
-use hale_codegen::build_executable;
 use hale_syntax::parse_source;
 
 #[path = "support/harness.rs"]
@@ -13,13 +12,8 @@ mod harness;
 fn ir_for(src: &str) -> String {
     let program = parse_source(src).expect("parse");
     let bin = harness::unique_bin("noalias_self");
-    std::env::set_var("LOTUS_DUMP_IR", "1");
-    build_executable(&program, &bin).expect("build");
-    std::env::remove_var("LOTUS_DUMP_IR");
-    let ll = bin.with_extension("ll");
-    let ir = std::fs::read_to_string(&ll).expect("IR dumped");
+    let ir = harness::build_ir_text(&program, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
-    let _ = std::fs::remove_file(&ll);
     ir
 }
 
