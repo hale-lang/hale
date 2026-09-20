@@ -3208,11 +3208,14 @@ pub fn compute_pool_of_locus_type(
 ///   contradiction: the pool has one worker thread. An entry that
 ///   names the pool without an affinity is compatible with any.
 fn check_pool_affinity(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    // GH #825: `main locus` inside a `module { … }` declares the same
+    // placement block, and an affinity with no named pool is just as
+    // meaningless there.
     for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(l) = item else { continue };
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
             if !l.is_main {
-                continue;
+                return;
             }
             let mut declared: BTreeMap<String, (PinAffinity, Span)> =
                 BTreeMap::new();
@@ -3270,7 +3273,7 @@ fn check_pool_affinity(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                     }
                 }
             }
-        }
+        });
     }
 }
 

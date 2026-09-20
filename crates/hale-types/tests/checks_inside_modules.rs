@@ -361,6 +361,36 @@ fn a_module_nested_main_locus_still_seeds_the_pool_map() {
     );
 }
 
+// ---- check_pool_affinity -------------------------------------------
+//
+// Two placement entries naming ONE pool with two different
+// affinities contradict each other — a pool has one worker thread.
+// A hard error, silent inside a module.
+
+const CONTRADICTORY_AFFINITY: &str = "\
+locus A { run() { } }
+locus B { run() { } }
+
+main locus App {
+    params {
+        a: A = A { };
+        b: B = B { };
+    }
+    placement {
+        a: cooperative(pool = io, core = 0);
+        b: cooperative(pool = io, core = 1);
+    }
+}
+";
+
+#[test]
+fn contradictory_pool_affinity_inside_a_module_is_flagged() {
+    assert_module_matches_top_level(
+        CONTRADICTORY_AFFINITY,
+        "is given two different",
+    );
+}
+
 #[test]
 fn a_module_nested_advisory_stays_a_warning() {
     // Severity is part of the contract: reaching inside a module
