@@ -117,19 +117,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         inits: &[StructInit],
         scope: &Scope<'ctx>,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        // m82: the let-binding above us may have signaled that
-        // this locus's dissolve should be deferred to the
-        // enclosing fn's scope-exit flush. Take the flag now —
-        // before any nested `lower_expr` calls below — so default
-        // / override expressions that themselves construct loci
-        // don't accidentally consume our flag and skip their own
-        // eager dissolve. Outermost instantiation owns it; nested
-        // ones see false.
-        let defer_for_let = std::mem::take(&mut self.defer_next_locus_dissolve);
         // GH #921 A2: the site the pre-pass indexed for this literal,
         // taken on the same one-shot discipline as the flags below so
-        // a nested literal does not read its parent's.
+        // a nested literal does not read its parent's. GH #921 A3
+        // commit 2: `declared_owner` is the same answer for a literal
+        // codegen SYNTHESISES — a prelude, a `reperspective` swap —
+        // which has no source expression for a table row to key on
+        // and so states its owner at the site instead.
         let owner_site = std::mem::take(&mut self.owner_site);
+        let site_owner: Option<crate::ownership::Owner> =
+            match std::mem::take(&mut self.declared_owner) {
+                Some(o) => Some(o),
+                None => match owner_site {
+                    Some(crate::ownership::Site::Expr(id)) => self
+                        .owner_table
+                        .entry(id)
+                        .map(|e| e.owner.clone()),
+                    _ => None,
+                },
+            };
         // GH #253: high-water mark of the enclosing deferred-
         // dissolve frame. Every entry pushed past this point
         // during THIS call is a (transitive) child of this
@@ -147,6 +153,36 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // (recursive `lower_locus_instantiation` calls below) see false.
         let is_bare_stmt =
             std::mem::take(&mut self.bare_locus_instantiation_stmt);
+        // GH #921 A3, commit 2: does the enclosing FRAME reclaim this
+        // instance at its scope-exit flush, or is it dissolved
+        // eagerly at the end of its own expression?
+        //
+        // `defer_next_locus_dissolve` carried that. It was armed by
+        // `Stmt::Let` (m82: the binding is the user-visible handle,
+        // so the instance lives until the handle's scope ends) and by
+        // both `Expr::Struct` arms of `lower_expr` (GH #711 / #812: a
+        // literal handed to a callee, or read for a field, is owned
+        // by the enclosing fn's scope and not torn down at the end of
+        // its own expression), and taken by "the next instantiation".
+        // The table says the same thing about the node itself:
+        // `Owner::Binding` for a `let` / `=` and `Owner::FrameTemp`
+        // for every other expression position, both of them this
+        // frame. A bare statement literal is the one expression the
+        // spec calls fire-and-forget — its value is discarded at the
+        // statement boundary — and that is a positional fact codegen
+        // already knows, so it stays where it is.
+        //
+        // An unindexed literal defers: later is the direction a
+        // missing decision may err in (the old leak), never earlier
+        // (a use-after-free). Commit 7 makes it an error outright.
+        let defer_for_let = !is_bare_stmt
+            && !matches!(
+                site_owner,
+                Some(crate::ownership::Owner::Field { .. })
+                    | Some(crate::ownership::Owner::Caller)
+                    | Some(crate::ownership::Owner::Placement(_))
+                    | Some(crate::ownership::Owner::Borrowed(_))
+            );
         // Phase-2 (2): parent locus is constructing us as a field
         // default / override. Suppress eager dissolve — the parent
         // owns us and cascades dissolve from its own dispatch.

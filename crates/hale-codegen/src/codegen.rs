@@ -1553,7 +1553,7 @@ pub fn build_executable_with_options(
         codec_thunks: BTreeMap::new(),
         generic_fn_templates: BTreeMap::new(),
         generic_locus_templates: BTreeMap::new(),
-        defer_next_locus_dissolve: false,
+        declared_owner: None,
         locus_cascade_path: Vec::new(),
         locus_instantiation_path: Vec::new(),
         instantiating_for_parent_field: false,
@@ -4538,22 +4538,13 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// resolution (`let c: Cache<Int, String> = Cache { ... };`),
     /// matching the m61b/m61c pattern for generic structs.
     generic_locus_templates: BTreeMap<String, LocusDecl>,
-    /// m82: locus-all-the-way-down lifecycle. Set true by
-    /// `Stmt::Let` lowering immediately before evaluating the RHS
-    /// when that RHS is a locus struct literal. Consumed (via
-    /// `std::mem::take`) by `lower_locus_instantiation`, which
-    /// then routes the locus into the enclosing fn's
-    /// `deferred_dissolves` frame instead of dissolving eagerly
-    /// at the end of the struct-literal expression. The decoupling
-    /// the user-visible binding (`s`) holds the handle; the locus
-    /// instance lives until its binding's scope ends. Cleared
-    /// between any two RHS lowerings; nested instantiations inside
-    /// the same RHS evaluation (e.g. `Outer { inner: Inner{...} }`)
-    /// only consume it for the outermost call, leaving inner
-    /// instantiations on the eager path. Statement-position locus
-    /// literals (`Stream { ... };`) are unaffected — the flag
-    /// only fires from `Stmt::Let`.
-    pub(crate) defer_next_locus_dissolve: bool,
+    /// GH #921 A3, commit 2: the owner of a locus literal codegen
+    /// SYNTHESISES, stated at the site because there is no source
+    /// expression for a table row to key on — the `@export`
+    /// singleton's prelude, a `reperspective` swap, the `bindings { }`
+    /// transport / adapter / codec preludes. One-shot, taken at the
+    /// top of `lower_locus_instantiation` beside `owner_site`.
+    pub(crate) declared_owner: Option<crate::ownership::Owner>,
     /// GH #750: the ancestor chain the teardown cascade is
     /// currently inside. `emit_locus_field_drains` /
     /// `emit_locus_field_dissolves` recurse into a child's own
@@ -4584,7 +4575,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// child runs its full birth → dissolve cycle inside the
     /// expression evaluation, freeing its malloc-backed buffer
     /// before the parent ever stores the dangling pointer. Same
-    /// `mem::take` discipline as `defer_next_locus_dissolve`:
+    /// `mem::take` discipline as the owner site:
     /// outermost instantiation owns the flag, nested ones see
     /// false.
     pub(crate) instantiating_for_parent_field: bool,
@@ -4793,7 +4784,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// GH #767: set by `Stmt::Let` immediately before lowering an
     /// `Expr::ArrayRepeat` RHS that `stack_array_bindings` cleared,
     /// consumed by the `ArrayRepeat` arm (same one-shot handshake as
-    /// `defer_next_locus_dissolve`). Nested array literals inside the
+    /// the owner site). Nested array literals inside the
     /// RHS keep the arena path.
     pub(crate) next_array_repeat_is_stack_local: bool,
     /// P26: the build-time model identity to stamp into the obs
@@ -7412,7 +7403,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     // placed where the flags are CONSUMED:
     //
     //   * `owner_shadow_literal` — `lower_locus_instantiation`, after
-    //     `defer_next_locus_dissolve`,
     //     `instantiating_for_parent_field`,
     //     `placement_for_next_locus_instantiation` and the
     //     `returns_this_locus` / `current_user_fn_ret` spoof have all
@@ -11686,8 +11676,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.owner_site = Some(crate::ownership::Site::Synthesized(
             "a `bindings { T: unix(..) }` transport",
         ));
+        self.declared_owner = Some(crate::ownership::Owner::Placement(
+            topic_name.to_string(),
+        ));
         let result = self.lower_expr(&locus_lit, &mut scope);
         self.owner_site = None;
+        self.declared_owner = None;
         self.current_user_fn_ret = saved_ret;
         let (self_val, _self_ty) = result?;
         let self_ptr = self_val.into_pointer_value();
@@ -12055,6 +12049,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.owner_site = Some(crate::ownership::Site::Synthesized(
             "a `bindings { T: adapter(..) }` prelude",
         ));
+        self.declared_owner = Some(crate::ownership::Owner::Placement(
+            topic_name.to_string(),
+        ));
 
         // Trigger m90 routing so the locus self_ptr is allocated
         // in the payload arena (program-lifetime). Restore the
@@ -12077,8 +12074,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.placement_for_next_locus_instantiation =
             Some(ScheduleClass::Pinned(None));
         let mut scope = Scope::default();
-        let (self_val, _self_ty) = self.lower_expr(&locus_lit, &mut scope)?;
+        let lowered = self.lower_expr(&locus_lit, &mut scope);
+        self.owner_site = None;
+        self.declared_owner = None;
         self.current_user_fn_ret = saved_ret;
+        let (self_val, _self_ty) = lowered?;
 
         // Resolve the locus's `send` method. The typechecker has
         // already confirmed it exists with the right shape via
@@ -12173,6 +12173,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.owner_site = Some(crate::ownership::Site::Synthesized(
             "a `bindings { T: ... codec }` prelude",
         ));
+        self.declared_owner = Some(crate::ownership::Owner::Placement(
+            topic_name.to_string(),
+        ));
 
         // m90 routing for program-lifetime allocation. Codec is
         // NOT pinned — its methods are pure and dispatched from
@@ -12184,8 +12187,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.current_user_fn_ret =
             Some(Some(CodegenTy::LocusRef(locus.name.clone())));
         let mut scope = Scope::default();
-        let (self_val, _) = self.lower_expr(&locus_lit, &mut scope)?;
+        let lowered = self.lower_expr(&locus_lit, &mut scope);
+        self.owner_site = None;
+        self.declared_owner = None;
         self.current_user_fn_ret = saved_ret;
+        let (self_val, _) = lowered?;
 
         // Resolve encode / decode method ptrs. Typecheck has
         // already verified both exist with the right signatures
@@ -14851,19 +14857,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             app_self_global.set_linkage(inkwell::module::Linkage::Internal);
             self.current_fn = Some(start_fn);
             self.deferred_dissolves.push(Vec::new());
-            self.defer_next_locus_dissolve = true;
             // Allocate the singleton in the persistent global arena, not
             // a stack alloca — it must outlive _hale_start.
             self.instantiating_persistent_singleton = true;
             let scope = Scope::default();
-            // GH #921 A2: no source expression builds this one.
+            // GH #921 A2 / A3: no source expression builds this
+            // one, so it states its owner. The frame it is registered
+            // in is then DISCARDED unflushed, which is what makes the
+            // singleton live for the module's lifetime; the owner is
+            // still this frame's, and saying so keeps the
+            // registration identical to what the flag produced.
             self.owner_site = Some(crate::ownership::Site::Synthesized(
                 "the @export singleton's prelude",
             ));
+            self.declared_owner = Some(crate::ownership::Owner::FrameTemp(
+                crate::ownership::ScopeId(0),
+            ));
             let self_ptr = self.lower_locus_instantiation(lname, &[], &scope)?;
             self.owner_site = None;
+            self.declared_owner = None;
             self.instantiating_persistent_singleton = false;
-            self.defer_next_locus_dissolve = false;
             // Drop the frame WITHOUT flushing → no dissolve IR emitted.
             let _ = self.deferred_dissolves.pop();
             self.builder
@@ -18229,23 +18242,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     },
                     _ => value,
                 };
-                // m82: if the RHS is a locus struct literal, signal
-                // `lower_locus_instantiation` to defer the locus's
-                // dissolve to the enclosing fn's scope-exit flush
-                // instead of firing eagerly at the end of the
-                // struct-literal expression. The binding is the
-                // user-visible handle; the locus instance lives
-                // until that handle goes out of scope. Set
-                // immediately before lowering the RHS — consumed
-                // (via `std::mem::take`) by the outermost
-                // instantiation, leaving any nested locus literals
-                // inside the RHS on the eager path. Cleared after
-                // lowering regardless of whether the flag was
-                // consumed (defensive — guards against the RHS
-                // bailing out before reaching an instantiation).
-                if self.expr_is_locus_literal(value_to_lower) {
-                    self.defer_next_locus_dissolve = true;
-                }
+                // m82's rule — the binding is the user-visible
+                // handle, so the instance lives until that handle
+                // goes out of scope rather than being dissolved at
+                // the end of the struct-literal expression — is the
+                // table's `Owner::Binding` for this RHS's own node
+                // since GH #921 A3 commit 2. Nothing is armed here.
                 // G20 (2026-05-23): if the let has an ascription
                 // and the ascription resolves to a composite type
                 // with Interface elements, route the RHS through
@@ -18359,7 +18361,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let lower_result =
                     self.lower_expr_into(value_to_lower, scope, hint_ty.as_ref());
                 self.current_arena_override = saved_override_for_returned;
-                self.defer_next_locus_dissolve = false;
                 self.next_array_repeat_is_stack_local = false;
                 let (mut val, mut ty) = lower_result?;
                 // GH #383: a let-bound call to a proven-fresh locus
@@ -25006,11 +25007,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // consumed there by `mem::take`, so a nested literal
                 // in the inits takes its own (parent-owned) path.
                 let name = path.segments[0].name.clone();
-                self.defer_next_locus_dissolve = true;
                 self.set_owner_site(e);
                 let lowered =
                     self.lower_locus_instantiation(&name, inits, scope);
-                self.defer_next_locus_dissolve = false;
                 self.owner_site = None;
                 let ptr = lowered?;
                 Ok((ptr.into(), CodegenTy::LocusRef(name)))
@@ -25041,11 +25040,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // handed to a callee, or read for a field) is owned
                     // by the enclosing fn's scope, not torn down at the
                     // end of its own expression.
-                    self.defer_next_locus_dissolve = true;
                     self.set_owner_site(e);
                     let lowered =
                         self.lower_locus_instantiation(mangled, inits, scope);
-                    self.defer_next_locus_dissolve = false;
                     self.owner_site = None;
                     let ptr = lowered?;
                     Ok((ptr.into(), CodegenTy::LocusRef(mangled.to_string())))
@@ -29595,45 +29592,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
 
 
-    /// Statement-level locus instantiation `T { f: v, ... };`.
-    /// Allocates a struct on the caller's stack, fills its fields
-    /// (defaults overridden by the call site), then calls birth()
-    /// and run() if present. The locus is ephemeral: when the
-    /// surrounding fn returns the alloca is reclaimed. Long-lived
-    /// loci wait on the cooperative scheduler + region allocator.
-    /// m82: classify whether an expression is a struct literal
-    /// that resolves to a locus (user-declared or stdlib-bundled).
-    /// Used by `Stmt::Let` to gate `defer_next_locus_dissolve`:
-    /// only locus literals produce a deferred-dissolve binding;
-    /// user-type literals, scalars, calls, etc. stay on the eager
-    /// path. Stdlib path-qualified locus literals
-    /// (`std::io::tcp::Stream { ... }`) are matched via
-    /// `stdlib_locus_for_path` so they get the same treatment as
-    /// bare-name user loci.
-    fn expr_is_locus_literal(&self, e: &Expr) -> bool {
-        if let Expr::Struct { path, .. } = e {
-            if path.segments.len() == 1 {
-                return self
-                    .user_loci
-                    .contains_key(&path.segments[0].name);
-            }
-            let segs: Vec<&str> = path
-                .segments
-                .iter()
-                .map(|s| s.name.as_str())
-                .collect();
-            // Use the generalized lookup, then narrow to loci.
-            // m84: path-qualified stdlib `type` records resolve via
-            // the same table; we mustn't accidentally classify them
-            // as locus literals (they have no dissolve to defer).
-            if let Some(mangled) = self.mangled_for_path(&segs) {
-                return self.user_loci.contains_key(&mangled);
-            }
-        }
-        false
-    }
-
-
     /// Lower a `self.method(args)` call. Resolves the method on the
     /// current locus's `user_methods` table and emits a call with
     /// `self_ptr` prepended. Returns the lowered value + type when
@@ -30126,7 +30084,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #710: a locus LITERAL in receiver position —
         // `Queries { j: GitLike { } }.total()` — is a temporary whose
         // owner is this call, and PR #743 gave it one by setting
-        // `defer_next_locus_dissolve` here, around the receiver.
+        // the deferred-dissolve decision here, around the
+        // receiver.
         // GH #711 (the literal as a call ARGUMENT, retained by the
         // callee) and GH #812 (the literal read for a FIELD) are the
         // same defect in the two positions that were left out, so the
@@ -33630,8 +33589,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.owner_site = Some(crate::ownership::Site::Synthesized(
             "a `reperspective` swap",
         ));
+        self.declared_owner = Some(crate::ownership::Owner::Field {
+            owner: crate::ownership::ExprId::DECLARED,
+            field: field_locus.to_string(),
+        });
         let new_ptr = self.lower_locus_instantiation(new_locus, inits, scope)?;
         self.owner_site = None;
+        self.declared_owner = None;
         self.current_arena_override = prev_arena;
 
         // (3) Repoint the field at the live new instance.

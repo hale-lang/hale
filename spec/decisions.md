@@ -3249,7 +3249,12 @@ at a factory call is the table's `Owner` for that call's own node,
 and the proven-fresh-factory fixpoint counts carrier tails and
 resolves a returned binding through its own `let`, so `return if c {
 make(1) } else { make(2) }` and its `let`-named twin are both
-factories. The remaining flags still decide what they did. The
+factories; and `defer_next_locus_dissolve` — a literal is reclaimed
+at the enclosing frame's flush whenever the table says the frame owns
+it (`Binding` or `FrameTemp`), and eagerly, at the end of its own
+expression, only where the spec already calls the value
+fire-and-forget: a bare statement literal. The remaining flags still
+decide what they did. The
 observable rules in `spec/semantics.md` § *Dissolve timing rules* do
 not change — this makes them true by construction.
 
