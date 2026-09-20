@@ -179,6 +179,8 @@ pub const AP_SOURCE: &str = concat!(
 /// `install.sh` binary has no stdlib checkout).
 pub const AP_FILES: &[(&str, &str)] = &[
     ("core.hl", include_str!("../hl/core.hl")),
+    // GH #720 — mirrors its position in AP_SOURCE (span math).
+    ("str_view.hl", include_str!("../hl/str_view.hl")),
     ("io_tcp.hl", include_str!("../hl/io_tcp.hl")),
     ("io_udp.hl", include_str!("../hl/io_udp.hl")),
     ("http.hl", include_str!("../hl/http.hl")),
