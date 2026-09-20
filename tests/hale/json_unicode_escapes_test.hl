@@ -1,0 +1,180 @@
+// GH #709: `std::json::unescape_string` decodes `\uHHHH` to the
+// scalar it names. It used to compute the code point correctly and
+// then throw it away — every byte went through a stub that answered
+// "?" for everything but space, tab, LF and CR, so `1` read as
+// "?" and an escaped literal never compared equal to its plain form.
+//
+// The documented contract for the cases that have no scalar: an
+// unpaired surrogate and `\u0000` both decode to U+FFFD, the
+// replacement character. U+0000 cannot be represented in a
+// NUL-terminated native String, and emitting the raw byte would
+// truncate the value — a prefix would then compare equal to the
+// whole. Digits that are not all hex pass through verbatim.
+//
+// GH #708 shares this file's call sites: escaping, unescaping and
+// the Builder now accumulate into one growing byte buffer instead of
+// rebuilding a String per piece. The bounded-memory half of that is
+// `crates/hale-codegen/tests/stdlib_json.rs`, which runs a 2 MB case
+// under a hard address-space cap.
+
+fn main() {
+    // The reported case: an escaped ASCII digit is that digit.
+    std::test::assert_eq_str(
+        std::json::unescape_string("\\u0031"), "1", "escaped ASCII digit"
+    );
+    std::test::assert(
+        std::json::unescape_string("hale.v\\u0031") == "hale.v1",
+        "an escaped literal compares equal to its plain form"
+    );
+    std::test::assert_eq_str(
+        std::json::unescape_string("\\u0041\\u0042"), "AB", "two ASCII escapes"
+    );
+
+    // Two bytes: U+0080..U+07FF.
+    std::test::assert_eq_str(
+        std::json::unescape_string("\\u00e9"), "é", "e-acute"
+    );
+    std::test::assert_eq_int(
+        len(std::json::unescape_string("\\u00e9")), 2, "e-acute is two bytes"
+    );
+
+    // Three bytes: the rest of the BMP.
+    std::test::assert_eq_str(
+        std::json::unescape_string("a\\u4e2db"), "a中b", "CJK, framed"
+    );
+    std::test::assert_eq_int(
+        len(std::json::unescape_string("\\u4e2d")), 3, "CJK is three bytes"
+    );
+
+    // Four bytes: an astral scalar, written as a surrogate pair.
+    std::test::assert_eq_str(
+        std::json::unescape_string("\\ud83d\\ude00"), "😀", "U+1F600 as a pair"
+    );
+    std::test::assert_eq_int(
+        len(std::json::unescape_string("\\ud83d\\ude00")),
+        4,
+        "an astral scalar is four bytes"
+    );
+    std::test::assert_eq_str(
+        std::json::unescape_string("[\\ud83d\\ude00]"), "[😀]", "pair, framed"
+    );
+
+    // An unpaired surrogate: U+FFFD, and the text around it survives.
+    let repl = "�";
+    std::test::assert_eq_int(len(repl), 3, "U+FFFD is three bytes");
+    std::test::assert_eq_str(
+        std::json::unescape_string("\\ud83d"), repl, "a lone high surrogate"
+    );
+    std::test::assert_eq_str(
+        std::json::unescape_string("\\udc00x"), repl + "x", "a lone low surrogate"
+    );
+    std::test::assert_eq_str(
+        std::json::unescape_string("\\ud83dZ"), repl + "Z", "a high one, unpaired"
+    );
+    std::test::assert_eq_str(
+        std::json::unescape_string("\\ud83d\\u0041"),
+        repl + "A",
+        "a high one followed by a non-surrogate escape"
+    );
+
+    // U+0000: the documented refusal. The point is that nothing
+    // truncates — the text after the escape is still there.
+    std::test::assert_eq_str(
+        std::json::unescape_string("a\\u0000b"), "a" + repl + "b", "NUL refused"
+    );
+    std::test::assert_eq_int(
+        len(std::json::unescape_string("a\\u0000b")), 5, "and nothing truncated"
+    );
+    std::test::assert(
+        std::json::unescape_string("a\\u0000b") != "a",
+        "a prefix does not compare equal to the whole"
+    );
+
+    // Digits that are not all hex are not an escape at all.
+    std::test::assert_eq_str(
+        std::json::unescape_string("\\uZZZZ"), "\\uZZZZ", "non-hex, verbatim"
+    );
+    std::test::assert_eq_str(
+        std::json::unescape_string("\\u12"), "\\u12", "truncated, verbatim"
+    );
+    std::test::assert_eq_str(
+        std::json::unescape_string("\\q"), "\\q", "an unknown escape, verbatim"
+    );
+
+    // The two-character escapes still read.
+    std::test::assert_eq_str(
+        std::json::unescape_string("a\\nb\\tc\\\\d\\\"e\\/f"),
+        "a\nb\tc\\d\"e/f",
+        "the short forms"
+    );
+
+    // Escaping, and the round trip through both directions.
+    std::test::assert_eq_str(
+        std::json::escape_string("a\"b\\c"), "a\\\"b\\\\c", "quote and backslash"
+    );
+    std::test::assert_eq_str(
+        std::json::escape_string("x\ny"), "x\\ny", "newline"
+    );
+    std::test::assert_eq_str(
+        std::json::escape_string("\x01"), "\\u0001", "a control byte"
+    );
+    std::test::assert_eq_str(
+        std::json::escape_string("é中😀"), "é中😀", "UTF-8 passes through"
+    );
+    let round = "plain, \"quoted\", back\\slash, a tab\there, é中😀";
+    std::test::assert_eq_str(
+        std::json::unescape_string(std::json::escape_string(round)),
+        round,
+        "escape then unescape is the identity"
+    );
+    std::test::assert_eq_str(
+        std::json::unescape_string(std::json::escape_string("\x01\x1f")),
+        "\x01\x1f",
+        "control bytes round trip through \\u00XX"
+    );
+
+    // A decoded escape and the literal it names are the same field
+    // value — the comparison the report was really about.
+    std::test::assert_eq_str(
+        std::json::find_string_field("{\"v\": \"hale.v\\u0031\"}", "v"),
+        "hale.v1",
+        "a field value decodes on the way out"
+    );
+
+    // The Builder emits what it is given, escaping string values.
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("name", "Adé");
+    b.int_field("age", 36);
+    b.begin_array_field("tags");
+    b.string_value("x\"y");
+    b.string_value("😀");
+    b.end_array();
+    b.end_object();
+    std::test::assert_eq_str(
+        b.result(),
+        "{\"name\": \"Adé\", \"age\": 36, \"tags\": [\"x\\\"y\", \"😀\"]}",
+        "a streamed document"
+    );
+    // result() is a snapshot: the Builder keeps accumulating.
+    let snapshot = b.result();
+    b.value("trailing");
+    std::test::assert_eq_str(snapshot, b.result()[0..len(snapshot)], "the snapshot is a prefix");
+    std::test::assert(len(b.result()) > len(snapshot), "and the buffer kept growing");
+    std::test::assert_eq_str(
+        std::json::find_string_field(snapshot, "name"), "Adé", "read back"
+    );
+
+    // The wrapping style, on the same locus.
+    std::test::assert_eq_str(
+        b.build_quoted_array("log\nnet/http\nos\n"),
+        "[\"log\", \"net/http\", \"os\"]",
+        "quoted array"
+    );
+    std::test::assert_eq_str(
+        b.build_array("{\"k\": 1}\n{\"k\": 2}\n"),
+        "[{\"k\": 1}, {\"k\": 2}]",
+        "raw array"
+    );
+    std::test::assert_eq_str(b.build_array(""), "[]", "an empty array");
+}

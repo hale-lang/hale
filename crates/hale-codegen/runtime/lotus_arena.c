@@ -6059,6 +6059,7 @@ static __thread uint64_t g_bus_pending_rec_pub = 0;
  * buffers below; declared here for the drain paths. Returns 0 when
  * the cell must be dropped (deserialize failure). */
 static int lotus_bus_cell_materialize(lotus_bus_cell_t *c);
+static void bus_dead_remove(void *p); /* GH #703 */
 
 /* Single-thread fast path. Set to non-zero before any thread
  * beyond main can touch the bus queue. Set by:
@@ -9624,6 +9625,8 @@ void lotus_bus_register_keyed(const char *subject,
                               uint8_t key_filter_kind,
                               uint64_t key_lo,
                               uint64_t key_hi) {
+    /* GH #703: this address is a live subscriber (again). */
+    bus_dead_remove(self_ptr);
     if (g_bus_count == g_bus_cap) {
         size_t new_cap = g_bus_cap == 0
             ? LOTUS_BUS_ROUTER_INITIAL_CAP
@@ -10219,7 +10222,133 @@ extern __thread lotus_arena_t *lotus_current_caller_arena;
  * aligned-move contract). Runs to completion without parking
  * (deserializers do no I/O), so the shared TLS struct buffer is
  * safe even on async-pool workers. */
+/* GH #703: the set of subscriber selves that were quarantined — a
+ * locus that ended (`terminate;` from a handler, or a parent's dissolve
+ * cascade) — whose cells may still sit in a queue, a coop-pool ring or
+ * a pinned mailbox. A queued cell carries the handler and self pointer
+ * resolved at enqueue, and `lotus_bus_quarantine_self` only nulls the
+ * REGISTRY entry, so a cell posted before the quarantine was dispatched
+ * after the arena was freed (#595's class, through `terminate`). Every
+ * consumer materializes a cell through `lotus_bus_cell_materialize`
+ * right before running its handler, so that is where a dead self is
+ * dropped — uniformly, on the consumer's own thread.
+ *
+ * An arena address is reused; a later locus at the same address that
+ * registers a subscription removes itself from the set (a non-
+ * subscribing locus at that address never has a cell queued, so a
+ * stale entry for it is harmless). Open addressing on the pointer,
+ * grown at half load; a mutex, because the consumers are on their own
+ * threads. `g_bus_dead_count` is the lock-free fast path: a program
+ * in which no subscriber ever ended never touches the lock. */
+static void          **g_bus_dead       = NULL;
+static size_t          g_bus_dead_cap   = 0;
+static size_t          g_bus_dead_len   = 0;
+static size_t          g_bus_dead_count = 0; /* atomic; == len */
+static pthread_mutex_t g_bus_dead_lock  = PTHREAD_MUTEX_INITIALIZER;
+
+static inline size_t bus_dead_slot(void *p, size_t cap) {
+    uint64_t x = (uint64_t)(uintptr_t)p;
+    x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return (size_t)(x & (cap - 1));
+}
+
+/* Locked. */
+static void bus_dead_insert_raw(void **tab, size_t cap, void *p) {
+    size_t i = bus_dead_slot(p, cap);
+    while (tab[i] && tab[i] != p) i = (i + 1) & (cap - 1);
+    tab[i] = p;
+}
+
+/* Locked: rebuild without `skip` (NULL: a plain rehash into `cap`). */
+static void bus_dead_rebuild(size_t cap, void *skip) {
+    void **fresh = (void **)calloc(cap, sizeof(void *));
+    if (!fresh) return;
+    size_t n = 0;
+    for (size_t i = 0; i < g_bus_dead_cap; i++) {
+        void *p = g_bus_dead[i];
+        if (!p || p == skip) continue;
+        bus_dead_insert_raw(fresh, cap, p);
+        n++;
+    }
+    free(g_bus_dead);
+    g_bus_dead     = fresh;
+    g_bus_dead_cap = cap;
+    g_bus_dead_len = n;
+    __atomic_store_n(&g_bus_dead_count, n, __ATOMIC_RELEASE);
+}
+
+static void bus_dead_add(void *p) {
+    if (!p) return;
+    pthread_mutex_lock(&g_bus_dead_lock);
+    if (g_bus_dead_cap == 0 || (g_bus_dead_len + 1) * 2 > g_bus_dead_cap) {
+        bus_dead_rebuild(g_bus_dead_cap ? g_bus_dead_cap * 2 : 64, NULL);
+    }
+    if (g_bus_dead) {
+        size_t i = bus_dead_slot(p, g_bus_dead_cap);
+        while (g_bus_dead[i] && g_bus_dead[i] != p) {
+            i = (i + 1) & (g_bus_dead_cap - 1);
+        }
+        if (!g_bus_dead[i]) {
+            g_bus_dead[i] = p;
+            g_bus_dead_len++;
+            __atomic_store_n(&g_bus_dead_count, g_bus_dead_len,
+                             __ATOMIC_RELEASE);
+        }
+    }
+    pthread_mutex_unlock(&g_bus_dead_lock);
+}
+
+/* The address lives again as a subscriber: forget it. Rare (only a
+ * reused address that was once a quarantined subscriber), so the
+ * rebuild-without is fine. */
+static void bus_dead_remove(void *p) {
+    if (!p || __atomic_load_n(&g_bus_dead_count, __ATOMIC_ACQUIRE) == 0) {
+        return;
+    }
+    pthread_mutex_lock(&g_bus_dead_lock);
+    if (g_bus_dead) {
+        size_t i = bus_dead_slot(p, g_bus_dead_cap);
+        while (g_bus_dead[i] && g_bus_dead[i] != p) {
+            i = (i + 1) & (g_bus_dead_cap - 1);
+        }
+        if (g_bus_dead[i] == p) bus_dead_rebuild(g_bus_dead_cap, p);
+    }
+    pthread_mutex_unlock(&g_bus_dead_lock);
+}
+
+static int bus_self_dead(void *p) {
+    if (!p || __atomic_load_n(&g_bus_dead_count, __ATOMIC_ACQUIRE) == 0) {
+        return 0;
+    }
+    int dead = 0;
+    pthread_mutex_lock(&g_bus_dead_lock);
+    if (g_bus_dead) {
+        size_t i = bus_dead_slot(p, g_bus_dead_cap);
+        while (g_bus_dead[i]) {
+            if (g_bus_dead[i] == p) { dead = 1; break; }
+            i = (i + 1) & (g_bus_dead_cap - 1);
+        }
+    }
+    pthread_mutex_unlock(&g_bus_dead_lock);
+    return dead;
+}
+
 static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
+    /* GH #703: a cell for a subscriber that ended after the cell was
+     * posted is dropped here, whole, before anything is deserialized
+     * into its (freed) arena or its handler runs on it. */
+    if (bus_self_dead(c->self_ptr)) {
+        if (c->payload_heap) {
+            free(c->payload_heap);
+            c->payload_heap = NULL;
+        }
+        c->payload_region = NULL;
+        c->payload_size   = 0;
+        c->deserialize    = NULL;
+        return 0;                       /* drop the cell */
+    }
     /* Defined for every cell the drain paths destroy after the
      * handler: non-wire cells (the common case) carry no per-delivery
      * region, so pin it NULL before the early return — the region
@@ -10595,11 +10724,17 @@ void lotus_bus_dispatch_flat(lotus_bus_queue_t *queue,
  * matches `self_ptr`. Subsequent `lotus_bus_dispatch` calls skip
  * those slots — quarantined subscribers stop receiving messages. */
 void lotus_bus_quarantine_self(void *self_ptr) {
+    int subscribed = 0;
     for (size_t i = 0; i < g_bus_count; i++) {
         if (g_bus_entries[i].self_ptr == self_ptr) {
             g_bus_entries[i].subject = NULL;
+            subscribed = 1;
         }
     }
+    /* GH #703: cells already queued for this self are dropped at
+     * materialization, on their consumer's thread — see
+     * `bus_self_dead`. Only a self that ever subscribed can have one. */
+    if (subscribed) bus_dead_add(self_ptr);
 }
 
 void lotus_bus_router_destroy(void) {
@@ -20791,6 +20926,37 @@ const char *lotus_str_substring(const char *s, int64_t lo, int64_t hi) {
     char *out = (char *)lotus_bus_payload_arena_alloc(out_len + 1, 1);
     if (!out) return "";
     memcpy(out, s + lo, out_len);
+    out[out_len] = '\0';
+    return out;
+}
+
+/*
+ * GH #720 — range copy with the length already known. Same result
+ * as lotus_str_substring(s, start, end_exclusive) but WITHOUT the
+ * strlen: the caller passes `n` (the byte length it already holds)
+ * and the clamp happens against that. This is the materializing
+ * sibling of the lotus_str_range_* family, and it carries the same
+ * contract: the caller owns the bounds. `n` must be the real byte
+ * length of `s` (std::str::bytes_view computes it once with one
+ * strlen); `start` / `end_exclusive` are clamped into [0, n] here,
+ * so a scanner's own off-by-one yields a short or empty String
+ * rather than a read past the end.
+ *
+ * Why it exists: lotus_str_substring's per-call strlen makes a
+ * token-extracting parser O(input) per token — quadratic over the
+ * whole input — which is exactly the cost profile #720 reported.
+ * Result lives in the payload arena, like substring's.
+ */
+const char *lotus_str_range_copy(const char *s, int64_t n, int64_t start,
+                                 int64_t end_exclusive) {
+    if (!s || n <= 0) return "";
+    if (start < 0) start = 0;
+    if (end_exclusive > n) end_exclusive = n;
+    if (start >= end_exclusive) return "";
+    size_t out_len = (size_t)(end_exclusive - start);
+    char *out = (char *)lotus_bus_payload_arena_alloc(out_len + 1, 1);
+    if (!out) return "";
+    memcpy(out, s + start, out_len);
     out[out_len] = '\0';
     return out;
 }

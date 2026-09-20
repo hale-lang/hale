@@ -341,6 +341,12 @@ Counter::on_beat  does={syscall}
 main  does={alloc}
 ### 86-formatting
 main  does={syscall,alloc}
+### 87-temp-locus-receiver
+Churner::birth  does={alloc}
+Churner::count  does={alloc}
+Queries::announce  does={syscall,alloc}
+Queries::total  does={alloc}
+main  does={syscall,alloc}
 ### docs-server
 __docs_dir  does={env}
 __render_doc  does={syscall,env,alloc}

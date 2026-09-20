@@ -691,6 +691,25 @@ repository:
   the socket membrane carries it), each in the appender's git identity;
   the host beside the organism relays unanswered rows onto the
   membrane, admitting each under `dna.trust` (GH #604 rule 6). **A
+  request is answered by its own answer** (GH #689): an intent, a
+  verdict's review and a practice request have an entity of their own,
+  and a concern — whose entity is its source, shared by every concern
+  from it — carries a `request` id that the organization writes into
+  the `concern.raised` answering it. That row is one object — the concern's
+  words, its severity, which occurrence it is, and the request it answers
+  — so the id is a member of the row rather than a shape inside its text:
+  a worker who writes `observed [request c1] in a log` has written text,
+  not metadata, and the host compares the whole id, so an answer to `c10`
+  is not an answer to `c1`. A row written before that
+  rule carries no such field and is matched by counting, as this host did
+  before. **One request is one concern**: a request delivered twice — the
+  host relays a row again while it looks unanswered — writes one
+  `concern.raised`, and the count that turns concerns into a knowledge
+  proposal counts distinct requests, never redeliveries. Two requests
+  raising the same words are two concerns; one id used for a second,
+  different concern — other words, or the same words at another severity
+  — is refused once, in `concern.refused`, which is that request's answer
+  and carries its id. **A
   membrane publish is confirmed by its answer in the record, never by
   the client's exit** (GH #682): the client hands the fact to its
   binding and exits, and under load the organism may never see it, so
@@ -806,7 +825,7 @@ record's.
 | `receipt.read` / `receipt.read_refused` | ledger | a read in the reader's name, or its refusal |
 | `receipt.held` / `receipt.hold_released` | ledger | a hold that refuses redaction, and its release |
 | `receipt.redacted` | ledger | the body removed, the digest kept |
-| `concern.requested` / `concern.raised` | ledger | a concern from a part about the part above it |
+| `concern.requested` / `concern.raised` | ledger | a concern from a part about the part above it; the request carries its own `request` id; the answer is one object (`what`, `severity`, `occurrence`, `request`), so a concern's words are never read as metadata, and one request is one concern, however often it is delivered |
 | `concern.refused` | ledger | one the organization would not admit |
 | `concern.proposed` | record | three raises became a proposal |
 | `pressure.raised` | ledger | a signal from a source, counted |
@@ -2215,7 +2234,10 @@ authority.
   next one. A Task whose Mutation was in flight settles
   `failed` with the Mutation; one whose Mutation is beyond proposal
   waits on that Mutation's outcome, and settles from it when the Work
-  that would have settled it is gone. A handed Task is a person's and
+  that would have settled it is gone. A Task's Mutation is found by the
+  Task it names (`mutation.proposed … task <id> …`) anywhere in the
+  journal, never by position: read as record + ledger, the record's
+  Mutation rows precede the ledger's births. A handed Task is a person's and
   waits. An `intent.offered` with no `task.born` naming it — the shape
   from before this rule — is noted (`intent.unrecovered`) and never
   re-offered: work may already have run.
@@ -2256,7 +2278,8 @@ authority.
   a child's live signal about the part above it: an application or
   `hale dna concern raise <source> <what…> [--severity N]` publishes
   it on the membrane (`hale-dna.concern.raised.sock`), the substrate
-  journals `concern.raised <source>` (`<what> x<n> severity <s>`), and
+  journals `concern.raised <source>` (an object: `what`, `severity`,
+  `occurrence`, `request`), and
   when one source has raised it `concern_threshold` times (3) it
   becomes a knowledge proposal by that source bound to its parent
   path — a concern by the tower rule — through `propose_knowledge`,
@@ -2442,6 +2465,47 @@ detached, with its pid, its exit code and its log as files under
 a tick at a time. The compiler keeps `init` / `new` / `upgrade` (they
 embed the sources), `hale fleet check` and the plan schema, and the
 exec shims. The host decides nothing.
+
+## The embedded source has a name
+
+`hale dna init` / `new` / `upgrade` materialize `vendor/dna` from the
+DNA source **embedded in the `hale` binary**, so an organism runs the
+core that binary carries and not the one in any checkout. A version
+does not identify that source — two builds of one version can embed
+different `dna/` source — so the toolchain names it (GH #726):
+`EMBEDDED_DIGEST` is a length-framed SHA-256 over the sorted `(path,
+content)` pairs of every embedded file (`dna/core`, `dna/host`,
+`dna/membrane`, `dna/ui`, `dna/knowledge`, the pinned `dna/pond`
+driver), computed when the toolchain is built. It is:
+
+- the second line of `hale --version` (`embedded dna: <first 16 hex>`;
+  the first line stays the version alone, since a provisioning script
+  reads field 2 of it);
+- all 64 digits on stdout, alone, from `hale dna --embedded-digest`,
+  and — with `--from-tree <dir>`, a checkout holding `dna/core` — the
+  digest that checkout *would* embed, by the same algorithm. Unequal
+  digests mean the binary predates the tree: what it materializes is
+  the older core, and a test of an edit to the tree measures the
+  wrong source. A missing directory is refused, never digested as a
+  smaller set;
+- the first line of `hale dna status`, with the toolchain version, and
+  a refusal to stay quiet when `vendor/dna` was materialized by
+  another build (`hale dna status --json` is unchanged: the
+  projection is the host's);
+- recorded where a materialized tree can be asked about it:
+  `vendor/dna/README.md` and `.hale/dna/embedded.digest` (`hale
+  <version>` then `embedded dna: <digest>`), both toolchain-owned and
+  git-ignored, both refreshed by `upgrade`. It is deliberately **not**
+  written into the generated organization's source: `dna/org/main.hl`
+  is project-owned source that is reviewed, diffed and read by
+  models, and a line that changes with every DNA edit belongs in
+  neither a review nor a recorded baseline.
+
+The build enforces its own snapshot: the digest is computed over the
+on-disk tree by the build script, the crate digests what the compiler
+actually embedded, and the two must agree — source edited *while* a
+build runs, or a file added without being embedded, fails the build
+rather than shipping a digest that names nothing.
 
 ## The surface
 

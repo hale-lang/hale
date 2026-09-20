@@ -226,18 +226,25 @@ locus WorkSystem {
         let mut history = "";
         let mut result = "";
         while n < self.max_attempts && last != "done" {
-            let kind = self.selection.select(req, n, last);
-            let r = self.perform_as(kind, req);
-            let aid = req.work_id + "/a" + to_string(n);
+            // One attempt, one number: the performer, the Attempt, its
+            // model evidence and the history all name the same attempt
+            // (DNA workflow card 01). Numbering continues from the
+            // request's own attempt; the selection policy still sees the
+            // try index it always has.
+            let no = req.attempt_no + n;
+            let attempt = request_for_attempt(req, no);
+            let kind = self.selection.select(attempt, n, last);
+            let r = self.perform_as(kind, attempt);
+            let aid = req.work_id + "/a" + to_string(no);
             Attempt {
                 attempt_id: aid,
                 work_id: req.work_id,
-                attempt_no: n,
+                attempt_no: no,
                 performer_kind: kind,
-                req: req,
+                req: attempt,
                 outcome: r
             };
-            history = history + "a" + to_string(n) + ":" + kind + ":" + r.disposition + " ";
+            history = history + "a" + to_string(no) + ":" + kind + ":" + r.disposition + " ";
             last = r.disposition;
             result = r.result;
             n = n + 1;
