@@ -199,6 +199,7 @@ fn dna_fixture_set_is_complete() {
             "two_heads_test.hl",
             "two_owners_test.hl",
             "verification_test.hl",
+            "work_correlation_test.hl",
             "workflow_admission_contention_test.hl",
             "workflow_admission_test.hl",
             "workflow_attempt_test.hl",

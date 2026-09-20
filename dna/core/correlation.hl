@@ -1,0 +1,97 @@
+// dna/core/correlation.hl — which exact Work and attempt asked for a plan
+// and produced a Mutation, with the request as it was asked (DNA workflow
+// card 14).
+//
+// A plan is asked for by one Work's attempt, and a Mutation is produced
+// by one. The Task-level rows stay as every reader of the day expects
+// them — `task.planned <task>`, `mutation.proposed <m>` naming the task
+// — and the exact association rides beside them: inside `task.planned`
+// as `binding`, and as a row of its own, `mutation.requested <m>`,
+// written before the Mutation is proposed. A restart reconnects each
+// Work to its own plan and its own Mutation by these ids — never by the
+// Task alone, never by a row's position in a memory — and a Work
+// resumes under the request it was asked with: its capability words
+// and its data class as recorded, never a default. A row from before
+// this card binds no Work and is the Task's alone, as it always was.
+
+// The identity of the asking Work and attempt, and the request as asked.
+type WorkBinding {
+    task_id: String = "";
+    work_id: String = "";
+    attempt_id: String = "";
+    attempt_no: Int = 0;
+    step_id: String = "";
+    objective: String = "";
+    target: String = "";
+    requires: String = "";
+    data_class: String = "";
+}
+
+// The binding of a request: the attempt is `<work>/a<n>` (§4), the
+// request's own number.
+fn binding_of(req: WorkRequest) -> WorkBinding {
+    return WorkBinding {
+        task_id: req.task_id, work_id: req.work_id,
+        attempt_id: if len(req.work_id) > 0 { req.work_id + "/a" + to_string(req.attempt_no) } else { "" },
+        attempt_no: req.attempt_no, step_id: req.step_id,
+        objective: req.objective, target: req.target, requires: req.requires, data_class: req.data_class
+    };
+}
+
+// Whether a binding names a Work at all. A row from before this card,
+// or a Mutation no Work asked for (an organ proposed from pressure),
+// binds nothing: it is the Task's alone.
+fn binds_work(w: WorkBinding) -> Bool { return len(w.work_id) > 0; }
+
+// The binding as one JSON object.
+fn encode_binding(w: WorkBinding) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("task_id", w.task_id);
+    b.string_field("work_id", w.work_id);
+    b.string_field("attempt_id", w.attempt_id);
+    b.int_field("attempt_no", w.attempt_no);
+    b.begin_object_field("request");
+    b.string_field("step_id", w.step_id);
+    b.string_field("objective", w.objective);
+    b.string_field("target", w.target);
+    b.string_field("requires", w.requires);
+    b.string_field("data_class", w.data_class);
+    b.end_object();
+    b.end_object();
+    return b.result();
+}
+
+// The binding a row carries under `binding`, or the row itself when it
+// is one; an empty binding when the row carries none.
+fn decode_binding(text: String) -> WorkBinding {
+    let raw = std::json::find_field_raw(text, "binding");
+    let obj = if len(raw) > 0 && raw != "null" { raw } else { text };
+    let req = std::json::find_field_raw(obj, "request");
+    return WorkBinding {
+        task_id: std::json::find_string_field(obj, "task_id"),
+        work_id: std::json::find_string_field(obj, "work_id"),
+        attempt_id: std::json::find_string_field(obj, "attempt_id"),
+        attempt_no: std::json::find_int_field(obj, "attempt_no"),
+        step_id: std::json::find_string_field(req, "step_id"),
+        objective: std::json::find_string_field(req, "objective"),
+        target: std::json::find_string_field(req, "target"),
+        requires: std::json::find_string_field(req, "requires"),
+        data_class: std::json::find_string_field(req, "data_class")
+    };
+}
+
+// The request a bound Work resumes with: what it was asked, as asked.
+fn request_of_binding(w: WorkBinding) -> WorkRequest {
+    return WorkRequest {
+        task_id: w.task_id, work_id: w.work_id, step_id: w.step_id, objective: w.objective, target: w.target,
+        requires: w.requires, data_class: if len(w.data_class) > 0 { w.data_class } else { "internal" }, attempt_no: w.attempt_no
+    };
+}
+
+// The Work a plan row is for: the one it binds, or — a row from before
+// this card — the Task's one Work, resumed as `<task>/resumed`.
+fn planned_work_of(task_id: String, body: String) -> String {
+    let b = decode_binding(body);
+    return if binds_work(b) { b.work_id } else { task_id + "/resumed" };
+}

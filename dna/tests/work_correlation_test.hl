@@ -1,0 +1,373 @@
+// dna/tests/work_correlation_test.hl — which exact Work and attempt asked
+// for a plan and produced a Mutation, persisted with the request as asked
+// (DNA workflow card 14).
+//
+// Two sibling edit Works of one Task are planned and mutated live: each
+// plan row binds its own Work and attempt, each Mutation's own request
+// row (`mutation.requested`, written before `mutation.proposed`) binds
+// the Work that asked for it, and the lookups answer by id — the Task
+// of a Mutation, the Mutation of a Work — while the Task-level rows of
+// the day stay as they were. A record written by hand into the shapes a
+// stopped organism leaves is then restarted: a Task with two planned
+// Works, one of them awaiting its Mutation's review, resumes only the
+// other, under its own plan, with the request it was asked with — its
+// capability words, data class and attempt number as recorded, never a
+// default; rows from before this card — a plan that binds no Work, a
+// Mutation naming only its Task — behave as they always did; a Mutation
+// with only its request row was in flight, fails, and its id is never
+// minted again. The same shape read as record + ledger reconnects the
+// same way: the association is by id, never by a row's position.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
+
+const APP: String = "fn main() { println(\"app\"); }\n";
+const DOCUMENTED: String = "// documented by the organism\nfn main() { println(\"app\"); }\n";
+const PLAN_HEAD: String = "{\"kind\": \"appendage\", \"change_class\": \"docs\", \"class_applied\": \"docs\", \"target\": \"main.hl\", \"assignee\": \"\", \"obligation\": \"\", \"count\": 1, \"narrative\": \"planned before the stop\", \"package\": \"\", \"by\": \"leader\", \"parsed\": true";
+const WA: String = "t2/wf1/s0/w0";
+const WB: String = "t2/wf1/s0/w1";
+const WC: String = "t5/wf1/s0/w0";
+const WD: String = "t6/wf1/s0/w0";
+const WE: String = "t7/wf1/s0/w0";
+
+// A plan row from before this card binds no Work.
+fn legacy_plan() -> String { return PLAN_HEAD + "}"; }
+// A plan row bound to one Work and attempt, with the request as asked.
+fn plan_for(b: dna::WorkBinding) -> String { return PLAN_HEAD + ", \"binding\": " + dna::encode_binding(b) + "}"; }
+// A Mutation's own request row.
+fn requested_by(b: dna::WorkBinding, objective: String) -> String {
+    return "{\"task_id\": \"" + b.task_id + "\", \"change_class\": \"docs\", \"objective\": \"" + objective + "\", \"target\": \"main.hl\", \"base\": \"0000000000000000000000000000000000000000\", \"binding\": " + dna::encode_binding(b) + "}";
+}
+fn review_of(m: String, task: String) -> String {
+    return "{\"mutation_id\":\"" + m + "\",\"task_id\":\"" + task + "\",\"question\":\"apply " + m + "?\",\"subject_digest\":\"candidate-1\",\"required_authority\":\"board\",\"author\":\"editor\"}";
+}
+
+main locus App {
+    params {
+        live: dna::Dna = dna::Dna { };
+        restarted: dna::Dna = dna::Dna { };
+        split: dna::Dna = dna::Dna { };
+        record: dna::GitJournal = dna::GitJournal { };
+        ledger: dna::MemJournal = dna::MemJournal { };
+        seeded: dna::GitJournal = dna::GitJournal { };
+        seed_mode: String = "one"; // "one": every row into `seeded`; "two": the record's rows into `record`, the day's into `ledger`
+        lead: dna::Leader = dna::Leader {
+            name: "leader", org: "corr", charter: "You are the architect.",
+            models: dna::ModelRouter {
+                quick: dna::FakeModel { name: "quick", answer: "kind: appendage\nclass: docs\ntarget: main.hl\ncount: 1\nplanned live" },
+                deep: dna::FakeModel { name: "deep", answer: "kind: appendage\nclass: docs\ntarget: main.hl\ncount: 1\nplanned live" },
+                private: dna::LocalFakeModel { }
+            }
+        };
+    }
+    bus {
+        publish dna::TaskPlanned; // plans the fixture forges, for the organism no leader serves
+    }
+    @unbounded
+    fn rows(j: dna::Journal, kind: String, entity: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn body_of(j: dna::Journal, kind: String, entity: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && e.entity == entity { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    // The nth row of `kind` for `entity` (0-based), "" when none.
+    @unbounded
+    fn nth_body(j: dna::Journal, kind: String, entity: String, n: Int) -> String {
+        let mut seen = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && e.entity == entity {
+                if seen == n { return e.body; }
+                seen = seen + 1;
+            }
+            i = i + 1;
+        }
+        return "";
+    }
+    // The index of the first row of `kind` for `entity`, -1 when none.
+    @unbounded
+    fn at(j: dna::Journal, kind: String, entity: String) -> Int {
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && e.entity == entity { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+    fn repo_at(path: String) -> String {
+        let mk = sh("sh\n-c\nrm -rf \"$1\" && mkdir -p \"$1/app\" \"$1/org\" \"$1/.hale/dna\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && printf '[deps]\\n' > hale.toml && printf '/.hale/\\n' > .gitignore\nsh\n" + path);
+        std::test::assert(mk.code == 0, "a repository at " + path + ": " + mk.stderr);
+        std::io::fs::write_file(path + "/app/main.hl", APP) or discard;
+        std::io::fs::write_file(path + "/org/main.hl", "fn main() { }\n") or discard;
+        let c = sh("sh\n-c\ncd \"$1\" && git add -A && git commit -q -m genome\nsh\n" + path);
+        std::test::assert(c.code == 0, "the genome at " + path + ": " + c.stderr);
+        return path;
+    }
+    fn put(j: dna::Journal, kind: String, entity: String, body: String) {
+        let r = j.append(j.revision(), kind, entity, body);
+        std::test::assert(r.ok, "seeded " + kind + " " + entity + ": " + r.error);
+    }
+    // A seeded row goes where the memory it belongs to is: one journal, or
+    // the record and the ledger by the row's family — as adoption places them.
+    fn row(kind: String, entity: String, body: String) {
+        if self.seed_mode == "two" {
+            if dna::memory_of(kind) == "ledger" { self.put(self.ledger, kind, entity, body); } else { self.put(self.record, kind, entity, body); }
+        } else {
+            self.put(self.seeded, kind, entity, body);
+        }
+    }
+    // The restart shapes: a Task with two planned Works, one awaiting its
+    // Mutation's review; a legacy plan and Mutation; a legacy plan alone;
+    // a plan whose request is not the default; a Mutation with only its
+    // request row.
+    fn seed() {
+        // t1: from before this card — a plan that binds no Work, and a Mutation naming only its Task, awaiting review
+        self.row("intent.offered", "i1", "a first");
+        self.row("task.born", "t1", "i1: a first");
+        self.row("task.pending", "t1", "routed");
+        self.row("task.planned", "t1", legacy_plan());
+        self.row("mutation.proposed", "m2", "task t1 docs: a first (main.hl) at 0000000000000000000000000000000000000000");
+        self.row("mutation.review", "m2", "docs candidate candidate-2");
+        self.row("review.requested", "review:m2", review_of("m2", "t1"));
+        // t2: two Works planned; wA's Mutation m1 is beyond proposal, awaiting review; wB planned only
+        self.row("intent.offered", "i2", "document main.hl twice");
+        self.row("task.born", "t2", "i2: document main.hl twice");
+        self.row("task.pending", "t2", "routed");
+        let a = dna::WorkBinding { task_id: "t2", work_id: WA, attempt_id: WA + "/a0", attempt_no: 0, step_id: "t2/wf1/s0", objective: "document main.hl twice", target: "", requires: "edit", data_class: "internal" };
+        let b = dna::WorkBinding { task_id: "t2", work_id: WB, attempt_id: WB + "/a0", attempt_no: 0, step_id: "t2/wf1/s0", objective: "document main.hl twice", target: "", requires: "edit", data_class: "internal" };
+        self.row("task.planned", "t2", plan_for(a));
+        self.row("task.planned", "t2", plan_for(b));
+        self.row("mutation.requested", "m1", requested_by(a, "document main.hl twice"));
+        self.row("mutation.proposed", "m1", "task t2 docs: document main.hl twice (main.hl) at 0000000000000000000000000000000000000000");
+        self.row("mutation.review", "m1", "docs candidate candidate-1");
+        self.row("review.requested", "review:m1", review_of("m1", "t2"));
+        // t3: from before this card — a plan that binds no Work, a Mutation naming only its Task, in flight
+        self.row("intent.offered", "i3", "a third");
+        self.row("task.born", "t3", "i3: a third");
+        self.row("task.pending", "t3", "routed");
+        self.row("task.planned", "t3", legacy_plan());
+        self.row("mutation.proposed", "m3", "task t3 docs: a third () at 0000000000000000000000000000000000000000");
+        // t4: from before this card — a plan that binds no Work, and nothing after it
+        self.row("intent.offered", "i4", "a fourth");
+        self.row("task.born", "t4", "i4: a fourth");
+        self.row("task.pending", "t4", "routed");
+        self.row("task.planned", "t4", legacy_plan());
+        // t5: one Work planned, asked with capability words, a data class and an attempt number that are not the defaults
+        self.row("intent.offered", "i5", "refactor the greeting");
+        self.row("task.born", "t5", "i5: refactor the greeting");
+        self.row("task.pending", "t5", "routed");
+        let c = dna::WorkBinding { task_id: "t5", work_id: WC, attempt_id: WC + "/a1", attempt_no: 1, step_id: "t5/wf1/s0", objective: "refactor the greeting", target: "main.hl", requires: "edit review", data_class: "internal" };
+        self.row("task.planned", "t5", plan_for(c));
+        // t6: one Work planned; its Mutation m9 has its request row and nothing after it — the stop fell between the two rows
+        self.row("intent.offered", "i6", "a sixth");
+        self.row("task.born", "t6", "i6: a sixth");
+        self.row("task.pending", "t6", "routed");
+        let d = dna::WorkBinding { task_id: "t6", work_id: WD, attempt_id: WD + "/a0", attempt_no: 0, step_id: "t6/wf1/s0", objective: "a sixth", target: "", requires: "edit", data_class: "internal" };
+        self.row("task.planned", "t6", plan_for(d));
+        self.row("mutation.requested", "m9", requested_by(d, "a sixth"));
+        // t7: one Work planned, asked with a confidential data class
+        self.row("intent.offered", "i7", "a seventh");
+        self.row("task.born", "t7", "i7: a seventh");
+        self.row("task.pending", "t7", "routed");
+        let g = dna::WorkBinding { task_id: "t7", work_id: WE, attempt_id: WE + "/a0", attempt_no: 0, step_id: "t7/wf1/s0", objective: "a seventh", target: "main.hl", requires: "edit", data_class: "confidential" };
+        self.row("task.planned", "t7", plan_for(g));
+    }
+    fn check_restart(label: String, d: dna::Dna) {
+        let j = d.journal;
+        // t2: wA waits on m1's review — restored, not resumed, no second Mutation for wA; wB resumes under its own plan
+        std::test::assert_eq_int(d.rehydrated, 2, label + ": m1's and m2's reviews are restored");
+        // t1: as before this card — its Mutation, the Task's alone, awaits review; nothing of t1 resumes
+        std::test::assert_eq_int(self.rows(j, "task.resumed", "t1"), 0, label + ": t1 waits on its Mutation's review, not resumed");
+        std::test::assert_eq_str(d.task_state("t1"), "pending", label + ": and is still pending");
+        std::test::assert_eq_int(self.rows(j, "mutation.requested", "m2"), 0, label + ": a Mutation from before this card has no request row invented for it");
+        std::test::assert_eq_int(self.rows(j, "task.resumed", "t2"), 1, label + ": t2 is resumed once, for the Work without a Mutation");
+        std::test::assert(std::str::contains(self.body_of(j, "task.resumed", "t2"), "for " + WB + "; not replanned"), label + ": under wB's own plan: " + self.body_of(j, "task.resumed", "t2"));
+        std::test::assert_eq_str(d.mutation_of_work(WA), "m1", label + ": wA's Mutation is still m1 — nothing was proposed for it again");
+        let mb = d.mutation_of_work(WB);
+        std::test::assert_eq_str(mb, "m10", label + ": wB's Mutation was minted after the record's last id, m9 — not m9 again");
+        let bb = dna::decode_binding(self.body_of(j, "mutation.requested", mb));
+        std::test::assert_eq_str(bb.attempt_id, WB + "/a0", label + ": bound to wB's attempt");
+        std::test::assert_eq_str(bb.requires + "|" + bb.data_class, "edit|internal", label + ": with the request it was asked with");
+        std::test::assert_eq_str(d.task_of_mutation(mb), "t2", label + ": and the Mutation names its Task");
+        std::test::assert(self.at(j, "mutation.requested", mb) < self.at(j, "mutation.proposed", mb), label + ": the request row precedes the proposal");
+        std::test::assert_eq_int(self.rows(j, "model.called", "t2/plan"), 0, label + ": t2 was not planned again");
+        // (t2 settles from wB's outcome as the day's rule has it — the first Work
+        // done settles the Task; when a code-edit activity counts as complete is
+        // card 15's, not this card's)
+        std::test::assert_eq_int(d.pending_plans.len(), 0, label + ": nothing is queued for a plan");
+        // t3: as before this card — the Task's Mutation in flight fails it; nothing resumes
+        std::test::assert_eq_int(self.rows(j, "mutation.failed", "m3"), 1, label + ": m3, only proposed, failed in flight");
+        std::test::assert_eq_str(d.task_state("t3"), "failed", label + ": and t3 settled failed with it");
+        std::test::assert_eq_int(self.rows(j, "task.resumed", "t3"), 0, label + ": t3 is not resumed");
+        // t4: as before this card — the Task's one Work resumes as <task>/resumed under the plan
+        std::test::assert(std::str::contains(self.body_of(j, "task.resumed", "t4"), "for t4/resumed; not replanned"), label + ": t4 resumed as its one Work: " + self.body_of(j, "task.resumed", "t4"));
+        std::test::assert_eq_str(d.mutation_of_work("t4/resumed"), "m11", label + ": and its Mutation binds that Work");
+        // t5: the request as asked — capability words, data class, attempt number — never a default
+        let mc = d.mutation_of_work(WC);
+        std::test::assert_eq_str(mc, "m12", label + ": wC's Mutation");
+        let bc = dna::decode_binding(self.body_of(j, "mutation.requested", mc));
+        std::test::assert_eq_str(bc.attempt_id, WC + "/a1", label + ": under its recorded attempt, not attempt zero");
+        std::test::assert_eq_str(bc.requires, "edit review", label + ": with its capability words");
+        std::test::assert_eq_str(bc.data_class, "internal", label + ": and its data class, verbatim");
+        std::test::assert_eq_int(self.rows(j, "effect.requested", "commit:" + mc + ":a1"), 1, label + ": the candidate was committed as attempt one, the attempt the record holds");
+        std::test::assert(std::str::contains(self.body_of(j, "task.resumed", "t5"), "for " + WC + "; not replanned"), label + ": resumed as wC: " + self.body_of(j, "task.resumed", "t5"));
+        // t6: a Mutation with only its request row was in flight: it fails, its Task with it, and its id is never minted again
+        std::test::assert(std::str::contains(self.body_of(j, "mutation.failed", "m9"), "in flight (requested)"), label + ": m9 failed in flight: " + self.body_of(j, "mutation.failed", "m9"));
+        std::test::assert_eq_str(d.task_state("t6"), "failed", label + ": t6 settled failed with it");
+        std::test::assert_eq_int(self.rows(j, "task.resumed", "t6"), 0, label + ": t6 is not resumed");
+        std::test::assert_eq_int(self.rows(j, "mutation.proposed", "m9"), 0, label + ": and m9 was never proposed by the restart");
+        std::test::assert_eq_str(d.task_of_mutation("m9"), "t6", label + ": a Mutation with only its request row still names its Task");
+        // t7: the editor is asked under the ask's data class, never `internal`: a
+        // confidential ask goes to the private backend, whose scripted answer
+        // is its own name — and that name is what the editor wrote
+        let me = d.mutation_of_work(WE);
+        std::test::assert_eq_str(me, "m13", label + ": wE's Mutation");
+        std::test::assert_eq_str(dna::decode_binding(self.body_of(j, "mutation.requested", me)).data_class, "confidential", label + ": bound under the ask's data class");
+        std::test::assert(std::str::contains(self.body_of(j, "mutation.failed", me), "private"), label + ": and the editor was asked under it — the private backend answered: " + self.body_of(j, "mutation.failed", me));
+    }
+    run() {
+        let base = "/tmp/dna-corr-" + to_string(std::process::pid());
+
+        // ---- live: two sibling edit Works of one Task, planned and mutated
+        let repo = self.repo_at(base + "-live");
+        self.live = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            editor: dna::SourceEditor {
+                models: dna::ModelRouter {
+                    quick: dna::FakeModel { name: "quick", answer: DOCUMENTED, answer_role: "edit" },
+                    deep: dna::FakeModel { name: "deep", answer: "clarity +" },
+                    private: dna::LocalFakeModel { }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
+            genome_seed: "app", org_seed: "org", planned: true, org_id: "corr"
+        };
+        let t1 = self.live.ask(dna::Intent { id: "i1", outcome: "document main.hl", from: "riley" }, dna::Knobs { routed: true, requires: "edit", fan: 2 });
+        std::time::sleep(3000ms);
+        let j = self.live.journal;
+        std::test::assert_eq_int(self.rows(j, "task.planned", t1), 2, "two Works, two plans, each a row of the Task's");
+        let p0 = dna::decode_binding(self.nth_body(j, "task.planned", t1, 0));
+        let p1 = dna::decode_binding(self.nth_body(j, "task.planned", t1, 1));
+        std::test::assert(len(p0.work_id) > 0 && len(p1.work_id) > 0 && p0.work_id != p1.work_id, "each plan binds its own Work: " + p0.work_id + " / " + p1.work_id);
+        std::test::assert(std::str::starts_with(p0.work_id, t1 + "/") && std::str::starts_with(p1.work_id, t1 + "/"), "Works of this Task");
+        std::test::assert_eq_str(p0.attempt_id, p0.work_id + "/a0", "and its attempt");
+        std::test::assert_eq_str(p0.task_id + "|" + p0.objective + "|" + p0.requires + "|" + p0.data_class, t1 + "|document main.hl|edit|internal", "with the request as asked");
+        std::test::assert_eq_int(self.rows(j, "mutation.requested", ""), 2, "two Mutations, each with its own request row");
+        let m1 = dna::decode_binding(self.body_of(j, "mutation.requested", "m1"));
+        let m2 = dna::decode_binding(self.body_of(j, "mutation.requested", "m2"));
+        std::test::assert(m1.work_id != m2.work_id && (m1.work_id == p0.work_id || m1.work_id == p1.work_id) && (m2.work_id == p0.work_id || m2.work_id == p1.work_id), "each Mutation binds one of the planned Works, not the same one: " + m1.work_id + " / " + m2.work_id);
+        std::test::assert_eq_str(self.live.mutation_of_work(m1.work_id) + " " + self.live.mutation_of_work(m2.work_id), "m1 m2", "the Mutation of a Work is found by the Work's id");
+        std::test::assert_eq_str(self.live.task_of_mutation("m1") + " " + self.live.task_of_mutation("m2"), t1 + " " + t1, "and the Task of a Mutation by the Mutation's");
+        std::test::assert_eq_str(m1.requires + "|" + m1.data_class + "|" + m1.attempt_id, "edit|internal|" + m1.work_id + "/a0", "the Mutation's request is the Work's, as asked");
+        std::test::assert(std::str::starts_with(self.body_of(j, "mutation.proposed", "m1"), "task " + t1 + " ") && std::str::contains(self.body_of(j, "mutation.proposed", "m1"), ": document main.hl ("), "the Task-level row of the day is as it was: " + self.body_of(j, "mutation.proposed", "m1"));
+        std::test::assert(self.at(j, "mutation.requested", "m1") < self.at(j, "mutation.proposed", "m1"), "the request row precedes the proposal");
+        std::test::assert_eq_int(self.rows(j, "task.planned", ""), 2, "and nothing else was planned");
+
+        // ---- a restart over the shapes a stopped organism leaves
+        let repo2 = self.repo_at(base + "-restart");
+        self.seeded = dna::GitJournal { repo: repo2, author: "dna" };
+        self.seed();
+        self.restarted = dna::Dna {
+            journal: dna::GitJournal { repo: repo2 },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo2, root: repo2 + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo2 }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo2 }, scratch: repo2 + "/.hale/dna/scratch", repo: repo2 },
+            editor: dna::SourceEditor {
+                models: dna::ModelRouter {
+                    quick: dna::FakeModel { name: "quick", answer: DOCUMENTED, answer_role: "edit" },
+                    deep: dna::FakeModel { name: "deep", answer: "clarity +" },
+                    private: dna::LocalFakeModel { }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
+            genome_seed: "app", org_seed: "org", planned: true, org_id: "corr-restart"
+        };
+        std::time::sleep(3000ms);
+        self.check_restart("one memory", self.restarted);
+        // ---- a plan is taken for the Work AND the Task it names: in this
+        //      organism no leader serves, so a new ask waits for its plan; a
+        //      plan naming the Work under another Task is not its plan, and
+        //      changes nothing; the plan naming both is
+        let t8 = self.restarted.ask(dna::Intent { id: "i8", outcome: "document main.hl once more", from: "riley" }, dna::Knobs { routed: true, requires: "edit" });
+        std::time::sleep(500ms);
+        std::test::assert_eq_int(self.restarted.pending_plans.len(), 1, "the ask waits for a plan nobody gives");
+        let w8 = self.restarted.pending_plans.get(0) or dna::WorkRequest { };
+        std::test::assert_eq_str(w8.task_id, t8, "the pending Work is the ask's");
+        dna::TaskPlanned <- dna::Plan { org: "corr-restart", task_id: "t2", work_id: w8.work_id, kind: "appendage", change_class: "docs", target: "main.hl", count: 1, narrative: "forged under another task", by: "leader", parsed: true };
+        std::time::sleep(500ms);
+        std::test::assert_eq_int(self.rows(self.restarted.journal, "task.planned", t8), 0, "a plan naming the Work under another Task is not its plan");
+        std::test::assert_eq_str(self.restarted.mutation_of_work(w8.work_id), "", "and nothing was mutated on it");
+        dna::TaskPlanned <- dna::Plan { org: "corr-restart", task_id: t8, work_id: w8.work_id, kind: "appendage", change_class: "docs", target: "main.hl", count: 1, narrative: "the plan", by: "leader", parsed: true };
+        std::time::sleep(2500ms);
+        std::test::assert_eq_int(self.rows(self.restarted.journal, "task.planned", t8), 1, "the plan naming the Work and its Task is taken");
+        let m8 = self.restarted.mutation_of_work(w8.work_id);
+        std::test::assert(len(m8) > 0 && self.restarted.task_of_mutation(m8) == t8, "and the Work's Mutation binds it, under its Task: " + m8);
+
+        // ---- the same shapes read as record + ledger: the record's
+        //      Mutation rows come before the ledger's births and plans,
+        //      and every association still answers by id
+        let repo3 = self.repo_at(base + "-split");
+        self.record = dna::GitJournal { repo: repo3, author: "dna" };
+        self.ledger = dna::MemJournal { };
+        self.seed_mode = "two";
+        self.seed();
+        self.put(self.record, "ledger.adopted", "ledger", "{\"routing\": 1, \"checkpoint\": \"probe\", \"rows\": 0}");
+        std::test::assert(self.ledger.revision() > 0 && self.rows(self.record, "mutation.requested", "") == 2, "the day's rows went to the ledger, the Mutations' to the record");
+        self.split = dna::Dna {
+            journal: dna::RoutedJournal { record: self.record, ledger: self.ledger },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo3, root: repo3 + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo3 }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo3 }, scratch: repo3 + "/.hale/dna/scratch", repo: repo3 },
+            editor: dna::SourceEditor {
+                models: dna::ModelRouter {
+                    quick: dna::FakeModel { name: "quick", answer: DOCUMENTED, answer_role: "edit" },
+                    deep: dna::FakeModel { name: "deep", answer: "clarity +" },
+                    private: dna::LocalFakeModel { }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
+            genome_seed: "app", org_seed: "org", planned: true, org_id: "corr-split"
+        };
+        std::time::sleep(3000ms);
+        std::test::assert(self.at(self.split.journal, "mutation.requested", "m1") < self.at(self.split.journal, "task.born", "t2"), "the split view reads the record's Mutation before the ledger's birth");
+        self.check_restart("two memories", self.split);
+
+        let rm = sh("rm\n-rf\n" + repo + "\n" + repo2 + "\n" + repo3);
+    }
+}
+fn main() { App { }; }

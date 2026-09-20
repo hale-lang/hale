@@ -1202,7 +1202,7 @@ locus Dna {
         let mut found = -1;
         while i < self.pending_plans.len() {
             let w = self.pending_plans.get(i) or WorkRequest { };
-            if w.work_id == p.work_id { found = i; }
+            if w.task_id == p.task_id && w.work_id == p.work_id { found = i; }
             i = i + 1;
         }
         if found < 0 { return; }
@@ -1222,17 +1222,21 @@ locus Dna {
         b.string_field("package", p.package);
         b.string_field("by", p.by);
         b.bool_field("parsed", p.parsed);
+        // card 14: which exact Work and attempt asked for this plan, with
+        // the request as asked — the Task-level row, with its binding
+        b.field("binding", encode_binding(binding_of(req)));
         b.end_object();
         let j = self.journal.append(self.journal.revision(), "task.planned", req.task_id, b.result());
-        self.execute_plan(req.task_id, req.work_id, req.objective, req.target, p);
+        self.execute_plan(req, p);
     }
     // The plan's execution, apart from receiving it: reached from
     // `on_planned` with a live Work, and from `resume_work` after a
     // restart with the plan read back from the record (GH #604 rule 2:
-    // a restart never regenerates a plan).
+    // a restart never regenerates a plan). The request is the Work's
+    // own — as asked, or as the record holds it (card 14) — never
+    // rebuilt from the Task.
     @unbounded
-    fn execute_plan(task_id: String, work_id: String, objective: String, ask_target: String, p: Plan) {
-        let req = WorkRequest { task_id: task_id, work_id: work_id, objective: objective, target: ask_target };
+    fn execute_plan(req: WorkRequest, p: Plan) {
         if p.kind == "person" {
             // GH #596 W: a person's job. The Work is done as far as the
             // organism is concerned — it handed the Task on — and the
@@ -1312,7 +1316,7 @@ locus Dna {
         let under = self.gateway.repo.root() + "/" + (if seed == "." { "" } else { seed + "/" }) + p.target;
         let planned_target = len(p.target) > 0 && !std::str::contains(p.target, " ") && std::io::fs::file_exists(under);
         let target = if planned_target { p.target } else { req.target };
-        let out = self.mutate(req.task_id, class, req.objective, target, std::time::now());
+        let out = self.mutate_for(req, class, req.objective, target, std::time::now());
         let ok = std::str::contains(out, ": review") || std::str::contains(out, ": release");
         WorkDone <- WorkSettlement {
             work_id: req.work_id,
@@ -1352,7 +1356,7 @@ locus Dna {
             PlanRequested <- PlanRequest { org: self.org_id, task_id: req.task_id, work_id: req.work_id, objective: req.objective, target: req.target, requires: req.requires, data_class: req.data_class };
             return;
         }
-        let out = self.mutate(req.task_id, "application", req.objective, req.target, std::time::now());
+        let out = self.mutate_for(req, "application", req.objective, req.target, std::time::now());
         let ok = std::str::contains(out, ": review") || std::str::contains(out, ": release");
         WorkDone <- WorkSettlement {
             work_id: req.work_id,
@@ -2300,12 +2304,34 @@ locus Dna {
     }
     @unbounded
     fn mutate(task_id: String, change_class: String, objective: String, target: String, now: Int) -> String {
+        return self.mutate_for(WorkRequest { task_id: task_id }, change_class, objective, target, now);
+    }
+    // The Mutation one Work's attempt asks for (card 14): the request as
+    // asked binds it. `mutate` above is the Task-level entry — an ask
+    // with no Work behind it binds nothing and is the Task's alone.
+    @unbounded
+    fn mutate_for(req: WorkRequest, change_class: String, objective: String, target: String, now: Int) -> String {
+        let task_id = req.task_id;
         self.bind_owner();
         self.mutations_minted = self.mutations_minted + 1;
         let id = own_prefix(self.ownership.me) + "m" + to_string(self.mutations_minted);
         self.last_mutation = id;
         let seed = self.seed_for(change_class);
         let base = self.gateway.head();
+        // card 14: which exact Work and attempt asked for this Mutation,
+        // with the request as asked — written first, so the association
+        // exists from the Mutation's first row; the Task-level summary
+        // follows, as every reader of the day expects it
+        let asked = std::json::Builder { };
+        asked.begin_object();
+        asked.string_field("task_id", task_id);
+        asked.string_field("change_class", change_class);
+        asked.string_field("objective", objective);
+        asked.string_field("target", target);
+        asked.string_field("base", base);
+        asked.field("binding", encode_binding(binding_of(req)));
+        asked.end_object();
+        let xr = self.journal.append(self.journal.revision(), "mutation.requested", id, asked.result());
         let x0 = self.journal.append(self.journal.revision(), "mutation.proposed", id, "task " + task_id + " " + change_class + ": " + objective + " (" + target + ") at " + base);
         let lease = self.gateway.take(id, "dna", now);
         let opened = self.gateway.open(self.journal, id, base, lease.token, now);
@@ -2357,8 +2383,12 @@ locus Dna {
         // candidate quietly building on a moved base
         let head_before = self.gateway.head();
         let wt_before = self.gateway.repo.head(wt);
+        // the request's own capability words, data class and attempt
+        // (card 14): the editor works the ask as it was asked, and its
+        // evidence is classed as the ask was
         let r = self.editor.perform(WorkRequest {
-            work_id: id, task_id: task_id, objective: handed, target: file, data_class: "internal",
+            work_id: id, task_id: task_id, step_id: req.step_id, objective: handed, target: file,
+            requires: req.requires, data_class: req.data_class, attempt_no: req.attempt_no,
             context_digest: pkg.digest, knowledge_bindings: bindings_of(pkg)
         });
         if self.gateway.head() != head_before || self.gateway.repo.head(wt) != wt_before {
@@ -2369,7 +2399,7 @@ locus Dna {
             let x = self.gateway.remove(self.journal, id, lease.token, now);
             return self.mutation_failed(id, "attempt: " + r.narrative);
         }
-        let committed = self.gateway.commit(self.journal, id, "a0", change_class + ": " + objective, lease.token, now);
+        let committed = self.gateway.commit(self.journal, id, "a" + to_string(req.attempt_no), change_class + ": " + objective, lease.token, now);
         if !committed.ok { return self.mutation_failed(id, "commit: " + committed.refused); }
         let m = Mutation {
             id: id, task_id: task_id, base_commit: base, worktree: wt,
@@ -2499,7 +2529,9 @@ locus Dna {
             // before any summary row; a crash between the two must not
             // let that id be minted again
             if (e.kind == "workflow.admitted" || e.kind == "workflow.refused") && owned_by(self.ownership.me, e.entity) && id_number(e.entity, "t") > tasks { tasks = id_number(e.entity, "t"); }
-            if e.kind == "mutation.proposed" && owned_by(self.ownership.me, e.entity) && id_number(e.entity, "m") > mutations { mutations = id_number(e.entity, "m"); }
+            // card 14: a Mutation's request row precedes its proposal; a
+            // crash between the two must not let that id be minted again
+            if (e.kind == "mutation.proposed" || e.kind == "mutation.requested") && owned_by(self.ownership.me, e.entity) && id_number(e.entity, "m") > mutations { mutations = id_number(e.entity, "m"); }
             // a mutation's Review, or a knowledge proposal's (GH #583 K1)
             if e.kind == "review.requested" && (std::str::contains(e.body, "\"mutation_id\"") || std::str::contains(e.body, "\"knowledge_digest\"")) {
                 let id = if std::str::contains(e.body, "\"mutation_id\"") { std::json::find_string_field(e.body, "mutation_id") } else { e.entity[7..len(e.entity)] };
@@ -2626,17 +2658,59 @@ locus Dna {
     fn task_of_mutation(mutation_id: String) -> String {
         let n = self.journal.revision();
         let mut i = 0;
-        let mut out = "";
+        let mut exact = "";
+        let mut summary = "";
         while i < n {
             let e = self.journal.read(i);
+            // card 14: the Mutation's own request row names its Task; the
+            // summary row from before it is read when there is no other
+            if e.kind == "mutation.requested" && e.entity == mutation_id && len(exact) == 0 { exact = std::json::find_string_field(e.body, "task_id"); }
             if e.kind == "mutation.proposed" && e.entity == mutation_id && std::str::starts_with(e.body, "task ") {
                 let rest = e.body[5..len(e.body)];
                 let sp = std::str::index_of(rest, " ");
-                out = if sp < 0 { rest } else { rest[0..sp] };
+                summary = if sp < 0 { rest } else { rest[0..sp] };
             }
             i = i + 1;
         }
-        return out;
+        return if len(exact) > 0 { exact } else { summary };
+    }
+    // card 14: the Mutation a Work asked for, by the Work's id in the
+    // Mutation's own request row; "" when none.
+    @unbounded
+    fn mutation_of_work(work_id: String) -> String {
+        if len(work_id) == 0 { return ""; }
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "mutation.requested" && decode_binding(e.body).work_id == work_id { return e.entity; }
+            i = i + 1;
+        }
+        return "";
+    }
+    // card 14: a Mutation of the Task that no Work is bound to — a row
+    // from before this card, or one whose request row names no Work —
+    // is the Task's alone, as it always was: nothing of the Task resumes
+    // past it. "" when every Mutation of the Task is a Work's.
+    @unbounded
+    fn unbound_mutation_of(task_id: String) -> String {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "mutation.proposed" && std::str::starts_with(e.body, "task " + task_id + " ") {
+                let mut is_bound = false;
+                let mut k = 0;
+                while k < n {
+                    let r = self.journal.read(k);
+                    if r.kind == "mutation.requested" && r.entity == e.entity && binds_work(decode_binding(r.body)) { is_bound = true; }
+                    k = k + 1;
+                }
+                if !is_bound { return e.entity; }
+            }
+            i = i + 1;
+        }
+        return "";
     }
     // F.15 by the assembly, when the Work that would have settled the
     // Task is gone (a restart between the proposal and the outcome):
@@ -2684,42 +2758,67 @@ locus Dna {
                 let id = e.entity;
                 let state = self.task_state(id);
                 if state == "pending" || state == "" {
-                    // The Task's Mutation is found by the Task it names,
-                    // anywhere in the journal: read as record + ledger, a
-                    // Mutation (the record's) comes before the birth it
-                    // answers (the ledger's), and a scan forward from the
-                    // birth missed it (DNA workflow card 02). The plan is
-                    // the ledger's, like the birth, and follows it.
-                    let proposed = self.mutation_of_task(id) != "";
-                    let mut plan = "";
-                    let mut k = i + 1;
-                    while k < n {
-                        let s = self.journal.read(k);
-                        if s.kind == "task.planned" && s.entity == id { plan = s.body; }
-                        k = k + 1;
-                    }
-                    // a Task resumed before is resumed again: a restart that
-                    // stopped between its `task.resumed` and the dispatch left
-                    // it unfinished, and only its settlement ends it
-                    if !proposed {
-                        let colon = std::str::index_of(e.body, ": ");
-                        let objective = if colon < 0 { e.body } else { e.body[(colon + 2)..len(e.body)] };
-                        if len(plan) > 0 {
-                            let x = self.journal.append(self.journal.revision(), "task.resumed", id, "after a restart, under the plan in the record; not replanned");
-                            self.execute_plan(id, id + "/resumed", objective, "", Plan {
-                                org: self.org_id, task_id: id, work_id: id + "/resumed",
-                                kind: std::json::find_string_field(plan, "kind"),
-                                change_class: std::json::find_string_field(plan, "change_class"),
-                                target: std::json::find_string_field(plan, "target"),
-                                count: std::json::find_int_field(plan, "count"),
-                                narrative: std::json::find_string_field(plan, "narrative"),
-                                package: std::json::find_string_field(plan, "package"),
-                                by: std::json::find_string_field(plan, "by"),
-                                assignee: std::json::find_string_field(plan, "assignee"),
-                                obligation: std::json::find_string_field(plan, "obligation"),
-                                parsed: true
-                            });
-                        } else {
+                    // The Task's Mutations are found by the Task and the Work
+                    // they name, anywhere in the journal: read as record +
+                    // ledger, a Mutation (the record's) comes before the
+                    // birth it answers (the ledger's), and a scan forward
+                    // from the birth missed it (DNA workflow card 02). The
+                    // plans are the ledger's, like the birth, and follow it.
+                    let colon = std::str::index_of(e.body, ": ");
+                    let objective = if colon < 0 { e.body } else { e.body[(colon + 2)..len(e.body)] };
+                    // A Mutation of the Task that no Work is bound to — from
+                    // before card 14 — is the Task's alone: nothing of the
+                    // Task resumes past it, and its outcome settles the Task.
+                    if len(self.unbound_mutation_of(id)) == 0 {
+                        // card 14: each Work the record planned for this Task
+                        // resumes under its own plan — the last plan row for
+                        // that Work — with the request it was asked with, as
+                        // recorded; not when the Work's own Mutation is in the
+                        // record, whose outcome settles it. A plan from before
+                        // this card binds no Work: it is the Task's one Work,
+                        // resumed as `<task>/resumed`, as before.
+                        let mut planned = 0;
+                        let mut k = i + 1;
+                        while k < n {
+                            let s = self.journal.read(k);
+                            if s.kind == "task.planned" && s.entity == id {
+                                let wid = planned_work_of(id, s.body);
+                                let mut later = false;
+                                let mut m = k + 1;
+                                while m < n {
+                                    let t = self.journal.read(m);
+                                    if t.kind == "task.planned" && t.entity == id && planned_work_of(id, t.body) == wid { later = true; }
+                                    m = m + 1;
+                                }
+                                if !later {
+                                    planned = planned + 1;
+                                    if len(self.mutation_of_work(wid)) == 0 {
+                                        let x = self.journal.append(self.journal.revision(), "task.resumed", id, "after a restart, under the plan in the record for " + wid + "; not replanned");
+                                        let b = decode_binding(s.body);
+                                        let mut req = WorkRequest { task_id: id, work_id: wid, objective: objective };
+                                        if binds_work(b) { req = request_of_binding(b); }
+                                        self.execute_plan(req, Plan {
+                                            org: self.org_id, task_id: id, work_id: wid,
+                                            kind: std::json::find_string_field(s.body, "kind"),
+                                            change_class: std::json::find_string_field(s.body, "change_class"),
+                                            target: std::json::find_string_field(s.body, "target"),
+                                            count: std::json::find_int_field(s.body, "count"),
+                                            narrative: std::json::find_string_field(s.body, "narrative"),
+                                            package: std::json::find_string_field(s.body, "package"),
+                                            by: std::json::find_string_field(s.body, "by"),
+                                            assignee: std::json::find_string_field(s.body, "assignee"),
+                                            obligation: std::json::find_string_field(s.body, "obligation"),
+                                            parsed: true
+                                        });
+                                    }
+                                }
+                            }
+                            k = k + 1;
+                        }
+                        // a Task resumed before is resumed again: a restart that
+                        // stopped between its `task.resumed` and the dispatch left
+                        // it unfinished, and only its settlement ends it
+                        if planned == 0 {
                             let x = self.journal.append(self.journal.revision(), "task.resumed", id, "after a restart, before any plan; planned now for the first time");
                             self.on_work_requested(WorkRequest { task_id: id, work_id: id + "/resumed", objective: objective, target: "", requires: "edit" });
                         }
@@ -2737,6 +2836,7 @@ locus Dna {
         while i < n {
             let e = self.journal.read(i);
             if e.kind == "mutation.proposed" && std::str::starts_with(e.body, "task " + task_id + " ") { return e.entity; }
+            if e.kind == "mutation.requested" && std::json::find_string_field(e.body, "task_id") == task_id { return e.entity; }
             i = i + 1;
         }
         return "";
@@ -2752,6 +2852,22 @@ locus Dna {
         let mut i = 0;
         while i < n {
             let e = self.journal.read(i);
+            // card 14: a Mutation whose request row is its only row — the
+            // organization stopped between the request and the proposal —
+            // was in flight as surely as one only proposed
+            if e.kind == "mutation.requested" {
+                let mut proposed = false;
+                let mut k = i + 1;
+                while k < n {
+                    if self.journal.read(k).kind == "mutation.proposed" && self.journal.read(k).entity == e.entity { proposed = true; }
+                    k = k + 1;
+                }
+                if !proposed {
+                    self.settle_task_of(e.entity, "failed", "in flight when the organization stopped");
+                    let x = self.journal.append(self.journal.revision(), "mutation.failed", e.entity, "in flight (requested) when the organization stopped; nothing resumes an attempt");
+                    let y = self.gateway.workspaces.remove(e.entity);
+                }
+            }
             if e.kind == "mutation.proposed" {
                 let id = e.entity;
                 let mut last = "proposed";

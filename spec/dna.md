@@ -776,11 +776,12 @@ record's.
 | `intent.unrecovered` | ledger | an intent offered before a restart that no Task was born for; never re-offered |
 | `review.verdict` | record | a verdict appended in the reviewer's name, from a clone or a forge |
 | `task.born` | ledger | the work an intent or a settled review made |
-| `task.planned` | ledger | the plan the Task will be worked under |
+| `task.planned` | ledger | the plan the Task will be worked under; with the `binding` of the Work and attempt that asked, and their request as asked (card 14) |
 | `task.handed` | ledger | handed to a person: assignee, obligation, acceptance |
 | `task.reassigned` | ledger | the assignment moved to someone else |
 | `task.resumed` | ledger | re-entered after a restart, under the plan already recorded |
 | `task.<state>` | ledger | every other state a Task passes through, to `done` or `failed` |
+| `mutation.requested` | record | which exact Work and attempt asked for the Mutation, with the request as asked; written before `mutation.proposed` (card 14) |
 | `mutation.proposed` | record | a change proposed for a Task: class, objective, target, base |
 | `mutation.worktree` | record | the sandbox opened for it, and removed |
 | `mutation.located` | record | the files found, and the grant they were found under |
@@ -2204,7 +2205,10 @@ authority.
   `TaskPlanned`, and the substrate journals `task.planned <task>`
   (kind — `organism`, `appendage`, `product` or `person` —
   `change_class`, `target`, `count`, the model's narrative, the
-  package read, `parsed`, and `class_applied`) and proceeds under the
+  package read, `parsed`, and `class_applied` — and, from card 14, a
+  `binding`: the Work and attempt that asked, `work_id`, `attempt_id`,
+  `attempt_no`, with their `request` as asked, objective, target,
+  capability words, data class) and proceeds under the
   class and target the plan names. **The kind decides whose change
   it is.** A plan of kind `organism` is a change to the organism
   itself, and that is class `organization` whatever the plan called
@@ -2227,7 +2231,18 @@ authority.
   restart, a Task born and not settled re-enters the tower from its
   last durable state (`task.resumed <task>`): under the plan in the
   record when there is one, never replanned; planned for the first
-  time when there is none. `task.resumed` is an event of a restart,
+  time when there is none. Each Work the record planned for the Task
+  resumes under its own plan — the last plan row bound to that Work —
+  and with the request it was asked with, its capability words, data
+  class and attempt number as recorded, never a default; not when the
+  Work's own Mutation is in the record (`mutation.requested` binding
+  it), whose outcome settles it (card 14). A plan from before card 14
+  binds no Work: it is the Task's one Work, resumed as `<task>/resumed`.
+  A Mutation naming only its Task, from before card 14, is the Task's
+  alone: nothing of the Task resumes past it. A Mutation with only its
+  request row was in flight — the stop fell between the two rows — and
+  fails like one only proposed; its id is counted at the restart and
+  never minted again. `task.resumed` is an event of a restart,
   never a state: a resumed Task not yet settled is still pending, it
   settles like any other, and a restart that stopped between its
   `task.resumed` and the dispatch leaves it to be resumed again at the
@@ -2237,7 +2252,9 @@ authority.
   that would have settled it is gone. A Task's Mutation is found by the
   Task it names (`mutation.proposed … task <id> …`) anywhere in the
   journal, never by position: read as record + ledger, the record's
-  Mutation rows precede the ledger's births. A handed Task is a person's and
+  Mutation rows precede the ledger's births. A Work's Mutation is found
+  the same way, by the Work its request row names (`mutation.requested`,
+  card 14). A handed Task is a person's and
   waits. An `intent.offered` with no `task.born` naming it — the shape
   from before this rule — is noted (`intent.unrecovered`) and never
   re-offered: work may already have run.
