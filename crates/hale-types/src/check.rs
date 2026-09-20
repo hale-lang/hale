@@ -809,19 +809,21 @@ fn check_unowned_subscriber_locus(
     if allow {
         return;
     }
+    // GH #825: a module is a namespace, not an analysis boundary —
+    // both the index and the walk flatten it.
     let mut local_loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 local_loci.insert(l.name.name.as_str(), l);
             }
-        }
+        });
     }
 
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             let TopDecl::Locus(p) = item else {
-                continue;
+                return;
             };
             // Collect this locus's bus-handler fn names. The
             // antipattern is narrow on purpose: a subscriber
@@ -845,7 +847,7 @@ fn check_unowned_subscriber_locus(
                 }
             }
             if handler_names.is_empty() {
-                continue;
+                return;
             }
             for member in &p.members {
                 let LocusMember::Fn(fd) = member else {
@@ -894,7 +896,7 @@ fn check_unowned_subscriber_locus(
                     ));
                 }
             }
-        }
+        });
     }
 }
 
