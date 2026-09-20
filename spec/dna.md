@@ -1513,6 +1513,39 @@ stale, decided again and refused. The cell leases (`MemLeases`,
 operation they fence is not an append to this record. A runtime with no
 lease key is unfenced: a standalone runtime over a memory record.
 
+## Workflow execution: edit outcomes
+
+An edit leaf of a workflow execution is performed by the assembly —
+its editor, its gateway, its record — never by a router performer.
+The engine reaches it through a fifth performer kind, `edit`: the
+`EditRelay` publishes the attempt (`EditRequested`, keyed by the
+runtime's scope, which is the organism's id) and answers pending; the
+assembly performs or waits, and reports the outcome for that exact
+attempt (`AttemptReported`), which the runtime settles as it settles a
+late reply — judged, recorded, answered to its Work and only its Work;
+a report whose outcome names another attempt than the report does, or
+none, is nobody's and settles nothing.
+The Work settles as any Work does, its step counts it, and the
+workflow settles the root: no Work of an admitted execution settles
+its Task, and a Mutation's review outcome never settles it either —
+one root terminal writer. The legacy paths keep settling legacy Tasks.
+
+Two output contracts, never reinterpreted as each other. `Patch` — the
+default for an edit leaf — is a candidate prepared for review: the
+attempt is performed once, the Mutation it produces is bound to it
+(card 14), and the Work is done when the candidate is in review,
+escalated or released, failed when preparation failed before a
+candidate; a later verdict changes nothing about it. `Applied` (or
+`Approved`) is the candidate approved and applied: the Work performs
+nothing and waits for the review of the candidate a Work of its Task
+prepared — answered at once when that review has settled already, and
+when it settles otherwise: approved (and applied) is done, rejected or
+sent back is failed. An attempt asked again — a redelivery after a
+restart — is answered from the Mutation bound to it and edits nothing
+twice, so the edit kind's reconciliation is a replay. A request row
+the record refuses starts nothing: the attempt is held, and `redrive`
+puts it again.
+
 ## Storage interfaces
 
 `Journal` (ordered append with an expected revision, read by index,

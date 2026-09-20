@@ -462,3 +462,17 @@ type Observation {
     detail: String = "";
 }
 topic ExpressionObserved { payload: Observation; subject: "dna.expression.observed"; }
+
+// ---- card 15: edit outcomes through Work completion -------------------
+// An edit leaf's attempt, handed to the assembly that owns the editor,
+// its gateway and its record: the performer of kind `edit` publishes it
+// and answers pending; the assembly performs — or, for a Work whose
+// contract is the review's outcome, waits — and reports the outcome
+// for this exact attempt.
+type EditAsk { scope: String = ""; attempt_id: String = ""; performer: String = ""; request: WorkRequest = WorkRequest { }; }
+topic EditRequested { payload: EditAsk; subject: "dna.edit.requested"; keyed_by scope; }
+// The outcome of one attempt, reported for it by the adapter that did
+// the work — into the generic lifecycle: the runtime settles that
+// attempt, and only it, and the Work answers its step as any Work does.
+type AttemptReport { scope: String = ""; attempt_id: String = ""; result: WorkResult = WorkResult { }; }
+topic AttemptReported { payload: AttemptReport; subject: "dna.attempt.reported"; keyed_by scope; }

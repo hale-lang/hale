@@ -183,6 +183,21 @@ locus PendingWork { capacity { heap rows of WorkRequest; } }
 // request, re-driven by `redrive`.
 @form(vec)
 locus HeldPlans { capacity { heap rows of Plan; } }
+// Edit attempts relayed from the workflow engine (card 15): the ones
+// waiting on a review's outcome, and the ones the record refused to
+// start, re-driven by `redrive`.
+@form(vec)
+locus EditAsks { capacity { heap rows of EditAsk; } }
+
+// The two output contracts an edit Work declares (card 15). `Patch` —
+// the default for an edit leaf — is "a candidate prepared for review":
+// the Work is done when its candidate is in review or released, and a
+// later verdict cannot reverse that. `Applied` (or `Approved`) is "the
+// candidate approved and applied": the Work waits for the review of
+// the candidate a Work of its Task prepared, and is done when it was
+// applied, failed when it was rejected or sent back. The engine never
+// reinterprets one as the other.
+fn review_waiting(output: String) -> Bool { return output == "Applied" || output == "Approved"; }
 
 locus Dna {
     params {
@@ -239,6 +254,9 @@ locus Dna {
         pending_plans: PendingWork = PendingWork { };
         held_plans: HeldPlans = HeldPlans { }; // card 14: a plan whose binding the record refused, kept with its request
         held_direct: PendingWork = PendingWork { }; // card 14: a direct edit request whose Mutation's request row the record refused
+        waiting_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose contract is a review's outcome, waiting for it
+        held_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose Mutation's request row the record refused
+        edits_reported: Int = 0; // card 15: outcomes reported to the engine, by attempt
         record_refusals: Int = 0; // association writes the record refused: nothing proceeded past them
         plans: Int = 0;
         // GH #596 O: the optimize pass. `org_id` keys the exchange with
@@ -314,6 +332,11 @@ locus Dna {
         subscribe WorkRequested as on_work_requested;
         subscribe TaskPlanned as on_planned where key == self.org_id;
         publish PlanRequested;
+        // card 15: an edit leaf of a workflow execution, relayed by the
+        // engine's edit performer (the runtime's scope is this organism's
+        // id); its outcome goes back for that exact attempt
+        subscribe EditRequested as on_edit_requested where key == self.org_id;
+        publish AttemptReported;
         subscribe OrgReviewed as on_org_reviewed where key == self.org_id;
         publish OptimizeRequested;
         subscribe TaskSettled as on_task_settled;
@@ -719,18 +742,23 @@ locus Dna {
         let d = self.disposition_of(r.review_id);
         let live = d == "applied" || d == "retained";
         if r.outcome == "approve" {
-            if live { return; } // post-review: it was applied under the grant; the human concurs
-            let y = self.apply_reviewed(r.review_id, std::time::now());
+            // post-review: it was applied under the grant; the human concurs
+            if !live { let y = self.apply_reviewed(r.review_id, std::time::now()); }
+            // card 15: the attempts waiting on this candidate hear its verdict
+            self.settle_waiting(r.review_id);
             return;
         }
         if live {
             // post-review rejection: the applied candidate comes back out
             self.rollback_to_base(r.review_id, "review " + r.outcome + " by " + r.decided_by, std::time::now());
+            self.settle_waiting(r.review_id);
             return;
         }
         let z = self.journal.append(self.journal.revision(), "mutation." + (if r.outcome == "revise" { "revise" } else { "rejected" }), r.review_id,
             "review " + r.outcome + " by " + r.decided_by + "; genome and expression untouched");
         if r.outcome != "revise" { self.settle_task_of(r.review_id, "failed", "review " + r.outcome + " after a restart"); }
+        // card 15: the attempts waiting on this candidate hear its verdict
+        self.settle_waiting(r.review_id);
         // the worktree was scratch; the Mutation, its candidate commit,
         // its Attempts and its evidence stay in the Journal
         let now = std::time::now();
@@ -1250,14 +1278,147 @@ locus Dna {
         }
         self.execute_plan(req, p);
     }
+    // An edit leaf's attempt from the workflow engine (card 15). Under
+    // the prepare-candidate contract the attempt is performed once — the
+    // Mutation it produces is bound to the attempt (card 14), so an
+    // attempt asked again answers from that Mutation and edits nothing
+    // twice — and its outcome is reported for the attempt: done when its
+    // candidate is prepared for review (or released), failed when
+    // preparation failed, nothing while the record would not take its
+    // request row (held for `redrive`). Under the review-waiting contract
+    // the attempt performs nothing: it is answered from a review of its
+    // Task's candidate already settled, or waits for one. No Work of an
+    // admitted execution settles its Task: the engine's workflow does.
+    @unbounded
+    fn on_edit_requested(e: EditAsk) {
+        let req = e.request;
+        if review_waiting(req.output_contract) {
+            let decided = self.decided_candidate_of(req.task_id);
+            if len(decided) > 0 { self.report_review(e, decided); return; }
+            self.waiting_edits.push(e);
+            return;
+        }
+        let seen = self.mutation_of_attempt(e.attempt_id);
+        if len(seen) > 0 { self.report_prepared(e, seen); return; }
+        let out = self.mutate_for(req, "application", req.objective, req.target, std::time::now());
+        if record_refused(out) { self.held_edits.push(e); return; }
+        let m = self.mutation_of_attempt(e.attempt_id);
+        self.report_prepared(e, m);
+    }
+    // The outcome of a prepare-candidate attempt, from the durable state
+    // of the Mutation bound to it: prepared (in review, escalated,
+    // released, applied, retained — a later verdict changes none of
+    // this) is done; failed before a candidate is failed; still in
+    // flight is not reported yet.
+    fn report_prepared(e: EditAsk, mutation_id: String) {
+        if len(mutation_id) == 0 {
+            self.report(e, "failed", "", "no Mutation was bound to attempt " + e.attempt_id);
+            return;
+        }
+        let d = self.disposition_of(mutation_id);
+        let prepared = len(self.request_of(mutation_id)) > 0 || d == "release" || d == "applied" || d == "retained";
+        if prepared { self.report(e, "done", mutation_id + ": candidate prepared (" + d + ")", "candidate prepared for review"); return; }
+        if d == "failed" || d == "deny" || d == "refused" { self.report(e, "failed", mutation_id + ": " + d, "preparation failed"); return; }
+        // in flight: its outcome is reported when it is one
+    }
+    // The outcome of a review-waiting attempt, from the settled review of
+    // its Task's candidate: approved (and applied) is done; rejected or
+    // sent back is failed.
+    fn report_review(e: EditAsk, mutation_id: String) {
+        let verdict = self.review_outcome_of(mutation_id);
+        if verdict == "approve" {
+            self.report(e, "done", mutation_id + ": " + self.disposition_of(mutation_id), "the candidate was approved");
+            return;
+        }
+        self.report(e, "failed", mutation_id + ": " + verdict, "the candidate was " + (if verdict == "revise" { "sent back" } else { "rejected" }));
+    }
+    fn report(e: EditAsk, disposition: String, result: String, narrative: String) {
+        self.edits_reported = self.edits_reported + 1;
+        AttemptReported <- AttemptReport {
+            scope: e.scope, attempt_id: e.attempt_id,
+            result: WorkResult { disposition: disposition, result: result, narrative: narrative, performer: e.performer, attempt_id: e.attempt_id }
+        };
+    }
+    // The Mutation bound to an attempt (card 14), by the attempt's id in
+    // the Mutation's own request row; "" when none.
+    @unbounded
+    fn mutation_of_attempt(attempt_id: String) -> String {
+        if len(attempt_id) == 0 { return ""; }
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "mutation.requested" && decode_binding(e.body).attempt_id == attempt_id { return e.entity; }
+            i = i + 1;
+        }
+        return "";
+    }
+    // The first Mutation of the Task (by the Work that asked for it, card
+    // 14) whose review has settled; "" when none has.
+    @unbounded
+    fn decided_candidate_of(task_id: String) -> String {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "mutation.requested" && decode_binding(e.body).task_id == task_id && len(self.review_outcome_of(e.entity)) > 0 { return e.entity; }
+            i = i + 1;
+        }
+        return "";
+    }
+    // The settled verdict on a Mutation's review — "approve", "reject",
+    // "revise" — or "" while it is open.
+    @unbounded
+    fn review_outcome_of(mutation_id: String) -> String {
+        let n = self.journal.revision();
+        let mut i = 0;
+        let mut out = "";
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "review.settled" && e.entity == mutation_id {
+                let sp = std::str::index_of(e.body, " ");
+                out = if sp < 0 { e.body } else { e.body[0..sp] };
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+    // A review settled on a Mutation of an admitted execution answers the
+    // attempts waiting on that Task's candidate (card 15), each once.
+    @unbounded
+    fn settle_waiting(mutation_id: String) {
+        let task = self.task_of_mutation(mutation_id);
+        if len(task) == 0 { return; }
+        let mut i = 0;
+        while i < self.waiting_edits.len() {
+            let e = self.waiting_edits.get(i) or EditAsk { };
+            if len(e.attempt_id) > 0 && e.request.task_id == task {
+                self.waiting_edits.set(i, EditAsk { }) or discard;
+                self.report_review(e, mutation_id);
+            }
+            i = i + 1;
+        }
+    }
     // Every responsibility the record refused to take (card 14) is driven
     // again: a held plan through `on_planned`, which finds its request
-    // still pending; a held direct request through `on_work_requested`.
-    // One round: what the record refuses again is held again, for the
-    // next. How many were driven.
+    // still pending; a held direct request through `on_work_requested`;
+    // a held engine attempt (card 15) through `on_edit_requested`. One
+    // round: what the record refuses again is held again, for the next.
+    // How many were driven.
     @unbounded
     fn redrive() -> Int {
         let mut n = 0;
+        let edits = self.held_edits.len();
+        let mut k = 0;
+        while k < edits {
+            let e = self.held_edits.get(k) or EditAsk { };
+            if len(e.attempt_id) > 0 {
+                self.held_edits.set(k, EditAsk { }) or discard;
+                self.on_edit_requested(e);
+                n = n + 1;
+            }
+            k = k + 1;
+        }
         let plans = self.held_plans.len();
         let mut i = 0;
         while i < plans {
@@ -1387,8 +1548,10 @@ locus Dna {
         };
         // F.15, as on the direct path: the Work that asked settled
         // PENDING while the plan was made; the durable Task is settled
-        // here, in the Journal, by the assembly that did its Work
-        if self.task_state(req.task_id) == "pending" {
+        // here, in the Journal, by the assembly that did its Work — a
+        // legacy Task's; an admitted execution's root is its workflow's
+        // to settle (card 15)
+        if self.task_state(req.task_id) == "pending" && !self.workflow_admitted(req.task_id) {
             let x = self.journal.append(self.journal.revision(), "task." + (if ok { "done" } else { "failed" }), req.task_id,
                 req.work_id + " by " + self.editor.identity() + ": " + out);
         }
@@ -1432,8 +1595,9 @@ locus Dna {
         };
         // F.15: behind an off-thread bus the Work that asked is gone and
         // its Task settled PENDING; the durable Task is settled here, in
-        // the Journal, by the assembly that did its Work.
-        if self.task_state(req.task_id) == "pending" {
+        // the Journal, by the assembly that did its Work — a legacy
+        // Task's; an admitted execution's root is its workflow's (card 15)
+        if self.task_state(req.task_id) == "pending" && !self.workflow_admitted(req.task_id) {
             let x = self.journal.append(self.journal.revision(), "task." + (if ok { "done" } else { "failed" }), req.task_id,
                 req.work_id + " by " + self.editor.identity() + ": " + out);
         }
@@ -2799,6 +2963,10 @@ locus Dna {
     fn settle_task_of(mutation_id: String, disposition: String, detail: String) {
         let t = self.task_of_mutation(mutation_id);
         if len(t) == 0 || id_number(t, "t") < 0 { return; }
+        // card 15: an admitted execution has one root terminal writer, its
+        // workflow; a Mutation's outcome reaches it through the Work that
+        // asked, never by settling the Task here
+        if self.workflow_admitted(t) { return; }
         if self.task_state(t) != "pending" { return; }
         let x = self.journal.append(self.journal.revision(), "task." + disposition, t, mutation_id + " " + detail);
     }

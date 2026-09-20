@@ -144,6 +144,27 @@ locus AgentPerformer {
 // An external API is a performer only when it fulfils the Work
 // contract (an assessment). Anything that changes the world stays an
 // effect behind a gateway — see dna/tests/dna_law.rs.
+// ---- the edit relay (card 15) -----------------------------------------
+// Work that changes source is the assembly's — its editor, its gateway,
+// its record — never a router performer's. An edit leaf's attempt is
+// relayed to the assembly serving this scope and answered pending; the
+// assembly reports the attempt's outcome (`AttemptReported`) and the
+// runtime settles it. The relay is idempotent by attempt: asked again —
+// a redelivery after a restart — the assembly answers from the Mutation
+// bound to the attempt (card 14) and edits nothing twice.
+locus EditRelay {
+    params { scope: String = ""; name: String = "editor"; relayed: Int = 0; }
+    bus { publish EditRequested; }
+    fn kind() -> String { return "edit"; }
+    fn identity() -> String { return self.name; }
+    fn perform(req: WorkRequest) -> WorkResult {
+        self.relayed = self.relayed + 1;
+        let attempt = req.work_id + "/a" + to_string(req.attempt_no);
+        EditRequested <- EditAsk { scope: self.scope, attempt_id: attempt, performer: self.name, request: req };
+        return WorkResult { disposition: "pending", performer: self.name, attempt_id: attempt };
+    }
+}
+
 locus ServicePerformer {
     params { name: String = "analysis-service"; calls: Int = 0; }
     fn kind() -> String { return "service"; }
@@ -162,6 +183,11 @@ locus WorkSystem {
         agent: Performer = AgentPerformer { };
         software: Performer = ScriptedPerformer { name: "software" };
         service: Performer = ServicePerformer { };
+        // card 15: the fifth kind — an edit leaf's attempt goes to the
+        // assembly through the relay; its effect is the Mutation bound to
+        // the attempt, so a redelivery is reconciled by the assembly itself
+        // (it answers from that Mutation, never editing twice): replay is safe
+        edit: Performer = EditRelay { };
         // the effect adapters that say, after a restart, whether an
         // attempt acted (card 12c), one per performer kind as the
         // performers are: evidence about one kind's effect says nothing
@@ -170,6 +196,7 @@ locus WorkSystem {
         agent_reconciler: Reconciler = NoEvidence { };
         service_reconciler: Reconciler = NoEvidence { };
         software_reconciler: Reconciler = NoEvidence { };
+        edit_reconciler: Reconciler = IdempotentReplay { };
         selection: perspective(WorkRouting) = CapabilityFirstSelection { };
         max_attempts: Int = 3;
         requests: Int = 0;
@@ -193,6 +220,7 @@ locus WorkSystem {
     // The identity of the performer a kind selects: what its reply must
     // say it is (card 08).
     fn identity_of(kind: String) -> String {
+        if kind == "edit" { return self.edit.identity(); }
         if kind == "human" { return self.human.identity(); }
         if kind == "agent" { return self.agent.identity(); }
         if kind == "service" { return self.service.identity(); }
@@ -202,12 +230,14 @@ locus WorkSystem {
     // kind selects; its answer names them, or it is no evidence.
     fn reconcile_as(kind: String, req: WorkRequest) -> Reconciliation {
         let identity = self.identity_of(kind);
+        if kind == "edit" { return self.edit_reconciler.reconcile(kind, identity, req); }
         if kind == "human" { return self.human_reconciler.reconcile(kind, identity, req); }
         if kind == "agent" { return self.agent_reconciler.reconcile(kind, identity, req); }
         if kind == "service" { return self.service_reconciler.reconcile(kind, identity, req); }
         return self.software_reconciler.reconcile(kind, identity, req);
     }
     fn perform_as(kind: String, req: WorkRequest) -> WorkResult {
+        if kind == "edit" { return self.edit.perform(req); }
         if kind == "human" { return self.human.perform(req); }
         if kind == "agent" { return self.agent.perform(req); }
         if kind == "service" { return self.service.perform(req); }
