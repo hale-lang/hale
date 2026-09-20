@@ -156,6 +156,23 @@ like `len(s)`):
 - `truncate(f, n)` — shrink the count (never grows); with `set`,
   this is the drop-front idiom for FIFO windows.
 
+None of those six names is reserved, unlike `sum` or `abs` further
+down this page. They are recognized by the *type* of their first
+argument, so the compiler can tell your function from the intrinsic
+— and yours wins:
+
+```hale,fragment
+fn count(xs: bounded[Int; 8]) -> Int { return 8801; }
+// ... count(w.samples) on a bounded[Int; 8] now runs YOUR body
+```
+
+The match is on the whole receiver type, capacity included: a
+`fn count(xs: bounded[Int; 4])` does not take over calls on a
+`bounded[Int; 8]`, and the intrinsic answers those. (That is what
+keeps your `count` from capturing the standard library's own calls
+on its own buffers.) `f.get(i)` and the chain terminals are reached
+through a receiver, so they are never yours to shadow.
+
 A `bounded` of **scalars** (`Int`, `Float`, `Bool`, `Decimal`,
 `Duration`) prints directly, showing the *live* count rather than
 the capacity — an eight-slot buffer holding two elements reads as

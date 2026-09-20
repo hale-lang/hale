@@ -12926,6 +12926,61 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// GH #892: does the program's OWN `fn NAME` answer this call,
+    /// ahead of the `bounded[T; N]` intrinsic of the same name?
+    ///
+    /// `count` / `clear` / `truncate` / `push` / `at` / `set` are
+    /// intrinsics only where the first argument IS a bounded
+    /// receiver, which is why they are absent from the parser's
+    /// `BUILTIN_CALL_FORMS` and a free `fn` of any of those names is
+    /// legal (`dna/tests/books_slice_test.hl` declares `fn count(app,
+    /// kind, entity, needle)` and calls it). On a bounded argument,
+    /// though, the intrinsic took the call from the declaration in
+    /// BOTH layers and said nothing: `fn count(xs: bounded[Int; 8])
+    /// -> Int` beside `count(w.samples)` typed as the intrinsic here
+    /// and ran the intrinsic there, and only because both answer
+    /// `Int` did the program check at all.
+    ///
+    /// The rule is lexical scope: **a declaration whose first
+    /// parameter is the receiver's own `bounded[T; N]` answers the
+    /// call**, at any arity that declaration accepts. Dispatch is
+    /// type-directed, so the shadow is decidable at the call site —
+    /// which is what makes this resolvable in the program's favour
+    /// where GH #880's flat-namespace names were not.
+    ///
+    /// Element type and capacity are part of the match, because the
+    /// Hale-source standard library is merged into this same global
+    /// fn namespace and calls the intrinsics on buffers of its own
+    /// (`bounded[String; 8]`, `bounded[Float; 32]`,
+    /// `bounded[Int; 33]`). A name-only shadow would retarget the
+    /// LIBRARY's calls at the user's declaration — the same capture
+    /// that made `print` a claimed name. Matching the receiver type
+    /// holds the shadow to the calls the author's own type reaches.
+    ///
+    /// Codegen holds the identical rule
+    /// (`user_fn_shadows_bounded_intrinsic` in
+    /// `crates/hale-codegen/src/form/bounded.rs`).
+    fn user_fn_shadows_bounded_intrinsic(
+        &self,
+        name: &str,
+        argc: usize,
+        recv_elem: &Ty,
+        recv_cap: u64,
+    ) -> bool {
+        let Some(TopSymbol::Fn(sig)) = self.top.lookup(name) else {
+            return false;
+        };
+        let Some((_, Ty::Bounded(param_elem, param_cap))) =
+            sig.params.first()
+        else {
+            return false;
+        };
+        param_elem.as_ref() == recv_elem
+            && *param_cap == recv_cap
+            && argc >= sig.required_params()
+            && argc <= sig.params.len()
+    }
+
     /// A bare identifier in expression position.
     ///
     /// GH #721: an identifier that binds NOTHING used to type as
@@ -13510,6 +13565,12 @@ impl<'a> Checker<'a> {
                 // arg. Probed speculatively — when arg0 isn't
                 // bounded, its diags are rolled back and the call
                 // falls through to the normal paths.
+                //
+                // GH #892: it also falls through when the program
+                // DECLARES the name over this receiver's own bounded
+                // type — lexical scope wins, and codegen's arms hold
+                // the same rule, so both layers resolve the call to
+                // the same fn.
                 if let Expr::Ident(id) = callee.as_ref() {
                     if matches!(
                         id.name.as_str(),
@@ -13519,7 +13580,19 @@ impl<'a> Checker<'a> {
                     {
                         let mark = self.diags.len();
                         let recv_ty = self.check_expr(&args[0]);
-                        if let Ty::Bounded(elem, _cap) = recv_ty {
+                        let shadowed = match &recv_ty {
+                            Ty::Bounded(elem, cap) => self
+                                .user_fn_shadows_bounded_intrinsic(
+                                    id.name.as_str(),
+                                    args.len(),
+                                    elem.as_ref(),
+                                    *cap,
+                                ),
+                            _ => false,
+                        };
+                        if let (false, Ty::Bounded(elem, _cap)) =
+                            (shadowed, recv_ty)
+                        {
                             let want_args = match id.name.as_str() {
                                 "push" | "at" | "truncate" => 2,
                                 "set" => 3,
@@ -13670,7 +13743,10 @@ impl<'a> Checker<'a> {
                                 _ => return Ty::Unit,
                             }
                         }
-                        // Not bounded: roll back speculative diags.
+                        // Not bounded, or the program's own fn owns
+                        // the name for this receiver type (GH #892):
+                        // roll back the speculative diags and let the
+                        // ordinary call paths resolve it.
                         self.diags.truncate(mark);
                     }
                 }

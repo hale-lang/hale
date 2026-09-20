@@ -15,19 +15,23 @@
 //! Re-record (a key in the environment, the tape rewritten):
 //!   HALE_DNA_TAPE=record cargo test --release -p hale-cli --test dna_recorded_fixture
 
+#[path = "support/trace.rs"]
+mod trace;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 type Row = (u64, String, String, String);
 
 fn git(args: &[&str], cwd: &Path) -> String {
+    let _s = trace::Span::new("git", args[0].to_string());
     let out = Command::new("git").args(["-c", "user.name=riley", "-c", "user.email=r@l"]).args(args).current_dir(cwd).output().expect("git");
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 fn journal(app: &Path) -> Vec<Row> {
+    let _s = trace::Span::new("git", "show refs/dna/journal:journal.jsonl");
     let out = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
     String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -40,15 +44,8 @@ fn journal(app: &Path) -> Vec<Row> {
         .collect()
 }
 
-fn wait_row(app: &Path, secs: u64, pred: impl Fn(&Row) -> bool) -> bool {
-    let dl = Instant::now() + Duration::from_secs(secs);
-    while Instant::now() < dl {
-        if journal(app).iter().any(&pred) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(300));
-    }
-    false
+fn wait_row(app: &Path, what: &str, secs: u64, pred: impl Fn(&Row) -> bool) -> bool {
+    trace::wait_until(what.to_string(), Duration::from_secs(secs), Duration::from_millis(300), || journal(app).iter().any(&pred))
 }
 
 fn dump(app: &Path) -> String {
@@ -94,10 +91,12 @@ impl Fixture {
         c
     }
     fn hale(&self, args: &[&str], cwd: &Path) -> (bool, String) {
+        let _s = trace::Span::new("hale", args.join(" "));
         let out = self.cmd(args, cwd).output().expect("hale");
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
     }
     fn spawn(&mut self, args: &[&str], cwd: &Path) {
+        let _s = trace::Span::new("spawn", args.join(" "));
         let log = std::fs::File::create(self.d.join(format!("{}.stderr", args.iter().take(2).map(|a| a.replace('/', "_")).collect::<Vec<_>>().join("-")))).unwrap();
         let c = self.cmd(args, cwd).stdout(Stdio::null()).stderr(log).spawn().expect("spawn");
         self.procs.push(c);
@@ -121,7 +120,7 @@ impl Fixture {
             let _ = p.kill();
             let _ = p.wait();
         }
-        std::thread::sleep(Duration::from_millis(300));
+        trace::sleep("after kill, before reaping the pid files", Duration::from_millis(300));
         for f in ["org.pid", "app.pid", "knowledge.pid"] {
             if let Ok(pid) = std::fs::read_to_string(self.app.join(".hale/dna").join(f)) {
                 let _ = Command::new("kill").args(["-9", pid.trim()]).status();
@@ -191,10 +190,7 @@ fn bring_up() -> Fixture {
     for (i, e) in edges.iter().enumerate() {
         f.spawn(&["node", &format!("edge-{}", i + 1), "--repo", &e.to_string_lossy(), "--tick", "300"], &d);
     }
-    let dl = Instant::now() + Duration::from_secs(90);
-    while !app.join(".hale/dna/hale-dna.intent.offered.sock").exists() && Instant::now() < dl {
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    trace::wait_until("dna run: the membrane bound", Duration::from_secs(90), Duration::from_millis(200), || app.join(".hale/dna/hale-dna.intent.offered.sock").exists());
     if !app.join(".hale/dna/hale-dna.intent.offered.sock").exists() {
         f.fail("the membrane did not come up");
     }
@@ -204,7 +200,7 @@ fn bring_up() -> Fixture {
     }
     let base = git(&["rev-parse", "HEAD"], &app);
     for id in ["gateway-0", "gateway-1", "api-0", "worker-0"] {
-        if !wait_row(&app, 180, |(_, k, e, b)| k == "instance.up" && e == id && b.contains(&base)) {
+        if !wait_row(&app, &format!("instance.up {id} at the base"), 180, |(_, k, e, b)| k == "instance.up" && e == id && b.contains(&base)) {
             f.fail(&format!("{id} did not come up at the base"));
         }
     }
@@ -213,6 +209,7 @@ fn bring_up() -> Fixture {
 
 #[test]
 fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
+    let _t = trace::test("dna_recorded_fixture");
     let mut f = bring_up();
     let app = f.app.clone();
 
@@ -221,7 +218,7 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     //         node puts each into the record; the host relays; the
     //         organization proposes it as knowledge for org/trio; the
     //         Board ratifies the exact digest; the service tails it
-    if !wait_row(&app, 240, |(_, k, e, _)| k == "concern.proposed" && e == "org/trio/worker") {
+    if !wait_row(&app, "concern.proposed org/trio/worker", 240, |(_, k, e, _)| k == "concern.proposed" && e == "org/trio/worker") {
         f.fail("the worker's concern did not become a proposal");
     }
     let rows = journal(&app);
@@ -239,7 +236,7 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     if !ok {
         f.fail(&format!("ratify: {out}"));
     }
-    if !wait_row(&app, 60, |(_, k, e, _)| k == "knowledge.ratified" && *e == kdigest) {
+    if !wait_row(&app, "knowledge.ratified", 60, |(_, k, e, _)| k == "knowledge.ratified" && *e == kdigest) {
         f.fail("the concern was not ratified");
     }
 
@@ -251,14 +248,14 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     if !ok {
         f.fail(&format!("ask: {out}"));
     }
-    if !wait_row(&app, 240, |(_, k, e, _)| k == "review.requested" && e == "review:m1") {
+    if !wait_row(&app, "review.requested review:m1", 240, |(_, k, e, _)| k == "review.requested" && e == "review:m1") {
         f.fail("m1 did not reach its Review");
     }
     let (ok, out) = f.hale(&["dna", "review", "m1", "approve", "--as", "riley", "--comment", "documented"], &app);
     if !ok {
         f.fail(&format!("approve m1: {out}"));
     }
-    if !wait_row(&app, 240, |(_, k, e, _)| k == "mutation.retained" && e == "m1") {
+    if !wait_row(&app, "mutation.retained m1", 240, |(_, k, e, _)| k == "mutation.retained" && e == "m1") {
         f.fail("m1 was not retained");
     }
     let rows = journal(&app);
@@ -291,9 +288,9 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
         if !ok {
             f.fail(&format!("pressure: {out}"));
         }
-        std::thread::sleep(Duration::from_millis(400));
+        trace::sleep("between pressure signals", Duration::from_millis(400));
     }
-    if !wait_row(&app, 300, |(_, k, e, _)| k == "review.requested" && e == "review:m2") {
+    if !wait_row(&app, "review.requested review:m2", 300, |(_, k, e, _)| k == "review.requested" && e == "review:m2") {
         f.fail("the organization's growth did not reach its Review");
     }
     let (ok, board) = f.hale(&["dna", "board"], &app);
@@ -302,7 +299,7 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     if !ok {
         f.fail(&format!("approve m2: {out}"));
     }
-    if !wait_row(&app, 300, |(_, k, e, _)| k == "mutation.retained" && e == "m2") {
+    if !wait_row(&app, "mutation.retained m2", 300, |(_, k, e, _)| k == "mutation.retained" && e == "m2") {
         f.fail("m2 was not retained");
     }
     let rows = journal(&app);
@@ -321,7 +318,7 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     if !ok {
         f.fail(&format!("ask: {out}"));
     }
-    if !wait_row(&app, 240, |(_, k, e, b)| k == "mutation.deny" && e == "m3" && b.contains("breaks the fleet")) {
+    if !wait_row(&app, "mutation.deny m3", 240, |(_, k, e, b)| k == "mutation.deny" && e == "m3" && b.contains("breaks the fleet")) {
         f.fail("m3 was not denied by the fleet's law");
     }
     let rows = journal(&app);
@@ -333,7 +330,7 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     // journaled by the assembly's bus handler, so it lands AFTER the
     // mutation row the test waited on; wait for the last attempt's
     // rows and re-read, rather than judging an older snapshot.
-    let calls_landed = wait_row(&app, 60, |(_, k, e, _)| k == "model.called" && e == "m3/a0");
+    let calls_landed = wait_row(&app, "model.called m3/a0", 60, |(_, k, e, _)| k == "model.called" && e == "m3/a0");
     let (ok, status) = f.hale(&["dna", "status"], &app);
     f.stop();
     assert!(ok, "{status}");

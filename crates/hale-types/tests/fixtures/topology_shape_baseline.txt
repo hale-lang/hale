@@ -216,6 +216,14 @@ crates/hale-codegen/tests/bounded_collections.rs#4 e5c8db1bac6d85da
 crates/hale-codegen/tests/bounded_collections.rs#5 94269bb5a98073c3
 crates/hale-codegen/tests/bounded_collections.rs#6 dd3cf93fbd38d003
 crates/hale-codegen/tests/bounded_collections.rs#7 f2c1228edb650960
+crates/hale-codegen/tests/bounded_receiver_dispatch.rs#0 f224362364f184e2
+crates/hale-codegen/tests/bounded_receiver_dispatch.rs#1 40da4c883815a7a2
+crates/hale-codegen/tests/bounded_receiver_dispatch.rs#2 ba8fdb8ddfce8eab
+crates/hale-codegen/tests/bounded_receiver_dispatch.rs#3 f2c1228edb650960
+crates/hale-codegen/tests/bounded_receiver_dispatch.rs#4 f224362364f184e2
+crates/hale-codegen/tests/bounded_receiver_dispatch.rs#5 f224362364f184e2
+crates/hale-codegen/tests/bounded_receiver_dispatch.rs#6 f224362364f184e2
+crates/hale-codegen/tests/bounded_receiver_dispatch.rs#7 8d626fb945314339
 crates/hale-codegen/tests/build_hello.rs#0 29a8d183d7eaf7c8
 crates/hale-codegen/tests/build_hello.rs#1 865d341109268295
 crates/hale-codegen/tests/build_hello.rs#10 865d341109268295

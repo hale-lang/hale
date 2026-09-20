@@ -7,11 +7,14 @@
 
 #[path = "support/reap.rs"]
 mod reap;
+#[path = "support/trace.rs"]
+mod trace;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn hale_in(args: &[&str], cwd: &Path) -> (bool, i32, String) {
+    let _s = trace::Span::new("hale", args.join(" "));
     let out = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(args)
         .current_dir(cwd)
@@ -24,6 +27,7 @@ fn hale_in(args: &[&str], cwd: &Path) -> (bool, i32, String) {
 }
 
 fn git(args: &[&str], cwd: &Path) -> String {
+    let _s = trace::Span::new("git", args[0].to_string());
     let out = Command::new("git").args(args).current_dir(cwd).output().expect("git");
     assert!(out.status.success(), "git {args:?} in {}: {}", cwd.display(), String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
@@ -36,6 +40,7 @@ fn record(cwd: &Path) -> Vec<serde_json::Value> {
 
 /// `hale dna run` in the background, its stderr to a log; the log's path.
 fn run_host(app: &Path, log: &Path) -> std::process::Child {
+    let _s = trace::Span::new("spawn", "hale dna run");
     Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(app)
@@ -49,17 +54,20 @@ fn run_host(app: &Path, log: &Path) -> std::process::Child {
 }
 
 fn wait_log(log: &Path, needle: &str, secs: u64, host: &mut std::process::Child) -> bool {
-    let dl = Instant::now() + Duration::from_secs(secs);
-    while Instant::now() < dl {
-        if std::fs::read_to_string(log).unwrap_or_default().contains(needle) {
+    let has = |log: &Path| std::fs::read_to_string(log).unwrap_or_default().contains(needle);
+    let mut at_exit: Option<bool> = None;
+    let held = trace::wait_until(format!("log: {needle}"), Duration::from_secs(secs), Duration::from_millis(250), || {
+        if has(log) {
             return true;
         }
-        if let Ok(Some(_)) = host.try_wait() {
-            return std::fs::read_to_string(log).unwrap_or_default().contains(needle);
+        // the host exited: the log will not grow, so stop waiting on it
+        if matches!(host.try_wait(), Ok(Some(_))) {
+            at_exit = Some(has(log));
+            return true;
         }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-    false
+        false
+    });
+    at_exit.unwrap_or(held)
 }
 
 fn kill_org(app: &Path) {
@@ -70,6 +78,7 @@ fn kill_org(app: &Path) {
 
 #[test]
 fn a_record_admits_one_body_and_a_partitioned_body_stops() {
+    let _t = trace::test("dna_body_lease");
     let d = std::env::temp_dir().join(format!("hale_dna_body_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
@@ -165,7 +174,7 @@ fn a_record_admits_one_body_and_a_partitioned_body_stops() {
         if stale.0 {
             break;
         }
-        std::thread::sleep(Duration::from_millis(500));
+        trace::sleep("polling for the lease to go stale", Duration::from_millis(500));
     }
     assert!(stale.0, "{}", stale.1);
     kill_org(&a);

@@ -8,11 +8,14 @@
 
 #[path = "support/reap.rs"]
 mod reap;
+#[path = "support/trace.rs"]
+mod trace;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
+    let _s = trace::Span::new("hale", args.join(" "));
     let out = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(args)
         .current_dir(cwd)
@@ -31,6 +34,7 @@ fn git(args: &[&str], cwd: &Path) -> String {
 }
 
 fn journal(app: &Path) -> Vec<(String, String, String)> {
+    let _s = trace::Span::new("git", "show refs/dna/journal:journal.jsonl");
     let out = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
     String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -48,18 +52,12 @@ fn has(rows: &[(String, String, String)], kind: &str, entity: &str) -> bool {
 }
 
 fn wait_for(app: &Path, secs: u64, kind: &str, entity: &str) -> bool {
-    let dl = Instant::now() + Duration::from_secs(secs);
-    while Instant::now() < dl {
-        if has(&journal(app), kind, entity) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(300));
-    }
-    false
+    trace::wait_until(format!("{kind} {entity}"), Duration::from_secs(secs), Duration::from_millis(300), || has(&journal(app), kind, entity))
 }
 
 #[test]
 fn persistent_pressure_grows_the_organization_through_the_board() {
+    let _t = trace::test("dna_org_evolves");
     let d = std::env::temp_dir().join(format!("hale_dna_grow_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
@@ -104,10 +102,7 @@ fn persistent_pressure_grows_the_organization_through_the_board() {
         .spawn()
         .expect("hale dna run");
     let up = |app: &Path| app.join(".hale/dna/hale-dna.pressure.raised.sock").exists() && app.join(".hale/dna/hale-dna.review.verdict.sock").exists();
-    let dl = Instant::now() + Duration::from_secs(120);
-    while Instant::now() < dl && !up(&app) {
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    trace::wait_until("dna run: the membrane bound", Duration::from_secs(120), Duration::from_millis(200), || up(&app));
     let stop = |host: &mut std::process::Child| {
         let _ = host.kill();
         let _ = host.wait();
@@ -121,14 +116,17 @@ fn persistent_pressure_grows_the_organization_through_the_board() {
         stop(&mut host);
         panic!("the membrane did not come up");
     }
-    std::thread::sleep(Duration::from_millis(500));
+    // the organism writes org.pid once it is up
+    trace::wait_until("org.pid written", Duration::from_secs(30), Duration::from_millis(200), || {
+        !std::fs::read_to_string(app.join(".hale/dna/org.pid")).unwrap_or_default().trim().is_empty()
+    });
     let org_pid_before = std::fs::read_to_string(app.join(".hale/dna/org.pid")).unwrap_or_default();
 
     // pressure, three times from one source: the third proposes, and proposes as a candidate
     for _ in 0..3 {
         let (ok, out) = hale(&["dna", "pressure", "raise", "billing", "invoices", "queue", "behind", "support"], &app);
         assert!(ok, "{out}");
-        std::thread::sleep(Duration::from_millis(400));
+        trace::sleep("between pressure signals", Duration::from_millis(400));
     }
     let requested = wait_for(&app, 120, "review.requested", "review:m1");
     let (ok1, board) = hale(&["dna", "board"], &app);

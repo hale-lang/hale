@@ -13,13 +13,16 @@
 
 #[path = "support/reap.rs"]
 mod reap;
+#[path = "support/trace.rs"]
+mod trace;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn hale(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> (bool, String) {
+    let _s = trace::Span::new("hale", args.join(" "));
     let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
     c.args(args).current_dir(cwd).env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off").env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"));
@@ -50,6 +53,7 @@ fn body(resp: &str) -> String {
 }
 
 fn journal(app: &Path) -> Vec<(String, String, String)> {
+    let _s = trace::Span::new("git", "show refs/dna/journal:journal.jsonl");
     let out = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
     String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -63,14 +67,7 @@ fn journal(app: &Path) -> Vec<(String, String, String)> {
 }
 
 fn wait_row(app: &Path, secs: u64, kind: &str, entity: &str) -> bool {
-    let dl = Instant::now() + Duration::from_secs(secs);
-    while Instant::now() < dl {
-        if journal(app).iter().any(|(k, e, _)| k == kind && e == entity) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(300));
-    }
-    false
+    trace::wait_until(format!("{kind} {entity}"), Duration::from_secs(secs), Duration::from_millis(300), || journal(app).iter().any(|(k, e, _)| k == kind && e == entity))
 }
 
 fn free_port() -> u16 {
@@ -172,14 +169,16 @@ fn serve<T>(app: &Path, dsn: &str, port: u16, body_of: impl FnOnce(u16) -> T) ->
     // sibling test may hold that build's lock
     // wait for the port to ACCEPT, not for a reply: the reply may be
     // held up by the store the service is about to discover is down
-    let dl = Instant::now() + Duration::from_secs(300);
-    while Instant::now() < dl && TcpStream::connect(("127.0.0.1", port)).is_err() {
+    trace::wait_until("dna knowledge: the port accepted", Duration::from_secs(300), Duration::from_millis(300), || {
+        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            return true;
+        }
         if let Ok(Some(st)) = c.try_wait() {
             let log = std::fs::read_to_string(&log).unwrap_or_default();
             panic!("hale dna knowledge exited early ({st}):\n{log}");
         }
-        std::thread::sleep(Duration::from_millis(300));
-    }
+        false
+    });
     let out = body_of(port);
     let _ = c.kill();
     let _ = c.wait();
@@ -392,6 +391,7 @@ fn with_database(dsn: &str, db: &str) -> String {
 
 #[test]
 fn init_writes_compose_and_dev_runs_the_knowledge_service_that_tails_the_record() {
+    let _t = trace::test("dna_knowledge::dev");
     let d = std::env::temp_dir().join(format!("hale_dna_knowledge_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
@@ -441,24 +441,23 @@ fn init_writes_compose_and_dev_runs_the_knowledge_service_that_tails_the_record(
         let _ = host.kill();
         let _ = host.wait();
     };
-    let dl = Instant::now() + Duration::from_secs(120);
     let mut summary = String::new();
     // the service comes up before the organization (its environment
     // names the service), so wait for the membrane as well
     let membrane = app.join(".hale/dna/hale-dna.review.verdict.sock");
-    while Instant::now() < dl {
+    trace::wait_until("dna dev: the service tailed the record and the membrane bound", Duration::from_secs(120), Duration::from_millis(300), || {
         let s = body(&http(kport, "GET / HTTP/1.0\r\nHost: x\r\n\r\n"));
         // the eight seeded design practices are ideas too (GH #596 C), plus this proposal
         if s.contains("\"store\": \"memory\"") && s.contains("\"ideas\": 9") && membrane.exists() {
             summary = s;
-            break;
+            return true;
         }
         if let Ok(Some(st)) = host.try_wait() {
             let log = std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default();
             panic!("hale dna dev exited early: {st}\n{log}");
         }
-        std::thread::sleep(Duration::from_millis(300));
-    }
+        false
+    });
     if summary.is_empty() {
         let log = std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default();
         stop(&mut host);
@@ -471,15 +470,11 @@ fn init_writes_compose_and_dev_runs_the_knowledge_service_that_tails_the_record(
     // the Board ratifies the exact digest
     let (ok, out) = hale(&["dna", "review", &format!("k:{}", &digest[7..19]), "approve", "--as", "riley", "--authority", "board", "--comment", "a good practice"], &app, &[]);
     assert!(ok, "verdict: {out}");
-    let dl = Instant::now() + Duration::from_secs(60);
     let mut pkg = String::new();
-    while Instant::now() < dl {
+    trace::wait_until("the ratified practice reached the package", Duration::from_secs(60), Duration::from_millis(300), || {
         pkg = body(&http(kport, "GET /context?target=org%2Fknowing%2Fmailer&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
-        if pkg.contains("\"included_n\": 1") {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(300));
-    }
+        pkg.contains("\"included_n\": 1")
+    });
     let idea = body(&http(kport, &format!("GET /idea/{digest} HTTP/1.0\r\nHost: x\r\n\r\n")));
     let sibling = body(&http(kport, "GET /context?target=org%2Fother&budget=8 HTTP/1.0\r\nHost: x\r\n\r\n"));
 
@@ -495,13 +490,18 @@ fn init_writes_compose_and_dev_runs_the_knowledge_service_that_tails_the_record(
     for _ in 0..3 {
         let (ok, out) = hale(&["dna", "concern", "raise", "org/knowing/echo", "pings", "arrive", "twice", "under", "load", "--severity", "2"], &app, &[]);
         assert!(ok && out.contains("concern raised by org/knowing/echo"), "{out}");
-        std::thread::sleep(Duration::from_millis(300));
+        trace::sleep("between concerns", Duration::from_millis(300));
     }
     let proposed = wait_row(&app, 60, "concern.proposed", "org/knowing/echo");
     // ---- K3: the projections and ranking, from the service
-    std::thread::sleep(Duration::from_millis(500));
+    // the service tails the record; wait for the third concern to reach
+    // it rather than for a fixed half second
+    let mut signals = String::new();
+    trace::wait_until("the service counted three concerns", Duration::from_secs(30), Duration::from_millis(250), || {
+        signals = body(&http(kport, "GET /signals HTTP/1.0\r\nHost: x\r\n\r\n"));
+        signals.contains("\"count\": 3")
+    });
     let structure = body(&http(kport, "GET /structure HTTP/1.0\r\nHost: x\r\n\r\n"));
-    let signals = body(&http(kport, "GET /signals HTTP/1.0\r\nHost: x\r\n\r\n"));
     let ranked = body(&http(kport, "GET /context?target=org%2Fknowing%2Fmailer&budget=1&query=retry%20the%20mail%20send HTTP/1.0\r\nHost: x\r\n\r\n"));
     let rows = journal(&app);
     let (ok, reviews) = hale(&["dna", "review"], &app, &[]);
