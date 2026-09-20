@@ -1303,8 +1303,65 @@ cancel, which settles cancelled through the same proposal, so the
 fence reaches every level below and each level drains and reclaims
 from the leaves upward.
 
-Nothing yet survives a restart or is reached through the public
-admission; those are later cards.
+## Workflow execution: restore
+
+Restore is not a mode. An execution asked of the executions owner over
+the record a crash left — or fresh: the same ask — first asks the
+runtime what the record holds about it (`ExecutionStateAsked`,
+answered from the projection): one the record has settled is over —
+its settlement is announced and the workflow leaves, birthing nothing
+— except a cancelled one whose admitted Works have not settled:
+cancelled is not cancelled-and-drained, and the current step is born
+fenced, so those Works settle cancelled, the step drains, and the
+workflow leaves behind it. A cancellation heard while the record is
+being asked waits for the answer: an execution the record has settled
+is not cancelled, and one still open is cancelled first — and then,
+as whenever a cancellation lands with no step active, the record is
+asked again what it still holds admitted and unsettled, and that is
+drained through the current step, born fenced, before the workflow
+leaves. One still open proposes its transitions exactly as a fresh one
+does,
+and the committer answers what the record already holds as a replay,
+so every Task, Step, Work and Attempt id a restored incarnation uses is
+the record's, never minted again — a completed record rebooted gains
+no row and runs nothing, and a cancelled one ends the restored
+execution before anything is born.
+
+The one thing a restart adds is redelivery, and the runtime derives it
+from its own incarnation, never from a request: a request for an
+attempt names the attempt and the Work it is an attempt of, and the
+runtime knows which attempts it claimed itself and which it already
+redelivered. Every request is decided against the record at one
+reading: an attempt whose outcome is recorded is answered from it and
+never runs again, and a claim the dead incarnation left open under it
+is closed with it, durably, before the Work is answered — on every
+path that answers from a recorded outcome: a request that finds it,
+one that runs into it on its own reading after seeing the attempt
+unclaimed, one that attaches to a running attempt and finds it, and a
+reply — and
+a close the record refuses leaves the Work holding its responsibility,
+told so, until a later request or reply closes it: a Work whose
+request was refused without an outcome asks again when the record
+resumes; one never claimed runs through the
+ordinary path, which claims first; one claimed by this incarnation, or
+redelivered by it, is running, and the request attaches, so a duplicate
+dispatch starts no second invocation; one claimed and never answered by
+a claimant this incarnation is not was claimed by an incarnation nobody
+will hear from again — unless its effect resulted unknown (a restart
+the existing recovery reconciled no further), which stays visibly
+unresolved, nothing running on it until card 12c's reconciliation
+says what happened. Otherwise its dispatch is issued again with the
+same attempt id and no new claim — a transport redelivery, not a new
+attempt — and that decision is a row (`effect.redelivered`) appended
+exactly at the reading that saw the claim, no outcome and no fence, so
+an outcome or a cancellation landing meanwhile makes it stale and the
+decision is taken again. A reply from the old process for the
+still-current attempt is accepted and recorded like any reply, and
+whichever reply arrives second changes nothing. The admission's
+performer kind is durable: the restored incarnation runs the attempt on
+that kind. What an invocation that died did before it died is a later
+card's, as are numbered retries under a restart and cross-process
+delivery.
 
 ## Storage interfaces
 

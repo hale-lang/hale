@@ -149,6 +149,22 @@ type ChildLeave { step_id: String = ""; key: String = ""; task_id: String = ""; 
 topic ChildLeft { payload: ChildLeave; subject: "dna.child.left"; keyed_by step_id; }
 type WorkflowLeave { task_id: String = ""; }
 topic WorkflowLeft { payload: WorkflowLeave; subject: "dna.workflow.left"; keyed_by task_id; }
+// GH #646 workflow card 12a: what the record holds about one execution,
+// asked of the runtime by its workflow before it starts — restored after
+// a restart or fresh, the same question — and answered from the
+// projection: an execution the record has settled is over, whatever is
+// in memory.
+type ExecutionStateAsk { scope: String = ""; task_id: String = ""; }
+topic ExecutionStateAsked { payload: ExecutionStateAsk; subject: "dna.execution.state.asked"; keyed_by scope; }
+type ExecutionState {
+    task_id: String = "";
+    admitted: Bool = false;
+    disposition: String = "";
+    reason: String = "";
+    outstanding: Int = 0; // Works with an admitted attempt and no settlement: a cancelled execution's undrained responsibilities
+    current_step: Int = 0; // the first step the record has not completed
+}
+topic ExecutionStateAnswered { payload: ExecutionState; subject: "dna.execution.state.answered"; keyed_by task_id; }
 // The record is writable again: a resident holding a transition the
 // record refused proposes it again. Published by whoever knows — the
 // host after a reconnect, a fixture — keyed by the committer's scope.

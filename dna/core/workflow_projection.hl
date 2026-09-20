@@ -307,6 +307,41 @@ locus WorkflowProjection {
         return StepView { };
     }
 
+    // How many Works of a task hold an admitted attempt and no
+    // settlement: what a cancelled execution still owes before it has
+    // drained (card 12a).
+    @unbounded
+    fn outstanding_works(task_id: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.works.len() {
+            let w = self.works.get(i) or WorkView { };
+            if w.task_id == task_id && len(w.disposition) == 0 { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    // The index of the first step of a task the record has not completed,
+    // in the recipe's order: where an execution still open resumes.
+    @unbounded
+    fn current_step(task_id: String) -> Int {
+        let mut index = 0;
+        let mut found = true;
+        while found {
+            found = false;
+            let mut i = 0;
+            while i < self.tree.len() {
+                let n = self.tree.get(i) or BoundNode { };
+                if n.kind == "step" && n.parent == task_id && n.step_index == index {
+                    found = true;
+                    if self.step(n.id).disposition != "completed" { return index; }
+                }
+                i = i + 1;
+            }
+            if found { index = index + 1; }
+        }
+        return index;
+    }
     @unbounded
     fn task(task_id: String) -> TaskView {
         let mut i = 0;
