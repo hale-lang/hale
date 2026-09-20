@@ -264,6 +264,26 @@ line to open). `bench` names the bench file itself, not the temporary
 copy with the synthesized driver appended that it actually compiles
 and then deletes.
 
+Nor, finally, is the **rule set**. The checks that need the whole
+program — the F.18 bare-callee rule and the bare-identifier and
+bare-type-name rules that follow it (`spec/types.md` § *Calls to bare
+names*) — are on for every command that HAS the whole program:
+`check` and `verify` on a seed, `build`, `run`, `test` and `replay`,
+which compile exactly what they bundle, and `hale lsp`, which
+typechecks only once the whole seed has parsed. A call to a name
+nothing declares is therefore `path:line:col: type error: call to X:
+no free fn, generic fn or fn-pointer binding with that name is in
+scope` from all of them (2026-09-20, GH #911 B1 / #846; the callee
+half was off on the build path, so the front end said that and the
+backend answered `codegen error: unsupported in codegen v0: call to
+X: …` — no file, no line, no caret, and a did-you-mean over
+compiler-internal symbols. Two answers to one question, and the
+useful one was the one the build did not give). `hale check <file>`
+keeps the permissive reading, because the sibling it was not handed
+may declare the name: the line is drawn by what the command was
+given, not by which command it is. `hale bench` typechecks nothing
+today, so its only answers still come from codegen.
+
 ## `hale bench` — the Layer-3 runner
 
 `hale bench [file | dir]` discovers `*_bench.hl` files (dir walk,

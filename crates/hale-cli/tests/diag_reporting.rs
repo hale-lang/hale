@@ -1425,3 +1425,114 @@ fn replay_locates_a_codegen_error_too() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ── GH #911 B1 (#846): the same located line for a bare unknown name ──
+
+/// A call to a bare name nothing binds.
+///
+/// `hex` is not a builtin — GH #800 dropped it, because hexadecimal
+/// is a format spec (`f"{n:x}"`) and never a call — and this program
+/// declares nothing, so the F.18 strict-callee rule refuses the call
+/// at its own span. That rule was off on the build path until GH #911
+/// B1, so the two layers gave two different answers to one question:
+///
+/// ```console
+/// $ hale check seed/
+/// seed/main.hl:2:13: type error: call to `hex`: no free fn, generic
+/// fn or fn-pointer binding with that name is in scope
+///         let s = hex(255);
+///                 ^^^
+/// $ hale build seed/
+/// codegen error: unsupported in codegen v0: call to `hex`: no free fn
+/// / generic fn / fn-pointer binding with that name is in scope — did
+/// you mean `__json_hex4`?
+/// ```
+///
+/// No file, no line, no caret, from a layer below the one that had
+/// just approved the program — and a did-you-mean naming a compiler
+/// internal the author cannot write.
+///
+/// (An ordinary string literal, not a raw one: `hale-corpus` harvests
+/// `r#"…"#` program literals out of the test sources.)
+const UNKNOWN_BARE_CALLEE: &str =
+    "fn main() {\n    let s = hex(255);\n    println(s);\n}\n";
+
+/// The one `path:line:col: type error: message` line, from whichever
+/// stream the command reports on.
+fn located_type_error(what: &str, out: &str) -> String {
+    let rows: Vec<&str> =
+        out.lines().filter(|l| l.contains(": type error:")).collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "one mistake, one located type error from {what}:\n{out}"
+    );
+    rows[0].trim().to_string()
+}
+
+/// Every command that holds the whole program reports the unbound
+/// name the way `check` does — same file, same line, same column, same
+/// sentence — rather than as codegen's spanless refusal.
+///
+/// The drift guard for B1: the strictness is one boolean per entry
+/// point, so a new command that compiles, or an entry point moved back
+/// to `check_bundle_opts`, silently returns to the unlocated answer.
+#[test]
+fn build_run_and_test_report_a_bare_unknown_name_as_check_does() {
+    let d = seed_dir("barename911");
+    let f = d.join("main.hl");
+    std::fs::write(&f, UNKNOWN_BARE_CALLEE).unwrap();
+
+    // `check` of the SEED is the reference answer: the rule wants a
+    // whole program, and one file of a multi-file seed may call what a
+    // sibling declares, so `hale check <file>` stays permissive by
+    // design and is not the comparison.
+    let (check_out, check_err, check_code) = hale_check(&[], &d);
+    let check_all = format!("{check_out}{check_err}");
+    assert_eq!(check_code, 1, "check refuses it:\n{check_all}");
+    let from_check = located_type_error("check", &check_all);
+    assert!(
+        from_check.contains("main.hl:2:13: type error: call to `hex`: ")
+            && from_check.contains(
+                "no free fn, generic fn or fn-pointer binding with that \
+                 name is in scope"
+            ),
+        "the reference answer is located at the call: {from_check}"
+    );
+
+    // A directory and a single file reach the check through different
+    // entry points in every one of these commands, so both are asked.
+    for (what, target) in [
+        ("build <dir>", d.as_path()),
+        ("build <file>", f.as_path()),
+        ("run <dir>", d.as_path()),
+        ("run <file>", f.as_path()),
+        ("test <file>", f.as_path()),
+    ] {
+        let cmd = what.split_whitespace().next().unwrap();
+        let (out, err, code) = hale_cmd(cmd, &[], target);
+        let all = format!("{out}{err}");
+        assert_eq!(code, 1, "{what} refuses it:\n{all}");
+        assert_eq!(
+            located_type_error(what, &all),
+            from_check,
+            "{what} must report it exactly as check does\ncheck:\n\
+             {check_all}\n{what}:\n{all}"
+        );
+        assert!(
+            all.contains("let s = hex(255);") && all.contains('^'),
+            "{what} must cut the snippet and caret from the source \
+             too:\n{all}"
+        );
+        assert!(
+            !all.contains("codegen error"),
+            "{what} must not fall through to the backend's answer:\n{all}"
+        );
+        assert!(
+            !all.contains("__json_hex4"),
+            "{what} must not offer a compiler-internal spelling as the \
+             did-you-mean:\n{all}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}

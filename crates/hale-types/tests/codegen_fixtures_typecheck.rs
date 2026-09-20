@@ -23,7 +23,15 @@
 /// Multi-file projects: a single `main.hl` legitimately can't see
 /// types its siblings declare, so checking it in isolation reports
 /// "unknown type" for reasons that are not defects.
-const MULTI_FILE_PROJECTS: &[&str] = &["25-imports", "fitter-applier-pair"];
+///
+/// `multi-file-seed` joined them with GH #911 B1: `check_program` now
+/// holds the whole-program rules, and that fixture's `main.hl` calls
+/// `greeting` — which its sibling `greet.hl` declares — by bare name,
+/// which is the fixture's whole point. The same seed checked and built
+/// as a seed (`hale check <dir>`, which is what the corpus oracle
+/// does) binds it.
+const MULTI_FILE_PROJECTS: &[&str] =
+    &["25-imports", "fitter-applier-pair", "multi-file-seed"];
 
 #[test]
 fn on_disk_example_corpus_typechecks_clean() {
