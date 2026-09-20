@@ -126,6 +126,39 @@ And this is why work that needs its siblings to exist belongs in
 the **main locus's** `run()`, not a child's — main's `run()` starts
 only once every child has been born.
 
+## A locus can't hold one of itself
+
+A params field is where a locus keeps its children, so this looks
+like it should be a linked list:
+
+```hale,fragment
+params { n: Int = 0; next: Node = Node { n: 1 }; }   // won't compile
+```
+
+It isn't one. The `Node` that default builds leaves *its* `next` to
+the same default, which builds another, and nothing ends the chain
+— not even the call site, because `Node { next: ... }` needs a
+`Node` to hand over and building one asks the same question again.
+The compiler says so at the param:
+
+```text
+param `next` of `Node` defaults to a `Node`; a locus cannot contain
+itself by value - every one the default builds needs another, and
+no locus literal can end the chain.
+```
+
+The same error covers a ring through two or three types, and names
+it (`Alpha` -> `Beta` -> `Alpha`). A locus holding a *different*
+locus is the ordinary parent/child shape and is untouched.
+
+What to write instead: take the child from the caller
+(`next: Node;`, supplied at the literal), keep a collection of them
+in a [form](../systems/forms.md) or a `capacity` slot, or hold a
+plain value rather than a locus. A locus is a live thing — an
+arena, a lifecycle, maybe a thread of its own — so a self-similar
+*chain* of them is almost always a collection wearing the wrong
+clothes.
+
 ## When does a locus dissolve?
 
 This is the one piece of bookkeeping worth internalizing,
