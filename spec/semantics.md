@@ -2750,6 +2750,15 @@ is just `xs.get(0) or …`; a stage-less sum can be written
 `*_into` names belong to this vocabulary — unlike bare `into`, no
 plausible user facade carries them (2026-08-11).
 
+Every stage and terminal above is recognized only **after a `.`**,
+so a free `fn map(...)` / `fn first(...)` / `fn count(...)` is
+admissible and is called as written. The exceptions are the four
+names the compiler claims at a BARE call site — `sum`, `prod`,
+`min`, `max` — which a free `fn` may not take; see
+[`tokens.md` § Built-in identifiers](tokens.md) for the rule and
+the diagnostic. A locus method may still carry any of them
+(2026-09-20, GH #863).
+
 ## Bus subscription dispatch
 
 A `bus { subscribe SUBJECT as HANDLER of type T; }` declaration

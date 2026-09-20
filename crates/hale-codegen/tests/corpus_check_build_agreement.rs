@@ -507,3 +507,109 @@ fn purity_bare_builtins_are_bare_callees() {
         orphans
     );
 }
+
+/// GH #863 — a name the compiler claims at a bare call site cannot
+/// also be DECLARED.
+///
+/// The same divergence this file exists for, entered from the
+/// declaration side. A free `fn sum(a: Int) -> Int { … }` passed
+/// `hale check` and was refused by `hale build` with `unsupported in
+/// codegen v0: 'sum(...)' outside a closure assertion`, unlocated —
+/// the parser gives `sum(` its own production, so the user's fn was
+/// never the callee. A two-arg `fn min(a: Int, b: Int)` was worse
+/// than a divergence: it BUILT, and ran codegen's math builtin
+/// instead of the body, silently.
+///
+/// The corpus sweeps above cannot see either one, because no corpus
+/// program declares these names — which is how both survived.
+///
+/// Agreement now holds the only way it can for a name codegen
+/// claims: the declaration is refused at parse, so `hale check` and
+/// `hale build` refuse the same programs with the same located
+/// sentence. Both halves are asserted, plus the control — the same
+/// program with the declaration renamed must still build, so the
+/// refusal is about the name and not the shape.
+#[test]
+fn a_fn_named_after_a_claimed_builtin_is_refused_before_codegen() {
+    const CLAIMED: [&str; 4] = ["sum", "prod", "min", "max"];
+    let mut failures: Vec<String> = Vec::new();
+    for (i, word) in CLAIMED.iter().enumerate() {
+        for (arity, params, call) in [
+            (1usize, "a: Int".to_string(), format!("{}(1)", word)),
+            (2usize, "a: Int, b: Int".to_string(), format!("{}(1, 2)", word)),
+        ] {
+            let src = format!(
+                "fn {w}({params}) -> Int {{\n    return 1;\n}}\n\n\
+                 fn main() {{\n    println(\"{{}}\", {call});\n}}\n",
+                w = word,
+                params = params,
+                call = call,
+            );
+            match hale_syntax::parse_source(&src) {
+                Ok(_) => failures.push(format!(
+                    "  `fn {}` / {} arg(s) still parses — `hale check` \
+                     accepts it and codegen claims the call",
+                    word, arity
+                )),
+                Err(ds) => {
+                    let msgs: Vec<&str> =
+                        ds.iter().map(|d| d.message.as_str()).collect();
+                    if !msgs.iter().any(|m| {
+                        m.contains(
+                            "is a built-in call form and cannot name a fn",
+                        )
+                    }) {
+                        failures.push(format!(
+                            "  `fn {}` / {} arg(s) is refused, but not by \
+                             the declaration rule: {}",
+                            word,
+                            arity,
+                            msgs.join("; ")
+                        ));
+                    }
+                }
+            }
+
+            // The control: the same shape under a name nothing
+            // claims must still build.
+            let renamed =
+                src.replace(&format!("{}(", word), &format!("{}_of(", word));
+            let program = match hale_syntax::parse_source(&renamed) {
+                Ok(p) => p,
+                Err(ds) => {
+                    let msgs: Vec<&str> =
+                        ds.iter().map(|d| d.message.as_str()).collect();
+                    failures.push(format!(
+                        "  control `fn {}_of` does not parse: {}",
+                        word,
+                        msgs.join("; ")
+                    ));
+                    continue;
+                }
+            };
+            let bin =
+                harness::unique_bin(&format!("hale_claimed_{}_{}", i, arity));
+            match build_executable(&program, &bin) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&bin);
+                }
+                Err(e) => failures.push(format!(
+                    "  control `fn {}_of` / {} arg(s) does not build — {:?}",
+                    word, arity, e
+                )),
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} declaration(s) of a claimed built-in call form are not \
+         handled at parse, so `hale check` and `hale build` can \
+         disagree about them again (GH #863):\n{}\n\n\
+         The rule lives in `BUILTIN_CALL_FORMS` / \
+         `reject_builtin_call_form_as_fn` in \
+         `crates/hale-syntax/src/parser.rs`.",
+        failures.len(),
+        failures.join("\n")
+    );
+}
