@@ -125,6 +125,38 @@ in the backend with `locus L member kind not yet lowered to
 codegen` — a program the gate accepted that could not be built
 (GH #756, the sibling of the member `const`).
 
+### `const` is a top-level declaration
+
+A locus body may not declare a `const`. `const NAME: T = value;`
+is a top-level declaration only (see `grammar.ebnf`:
+`const_decl` is a `top_decl`, not a `locus_member`), and a
+`const` inside a locus body is a type error **at the `const`
+keyword**:
+
+```text
+main.hl:2:5: type error: `const limit` is declared inside locus
+`Holder`: `const` is a top-level declaration, not a locus
+member. Move it above the locus — a top-level `const` is in
+scope inside every locus of the seed — or, if each instance
+should carry its own, make it a params field with a default
+(`params { limit: ... = ...; }`).
+```
+
+The two spellings the diagnostic names are the supported ones: a
+top-level `const` is in scope inside every locus of the seed
+(one value, shared, compile-time), and a `params` field with a
+default gives each instance its own copy (`self.name`). A
+locus-level `const` is neither — it is not per-instance state,
+so it is not reachable as `self.name`, and it had no settled
+spelling for the other two readings (`L::name` from outside,
+bare `name` inside).
+
+Before this rule, the parser accepted the member and the checker
+typechecked its value, so such a program passed `hale check` and
+then failed in the backend with `locus L member kind not yet
+lowered to codegen` — a program the gate accepted that could not
+be built (GH #747).
+
 ### Reserved member names
 
 Every locus type also carries three **synthetic members** the

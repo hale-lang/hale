@@ -292,7 +292,6 @@ locus_member      = params_block
                   | failure_decl
                   | closure_decl
                   | function_decl
-                  | const_decl
                   | bindings_block
                   | placement_block
                   | topology_block
@@ -307,6 +306,14 @@ locus_member      = params_block
    located type error at the `type` keyword rather than a parse
    failure that cascades; see `types.md` § `type` is a top-level
    declaration. *)
+
+(* GH #747 — `const_decl` is NOT a locus member: a constant is a
+   top-level declaration (see `top_decl`), in scope inside every
+   locus of the seed. The parser still recognizes the keyword in a
+   locus body so the error can be a located type error at the
+   `const` keyword rather than a parse failure that cascades; see
+   `types.md` § `const` is a top-level declaration. Per-instance
+   constants are a `params` field with a default. *)
 
 (* GH #382 — the `claims { }` main-locus member: named,
    bundle-level sentences over the program graph. Only legal inside
