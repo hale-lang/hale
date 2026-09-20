@@ -1,10 +1,8 @@
 name: tests
 
-# Runs the full workspace test suite on every push (to any branch)
-# and on every pull request targeting main. Pushing a feature
-# branch is enough to delegate a full test run — no PR required.
-# Linux-only at v1; the release workflow exercises macOS coverage
-# at tag time.
+# Runs the full workspace test suite on every pull request targeting
+# main and on every push to main. Linux-only at v1; the macos
+# workflow and the release workflow cover macOS.
 #
 # Uses cargo-nextest (drop-in replacement for `cargo test`) for
 # smarter scheduling: each test runs in its own process.
@@ -169,30 +167,32 @@ jobs:
 
       # Fixtures resolve via CARGO_MANIFEST_DIR against this checkout,
       # so build + run happen in-place with no path remap.
-      - name: Free disk space
-        uses: ./.github/actions/free-disk-space
-
+      #
+      # No "Free disk space" step here any more: the test binaries
+      # link libLLVM dynamically (`hale-codegen/dynamic-llvm`, below),
+      # so the target dir is a few GB rather than tens, and the
+      # 1.5-3min of deleting preinstalled toolchains bought nothing.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      # Shared cache across the partitions (and reused run-to-run):
-      # all four restore the same key, so each partition's build is
-      # warm (~3min) rather than cold (~6.5min). One partition wins
-      # the save at job end; the others skip with a harmless warning.
-      - name: Cache cargo registry + target
-        uses: actions/cache@v4
+      # Shared cache across the partitions (and reused run-to-run).
+      # rust-cache keeps only the dependency artifacts — the workspace
+      # crates and their test binaries change on every commit and
+      # are rebuilt anyway — so the cache is a fraction of the size
+      # the raw `target` dir was (6.4GB, 2-3min to restore) and
+      # restores in seconds. Saved from main only, so a PR's cache
+      # writes cannot evict the one every other branch restores.
+      - name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-tests-x86_64-linux-llvm18-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-tests-x86_64-linux-llvm18-
+          shared-key: tests-x86_64-linux-llvm18
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install LLVM 18 + clang
-        # llvm-sys links libLLVM.so.18 dynamically; clang-18 is also
-        # invoked at test time to link compiled `.hl` fixtures.
+        # llvm-18-dev provides both the static archives and
+        # libLLVM-18.so; the builds below link the shared one
+        # (`hale-codegen/dynamic-llvm`). clang-18 is also invoked at
+        # test time to link compiled `.hl` fixtures.
         run: |
           set -eux
           sudo apt-get update
@@ -212,7 +212,12 @@ jobs:
         # path-probe (no cargo dep edge forces it), so going straight
         # to `cargo test` misses it (`undefined reference to
         # lotus_ts_*`).
-        run: cargo build --release --workspace
+        #
+        # `--features hale-codegen/dynamic-llvm`: link the shared
+        # libLLVM rather than a static copy into every binary. The
+        # same flag on the nextest run below, or cargo would build
+        # the workspace twice under two feature sets.
+        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
       - name: hale fmt --check (canonical-form gate)
         # The styleguide's §5 fmt tier: the repo's own .hl surface
@@ -235,7 +240,7 @@ jobs:
         # reproducible to its partition.
         run: |
           cargo nextest run \
-            --release --workspace \
+            --release --workspace --features hale-codegen/dynamic-llvm \
             --partition hash:${{ matrix.partition }}/4
 
   # 2026-05-26 — TSAN regression coverage for the lockfree
