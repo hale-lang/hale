@@ -1,9 +1,25 @@
 //! `std::process::rss_bytes() -> Int` — observability primitive
 //! backed by `getrusage(RUSAGE_SELF)`. Returns the peak resident
 //! set size in bytes. Useful for long-running daemons that want
-//! to assert their memory pressure stays bounded (and is the
-//! workaround for read_file-of-/proc/self/statm returning empty
-//! because synthesized files report st_size=0).
+//! to assert their memory pressure stays bounded.
+//!
+//! Two things it is NOT, both of which cost this suite real time
+//! (GH #772):
+//!
+//!   * It is not the program's own number when the program was
+//!     spawned: `execve` folds the pre-exec (fork-inherited,
+//!     copy-on-write) RSS high-water mark into `ru_maxrss`, so a
+//!     child reports at least its parent's RSS forever. Measured:
+//!     4.7 MB standalone, 411 MB from a parent holding 400 MB.
+//!     Tests that have to measure a spawned program use
+//!     `harness::SELF_RSS_HL`, which reads /proc/self/statm.
+//!   * It is no longer the workaround for `read_file` of
+//!     /proc/self/statm "returning empty because synthesized files
+//!     report st_size=0" — as this comment used to claim. That was
+//!     true before the size-tolerant read landed;
+//!     `std::io::fs::read_file("/proc/self/statm")` returns the
+//!     live content today, which is what makes SELF_RSS_HL
+//!     possible.
 
 use std::process::Command;
 

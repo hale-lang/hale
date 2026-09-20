@@ -755,7 +755,7 @@ crates/hale-codegen/tests/json_range_helpers.rs#1 3b731ede5842c7dc
 crates/hale-codegen/tests/json_range_helpers.rs#2 3b731ede5842c7dc
 crates/hale-codegen/tests/json_range_helpers.rs#3 865d341109268295
 crates/hale-codegen/tests/json_range_helpers.rs#4 865d341109268295
-crates/hale-codegen/tests/json_range_helpers.rs#5 a6cceee031d6561b
+crates/hale-codegen/tests/json_range_helpers.rs#5 e84a1badfaeaf62f
 crates/hale-codegen/tests/json_span_iter.rs#0 865d341109268295
 crates/hale-codegen/tests/json_span_iter.rs#1 865d341109268295
 crates/hale-codegen/tests/json_span_iter.rs#2 865d341109268295

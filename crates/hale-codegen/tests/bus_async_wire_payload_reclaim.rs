@@ -48,7 +48,7 @@ fn flood_src(body_expr: &str, n: u32) -> String {
                 self.acc = self.acc + len(m.body);
                 if self.got == self.n {{
                     print("acc="); println(self.acc);
-                    print("final_rss_mb="); println(std::process::rss_bytes() / 1048576);
+                    print("rss_statm="); println(std::io::fs::read_file("/proc/self/statm") or "");
                     std::process::exit(0);
                 }}
             }}
@@ -86,6 +86,13 @@ fn flood_src(body_expr: &str, n: u32) -> String {
     )
 }
 
+/// The megabytes the program reports for ITSELF, out of the
+/// `/proc/self/statm` line it prints (`harness::statm_resident_bytes`).
+/// `std::process::rss_bytes()` is `getrusage(RUSAGE_SELF).ru_maxrss`,
+/// which a spawned program inherits from its parent through
+/// fork+exec: under the test harness both runs below clamped to the
+/// same harness footprint, so the gap this test asserts on was 0
+/// whatever the payloads did (GH #772).
 fn build_and_rss(name: &str, src: &str) -> i64 {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_bus_async_reclaim_{}", name));
@@ -94,11 +101,11 @@ fn build_and_rss(name: &str, src: &str) -> i64 {
     let _ = std::fs::remove_file(&bin);
     assert!(output.status.success(), "{} crashed: {:?}", name, output.status);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
+    let statm = stdout
         .lines()
-        .find(|l| l.starts_with("final_rss_mb="))
-        .and_then(|l| l.trim_start_matches("final_rss_mb=").trim().parse().ok())
-        .unwrap_or_else(|| panic!("no final_rss_mb in {} stdout: {:?}", name, stdout))
+        .find_map(|l| l.strip_prefix("rss_statm="))
+        .unwrap_or_else(|| panic!("no rss_statm in {} stdout: {:?}", name, stdout));
+    harness::statm_resident_bytes(statm) / 1048576
 }
 
 #[test]

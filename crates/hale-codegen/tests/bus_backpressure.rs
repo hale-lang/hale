@@ -19,6 +19,14 @@ use hale_codegen::build_executable;
 #[path = "support/harness.rs"]
 mod harness;
 
+/// The megabytes the program reports for ITSELF, out of the
+/// `/proc/self/statm` line it prints (`harness::statm_resident_bytes`).
+/// `std::process::rss_bytes()` cannot be used: a spawned program
+/// inherits its parent's RSS high-water mark through fork+exec, so
+/// under `cargo test` these readings clamped to the libtest
+/// harness's own footprint (~135 MB with several in-process LLVM
+/// builds running) — two thirds of the 200 MB bound below, before
+/// this program allocated anything. See GH #772.
 fn build_and_rss(name: &str, src: &str) -> i64 {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_bus_bp_{}", name));
@@ -27,11 +35,11 @@ fn build_and_rss(name: &str, src: &str) -> i64 {
     let _ = std::fs::remove_file(&bin);
     assert!(output.status.success(), "{} crashed: {:?}", name, output.status);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
+    let statm = stdout
         .lines()
-        .find(|l| l.starts_with("final_rss_mb="))
-        .and_then(|l| l.trim_start_matches("final_rss_mb=").trim().parse().ok())
-        .unwrap_or_else(|| panic!("no final_rss_mb in {} stdout: {:?}", name, stdout))
+        .find_map(|l| l.strip_prefix("rss_statm="))
+        .unwrap_or_else(|| panic!("no rss_statm in {} stdout: {:?}", name, stdout));
+    harness::statm_resident_bytes(statm) / 1048576
 }
 
 /// A `Source` whose `birth()` publishes 2M ticks before yielding — the
@@ -46,8 +54,8 @@ const FLOOD: &str = r#"
             self.acc = self.acc + t.n;
             self.count = self.count + 1;
             if self.count == self.n {
-                print("final_rss_mb=");
-                println(std::process::rss_bytes() / 1048576);
+                print("rss_statm=");
+                println(std::io::fs::read_file("/proc/self/statm") or "");
             }
         }
     }
@@ -80,8 +88,8 @@ const PINNED_FLOOD: &str = r#"
             let mut i = 0;
             while i < 2000000 { "px" <- Tick { n: i }; i = i + 1; }
             while self.sub.count < 2000000 { std::time::sleep(1ms); }
-            print("final_rss_mb=");
-            println(std::process::rss_bytes() / 1048576);
+            print("rss_statm=");
+            println(std::io::fs::read_file("/proc/self/statm") or "");
         }
     }
     fn main() { App { }; }

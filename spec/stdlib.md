@@ -463,10 +463,26 @@ let bytes = std::process::rss_bytes();
 println("rss=", to_string(bytes));
 ```
 
-For the *current* RSS, parse `/proc/self/statm`'s line one
-field two via `read_file` (size-tolerant for synthesized
-files). Both surfaces ship; pick by use case (peak for
-alarms, current for heartbeat gauges).
+**A spawned process inherits its parent's peak.** `execve` does
+not reset `ru_maxrss`: `fork` hands the child a copy-on-write
+duplicate of the parent's address space, so the pre-exec child's
+RSS high-water mark *is* the parent's RSS, and the exec folds that
+mark into the new image's `ru_maxrss` for the life of the process.
+A program started by a large parent therefore reports at least
+that parent's RSS forever after — measured, one unmodified binary
+reads 4.7 MB standalone and 411 MB when spawned from a parent
+holding 400 MB. `rss_bytes()` is a peak for a process that owns
+its own history (a service started by an init system, a CLI run
+from a shell); it is not a way to measure a child you spawned, and
+a supervised worker's reading carries its supervisor's footprint.
+
+For the *current* RSS — and for any measurement that must be the
+program's own — parse `/proc/self/statm`'s line one field two via
+`read_file` (size-tolerant for synthesized files); that file is
+read from the post-exec address space and carries none of the
+inherited history. Both surfaces ship; pick by use case (peak for
+alarms on a top-level process, current for heartbeat gauges and
+for anything spawned).
 
 ## `Server.shutdown()` — interruptible accept loop
 

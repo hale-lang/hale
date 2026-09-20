@@ -79,6 +79,16 @@ to confirm growth before you go digging. `dump_pool_residency()` is
 the per-pool view (pending/in-flight work), useful when the growth
 is a queue rather than an arena.
 
+One caveat on `rss_bytes()`: it is `getrusage`'s *peak*, and a
+process inherits its parent's peak through `fork` + `exec` — a
+worker your supervisor spawned reports at least the supervisor's
+RSS from its first instruction. Poll the delta over the life of
+the process rather than the absolute number, or read
+`/proc/self/statm` field two (current RSS, no inherited history)
+when the figure has to be this program's own. See
+[`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md)
+§ `std::process::rss_bytes()`.
+
 **Compile-time proofs.** Before the program even runs, three build
 flags report on allocation shape:
 
