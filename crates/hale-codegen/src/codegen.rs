@@ -1540,6 +1540,7 @@ pub fn build_executable_with_options(
         replica_index_for_next_locus_instantiation: None,
         current_instantiation_replica_index: 0,
         suppress_fresh_temp: false,
+        or_field_owner_locus: None,
         in_fresh_temp_hook: false,
         current_fn_skip_exit_drain: false,
         bus_inert,
@@ -4762,6 +4763,15 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// filter registers as the subscription key.
     pub(crate) current_instantiation_replica_index: u64,
     pub(crate) suppress_fresh_temp: bool,
+    /// GH #853: the locus a param field being initialised holds,
+    /// when that field's initialiser is an `or <substitute>` whose
+    /// BOTH branches transfer into it
+    /// (`or_substitute_transfers_into_field`). One-shot, taken by
+    /// `lower_or_expr` on the outermost `or` node exactly as
+    /// `suppress_fresh_temp` is, and the reason the substitute is
+    /// not ALSO given the GH #402 frame temporary that the field's
+    /// mask bit would then double-own.
+    pub(crate) or_field_owner_locus: Option<String>,
     /// GH #402: re-entry guard for the fresh-temp hook, cleared
     /// immediately on entry so nested calls still get their own.
     pub(crate) in_fresh_temp_hook: bool,
@@ -7165,18 +7175,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // question, because a DIVERGING err branch leaves the
         // factory's result as the only value the field can hold.
         //
-        // `or <substitute>` is a different question and this rule
-        // stays out of it. The field then holds one of two values
-        // decided at run time, and the substitute already has an
-        // owner of its own: a locus literal there consumes the
-        // parent-field flag and sets this same bit the ordinary way
-        // (so the shape is already right without us), while a call
-        // there takes a frame temporary (GH #402) and an external
-        // handle belongs to its own binding. Claiming the field in
-        // those cases would put a second owner on a value that has
-        // one — the direction this family of rules never goes, since
-        // a missed bit is the old leak and an extra one is a double
-        // free.
+        // `or <substitute>` is a different question, because the
+        // field then holds one of two values decided at run time and
+        // BOTH have to be the field's for the bit to be right. That
+        // is `or_substitute_transfers_into_field` (GH #853), asked
+        // separately by the same two sites; an external handle in
+        // that position still belongs to its own binding and still
+        // leaves the bit clear — the direction this family of rules
+        // never goes, since a missed bit is the old leak and an
+        // extra one is a double free.
         let call = match e {
             Expr::Call { .. } => e,
             Expr::Or { inner, disposition, .. }
@@ -7244,6 +7251,105 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.fresh_temp_decision_lands_on(inner)
             }
             Expr::If(_) | Expr::Match(_) | Expr::Block(_) => true,
+            _ => false,
+        }
+    }
+
+    /// GH #853: does an `or <substitute>` param-field initialiser
+    /// hand the field a value the field is the SOLE owner of on
+    /// EITHER branch?
+    ///
+    /// `Router { quick: make_f(5) or make2() }` is one field and one
+    /// mask bit, but two values: the factory's on the ok branch and
+    /// the substitute's on the err branch, and only one of them is
+    /// ever built. The bit is a static store, so it claims whichever
+    /// one the field ends up holding — which is right exactly when
+    /// NEITHER branch's value has an owner elsewhere. Then the
+    /// owner's cascade tears down the value that was produced, once.
+    ///
+    /// Left to the older rules the same field got neither: the F.17
+    /// gate kept the frame off the ok value and no bit claimed it
+    /// (a leak), while the substitute took the GH #402 frame
+    /// temporary and was flushed at the enclosing fn's exit with the
+    /// field still pointing at it (a use-after-free as soon as the
+    /// owner outlives that frame — a returned router read its
+    /// child's fields after the child's `dissolve()` had run).
+    ///
+    /// A branch transfers into the field when it is
+    ///
+    ///   * a proven-fresh factory call of the field's own locus —
+    ///     the `fresh_locus_factories` fixpoint GH #383 / #402 / #836
+    ///     already decide ownership with, so an ACCESSOR (`pick(x, y)`
+    ///     hands back a locus its own `let` still owns) never
+    ///     qualifies;
+    ///   * a locus literal of that locus, which is the shape that was
+    ///     already right: it consumes the parent-field flag and sets
+    ///     this same bit the ordinary way;
+    ///   * a nested `or` whose own branches all qualify, diverging
+    ///     (`or raise` / `or fail`) or substituting.
+    ///
+    /// Anything else — an external handle, a call the fixpoint did
+    /// not prove fresh, an interface-typed field — leaves the bit
+    /// clear and reads exactly as it did before.
+    ///
+    /// The answer is also what arms `or_field_owner_locus`, so the
+    /// claim at the store and the suppression of the substitute's
+    /// frame temporary in `lower_or_expr` cannot disagree: one
+    /// predicate, asked once per field init.
+    pub(crate) fn or_substitute_transfers_into_field(
+        &self,
+        e: &Expr,
+        field_locus: &str,
+    ) -> bool {
+        let Expr::Or { inner, disposition, .. } = e else {
+            return false;
+        };
+        let OrDisposition::Substitute(rhs) = disposition else {
+            return false;
+        };
+        // The ok branch. Note this is the inner call itself, not
+        // `field_init_is_fresh_factory` — which would also accept a
+        // nested `or`, and a nested `or` on the OK side of an outer
+        // one is `lower_fallible_call`'s territory rather than this
+        // rule's.
+        let ok_transfers = match inner.as_ref() {
+            Expr::Call { callee, .. } => self
+                .callee_fn_name(callee)
+                .and_then(|f| self.fresh_locus_factories.get(&f))
+                .map(|(l, _)| l == field_locus)
+                .unwrap_or(false),
+            _ => false,
+        };
+        ok_transfers && self.or_branch_transfers_into_field(rhs, field_locus)
+    }
+
+    /// GH #853: the per-branch half of the rule above — "this
+    /// expression, evaluated in a param-field initialiser, produces a
+    /// value the field is the sole owner of".
+    pub(crate) fn or_branch_transfers_into_field(
+        &self,
+        e: &Expr,
+        field_locus: &str,
+    ) -> bool {
+        match e {
+            Expr::Call { callee, .. } => self
+                .callee_fn_name(callee)
+                .and_then(|f| self.fresh_locus_factories.get(&f))
+                .map(|(l, _)| l == field_locus)
+                .unwrap_or(false),
+            // `Router { quick: make_f(5) or Quick { n: 9 } }` — the
+            // spelling that was already right, stated here so the
+            // predicate describes the whole rule rather than only
+            // the part that moved.
+            Expr::Struct { path, .. } => path
+                .segments
+                .last()
+                .map(|s| s.name == field_locus)
+                .unwrap_or(false),
+            Expr::Or { .. } => {
+                self.field_init_is_fresh_factory(e, field_locus)
+                    || self.or_substitute_transfers_into_field(e, field_locus)
+            }
             _ => false,
         }
     }

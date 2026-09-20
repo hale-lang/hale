@@ -422,12 +422,20 @@ position by GH #711 / #812):
   the call site or as the param's **default**, and whether the
   call is bare or reached through a *diverging* `or` (`or raise`,
   `or fail`), where the factory's result is the only value the
-  field can hold (GH #836). Two calls in that position transfer
-  nothing and are excluded exactly as an external handle is: one
-  that returns a locus it did *not* build (one of its arguments, a
-  handle it was given), and one under `or <substitute>`, where the
-  field holds whichever branch ran and the substitute carries its
-  own owner.
+  field can hold (GH #836). `or <substitute>` transfers on **both
+  branches**: the field holds whichever branch ran and owns that
+  value, so `Router { quick: make_f(5) or make2() }` reclaims
+  exactly the locus that was built, once, from the owner's cascade
+  — the substitute is not *also* a temporary of the frame that
+  built the owner, which would flush it at that frame's exit with
+  the field still pointing at it (GH #853). The claim needs every
+  branch to transfer: a proven-fresh factory call of the field's
+  own locus, a locus literal, or a nested `or` of those. A call in
+  that position that transfers nothing is excluded exactly as an
+  external handle is — one that returns a locus it did *not* build
+  (one of its arguments, a handle it was given), and an `or` whose
+  ok value or substitute is such a call — and the value is left to
+  its real owner.
 - **Long-lived** (locus has `bus subscribe`): always deferred,
   irrespective of binding shape — the locus must stay alive to
   receive published events between birth and the enclosing

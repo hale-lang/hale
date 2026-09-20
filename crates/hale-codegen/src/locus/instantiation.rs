@@ -2357,6 +2357,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // GH #383 fixpoint) qualifies — a call that
                     // hands back a locus somebody else holds leaves
                     // the bit clear, as it always did.
+                    //
+                    // GH #853: `make_f(5) or make2()` is the same
+                    // field and the same bit once BOTH branches
+                    // transfer into it — the field holds one of two
+                    // values and owns whichever one was built.
+                    // `or_field_owner_locus` carries that decision
+                    // into `lower_or_expr`, which is where the
+                    // substitute would otherwise take the GH #402
+                    // frame temporary this bit must not double-own.
+                    let mut or_substitute_owned = None;
                     let factory_owned_by_field = match info
                         .fields
                         .get(fname.as_str())
@@ -2364,7 +2374,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     {
                         Some(CodegenTy::LocusRef(l)) => {
                             let l = l.clone();
-                            self.field_init_is_fresh_factory(expr, &l)
+                            let or_sub = self
+                                .or_substitute_transfers_into_field(expr, &l);
+                            if or_sub {
+                                or_substitute_owned = Some(l.clone());
+                            }
+                            or_sub || self.field_init_is_fresh_factory(expr, &l)
                         }
                         _ => false,
                     };
@@ -2372,7 +2387,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     if field_owns_locus_rhs {
                         self.suppress_fresh_temp = true;
                     }
+                    let prev_ofo = self.or_field_owner_locus.take();
+                    self.or_field_owner_locus = or_substitute_owned;
                     let r = self.lower_expr(expr, scope);
+                    self.or_field_owner_locus = prev_ofo;
                     self.suppress_fresh_temp = prev_sft;
                     let r = r?;
                     self.params_init_initialized = inner_init;
@@ -2425,6 +2443,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // whose DEFAULT is a factory call is the
                             // same transfer into the same field, so
                             // it takes the same ownership bit.
+                            // GH #853, likewise: a DEFAULT that is an
+                            // `or <substitute>` transfers into the
+                            // same field on both branches.
+                            let mut or_substitute_owned = None;
                             let factory_owned_by_field = match info
                                 .fields
                                 .get(fname.as_str())
@@ -2432,7 +2454,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             {
                                 Some(CodegenTy::LocusRef(l)) => {
                                     let l = l.clone();
-                                    self.field_init_is_fresh_factory(e, &l)
+                                    let or_sub = self
+                                        .or_substitute_transfers_into_field(
+                                            e, &l,
+                                        );
+                                    if or_sub {
+                                        or_substitute_owned = Some(l.clone());
+                                    }
+                                    or_sub
+                                        || self
+                                            .field_init_is_fresh_factory(e, &l)
                                 }
                                 _ => false,
                             };
@@ -2440,7 +2471,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             if field_owns_locus_rhs {
                                 self.suppress_fresh_temp = true;
                             }
+                            let prev_ofo = self.or_field_owner_locus.take();
+                            self.or_field_owner_locus = or_substitute_owned;
                             let r = self.lower_expr(e, scope);
+                            self.or_field_owner_locus = prev_ofo;
                             self.suppress_fresh_temp = prev_sft;
                             let r = r?;
                             self.in_params_default = saved_ipd;
