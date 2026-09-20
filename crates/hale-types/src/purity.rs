@@ -133,25 +133,35 @@ fn is_impure_stdlib(segments: &[&str]) -> bool {
 }
 
 /// Bare-identifier callee names that are impure builtins (visible
-/// to user code without the `std::` qualifier). The bus / print
-/// surface that shipped as bare-name primitives lives here.
+/// to user code without the `std::` qualifier). The print surface
+/// that shipped as bare-name primitives lives here.
+///
+/// GH #800: this is only ever consulted for an `Expr::Ident` in
+/// CALLEE position, so every entry must be a name that can stand
+/// there — that is, a member of [`crate::check::BARE_BUILTIN_CALLEES`],
+/// the set of bare callees the compiler answers. Anything else
+/// states the purity of a call that cannot compile. It listed eight
+/// such names. Six (`bubble`, `quarantine`, `restart`,
+/// `restart_in_place`, `dissolve`, `reorganize`) are hard keywords
+/// in the lexer and never lex as an identifier at all; `raise` is an
+/// `or` DISPOSITION, parsed in its own position and never a call;
+/// and `panic` does not exist in the language (`spec/runtime.md`:
+/// "Hale has no `panic(msg)`"). The subset property is pinned by
+/// `purity_bare_builtins_are_bare_callees`.
 const IMPURE_BARE_BUILTINS: &[&str] = &[
     "println",
     "print",
     "eprintln",
     "eprint",
-    "raise",        // diverges via closure violation
-    "panic",        // process exit
-    "bubble",       // recovery escalation
-    "quarantine",
-    "restart",
-    "restart_in_place",
-    "dissolve",
-    "reorganize",
 ];
 
 fn is_impure_bare_builtin(name: &str) -> bool {
     IMPURE_BARE_BUILTINS.iter().any(|n| *n == name)
+}
+
+/// Read-only view for the agreement test (see the const's docs).
+pub fn impure_bare_builtins() -> &'static [&'static str] {
+    IMPURE_BARE_BUILTINS
 }
 
 /// Bundle of programs the typecheck pass operates on. Mirrors the

@@ -138,12 +138,19 @@ did you mean `celsius_to_f`?
 "Something" means a free function, a generic function, a
 fn-pointer binding — or one of the handful of *builtins* the
 compiler answers itself, which you can call without declaring
-anything: `len`, `to_string`, `Int`, the printers (`print`,
-`println`, `eprint`, `eprintln`), `abs` / `min` / `max`,
-`starts_with` / `contains`, and the `bounded` collection
-intrinsics. Those are not magic names to memorise — you'll meet
-each one where it's useful — but they are why `len(s)` needs no
-import.
+anything: `len`, `to_string`, the two numeric casts `Int` /
+`Float`, the printers (`print`, `println`, `eprint`, `eprintln`),
+`abs` / `min` / `max`, `starts_with` / `contains`, and the
+`bounded` collection intrinsics. Those are not magic names to
+memorise — you'll meet each one where it's useful — but they are
+why `len(s)` needs no import.
+
+The list is short on purpose, and it is exact: a name that is not
+on it and not declared is refused here, at the call, rather than
+somewhere in the backend. A capitalised name that *looks* like a
+conversion is not one — `String(x)` is not a cast, it is a call to
+nothing. Use `to_string(x)` to render a value and
+`std::str::parse_int` / `parse_float` to read one back.
 
 Like the unknown-identifier rule, this one wants the whole
 program, so it's on for `hale check <directory>`. One file of a

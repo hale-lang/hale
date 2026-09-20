@@ -338,6 +338,13 @@ becomes "a closure asserting state is possible." "Bail from this
 function" is a category error in Hale — functions return
 values; failure lives at the locus level.
 
+Writing `panic("…")` anyway is an ordinary unbound callee: `hale
+check <directory>` reports ``call to `panic`: no free fn, generic
+fn or fn-pointer binding with that name is in scope`` at the call.
+Until GH #800 the name sat in the checker's bare-builtin exemption
+table, so `check` accepted it and only `hale build` objected, at
+lowering, without a source location.
+
 ## Form-synthesized error types
 
 Beyond the explicit `std::*` namespace, the resolver injects
