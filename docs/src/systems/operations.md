@@ -273,6 +273,7 @@ file format is pre-stable (GH #296).
 ```sh
 hale replay run.halerec app.hl            # re-execute it
 hale replay run.halerec app.hl --diff     # + compare, fail on any divergence
+hale replay run.halerec app.hl --diff --json      # ...that verdict, machine-readable
 hale replay run.halerec app.hl --at 65:12 # SIGSTOP at consumer 65's 12th consume
 hale replay run.halerec app.hl --allow-truncated  # crashed run → replay the prefix
 hale replay run.halerec app.hl --feed     # inject the ingress tape into changed code
@@ -282,7 +283,9 @@ The full story — admission by executable identity, the
 safe-by-default effect gate (`--allow-live-effects`), env-value
 redaction (`LOTUS_OBS_RECORD_ENV`), the hermetic wire and ingress
 injection, feed mode (backtesting), crash-truncated recordings,
-and what the comparator actually compares — has its own chapter:
+and what the comparator actually compares (a match names its
+coverage per category, and says which categories a recording never
+exercised) — has its own chapter:
 [Record & replay](./replay.md).
 
 ## Debugging with the native toolchain
