@@ -226,8 +226,20 @@ jobs:
             -p hale-cli --test mcp \
             --features hale-codegen/dynamic-llvm
 
-  test:
-    name: test ${{ matrix.partition }}/6
+  # The partitions are by BINARY SET, not by test-name hash. Every
+  # file under a crate's tests/ is its own test binary — 565 across
+  # the workspace — and a hash partition over test names needs nearly
+  # all of them, so each of six partitions spent ~4min compiling and
+  # linking the whole set to run a sixth of it (2026-09-20, and
+  # sccache cannot help: it caches rlibs, never bin/test crate
+  # types). Three job families instead, each building only what it
+  # runs: `cli` (hale-cli and the crates beside it, minus the DNA
+  # fixture suite), `codegen` (hale-codegen's 334 binaries, split by
+  # FILE so each half compiles 167), and `dna` (the fixture suite on
+  # its own, so its slices can run four-wide). The LLVM-free crates
+  # are `quick`'s.
+  cli:
+    name: cli ${{ matrix.part }}/3
     needs: scope
     if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-latest
@@ -236,7 +248,7 @@ jobs:
       # we want to see the full failure picture across the suite.
       fail-fast: false
       matrix:
-        partition: [1, 2, 3, 4, 5, 6]
+        part: [1, 2, 3]
     # GH #583 K1: the knowledge store's Postgres half runs against a
     # service container; `dna/tests/knowledge_store_test.hl` reads the
     # DSN and skips the half when it is unset (a laptop without one).
@@ -329,8 +341,8 @@ jobs:
       - name: hale fmt --check (canonical-form gate)
         # The styleguide's §5 fmt tier: the repo's own .hl surface
         # must be canonical. Partition 1 only — the check is
-        # whole-repo and takes <1s; running it 6× adds nothing.
-        if: matrix.partition == 1
+        # whole-repo and takes <1s; running it 3× adds nothing.
+        if: matrix.part == 1
         run: |
           # Whole repo, not an enumerated list. The list form silently
           # excluded tests/hale (the in-language suite), which drifted
@@ -338,17 +350,152 @@ jobs:
           # scope that goes stale every time a directory is added.
           ./target/release/hale fmt --check .
 
-      - name: cargo nextest run (partition ${{ matrix.partition }}/6)
-        # Build-and-run in one job (no separate archive job + upload/
-        # download round-trip): nextest compiles the test binaries
-        # reusing the build above + the cache, then runs this
-        # partition's subset. `hash:I/N` partitions by test name — a
-        # test always lands on the same partition, so a flake is
-        # reproducible to its partition.
+      - name: cargo nextest run (cli part ${{ matrix.part }}/3)
+        # Everything the other families do not own: hale-cli's 111
+        # binaries less the DNA fixture suite, plus hale-lsp,
+        # hale-iris and hale-dna. `hash:I/N` partitions by test name
+        # within that set — a test always lands on the same part, so
+        # a flake is reproducible to its part. `hale-cli/dynamic-llvm`
+        # is a passthrough to hale-codegen's feature: cargo only
+        # accepts `pkg/feature` for a selected package, and the same
+        # feature set as the build above keeps it from rebuilding.
         run: |
-          cargo nextest run \
-            --release --workspace --features hale-codegen/dynamic-llvm \
-            --partition hash:${{ matrix.partition }}/6
+          cargo nextest run --release --workspace \
+            --exclude hale-codegen --exclude hale-syntax --exclude hale-types \
+            --exclude hale-model --exclude hale-stdlib --exclude hale-corpus \
+            --features hale-cli/dynamic-llvm \
+            -E 'not binary(dna_native_suite)' \
+            --partition hash:${{ matrix.part }}/3
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
+  codegen:
+    name: codegen ${{ matrix.half }}/2
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        half: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests-x86_64-linux-llvm18
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install LLVM 18 + clang
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y \
+            llvm-18-dev libpolly-18-dev libzstd-dev \
+            clang-18 libclang-18-dev zlib1g-dev
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: cargo build --release --workspace
+        # For `libhale_ts_shim.a` (see the cli job).
+        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
+
+      - name: cargo nextest run (hale-codegen tests, half ${{ matrix.half }}/2)
+        # Split by FILE, not by test: each file under
+        # crates/hale-codegen/tests/ is its own binary, and naming
+        # half of them with `--test` is what makes cargo compile only
+        # that half. Half 1 also takes the lib's unit tests.
+        run: |
+          set -euo pipefail
+          tests=$(ls crates/hale-codegen/tests/*.rs | xargs -n1 basename | sed 's/\.rs$//' \
+            | sort | awk -v h=${{ matrix.half }} 'NR % 2 == h % 2' | sed 's/^/--test /')
+          lib=""; [ "${{ matrix.half }}" = "1" ] && lib="--lib"
+          echo "$(echo "$tests" | wc -l) test binaries in this half"
+          cargo nextest run --release -p hale-codegen --features dynamic-llvm $lib $tests
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
+  dna:
+    name: dna ${{ matrix.part }}/2
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2]
+    services:
+      knowledge-db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: dna
+          POSTGRES_PASSWORD: dna
+          POSTGRES_DB: dna
+        ports:
+          - 5480:5432
+        options: >-
+          --health-cmd "pg_isready -U dna"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      HALE_DNA_KNOWLEDGE_DSN: postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: gc.auto
+      GIT_CONFIG_VALUE_0: "0"
+      GIT_CONFIG_KEY_1: receive.autogc
+      GIT_CONFIG_VALUE_1: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests-x86_64-linux-llvm18
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install LLVM 18 + clang
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y \
+            llvm-18-dev libpolly-18-dev libzstd-dev \
+            clang-18 libclang-18-dev zlib1g-dev
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: cargo build --release --workspace
+        # The fixtures run through the `hale` binary this builds.
+        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
+
+      - name: cargo nextest run (DNA fixture suite, part ${{ matrix.part }}/2)
+        # The suite alone on its runner: sixteen slice tests, hashed
+        # across two jobs, running four-wide (the `dna-fixtures`
+        # group in .config/nextest.toml) now that nothing else
+        # competes for the four cores.
+        run: |
+          cargo nextest run --release -p hale-cli --features dynamic-llvm \
+            --test dna_native_suite \
+            --partition hash:${{ matrix.part }}/2
 
       - name: sccache stats
         if: always()
