@@ -353,6 +353,14 @@ Parker::on_frame  does={syscall,block,publish,time,alloc}
 Parker::on_job  does={syscall,block,publish,time,alloc}
 Prompt::on_job  does={publish,alloc}
 main  does={alloc}
+### 90-unowned-literal-positions
+Holder::birth  does={alloc}
+Provider::submit  does={alloc}
+Server::handle  does={alloc}
+call_through  does={alloc}
+churn  does={alloc}
+main  does={syscall,alloc}
+serve  does={alloc}
 ### docs-server
 __docs_dir  does={env}
 __render_doc  does={syscall,env,alloc}

@@ -361,12 +361,13 @@ completes, so by then every child has been born.
 ### Dissolve timing rules
 
 Four shapes, three timings (m82 — "locus all the way down";
-receiver position added by GH #710):
+expression position generalized from receivers to every
+position by GH #711 / #812):
 
 - **Statement-position literal** (`LocusName { ... };`, no
-  binding and no method call on it): birth → run → drain →
-  dissolve all fire at the statement boundary. Fire-and-forget.
-  The handle is discarded.
+  binding and nothing done with the value): birth → run →
+  drain → dissolve all fire at the statement boundary.
+  Fire-and-forget. The handle is discarded.
 - **Let-bound literal** (`let h = LocusName { ... };`): birth
   + run + drain fire at the construction site. Dissolve is
   **deferred to the enclosing fn's scope-exit flush**. The
@@ -375,16 +376,21 @@ receiver position added by GH #710):
   `let s = Stream { conn_fd: fd }; s.send(msg) or raise;` work — `s`
   stays valid for the method call because dissolve hasn't
   fired yet.
-- **Receiver-position literal** (`LocusName { ... }.method()`):
-  the call is the handle, so the literal has **the same timing as
-  a let-bound one** — dissolve is deferred to the enclosing fn's
-  scope-exit flush. The receiver and its whole child tree are
-  therefore alive for the entire call, including any allocation
-  churn or drain point inside it. `Queries { j: Journal { } }.count()`
-  and `let q = Queries { j: Journal { } }; q.count();` are the same
-  program. This holds in statement position too
-  (`LocusName { ... }.method();`): a literal that a method is
-  called on is never torn down at the literal's own boundary.
+- **Expression-position literal** (a literal used as a value:
+  a method receiver `LocusName { ... }.method()`, a call
+  argument `serve(LocusName { ... })`, a field read
+  `LocusName { ... }.field`, an operand): the expression that
+  consumes it is the handle, so the literal has **the same
+  timing as a let-bound one** — dissolve is deferred to the
+  enclosing fn's scope-exit flush. Naming the literal with
+  `let` first and using it inline are the same program, in
+  every position. In particular the literal is alive for the
+  entire call it is the receiver or argument of, including any
+  allocation churn or drain point inside it, and for as long as
+  a callee that retains it holds on to it. This holds in
+  statement position too (`LocusName { ... }.method();`): only
+  a literal whose value is *discarded* is torn down at the
+  literal's own boundary.
 - **Long-lived** (locus has `bus subscribe`): always deferred,
   irrespective of binding shape — the locus must stay alive to
   receive published events between birth and the enclosing
@@ -397,8 +403,8 @@ locus may depend on an earlier-created one, so the later one
 must dissolve first.
 
 The deferred-dissolve mechanism is fn-level, not block-level,
-in v0. Loops that bind a locus per iteration — or that call a
-method on a fresh literal per iteration — accumulate dissolves
+in v0. Loops that bind a locus per iteration — or that use a
+fresh literal as a value per iteration — accumulate dissolves
 until fn exit. Per-iteration cleanup uses a helper free fn whose
 return is the per-iteration boundary (see `handle_one_connection`
 in `stdlib/io_tcp.hl`).

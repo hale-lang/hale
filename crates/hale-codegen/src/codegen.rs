@@ -23096,20 +23096,60 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     && self.user_loci.contains_key(&path.segments[0].name) =>
             {
                 // Locus literal in expression position: instantiate
-                // and return the self_ptr typed as LocusRef. The
-                // caller (a let-binding, etc.) keeps the locus
-                // alive for the duration of the binding's scope.
-                // Ephemeral semantics still apply — the struct is
-                // alloca'd on the current frame, and drain/dissolve
-                // fired at the end of lower_locus_instantiation
-                // for ephemeral loci. The pointer remains valid
-                // because the alloca itself outlives statement
-                // boundaries; field reads through the locus's
-                // expose'd contract still work for the rest of
-                // the body.
+                // and return the self_ptr typed as LocusRef.
+                //
+                // GH #711 / #812: reaching THIS arm means the literal
+                // is a sub-expression — a call argument, a field read,
+                // a method receiver, an operand — so its value is
+                // still needed after the literal itself has been
+                // lowered, and whoever consumes it may hold it well
+                // past this statement. A bare `LocusName { ... };`
+                // statement never comes through here (`lower_stmt`
+                // calls `lower_locus_instantiation` directly, so
+                // fire-and-forget keeps its eager teardown).
+                //
+                // Without an owner the instantiation took the eager
+                // path and emitted drain → dissolve → arena_destroy
+                // at the END OF THE LITERAL, before the expression
+                // that needed it ran: `Holder { tag: "x" }.tag`
+                // loaded the field out of a destroyed arena (#812,
+                // a silent wrong answer once a second literal in the
+                // same statement recycles the chunk), and a literal
+                // passed through an interface-typed parameter to a
+                // callee that RETAINS it — a server built on it —
+                // died by a signal at the provider's first retained
+                // write (#711, a downstream handoff), while naming it
+                // with `let` first answered.
+                //
+                // One rule: an unowned locus literal in ANY
+                // expression position is owned by the enclosing fn's
+                // scope, exactly as `let` owns its RHS. Deferring
+                // here routes it onto the same scope-exit flush
+                // (drain → __dissolve_closures → dissolve →
+                // arena_destroy), so the two spellings are the same
+                // program. GH #710 / PR #743 made receiver position
+                // behave this way by flagging the receiver at the
+                // call site; the flag now belongs to the position
+                // itself, which is what the other two positions were
+                // missing.
+                //
+                // Nothing is allocated that was not allocated before
+                // — only the reclaim point moves — so the leak
+                // accounting is unchanged for straight-line code.
+                // The fn-level (not block-level) scope is inherited
+                // from the `let` rule: a fresh literal consumed per
+                // loop iteration accumulates until the fn returns,
+                // and the hot-path lint already flags it.
+                //
+                // Set immediately before the instantiation; it is
+                // consumed there by `mem::take`, so a nested literal
+                // in the inits takes its own (parent-owned) path.
                 let name = path.segments[0].name.clone();
-                let ptr =
-                    self.lower_locus_instantiation(&name, inits, scope)?;
+                self.defer_next_locus_dissolve = true;
+                let lowered =
+                    self.lower_locus_instantiation(&name, inits, scope);
+                self.defer_next_locus_dissolve = false;
+                let ptr = lowered?;
                 Ok((ptr.into(), CodegenTy::LocusRef(name)))
             }
             // m81 + m84: path-qualified stdlib literal in expression
@@ -23132,7 +23172,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 })?;
                 let mangled: &str = &mangled_owned;
                 if self.user_loci.contains_key(mangled) {
-                    let ptr = self.lower_locus_instantiation(mangled, inits, scope)?;
+                    // GH #711 / #812: same rule as the bare-name arm
+                    // above — a path-qualified locus literal in
+                    // expression position (`std::io::tcp::Stream { fd }`
+                    // handed to a callee, or read for a field) is owned
+                    // by the enclosing fn's scope, not torn down at the
+                    // end of its own expression.
+                    self.defer_next_locus_dissolve = true;
+                    let lowered =
+                        self.lower_locus_instantiation(mangled, inits, scope);
+                    self.defer_next_locus_dissolve = false;
+                    let ptr = lowered?;
                     Ok((ptr.into(), CodegenTy::LocusRef(mangled.to_string())))
                 } else if self.user_types.contains_key(mangled) {
                     let ptr = self.lower_user_type_instantiation(mangled, inits, scope)?;
@@ -28180,40 +28230,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         // GH #710: a locus LITERAL in receiver position —
         // `Queries { j: GitLike { } }.total()` — is a temporary whose
-        // owner is this call. Without an owner,
-        // `lower_locus_instantiation` takes the eager path and emits
-        // drain → dissolve → arena_destroy at the END OF THE LITERAL,
-        // so the method ran against a locus whose arena (and whose
-        // children's arenas and structs) were already freed. It read
-        // as "works sometimes": with no child, or a child whose birth
-        // allocates nothing, the freed bytes were still intact; an
-        // interface-typed child (fat pointer into the freed child
-        // struct) or a birth that churns the allocator (a subprocess
-        // drain, a @form(vec) push) recycled them first and the call
-        // took a SIGSEGV.
-        //
-        // Give the temporary the same owner `let` gives it: defer its
-        // dissolve to the enclosing fn's scope-exit flush, exactly as
-        // `Stmt::Let` does for `let q = Queries { ... };`. The receiver
-        // and its whole child tree then live until the fn returns —
-        // across the call, its allocation churn, and any drain point
-        // inside it — and are torn down by the one flush path
-        // (drain → __dissolve_closures → dissolve → arena_destroy),
-        // preserving F.4 ordering. Set immediately before lowering the
-        // receiver and cleared after, so only the OUTERMOST literal
-        // takes the flag (`lower_locus_instantiation` consumes it with
-        // `mem::take` at entry); nested child literals in its inits
-        // stay parent-owned, as in the `let` form.
-        let recv_is_locus_literal =
-            self.expr_is_locus_literal(receiver_expr);
-        if recv_is_locus_literal {
-            self.defer_next_locus_dissolve = true;
-        }
-        let recv_lowered = self.lower_expr(receiver_expr, scope);
-        if recv_is_locus_literal {
-            self.defer_next_locus_dissolve = false;
-        }
-        let (recv_val, recv_ty) = recv_lowered?;
+        // owner is this call, and PR #743 gave it one by setting
+        // `defer_next_locus_dissolve` here, around the receiver.
+        // GH #711 (the literal as a call ARGUMENT, retained by the
+        // callee) and GH #812 (the literal read for a FIELD) are the
+        // same defect in the two positions that were left out, so the
+        // flag now belongs to the position rather than to this call
+        // site: `lower_expr`'s locus-literal arms set it for every
+        // expression-position literal, receiver included. Nothing is
+        // needed here any more — see the rule (and why a bare
+        // `LocusName { ... };` statement keeps its eager teardown) in
+        // `lower_expr`.
+        let (recv_val, recv_ty) = self.lower_expr(receiver_expr, scope)?;
         // F.20 Phase B: dispatch through an interface fat pointer.
         // The receiver value is a pointer to a `{data, vtable}`
         // struct laid out by `coerce_to_interface`. Load data

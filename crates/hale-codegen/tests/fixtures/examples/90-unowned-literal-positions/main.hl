@@ -1,0 +1,109 @@
+// An unowned locus literal in expression position (GH #711, #812).
+//
+// A literal nothing binds still has to survive the expression that
+// needs it. `Provider { }` handed to a fn that RETAINS it (#711) and
+// `Holder { tag: "hello" }.tag` read for a field (#812) used to take
+// the eager path — drain → dissolve → arena_destroy at the end of the
+// literal — so the callee's first retained write hit a destroyed
+// arena and the field load read recycled bytes. Receiver position had
+// already been given an owner (GH #710); the rule now covers every
+// expression position, so each shape below is the same program as its
+// let-bound control.
+//
+// Here for the run oracles: the argument shape died by a signal, and
+// the field-read shape answered with the OTHER literal's string once a
+// second literal in the same statement recycled the chunk.
+
+interface Commands {
+    fn submit(n: Int) -> Int;
+}
+
+type Row {
+    v: Int = 0;
+}
+
+@form(vec)
+locus Rows {
+    capacity {
+        heap rows of Row;
+    }
+}
+
+// The child that made the corruption fatal rather than merely wrong:
+// a `@form(vec)` whose buffer is reclaimed with the parent's arena.
+locus Provider {
+    params {
+        tag: String = "p";
+        seen: Rows = Rows { };
+    }
+    fn submit(n: Int) -> Int {
+        self.seen.push(Row { v: n });
+        return self.seen.len() + len(self.tag);
+    }
+}
+
+// Retains the interface-typed argument for its whole life.
+locus Server {
+    params {
+        commands: Commands = Provider { };
+        port: Int = 0;
+    }
+    fn handle(n: Int) -> Int {
+        return self.commands.submit(n);
+    }
+}
+
+locus Holder {
+    params {
+        tag: String = "none";
+        seen: Rows = Rows { };
+    }
+    birth() {
+        self.seen.push(Row { v: len(self.tag) });
+        self.tag = self.tag + "-" + to_string(self.seen.len());
+    }
+}
+
+// Allocation churn between the two retained writes: the argument has
+// to be whole at the far end of the callee, not just at its entry.
+fn churn() -> Int {
+    let mut s = "";
+    let mut i = 0;
+    while i < 200 {
+        s = s + "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" + to_string(i);
+        i = i + 1;
+    }
+    return len(s);
+}
+
+fn serve(c: Commands) -> Int {
+    let server = Server { commands: c, port: 1 };
+    let first = server.handle(1);
+    let noise = churn();
+    let second = server.handle(2);
+    if noise < 200 {
+        return -1;
+    }
+    return first + second;
+}
+
+fn call_through(c: Commands) -> Int {
+    return c.submit(1);
+}
+
+fn main() {
+    // Argument position, retained by the callee (GH #711).
+    println("inline=", serve(Provider { tag: "inline" }));
+    let bound = Provider { tag: "inline" };
+    println("bound=", serve(bound));
+    // Argument position, used immediately and not retained.
+    println("through=", call_through(Provider { tag: "inline" }));
+    // Field position, two literals in one statement so the chunk pool
+    // cannot mask the reclaim (GH #812).
+    println("a=", Holder { tag: "hello" }.tag, " b=", Holder { tag: "again" }.tag);
+    // Receiver position (GH #710), kept beside its siblings.
+    println("recv=", Provider { tag: "inline" }.submit(4));
+    // Statement position keeps its eager, fire-and-forget teardown.
+    Provider { tag: "bare" };
+    println("done");
+}
