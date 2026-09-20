@@ -911,8 +911,9 @@ crates/hale-codegen/tests/pool_affinity.rs#0 35643ce677393024
 crates/hale-codegen/tests/process_child.rs#0 53cadec6decfbc54
 crates/hale-codegen/tests/process_child.rs#1 55d9bfc2e7b9f127
 crates/hale-codegen/tests/process_child.rs#2 865d341109268295
-crates/hale-codegen/tests/process_child.rs#3 1f0dcc09d5592cfa
+crates/hale-codegen/tests/process_child.rs#3 a636b56f03869150
 crates/hale-codegen/tests/process_child.rs#4 53cadec6decfbc54
+crates/hale-codegen/tests/process_child_adopt.rs#0 a636b56f03869150
 crates/hale-codegen/tests/process_run.rs#0 53cadec6decfbc54
 crates/hale-codegen/tests/process_run.rs#1 53cadec6decfbc54
 crates/hale-codegen/tests/process_run.rs#2 912257afabeee6a8
@@ -1202,7 +1203,7 @@ crates/hale-stdlib/hl/log.hl 8f96d39abe5b312b
 crates/hale-stdlib/hl/metrics.hl b9dee86669b92506
 crates/hale-stdlib/hl/mirror_ring.hl 67d1b5dd2519f196
 crates/hale-stdlib/hl/name.hl 303db68fd4e3b23b
-crates/hale-stdlib/hl/process.hl d40c7428cf5b63dd
+crates/hale-stdlib/hl/process.hl 016a44f03eb012c0
 crates/hale-stdlib/hl/secret.hl 93d154f363e62c85
 crates/hale-stdlib/hl/source.hl 5dee20cb0f0c4164
 crates/hale-stdlib/hl/tagged.hl 7b514c1ecd3e9de5
@@ -1370,9 +1371,9 @@ crates/hale-types/tests/judgment_reachability.rs#45 3dd1b6b6e796efc1
 crates/hale-types/tests/judgment_reachability.rs#51 9bf40978739dae8d
 crates/hale-types/tests/judgment_reachability.rs#6 2312cb2f00d5c35c
 crates/hale-types/tests/library_claims.rs#2 ec2370ca8357a69a
-crates/hale-types/tests/locus_field_store.rs#2 0820f11648b08ee7
-crates/hale-types/tests/locus_field_store.rs#3 ed0f729bfde57d33
-crates/hale-types/tests/locus_field_store.rs#4 fb576285cf6c267e
+crates/hale-types/tests/locus_field_store.rs#4 0820f11648b08ee7
+crates/hale-types/tests/locus_field_store.rs#5 ed0f729bfde57d33
+crates/hale-types/tests/locus_field_store.rs#6 fb576285cf6c267e
 crates/hale-types/tests/locus_member_const.rs#3 36c5f94439f06042
 crates/hale-types/tests/locus_member_const.rs#4 36c5f94439f06042
 crates/hale-types/tests/model_builder.rs#1 3393c58563b7e1ad

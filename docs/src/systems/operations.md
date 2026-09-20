@@ -163,6 +163,60 @@ For a long-running child you drive incrementally, the lower-level
 `spawn` / `wait` / `kill` / `write_stdin` / `read_stdout` /
 `read_stderr` surface over a `Child` handle is in
 [`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md).
+
+### Keeping the child: `adopt`
+
+A supervisor has to hold its subprocess past the method that started
+it, and `self.child = std::process::spawn(argv)` is **refused** — a
+locus-typed field takes only a locus literal, because a store would
+leave the field and the frame that produced the value both claiming
+the instance. `std::process::adopt` is the transfer: it moves the
+spawned handle's pid and pipe fds into the `Child` your field already
+owns, so there is only ever one owner.
+
+```hale
+locus Job {
+    params { child: std::process::Child = std::process::Child { }; }
+
+    fn start(argv: String) {
+        let spawned = std::process::spawn(argv) or std::process::Child { };
+        std::process::adopt(self.child, spawned);
+    }
+
+    fn tick() {
+        let code = std::process::try_wait(self.child) or -2;
+        if code != -2 {
+            self.start("./worker");
+        }
+    }
+}
+```
+
+Three things that follow from "one owner", and that you get without
+writing any of it:
+
+- **`adopt` terminates what the field was holding** (TERM → grace →
+  KILL → reap), so restarting is just `start` again. Call
+  `wait`/`try_wait` first if you need the outgoing child's exit code.
+- **The replacement's pipes are never closed by the old handle.** The
+  field's descriptors stay open until `adopt` replaces them, so the
+  kernel cannot have handed their numbers to the new child — the
+  hazard that makes a hand-rolled version of this so easy to get
+  wrong.
+- **A failed spawn leaves the field empty**, not half-built: the `or`
+  disposition hands back an empty `Child { }`, and adopting it clears
+  the field. `try_wait` on an empty field answers "exited, code 0".
+
+Never copy `pid` / `stdin_fd` / … across by hand. Two `Child`s holding
+one descriptor triple both close it.
+
+Teardown rides on the owner: when the locus holding the field
+dissolves, the field's `dissolve` closes the pipes and reaps the
+child. A handle you only `let`-bind has no such owner — a
+factory-returned locus is never reclaimed, so its `dissolve` never
+runs and the child is still alive when your program exits. Moving it
+into a field is what gives it a teardown.
+
 A supervising daemon reaps without blocking via
 `std::process::try_wait(c)` — `-2` means still running (poll again
 on your next tick), any other value is the exit code (`-1` =

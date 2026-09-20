@@ -189,6 +189,28 @@ let h = Locus { ... };
 // Then: drain() runs (cascades), dissolve() runs, region freed.
 ```
 
+That is the rule for a locus **literal**. A locus a free `fn`
+RETURNED is the documented exception:
+
+```
+let h = make_locus();   // factory result
+// h is bound, but nothing reclaims it: the instance was routed to a
+// program-lifetime arena, so no drain/dissolve runs and the region is
+// never freed.
+```
+
+The instance outliving every scope is what makes holding a factory
+result safe at all — see spec/semantics.md § "Reassigning a
+locus-typed field" (GH #383) for why the alternative produced
+use-after-frees, and why storing such a result into a locus-typed
+field is refused. The consequence a caller must plan for: a locus
+that holds an **external** resource (a file descriptor, a child
+process) releases it in `dissolve`, and a factory-returned instance's
+`dissolve` never runs — so the resource is not released until process
+exit. Such a module publishes a transfer that moves the handle's state
+into an instance an owner *does* reclaim (`std::process::adopt`), and
+that transfer, not scope exit, is what gives the resource a teardown.
+
 ### Unbound expressions
 
 Per design-rationale §A:

@@ -2,8 +2,9 @@
 //!
 //! Async subprocess via `spawn` / `wait` / `kill` / `write_stdin` /
 //! `read_stdout` / `read_stderr`. The `Child` locus's dissolve()
-//! reaps any unwaited child (TERM → wait 100ms → KILL → waitpid)
-//! so the parent doesn't leak zombies on scope exit.
+//! reaps any unwaited child (TERM → wait 100ms → KILL → waitpid),
+//! for a handle that an owner reclaims — see `dissolve_reaps_unwaited_child`
+//! for which handles those are.
 //!
 //! Tests:
 //!
@@ -15,8 +16,8 @@
 //! 4. `kill` against a long-running `sleep 60` returns promptly
 //!    (within ~200ms grace; well under the 60s the child would
 //!    otherwise run).
-//! 5. dissolve() at scope exit reaps an unwaited child (the
-//!    process group is gone after the surrounding fn returns).
+//! 5. an owner's dissolve reaps an unwaited child — the pid is gone
+//!    after the program exits, checked from outside it.
 //!
 //! Resolves pond/subprocess FRICTION "no-async-child-lifecycle"
 //! and pond/agent/sandbox FRICTION "no-supervised-subprocess".
@@ -165,35 +166,59 @@ fn kill_on_long_running_returns_promptly() {
     );
 }
 
+/// True while `pid` is still a `sleep` in the process table — either
+/// running or a zombie nobody reaped. The `comm` field of procfs's
+/// per-process status line is the right place to look: a zombie keeps
+/// its comm but has an EMPTY command line, so a command-line check
+/// reads an unreaped child as gone. A recycled pid running something
+/// else reads as gone too, which is the conservative direction.
+fn sleep_alive(pid: &str) -> bool {
+    let p = std::path::Path::new("/proc").join(pid).join("stat");
+    match std::fs::read_to_string(&p) {
+        Ok(line) => line.contains("(sleep)"),
+        Err(_) => false,
+    }
+}
+
 #[test]
 fn dissolve_reaps_unwaited_child() {
-    // When the scope owning a Child exits without calling
-    // wait(), dissolve() must kill + reap so we don't leak a
-    // zombie. The test:
-    //   1. Build a binary whose main spawns a long-running
-    //      child but doesn't wait.
-    //   2. The binary exits.
-    //   3. After the parent dies, the child should be gone
-    //      (reaped by dissolve, OR killed by parent's process-
-    //      group exit + reaped by init — either is fine; the
-    //      contract is "no zombies").
+    // A Child whose owner is reclaimed must be killed + reaped by
+    // that owner's dissolve, so nothing is left running once the
+    // program is gone.
     //
-    // The Rust harness can't easily inspect /proc for zombies
-    // owned by a now-dead parent. Instead we focus on the
-    // measurable outcome: the Hale program itself exits
-    // promptly (within a couple seconds, not 60s blocked
-    // waiting for sleep) — that *is* dissolve() running before
-    // process exit and reaping.
+    // This test used to assert only that the program exited promptly
+    // — "which *is* dissolve() running before process exit and
+    // reaping". It is not: a program that spawns and never waits
+    // exits promptly whether or not anything reaped, so the
+    // assertion held vacuously while `sleep 60` was left ORPHANED.
+    // The claim is now checked where it is observable: from outside,
+    // after the parent is gone.
+    //
+    // The shape is the one that HAS an owner (GH #716): the handle is
+    // moved into a locus's `params` field with
+    // `std::process::adopt`, and the owner's dissolve tears it down.
+    // A handle that is only `let`-bound from the factory does NOT
+    // reap today, and cannot be used to assert this: an instantiation
+    // that escapes by `return` is deliberately not pushed onto the
+    // caller's `deferred_dissolves` frame (`returns_this_locus` in
+    // `locus/instantiation.rs`, the m90 3f decision — "the locus
+    // leaks … live until process exit"), and the `let` at the call
+    // site registers nothing either, so no teardown runs for it
+    // anywhere. That is the GH #383 factory-return class, reported
+    // separately; `spec/memory.md` § Bound handles states it.
     let src = r#"
-        fn helper() {
-            // sleep 60 spawned inside this fn. helper() returns
-            // immediately, triggering Child's scope-exit dissolve
-            // (m82) which kills + reaps.
-            let _c = std::process::spawn("sleep\n60") or raise;
+        locus Job {
+            params { child: std::process::Child = std::process::Child { }; }
+            fn start(argv: String) {
+                let spawned = std::process::spawn(argv) or std::process::Child { };
+                std::process::adopt(self.child, spawned);
+            }
+            fn pid() -> Int { return self.child.pid; }
         }
         fn main() {
-            helper();
-            println("returned");
+            let j = Job { };
+            j.start("sleep\n30");
+            println(j.pid());
         }
     "#;
     let start = Instant::now();
@@ -206,11 +231,20 @@ fn dissolve_reaps_unwaited_child() {
         status,
         stderr
     );
+    let pid = stdout.trim();
     assert!(
-        stdout.contains("returned"),
-        "expected returned marker; got: {:?}",
+        pid.parse::<i64>().map(|n| n > 0).unwrap_or(false),
+        "expected the spawned pid on stdout; got: {:?}",
         stdout
     );
+    // The parent has exited. The child must not still be running.
+    assert!(
+        !sleep_alive(pid),
+        "the child ({}) outlived the program — the owner's dissolve \
+         did not kill + reap it",
+        pid
+    );
+    // And the teardown must not block on the child's own 30s.
     assert!(
         elapsed.as_secs() < 10,
         "dissolve-driven reap took {:?}, expected < 10s",

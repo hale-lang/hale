@@ -352,6 +352,10 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     // its bare `__std_process_*` implementation in process.hl.
     (&["std", "process", "Child"], "__StdProcessChild"),
     (&["std", "process", "ProcessOutput"], "__StdProcessOutput"),
+    // GH #716: the one-owner handle handoff. `__std_process_release`
+    // is deliberately absent — it is the shared teardown spine of
+    // dissolve and adopt, called bare inside process.hl only.
+    (&["std", "process", "adopt"], "__std_process_adopt"),
     (&["std", "process", "kill"], "__std_process_kill"),
     (&["std", "process", "read_stderr"], "__std_process_read_stderr"),
     (&["std", "process", "read_stdout"], "__std_process_read_stdout"),
