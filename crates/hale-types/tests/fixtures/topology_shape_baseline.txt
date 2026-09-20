@@ -108,6 +108,7 @@ crates/hale-cli/tests/replay_cli.rs#10 8d95b6ed57982b91
 crates/hale-cli/tests/replay_cli.rs#11 68bf0d220803c902
 crates/hale-cli/tests/replay_cli.rs#14 10feb9f97e3a1d25
 crates/hale-cli/tests/replay_cli.rs#16 a3080f5490941b07
+crates/hale-cli/tests/replay_cli.rs#17 b86d0dae062a149a
 crates/hale-cli/tests/replay_cli.rs#2 e17bb979621ac088
 crates/hale-cli/tests/replay_cli.rs#3 ae3b10bc0d84db2a
 crates/hale-cli/tests/replay_cli.rs#4 82b3daf3d74e79e4

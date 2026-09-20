@@ -403,6 +403,227 @@ pub fn parse_file(file: &std::fs::File, path: &Path) -> Result<Recording, String
     })
 }
 
+/// One `--diff` comparison category: what it is called, how many
+/// observations the recording carried for it, and — when it carried
+/// none — why there was nothing to compare.
+pub struct Category {
+    /// Human label.
+    pub name: &'static str,
+    /// Machine-readable key (stable; `--json` consumers key on it).
+    pub key: &'static str,
+    /// Observations the recording carries for this category — what
+    /// the comparison walked, when it was compared.
+    pub count: usize,
+    /// Consumers the observations were spread across, for the
+    /// per-consumer streams; `None` for global categories.
+    pub consumers: Option<usize>,
+    /// `None` when the category WAS compared; `Some(why)` when the
+    /// recording carries no observations of it, so a match says
+    /// nothing about it.
+    pub not_exercised: Option<&'static str>,
+    /// What "identical" means for this category, when that needs
+    /// saying.
+    pub detail: Option<&'static str>,
+}
+
+impl Category {
+    pub fn compared(&self) -> bool {
+        self.not_exercised.is_none()
+    }
+}
+
+/// GH #728: the per-category coverage of a successful `--diff`.
+///
+/// A match is only as strong as the categories the recording carries
+/// observations for. A workload whose subscribers are
+/// direct-dispatched (publisher and subscriber on one thread) records
+/// ZERO queued consumes — reporting that as "0 consumes across 0
+/// consumers" reads like a verified delivery schedule when no queued
+/// schedule was ever exercised, and it also hides that the public bus
+/// events and payloads WERE compared. Derived from the same
+/// `Recording` `diff` walks, and gated on the same
+/// `async_schedule_capable` bit, so the report cannot claim a
+/// category the comparator skipped.
+pub struct Coverage {
+    pub ring_records: usize,
+    /// The recording is a crash-cut prefix: the replay legitimately
+    /// ran past it, so the compared extent is the recording's.
+    pub prefix_only: bool,
+    pub categories: Vec<Category>,
+}
+
+impl Coverage {
+    /// Derive the coverage of `diff(rec, verify, !rec.clean)` from
+    /// the ORIGINAL recording — the extent every comparison walks.
+    pub fn of(rec: &Recording) -> Coverage {
+        let queued: usize =
+            rec.consume_streams.iter().map(|(_, s)| s.len()).sum();
+        let public: usize =
+            rec.public_streams.iter().map(|(_, s)| s.len()).sum();
+        let steps: usize =
+            rec.async_steps.iter().map(|(_, s)| s.len()).sum();
+        let categories = vec![
+            Category {
+                name: "public bus events",
+                key: "public_bus_events",
+                count: public,
+                consumers: Some(rec.public_streams.len()),
+                not_exercised: (public == 0).then_some(
+                    "no publish or deliver events were recorded",
+                ),
+                detail: Some("publish + deliver, subject-aligned"),
+            },
+            Category {
+                name: "payloads",
+                key: "payloads",
+                count: rec.payloads.len(),
+                consumers: None,
+                not_exercised: rec.payloads.is_empty().then_some(
+                    "no payload blobs were recorded, so no payload \
+                     bytes or declared sizes were compared",
+                ),
+                detail: Some(
+                    "canonical bytes identical; raw ABI payloads \
+                     matched by declared size",
+                ),
+            },
+            Category {
+                name: "queued consumes",
+                key: "queued_consumes",
+                count: queued,
+                consumers: Some(rec.consume_streams.len()),
+                not_exercised: (queued == 0).then_some(
+                    "no queued consumer deliveries were recorded; \
+                     dispatch was direct (valid — a synchronous \
+                     delivery has no queue order to enforce), so no \
+                     queued delivery order was verified",
+                ),
+                detail: Some("per consumer, in recorded order"),
+            },
+            Category {
+                name: "async schedule steps",
+                key: "async_schedule_steps",
+                count: steps,
+                consumers: Some(rec.async_steps.len()),
+                not_exercised: if !rec.async_schedule_capable {
+                    Some(
+                        "this recording predates async-schedule \
+                         support: no schedule was recorded, so none \
+                         was compared",
+                    )
+                } else if steps == 0 {
+                    Some(
+                        "no async pool scheduling steps were \
+                         recorded",
+                    )
+                } else {
+                    None
+                },
+                detail: Some("start / resume / expire, per consumer"),
+            },
+            Category {
+                name: "journal reads",
+                key: "journal_reads",
+                count: rec.journal.len(),
+                consumers: None,
+                not_exercised: rec.journal.is_empty().then_some(
+                    "no time, randomness or env reads were \
+                     journaled",
+                ),
+                detail: Some("kind, args, withheld state, value"),
+            },
+        ];
+        Coverage {
+            ring_records: rec.ring_records,
+            prefix_only: !rec.clean,
+            categories,
+        }
+    }
+
+    /// The human report. Multi-line on purpose: the categories are
+    /// the point, and a single line hid them.
+    pub fn human(&self) -> String {
+        let mut out = format!(
+            "replay matches the recording ({} ring records){}. \
+             Compared, by category:\n",
+            self.ring_records,
+            if self.prefix_only {
+                ", over its recorded prefix"
+            } else {
+                ""
+            }
+        );
+        for c in &self.categories {
+            let label = format!("{}:", c.name);
+            match c.not_exercised {
+                None => {
+                    let across = match c.consumers {
+                        Some(n) => format!(
+                            " across {} consumer{}",
+                            n,
+                            if n == 1 { "" } else { "s" }
+                        ),
+                        None => String::new(),
+                    };
+                    let detail = match c.detail {
+                        Some(d) => format!(" ({})", d),
+                        None => String::new(),
+                    };
+                    out.push_str(&format!(
+                        "  {:<22} {}{}{}\n",
+                        label, c.count, across, detail
+                    ));
+                }
+                Some(why) => {
+                    out.push_str(&format!(
+                        "  {:<22} not exercised: {}\n",
+                        label, why
+                    ));
+                }
+            }
+        }
+        out.push_str(
+            "A category reported as not exercised was NOT verified \
+             by this match.",
+        );
+        out
+    }
+
+    /// The machine-readable report — same counts, same flags. Only
+    /// emitted for a MATCH: a divergence stops the comparison at the
+    /// first difference, so per-category counts would overclaim (see
+    /// `diverged_json`).
+    pub fn json(&self) -> String {
+        let mut cats = serde_json::Map::new();
+        for c in &self.categories {
+            let mut o = serde_json::Map::new();
+            o.insert("compared".into(), c.compared().into());
+            o.insert("count".into(), c.count.into());
+            if let Some(n) = c.consumers {
+                o.insert("consumers".into(), n.into());
+            }
+            if let Some(why) = c.not_exercised {
+                o.insert("not_exercised_because".into(), why.into());
+            }
+            cats.insert(c.key.to_string(), o.into());
+        }
+        serde_json::json!({
+            "result": "match",
+            "ring_records": self.ring_records,
+            "recorded_prefix_only": self.prefix_only,
+            "categories": cats,
+        })
+        .to_string()
+    }
+}
+
+/// The machine-readable divergence verdict. No category counts: the
+/// comparison stopped at `reason`, so nothing after it was compared.
+pub fn diverged_json(reason: &str) -> String {
+    serde_json::json!({ "result": "diverged", "reason": reason })
+        .to_string()
+}
+
 /// Compare two recordings. Bidirectional over every surface the
 /// artifact carries: per-consumer queued consume streams (target
 /// locus + msg_id), per-consumer PUBLIC bus streams (subject-aligned
