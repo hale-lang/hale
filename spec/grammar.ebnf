@@ -444,8 +444,17 @@ birth_check_decl  = "birth_check" , "{" , expression , "}" , "->" ,
    the right-hand side. The grammar distinguishes the two by
    the head's case: lowercase keyword `unix` vs capitalized
    locus name. *)
+(* GH #527 B6 (2026-09-16): the topic may be an IMPORTED one, named
+   through its import alias — `bindings { catalog::Ticks: unix(...); }`.
+   A topic shared between binaries lives in a central seed both import,
+   which is exactly the case `bindings` exists for, so the qualified
+   spelling is the common one. The parser keeps the entry an `Ident`
+   with the path joined by `::` (the same key `BusSubject::canonical()`
+   gives a qualified bus subject, so a binding and a subscribe compare
+   like with like) and the cross-seed rename pass collapses it to the
+   mangled declaration. *)
 bindings_block    = "bindings" , "{" , { binding_entry } , "}" ;
-binding_entry     = IDENTIFIER , ":" , transport_spec ,
+binding_entry     = qualified_name , ":" , transport_spec ,
                     [ codec_spec ] ,
                     [ binding_where ] , ";" ;
 
