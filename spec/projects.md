@@ -256,6 +256,45 @@ The mangling shape mirrors the existing hand-spelled
 stdlib and moa seeds carry; cross-seed imports extend the same
 discipline automatically.
 
+### An alias and a value may share a name
+
+An import alias lives in its own namespace: it may coincide with
+the name of a fn, const, locus or topic the seed declares.
+
+```hale
+import "../core" as core;
+
+fn core(args: String) -> String { return "[" + args + "]"; }
+
+fn go() -> String {
+    return core::greet("mid") + " " + core("x");
+}
+```
+
+Both references resolve. A **qualified path** (`core::greet`)
+resolves its head against the seed's import aliases — the head of
+a two-segment path is never a value. A **bare name** (`core("x")`,
+`core`) resolves against the seed's own declarations. Locals still
+shadow both, per the scope rules above.
+
+The one head that is not an alias is a **type**: `Color::Red` is
+an enum-variant path, so a seed declaring both `import "…" as
+Color;` and `type Color = enum { … }` resolves `Color::…` against
+its own enum, and the alias is unreachable in path position from
+that seed. Aliases are conventionally lower-case for exactly this
+reason.
+
+This holds identically whether the seed is compiled directly or
+reached through an import: the import rewrite renames a path head
+only when the head names one of the seed's own **type** decls, so
+an alias head survives mangling and the per-build path-rename
+table resolves it as it does at the import site. (GH #714: the
+rewrite used to rename any head that matched a seed decl, so
+`core::greet` became `__lib_<lib_id>_main_core::greet` — a path
+through the free fn's mangled symbol. `hale check` passed, since
+it resolves the alias, and the build failed. A seed that ran on
+its own became unbuildable the moment someone imported it.)
+
 ### Scoped imports (A4)
 
 If library A imports library B, B's decls become reachable
@@ -295,6 +334,30 @@ where the same source produced different symbols.
 **Cycles.** The CLI's canonical-path `visited` set bounds the
 walk; a lib that imports itself or two libs that mutually import
 each other resolve once each and stop.
+
+**An alias binds in its own seed only, through the rename table
+too.** Two seeds in one build may choose the same alias for
+*different* libraries: if `a` says `import "../libx" as u;` and
+the app says `import "../liby" as u;`, `u::f()` in `a` is
+`libx`'s `f` and `u::f()` in the app is `liby`'s. Each reference
+resolves against the aliases of the seed it is written in, and
+the seed's files share one alias namespace exactly as they share
+one declaration namespace.
+
+The build holds that guarantee through the per-build path-rename
+table (`alias::Name -> mangled symbol`), which is keyed by the
+alias as written. When two seeds bind one alias name to different
+libraries the compiler gives each binder a scoped head of its own
+and rewrites that seed's own references to match, so the two
+cannot be confused; the alias the author wrote is what
+diagnostics show. Until GH #746 the table was flat: the last
+binding registered won, both seeds resolved to one library, and
+nothing reported it (`hale check` passed and the binary computed
+the wrong value).
+
+One seed whose own files disagree — the same alias bound to two
+libraries inside a single namespace — resolves to one of them, as
+it always has; the compiler does not (yet) reject that shape.
 
 ### No `pub` / `export`
 

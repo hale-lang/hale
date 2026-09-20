@@ -41,6 +41,68 @@ fn method_to_fn_ty(m: &MethodInfo) -> Ty {
     }
 }
 
+/// GH #734 — the member names the compiler injects on EVERY locus,
+/// with the phrase that explains each one in a diagnostic.
+///
+/// `self.children` (the accept'd-child collection), `self.k_max`
+/// (F.1 displacement bound) and `self.draining` (F.27 drain flag)
+/// are resolved before any declared member of the same name, in
+/// both `field_ty` here and the field lowering in codegen. A locus
+/// that declares one of these spellings therefore has a member it
+/// can never read back: the read takes the synthetic member's type
+/// and lowering instead, and the program fails somewhere else — as
+/// an unrelated type mismatch at the USE site (`expected Int, got
+/// [?]`), or, when the declared type happens to match, as a codegen
+/// error about params the locus never declared. Reserving the names
+/// at the declaration keeps the failure at the one line that can fix
+/// it, and keeps a collision from reaching codegen at all.
+const SYNTHETIC_LOCUS_MEMBERS: [(&str, &str); 3] = [
+    (
+        "children",
+        "the accept'd-child collection every locus carries \
+         (`for c in self.children`, `self.children.count`)",
+    ),
+    (
+        "k_max",
+        "the F.1 displacement bound every locus carries \
+         (`self.k_max`)",
+    ),
+    (
+        "draining",
+        "the F.27 drain flag every locus carries (`self.draining`)",
+    ),
+];
+
+/// The explanatory phrase for `name` iff it is a synthetic locus
+/// member, else `None`.
+fn synthetic_locus_member(name: &str) -> Option<&'static str> {
+    SYNTHETIC_LOCUS_MEMBERS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, what)| *what)
+}
+
+/// Push the GH #734 reserved-member diagnostic at `id`'s span when
+/// `id` spells a synthetic locus member. `kind` names what was
+/// declared ("params field", "method", "capacity slot").
+fn reserved_member_diag(diags: &mut Vec<Diag>, kind: &str, id: &Ident) {
+    let Some(what) = synthetic_locus_member(&id.name) else {
+        return;
+    };
+    diags.push(Diag::ty(
+        id.span,
+        format!(
+            "{kind} `{n}`: `{n}` is a reserved locus member — it names \
+             {what}, and the compiler resolves that before anything a \
+             locus declares, so `self.{n}` never reaches this {kind}. \
+             Rename it (`own_{n}`, say).",
+            kind = kind,
+            n = id.name,
+            what = what,
+        ),
+    ));
+}
+
 /// Phase 3 migration: two loci have the same *footprint* iff their
 /// params (the user-visible state fields) match by name and type in
 /// declaration order. A state-preserving `reperspective` keeps the
@@ -338,19 +400,29 @@ pub fn check_bundle(
     top: &TopScope,
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
-    check_bundle_scoped(bundle, top, allow_unowned_subscriber, false)
+    check_bundle_scoped(bundle, top, allow_unowned_subscriber, false, false)
 }
 
+/// Two whole-program strictnesses, both off for a partial program.
+///
 /// `strict_callees`: refuse a call to a bare name nothing binds
 /// (dna/FRICTION.md F.18) — the rule `hale build` holds. On only when
 /// the caller checked a WHOLE seed, so a single file of a multi-file
 /// seed, a styleguide snippet or a harness's partial program keeps the
 /// permissive `Unknown` it always had for a sibling's fn.
+///
+/// `strict_idents` (GH #721): the same rule for a bare identifier in
+/// VALUE position. Separate from the callee flag because the two have
+/// different safe surfaces — the build path can hold the identifier
+/// rule (what it bundles is exactly what it compiles) without holding
+/// the callee rule, which still over-fires on bare names codegen
+/// answers itself but `BARE_BUILTIN_CALLEES` does not list.
 pub fn check_bundle_scoped(
     bundle: &Bundle<'_>,
     top: &TopScope,
     allow_unowned_subscriber: bool,
     strict_callees: bool,
+    strict_idents: bool,
 ) -> Vec<Diag> {
     let mut diags = Vec::new();
     let known = collect_known_names(top);
@@ -379,6 +451,18 @@ pub fn check_bundle_scoped(
             }
         }
     }
+    // GH #724: aliases of imports this bundle never resolved. Empty on
+    // every CLI path (the merge strips `imports`); populated only for a
+    // consumer of a library whose seed is not in the bundle.
+    let mut unresolved_import_aliases: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    for program in bundle.programs.values() {
+        for imp in &program.imports {
+            if let Some(alias) = &imp.alias {
+                unresolved_import_aliases.insert(alias.clone());
+            }
+        }
+    }
     for program in bundle.programs.values() {
         let mut generic_fns: BTreeMap<String, &FnDecl> = BTreeMap::new();
         collect_generic_fns(&program.items, &mut generic_fns);
@@ -398,11 +482,13 @@ pub fn check_bundle_scoped(
             return_ctx: None,
             wasm_target,
             strict_callees,
+            strict_idents,
             or_value_discarded: false,
             generic_fns,
             generic_types,
             bound_topics: &bound_topics,
             import_renames: &bundle.import_renames,
+            unresolved_import_aliases: &unresolved_import_aliases,
         };
         for item in &program.items {
             cx.check_top_decl(item);
@@ -449,6 +535,10 @@ pub fn check_bundle_scoped(
     // loop. Warnings that steer toward the allocation-free shape
     // (hoisted field / `recv_into`).
     check_hot_path_alloc(bundle, top, &mut diags);
+    // GH #723: the fn-level contract decorators stack, so a stack can
+    // be incoherent — the same decorator twice, or `@unbounded` against
+    // a contract that forbids allocation.
+    check_decorator_stacks(bundle, &mut diags);
     // Gap D (2026-07-17): accept-without-release on a daemon-shaped
     // locus — resident children accumulate until OOM.
     check_accept_release(bundle, &mut diags);
@@ -2087,6 +2177,152 @@ fn check_hot_path_alloc(bundle: &Bundle<'_>, top: &TopScope, diags: &mut Vec<Dia
                 _ => {}
             }
         }
+    }
+}
+
+// === GH #723: decorator stacks =====================================
+
+/// GH #723: the coherence of a fn's DECORATOR STACK.
+///
+/// `@unbounded`, `@hot`, `@budget(...)` and the effect assertions state
+/// orthogonal things, so the parser accepts them in any order and in
+/// any combination (before #723 a second decorator was a parse error,
+/// which is why a `@unbounded` method needed a free `@no_syscall`
+/// wrapper to carry both contracts). What the parser can no longer say
+/// is whether a stack MEANS anything, and two shapes do not:
+///
+/// - the same decorator twice — the second is either redundant or
+///   silently overrides the first (`@budget`), and either way the
+///   author wrote something they did not mean;
+/// - `@unbounded` against a contract that forbids allocation. Every
+///   conflicting pair is this one pair in different spellings: the
+///   `@hot` certification (which turns the allocation advisory
+///   `@unbounded` silences into a hard error), an assertion that
+///   forbids the `alloc` class, and the `@budget(alloc_per_call = 0)`
+///   zero-allocation certificate. A decorator that contradicts its
+///   neighbour cannot be enforced; both together is a statement about
+///   the program that is not true of any program.
+///
+/// A ceiling ABOVE zero is not a conflict: `@budget(alloc_per_call =
+/// 2) @unbounded` says "at most two allocations per call, and their
+/// aggregate growth is deliberate" — a cache insert per call is
+/// exactly that shape.
+fn check_decorator_stacks(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    fn check_fn(fd: &FnDecl, diags: &mut Vec<Diag>) {
+        // Duplicates. The general `@effects(...)` is exempt: it is a
+        // set of clauses (`none:` / `publish:` / `is:` / …) and two of
+        // them compose, where a bare flag can only repeat itself.
+        let mut seen: Vec<&FnDecorator> = Vec::new();
+        for d in &fd.decorators {
+            if d.name == "effects" {
+                continue;
+            }
+            if let Some(prev) = seen.iter().find(|p| p.name == d.name) {
+                diags.push(
+                    Diag::ty(
+                        d.span,
+                        format!(
+                            "duplicate `@{}` on `{}` — it is already \
+                             declared on this fn. State it once.",
+                            d.name, fd.name.name
+                        ),
+                    )
+                    .with_related(prev.span, "first written here"),
+                );
+                continue;
+            }
+            seen.push(d);
+        }
+        let Some(unbounded) = fd.decorators.iter().find(|d| d.name == "unbounded")
+        else {
+            return;
+        };
+        let spelled = |name: &str| -> Span {
+            fd.decorators
+                .iter()
+                .find(|d| d.name == name)
+                .map(|d| d.span)
+                .unwrap_or(unbounded.span)
+        };
+        if let Some(hot) = fd.decorators.iter().find(|d| d.name == "hot") {
+            diags.push(
+                Diag::ty(
+                    unbounded.span,
+                    format!(
+                        "`@unbounded` and `@hot` contradict on `{}`: \
+                         `@unbounded` acknowledges an allocation this fn \
+                         makes without a static bound, and `@hot` makes \
+                         exactly that allocation a hard error. Keep the one \
+                         that states the intent.",
+                        fd.name.name
+                    ),
+                )
+                .with_related(hot.span, "the hot-path certification"),
+            );
+        }
+        // An assertion forbids `alloc` either openly (`none: {alloc}`)
+        // or by closing a set that leaves it out (`only: {…}` — the
+        // fn's inferred effects must be a SUBSET, so an unlisted class
+        // is forbidden).
+        let forbids_alloc = fd.effects.iter().any(|a| match a {
+            EffectAssert::Forbid(cs) => cs.contains(&EffectClass::Alloc),
+            EffectAssert::Only(cs) => !cs.contains(&EffectClass::Alloc),
+            _ => false,
+        });
+        if forbids_alloc {
+            diags.push(
+                Diag::ty(
+                    unbounded.span,
+                    format!(
+                        "`@unbounded` and an effect assertion that forbids \
+                         `alloc` contradict on `{}`: one acknowledges an \
+                         allocation without a static bound, the other says \
+                         this fn performs none. Drop `@unbounded`, or let \
+                         the assertion admit `alloc`.",
+                        fd.name.name
+                    ),
+                )
+                .with_related(spelled("effects"), "the assertion that forbids `alloc`"),
+            );
+        }
+        if fd.budget == Some(0) {
+            diags.push(
+                Diag::ty(
+                    unbounded.span,
+                    format!(
+                        "`@unbounded` and `@budget(alloc_per_call = 0)` \
+                         contradict on `{}`: the budget is the zero-alloc \
+                         certificate and `@unbounded` acknowledges an \
+                         allocation without a static bound. A ceiling above \
+                         zero does stack with `@unbounded` — bounded per \
+                         call, deliberately unbounded in aggregate.",
+                        fd.name.name
+                    ),
+                )
+                .with_related(spelled("budget"), "the zero-alloc certificate"),
+            );
+        }
+    }
+    fn walk(items: &[TopDecl], diags: &mut Vec<Diag>) {
+        for item in items {
+            match item {
+                TopDecl::Fn(fd) => check_fn(fd, diags),
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        if let LocusMember::Fn(fd) = m {
+                            check_fn(fd, diags);
+                        }
+                    }
+                }
+                // A module nests top declarations arbitrarily deep;
+                // a decorator inside one is still a decorator.
+                TopDecl::Module(m) => walk(&m.items, diags),
+                _ => {}
+            }
+        }
+    }
+    for program in bundle.programs.values() {
+        walk(&program.items, diags);
     }
 }
 
@@ -5900,6 +6136,11 @@ struct Checker<'a> {
     /// the browser sandbox) at typecheck — see `wasm_unavailable_stdlib`.
     wasm_target: bool,
     strict_callees: bool, // F.18: on for a whole seed (`hale check <dir>`), off for a partial program
+    /// GH #721: on for a whole program — every import resolved, so a
+    /// bare identifier nothing binds is a typo rather than a name a
+    /// sibling file supplies. `hale check <dir>` and the build path
+    /// both set it; one file checked alone does not.
+    strict_idents: bool,
     /// M3 stage 2 (2026-07-02): true while checking an `or`
     /// expression whose value is discarded (statement position) —
     /// the Substitute arm skips the fallback-vs-success type match.
@@ -5933,6 +6174,16 @@ struct Checker<'a> {
     /// passed `check` and died at build). Empty for a single-seed
     /// bundle, so this only ever activates on imported literals.
     import_renames: &'a [(Vec<String>, String)],
+    /// GH #724: import aliases whose seed this bundle does NOT hold.
+    /// Every CLI path merges the imported seeds and hands the checker
+    /// one program with no `import` directives left, so this set is
+    /// empty there. `hale lsp` bundles a directory's own files with
+    /// their `import` lines intact and no rename table at all — which
+    /// is why a qualified type or call types as opaque in the editor
+    /// rather than as an error. A qualified perspective path behind
+    /// such an alias gets the same tolerance, so the editor does not
+    /// squiggle a program `hale check` accepts.
+    unresolved_import_aliases: &'a std::collections::BTreeSet<String>,
 }
 
 #[derive(Default)]
@@ -6837,7 +7088,148 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// GH #734: a declared member may not take the spelling of a
+    /// synthetic one (`children` / `k_max` / `draining`). Reported
+    /// at the declaration, where the rename happens — reads of such
+    /// a member resolve to the synthetic member, so the collision
+    /// otherwise surfaces as an unrelated error at a use site, or
+    /// (when the declared type matches the synthetic one) not until
+    /// codegen.
+    fn check_reserved_member_names(&mut self, decl: &LocusDecl) {
+        for member in &decl.members {
+            match member {
+                LocusMember::Params(pb) => {
+                    for p in &pb.params {
+                        reserved_member_diag(
+                            &mut self.diags,
+                            "params field",
+                            &p.name,
+                        );
+                    }
+                }
+                LocusMember::Fn(f) => {
+                    reserved_member_diag(&mut self.diags, "method", &f.name);
+                }
+                LocusMember::Capacity(cb) => {
+                    for slot in &cb.slots {
+                        reserved_member_diag(
+                            &mut self.diags,
+                            "capacity slot",
+                            &slot.name,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// GH #756: `type` is a TOP-LEVEL declaration. The parser accepts
+    /// one inside a locus body (`LocusMember::Type`) and the checker
+    /// ignored it, so a locus-level `type` passed `hale check` — and
+    /// then codegen, which has no lowering for the member, refused
+    /// the whole program with `locus L member kind not yet lowered to
+    /// codegen`: a program the gate accepted could not be built, and
+    /// the message named no line. Nothing could USE the declaration
+    /// either: the resolver never registers a member type, so the
+    /// name it introduces is invisible everywhere, including inside
+    /// the locus that declares it.
+    ///
+    /// Rejecting it at the declaration is the fix rather than
+    /// lowering it, for the reasons that decided the sibling member
+    /// `const` (GH #747): a namespaced type has no settled spelling
+    /// (`Holder::Pair` from outside, bare `Pair` inside), it would
+    /// need new resolution in the checker AND in codegen, and it
+    /// lands on the generic-monomorph and cross-seed rename paths
+    /// that already walk a member type's field types. A top-level
+    /// `type` is in scope everywhere in the seed and is what the
+    /// author wanted.
+    fn check_no_member_types(&mut self, decl: &LocusDecl) {
+        for member in &decl.members {
+            let LocusMember::Type(t) = member else {
+                continue;
+            };
+            // At the `type` keyword: `TypeDecl::span` runs from the
+            // keyword to the declaration's end in all three forms
+            // (struct, alias, enum), so the declaration's first
+            // token is the one line that has to change.
+            let kw = Span::new(
+                t.span.start.as_usize(),
+                t.span.start.as_usize() + "type".len(),
+            );
+            self.diags.push(Diag::ty(
+                kw,
+                format!(
+                    "`type {n}` is declared inside locus `{l}`: `type` is a \
+                     top-level declaration, not a locus member. Move it \
+                     above the locus — a top-level `type` is in scope \
+                     everywhere in the seed, including inside every locus.",
+                    n = t.name.name,
+                    l = decl.name.name,
+                ),
+            ));
+        }
+    }
+
+    /// GH #747: `const` is a TOP-LEVEL declaration. The parser
+    /// accepts one inside a locus body (`LocusMember::Const`) and
+    /// the checker used to typecheck its value, so a locus-level
+    /// const passed `hale check` — and then codegen, which has no
+    /// lowering for the member, refused the whole program with
+    /// `locus L member kind not yet lowered to codegen`: a program
+    /// the gate accepted could not be built, and the message named
+    /// no line.
+    ///
+    /// Rejecting it at the declaration is the fix rather than
+    /// lowering it: a locus-level const has no settled scope or
+    /// spelling (`L::name` from outside, bare `name` inside, and
+    /// `self.name` — which it is NOT, a const being per-type and not
+    /// per-instance state), and lowering would have to answer all
+    /// three in the checker AND in codegen, plus the generic-locus
+    /// monomorph path that already walks a member const's type. The
+    /// two things the author wanted both exist: a top-level `const`
+    /// is in scope inside every locus of the seed, and a `params`
+    /// field with a default gives each instance its own copy.
+    fn check_no_member_consts(&mut self, decl: &LocusDecl) {
+        for member in &decl.members {
+            let LocusMember::Const(c) = member else {
+                continue;
+            };
+            // At the `const` keyword: `ConstDecl::span` runs from
+            // the keyword to the `;`, so the declaration's first
+            // token is the one line that has to change.
+            let kw = Span::new(
+                c.span.start.as_usize(),
+                c.span.start.as_usize() + "const".len(),
+            );
+            self.diags.push(Diag::ty(
+                kw,
+                format!(
+                    "`const {n}` is declared inside locus `{l}`: `const` is \
+                     a top-level declaration, not a locus member. Move it \
+                     above the locus — a top-level `const` is in scope \
+                     inside every locus of the seed — or, if each instance \
+                     should carry its own, make it a params field with a \
+                     default (`params {{ {n}: ... = ...; }}`).",
+                    n = c.name.name,
+                    l = decl.name.name,
+                ),
+            ));
+        }
+    }
+
     fn check_locus(&mut self, decl: &'a LocusDecl) {
+        // GH #734 — reserved member names. Runs before the symbol
+        // lookup below so it fires for every parsed locus.
+        self.check_reserved_member_names(decl);
+
+        // GH #756 — a `type` is not a locus member. Also before the
+        // lookup, for the same reason.
+        self.check_no_member_types(decl);
+        // GH #747 — a `const` is not a locus member. Also before the
+        // lookup, for the same reason.
+        self.check_no_member_consts(decl);
+
         let info = match self.top.lookup(&decl.name.name) {
             Some(TopSymbol::Locus(info)) => info,
             _ => return,
@@ -9179,22 +9571,21 @@ impl<'a> Checker<'a> {
                 self.check_fn(f, self.current_locus);
                 self.in_lifecycle = false;
             }
-            LocusMember::Const(c) => {
-                let want = resolve_type_expr(&c.ty, self.known);
-                let got = self.check_expr(&c.value);
-                if !want.assignable_from(&got) {
-                    self.diags.push(Diag::ty(
-                        c.value.span(),
-                        format!(
-                            "const `{}`: expected `{}`, got `{}`",
-                            c.name.name,
-                            want.display(),
-                            got.display()
-                        ),
-                    ));
-                }
+            LocusMember::Const(_) => {
+                // GH #747: refused at its declaration by
+                // `check_no_member_consts` before any member is
+                // walked. Typechecking the value here too would
+                // print a second message ("const `x`: expected
+                // Int, got String") about a declaration that has
+                // to move either way — one mistake, one diagnostic.
             }
-            LocusMember::Type(_) => {}
+            LocusMember::Type(_) => {
+                // GH #756: refused at its declaration by
+                // `check_no_member_types` before any member is
+                // walked. Its fields were never checked here either
+                // — the resolver registers no member type, so there
+                // is nothing to check them against.
+            }
             LocusMember::Capacity(cb) => {
                 // F.22 restriction 1: cell type must be a value-shape,
                 // not a LocusRef. Loci have lifecycle; recycling
@@ -10110,6 +10501,34 @@ impl<'a> Checker<'a> {
         let _ = self.check_match_core(stmt, false);
     }
 
+    /// Enter a match arm's pattern binders into the current scope.
+    ///
+    /// Typed `Unknown` deliberately: the binders' types are already
+    /// resolved by codegen (scrutinee for a bare binder, element type
+    /// for a tuple sub-pattern, payload field for a constructor arg),
+    /// and inventing a narrower type here would turn a scope fix into
+    /// a new class of type error on programs that compile today. What
+    /// this establishes is that the NAME exists.
+    fn bind_pattern(&mut self, pat: &Pattern) {
+        match pat {
+            Pattern::Binding(id) => self.locals.insert(
+                &id.name,
+                LocalSym { ty: Ty::Unknown, is_mut: false },
+            ),
+            Pattern::Constructor { args, .. } => {
+                for a in args {
+                    self.bind_pattern(a);
+                }
+            }
+            Pattern::Tuple(parts, _) => {
+                for p in parts {
+                    self.bind_pattern(p);
+                }
+            }
+            Pattern::Literal(_, _) | Pattern::Wildcard(_) => {}
+        }
+    }
+
     /// Shared match checking (Gap C, 2026-07-17). In statement
     /// position (`as_expr = false`) arm-body types are discarded —
     /// heterogeneous arms are legal, exactly the pre-Gap-C
@@ -10124,6 +10543,15 @@ impl<'a> Checker<'a> {
         let scrut_ty = self.check_expr(&stmt.scrutinee);
         let mut joined: Option<Ty> = None;
         for arm in &stmt.arms {
+            // GH #721: an arm's pattern BINDS — `v`, `(a, b)`,
+            // `Event::Tick(n)` — and the binders are in scope for the
+            // guard and the body (codegen's `bindings` vector does
+            // exactly this). The checker never entered them, which
+            // was invisible while an unresolved name typed as
+            // `Unknown` and became a false "unknown identifier" the
+            // moment that stopped being free.
+            self.locals.push();
+            self.bind_pattern(&arm.pattern);
             if let Some(g) = &arm.guard {
                 let _ = self.check_expr(g);
             }
@@ -10134,6 +10562,7 @@ impl<'a> Checker<'a> {
                     Ty::Unknown
                 }
             };
+            self.locals.pop();
             if as_expr {
                 match &joined {
                     None => joined = Some(arm_ty),
@@ -10565,6 +10994,27 @@ impl<'a> Checker<'a> {
     /// Both arguments are top-symbol names. Caller has already
     /// verified that `iface_name` resolves to a TopSymbol::Interface.
     /// `locus_name` may be any TopSymbol — non-locus returns Err.
+    /// GH #724: does this name reference a seed the bundle does not
+    /// hold? True only for a `::`-joined path whose head is an import
+    /// alias still unresolved in this bundle AND which the rename
+    /// table cannot map. A resolvable path never reaches here as a
+    /// path — the import-rename pass collapsed it to the imported
+    /// declaration's mangled name before typecheck — so this is the
+    /// "we genuinely cannot see the declaration" case, kept tolerant
+    /// exactly as an imported struct literal's fields are when its
+    /// declaration is invisible.
+    fn unresolved_alias_path(&self, name: &str) -> bool {
+        let Some((head, _)) = name.split_once("::") else {
+            return false;
+        };
+        if !self.unresolved_import_aliases.contains(head) {
+            return false;
+        }
+        let key: Vec<String> =
+            name.split("::").map(|s| s.to_string()).collect();
+        !self.import_renames.iter().any(|(p, _)| *p == key)
+    }
+
     /// Phase 2a: verify a `locus L : serves P` provides every
     /// method of perspective contract `P`. Emits a diagnostic per
     /// missing / mismatched method (arity, param types, return
@@ -10577,6 +11027,16 @@ impl<'a> Checker<'a> {
             return;
         };
         for persp_name in &decl.serves {
+            // GH #724: `serves lib::Routing` where this bundle holds
+            // no `lib`. The contract is behind an alias we cannot
+            // see, so there is nothing to conform to — the same
+            // tolerance every other qualified reference already has
+            // in that situation. A path whose head is NOT an
+            // unresolved alias (`lib::Nope` in a bundle that did
+            // resolve `lib`, a bare typo) still reports below.
+            if self.unresolved_alias_path(&persp_name.name) {
+                continue;
+            }
             let persp = match self.top.lookup(&persp_name.name) {
                 Some(TopSymbol::Perspective(p)) => p,
                 Some(_) => {
@@ -10721,6 +11181,15 @@ impl<'a> Checker<'a> {
             ));
             return;
         };
+        // GH #724: `reperspective self.f as lib::Impl` where this
+        // bundle holds no `lib`. Both ends — the impl and the field's
+        // contract — sit behind an alias we cannot see, so nothing
+        // here is decidable. Every CLI path merges the imported seed
+        // before checking, so this only ever skips in a tool holding
+        // one seed (the LSP).
+        if self.unresolved_alias_path(&impl_name.name) {
+            return;
+        }
         // Resolve the field's declared perspective contract.
         let field_ty =
             locus.params.iter().find(|p| p.name == field.name).map(|p| &p.ty);
@@ -11112,6 +11581,106 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A bare identifier in expression position.
+    ///
+    /// GH #721: an identifier that binds NOTHING used to type as
+    /// `Ty::Unknown` in silence, so `let total = 1; println("" +
+    /// totl);` passed `hale check` and `hale verify` and then died in
+    /// `hale build` as `unknown identifier` with no source location —
+    /// the one place a located message costs nothing to produce. The
+    /// checker holds codegen's rule now, whenever the program it was
+    /// handed is WHOLE (`strict_idents`): every import is resolved, so
+    /// a name nothing binds is a typo, not a sibling file's const. One
+    /// file of a multi-file seed, a snippet or a harness's partial
+    /// program keeps the permissive `Unknown` — the corpus has seeds
+    /// whose every file reads a const another file declares.
+    ///
+    /// `report_unknown` is false at a CALL's callee, where F.18's own
+    /// diagnostic — which names fn-pointer bindings and generic fns,
+    /// the things a callee may also be — already covers the same
+    /// mistake; reporting both would print two messages for one typo.
+    fn check_ident_expr(&mut self, id: &Ident, report_unknown: bool) -> Ty {
+        if let Some(s) = self.locals.lookup(&id.name) {
+            return s.ty.clone();
+        }
+        let Some(sym) = self.top.lookup(&id.name) else {
+            if report_unknown && self.strict_idents {
+                let hint = self
+                    .closest_name_in_scope(&id.name)
+                    .map(|h| format!(" — did you mean `{}`?", h))
+                    .unwrap_or_default();
+                self.diags.push(Diag::ty(
+                    id.span,
+                    format!(
+                        "unknown identifier `{}`: no binding, param, \
+                         const or declaration with that name is in \
+                         scope{}",
+                        id.name, hint
+                    ),
+                ));
+            }
+            return Ty::Unknown;
+        };
+        match sym {
+            TopSymbol::Const(c) => c.ty.clone(),
+            TopSymbol::Fn(sig) => Ty::Function {
+                params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
+                ret: Box::new(sig.ret.clone()),
+            },
+            // Locus / Type / Perspective / Interface
+            // names used in expression position resolve
+            // to the type (struct-literal, call site,
+            // or interface-typed binding).
+            TopSymbol::Locus(_)
+            | TopSymbol::Type(_)
+            | TopSymbol::Perspective(_)
+            | TopSymbol::Interface(_) => Ty::Named(id.name.clone()),
+            // Topics aren't values — they only address
+            // a bus channel. They appear legally only on
+            // the left of `<-` (handled in check_send,
+            // before check_expr ever sees the subject).
+            // Anywhere else is an error.
+            TopSymbol::Topic(_) => {
+                self.diags.push(Diag::ty(
+                    id.span,
+                    format!(
+                        "topic `{}` is not a value; use `{} <- expr` \
+                         to publish on it",
+                        id.name, id.name
+                    ),
+                ));
+                Ty::Unknown
+            }
+            TopSymbol::RingLayout(_) => {
+                self.diags.push(Diag::ty(
+                    id.span,
+                    format!(
+                        "ring_layout `{}` is not a value; reference it \
+                         in a `shm_ring(..., layout: {})` binding",
+                        id.name, id.name
+                    ),
+                ));
+                Ty::Unknown
+            }
+        }
+    }
+
+    /// Nearest spelling to `name` among the things a bare identifier
+    /// could have meant here: the locals in scope first (the typo is
+    /// nearly always a local), then the program's top-level names.
+    fn closest_name_in_scope(&self, name: &str) -> Option<String> {
+        let mut locals: Vec<&str> = Vec::new();
+        for frame in self.locals.frames.iter() {
+            locals.extend(frame.keys().map(|k| k.as_str()));
+        }
+        if let Some(hit) = closest_bare_name(name, &locals) {
+            return Some(hit.to_string());
+        }
+        let tops: Vec<&str> =
+            self.top.symbols.keys().map(|k| k.as_str()).collect();
+        closest_bare_name(name, &tops).map(|h| h.to_string())
+    }
+
     fn check_expr(&mut self, expr: &Expr) -> Ty {
         match expr {
             Expr::Literal(lit, span) => {
@@ -11132,56 +11701,7 @@ impl<'a> Checker<'a> {
                 }
                 lit_ty(lit)
             }
-            Expr::Ident(id) => {
-                if let Some(s) = self.locals.lookup(&id.name) {
-                    s.ty.clone()
-                } else if let Some(sym) = self.top.lookup(&id.name) {
-                    match sym {
-                        TopSymbol::Const(c) => c.ty.clone(),
-                        TopSymbol::Fn(sig) => Ty::Function {
-                            params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
-                            ret: Box::new(sig.ret.clone()),
-                        },
-                        // Locus / Type / Perspective / Interface
-                        // names used in expression position resolve
-                        // to the type (struct-literal, call site,
-                        // or interface-typed binding).
-                        TopSymbol::Locus(_)
-                        | TopSymbol::Type(_)
-                        | TopSymbol::Perspective(_)
-                        | TopSymbol::Interface(_) => Ty::Named(id.name.clone()),
-                        // Topics aren't values — they only address
-                        // a bus channel. They appear legally only on
-                        // the left of `<-` (handled in check_send,
-                        // before check_expr ever sees the subject).
-                        // Anywhere else is an error.
-                        TopSymbol::Topic(_) => {
-                            self.diags.push(Diag::ty(
-                                id.span,
-                                format!(
-                                    "topic `{}` is not a value; use `{} <- expr` \
-                                     to publish on it",
-                                    id.name, id.name
-                                ),
-                            ));
-                            Ty::Unknown
-                        }
-                        TopSymbol::RingLayout(_) => {
-                            self.diags.push(Diag::ty(
-                                id.span,
-                                format!(
-                                    "ring_layout `{}` is not a value; reference it \
-                                     in a `shm_ring(..., layout: {})` binding",
-                                    id.name, id.name
-                                ),
-                            ));
-                            Ty::Unknown
-                        }
-                    }
-                } else {
-                    Ty::Unknown
-                }
-            }
+            Expr::Ident(id) => self.check_ident_expr(id, true),
             Expr::Path(qn) => {
                 // m47-followup: 2-segment path may be an enum
                 // variant construction (`EnumName::VariantName`).
@@ -11864,7 +12384,14 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
-                let callee_ty = self.check_expr(callee);
+                // GH #721: a bare callee gets F.18's diagnostic below,
+                // never the generic unknown-identifier one — two
+                // messages for one typo, and the callee's is the more
+                // informative of the two.
+                let callee_ty = match callee.as_ref() {
+                    Expr::Ident(id) => self.check_ident_expr(id, false),
+                    other => self.check_expr(other),
+                };
                 // GH #583 (dna/FRICTION.md F.18): a bare callee that names
                 // nothing — not a local (a fn-pointer binding), not a
                 // top-level fn, not a generic fn, not a builtin — was
@@ -12316,12 +12843,25 @@ impl<'a> Checker<'a> {
                             // now, so the hint was unreachable —
                             // dead advice about a limitation that no
                             // longer exists is worse than none.)
-                            let hint = crate::stdlib_surface::nearest_name(
+                            let mut hint = crate::stdlib_surface::nearest_name(
                                 &name.name,
                                 candidates.iter().map(|s| s.as_str()),
                             )
                             .map(|s| format!(" — did you mean `{}`?", s))
                             .unwrap_or_default();
+                            // GH #722: `s.len()` / `s.length` on a
+                            // String or Bytes is the member spelling
+                            // of a builtin; no candidate name can
+                            // bridge it, so point at the builtin.
+                            if hint.is_empty() {
+                                if let Some(advice) =
+                                    crate::stdlib_surface::builtin_member_advice(
+                                        &rt, &name.name,
+                                    )
+                                {
+                                    hint = format!(" — {}", advice);
+                                }
+                            }
                             self.diags.push(Diag::ty(
                                 *span,
                                 format!(
@@ -12548,8 +13088,24 @@ impl<'a> Checker<'a> {
                         // inner call's payload. Same divergence
                         // rule as `or raise`: expression type
                         // collapses to the inner success type.
-                        let _ = payload;
+                        //
+                        // GH #721: `err` — the INNER call's error, the
+                        // same binding the substitute RHS gets — is in
+                        // scope on the payload, which is what makes
+                        // `or fail DstError { kind: err.kind }` an
+                        // inline translation rather than a helper call
+                        // (`tests/hale/or_fail_err_binding_test.hl`
+                        // runs it). The checker had not entered it.
+                        self.locals.push();
+                        self.locals.insert(
+                            "err",
+                            LocalSym {
+                                ty: payload.clone(),
+                                is_mut: false,
+                            },
+                        );
                         let new_payload_ty = self.check_expr_addressed(payload_expr);
+                        self.locals.pop();
                         match &self.fallible_ctx {
                             None => self.diags.push(Diag::ty(
                                 *span,
@@ -13343,7 +13899,7 @@ impl<'a> Checker<'a> {
         inits: &[StructInit],
         span: Span,
     ) -> Ty {
-        let mut stdlib_resolved: Option<String> = None;
+        let mut qualified_resolved: Option<String> = None;
         if path.segments.len() != 1 {
             // Resolve an imported qualified literal (`mat::Grid { }`)
             // to the merged symbol codegen lowers it to, so field and
@@ -13352,81 +13908,100 @@ impl<'a> Checker<'a> {
             // the gap that let `mat::Grid { }.make(x)` (no such method;
             // `make` is a free fn) pass `check` and die in codegen.
             //
-            // Only the result TYPE is resolved for IMPORTS. The inits
-            // are not re-validated against the imported params, so any
-            // literal `check` accepted before (as Unknown) still
-            // typechecks. Empty renames (every single-seed bundle)
+            // GH #707: the INITS are validated against that resolved
+            // declaration too, exactly as a local literal's are.
+            // Resolving only the result type left the field names
+            // unchecked, so `alias::Resume { key: "main" }` — a typo
+            // for `scope` — silently constructed the default while
+            // `check` reported `ok`; the same literal on a local type
+            // was rejected. Empty renames (every single-seed bundle)
             // skip straight past this.
             let key: Vec<String> =
                 path.segments.iter().map(|s| s.name.clone()).collect();
-            if let Some((_, mangled)) =
-                self.import_renames.iter().find(|(p, _)| *p == key)
-            {
-                for init in inits {
-                    let _ = self.check_expr(&init.value);
-                }
+            let imported: Option<String> = self
+                .import_renames
+                .iter()
+                .find(|(p, _)| *p == key)
+                .map(|(_, mangled)| mangled.clone());
+            if let Some(mangled) = imported {
                 if matches!(
-                    self.top.lookup(mangled),
+                    self.top.lookup(&mangled),
                     Some(
                         TopSymbol::Locus(_)
                             | TopSymbol::Type(_)
                             | TopSymbol::Perspective(_)
                     )
                 ) {
-                    return Ty::Named(mangled.clone());
-                }
-                return Ty::Unknown;
-            }
-            // GH #470: a STDLIB qualified literal resolves through
-            // PATH_RENAMES to the mangled symbol the Hale-source
-            // stdlib declares (now registered in the top scope), and
-            // then falls through to FULL literal validation below —
-            // fields checked, interface coercions enforced. The old
-            // `Ty::Unknown` tolerance here was fail-open all the way
-            // to runtime memory corruption (a wrong-arity middleware
-            // coerced to `std::http::Middleware` unchecked).
-            let segs: Vec<&str> =
-                path.segments.iter().map(|s| s.name.as_str()).collect();
-            if let Some(m) = crate::stdlib_bodies::mangled_locus_name(&segs)
-            {
-                if self.top.lookup(m).is_some() {
-                    stdlib_resolved = Some(m.to_string());
+                    // Falls through to the full literal validation
+                    // below under the merged name. Diagnostics name
+                    // `__lib_*` symbols, which the CLI demangles back
+                    // to the `alias::Name` the author wrote.
+                    qualified_resolved = Some(mangled);
                 } else {
-                    // Renamed but not Hale-source-declared (a
-                    // Rust-implemented handle, e.g.
-                    // std::io::tcp::Listener): keep the historical
-                    // tolerance — a Named with no symbol behind it
-                    // would trade fail-open for false errors.
+                    // Renamed to something that isn't a declaration we
+                    // can see: keep the historical tolerance rather
+                    // than invent errors against a definition we don't
+                    // have.
                     for init in inits {
                         let _ = self.check_expr(&init.value);
                     }
                     return Ty::Unknown;
                 }
-            } else if segs.first() == Some(&"std") {
-                // GH #470: a std:: literal that matches nothing in
-                // the rename table is a typo, not an Unknown —
-                // `std::log::TotallyFakeSink {}` used to typecheck.
-                self.diags.push(Diag::ty(
-                    span,
-                    format!(
-                        "unknown stdlib type `{}` in struct/locus \
-                         literal",
-                        key.join("::")
-                    ),
-                ));
-                for init in inits {
-                    let _ = self.check_expr(&init.value);
+            }
+            if qualified_resolved.is_none() {
+                // GH #470: a STDLIB qualified literal resolves through
+                // PATH_RENAMES to the mangled symbol the Hale-source
+                // stdlib declares (now registered in the top scope),
+                // and then falls through to FULL literal validation
+                // below — fields checked, interface coercions
+                // enforced. The old `Ty::Unknown` tolerance here was
+                // fail-open all the way to runtime memory corruption
+                // (a wrong-arity middleware coerced to
+                // `std::http::Middleware` unchecked).
+                let segs: Vec<&str> =
+                    path.segments.iter().map(|s| s.name.as_str()).collect();
+                if let Some(m) =
+                    crate::stdlib_bodies::mangled_locus_name(&segs)
+                {
+                    if self.top.lookup(m).is_some() {
+                        qualified_resolved = Some(m.to_string());
+                    } else {
+                        // Renamed but not Hale-source-declared (a
+                        // Rust-implemented handle, e.g.
+                        // std::io::tcp::Listener): keep the historical
+                        // tolerance — a Named with no symbol behind it
+                        // would trade fail-open for false errors.
+                        for init in inits {
+                            let _ = self.check_expr(&init.value);
+                        }
+                        return Ty::Unknown;
+                    }
+                } else if segs.first() == Some(&"std") {
+                    // GH #470: a std:: literal that matches nothing in
+                    // the rename table is a typo, not an Unknown —
+                    // `std::log::TotallyFakeSink {}` used to typecheck.
+                    self.diags.push(Diag::ty(
+                        span,
+                        format!(
+                            "unknown stdlib type `{}` in struct/locus \
+                             literal",
+                            key.join("::")
+                        ),
+                    ));
+                    for init in inits {
+                        let _ = self.check_expr(&init.value);
+                    }
+                    return Ty::Unknown;
+                } else {
+                    for init in inits {
+                        let _ = self.check_expr(&init.value);
+                    }
+                    return Ty::Unknown;
                 }
-                return Ty::Unknown;
-            } else {
-                for init in inits {
-                    let _ = self.check_expr(&init.value);
-                }
-                return Ty::Unknown;
             }
         }
         let name: &String =
-            stdlib_resolved.as_ref().unwrap_or(&path.segments[0].name);
+            qualified_resolved.as_ref().unwrap_or(&path.segments[0].name);
         // M3 stage 3 tranche 2 (2026-07-02): mangled generic
         // monomorph literal (`Box_Int { ... }`). Resolve the
         // `Base_Tok[_Tok...]` shape against a generic type

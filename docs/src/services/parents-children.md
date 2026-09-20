@@ -38,6 +38,15 @@ parent's `self.children` holds its accepted children (with
 `self.children.count` and `self.children.is_empty` for quick
 summaries).
 
+`children` is one of three names every locus already carries —
+the others are `k_max` (the displacement bound) and `draining`
+(the drain flag) — and `self.<name>` always means the built-in
+one. So they're reserved: naming a params field, a method, or a
+capacity slot `children` is an error at the declaration ("rename
+it"), not a confusing type mismatch wherever you read it back.
+A `type`'s struct field may still be called `children` — only
+loci carry the synthetic members.
+
 A locus accepts **one** child type. Writing a second `accept` is a
 compile error that points at both clauses; if a parent needs to own
 two kinds of children, one of them belongs under a different owner

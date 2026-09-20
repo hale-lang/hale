@@ -97,6 +97,90 @@ Instantiating a locus type produces a **locus handle** of that
 type, allocated as a region within the enclosing scope (per
 `memory.md`).
 
+### `type` is a top-level declaration
+
+A locus body may not declare a `type`. `type X { ... }` is a
+top-level declaration only (see `grammar.ebnf`: `type_decl` is a
+`top_decl`, not a `locus_member`), and a `type` inside a locus
+body is a type error **at the `type` keyword**:
+
+```text
+main.hl:2:5: type error: `type Pair` is declared inside locus
+`Holder`: `type` is a top-level declaration, not a locus member.
+Move it above the locus — a top-level `type` is in scope
+everywhere in the seed, including inside every locus.
+```
+
+A top-level `type` is the supported spelling and loses nothing:
+it is in scope inside every locus of the seed, so a locus that
+wants a record of its own declares it above itself and uses it
+unqualified. A locus-level `type` had no reading at all before
+this rule — the resolver registers no member type, so the name it
+introduced was invisible everywhere, including inside the locus
+that declared it.
+
+Before this rule, the parser accepted the member and the checker
+ignored it, so such a program passed `hale check` and then failed
+in the backend with `locus L member kind not yet lowered to
+codegen` — a program the gate accepted that could not be built
+(GH #756, the sibling of the member `const`).
+
+### `const` is a top-level declaration
+
+A locus body may not declare a `const`. `const NAME: T = value;`
+is a top-level declaration only (see `grammar.ebnf`:
+`const_decl` is a `top_decl`, not a `locus_member`), and a
+`const` inside a locus body is a type error **at the `const`
+keyword**:
+
+```text
+main.hl:2:5: type error: `const limit` is declared inside locus
+`Holder`: `const` is a top-level declaration, not a locus
+member. Move it above the locus — a top-level `const` is in
+scope inside every locus of the seed — or, if each instance
+should carry its own, make it a params field with a default
+(`params { limit: ... = ...; }`).
+```
+
+The two spellings the diagnostic names are the supported ones: a
+top-level `const` is in scope inside every locus of the seed
+(one value, shared, compile-time), and a `params` field with a
+default gives each instance its own copy (`self.name`). A
+locus-level `const` is neither — it is not per-instance state,
+so it is not reachable as `self.name`, and it had no settled
+spelling for the other two readings (`L::name` from outside,
+bare `name` inside).
+
+Before this rule, the parser accepted the member and the checker
+typechecked its value, so such a program passed `hale check` and
+then failed in the backend with `locus L member kind not yet
+lowered to codegen` — a program the gate accepted that could not
+be built (GH #747).
+
+### Reserved member names
+
+Every locus type also carries three **synthetic members** the
+compiler injects, readable by name from any method body:
+
+| Name | Type | Meaning |
+|---|---|---|
+| `children` | `[ChildType]` | the accept'd-child collection (F.11); `self.children.count` / `.is_empty` summarize it |
+| `k_max` | `Float` | the F.1 displacement bound computed from `B` / `c` / `sigma` / `phi` |
+| `draining` | `Bool` | the F.27 drain flag, true once the locus is winding down |
+
+`self.<name>` resolves the synthetic member **before** any
+member the locus declares, so these three names are **reserved**:
+a params field, member fn, or capacity slot spelled `children`,
+`k_max`, or `draining` is a type error *at its declaration*,
+naming the synthetic member it collides with and suggesting a
+rename. The rule is unconditional — it holds for a locus that
+accepts no child type as much as for one that does, because the
+synthetic member is resolved in both.
+
+The reservation is per-locus-namespace, not per-spelling: a
+`type`'s struct field may be named `children` (types carry no
+synthetic members), and so may a local binding or a fn parameter.
+
 ## Capacity-slot cell handles (F.22)
 
 `Cell<T>` is the value type returned by `acquire()` (Pool slots)
@@ -589,9 +673,37 @@ fn, generic fn or fn-pointer binding with that name is in scope`,
 with a did-you-mean over the program's fns — rather than an
 `Unknown` that `hale build` refuses later. One file checked alone,
 or a partial program a harness assembles, keeps the permissive
-reading: it may call what a sibling file defines. Unresolved
-identifiers in other positions remain permissive (dna/FRICTION.md
+reading: it may call what a sibling file defines (dna/FRICTION.md
 F.18).
+
+### Bare identifiers
+
+The same rule holds in value position. A bare identifier must name
+something in scope: a local binding, a fn param, a match-arm binder,
+the implicit `err` of an `or` handler, a chain's `it` / `idx`, a
+top-level `const`, or a top-level declaration (`fn`, `locus`,
+`type`, `perspective`, `interface`; a `topic` resolves and is then
+refused by its own rule — it addresses a channel, it is not a
+value). In a **whole program** — every import resolved, which is
+`hale check <directory>`, every build (`hale build` / `hale run` /
+`hale test` compile exactly what they bundle) and `hale lsp`, which
+typechecks only once the whole seed has parsed — any other bare
+identifier is a type error at its own span: `unknown identifier X:
+no binding, param, const or declaration with that name is in
+scope`, with a did-you-mean over the locals in scope and then the
+program's top-level names.
+
+Before this, an identifier that bound nothing typed as `Unknown`,
+which is permissive everywhere, so a one-character typo passed
+`check` and `verify` and failed in the backend as `unknown
+identifier` with no source location.
+
+One file of a multi-file seed, checked alone (`hale check
+<file>`), keeps the permissive reading: it legitimately reads a
+`const` a sibling file declares. Only the seed is held to the rule.
+
+A bare unknown CALLEE reports the call diagnostic above and not this
+one — one mistake, one message (GH #721).
 
 ## Contract subsumption
 

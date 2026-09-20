@@ -18,7 +18,7 @@ run](#the-first-run).
 ```text
 $ hale dna init .
 ok: 1 file(s) typechecked
-wrote   vendor/dna (14 file(s) written, 0 unchanged; hale.lock pins toolchain 0.19.2)
+wrote   vendor/dna (14 file(s) written, 0 unchanged; hale.lock pins toolchain 0.19.2, embedded dna 770b3dfaaf001331)
 cut     …/chat/.hale/dna/baseline.topology (schema 1.19, shape 3c9b9327e480d349, verdict clean)
 created …/chat/dna/org/purpose.hl
 created …/chat/dna/org/law.hl
@@ -45,7 +45,7 @@ your application. What appeared:
 | **The catalog.** Which model each position calls, and the budget, written from what your machine had. `hale dna models` probes it. | `dna/org/models.hl` | yes — edit it |
 | **The knowledge graph's environment.** Its Postgres, for `hale dna dev` through docker compose. | `dna/compose.yaml` | yes — edit it |
 | **The law.** What no position may ever do, enforced by the compiler against the wiring you actually built. Add to it; don't weaken it. | `dna/org/law.hl` | yes — extend it |
-| **The toolchain's part.** The DNA itself, pinned to your `hale` version. Ignored by git; `hale dna upgrade` refreshes it. | `vendor/dna/` | no |
+| **The toolchain's part.** The DNA itself, as the `hale` you ran carries it. Ignored by git; `hale dna upgrade` refreshes it. | `vendor/dna/` | no |
 | **The record.** Everything the organization does, one commit per event, plus receipts and leases. Not files: refs in your repository. | `refs/dna/*` | no — but it's git |
 | **Scratch.** Sockets, sandboxes, the toolchain's inputs, the status projection. Ignored by git; delete it and nothing is lost. | `.hale/dna/` | no |
 
@@ -53,6 +53,21 @@ Your `hale.toml` gained two environments — the application and the
 organization are two entrypoints, each checked against its own law
 — and `[claims] no_base = true`, because they deliberately share
 none.
+
+`vendor/dna` is the DNA source your `hale` binary *carries*, not the
+source of any checkout, so `embedded dna 770b3dfaaf001331` on that
+first line is its provenance: a version number is not one, because
+two builds of `hale 0.19.2` can embed different `dna/` source. The
+digest is printed by `hale --version` (second line) and by `hale dna
+status`, written into `vendor/dna/README.md` and
+`.hale/dna/embedded.digest`, and `hale dna --embedded-digest` prints
+it alone for a script. If you work *on* the DNA, compare it with your
+checkout — `hale dna --embedded-digest --from-tree <hale-repo>` — and
+rebuild when they differ: until you do, every organization you
+generate runs the core your binary was built with, and a test of your
+edit measures the old one. `hale dna status` says
+`vendor/dna was materialized from <digest> — run hale dna upgrade`
+when a project's vendored tree came from another build.
 
 Commit it, and if you have a remote, push:
 

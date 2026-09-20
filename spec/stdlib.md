@@ -24,6 +24,19 @@ path-call names validated against the stdlib surface registry.
 The codegen layer resolves `std::*` paths against a hardcoded
 namespace dispatcher.
 
+Some operations are bare **builtins** rather than stdlib
+functions (`len`, `to_string`, `abs`, `min`, `max`, the printers —
+grammar intrinsics, see [`types.md`](./types.md)). A path that is
+a conventional spelling of one of those — `std::str::len`,
+`std::string::length`, `std::math::abs`, `std::cmp::min`,
+`std::io::println` and their siblings — is answered with that
+builtin's call shape (``the length of a String is the builtin
+`len(s)` ``) rather than an edit-distance guess, as is the member
+spelling `s.len()` / `s.length` / `s.size` on a `String` or
+`Bytes` (GH #722). Every other unknown name keeps the plain
+unknown-function or unknown-namespace diagnostic: an operation
+with no builtin equivalent is never pointed anywhere.
+
 There is **no general module system** at v1 — no `use`
 statements, no user-defined modules, no multi-file `.hl`
 packages via the std-style mechanism. `std::*` is the only
@@ -69,7 +82,7 @@ surface without touching the compiler.
 | `std::cli` | `Resolver` locus — layered config resolution with precedence **CLI argv > env var > fallback**. Params: `env_prefix: String = "HALE_"` (each `get(key, …)` looks up `<prefix><UPPER(key)>` in the process env — `prefix="HALE_"`, `key="dir"` → `HALE_DIR`) and `argv_keys: String = ""` (newline-separated positional keys — first line maps to `argv[1]`, second to `argv[2]`, …; a blank line doesn't shift positions; a key absent from `argv_keys` skips the CLI layer). Methods: `get(key, fallback) -> String` (the highest *populated* layer wins; empty/unset at a layer falls through) and `get_int(key, fallback) -> Int` (same precedence; a non-parseable value falls through to `fallback` rather than crash). No birth/run/dissolve lifecycle — the params *are* the configuration, so re-prefixing the Resolver retargets it without touching the body. | `runtime/stdlib/cli.hl` |
 | `std::time` | `monotonic() -> Duration`, `monotonic_ns() -> Int`, `sleep(d: Duration)`, `now() -> Int`, `time_from_unix(n: Int) -> Time`, **`current() -> Time`**, **`iso8601(t: Time) -> String`**, **`parse_time(s) -> Time fallible(ParseError)`**, **`unix(t: Time) -> Int`**, **`nanos(t: Time) -> Int`**, **`from_nanos(n: Int) -> Time`** | `clock_gettime` + EINTR-retrying `clock_nanosleep`; **on a `where async_io` pool `sleep` PARKS the coroutine on a deadline** (timer-only park, no fd — Crumb batch-5, 2026-07-28), yielding the shared worker so N sleeping coros overlap instead of serializing and a sleeping handler never holds the pool against unrelated work; off async pools `sleep` slices the request into ≤100ms intervals and folds in a cooperative bus drain after each slice, so a long keep-alive sleep doesn't starve main-pool handlers (see `spec/runtime.md` § "`time::sleep` drain semantics"); `now()` is `CLOCK_REALTIME` seconds and stays; **`current()` is the same clock as a `Time` (nanoseconds; journaled and replayed like `now()`)**. `Time` is i64 nanoseconds since the epoch (GH #607): `time_from_unix(n)` is `n × 10⁹`, `iso8601` renders it (the fraction only when not zero; `to_string` and `println` do the same), `parse_time` is `parse_iso8601` yielding the instant, `unix` floors to seconds, `nanos` / `from_nanos` are the integer view. **`parse_iso8601(s) -> Int fallible(ParseError)`** with the probe sibling **`can_parse_iso8601(s) -> Bool`** (2026-08-03) — the inverse of `time_from_unix`, returning unix seconds. Formatting was never missing (`time_from_unix` already yields ISO-8601 text, which is why `println` on a `Time` renders a date); parsing had no counterpart, so a timestamp could be emitted and never read back. UTC only: a timezone database is megabytes against the wasm target, and local time additionally reads `TZ`, making it an `env` effect rather than a pure computation — it can arrive later as a distinct, effectful call. A trailing offset such as `+01:00` is REJECTED rather than ignored, because an hour-wrong timestamp that never announces itself is worse than a failure |
 | `std::decimal` | `to_float(d: Decimal) -> Float` `format(d: Decimal, places: Int) -> String` (GH #230, 2026-07-22): render with exactly `places` fraction digits (0..=9 clamped), round half-up — the fixed-places money-display surface; default printing still trims trailing zeros (declared precision is not stored in the scale-9 repr). | Direct i128 → f64 conversion at scale 9 (`mantissa × 10^-9`) — skips an ASCII round-trip |
-| `std::str` | `parse_int(s) -> Int fallible(ParseError)`, `parse_float(s) -> Float fallible(ParseError)`, `parse_decimal(s) -> Decimal fallible(ParseError)`; predicate siblings `can_parse_int` / `can_parse_float` (`can_parse_decimal` is NOT dispatched — listed here historically; implement or drop, tracked in notes/typecheck-m3.md); range-bounded variants `range_eq(json, start, end_exclusive, expected) -> Bool` / `range_parse_int(json, start, end_exclusive) -> Int fallible(ParseError)` / `range_parse_decimal(json, start, end_exclusive) -> Decimal fallible(ParseError)` (2026-05-26 — operate on byte ranges within an existing `String` without materializing a substring, paired with `std::json::iter_find_*_range` for allocation-free JSON walks); `byte_at_unchecked(s, i) -> Int` (2026-05-26 — direct byte access at offset i with NO bounds check; caller must guarantee 0 ≤ i < len(s); used by stdlib scan helpers (JSON walkers) where the bound is externally known and a per-access strlen / bytes_from_string would tank perf; misuse → UB); `index_of`, `lower` / `upper`, `trim`, `substring(s, lo, hi)`, `replace`, `repeat`, `pad_left` / `pad_right`, `from_bytes`, `clone(v) -> String` (deep-copy a `StringView` to an owned blob; identity on a `String` for generic callers); `builder_new` / `builder_append` / `builder_len` / `builder_finish` (String-builder primitives — for binary-safe accumulator use `std::bytes::BytesBuilder`); **the everyday predicates `contains` / `starts_with` / `ends_with` -> Bool** (2026-08-03 — the first two existed in the runtime with `memory(read)` attributes long before they were reachable from Hale; `ends_with` is new, and its absence is why the trio was unusable as a set); **`split_into(s, sep, target: @form(vec))`** (2026-08-03 — writes into caller-supplied storage rather than returning a sequence, following `text::tokenize_words_into`, because Hale has no sequence VALUE to return: arrays are fixed-size and growable collections are locus-owned. That is also the allocation-visible shape — the caller owns the storage, so the cost lands in the caller's budget and a `@hot` handler can reuse one vec. Empty fields are preserved: `"a,,b,"` is four); **`join(v: @form(vec) of String, sep) -> String`** (2026-08-03 — note this RETURNS where split writes: a String is already a value, so joining never meets the sequence question. One arena allocation sized in a first pass, not repeated concatenation); **UTF-8 accessors `cp_count(s)` / `cp_at(s, byte_off)` / `cp_size(s, byte_off)`** (2026-08-03 — `String` stays byte-oriented; these let a caller walk code points deliberately rather than pretending bytes are characters. Invalid UTF-8, and a byte offset landing mid-sequence, both yield -1 rather than U+FFFD, so corruption cannot be mistaken for content. Normalization, case folding beyond ASCII, grapheme segmentation and locale collation are each a separate commitment with megabytes of tables against the wasm target, and are deliberately NOT provided) | `lotus_str_*` C runtime primitives |
+| `std::str` | `parse_int(s) -> Int fallible(ParseError)`, `parse_float(s) -> Float fallible(ParseError)`, `parse_decimal(s) -> Decimal fallible(ParseError)`; predicate siblings `can_parse_int` / `can_parse_float` (`can_parse_decimal` is NOT dispatched — listed here historically; implement or drop, tracked in notes/typecheck-m3.md); range-bounded variants `range_eq(json, start, end_exclusive, expected) -> Bool` / `range_parse_int(json, start, end_exclusive) -> Int fallible(ParseError)` / `range_parse_decimal(json, start, end_exclusive) -> Decimal fallible(ParseError)` (2026-05-26 — operate on byte ranges within an existing `String` without materializing a substring, paired with `std::json::iter_find_*_range` for allocation-free JSON walks); `byte_at_unchecked(s, i) -> Int` (2026-05-26 — direct byte access at offset i with NO bounds check; caller must guarantee 0 ≤ i < len(s); used by stdlib scan helpers (JSON walkers) where the bound is externally known and a per-access strlen / bytes_from_string would tank perf; misuse → UB); **the `ByteView` byte-scanning surface (GH #720, 2026-09-19): `bytes_view(s) -> ByteView` (one strlen, kept in the view's `n` field), `byte_at(v, i) -> Int` (the byte 0..255, or -1 outside `[0, n)`), `slice(v, lo, hi) -> String` (clamped into `[0, n]`, no strlen), and the length-taking primitive `range_copy(s, n, lo, hi) -> String` they are built on** — the SAFE linear-time way to walk a large String a byte at a time; see [§ Linear byte scanning](#linear-byte-scanning--the-string-cost-model) for the cost model and why the obvious loop is quadratic; `index_of`, `lower` / `upper`, `trim`, `substring(s, lo, hi)`, `replace`, `repeat`, `pad_left` / `pad_right`, `from_bytes`, `clone(v) -> String` (deep-copy a `StringView` to an owned blob; identity on a `String` for generic callers); `builder_new` / `builder_append` / `builder_len` / `builder_finish` (String-builder primitives — for binary-safe accumulator use `std::bytes::BytesBuilder`); **the everyday predicates `contains` / `starts_with` / `ends_with` -> Bool** (2026-08-03 — the first two existed in the runtime with `memory(read)` attributes long before they were reachable from Hale; `ends_with` is new, and its absence is why the trio was unusable as a set); **`split_into(s, sep, target: @form(vec))`** (2026-08-03 — writes into caller-supplied storage rather than returning a sequence, following `text::tokenize_words_into`, because Hale has no sequence VALUE to return: arrays are fixed-size and growable collections are locus-owned. That is also the allocation-visible shape — the caller owns the storage, so the cost lands in the caller's budget and a `@hot` handler can reuse one vec. Empty fields are preserved: `"a,,b,"` is four); **`join(v: @form(vec) of String, sep) -> String`** (2026-08-03 — note this RETURNS where split writes: a String is already a value, so joining never meets the sequence question. One arena allocation sized in a first pass, not repeated concatenation); **UTF-8 accessors `cp_count(s)` / `cp_at(s, byte_off)` / `cp_size(s, byte_off)`** (2026-08-03 — `String` stays byte-oriented; these let a caller walk code points deliberately rather than pretending bytes are characters. Invalid UTF-8, and a byte offset landing mid-sequence, both yield -1 rather than U+FFFD, so corruption cannot be mistaken for content. Normalization, case folding beyond ASCII, grapheme segmentation and locale collation are each a separate commitment with megabytes of tables against the wasm target, and are deliberately NOT provided) | `lotus_str_*` C runtime primitives |
 | `std::bytes` | `at(b, i) -> Int fallible(IndexError)`, `slice(b, lo, hi) -> Bytes`, `from_string(s) -> Bytes`, `from_int(v) -> Bytes`, `concat(a, b) -> Bytes`, `clone(v) -> Bytes` (deep-copy a view to an owned blob). **Word-scan + masked-XOR** (2026-06-13, fast-protocol-I/O #4): `find_byte(b, off, needle) -> Int` returns the first index `>= off` whose byte equals `needle` (low 8 bits) or `-1` (non-fallible; `memchr` word-at-a-time scan — the length/delimiter-framing primitive for HTTP CRLF etc.). `read_*` / `at` / `find_byte` also accept a **`BytesMut`** raw `{ptr,len}` window (a `MirrorRing.readable()` window or a `Topic.write` slot) — read directly via their `_raw` siblings (length is the window length, no `[i64 len]` prefix), so a mirror-ring parse is zero-copy. `BytesBuilder.xor_mask(src: Bytes, key: Int)` (and its primitive `std::bytes::builder::__xor_mask_into(handle, src, key) -> Int`) appends `src` XOR'd with a repeating 4-byte key (`masked[i] = src[i] ^ key[i % 4]`, key bytes packed little-endian) in one reserve + word-at-a-time pass — the WebSocket masking primitive, replacing a per-byte `from_int` + `append` loop. **Binary-pack readers** (2026-06-06, shm-ring-interop Proposal A): `read_u8` / `read_u16_{le,be}` / `read_u32_{le,be}` / `read_u64_{le,be}` and the signed `read_i8` / `read_i16_{le,be}` / `read_i32_{le,be}` / `read_i64_{le,be}` (sign-extended), each `(b, off) -> Int fallible(IndexError)`; plus `read_f32_le` / `read_f64_{le,be}` `-> Float fallible(IndexError)`. Fixed-width scalar reads at a byte offset, bounds-checked (`[off, off+width)` past the buffer raises `IndexError { kind: "out_of_bounds", index: off, len }`, same error as `at`). Endianness is explicit (`_le` is the x86-native common case); a `u64` with the top bit set wraps to a negative `Int` (i64). **Binary-pack writers** (2026-06-08, shm-ring-interop A1): the mirror `write_u8` / `write_u16_{le,be}` / `write_u32_{le,be}` / `write_u64_{le,be}`, signed `write_i8` / `write_i16_{le,be}` / `write_i32_{le,be}` / `write_i64_{le,be}`, and `write_f32_le` / `write_f64_{le,be}`, each `(buf, off, val) -> Int fallible(IndexError)` — a fixed-width scalar write at a byte offset into a **`BytesMut`** raw window (a `Topic.write` slot or a `MirrorRing.writable()` window), bounds-checked identically to the readers (`[off, off+width)` past the window raises `IndexError`), returning the offset past the write. These back the `Topic.write(max) { … }` zero-copy ring producer and the `repr:`-tagged `Type::set_field`. Growing-buffer accumulator surface lives on the `BytesBuilder` locus — see [§ Builders vs Bytes](#builders-vs-bytes--the-recv-loop-pattern) | `lotus_bytes_*` C runtime primitives |
 | `std::regex` | `matches(pattern, text) -> Bool` (full match), `find(pattern, text) -> Int` (leftmost byte offset, `-1` when absent), `valid(pattern) -> Bool`. Syntax: literals, `.`, `*`, `+`, `?`, `|`, grouping, character classes with ranges and negation, `\` escapes. **No backreferences, no lookaround** — the engine class is forced, not chosen: backtracking's exponential worst case cannot be bounded, so it is incompatible with `@budget` and `@hot`, and a linear-time Thompson NFA is the only option. Classified PURE; the match path allocates nothing beyond fixed state lists sized from the pattern, so a match is countable against a budget. `valid` exists so a malformed pattern is reported rather than silently matching nothing | `lotus_regex_*` C runtime (Thompson NFA over a state set) |
 | `std::text` | `md_to_html(md) -> String`, `base64::encode` / `base64::decode` / `base64::url_encode` (RFC 4648 §5 URL-safe, unpadded — for JWT/JWS, OAuth, webhooks), `Sink` interface + `StdoutSink` / `StringSink` / `FileSink` loci, byte-class predicates (`is_alpha` / `is_digit` / `is_alnum` / `is_whitespace` / `is_word_char`), `tokenize_words_into(s, target_vec)` | `runtime/stdlib/text.hl` + C runtime |
@@ -87,7 +100,7 @@ surface without touching the compiler.
 | `std::shm` | In-band record-header field delivery for a foreign ring (2026-06-13, shm-ring-interop). When a `layout:`-bound subscriber's `ring_layout` declares `record_header_bytes` with in-band header scalars (a per-record fixed header before the payload — e.g. a sequence number and a producer wire-arrival timestamp), `last_record_seq() -> Int` / `last_record_kernel_ns() -> Int` / `last_record_user_ns() -> Int` read the header fields of the record currently being delivered, called from inside the handler (errno-style thread-local, the same read-immediately idiom as `tcp::recv_stamped` — the value is the most-recent record's, valid for the duration of the handler). Each returns `0` when the bound layout declares no corresponding header field. The names map to the layout's declared header scalars by role; the layout's `recheck post_copy` guard ensures a torn header isn't surfaced. | `lotus_shm_*` in `runtime/lotus_shm_ring.c` |
 | `std::diag` | Test-time gate counters. `heap_alloc_count() -> Int` returns the cumulative number of heap allocations (malloc / realloc / calloc / mmap) the runtime has made; `syscall_count(name: String) -> Int` returns the cumulative count of a wrapped I/O syscall (`"recv"`, `"recvmsg"`, `"read"`, `"write"`, `"send"`, `"sendto"`). Read a counter before and after a steady-state region and assert the delta — the runtime/test-time complement to compile-time `--warn-unbounded-alloc` ("this loop did zero heap allocs" / "exactly one read per poll"). Both return `-1` when the counting shim is absent (sanitizer builds — TSan/ASan interceptors collide with the `-Wl,--wrap` shim), so a caller can distinguish "gate unavailable in this build" from a real `0`. Counters are process-wide and monotonic; `syscall_count` returns `-1` for an unrecognized name. The wrap shim is compiled into every default (`-O2`) build at the cost of one relaxed-atomic increment per allocation / wrapped syscall — only the runtime's own calls are routed (libc- and libssl-internal I/O is untouched). | `lotus_diag_*` + `__wrap_*` in `runtime/lotus_arena.c` |
 | `std::http` | `Request` + `Response` types (`Response.headers: String` carries CRLF-joined user-supplied headers — no trailing CRLF — for Set-Cookie / CORS / custom headers); `parse_request`, `write_response`; case-insensitive symmetric `header(receiver, name)` lookup; `Handler` interface (`fn handle(req: Request) -> Response`); `Server` locus with `shutdown()` (cross-thread safe — see [§ Server.shutdown](#servershutdown--interruptible-accept-loop)) and optional `ready_signal: String` for piped oracles. **Request reassembly** (2026-07-14, downstream handoff): the per-connection loop reads until the `\r\n\r\n` header terminator and then until `Content-Length` body bytes arrive, so clients that split headers and body across TCP segments (python urllib et al.) are served whole. Guards: 1 MiB total-request cap (a declared `Content-Length` over the cap answers `413`; overflow before a complete header block closes without a response) and a 5s recv timeout (bounds a stalled client on classic/pinned pools; inert on `async_io`, where a stalled conn parks only its coroutine). Keep-alive remains unsupported (`Connection: close` hardcoded); `Transfer-Encoding: chunked` is not parsed. **Connection takeover / Upgrade (2026-07-19):** `Request.conn_fd` carries the live connection fd into the handler (`-1` outside a Server), and `Response { takeover: true }` makes the Server write ONLY the status line + the response's `headers` + a blank line — no Content-Type/Content-Length/`Connection: close`, no body — and return WITHOUT closing the fd (`Stream.release_fd()` disarms the per-connection scope close). From that moment the handler owns the connection: stash `req.conn_fd` (typically publish it to a session locus on its own pool) and drive it through the raw-fd tcp surface (`send_fd` / `recv_into` / `close_fd`) or a borrowed `Stream { conn_fd: fd, owns_fd: false }`. Status-agnostic (101 for WebSocket-class upgrades — `__status_phrase` knows `101 Switching Protocols` — or a CONNECT tunnel's 200). Caveats: the conn loop's 5s recv timeout is still armed on the fd (clear via `set_recv_timeout(fd, 0)`), and a handler that sets `takeover` without stashing the fd leaks it — the accept/release daemon warn class. This is the surface WebSocket promotion was blocked on. **Raw takeover (Crumb batch-3, 2026-07-28):** `Response { takeover_raw: true }` transfers the fd with **nothing written** — no status line, no headers. For the deferred-response shape: the handler returns before the answer exists (a promise resolved later, a bus reply from another locus), so whoever ends up owning the fd writes the entire response — status line included — via the raw-fd surface (`send_fd`). Also the CONNECT-tunnel / server-initiated-protocol shape. `status`/`headers`/`body` are ignored; takes precedence over `takeover`; same timeout + fd-leak caveats. **Router** (promoted from pond/router, 2026-07-17): `Router` locus — `add(method, pattern, h)` registers `METHOD /path/:capture` patterns against `RouteHandler` loci (`fn handle(ctx: Context) -> Response`; first match wins, register specific-before-general; method matching is case-insensitive at register time), `add_fn(method, pattern, f)` registers a bare `fn(Context) -> Response` — no handler locus; the fn pointer is stored in the route entry itself, sharing one list and one precedence order with locus routes (2026-08-11, downstream request), `use(m)` registers `Middleware` (`before(ctx)` forward / `after(ctx, resp)` backward — onion order), `dispatch(req)` runs the chain, and `handle(req)` satisfies the `Handler` interface so `Server { handler: router }` plugs in directly. **Direct dispatch** (2026-08-14): `build_context(req) -> Context` builds the per-request bundle the Router would (query string split into `params.qs`, captures empty) and `is_route(ctx, method, pattern) -> Bool` runs the Router's own matcher against one method + pattern — `:name` captures fill `ctx.params` on a hit; **any** miss (method or pattern) leaves the captures cleared, so an `if`-ladder of `is_route` checks in a locus's own `handle` is first-match-wins in written order with no stale-capture bleed. Method compare is case-insensitive on the argument side (like `add`); both fns are pure. This is the one-locus-many-endpoints shape: endpoint methods are direct `self` calls, so shared per-instance state (a db handle) needs no Router and no per-endpoint handler loci, and under `pinned(..., replicas = K)` placement that state is per-replica by construction. `Context` bundles the parsed `Request` (`ctx.req`, raw target incl. query string) with `RouteParams` (`ctx.params`); `path_param(params, name)` / `query_param(params, name)` return the capture / `k=v` value or `""` (sentinel shape; values NOT URL-decoded at v1). Patterns bound at 8 captures (`bounded[String; 8]` — exceeding it raises at register-authored routes); the 404 default is the overridable `not_found: RouteHandler` param. Trailing-slash tolerant on both sides; no implicit wildcard suffix. **Client** (promoted from pond/http/client, 2026-07-17): one-shot free fns `get(url)` / `post(url, body, content_type)` / `request(req)` — all `fallible(HttpError)`, `Connection: close`, read-to-close — plus the pooled `Client` locus (`user_agent` / `timeout_ms` / `max_retries` / `max_body` params; same fallible method surface; opt-in `keep_alive: true` switches to framed reads — Content-Length or `Transfer-Encoding: chunked` — over a 4-slot per-host:port connection pool with retry-and-backoff; the pool is deliberately hand-rolled, NOT `@form(lru_cache)`: an fd-owning cache needs an eviction hook and take-semantics the form doesn't offer). Client-side types are distinct from the server side on purpose: `ClientRequest` (`method` / `url: Url` / packed `headers` / `body: Bytes`) and `ClientResponse` (`status` / packed `headers` / `body: Bytes` — Bytes for binary safety, embedded NULs survive); `parse_url(s) -> Url fallible(HttpError)` decomposes scheme/host/port/path (query rides in `path`; no userinfo/fragments; no URL-decoding). `HttpError` kinds: bad_url / unsupported_scheme / connect_failed / send_failed / recv_failed / bad_response / too_large / retries_exhausted. https rides `std::io::tls` — **placement caveat**: TLS recv blocks the worker thread (no async_io park yet), so loci making https calls belong on `pinned` or a classic cooperative pool. Not implemented at v1: redirects (3xx returns as-is), proxies, compression. **Bus-routed observability**: `Server` gains a `log_subject: String = ""` param and a `bus { publish "io.http.**" of type std::io::tcp::LogEvent; }` declaration. When `log_subject` is set, listen-start / accept / listen-close events publish on the configured subject; empty (default) keeps the hot path at a single `len > 0` branch per event. Reuses the `std::io::tcp::LogEvent` type so one subscriber can observe both TCP and HTTP layers. | `runtime/stdlib/http.hl` |
-| `std::json` | `Builder` locus (streaming output assembly — see [§ json::Builder](#stdjsonbuilder--streaming-output-api)); `escape_string` / `unescape_string` (RFC 8259); `find_string_field` / `find_int_field` / `find_bool_field` (flat-object lookup); `find_field_raw(json, name) -> String` (the raw value of the named TOP-LEVEL member — rebuilt on the object cursor 2026-07-28 (Crumb batch-4): matches key POSITIONS only, so key text recurring inside an earlier string VALUE no longer shadows the real key (on a real npm packument the old text-scan lost 12 of 35 version keys). Depth-aware and string-safe; nested walks re-feed the returned object/array substring — the documented chaining contract, now actually enforced); `ArrayIter` + `array_first` / `array_next`, and the span-bearing `ArrayIterSpan` cursor `array_first_span(json, start) -> ArrayIterSpan` / `array_next_span(it) -> ArrayIterSpan` (carry the element's byte range rather than an owned substring — the allocation-free array-walk sibling of the object cursor below). Range-bearing iter family: `iter_find_field_range(it, json, name) -> JsonFieldRange` and `iter_find_string_field_range(it, json, name) -> JsonFieldRange` return `{ok, start, end_pos}` instead of an owned-String substring; paired with the `std::str::range_*` family for fully allocation-free per-element walks on large arrays (the high-throughput workload class where per-field allocation dominates arena pressure). No nested-tree shape at v1 — re-feed substrings into the same surface for nested walks. Single-pass object member cursor: `object_first(json) -> ObjectIterSpan` / `object_next(it, json)` walk `{...}` members once, with `obj_key_eq(it, json, name) -> Bool` / `obj_key_len(it) -> Int` for key dispatch, `obj_key_string(it, json) -> String` for unknown-key iteration (the key-side sibling of `obj_value_string`, incl. escape decoding — hand-slicing `key_start..key_end` silently skips it) and `obj_value_int` / `obj_value_bool` / `obj_value_string` / `obj_value_raw(it, json)` reading the current value from its source range (no per-field rescan; nested objects/arrays on unmatched keys are skipped whole by the depth scan). This is the substrate a compiler-generated, schema-specialized parser drives — and the seam a future SIMD structural index slots under. | `runtime/stdlib/json.hl` |
+| `std::json` | `Builder` locus (streaming output assembly — see [§ json::Builder](#stdjsonbuilder--streaming-output-api)); `escape_string` / `unescape_string` (RFC 8259 — `unescape_string` decodes \uHHHH to its scalar, combines surrogate pairs, and answers U+FFFD for an unpaired surrogate or \u0000; both helpers and the Builder are linear in output bytes — see [§ String escaping](#string-escaping--escape_string--unescape_string)); `find_string_field` / `find_int_field` / `find_bool_field` (flat-object lookup — PERMISSIVE by contract: a non-String value comes back as its raw scalar spelling, so `"owner": null` reads as the String "null"); `string_field(json, name) -> JsonString` (the TYPED read, GH #719 — `{kind, text}` where `kind` is one of `"string"` / `"null"` / `"missing"` / `"number"` / `"bool"` / `"array"` / `"object"` / `"invalid"` and `text` carries the decoded string only for `"string"` — see [§ Typed field access](#typed-field-access)); `find_field_raw(json, name) -> String` (the raw value of the named TOP-LEVEL member — rebuilt on the object cursor 2026-07-28 (Crumb batch-4): matches key POSITIONS only, so key text recurring inside an earlier string VALUE no longer shadows the real key (on a real npm packument the old text-scan lost 12 of 35 version keys). Depth-aware and string-safe; nested walks re-feed the returned object/array substring — the documented chaining contract, now actually enforced); `ArrayIter` + `array_first` / `array_next`, and the span-bearing `ArrayIterSpan` cursor `array_first_span(json, start) -> ArrayIterSpan` / `array_next_span(it) -> ArrayIterSpan` (carry the element's byte range rather than an owned substring — the allocation-free array-walk sibling of the object cursor below). Range-bearing iter family: `iter_find_field_range(it, json, name) -> JsonFieldRange` and `iter_find_string_field_range(it, json, name) -> JsonFieldRange` return `{ok, start, end_pos}` instead of an owned-String substring; paired with the `std::str::range_*` family for fully allocation-free per-element walks on large arrays (the high-throughput workload class where per-field allocation dominates arena pressure). No nested-tree shape at v1 — re-feed substrings into the same surface for nested walks. Single-pass object member cursor: `object_first(json) -> ObjectIterSpan` / `object_next(it, json)` walk `{...}` members once, with `obj_key_eq(it, json, name) -> Bool` / `obj_key_len(it) -> Int` for key dispatch, `obj_key_string(it, json) -> String` for unknown-key iteration (the key-side sibling of `obj_value_string`, incl. escape decoding — hand-slicing `key_start..key_end` silently skips it) and `obj_value_int` / `obj_value_bool` / `obj_value_string` / `obj_value_raw(it, json)` reading the current value from its source range (no per-field rescan; nested objects/arrays on unmatched keys are skipped whole by the depth scan). This is the substrate a compiler-generated, schema-specialized parser drives — and the seam a future SIMD structural index slots under. Strict counterparts to all of the above: `valid(text) -> Bool` (one well-formed RFC 8259 value and nothing else) and `valid_object(text) -> Bool` (…and a top-level object with unique, unescaped keys) — see [§ Validation](#validation--valid--valid_object). | `runtime/stdlib/json.hl` |
 | `std::test` | `assert(cond, msg)`, `assert_eq_int`, `assert_eq_str` | `runtime/stdlib/test.hl` |
 | `std::log` | `Logger`, `LogEvent`, `StdoutSink` (subscribes `log.**`). **Sinks promoted from pond/logfmt (2026-07-18):** `FileSink` — appends every event to `path`, rotates by size (`max_size_bytes`, `keep_files`; chain shifts via atomic `rename(2)` overwrite, oldest evicted, active file recreated on next append), I/O failures captured in the `last_error_kind/errno/path` scratch triple (the styleguide-2.7 convention), also wears the `std::text::Sink` shape (write/line/newline with the same rotation). `ConsoleSink` — dim HH:MM:SS + colored width-5 level badge + dim path + message; WARN/ERROR on stderr (StdoutSink's lane split); color AUTO (tty probe on stderr; FORCE_COLOR/CLICOLOR_FORCE override; NO_COLOR always wins; `color: false` = never). pond's OtlpSink stays in pond (vendor-protocol integration is app-tier). **Structured logging (GH #469):** `LogEvent` carries `fields` (logfmt text) and `ts` (unix seconds, stamped at the PUBLISH site, not the render site — they differ under a queued or bridged sink and under `hale replay`). `kv(key, value)` renders one pair, quoting the value when it contains a space, a quote or an `=`; join pairs with a space. Each level has a `_kv` variant (`info_kv`, `warn_kv`, …). Fields are text rather than a map because a map is a locus and a locus cannot be a payload; the flat record crosses every transport the bus supports. **Level filter:** `HALE_LOG=error|warn|info|debug` sets a threshold; `min_severity` on a `Logger` or any sink pins it in code (0=trace 1=debug 2=info 3=warn 4=error — a severity ORDER distinct from the wire level constants, which are historical). Filtering is at the PUBLISHER, so a suppressed call emits no event at all; sinks filter too, for the case where two sinks want different levels. | `runtime/stdlib/log.hl` |
 | `std::metrics` | Prometheus-shaped metrics (promoted from pond/metrics, 2026-07-18). `Registry` locus (`namespace` prefix; **owns its storage** — the `MetricMap` (`@form(hashmap, sync = serialized)`) and `HistogramList` (`@form(vec)`) are param-default children, so `Registry { namespace: "app" }` is the whole construction and a Registry returned from a builder fn keeps its series alive; explicit `store:`/`histograms:` overrides remain accepted but a let-bound override dissolves at the constructing fn's scope exit — prefer the owned default). Factory free fns `counter(reg, name, labels)` / `gauge(reg, name, labels)` / `histogram(reg, name, bounds, labels)` are **idempotent on (name, labels)** — a repeat call returns a handle to the same series without resetting it; handles reference the storage slots directly (resolve once at boot, cache the handle as a field, mutate from the hot path — styleguide S12). `Counter` (`inc` / `add`, monotonic by convention), `Gauge` (`set` / `add` / `sub` / `inc` / `dec`), `Histogram` (`observe(v)` — cumulative buckets + implicit `+Inf` + `sum` + `count`; bucket bounds passed as a space-separated ascending String `"0.005 0.01 0.05"`, parsed once at registration, max 32 buckets with over-cap clamping). Labels via `labels_empty()` / `labels_one(k, v)` / `labels_two(...)` / `labels_append(l, k, v)`. `render()` emits Prometheus text exposition (`# TYPE` lines, `ns_name{k="v"} value` samples, histogram `_bucket{le=...}` / `_sum` / `_count`); `Endpoint { registry: reg }` satisfies `std::http::Handler` and answers any request with the rendering under `Content-Type: text/plain; version=0.0.4`, so `std::http::Server { handler: Endpoint { ... } }` is a complete /metrics scrape target. The MetricMap is `sync = serialized` because the canonical topology scrapes from one pool while handlers write from another. | `runtime/stdlib/metrics.hl` |
@@ -231,6 +244,77 @@ locus WsClient {
 
 Consumer reads `self.last_msg` via a contract that exposes
 `b.view()` — zero-copy across the F.14 interface.
+
+## Linear byte scanning — the `String` cost model
+
+A `String` is a NUL-terminated blob with no stored length, and
+the operations a hand-written parser reaches for first are the
+O(n) ones. The costs below are the shipped ones, measured on a
+1 MiB input (GH #720):
+
+| operation | cost | notes |
+| --- | --- | --- |
+| `len(s)` | O(n) — `strlen` | The call is `memory(read)`, so LLVM hoists it out of a loop whose body writes no memory. Put an allocating call in that body — a slice, a concat, a builder append — and the hoist fails and every iteration re-walks the input. Measured: the same 1 MiB slice loop took 13.2 s with `len(s)` in the condition and 7.7 s with the length in a local. |
+| `s[lo..hi]`, `std::str::substring(s, lo, hi)` | O(n) + O(hi-lo) | The clamp does its own `strlen`, so the cost does not depend on how few bytes were asked for. One-byte slices in a bounded loop are the quadratic shape: 1 Mi of them cost 7.7 s. |
+| `std::str::byte_at_unchecked(s, i)` | O(1) — one load | No bounds check at all. Correct only while the caller's bound is; an out-of-range `i` is an out-of-bounds read. |
+| `std::str::bytes_view(s)` | O(n), once | One `strlen` for `n`, plus one copy of the text into the caller's arena (a `String` field of a returned struct is deep-copied at the fn boundary). Hoist it out of the loop that uses it. |
+| `std::str::byte_at(v, i)` | O(1) — compare + load | Checked against the view's `n`. |
+| `std::str::slice(v, lo, hi)` | O(hi-lo) | Clamped into `[0, n]`; no `strlen`. |
+| `std::str::range_copy(s, n, lo, hi)` | O(hi-lo) | What `slice` is built on, for a caller that already tracks its own length. |
+
+So the natural bounded-parser loop is quadratic:
+
+```hale
+let mut i = 0;
+while i < len(s) {            // hoisted, but see above
+    let c = s[i..(i + 1)];    // O(n) EVERY iteration
+    i = i + 1;
+}
+```
+
+and the view is the linear form of the same loop, with the bound
+kept in a register and every read checked against it:
+
+```hale
+let v = std::str::bytes_view(s);   // one strlen + one copy
+let mut i = 0;
+while i < v.n {
+    let c = std::str::byte_at(v, i);   // 0..255, or -1 if out of range
+    if c == 44 { … }                   // 44 = ','
+    i = i + 1;
+}
+```
+
+Measured on the same 1 MiB input: **13.2 s → 29 µs** for the scan
+(the loop vectorizes, because the bound is loop-invariant), and
+the whole program including construction runs in 2 ms. At 1 / 2 /
+4 MiB the scan costs 29 / 57 / 114 µs — linear, pinned by
+`byte_view_scan_scales_linearly` in
+`crates/hale-codegen/tests/stdlib_str.rs`.
+
+Three properties the surface commits to:
+
+1. **Refusal, not UB.** `byte_at` answers -1 for any `i` outside
+   `[0, n)` and `slice` clamps into `[0, n]`, so a truncated frame
+   or an attacker-supplied length field yields short data rather
+   than a read past the end. A length taken from untrusted input
+   needs no validation before it reaches `slice`.
+2. **Bytes, not characters.** `n` is a byte count, `byte_at`
+   returns one byte, and `slice` can cut a multi-byte sequence in
+   half. That is the right default for protocol and format work
+   (every delimiter, digit and quote is one byte in UTF-8, and a
+   continuation byte is never mistaken for one). When the unit of
+   meaning is a character, walk with `std::str::cp_at` /
+   `cp_size`, which refuse mid-sequence offsets with -1.
+3. **The view's `n` is the bound.** It comes from `bytes_view`,
+   which is why the checks can be one compare. A view fabricated
+   by hand with an `n` larger than its text is the one way to get
+   past them (the `byte_at` byte-is-NUL guard still stops a
+   sequential scan at the real end).
+
+`std::str::byte_at_unchecked` stays for the case where the bound
+is already proven by the surrounding scan — the stdlib JSON
+range-walkers use it — and keeps its "misuse is UB" contract.
 
 ## `~~std::panic~~` — not a thing
 
@@ -482,6 +566,186 @@ The flat-object readers (`find_*_field`, `array_first/next`)
 are the input side of the same v1 commitment: JSON is a wire
 format, not a tree value type, and the API surface reflects
 that.
+
+### String escaping — `escape_string` / `unescape_string`
+
+`escape_string(s)` emits RFC 8259 §7: `\\` and `\"`, the four
+short forms `\b \f \n \r \t`, and `\u00XX` for the remaining
+control bytes. Every other byte passes through, so UTF-8 in the
+input is UTF-8 in the output.
+
+`unescape_string(s)` is the inverse, and decodes `\uHHHH` to
+the scalar it names (GH #709 — before 2026-09-19 every `\uHHHH`
+decoded to `?`, so an escaped literal never compared equal to
+its plain form):
+
+| input | result |
+| --- | --- |
+| a scalar, `\u0031` / `\u00e9` / `\u4e2d` | its UTF-8 encoding, 1–3 bytes |
+| a surrogate pair, `\ud83d\ude00` | the astral scalar it denotes, 4 bytes |
+| an unpaired surrogate, `\ud83d` or `\udc00` | U+FFFD |
+| `\u0000` | U+FFFD |
+| four digits that are not all hex, `\uZZZZ` | the six source bytes, verbatim |
+| any other unknown escape, `\q` | the two source bytes, verbatim |
+
+The two refusals are deliberate. A native `String` is
+NUL-terminated, so U+0000 has no representation in one: writing
+the raw byte would truncate the value and let a prefix compare
+equal to the whole, which is worse than a visibly wrong
+character. An unpaired surrogate is not a Unicode scalar and
+has no UTF-8 encoding at all. Both answer U+FFFD rather than
+failing, because these helpers read untrusted wire bytes and
+the rest of the document is still worth decoding.
+
+### Bounded memory
+
+`escape_string`, `unescape_string` and every `Builder` emitter
+accumulate into one growing byte buffer and materialize a
+`String` once, so each is linear in the bytes it produces and
+the transient cost is bounded by the output size (GH #708).
+
+This is a contract, not an optimization: a `String` is
+immutable, so the earlier `out = out + piece` form copied the
+whole accumulated prefix per write AND left every prefix behind
+in arena storage until the call returned — quadratic in both
+time and retained memory. A downstream handoff generating a
+document with a 600,000-byte shared value and 512 references
+reached 23–24 GiB of scratch and exhausted swap.
+
+`result()` copies the buffer, so a snapshot taken mid-document
+is a stable `String`: the Builder keeps accumulating after it,
+and the earlier snapshot does not change.
+
+### Validation — `valid` / `valid_object`
+
+`valid(text)` is true when `text` is one well-formed RFC 8259
+value and nothing else: objects, arrays, strings, numbers,
+`true` / `false` / `null`, with JSON whitespace (space, tab, LF,
+CR) permitted around every token. Leading and trailing
+whitespace is fine; trailing anything else is not, and `""` is
+not a document. The number rules are the grammar's, so `01`,
+`1.`, `.5`, `1e` and `+1` are all refused while `-0`, `1e5` and
+`-1.25e-3` are values.
+
+`valid_object(text)` is `valid` plus: the top-level value is an
+object, its keys are unique, and none of them is written with an
+escape. That is the shape a gate in front of a record wants. A
+duplicate key is syntactically valid JSON — last-wins is a
+convention, not the spec — so `valid` accepts it and two readers
+of the same bytes can disagree about the record; an escaped key
+spelling (`"\u0061"` for `"a"`) compares unequal to the plain
+spelling in every `find_*` lookup in this module, so admitting
+one lets a field be present and unfindable at the same time.
+Keys of NESTED objects are checked for syntax only.
+
+Three refusals go past the grammar. Each is a value this runtime
+cannot carry, and each is the same call the escape helpers make:
+
+| refused | why |
+| --- | --- |
+| text that is not well-formed UTF-8 | including a surrogate encoded directly as three bytes (ED A0..BF) and anything above U+10FFFF |
+| a lone `\uXXXX` surrogate | denotes no scalar; `unescape_string` answers U+FFFD for it, and an admission gate should refuse rather than hand on a replacement character |
+| `\u0000` | a native `String` is NUL-terminated, so U+0000 would truncate the value and let a prefix compare equal to the whole |
+
+`valid` is linear in the input. Both are **bounded**:
+
+- **Depth 64.** Nesting deeper than that is refused rather than
+  scanned, so a hostile `[[[[…` costs a constant walk. The walk
+  is iterative — one `Int` holds a bit per open level saying
+  whether that level is an object — and 64 is where one machine
+  word of that mask runs out. The bound is also the reason the
+  scan is not a recursive descent: a coroutine stack is 64 KiB,
+  and 64 frames of one is a real fraction of it.
+- **64 top-level fields, for `valid_object` only.** Uniqueness is
+  decided by walking the object's earlier members and comparing
+  keys where they already live, so the check needs no table and
+  no accumulator — and the width bound is what keeps that walk
+  from being the quadratic cost it would otherwise become
+  (uniqueness is at most 64 passes over the object). A wider
+  object answers false. `valid` has no width bound, so it is
+  still checkable as JSON — only the unique-key guarantee stops
+  at 64, and a caller that needs both on a wider object can
+  `valid` it and walk the keys with `object_first` /
+  `obj_key_eq`.
+
+Both are classified **pure**, and both allocate nothing at all:
+bytes are read with `std::str::byte_at_unchecked` after explicit
+bounds checks, whitespace runs skip through the SIMD
+`next_non_ws`, and nothing intermediate is materialized — no
+substring, no key set, no accumulator. That is a contract, not an
+accident: these fns are meant to run on every inbound message, so
+a per-call scratch buffer would land in the caller's arena and be
+retained there until the caller returned. Cost is one pass for
+UTF-8, one for the grammar, and for `valid_object` up to one per
+field over the top-level keys — measured at ~10 ms per MiB,
+against 10.6 s for the per-character checked-slice shape
+(`text[p..p + 1]`, which allocates per byte) that hand-rolled
+validators reach for first (GH #720).
+
+String bodies are deliberately NOT scanned with the sibling
+`next_quote_or_bs` jump: it cannot see the raw control bytes
+RFC 8259 §7 forbids inside a string, and accepting those would
+make `valid` weaker than the validators it exists to replace.
+
+These are the strict counterpart to the `find_*` family, which
+stays permissive on purpose (`find_string_field("{\"x\":1",
+"x")` answers `1`). Validate at the boundary, then scan.
+
+### Typed field access
+
+`find_string_field(json, name)` answers with a `String` whatever
+the value was. That is its contract and it does not change — but
+it means eight different documents give one answer, and an
+optional field cannot be read safely:
+
+| document | `find_string_field` | `string_field(…).kind` |
+| --- | --- | --- |
+| `{"owner": "Ada"}` | `"Ada"` | `"string"` |
+| `{"owner": null}` | `"null"` | `"null"` |
+| `{"owner": "null"}` | `"null"` | `"string"` |
+| `{"owner": ""}` | `""` | `"string"` |
+| `{}` | `""` | `"missing"` |
+| `{"owner": 7}` | `"7"` | `"number"` |
+| `{"owner": true}` | `"true"` | `"bool"` |
+| `{"owner": []}` | `"[]"` | `"array"` |
+| `{"owner": {"a": 1}}` | `{"a": 1}` | `"object"` |
+| `[1, 2]` (not an object) | `""` | `"invalid"` |
+
+`string_field(json, name) -> JsonString` is the typed read (GH
+#719). `JsonString` is `{ kind: String; text: String; }`:
+
+- `kind` is one of `"string"`, `"null"`, `"missing"`, `"number"`,
+  `"bool"`, `"array"`, `"object"`, `"invalid"`.
+- `text` is the DECODED string content — surrounding quotes
+  stripped, escapes resolved through the same `\uHHHH` path as
+  `unescape_string` — and only when `kind` is `"string"`. Every
+  other kind carries `""`, so a caller that ignores `kind` gets
+  an empty name rather than a plausible wrong one.
+- `"missing"` means `json` IS an object with no such member;
+  `"invalid"` means `json` is not an object at all, or the
+  member's value is not a JSON value the scanner can name (an
+  unterminated string, a bare token like `NaN`).
+- A key repeated within one object resolves to the FIRST member
+  with that name — the same answer `find_string_field` gives,
+  since both walk the top-level object cursor and stop at the
+  first match.
+
+The reader is not string-specific: an `Int` or `Bool` caller can
+gate the coercion on `string_field(json, name).kind == "number"`
+/ `== "bool"` before trusting `find_int_field` /
+`find_bool_field`, which coerce the same way
+`find_string_field` does.
+
+```hale
+let owner = std::json::string_field(body, "owner");
+if owner.kind == "string" {
+    node.adopt(owner.text);
+} else if owner.kind == "null" || owner.kind == "missing" {
+    // a root: parentless, and NOT a node named `null`
+} else {
+    return "owner must be a string or null";
+}
+```
 
 ## `read_file` for synthesized files
 

@@ -1,0 +1,89 @@
+// GH #723: `@unbounded` and an effect assertion are orthogonal
+// contracts — one acknowledges an intentionally-unbounded allocation,
+// the other promises which effects the fn can reach — and they stack on
+// one fn in either order. Together they used to be a PARSE error, so a
+// method that accumulated had to be wrapped in a free `@no_syscall` fn
+// to carry both (downstream handoff).
+//
+// Every fn below allocates (a growing `@form(vec)`, a fresh String per
+// call) and reaches no syscall, so both contracts hold at once: the
+// allocation advisory is silent and the assertion still checks every
+// call it can reach.
+
+@form(vec)
+locus Lines {
+    capacity {
+        heap items of String;
+    }
+}
+
+// `@unbounded` first, then the assertion.
+@unbounded
+@no_syscall
+fn absorb(log: Lines, line: String) -> Int {
+    log.push(line);
+    return log.len();
+}
+
+// The reverse order, and with the general form of the assertion.
+@no_syscall
+@effects(none: { block })
+@unbounded
+fn render(log: Lines) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < log.len() {
+        let line = log.get(i) or "";
+        out = out + line + ";";
+        i = i + 1;
+    }
+    return out;
+}
+
+// A stack of five, in an order no single-slot parser could take. The
+// per-call ceiling above zero composes with `@unbounded`: bounded per
+// call, deliberately unbounded in aggregate.
+@no_syscall
+@unbounded
+@deterministic
+@no_recursion
+@budget(alloc_per_call = 4)
+fn label(n: Int) -> String {
+    return f"n={n}";
+}
+
+main locus App {
+    params {
+        log: Lines = Lines { };
+    }
+
+    // A method carries the stack too — the placement the free-fn
+    // wrapper existed to work around.
+    @unbounded
+    @no_syscall
+    fn absorb_many(n: Int) -> Int {
+        let mut i = 0;
+        while i < n {
+            self.log.push(label(i));
+            i = i + 1;
+        }
+        return self.log.len();
+    }
+
+    run() {
+        std::test::assert_eq_int(absorb(self.log, "first"), 1, "one line");
+        std::test::assert_eq_int(absorb(self.log, "second"), 2, "two lines");
+        std::test::assert_eq_str(render(self.log), "first;second;", "rendered in order");
+
+        std::test::assert_eq_str(label(7), "n=7", "the five-decorator stack still computes");
+
+        std::test::assert_eq_int(self.absorb_many(3), 5, "the method's stack applies");
+        std::test::assert_eq_str(
+            render(self.log),
+            "first;second;n=0;n=1;n=2;",
+            "and the method appended through it"
+        );
+    }
+}
+
+fn main() { App { }; }

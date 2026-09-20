@@ -84,6 +84,33 @@ hot-path certificate is one line:
 fn on_tick(a: Int, b: Int) -> Int { ... }
 ```
 
+A fn's decorators are a list, and **order carries no meaning** — each
+one is a separate contract checked by its own analysis. That includes
+`@unbounded`, which is not an effect assertion at all: it acknowledges
+an allocation this fn makes on purpose without a static bound, so the
+memory advisory stops reporting it. A fn that accumulates deliberately
+*and* promises it reaches nothing outside its arena states both, either
+way round:
+
+```hale,fragment
+@unbounded @no_syscall fn absorb(log: Lines, line: String) { ... }
+@no_syscall @unbounded fn absorb(log: Lines, line: String) { ... }
+```
+
+The one thing a stack may not do is contradict itself, and the compiler
+says so at the decorator rather than leaving you with a contract that
+cannot be enforced. `@unbounded` says "there is an allocation here and I
+mean it"; `@hot`, `@effects(none: {alloc})` and
+`@budget(alloc_per_call = 0)` each say "there is none" — so pairing
+`@unbounded` with any of those is an error, as is writing the same
+decorator twice. A per-call ceiling *above* zero is fine next to
+`@unbounded`: "at most two allocations per call, and their aggregate
+growth is intended" is a coherent thing to say about a cache.
+
+A lifecycle hook takes `@unbounded` and nothing else — a hook is
+one-shot, so a per-call budget has no calls to divide by. Put the other
+contracts on a `fn` the hook calls.
+
 `@deterministic` is the one to know for replay: a fn that reads no
 clock, no randomness and no environment is a function of its inputs,
 so replaying its inputs replays its behavior exactly. The compiler
