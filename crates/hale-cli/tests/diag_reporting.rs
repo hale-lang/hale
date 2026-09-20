@@ -17,6 +17,15 @@
 //!    — exactly what `hale lsp` always did, which is why the LSP
 //!    attributed the same diagnostic correctly while the CLI did
 //!    not.
+//!
+//! GH #777 is the third instance of defect 2, in the one remaining
+//! place that still printed before the reporting path existed:
+//! `parse_files`, which reads the target's own files. A seed that does
+//! not PARSE failed `check --json` with an empty stdout — exit 1 and
+//! nothing saying why, for every syntactic error there is. Parse
+//! diagnostics now travel to the same site every other finding goes
+//! through, so `--json` carries one record per parse error and the
+//! text rendering is untouched.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -29,19 +38,24 @@ fn seed_dir(tag: &str) -> PathBuf {
     d
 }
 
-/// (stdout, stderr, exit code)
-fn hale_check(args: &[&str], target: &Path) -> (String, String, i32) {
+/// (stdout, stderr, exit code) for a subcommand that takes a target.
+fn hale_cmd(cmd: &str, args: &[&str], target: &Path) -> (String, String, i32) {
     let out = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .arg("check")
+        .arg(cmd)
         .args(args)
         .arg(target)
         .output()
-        .expect("run hale check");
+        .unwrap_or_else(|e| panic!("run hale {}: {}", cmd, e));
     (
         String::from_utf8_lossy(&out.stdout).to_string(),
         String::from_utf8_lossy(&out.stderr).to_string(),
         out.status.code().unwrap_or(-1),
     )
+}
+
+/// (stdout, stderr, exit code)
+fn hale_check(args: &[&str], target: &Path) -> (String, String, i32) {
+    hale_cmd("check", args, target)
 }
 
 #[test]
@@ -272,5 +286,244 @@ fn reserved_word_in_a_sibling_file_is_located_at_the_word() {
         "no follow-on about the sibling's view of the seed: {}",
         stderr
     );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------
+// GH #777: a parse error is a record under `--json` too.
+//
+// `parse_files` predates the JSON reporting path: it rendered parse
+// diagnostics to stderr as text and handed back a bare exit code, so
+// `hale check --json` on a seed that does not parse exited non-zero
+// with an EMPTY stdout. A CI gate, an admission step or an LSP client
+// consuming the machine-readable channel saw a real failure with
+// nothing explaining it, for every syntactic error there is. The
+// diagnostics now reach the same reporting site the checker's own
+// findings do.
+// ---------------------------------------------------------------
+
+/// A seed whose only fault is syntactic: `where` is a reserved word
+/// (`spec/tokens.md`), so this does not parse. Line 2, column 9.
+const RESERVED_WORD_SEED: &str =
+    "fn main() {\n    let where = 1;\n    println(\"x\");\n}\n";
+
+#[test]
+fn parse_error_is_an_ndjson_record() {
+    let d = seed_dir("parsejson");
+    std::fs::write(d.join("main.hl"), RESERVED_WORD_SEED).unwrap();
+
+    let (stdout, stderr, code) = hale_check(&["--json"], &d);
+    assert_eq!(code, 1, "a seed that does not parse fails check");
+    assert!(
+        !stdout.trim().is_empty(),
+        "--json must not answer a parse failure with an empty stream \
+         (stderr was: {})",
+        stderr
+    );
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 1, "one record for one mistake: {}", stdout);
+    let v: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("stdout is NDJSON");
+    assert!(
+        v["file"].as_str().unwrap().ends_with("main.hl"),
+        "the record names the file: {}",
+        lines[0]
+    );
+    assert_eq!(v["line"], 2, "the line the word is on: {}", lines[0]);
+    assert_eq!(v["col"], 9, "the column the word starts at: {}", lines[0]);
+    assert_eq!(v["severity"], "error");
+    assert_eq!(
+        v["kind"], "parse error",
+        "a parse error says so: {}",
+        lines[0]
+    );
+    assert!(
+        v["message"].as_str().unwrap().contains("reserved word"),
+        "got: {}",
+        lines[0]
+    );
+    // Under `--json` the diagnostics are the stdout stream; the text
+    // rendering must not also go out on stderr.
+    assert!(
+        !stderr.contains("reserved word"),
+        "diagnostics belong on stdout under --json: {}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The position has to survive the merged coordinate space: every
+/// file is parsed at its own virtual base, and a parse error in the
+/// second or later file of a seed used to be shifted by that base
+/// twice (GH #776 / #765). The JSON channel is where a mislocation is
+/// invisible — it comes out as `"file":""`.
+#[test]
+fn parse_error_in_a_sibling_file_carries_its_own_position() {
+    let d = seed_dir("parsejson2");
+    // Sorted first, so `b.hl` is parsed at a NON-ZERO base.
+    std::fs::write(d.join("a.hl"), "fn helper() -> Int {\n    return 1;\n}\n")
+        .unwrap();
+    std::fs::write(
+        d.join("b.hl"),
+        "main locus App {\n    run {\n        let tier = 1;\n        \
+         println(\"t\");\n    }\n}\n",
+    )
+    .unwrap();
+
+    let (stdout, _, code) = hale_check(&["--json"], &d);
+    assert_eq!(code, 1);
+    let line = stdout.lines().next().unwrap_or("");
+    let v: serde_json::Value =
+        serde_json::from_str(line).expect("stdout is NDJSON");
+    assert!(
+        v["file"].as_str().unwrap().ends_with("b.hl"),
+        "the file holding the mistake, not the first of the seed: {}",
+        line
+    );
+    assert_eq!(v["line"], 3, "`tier` is on line 3 of b.hl: {}", line);
+    assert_eq!(v["col"], 13, "and at column 13: {}", line);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The commonest parse error of all sits at EOF — a missing closing
+/// brace reports `expected }, got Eof`, and the `Eof` token's span is
+/// the one-past-the-last-byte position. The file-base windows were
+/// half-open, so that position belonged to NO file: routing parse
+/// errors through the shared renderers would have lost the filename
+/// from the text rendering and emitted `"file":"","line":0,"col":0`
+/// under `--json`. Both channels keep the file and the position.
+#[test]
+fn parse_error_at_eof_keeps_its_file() {
+    let d = seed_dir("parseeof");
+    std::fs::write(d.join("main.hl"), "fn main() {\n    println(\"x\");\n")
+        .unwrap();
+
+    let (stdout, _, code) = hale_check(&["--json"], &d);
+    assert_eq!(code, 1);
+    let line = stdout.lines().next().unwrap_or("");
+    let v: serde_json::Value =
+        serde_json::from_str(line).expect("stdout is NDJSON");
+    assert!(
+        v["file"].as_str().unwrap().ends_with("main.hl"),
+        "an EOF-positioned error still names its file: {}",
+        line
+    );
+    assert_eq!(v["line"], 3, "the line past the last one: {}", line);
+    assert_eq!(v["col"], 1, "at its start: {}", line);
+    assert!(
+        v["message"].as_str().unwrap().contains("Eof"),
+        "got: {}",
+        line
+    );
+
+    // The text rendering is the same as it always was.
+    let (_, stderr, code) = hale_check(&[], &d);
+    assert_eq!(code, 1);
+    assert!(
+        stderr.contains("main.hl:3:1: parse error: expected }, got Eof"),
+        "the text path is unchanged: {}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Two broken files, two records: nothing is collapsed or dropped on
+/// the way to the one reporting site.
+#[test]
+fn every_parse_error_gets_its_own_record() {
+    let d = seed_dir("parsemany");
+    std::fs::write(
+        d.join("a.hl"),
+        "fn a() -> Int {\n    let where = 1;\n    return 2;\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("b.hl"),
+        "main locus App {\n    run {\n        let tier = 2;\n    }\n}\n",
+    )
+    .unwrap();
+
+    let (stdout, _, code) = hale_check(&["--json"], &d);
+    assert_eq!(code, 1);
+    let files: Vec<String> = stdout
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            let v: serde_json::Value =
+                serde_json::from_str(l).expect("stdout is NDJSON");
+            v["file"].as_str().unwrap().to_string()
+        })
+        .collect();
+    assert_eq!(files.len(), 2, "one record per parse error: {}", stdout);
+    assert!(
+        files[0].ends_with("a.hl") && files[1].ends_with("b.hl"),
+        "each names the file it came from: {}",
+        stdout
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The human path is the control: located text with the snippet and
+/// caret, on stderr, and nothing on stdout.
+#[test]
+fn parse_error_text_rendering_is_unchanged() {
+    let d = seed_dir("parsetext");
+    std::fs::write(d.join("main.hl"), RESERVED_WORD_SEED).unwrap();
+
+    let (stdout, stderr, code) = hale_check(&[], &d);
+    assert_eq!(code, 1);
+    assert!(
+        stdout.trim().is_empty(),
+        "text mode writes no stdout: {}",
+        stdout
+    );
+    assert!(
+        stderr.contains("main.hl:2:9: parse error:")
+            && stderr.contains("reserved word"),
+        "located on stderr as before: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("let where = 1;") && stderr.contains("^^^^^"),
+        "with its snippet and caret: {}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// `verify` shares the reporting path, so it reports the same record.
+/// A seed that does not parse has nothing to verify, and answering
+/// with an empty stream is exactly the fail-open shape a gate cannot
+/// tell from a clean run.
+#[test]
+fn verify_json_reports_a_parse_error_too() {
+    let d = seed_dir("parseverify");
+    std::fs::write(d.join("main.hl"), RESERVED_WORD_SEED).unwrap();
+
+    let (stdout, _, code) = hale_cmd("verify", &["--json"], &d);
+    assert_ne!(code, 0, "verify refuses a seed that does not parse");
+    let line = stdout.lines().next().unwrap_or("");
+    let v: serde_json::Value =
+        serde_json::from_str(line).expect("stdout is NDJSON");
+    assert_eq!(v["kind"], "parse error", "got: {}", line);
+    assert!(v["file"].as_str().unwrap().ends_with("main.hl"), "{}", line);
+    assert_eq!(v["line"], 2, "{}", line);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// And a seed that parses says nothing at all: the stream stays empty
+/// on success, so an empty stdout with exit 0 keeps meaning "clean".
+#[test]
+fn a_clean_seed_emits_no_records() {
+    let d = seed_dir("parseclean");
+    std::fs::write(
+        d.join("main.hl"),
+        "fn main() {\n    println(\"ok\");\n}\n",
+    )
+    .unwrap();
+
+    let (stdout, _, code) = hale_check(&["--json"], &d);
+    assert_eq!(code, 0, "the seed checks clean");
+    assert!(stdout.trim().is_empty(), "nothing to report: {}", stdout);
     let _ = std::fs::remove_dir_all(&d);
 }
