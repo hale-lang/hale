@@ -1,0 +1,8 @@
+// The carve-out GH #774 must not run over: a POLICY seed. It closes
+// no world — no `main locus` — so its constitution is adopted
+// somewhere else, and spec `verification.md` ("Groups are not
+// implied") makes `guests` the ADOPTING entrypoint's to declare. The
+// reference stays open through the import on purpose.
+constitution House {
+    guests_sign_nothing: forbid reaches(guests, effects(secret_use));
+}

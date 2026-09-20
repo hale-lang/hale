@@ -3,6 +3,8 @@ crates/hale-cli/tests/claims_artifact_unknowns.rs#1	iso	forbid reaches(a_side, s
 crates/hale-cli/tests/claims_artifact_unknowns.rs#3	iso	forbid reaches(a_side, sinks)	Uncertified	None
 crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl	guests_sign_only_via_rooms	forbid reaches(participants, effects(secret_use)) avoiding rooms	Holds	Some("Chat")
 crates/hale-cli/tests/fixtures/imported-main-claims/seed-bad/chat.hl	guests_sign_only_via_rooms	forbid reaches(participants, effects(secret_use)) avoiding rooms	Violated	None
+crates/hale-cli/tests/fixtures/imported-main-claims/seed-const-missing/chat.hl	guests_sign_nothing	forbid reaches(guests, effects(secret_use))	Invalid	Some("House")
+crates/hale-cli/tests/fixtures/imported-main-claims/seed-lib-missing/vault.hl	guests_never_stamp	forbid reaches(guests, effects(secret_use))	Invalid	None
 crates/hale-cli/tests/fixtures/imported-main-claims/seed-missing/chat.hl	guests_sign_nothing	forbid reaches(guests, effects(secret_use))	Invalid	None
 crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl	guests_sign_only_via_rooms	forbid reaches(participants, effects(secret_use)) avoiding rooms	Holds	None
 crates/hale-cli/tests/fixtures/topology/pipeline.hl	apart	forbid reaches(stores, workers) via { calls }	Holds	None

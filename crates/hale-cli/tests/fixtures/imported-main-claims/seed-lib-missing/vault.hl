@@ -1,0 +1,29 @@
+// GH #774, library tier: a traveling top-level `claims { }` block
+// whose law names a group this library never declares. The seed is
+// wrong on its own and stays wrong in every closing build.
+@sealed
+locus Vault {
+    params {
+        key: Int = 40961;
+    }
+    @effects(is: { secret_use })
+    fn stamp(n: Int) -> Int {
+        return n * 31 + self.key % 997;
+    }
+}
+
+locus Teller {
+    params {
+        seen: Int = 0;
+        v: Vault = Vault { };
+    }
+    fn serve(n: Int) {
+        self.seen = self.seen + self.v.stamp(n);
+    }
+}
+
+group tellers = { Teller };
+
+claims {
+    guests_never_stamp: forbid reaches(guests, effects(secret_use));
+}

@@ -783,7 +783,20 @@ resolve through — so a claim means one thing whether its seed is
 checked directly or through an import, and an importer's group of the
 same name is never substituted for the declaration the claim was
 written against. Resolution never *widens*: a name no declaration
-answers is still an unknown-group error, never an empty set.
+answers is still an unknown-group error, never an empty set — and
+(GH #774) an undeclared group is an error in the seed that WROTE the
+claim regardless of what an importer declares. A group reference
+nothing in its own seed answers is bound to that seed at the merge,
+so an importer's same-named group cannot answer it and the error
+cannot disappear downstream; the diagnostic names the group the
+author wrote. This holds for an inline main-locus claim, for a
+library-tier block (both of which swear about their own seed's
+boundary), and for a `constitution` declared by a seed that itself
+declares `main locus` — such a constitution can be adopted by
+nothing but that main. A POLICY seed's constitution is the one
+exception, and by design: it closes no world, so its group
+vocabulary is the adopting entrypoint's to declare (below, "Groups
+are not implied").
 
 ## Constitutions — one authored claimset, many closed worlds (GH #409)
 
@@ -824,7 +837,13 @@ as if written there. Authoring is shared, evaluation is not.
   `may_be_empty` applies only to a group that is declared and
   resolves to zero members. An entrypoint lacking a component
   therefore writes `group thing = { } may_be_empty;` rather than
-  omitting the declaration.
+  omitting the declaration. This is what a POLICY seed is — a seed
+  that declares no `main locus`, so its constitutions are adopted
+  elsewhere and their open names are the adopter's to answer. A
+  constitution declared by a seed that DOES declare `main locus` can
+  be adopted by nothing but that main, so its vocabulary is its own
+  seed's and an undeclared name there is that seed's error wherever
+  it is compiled from (GH #774, above).
 
 ### Identity
 

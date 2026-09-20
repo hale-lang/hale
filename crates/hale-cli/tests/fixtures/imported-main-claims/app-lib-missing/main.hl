@@ -1,0 +1,22 @@
+// GH #774, library tier: the importer declares a `guests` of its own.
+// The traveling claim was written against the library's vocabulary,
+// which has no `guests` in it — so the closing build reports the same
+// unknown group the library does.
+import "../seed-lib-missing" as vault;
+
+locus Bystander {
+    params {
+        idle: Int = 0;
+    }
+    fn tick() {
+        self.idle = self.idle + 1;
+    }
+}
+
+group guests = { Bystander };
+
+fn main() {
+    let b = Bystander { };
+    b.tick();
+    println("idle ", b.idle);
+}
