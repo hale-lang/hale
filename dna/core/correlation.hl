@@ -22,9 +22,13 @@ type WorkBinding {
     attempt_no: Int = 0;
     step_id: String = "";
     objective: String = "";
-    target: String = "";
-    requires: String = "";
+    context_digest: String = "";
+    knowledge_bindings: String = "";
+    output_contract: String = "";
     data_class: String = "";
+    requires: String = "";
+    target: String = "";
+    cost_ceiling: Int = 0;
 }
 
 // The binding of a request: the attempt is `<work>/a<n>` (§4), the
@@ -34,7 +38,9 @@ fn binding_of(req: WorkRequest) -> WorkBinding {
         task_id: req.task_id, work_id: req.work_id,
         attempt_id: if len(req.work_id) > 0 { req.work_id + "/a" + to_string(req.attempt_no) } else { "" },
         attempt_no: req.attempt_no, step_id: req.step_id,
-        objective: req.objective, target: req.target, requires: req.requires, data_class: req.data_class
+        objective: req.objective, context_digest: req.context_digest, knowledge_bindings: req.knowledge_bindings,
+        output_contract: req.output_contract, data_class: req.data_class, requires: req.requires, target: req.target,
+        cost_ceiling: req.cost_ceiling
     };
 }
 
@@ -54,9 +60,13 @@ fn encode_binding(w: WorkBinding) -> String {
     b.begin_object_field("request");
     b.string_field("step_id", w.step_id);
     b.string_field("objective", w.objective);
-    b.string_field("target", w.target);
-    b.string_field("requires", w.requires);
+    b.string_field("context_digest", w.context_digest);
+    b.string_field("knowledge_bindings", w.knowledge_bindings);
+    b.string_field("output_contract", w.output_contract);
     b.string_field("data_class", w.data_class);
+    b.string_field("requires", w.requires);
+    b.string_field("target", w.target);
+    b.int_field("cost_ceiling", w.cost_ceiling);
     b.end_object();
     b.end_object();
     return b.result();
@@ -75,17 +85,25 @@ fn decode_binding(text: String) -> WorkBinding {
         attempt_no: std::json::find_int_field(obj, "attempt_no"),
         step_id: std::json::find_string_field(req, "step_id"),
         objective: std::json::find_string_field(req, "objective"),
-        target: std::json::find_string_field(req, "target"),
+        context_digest: std::json::find_string_field(req, "context_digest"),
+        knowledge_bindings: std::json::find_string_field(req, "knowledge_bindings"),
+        output_contract: std::json::find_string_field(req, "output_contract"),
+        data_class: std::json::find_string_field(req, "data_class"),
         requires: std::json::find_string_field(req, "requires"),
-        data_class: std::json::find_string_field(req, "data_class")
+        target: std::json::find_string_field(req, "target"),
+        cost_ceiling: std::json::find_int_field(req, "cost_ceiling")
     };
 }
 
-// The request a bound Work resumes with: what it was asked, as asked.
+// The request a bound Work resumes with: what it was asked, as asked —
+// every field of it: the admitted input, the completion contract and
+// the cost boundary are the record's, not a default's.
 fn request_of_binding(w: WorkBinding) -> WorkRequest {
     return WorkRequest {
-        task_id: w.task_id, work_id: w.work_id, step_id: w.step_id, objective: w.objective, target: w.target,
-        requires: w.requires, data_class: if len(w.data_class) > 0 { w.data_class } else { "internal" }, attempt_no: w.attempt_no
+        task_id: w.task_id, work_id: w.work_id, step_id: w.step_id, objective: w.objective,
+        context_digest: w.context_digest, knowledge_bindings: w.knowledge_bindings, output_contract: w.output_contract,
+        data_class: if len(w.data_class) > 0 { w.data_class } else { "internal" }, requires: w.requires, target: w.target,
+        cost_ceiling: w.cost_ceiling, attempt_no: w.attempt_no
     };
 }
 

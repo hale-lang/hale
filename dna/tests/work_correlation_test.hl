@@ -36,6 +36,25 @@ const WC: String = "t5/wf1/s0/w0";
 const WD: String = "t6/wf1/s0/w0";
 const WE: String = "t7/wf1/s0/w0";
 
+// A record that refuses the first row of one kind: the association
+// write the review's probes refuse.
+locus Refusing {
+    params { inner: dna::MemJournal = dna::MemJournal { }; refuse_kind: String = ""; refused: Bool = false; }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if !self.refused && kind == self.refuse_kind {
+            self.refused = true;
+            return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() };
+        }
+        return self.inner.append(expected, kind, entity, body);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.append(expected, kind, entity, body); }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+}
+
 // A plan row from before this card binds no Work.
 fn legacy_plan() -> String { return PLAN_HEAD + "}"; }
 // A plan row bound to one Work and attempt, with the request as asked.
@@ -56,6 +75,8 @@ main locus App {
         record: dna::GitJournal = dna::GitJournal { };
         ledger: dna::MemJournal = dna::MemJournal { };
         seeded: dna::GitJournal = dna::GitJournal { };
+        plan_refused: dna::Dna = dna::Dna { };
+        request_refused: dna::Dna = dna::Dna { };
         seed_mode: String = "one"; // "one": every row into `seeded`; "two": the record's rows into `record`, the day's into `ledger`
         lead: dna::Leader = dna::Leader {
             name: "leader", org: "corr", charter: "You are the architect.",
@@ -179,7 +200,10 @@ main locus App {
         self.row("intent.offered", "i5", "refactor the greeting");
         self.row("task.born", "t5", "i5: refactor the greeting");
         self.row("task.pending", "t5", "routed");
-        let c = dna::WorkBinding { task_id: "t5", work_id: WC, attempt_id: WC + "/a1", attempt_no: 1, step_id: "t5/wf1/s0", objective: "refactor the greeting", target: "main.hl", requires: "edit review", data_class: "internal" };
+        let c = dna::WorkBinding {
+            task_id: "t5", work_id: WC, attempt_id: WC + "/a1", attempt_no: 1, step_id: "t5/wf1/s0", objective: "refactor the greeting", target: "main.hl",
+            requires: "edit review", data_class: "internal", context_digest: "sha256:context-5", knowledge_bindings: "package:sha256:k5 p1", output_contract: "Patch", cost_ceiling: 42
+        };
         self.row("task.planned", "t5", plan_for(c));
         // t6: one Work planned; its Mutation m9 has its request row and nothing after it — the stop fell between the two rows
         self.row("intent.offered", "i6", "a sixth");
@@ -232,6 +256,7 @@ main locus App {
         std::test::assert_eq_str(bc.attempt_id, WC + "/a1", label + ": under its recorded attempt, not attempt zero");
         std::test::assert_eq_str(bc.requires, "edit review", label + ": with its capability words");
         std::test::assert_eq_str(bc.data_class, "internal", label + ": and its data class, verbatim");
+        std::test::assert_eq_str(bc.context_digest + "|" + bc.knowledge_bindings + "|" + bc.output_contract + "|" + to_string(bc.cost_ceiling), "sha256:context-5|package:sha256:k5 p1|Patch|42", label + ": and its context digest, knowledge bindings, output contract and cost ceiling — the request as asked, whole");
         std::test::assert_eq_int(self.rows(j, "effect.requested", "commit:" + mc + ":a1"), 1, label + ": the candidate was committed as attempt one, the attempt the record holds");
         std::test::assert(std::str::contains(self.body_of(j, "task.resumed", "t5"), "for " + WC + "; not replanned"), label + ": resumed as wC: " + self.body_of(j, "task.resumed", "t5"));
         // t6: a Mutation with only its request row was in flight: it fails, its Task with it, and its id is never minted again
@@ -368,6 +393,65 @@ main locus App {
         self.check_restart("two memories", self.split);
 
         let rm = sh("rm\n-rf\n" + repo + "\n" + repo2 + "\n" + repo3);
+
+        // ---- (review) the binding carries the whole request: every field
+        //      of it survives the row and comes back as asked
+        let asked = dna::WorkRequest {
+            task_id: "t1", work_id: "t1/wf1/s0/a", step_id: "t1/wf1/s0", objective: "assess", context_digest: "sha256:context",
+            knowledge_bindings: "package:sha256:knowledge p1", output_contract: "Assessment", data_class: "confidential",
+            requires: "edit review", target: "main.hl", cost_ceiling: 42, attempt_no: 3
+        };
+        let back = dna::request_of_binding(dna::decode_binding(dna::encode_binding(dna::binding_of(asked))));
+        std::test::assert_eq_str(back.task_id + "|" + back.work_id + "|" + back.step_id + "|" + back.objective + "|" + back.context_digest + "|" + back.knowledge_bindings + "|" + back.output_contract + "|" + back.data_class + "|" + back.requires + "|" + back.target + "|" + to_string(back.cost_ceiling) + "|" + to_string(back.attempt_no),
+            "t1|t1/wf1/s0/a|t1/wf1/s0|assess|sha256:context|package:sha256:knowledge p1|Assessment|confidential|edit review|main.hl|42|3", "every field of the request survives the binding");
+        std::test::assert_eq_str(dna::binding_of(asked).attempt_id, "t1/wf1/s0/a/a3", "and the attempt is the request's own");
+
+        // ---- (review) an association write the record refuses gates
+        //      execution: nothing proceeds on a binding that is not durable.
+        //      The responsibility is held, and `redrive` puts it again
+        self.plan_refused = dna::Dna { journal: Refusing { refuse_kind: "task.planned" }, planned: true, org_id: "refused-plan" };
+        let rq = dna::WorkRequest { task_id: "t1", work_id: "t1/wf1/s0/a", step_id: "t1/wf1/s0", objective: "change it", requires: "edit" };
+        self.plan_refused.pending_plans.push(rq);
+        let plan = dna::Plan { org: "refused-plan", task_id: "t1", work_id: "t1/wf1/s0/a", kind: "appendage", change_class: "docs", target: "main.hl", count: 1, narrative: "the plan", by: "leader", parsed: true };
+        self.plan_refused.on_planned(plan);
+        std::test::assert_eq_int(self.rows(self.plan_refused.journal, "task.planned", ""), 0, "the plan's binding write was refused");
+        std::test::assert_eq_int(self.rows(self.plan_refused.journal, "mutation.requested", "") + self.rows(self.plan_refused.journal, "mutation.proposed", ""), 0, "and nothing proceeded on a binding that is not durable");
+        std::test::assert_eq_int(self.plan_refused.record_refusals, 1, "the refusal is counted");
+        std::test::assert_eq_int(self.plan_refused.held_plans.len(), 1, "the plan is held");
+        let kept = self.plan_refused.pending_plans.get(0) or dna::WorkRequest { };
+        std::test::assert_eq_str(kept.work_id, "t1/wf1/s0/a", "with its request still pending");
+        std::test::assert_eq_int(self.plan_refused.redrive(), 1, "driven again");
+        std::test::assert_eq_int(self.rows(self.plan_refused.journal, "task.planned", "t1"), 1, "the plan landed the second time");
+        std::test::assert_eq_int(self.rows(self.plan_refused.journal, "mutation.requested", ""), 1, "and only then did its Mutation's request row follow");
+        std::test::assert(std::str::contains(self.body_of(self.plan_refused.journal, "task.planned", "t1"), "\"work_id\": \"t1/wf1/s0/a\""), "under the Work's binding");
+        std::test::assert_eq_int(self.plan_refused.redrive(), 0, "nothing is held any more");
+
+        self.request_refused = dna::Dna { journal: Refusing { refuse_kind: "mutation.requested" }, planned: true, org_id: "refused-request" };
+        let out = self.request_refused.mutate_for(rq, "docs", "change it", "main.hl", 1);
+        std::test::assert(std::str::contains(out, ": refused: the record would not take the Mutation's request"), "the Mutation's identity write was refused: " + out);
+        std::test::assert_eq_int(self.rows(self.request_refused.journal, "mutation.requested", "") + self.rows(self.request_refused.journal, "mutation.proposed", "") + self.rows(self.request_refused.journal, "effect.requested", "") + self.rows(self.request_refused.journal, "mutation.failed", ""), 0, "and nothing proceeded under that id: no summary row, no worktree, no effect");
+        // through the plan: the request keeps its place, the plan is held, no Work settles, no Task settles
+        self.request_refused.pending_plans.push(rq);
+        self.request_refused.on_planned(plan);
+        std::test::assert_eq_int(self.rows(self.request_refused.journal, "task.planned", "t1"), 1, "the plan landed");
+        std::test::assert_eq_int(self.rows(self.request_refused.journal, "mutation.requested", ""), 1, "its Mutation's request row was taken (the record refused only the first)");
+        self.request_refused = dna::Dna { journal: Refusing { refuse_kind: "mutation.requested" }, planned: true, org_id: "refused-request-2" };
+        self.request_refused.pending_plans.push(rq);
+        self.request_refused.on_planned(plan);
+        std::test::assert_eq_int(self.rows(self.request_refused.journal, "task.planned", "t1"), 1, "the plan landed");
+        std::test::assert_eq_int(self.rows(self.request_refused.journal, "mutation.requested", ""), 0, "its Mutation's request row was refused");
+        std::test::assert_eq_int(self.rows(self.request_refused.journal, "task.failed", "t1") + self.rows(self.request_refused.journal, "task.done", "t1"), 0, "a refused write is no outcome: the Task did not settle");
+        std::test::assert_eq_int(self.request_refused.held_plans.len(), 1, "the plan is held with its request");
+        std::test::assert_eq_int(self.request_refused.redrive(), 1, "driven again");
+        std::test::assert_eq_int(self.rows(self.request_refused.journal, "mutation.requested", ""), 1, "the Mutation's request row landed the second time");
+        std::test::assert_eq_int(self.rows(self.request_refused.journal, "task.planned", "t1"), 2, "under a plan row written again — the first is that Work's plan still, the last is what a restart reads");
+        // the direct path holds its request the same way
+        self.request_refused = dna::Dna { journal: Refusing { refuse_kind: "mutation.requested" }, org_id: "refused-direct" };
+        self.request_refused.on_work_requested(rq);
+        std::test::assert_eq_int(self.rows(self.request_refused.journal, "mutation.requested", ""), 0, "a direct edit's request row refused");
+        std::test::assert_eq_int(self.request_refused.held_direct.len(), 1, "the request is held");
+        std::test::assert_eq_int(self.request_refused.redrive(), 1, "driven again");
+        std::test::assert_eq_int(self.rows(self.request_refused.journal, "mutation.requested", ""), 1, "and taken");
     }
 }
 fn main() { App { }; }

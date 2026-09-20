@@ -2207,9 +2207,17 @@ authority.
   `change_class`, `target`, `count`, the model's narrative, the
   package read, `parsed`, and `class_applied` — and, from card 14, a
   `binding`: the Work and attempt that asked, `work_id`, `attempt_id`,
-  `attempt_no`, with their `request` as asked, objective, target,
-  capability words, data class) and proceeds under the
-  class and target the plan names. **The kind decides whose change
+  `attempt_no`, with their `request` as asked — every field of it:
+  objective, target, capability words, data class, context digest,
+  knowledge bindings, output contract, cost ceiling) and proceeds under
+  the class and target the plan names. A plan row the record refuses
+  starts nothing: the request keeps its place, the plan is held with
+  it, and `redrive` puts it again (a restart plans the Task again, since
+  no plan landed). A Mutation's request row (`mutation.requested`) the
+  record refuses ends that Mutation before it began: no summary row, no
+  worktree, no effect under that id, and the request is held the same
+  way — a refused write is no outcome, and the Work and Task do not
+  settle on it. **The kind decides whose change
   it is.** A plan of kind `organism` is a change to the organism
   itself, and that is class `organization` whatever the plan called
   it: it is expressed from the organism's seed and assessed under the
