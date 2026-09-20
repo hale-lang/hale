@@ -56,6 +56,15 @@
 //! them name the right file; none of them is a join key, and
 //! `check --json`'s `file` field is used as one. Every renderer now
 //! spells a path the one way — absolute, canonical, `..`-free.
+//!
+//! GH #848 is the family's last member and the one failure that is
+//! not the front end's: a program the CHECKER accepts and codegen
+//! refuses. A `CodegenError` carries a span, and only `build` ever
+//! used it — `run`, `test`, `bench` and `replay` printed the error
+//! with `{:?}`, so the reader got `UnsupportedAt("…", Span { start:
+//! Pos(55), end: Pos(60) })` and no line to open. All five now
+//! report through one helper, so the located line is the same
+//! string whichever command found it.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -997,5 +1006,161 @@ fn verify_json_reports_an_unreadable_input_too() {
     let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
     assert_eq!(lines.len(), 1, "exactly one record: {}", stdout);
     assert_io_record(lines[0], "not_here.hl");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ── GH #848: one located codegen error, whichever command compiles ──
+
+/// A program `hale check` accepts and codegen refuses, with the
+/// refusal carrying the offending generic argument's own span:
+/// `Bytes` is not one of the primitives v0 can mangle into a generic
+/// instantiation's name. Line 6, column 12 is `Bytes` in `Box<Bytes>`.
+///
+/// (An ordinary string literal, not a raw one, on purpose:
+/// `hale-corpus` harvests `r#"…"#` program literals out of the test
+/// sources, and a program that checks clean and will not build would
+/// land in the committed check/build divergence list for no gain.)
+const UNSUPPORTED_GENERIC_ARG: &str = "type Box<T> {\n    \
+     item: T;\n}\n\ntype Holder {\n    b: Box<Bytes>;\n}\n\n\
+     fn main() {\n    println(\"boxed\");\n}\n";
+
+/// The bench twin: same declarations, same line 6, but a `bench_*`
+/// fn instead of a `main` (the runner synthesizes the driver and
+/// refuses a bench file that brings its own `main`).
+const UNSUPPORTED_GENERIC_ARG_BENCH: &str = "type Box<T> {\n    \
+     item: T;\n}\n\ntype Holder {\n    b: Box<Bytes>;\n}\n\n\
+     fn bench_nothing() {\n    println(\"\");\n}\n";
+
+/// The located prefix — `file:line:col` — of the one codegen error,
+/// from whichever stream the command reports on.
+fn located_codegen(what: &str, out: &str) -> String {
+    out.lines()
+        .find(|l| l.contains(": codegen error:"))
+        .and_then(|l| l.split(": codegen error:").next())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| {
+            panic!("no located codegen error from {what}:\n{out}")
+        })
+}
+
+/// Neither the error's Rust variant nor its span may reach the
+/// reader: `UnsupportedAt("…", Span { start: Pos(55), … })` is what
+/// every command but `build` used to print.
+fn assert_no_debug_formatting(what: &str, out: &str) {
+    assert!(
+        !out.contains("Span {"),
+        "{what} printed a debug-formatted span:\n{out}"
+    );
+    assert!(
+        !out.contains("UnsupportedAt"),
+        "{what} printed the error's Rust variant name:\n{out}"
+    );
+}
+
+#[test]
+fn build_run_and_test_locate_one_codegen_error_identically() {
+    let d = seed_dir("codegen848");
+    let f = d.join("boxed.hl");
+    std::fs::write(&f, UNSUPPORTED_GENERIC_ARG).unwrap();
+
+    // The premise: the checker is clean, so this reaches the error
+    // path of every command that compiles and of no command that
+    // does not.
+    let (_, check_err, check_code) = hale_check(&[], &f);
+    assert_eq!(check_code, 0, "check accepts it:\n{check_err}");
+
+    let (_, build_err, build_code) = hale_cmd("build", &[], &f);
+    let (_, run_err, run_code) = hale_cmd("run", &[], &f);
+    // An explicitly named file is run whatever its suffix, so all
+    // three commands compile the SAME bytes.
+    let (test_out, _, test_code) = hale_cmd("test", &[], &f);
+    assert_eq!(build_code, 1, "build refuses it:\n{build_err}");
+    assert_eq!(run_code, 1, "run refuses it:\n{run_err}");
+    assert_eq!(test_code, 1, "test refuses it:\n{test_out}");
+
+    let from_build = located_codegen("build", &build_err);
+    assert!(
+        from_build.ends_with("boxed.hl:6:12"),
+        "the position is the generic argument's own: {from_build}"
+    );
+    for (what, out) in [("run", &run_err), ("test", &test_out)] {
+        assert_eq!(
+            located_codegen(what, out),
+            from_build,
+            "{what} must name the file, line and column exactly as \
+             build does\nbuild:\n{build_err}\n{what}:\n{out}"
+        );
+    }
+    for (what, out) in
+        [("build", &build_err), ("run", &run_err), ("test", &test_out)]
+    {
+        assert_no_debug_formatting(what, out);
+        assert!(
+            out.contains("b: Box<Bytes>;") && out.contains('^'),
+            "{what} must cut the snippet and caret from the source \
+             too:\n{out}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn bench_locates_a_codegen_error_in_the_bench_file() {
+    let d = seed_dir("codegen848bench");
+    let f = d.join("boxed_bench.hl");
+    std::fs::write(&f, UNSUPPORTED_GENERIC_ARG_BENCH).unwrap();
+
+    let (_, stderr, code) = hale_cmd("bench", &[], &f);
+    assert_eq!(code, 1, "bench refuses it:\n{stderr}");
+    assert_no_debug_formatting("bench", &stderr);
+    let prefix = located_codegen("bench", &stderr);
+    assert!(
+        prefix.ends_with("boxed_bench.hl:6:12"),
+        "bench names the bench file at the offending position — not \
+         the driver copy it compiles and deletes:\n{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn replay_locates_a_codegen_error_too() {
+    let d = seed_dir("codegen848replay");
+    let hello = d.join("hello.hl");
+    std::fs::write(&hello, "fn main() {\n    println(\"hi\");\n}\n")
+        .unwrap();
+    let rec = d.join("hello.halerec");
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("run")
+        .arg(&hello)
+        .env("LOTUS_OBS_RECORD", &rec)
+        .output()
+        .expect("record a hello program");
+    assert!(
+        out.status.success() && rec.is_file(),
+        "recording failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let f = d.join("boxed.hl");
+    std::fs::write(&f, UNSUPPORTED_GENERIC_ARG).unwrap();
+    // `--feed` re-executes CHANGED code against a recorded ingress
+    // tape, so it is the one way onto replay's build path with a
+    // program the recording did not come from — which is what a
+    // program that cannot compile necessarily is.
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("replay")
+        .arg(&rec)
+        .arg(&f)
+        .arg("--feed")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("run hale replay");
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(1), "replay refuses it:\n{stderr}");
+    assert_no_debug_formatting("replay", &stderr);
+    assert!(
+        located_codegen("replay", &stderr).ends_with("boxed.hl:6:12"),
+        "replay locates it like every other command:\n{stderr}"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }

@@ -246,6 +246,24 @@ resolver reached it (`/abs/app/../lib/second.hl`), and the target's
 own files were named exactly as the command line spelled them, `..`
 and all (2026-09-20, GH #822).
 
+Nor is the **kind** of failure. A refusal raised by CODEGEN rather
+than by the front end — a construct the checker accepts and the
+backend does not support, a missing toolchain component the program
+needs — is a located diagnostic like any other whenever it carries a
+span: `path:line:col: codegen error: message`, with the offending
+source line and a caret, from `build`, `run`, `test`, `bench` and
+`replay` alike, byte for byte the same line from each. A codegen
+refusal with no span to point at prints `codegen error: message` and
+nothing else, from all of them. These commands have no
+machine-readable channel, so this is a text contract only; `check`
+never reaches codegen and is unaffected (2026-09-20, GH #848; before
+it only `build` used the span, and the rest printed the error's Rust
+debug form — `UnsupportedAt("…", Span { start: Pos(55), end:
+Pos(60) })` — so `hale run` could refuse a program without naming a
+line to open). `bench` names the bench file itself, not the temporary
+copy with the synthesized driver appended that it actually compiles
+and then deletes.
+
 ## `hale bench` — the Layer-3 runner
 
 `hale bench [file | dir]` discovers `*_bench.hl` files (dir walk,
