@@ -17882,12 +17882,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             "count" | "clear" | "truncate"
                         ) && args.len()
                             == if name == "truncate" { 2 } else { 1 }
+                            && !self.user_fn_shadows_bounded_intrinsic(
+                                name, args, scope,
+                            )
                             && self
                                 .bounded_recv_spec(args, scope)
                                 .is_some()
                         {
                             // bounded[T; N] count/clear/truncate at
-                            // statement position.
+                            // statement position. GH #892: a declared
+                            // `fn NAME` over this receiver's own
+                            // bounded owns the name — fall through to
+                            // the `user_fns` arm below.
                             let (elem, cap) = self
                                 .bounded_recv_spec(args, scope)
                                 .expect("guard checked");
@@ -19609,6 +19615,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// (`dna/tests/books_slice_test.hl` declares `fn count(...)`),
     /// so refusing them here would invent a check/build divergence
     /// rather than close one.
+    ///
+    /// GH #892 closed the other half of that exemption. The guard
+    /// proves the ARGUMENT is a bounded receiver; it does not prove
+    /// the program meant the intrinsic. Where the program declares
+    /// `fn NAME` over that receiver's own `bounded[T; N]`, the
+    /// declaration wins in both layers —
+    /// `user_fn_shadows_bounded_intrinsic` (`form/bounded.rs`) — so
+    /// the guarded arms no longer hijack it and still need no
+    /// refusal here.
     fn reject_builtin_over_user_fn(
         &self,
         name: &str,
@@ -24580,12 +24595,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // bounded[T; N] intrinsics (2026-07-02): count/clear
                 // (push/at are fallible — they route through
                 // lower_fallible_call's Ident arm under `or`).
+                // GH #892: the program's own `fn NAME` wins when its
+                // first parameter is this receiver's own bounded —
+                // see `user_fn_shadows_bounded_intrinsic`.
                 Expr::Ident(i)
                     if matches!(
                         i.name.as_str(),
                         "count" | "clear" | "truncate"
                     ) && args.len()
                         == if i.name == "truncate" { 2 } else { 1 }
+                        && !self.user_fn_shadows_bounded_intrinsic(
+                            i.name.as_str(),
+                            args,
+                            scope,
+                        )
                         && self.bounded_recv_spec(args, scope).is_some() =>
                 {
                     let (elem, cap) = self

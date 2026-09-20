@@ -2498,6 +2498,43 @@ a tick at a time. The compiler keeps `init` / `new` / `upgrade` (they
 embed the sources), `hale fleet check` and the plan schema, and the
 exec shims. The host decides nothing.
 
+## A seed is built once per content fingerprint
+
+The host builds the organization's seed before it starts it, and the
+application's seed too under `dev`; it rebuilds both on a restart. A
+build is a pure function of what it reads, so the host does it **once
+per content fingerprint** and copies the binary thereafter. The cache
+is `$XDG_CACHE_HOME/hale/dna-build` (or `~/.cache/hale/dna-build`), a
+sibling of the toolchain cache the host, the membrane client and the
+surface are themselves built into; it holds the 32 most recently used
+binaries and prunes the rest.
+
+The fingerprint is a SHA-256 over:
+
+- every file the build reads, each as its path relative to the
+  project and the SHA-256 of its bytes. The list is the compiler's
+  own — `hale inputs <seed>`, which resolves imports exactly as a
+  build does — so a seed that grows an import, or a vendored core
+  that is upgraded, is a different fingerprint without anything here
+  having to be kept in step;
+- the project's `hale.toml` and `hale.lock`;
+- the toolchain version, and the `hale` binary's own size and mtime,
+  so a compiler rebuilt in place without a version bump is a
+  different fingerprint;
+- every environment variable that changes codegen;
+- the seed's own path, because a binary carries the paths of the
+  sources it was built from.
+
+A hit is a copy and nothing else: the binary is copied beside the
+seed and renamed over its place, so a reader sees the old file or the
+whole new one, and a binary that is still running is replaced rather
+than written through. A store is the same rename into the cache, so
+two hosts building one thing at once need no lock; one of them wins
+and both are right. Anything that stops the fingerprint being taken
+whole — no cache home, `hale inputs` failing — is a miss, and a miss
+builds exactly as it did before. `HALE_DNA_NO_BUILD_CACHE=1` makes
+every build a miss.
+
 ## The embedded source has a name
 
 `hale dna init` / `new` / `upgrade` materialize `vendor/dna` from the

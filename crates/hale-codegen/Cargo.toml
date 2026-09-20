@@ -13,6 +13,18 @@ hale-syntax = { path = "../hale-syntax" }
 hale-types = { path = "../hale-types" }
 inkwell = { version = "0.5", features = ["llvm18-0"] }
 
+[features]
+# llvm-sys links LLVM statically unless told otherwise, so every
+# binary that depends on this crate — the compiler, and each of the
+# ~550 integration-test binaries the workspace builds — carries its
+# own ~100MB copy of libLLVM. CI enables this feature to link the
+# shared libLLVM-18.so the distro package provides instead: the
+# test-binary links go from minutes to seconds, the binaries from
+# ~100MB to a few MB, and the runner no longer has to free disk
+# before it can build. Release builds stay static so the shipped
+# `hale` has no LLVM runtime dependency.
+dynamic-llvm = ["inkwell/llvm18-0-prefer-dynamic"]
+
 [dev-dependencies]
 hale-corpus = { path = "../hale-corpus" }
 libc = "0.2"

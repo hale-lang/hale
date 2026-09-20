@@ -6,13 +6,16 @@
 //! ratifying a proposal that supersedes an earlier version retires it;
 //! declining the replacement leaves the earlier version in force.
 
+#[path = "support/trace.rs"]
+mod trace;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
+    let _s = trace::Span::new("hale", args.join(" "));
     let out = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(args)
         .current_dir(cwd)
@@ -25,6 +28,7 @@ fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
 }
 
 fn hale_env(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> (bool, String) {
+    let _s = trace::Span::new("hale", args.join(" "));
     let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
     c.args(args).current_dir(cwd).env("HALE_BIN", env!("CARGO_BIN_EXE_hale")).env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"));
     for (k, v) in env {
@@ -60,6 +64,7 @@ fn body(resp: &str) -> String {
 }
 
 fn journal(app: &Path) -> Vec<(String, String, String)> {
+    let _s = trace::Span::new("git", "show refs/dna/journal:journal.jsonl");
     let out = Command::new("git").args(["show", "refs/dna/journal:journal.jsonl"]).current_dir(app).output().unwrap();
     String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -73,6 +78,7 @@ fn journal(app: &Path) -> Vec<(String, String, String)> {
 
 /// The organization, running, until `finish`.
 fn start_org(app: &Path) -> std::process::Child {
+    let _s = trace::Span::new("start_org", "hale dna run");
     // a previous organization's sockets would answer the wait below
     // before the new one has bound
     for s in ["hale-dna.intent.offered.sock", "hale-dna.review.verdict.sock"] {
@@ -89,10 +95,9 @@ fn start_org(app: &Path) -> std::process::Child {
         .stderr(Stdio::null())
         .spawn()
         .expect("hale dna run");
-    let dl = Instant::now() + Duration::from_secs(120);
-    while Instant::now() < dl && !(app.join(".hale/dna/hale-dna.intent.offered.sock").exists() && app.join(".hale/dna/hale-dna.review.verdict.sock").exists()) {
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    trace::wait_until("dna run: the membrane bound", Duration::from_secs(120), Duration::from_millis(200), || {
+        app.join(".hale/dna/hale-dna.intent.offered.sock").exists() && app.join(".hale/dna/hale-dna.review.verdict.sock").exists()
+    });
     assert!(app.join(".hale/dna/hale-dna.review.verdict.sock").exists(), "the organization never bound its membrane");
     host
 }
@@ -108,6 +113,7 @@ fn finish(app: &Path, host: &mut std::process::Child) {
 /// The package for `org` from a fresh knowledge service over the record:
 /// the digests included, and the raw body.
 fn package(app: &Path) -> (Vec<String>, String) {
+    let _s = trace::Span::new("package", "hale dna knowledge + GET /context");
     let port = free_port();
     let mut c = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["dna", "knowledge", ".", "--port", &port.to_string()])
@@ -120,11 +126,10 @@ fn package(app: &Path) -> (Vec<String>, String) {
         .stderr(Stdio::null())
         .spawn()
         .expect("hale dna knowledge");
-    let dl = Instant::now() + Duration::from_secs(120);
-    while Instant::now() < dl && TcpStream::connect(("127.0.0.1", port)).is_err() {
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    let ctx = body(&http(port, "GET /context?target=org&budget=32 HTTP/1.0\r\nHost: x\r\n\r\n"));
+    trace::wait_until("dna knowledge: the port answered", Duration::from_secs(120), Duration::from_millis(200), || {
+        TcpStream::connect(("127.0.0.1", port)).is_ok()
+    });
+    let ctx = trace::timed("http", "GET /context", || body(&http(port, "GET /context?target=org&budget=32 HTTP/1.0\r\nHost: x\r\n\r\n")));
     let _ = c.kill();
     let _ = c.wait();
     let v: serde_json::Value = serde_json::from_str(&ctx).unwrap_or(serde_json::Value::Null);
@@ -163,6 +168,7 @@ fn main() { App { }; }
 
 #[test]
 fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
+    let _t = trace::test("dna_design");
     let d = std::env::temp_dir().join(format!("hale_dna_design_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();

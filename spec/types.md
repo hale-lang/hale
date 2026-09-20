@@ -620,6 +620,15 @@ chain. It is identical to `at` in signature and semantics (on
 `bounded` it *is* `at`, bounded by the live count rather than the
 capacity); `at` remains the idiomatic spelling for a direct index.
 
+The six free-fn-shaped names are NOT reserved. They dispatch on the
+first argument's type, so a program may declare a free `fn` of any
+of them, and a declaration whose first parameter is the receiver's
+own `bounded[T; N]` **shadows** the intrinsic for that receiver type
+— checker and codegen alike. See
+[`tokens.md` § Built-in identifiers](tokens.md) for the exact rule.
+`f.get(i)` is unaffected: method position is not the free-fn
+namespace.
+
 Semantics:
 - Fields auto-initialize EMPTY. Literal init and whole-field
   assignment are rejected — the intrinsics are the only mutation

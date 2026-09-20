@@ -698,6 +698,49 @@ assertion. The rest of the element-chain vocabulary (`map`,
 `group_count_into` — [`semantics.md` § Element
 chains](semantics.md)) is recognized only after a `.`.
 
+#### A declaration shadows a bounded intrinsic (GH #892)
+
+The six `bounded[T; N]` intrinsics dispatch on the type of
+their first argument, so where a program *declares* one of
+those names the two readings can be told apart — and the
+program's own declaration wins:
+
+> A free `fn` whose **first parameter is a `bounded[T; N]`**
+> answers every call of that name whose first argument is a
+> receiver of **that same** `bounded[T; N]`, at any arity the
+> declaration accepts. The intrinsic answers every other call.
+
+```hale
+type Window { id: String; samples: bounded[Int; 8]; }
+
+fn count(xs: bounded[Int; 8]) -> Int { return 8801; }
+
+fn main() {
+    let mut w = Window { id: "w1" };
+    push(w.samples, 1) or raise;
+    println(count(w.samples));      // 8801 — the declaration
+}
+```
+
+The rule is held by the typechecker and by codegen alike, so
+`hale check` and `hale build` resolve such a call to the same
+`fn`. It is a *shadow*, not a refusal: no declaration is
+rejected, and a program that declares none of the names is
+unaffected.
+
+Element type and capacity are part of the match, and that is
+load-bearing rather than fussy. The Hale-source standard
+library is merged into the same global `fn` namespace and calls
+these intrinsics on buffers of its own, so a shadow keyed on
+the name alone would retarget the *library's* calls at the
+user's declaration — the capture that makes the four printers
+claimed names. A declaration over some other `bounded` is
+simply not the receiver's, and the intrinsic answers.
+
+Method position is untouched: `f.get(i)` and the element-chain
+terminals (`f.filter(…).count()`) are reached through a
+receiver, which no free `fn` claims.
+
 Until GH #863 / GH #880 the declaration was accepted and the
 divergence appeared later, in one of two shapes. `hale check`
 passed and `hale build` refused the program with an unlocated

@@ -3240,6 +3240,101 @@ multi-worker pool).
 
 ## Deferred & future work
 
+### Proposed F.39 — Locus ownership is resolved before lowering (the owner table)
+
+**Status: PROPOSED (GH #921, Phase A). Not shipped.** The shipped
+behaviour is the flag set described below; this entry becomes a locked
+commitment only when Riley approves it on #921 and the shadow-mode
+PR lands. The observable rules in `spec/semantics.md` § *Dissolve
+timing rules* do not change — this makes them true by construction.
+
+**Why.** Every teardown leak and use-after-free fixed in the 2026-09-20
+sweep (#711/#812, #750, #789, #793, #815, #836, #837, #853, #871,
+#883, #890, #893, #895) was one of seven one-shot flags in
+`crates/hale-codegen` consumed by "the next literal (or call) lowered":
+`suppress_fresh_temp`, `defer_next_locus_dissolve`,
+`instantiating_for_parent_field`, `placement_for_next_locus_instantiation`,
+`or_field_owner_locus`, `returns_this_locus` (with the
+`current_user_fn_ret` spoof, which also means "nobody owns this"), and
+the field-ownership predicates (`field_init_is_fresh_factory` /
+`_impl`, `or_substitute_transfers_into_field`). A flag set at a `let`
+or a field init is taken by whichever node lowers first — an argument,
+a receiver, the wrong branch of an `or`, the first arm of an `if` — and
+the residues still open (#921 A3) are all that shape.
+
+**The rule.** Before lowering a body, one pass assigns every
+locus-producing expression an owner:
+
+```
+Owner = Binding(slot)          -- `let x = …`, `x = …` into a local slot
+      | Field(owner, field)    -- a param-field initializer, literal or
+                               --   proven-fresh factory (bare / `or raise`
+                               --   / `or fail` / `or <fresh>`), any
+                               --   field type: locus, interface, perspective
+      | FrameTemp(scope)       -- an expression-position value nobody
+                               --   binds: receiver, argument, field read,
+                               --   operand; dissolved at the scope's
+                               --   flush (fn-scope, GH #814; per-iteration
+                               --   slot reuse, GH #824)
+      | Caller                 -- the value a `return` hands out, in every
+                               --   arm of an `if`/`match`/block tail
+      | Borrowed(from)         -- a handle passed in (`Mid { leaf: shared }`,
+                               --   an interface value from a parent field,
+                               --   GH #730): mask bit clear, never torn
+                               --   down here
+      | Placement(entry)       -- a `placement { }` entry's instance (pinned
+                               --   thread, program lifetime), incl. the
+                               --   bindings transport (GH #893)
+```
+
+Derivation is syntactic plus one fixpoint: `fresh_locus_factories`
+(a fn every one of whose return arms — including `if`/`match`/block
+tails, which today disqualify it — is a freshly built value of the
+declared locus). A locus-producing expression is: a literal, a call to
+a fresh factory, an `or` whose branches are those, a carrier
+(`if`/`match`/block) whose tails are those, or an element of an
+ascribed array/tuple of those. Each branch and each element gets its
+own decision; a carrier never "consumes" a decision for its arms.
+
+**What lowering does with it.** `lower_locus_instantiation` and the
+factory-call hooks read `Owner` from a side table keyed by expression
+id (assigned by desugar, stable across passes) and emit exactly the
+disposition the variant names: push a deferred entry (`Binding`,
+`FrameTemp`), write the reclaim slot and set the owner's mask bit
+(`Field`), suppress the frame entry (`Caller`, `Borrowed`), register
+with the placement machinery (`Placement`). Reaching an instantiation
+with no entry is a `CodegenError` — the assertion that turns "the flag
+was consumed by the wrong node" into a build failure with a span.
+
+**Shadow mode first (A2).** The table is computed and, in the first PR,
+only *checked* against what the flags decide, on every corpus program
+and every cell of the ownership shape matrix (A4); a disagreement is a
+test failure listing the expression. No behaviour changes. Then A3
+switches consumers one flag per commit and deletes the flag —
+`suppress_fresh_temp` → `defer_next_locus_dissolve` →
+`instantiating_for_parent_field` → `or_field_owner_locus` →
+`placement_for_next_locus_instantiation` → `returns_this_locus`
+(split into `Caller` and `Placement`; the adapter/codec binding
+preludes stop spoofing) — each commit un-marks the matrix cells it
+fixes.
+
+**Non-goals.** No new syntax. No change to when things dissolve
+(`spec/semantics.md` stays the contract). `let` inside a loop stays
+fn-scoped with per-iteration slot reuse (#824). Struct values are not
+loci and are outside this table (#713 is a separate ruling).
+
+**Open questions for the approval.** (1) Is `Borrowed(from)` the right
+home for GH #730 (interface value flowing into a same-interface child
+field) and #731 (holding a designated perspective slot) — i.e. do we
+commit that a handle passed *in* is never owned by the receiver?
+(2) Should an instantiation with no owner be a hard `CodegenError`
+from the first A3 commit, or a warning until the matrix is fully
+green? (3) The bindings transport as `Placement(entry)`: it is
+program-lifetime by contract; confirm it should not become `Binding`
+in `fn main`'s frame (PR #918 chose the frame; the table would say
+`Placement`, dissolved at the same point).
+
+
 Forward-looking items lifted from the spec files. These are design
 intent, **not current behavior** — grouped by the spec area they came
 from.

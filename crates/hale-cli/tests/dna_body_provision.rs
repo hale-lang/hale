@@ -9,11 +9,14 @@
 
 #[path = "support/reap.rs"]
 mod reap;
+#[path = "support/trace.rs"]
+mod trace;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn hale_env(args: &[&str], cwd: &Path, home: &Path, stdin: Option<&str>) -> (bool, String) {
+    let _s = trace::Span::new("hale", args.join(" "));
     let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
     c.args(args)
         .current_dir(cwd)
@@ -34,17 +37,20 @@ fn hale_env(args: &[&str], cwd: &Path, home: &Path, stdin: Option<&str>) -> (boo
 }
 
 fn git(args: &[&str], cwd: &Path) -> String {
+    let _s = trace::Span::new("git", args[0].to_string());
     let out = Command::new("git").args(args).current_dir(cwd).output().expect("git");
     assert!(out.status.success(), "git {args:?} in {}: {}", cwd.display(), String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 fn journal(cwd: &Path) -> String {
+    let _s = trace::Span::new("git", "show refs/dna/journal:journal.jsonl");
     let out = Command::new("git").args(["show", "refs/dna/journal:journal.jsonl"]).current_dir(cwd).output().unwrap();
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
 fn run_host(app: &Path, home: &Path, log: &Path) -> std::process::Child {
+    let _s = trace::Span::new("spawn", "hale dna run");
     Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(app)
@@ -61,17 +67,20 @@ fn run_host(app: &Path, home: &Path, log: &Path) -> std::process::Child {
 }
 
 fn wait_log(log: &Path, needle: &str, secs: u64, host: &mut std::process::Child) -> bool {
-    let dl = Instant::now() + Duration::from_secs(secs);
-    while Instant::now() < dl {
-        if std::fs::read_to_string(log).unwrap_or_default().contains(needle) {
+    let has = |log: &Path| std::fs::read_to_string(log).unwrap_or_default().contains(needle);
+    let mut at_exit: Option<bool> = None;
+    let held = trace::wait_until(format!("log: {needle}"), Duration::from_secs(secs), Duration::from_millis(250), || {
+        if has(log) {
             return true;
         }
-        if let Ok(Some(_)) = host.try_wait() {
-            return std::fs::read_to_string(log).unwrap_or_default().contains(needle);
+        // the host exited: the log will not grow, so stop waiting on it
+        if matches!(host.try_wait(), Ok(Some(_))) {
+            at_exit = Some(has(log));
+            return true;
         }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-    false
+        false
+    });
+    at_exit.unwrap_or(held)
 }
 
 fn stop_host(app: &Path, host: &mut std::process::Child) {
@@ -83,6 +92,7 @@ fn stop_host(app: &Path, host: &mut std::process::Child) {
 
 #[test]
 fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record() {
+    let _t = trace::test("dna_body_provision");
     let d = std::env::temp_dir().join(format!("hale_dna_prov_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
