@@ -168,6 +168,7 @@ locus Landing {
         return self.inner.append(expected, kind, entity, body);
     }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if kind == "effect.result" && self.refuse_close { self.refusals = self.refusals + 1; return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() }; }
         let r = self.inner.append_exact(expected, kind, entity, body);
         if r.ok && kind + ":" + entity == self.arm_on { self.armed = true; self.refreshes = 0; }
         return r;

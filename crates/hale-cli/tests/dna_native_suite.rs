@@ -210,6 +210,7 @@ fn dna_fixture_set_is_complete() {
             "workflow_projection_test.hl",
             "workflow_release_type_wide_test.hl",
             "workflow_restore_test.hl",
+            "workflow_retry_test.hl",
             "workflow_run_test.hl",
             "workflow_step_test.hl",
             "workspace_test.hl",

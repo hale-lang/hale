@@ -48,7 +48,9 @@ type TransitionAnswer {
     // on a refusal, who refused: "state" (the transition has no basis in
     // the projection), "record" (the append was refused, or the record
     // moved too often — the transition may be proposed again), "conflict"
-    // (the proposal disagrees with what its id committed, or with itself)
+    // (the proposal disagrees with what its id committed, or with itself),
+    // "fenced" (the committer no longer holds the lease its scope runs
+    // under — card 12b — the transition may be proposed again once it does)
     basis: String = "";
 }
 topic TransitionAnswered { payload: TransitionAnswer; subject: "dna.transition.answered"; keyed_by key; }
