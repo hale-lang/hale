@@ -172,6 +172,15 @@ through a receiver, `b.len()`, which no builtin claims, which is
 why the standard library's own ring buffer can declare `fn len()`.
 The exact set lives in `spec/tokens.md` § *Built-in identifiers*.
 
+The set is short because most builtins can be told apart from your
+function by *what you pass them*. The `bounded[T; N]` operations —
+`count`, `clear`, `truncate`, `push`, `at`, `set` — are recognized
+only when the first argument is a bounded receiver, so those names
+stay yours to declare, and a `fn count(xs: bounded[Int; 8])` of
+your own answers calls on a `bounded[Int; 8]` in preference to the
+intrinsic. See
+*[Collections](../everyday/collections.md)*.
+
 Like the unknown-identifier rule, this one wants the whole
 program, so it's on for `hale check <directory>`. One file of a
 multi-file project checked on its own stays permissive: it may

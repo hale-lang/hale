@@ -7732,7 +7732,11 @@ const PRINTER_CLAIM: &str =
 ///   receiver, or inside a closure assertion. Outside that the user
 ///   fn wins, and `dna/tests/books_slice_test.hl` declares a free
 ///   `fn count(...)` that builds and runs its own body — claiming
-///   the name would break a real program.
+///   the name would break a real program. GH #892 made the
+///   bounded-receiver case yield too: a declaration whose first
+///   parameter is the receiver's own `bounded[T; N]` shadows the
+///   intrinsic in the checker and in codegen alike, so these six
+///   names stay the program's to take at every argument type.
 /// - `B`, `c`, `sigma`, `phi`, `k_max`, `span_max`, `length` and
 ///   `empty` are in spec/tokens.md's built-in identifier table but
 ///   no call site claims them; each builds and runs its own body.
