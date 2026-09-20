@@ -41,7 +41,9 @@ main locus App {
         // its owner reads
         stub(fake + "/bin/ssh", "#!/bin/sh\necho 'the transport is local here; ssh must not be called' >&2\nexit 99\n");
         // the body's side: the pinned toolchain, git, systemd, compose, curl
-        let pin = dna::trim_nl(dna::run_tool("sh\n-c\n\"$1\" --version | awk '{print $2}'\nsh\n" + toolchain()).stdout);
+        // the version is field 2 of the FIRST line: `hale --version`
+        // has a second one since GH #726 (the embedded DNA digest)
+        let pin = dna::trim_nl(dna::run_tool("sh\n-c\n\"$1\" --version | awk 'NR==1{print $2}'\nsh\n" + toolchain()).stdout);
         stub(home + "/.hale/bin/hale", "#!/bin/sh\n[ \"$1\" = --version ] && { echo \"hale " + pin + "\"; exit 0; }\nexit 0\n");
         stub(home + "/.hale/bin/git", "#!/bin/sh\ncase \"$1\" in\n  clone) mkdir -p \"$4/.git\" ;;\nesac\nexit 0\n");
         stub(home + "/.hale/bin/systemctl", "#!/bin/sh\nstate=\"$FAKE/unit.state\"\ncase \"$2\" in\n  stop) echo inactive > \"$state\" ;;\n  start|enable) echo active > \"$state\" ;;\n  is-active) s=$(cat \"$state\" 2>/dev/null || echo inactive); [ \"$3\" = --quiet ] || echo \"$s\"; [ \"$s\" = active ] ;;\nesac\n");

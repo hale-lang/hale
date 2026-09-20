@@ -598,6 +598,8 @@ fn concern_raise(root: String, source: String, what: String, severity: Int) -> A
     if len(source) == 0 || len(what) == 0 { return fail("concern raise needs a <source> (a locus path under org) and what"); }
     let b = std::json::Builder { };
     b.begin_object();
+    // GH #689: this concern's own id, carried into the answer
+    b.string_field("request", "c" + hex(millis()));
     b.string_field("source", source);
     b.string_field("what", what);
     b.int_field("severity", severity);

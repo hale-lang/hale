@@ -42,6 +42,57 @@ fn keys_has(list: String, key: String) -> Bool {
 fn keys_add(list: String, key: String) -> String {
     return (if len(list) == 0 { "\n" } else { list }) + key + "\n";
 }
+// GH #689: whether the request at row `i` has ITS OWN answer.
+//
+// An intent, a verdict's review and a practice request each have an entity
+// of their own, so an answer naming that entity is that request's. Several
+// concerns from one source share an entity, so a concern carries its own
+// id (`request` in its body) and the organization writes that id into the
+// `concern.raised` it answers with, in a field of its own, which is read
+// back whole and compared whole (`dna::request_named`): the answer is
+// matched by identity, an answer to `c10` is not an answer to `c1`, and a
+// repeated or a later answer can neither answer an earlier request nor
+// hide one that was never delivered.
+//
+// A request written before this rule carries no id. Those fall back to
+// counting: the k-th such request of a (kind, entity) is answered when k
+// answers for that entity exist, which is what this host did before —
+// enough while a record holds only pre-rule rows, and never applied to a
+// request that has an id.
+@unbounded
+fn request_answered(p: Projection, i: Int, kinds: String) -> Bool {
+    let r = p.row(i);
+    let id = std::json::find_string_field(r.body, "request");
+    if len(id) > 0 {
+        let mut j = i + 1;
+        while j < p.rows() {
+            let o = p.row(j);
+            if o.entity == r.entity && std::str::contains(kinds, " " + o.kind + " ") && dna::request_named(o.body) == id { return true; }
+            j = j + 1;
+        }
+        return false;
+    }
+    let mut occurrence = 0;
+    let mut first = -1;
+    let mut j = 0;
+    while j <= i {
+        let o = p.row(j);
+        if o.kind == r.kind && o.entity == r.entity && len(std::json::find_string_field(o.body, "request")) == 0 {
+            occurrence = occurrence + 1;
+            if first < 0 { first = j; }
+        }
+        j = j + 1;
+    }
+    let mut answers = 0;
+    j = first + 1;
+    while j < p.rows() {
+        let o = p.row(j);
+        if o.entity == r.entity && std::str::contains(kinds, " " + o.kind + " ") && len(dna::request_named(o.body)) == 0 { answers = answers + 1; }
+        j = j + 1;
+    }
+    return answers >= occurrence;
+}
+
 // GH #682: when a row was last relayed (`<key>@<unix>` lines), -1 never.
 @unbounded
 fn relayed_at(list: String, key: String) -> Int {
@@ -436,8 +487,8 @@ locus Host {
                 self.relayed = relay_mark(self.relayed, fact_key(p, i), std::time::now());
                 self.say("refused an unverified " + r.kind + " (" + r.entity + ") from the record");
             } else if (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") {
-                let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else { " review.settled review.refused " };
-                let answered = find_after(p, i + 1, answers, r.entity).seq >= 0;
+                let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised concern.refused " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else { " review.settled review.refused " };
+                let answered = request_answered(p, i, answers);
                 // GH #664: an intent for a position another owner holds is
                 // theirs to admit; it stays in the record, unanswered here
                 let ours = r.kind != "intent.requested" || admits_here(self.root, std::json::find_string_field(r.body, "to"));

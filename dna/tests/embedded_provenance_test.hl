@@ -1,0 +1,89 @@
+// dna/tests/embedded_provenance_test.hl — GH #726: the binary under
+// test says which DNA source it carries, and a fixture can hold it to
+// the working tree.
+//
+// `hale dna new` / `init` / `upgrade` materialize `vendor/dna` from the
+// source EMBEDDED in the `hale` binary at its own build time, so an
+// organism a fixture starts runs the core that binary carries — not
+// the one in `dna/core` on disk. A fixture that edits the core and
+// forgets to rebuild therefore measures the OLD core while reading the
+// new source, and reports coverage it does not have (it happened twice
+// on 2026-09-17). Versions cannot tell those two binaries apart: both
+// say `hale 0.20.0`.
+//
+// So the toolchain names its embedded source set: `hale dna
+// --embedded-digest` prints a framed SHA-256 over the sorted (path,
+// content) pairs of every embedded file and nothing else, and
+// `--from-tree <dir>` prints what a checkout would embed. THIS is the
+// recipe for any fixture whose subject is a generated organism — assert
+// the two are equal before believing a mutation result:
+//
+//     let mine = dna::trim_nl(run(toolchain() + "\ndna\n--embedded-digest").stdout);
+//     let tree = dna::trim_nl(run(toolchain() + "\ndna\n--embedded-digest\n--from-tree\n" + repo).stdout);
+//     std::test::assert_eq_str(tree, mine, "rebuild: this binary predates the tree");
+//
+// The repository is `HALE_DNA_SOURCE` (the native suite exports it;
+// `hale test` from a checkout's root can use `.`).
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn source_tree() -> String {
+    if std::env::var_exists("HALE_DNA_SOURCE") { return std::env::var("HALE_DNA_SOURCE"); }
+    return ".";
+}
+
+fn hale(argv: String) -> dna::RunResult { return dna::run_tool(toolchain() + "\n" + argv); }
+
+fn first_line(s: String) -> String {
+    let nl = std::str::index_of(s, "\n");
+    return if nl < 0 { dna::trim_nl(s) } else { s[0..nl] };
+}
+
+fn line_after_first(s: String) -> String {
+    let nl = std::str::index_of(s, "\n");
+    if nl < 0 { return ""; }
+    return first_line(s[(nl + 1)..len(s)]);
+}
+
+main locus App {
+    run() {
+        // 1. the binary names what it embeds: one digest, on stdout, alone
+        let d = hale("dna\n--embedded-digest");
+        std::test::assert_eq_int(d.code, 0, "hale dna --embedded-digest: " + d.stderr);
+        let embedded = dna::trim_nl(d.stdout);
+        std::test::assert_eq_int(len(embedded), 64, "a 64-hex SHA-256 and nothing else: [" + embedded + "]");
+
+        // 2. …and it is THIS working tree's source. The assertion a
+        //    mutation run needs: unequal means the binary was built
+        //    before the edit and the organism it materializes is the
+        //    old one.
+        let tree = source_tree();
+        let t = hale("dna\n--embedded-digest\n--from-tree\n" + tree);
+        std::test::assert_eq_int(t.code, 0, "the checkout at " + tree + " can be digested (set HALE_DNA_SOURCE to the repository): " + t.stderr);
+        std::test::assert_eq_str(dna::trim_nl(t.stdout), embedded,
+            "the binary under test (" + toolchain() + ") embeds the DNA source of " + tree
+                + ": rebuild it (cargo build --release) before trusting a mutation result");
+
+        // 3. `hale --version`: the first line is the version alone —
+        //    the body's provisioning script and three fixtures read
+        //    field 2 of it — and the second names the embedded source.
+        let v = hale("--version");
+        std::test::assert_eq_int(v.code, 0, "hale --version: " + v.stderr);
+        std::test::assert(std::str::starts_with(first_line(v.stdout), "hale "), "the first line is `hale <version>`: " + v.stdout);
+        std::test::assert(!std::str::contains(first_line(v.stdout), "dna"), "and nothing else: " + v.stdout);
+        std::test::assert_eq_str(line_after_first(v.stdout), "embedded dna: " + embedded[0..16], "the second line is the digest's first 16: " + v.stdout);
+
+        // 4. a directory that is not a checkout is refused, and the
+        //    refusal names what was missing rather than digesting less
+        let bad = hale("dna\n--embedded-digest\n--from-tree\n" + tree + "/dna/tests");
+        std::test::assert(bad.code != 0, "a directory without dna/core is refused: " + bad.stdout);
+        std::test::assert(std::str::contains(bad.stderr, "dna/core"), "the refusal names it: " + bad.stderr);
+    }
+}
+
+fn main() { App { }; }

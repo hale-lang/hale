@@ -144,19 +144,49 @@ pub fn check_bundle_opts(
     bundle: &Bundle<'_>,
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
-    check_bundle_opts_scoped(bundle, allow_unowned_subscriber, false)
+    check_bundle_opts_scoped(bundle, allow_unowned_subscriber, false, false)
 }
 
-/// The same check with the F.18 rule on: a call to a bare name nothing
-/// binds is an error, as `hale build` would say. The CLI passes `true`
-/// when it checked a whole seed (a directory), never for one file.
+/// GH #721: the check for a caller holding a WHOLE program — every
+/// import resolved, nothing a sibling file still has to supply. The
+/// build path qualifies (`hale build` / `hale run` / `hale test`
+/// compile exactly what they bundle) and so does the language server,
+/// which typechecks only once the whole seed has parsed. An
+/// identifier nothing binds is a typo for these callers, reported
+/// with a span instead of arriving as codegen's spanless `unknown
+/// identifier`.
+///
+/// The F.18 callee rule stays OFF here: it still refuses bare names
+/// codegen answers itself but `BARE_BUILTIN_CALLEES` does not list
+/// (`29-helpers` in the fixture corpus builds and would be refused),
+/// and a build that succeeds today must keep succeeding.
+pub fn check_bundle_opts_whole_program(
+    bundle: &Bundle<'_>,
+    allow_unowned_subscriber: bool,
+) -> Vec<Diag> {
+    check_bundle_opts_scoped(bundle, allow_unowned_subscriber, false, true)
+}
+
+/// The same check with the whole-program rules on: a call to a bare
+/// name nothing binds (F.18) and a bare identifier nothing binds
+/// (GH #721) are errors, as `hale build` would say. The CLI passes
+/// `true` when it checked a whole seed (a directory), never for one
+/// file — see `check::check_bundle_scoped` for why the two are
+/// separate flags.
 pub fn check_bundle_opts_scoped(
     bundle: &Bundle<'_>,
     allow_unowned_subscriber: bool,
     strict_callees: bool,
+    strict_idents: bool,
 ) -> Vec<Diag> {
     let (top, mut diags) = resolve::build_top_scope(bundle);
-    diags.extend(check::check_bundle_scoped(bundle, &top, allow_unowned_subscriber, strict_callees));
+    diags.extend(check::check_bundle_scoped(
+        bundle,
+        &top,
+        allow_unowned_subscriber,
+        strict_callees,
+        strict_idents,
+    ));
     // GH #476 Change 9 (review): claim VERDICTS are judged over the
     // canonical model, and a model is a description of a CHECKED
     // program — `derive_application_model` says so, and ends with a

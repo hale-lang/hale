@@ -1,0 +1,129 @@
+// std::str::ByteView — safe linear-time BYTE scanning of a String
+// (GH #720).
+//
+// The problem it solves is a cost cliff, not a missing operation.
+// A `String` is a NUL-terminated blob, so:
+//
+//   - `len(s)` is a `strlen` — O(n) per evaluation. LLVM hoists it
+//     out of a loop whose body writes no memory, so a bare
+//     `while i < len(s)` often costs nothing; put ANY allocating
+//     call in that body (a slice, a concat, a builder append) and
+//     the hoist fails and every iteration re-walks the input.
+//   - a checked slice `s[i..(i + 1)]` is O(n) REGARDLESS of how
+//     few bytes it asks for: the clamp does its own `strlen` and
+//     the result is a fresh arena copy.
+//
+// So the natural bounded-parser loop
+//
+//     let mut i = 0;
+//     while i < len(s) { let c = s[i..(i + 1)]; ...; i = i + 1; }
+//
+// is quadratic. Measured on a 1 MiB input: 13.2 s. The only linear
+// alternative was `std::str::byte_at_unchecked`, which is a raw
+// load — correct only while the caller's own bound is correct, and
+// undefined behaviour the moment it isn't.
+//
+// A ByteView is the middle: the length is computed ONCE (one
+// strlen at `bytes_view`) and kept in the view, so every read is
+// bounds-checked against a number that is already in a register.
+// Same 1 MiB scan: 29 us for the loop (it vectorizes — the bound
+// is loop-invariant), 2 ms for the whole program including
+// construction.
+//
+//     let v = std::str::bytes_view(s);
+//     let mut i = 0;
+//     while i < v.n {
+//         let c = std::str::byte_at(v, i);   // 0..255, -1 if out
+//         if c == 44 { ... }                 // 44 = ','
+//         i = i + 1;
+//     }
+//
+// BYTES, not characters. `v.n` is a byte count and `byte_at`
+// returns one byte, so a multi-byte UTF-8 sequence is several
+// reads and `slice` can cut one in half. That is the right default
+// for protocol and format scanning (delimiters, digits, quotes are
+// all single-byte in UTF-8, and a continuation byte is never
+// mistaken for one). When the unit of meaning is a character, walk
+// with `std::str::cp_at` / `cp_size` instead.
+//
+// Truncated or malformed input cannot read out of bounds: the
+// bound is the view's own `n`, so a scan that runs off the end of
+// a half-received frame gets -1 and an empty slice, whatever the
+// bytes say.
+//
+// COST OF CONSTRUCTION. `bytes_view` walks the String twice: one
+// strlen for `n`, and one copy of the text into the caller's arena
+// (a String field of a returned struct is deep-copied at the fn
+// boundary, as everywhere else in Hale). Both are O(n) ONCE, which
+// is why the view has to be hoisted out of the loop that uses it —
+// built per iteration it is no better than what it replaces. The
+// copy also makes the view a snapshot: reassigning the variable it
+// was built from cannot leave the view reading freed bytes.
+//
+// For a scan that must not copy at all — a multi-megabyte payload
+// inspected in a hot handler — the zero-copy pieces are still
+// there: `std::str::byte_at_unchecked` with a bound you maintain
+// yourself, and `std::str::range_copy(s, n, lo, hi)` to materialize
+// a token out of a String you already measured. The view is the
+// safe default; those are the sharp tools.
+/// A String plus its byte length, so a byte-at-a-time scan pays
+/// the length once instead of per access. Build it with
+/// `std::str::bytes_view(s)`; read `n` for the byte count.
+type __StrByteView {
+    // The scanned text, copied once at construction (see the
+    // cost note above).
+    text: String;
+    // Byte length of `text`, computed once at construction. Every
+    // `byte_at` / `slice` bound is checked against this field, so
+    // it must come from `bytes_view` — fabricating a view with an
+    // `n` larger than the String is the one way to defeat the
+    // bounds check.
+    n: Int;
+}
+
+/// Measure `s` once and keep the byte count in the view's `n`,
+/// so a byte-at-a-time scan stops paying for the length. One
+/// strlen plus one copy of the text; build it OUTSIDE the loop
+/// that uses it.
+fn __str_bytes_view(s: String) -> std::str::ByteView {
+    return std::str::ByteView { text: s, n: len(s) };
+}
+
+// Refusing with -1 rather than raising keeps the scan loop
+// branch-shaped ("did I run off the end?") instead of forcing an
+// `or` disposition on every byte of a hot loop.
+//
+// The `b == 0` guard is a second line of defence, not reachable
+// through `bytes_view`: `n` is a strlen result, so no byte below
+// it can be the terminator. It means a sequential scan over a
+// hand-fabricated view still stops at the real end of the String
+// instead of walking past it.
+/// The byte at `i` as an Int in 0..255, or **-1** when `i` is
+/// outside `[0, n)` — including one past the end, which is how a
+/// scan discovers it has finished. O(1): a compare and a load.
+fn __str_byte_at(v: std::str::ByteView, i: Int) -> Int {
+    if i < 0 { return -1; }
+    if i >= v.n { return -1; }
+    let b = std::str::byte_at_unchecked(v.text, i);
+    if b == 0 { return -1; }
+    return b;
+}
+
+// Built on `std::str::range_copy`, which takes the view's length
+// instead of deriving one with a per-call strlen the way
+// `substring` and the `s[a..b]` slice expression must.
+/// `[start, end_exclusive)` of the view as an owned String,
+/// clamped into `[0, n]` — an inverted or out-of-range range
+/// yields "", so a length read out of untrusted input needs no
+/// validation first. Costs the width of the slice, not the length
+/// of the text.
+fn __str_slice(v: std::str::ByteView, start: Int, end_exclusive: Int)
+    -> String
+{
+    let mut lo = start;
+    let mut hi = end_exclusive;
+    if lo < 0 { lo = 0; }
+    if hi > v.n { hi = v.n; }
+    if lo >= hi { return ""; }
+    return std::str::range_copy(v.text, v.n, lo, hi);
+}
