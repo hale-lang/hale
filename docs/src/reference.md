@@ -57,6 +57,12 @@ diagnostic's meaning, go there.
 | `hale lsp` | the language server, in the compiler binary |
 | `hale mcp` | the MCP server, in the compiler binary |
 
+Every one of them answers `--help` (or `-h`) as its first argument with
+its own flags, its input shape and where its output goes. `hale build
+--help` is where the built binary's path is written down — `build` has
+no `-o`, so a file target becomes `./app` and a directory target becomes
+`myapp/myapp`, inside the directory.
+
 `check` and `verify` follow every `import`, so a parse failure anywhere
 in the import graph — a library you import, or one it imports — fails
 them both, reported at that file's own line and column. Neither ever
@@ -74,3 +80,11 @@ NDJSON record on stdout carrying the file, line, column and message,
 with `"kind":"parse error"`. Whatever fails, the machine-readable
 stream says why — so for a gate reading it, an empty stream means the
 seed is clean and nothing else does.
+
+That holds for the inputs themselves, not just for what is in them: a
+target that does not exist, or a file `check` cannot open — one of the
+seed's own, or one reached through an `import` — is a record with
+`"kind":"io error"`, the path in `"file"` and the operating system's
+error in `"message"`. It carries `"line":0` and `"col":0`, since a
+file that never opened has no text to point into. In text mode you
+read the same sentence you always did, on stderr.

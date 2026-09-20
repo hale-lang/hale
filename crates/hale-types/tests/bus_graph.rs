@@ -506,6 +506,24 @@ fn input_driven_publish_loop_is_ok() {
 }
 
 #[test]
+fn stdin_driven_publish_loop_is_ok() {
+    // GH #830: "input-pacing" is the registry's `block` rows, so a
+    // line read off stdin paces the loop exactly as a blocking
+    // `recv` does. Under the old hand list of 11 paths this drew the
+    // flood warning — whose own suggested fix ("drive it from an
+    // input") was what the program already did.
+    let msgs = check(&flood_src(
+        "while true { let line = std::io::stdin::read_line(); \
+         Beat <- Tick { n: 1 }; }",
+    ));
+    assert!(
+        !msgs.iter().any(|m| m.contains(BACKPRESSURE)),
+        "a stdin-paced publish loop must not warn; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
 fn bounded_for_loop_publish_is_ok() {
     let msgs = check(&flood_src("for i in 0..10 { Beat <- Tick { n: i }; }"));
     assert!(

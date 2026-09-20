@@ -5382,6 +5382,17 @@ impl Parser {
     fn parse_type_decl(&mut self) -> Result<TypeDecl, Diag> {
         let kw = self.expect(TokenKind::Type, "type")?;
         let name = self.expect_decl_name("type name")?;
+        // GH #834: remember where the parameter list opened. Which of
+        // the three forms this is only becomes known after the `=`,
+        // and two of them (struct, enum) are templates that keep
+        // their parameters — so the one that has none, the alias,
+        // has to report back HERE, at the `<`, rather than at the
+        // token it happens to be reading when it finds out.
+        let lt_span = if self.at(&TokenKind::Lt) {
+            Some(self.peek_token().span)
+        } else {
+            None
+        };
         let generics = self.parse_generic_params_opt()?;
 
         // Three forms:
@@ -5421,7 +5432,25 @@ impl Parser {
                     span: kw.span.merge(close.span),
                 });
             }
-            // alias
+            // alias. It is the one `type` form that takes no generic
+            // parameters (`spec/grammar.ebnf` `type_decl`): codegen
+            // monomorphizes struct and enum templates only, and an
+            // alias declares no type of its own to monomorphize.
+            // `type Twin<T> = Pair<T>;` used to parse, stay nominal
+            // through `resolve_alias_targets` (which has no single
+            // target to expand), and surface as a mismatch between
+            // two monomorph names — "expected `Twin_Int`, got
+            // `Pair_Int`" — which names neither the rule nor the fix
+            // (GH #834). Refusing it here also keeps the shape away
+            // from resolve, check, codegen and `hale fmt`, none of
+            // which have anything to say about it.
+            if let Some(lt) = lt_span {
+                return Err(Diag::parse(
+                    lt,
+                    "generic type aliases are not supported; write the \
+                     concrete alias `type Name = Pair<Int>;`",
+                ));
+            }
             let ty = self.parse_type_expr()?;
             let semi = self.expect(TokenKind::Semi, ";")?;
             Ok(TypeDecl {

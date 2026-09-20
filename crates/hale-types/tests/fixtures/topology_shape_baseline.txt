@@ -1576,6 +1576,7 @@ crates/hale-types/tests/topology_projection.rs#7 43fedbac6dfcd680
 crates/hale-types/tests/topology_projection.rs#8 9987dee9f11ab32a
 crates/hale-types/tests/topology_projection.rs#9 e2f9e2e579bb0933
 crates/hale-types/tests/type_alias.rs#0 865d341109268295
+crates/hale-types/tests/type_alias.rs#4 b6ed763b6434263e
 crates/hale-types/tests/violate.rs#0 8bef0857136a5c1f
 crates/hale-types/tests/violate.rs#1 d85d74c1f266771b
 crates/hale-types/tests/violate.rs#10 d85d74c1f266771b

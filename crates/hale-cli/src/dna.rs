@@ -141,6 +141,16 @@ fn host_exec(verb: &str, dir: &Path, args: &[String]) -> ExitCode {
     }
 }
 
+/// The `hale node` surface. One text for two callers: the usage
+/// error (stderr, exit 2) and `--help` (stdout, exit 0) — GH #817.
+pub(crate) fn node_usage() -> &'static str {
+    "usage: hale node <name> [--repo <clone>] [--fleet <name>] [--tick <ms>]\n\
+     \n\
+     The agent that expresses a fleet plan's instances on one machine,\n\
+     from the record: it reconciles what the plan says this node runs\n\
+     against what is running here (GH #566 F5).\n"
+}
+
 /// `hale node <name> [--repo <clone>] …`: the node agent is the host's
 /// (GH #566 F8); the clone is the project.
 pub fn node(args: &[String]) -> ExitCode {
@@ -162,7 +172,7 @@ pub fn node(args: &[String]) -> ExitCode {
     }
     if rest.iter().all(|a| a.starts_with("--")) {
         eprintln!("hale node: a node has a name");
-        eprintln!("usage: hale node <name> [--repo <clone>] [--fleet <name>] [--tick <ms>]");
+        eprint!("{}", node_usage());
         return ExitCode::from(2);
     }
     // GH #583 K4: the node listens for its instances' concerns on a

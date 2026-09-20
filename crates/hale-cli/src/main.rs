@@ -65,6 +65,20 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // GH #817: `--help` / `-h` right after a subcommand asks what
+    // THAT subcommand takes. Answered here, once, before any command
+    // parses its own arguments — otherwise the flag is whatever each
+    // command does with an unrecognized first argument, and no two
+    // agree (`hale build --help` read it as the target and failed
+    // with `not a file or directory: --help`). Only the first
+    // argument: further along it belongs to whatever is parsing
+    // there.
+    if matches!(args.get(2).map(String::as_str), Some("--help") | Some("-h"))
+        && subcommand_help(cmd)
+    {
+        return ExitCode::SUCCESS;
+    }
+
     // Which targets exist, and what the compiler can actually do with
     // each. Naming a target and building it are different capabilities,
     // so the listing states the tier rather than implying parity.
@@ -206,15 +220,7 @@ fn main() -> ExitCode {
             return run_model_diff(&rest[1..]);
         }
         if rest.first().map(String::as_str) != Some("dump") {
-            eprintln!("usage: hale model dump <file.hl | dir>");
-            eprintln!("       hale model diff <a.topology> <b.topology> [--json|--text]");
-            eprintln!();
-            eprintln!("`dump` derives the canonical ApplicationModel (GH #476) and prints an internal,");
-            eprintln!("non-stable dump (experimental, pre-1.0).");
-            eprintln!("`diff` compares two --dump-topology artifacts: declarations (added / removed /");
-            eprintln!("renamed / moved / split / joined / ambiguous), per-locus contract deltas, effect");
-            eprintln!("and certificate deltas, law and adequacy deltas, and a source-only vs model-shape");
-            eprintln!("classification. JSON (versioned, digest-bearing) by default; --text for a review view.");
+            eprint!("{}", model_usage());
             return ExitCode::from(2);
         }
         // The check pipeline's dump section reads PROCESS argv (it
@@ -361,6 +367,280 @@ fn usage() {
     eprintln!();
     eprintln!("    hale --version               print the version, and the embedded DNA source's digest");
     eprintln!("    hale --help                  print this help");
+    eprintln!("    hale <command> --help        that command's flags, input shape and output");
+}
+
+/// GH #817: one subcommand's usage — what `--help` / `-h` as its
+/// first argument prints, before the command parses anything.
+///
+/// Every command used to answer that question differently, because
+/// none of them was answering it: `hale build --help` read the flag
+/// as its target (`not a file or directory: --help`), `hale init
+/// --help` would have scaffolded a project into a directory of that
+/// name, `hale lsp` / `hale mcp` started a server on stdio and
+/// waited, and the flag-parsing commands called it an unknown flag
+/// (exit 2). Help is the one part of the surface every command has,
+/// so it is written in one place.
+///
+/// Commands whose text already exists somewhere else call it rather
+/// than repeat it: a second copy of a flag list is a copy that goes
+/// stale.
+///
+/// Returns `false` for a command this does not answer — `iris` and
+/// `dna` parse `--help` themselves further in, and the parser that
+/// owns the flags owns their description. A `false` falls through
+/// to ordinary dispatch.
+fn subcommand_help(cmd: &str) -> bool {
+    let text: &str = match cmd {
+        // `check` and `verify` have answered `--help` since the
+        // v0.15.0 devex review; the pre-pass routes to the same text
+        // so there is one description of the flag set.
+        "check" | "verify" => {
+            check_usage(cmd == "verify");
+            return true;
+        }
+        "fleet" => {
+            print!("{}", fleet_usage());
+            return true;
+        }
+        "model" => {
+            print!("{}", model_usage());
+            return true;
+        }
+        "topology" => {
+            print!("{}", topology_graph::usage_text());
+            return true;
+        }
+        "node" => {
+            print!("{}", dna::node_usage());
+            return true;
+        }
+        "lex" => "\
+hale lex <file.hl>            tokenize and print the token stream
+
+One file: every token on its own line, with its line:col. Nothing is
+parsed, `import` is not followed, and there are no flags.
+",
+        "parse" => "\
+hale parse <file.hl>          parse and print the AST
+
+One file: the parsed `Program`, pretty-printed. Nothing is
+typechecked and `import` is not followed — `hale check` is the
+command that reads the whole import graph. Takes no flags.
+",
+        "init" => "\
+hale init [dir]               bootstrap a project (default: the current directory)
+
+Writes a `hale.toml` skeleton, a hello-world `main.hl`, a first
+`tests/*_test.hl` so `hale test` works from minute one, and a
+`.gitignore` covering the build artifact and `vendor/`.
+
+Strictly non-destructive: a file that already exists is reported and
+left exactly as it was, so `init` is safe to re-run in a
+half-scaffolded directory. Takes no flags.
+",
+        "inputs" => "\
+hale inputs <seed-dir | file.hl>   every file a build of the seed reads
+
+One canonical path per line: the seed's own `.hl` files and every
+`.hl` of every directory they import, transitively, resolved exactly
+as the compiler resolves them. For anything that must know what a
+build depends on without guessing from git — an untracked, ignored
+or oddly named source file beside the reviewed ones is compiled all
+the same. Takes no flags.
+",
+        "fetch" => "\
+hale fetch [repo-root]        fetch the git deps in hale.toml into vendor/
+
+Each `[deps]` entry is cloned into `vendor/<name>/` and its resolved
+SHA pinned in `hale.lock`. Default root: the current directory.
+Takes no flags.
+",
+        "run" => "\
+hale run <file.hl | dir> [program args...]   compile + run as a native binary
+
+Compiles the target exactly as `hale build` does and execs the
+result from a temporary path — there is no interpreter. The target
+is one `.hl` file, whose `import` directives are followed, or one
+directory, whose `.hl` files are one seed.
+
+Everything after the target is the PROGRAM's argv: `std::env::arg`
+sees what a built binary run directly would see.
+
+  --observe    before the target: run the program with LOTUS_OBS=1
+               and an iris session beside it, for its lifetime
+",
+        "build" => "\
+hale build <file.hl | dir> [flags]   parse + typecheck + emit a native binary
+
+The target is one `.hl` file, whose `import` directives are
+followed, or one directory, whose `.hl` files are one seed and one
+binary.
+
+The binary lands beside the target, and there is no `-o`:
+
+    hale build app.hl    ->  ./app           the basename, minus .hl
+    hale build myapp/    ->  myapp/myapp     the directory's own name,
+                                             inside it
+
+Flags follow the target:
+
+  --target <native|wasm32|triple>  which backend emits the artifact
+                                   (`hale targets` lists every target
+                                   this compiler can name, and says
+                                   which it can build)
+  --target-cpu <native|baseline>   `native` tunes to this host, best
+                                   speed and not portable; `baseline`
+                                   pins a portable x86-64-v3 for an
+                                   artifact that travels
+  --dev                            LLVM O1 instead of the O3 default:
+                                   build latency over run speed
+  --link <name>                    link a system library (repeatable)
+  --csrc <file.c>                  compile and link a C source
+                                   (repeatable)
+  --wrap-main                      synthesize the wasm @export entry
+                                   from `fn main` (--target wasm32)
+  --locality-report                the per-locus working-set table,
+                                   on stderr; the build proceeds
+  --target-cache <l1|l2|l3>        evaluate each locus against that
+                                   cache tier's budget
+  --strict                         with --target-cache: an over-budget
+                                   locus is a build error, not a
+                                   warning
+",
+        "replay" => "\
+hale replay <recording> <program.hl>   re-run a LOTUS_OBS_RECORD recording
+
+The recording is the journal a program wrote under
+`LOTUS_OBS_RECORD=<path>`; the program is the code to re-execute it
+against. Admission is fail-closed: a recording from different build
+inputs, from a different model, or without a clean finalize is
+refused unless the matching flag accepts the gap.
+
+  --diff                    report the first divergence from the
+                            recording and fail on any; on a match,
+                            per-category coverage
+  --json                    with --diff: that verdict and coverage,
+                            machine-readable
+  --at <n>                  SIGSTOP at the n'th consume
+  --at <consumer-id>:<n>    ... at that consumer's n'th consume,
+                            stable across multi-consumer runs
+  --feed                    inject the recorded ingress tape into
+                            (possibly changed) code — there is no
+                            recorded schedule to compare against, so
+                            not with --diff or --at
+  --allow-unmatched-feed    with --feed: accept a partially-fed tape
+  --allow-live-effects      re-execute although this program can
+                            reach the live world (syscall and ffi
+                            writes repeat)
+  --allow-unverified-model  accept a recording whose execution
+                            identity is missing or does not match
+                            this compile
+  --allow-truncated         replay the recorded prefix of a
+                            crash-truncated recording
+",
+        "test" => "\
+hale test [file | dir]        compile + run every `*_test.hl` (default: cwd)
+
+Each `_test.hl` file is compiled and run as its own binary, and its
+exit status is the verdict. Finding nothing to run is success, not
+an error.
+
+  -run <substr>   only files whose path contains <substr>
+                  (`--run`, `-run=<substr>` and `--run=<substr>` too)
+  --json          the results as JSON on stdout
+",
+        "bench" => "\
+hale bench [file | dir]       run every `*_bench.hl`'s bench_* fns (default: cwd)
+
+Self-calibrating: each parameterless `bench_*` fn is run until the
+harness has a stable measurement, and reports ns/op and allocs/op. A
+`*_bench.hl` file may not declare `fn main`.
+
+  -run <substr>   only benches whose NAME contains <substr>
+  --json          the results as JSON on stdout
+",
+        "fmt" => "\
+hale fmt [file | dir ...]     canonical formatter, in place (default: cwd)
+
+Go-style and zero config. Directories are recursed; `vendor/` and
+dot-dirs are skipped. A file that does not lex is reported and
+skipped — the formatter never rewrites a file it cannot fully
+tokenize.
+
+  --check    do not write: list the files that would change and exit
+             1 (the CI gate)
+  --diff     do not write: print the before/after for those files
+  --stdin    format stdin to stdout (editor integration)
+",
+        "doc" => "\
+hale doc [file | dir]         render the seed's API reference (`///` comments)
+
+Markdown on stdout, one entry per documented declaration of the
+seed's `.hl` files.
+
+  --json        the same items as JSON instead of Markdown
+  -o <path>     write to <path> instead of stdout (`--out` too)
+  --stdlib      document the `std::` surface instead of a seed
+",
+        "lsp" => "\
+hale lsp                      stdio Language Server (diagnostics)
+
+Speaks LSP over stdin and stdout. No target and no flags: the seed
+to check is derived per document from the client's `textDocument`
+URIs. Not meant to be run by hand — point an editor at `hale lsp`.
+",
+        "mcp" => "\
+hale mcp                      stdio Model Context Protocol server (agent tools)
+
+Speaks MCP over stdin and stdout, exposing the toolchain to a host
+without a shell. No target and no flags. Its tools self-exec this
+binary, so the compiler an agent drives is the one it is talking to.
+",
+        _ => return false,
+    };
+    print!("{}", text);
+    true
+}
+
+/// The `hale fleet` surface. One text for two callers: the usage
+/// error (stderr, exit 2) and `--help` (stdout, exit 0).
+fn fleet_usage() -> &'static str {
+    "\
+hale fleet check [plan.json]   compose and check
+                                (no plan: every fleet in [fleets];
+                                 --in <dir> another workspace's, --if-declared: none is ok)
+hale fleet dump  <plan.json>    write the fleet artifact
+hale fleet attest <plan.json>   binaries match the plan's sha256 rows
+hale fleet keygen <prefix>      ES256 keypair for signing
+hale fleet sign <file> --key K  detached .sig over exact bytes
+
+check/dump take --trust <pub.pem> (repeatable):
+with trust roots declared, every component must
+verify under one of them.
+
+A plan names exact application INSTANCES and the
+routes between them. It composes artifacts, never
+source: matching wire identities establish
+compatibility, but only an explicit route creates
+a fleet edge.
+"
+}
+
+/// The `hale model` surface. One text for two callers: the usage
+/// error (stderr, exit 2) and `--help` (stdout, exit 0).
+fn model_usage() -> &'static str {
+    "\
+usage: hale model dump <file.hl | dir>
+       hale model diff <a.topology> <b.topology> [--json|--text]
+
+`dump` derives the canonical ApplicationModel (GH #476) and prints an internal,
+non-stable dump (experimental, pre-1.0).
+`diff` compares two --dump-topology artifacts: declarations (added / removed /
+renamed / moved / split / joined / ambiguous), per-locus contract deltas, effect
+and certificate deltas, law and adequacy deltas, and a source-only vs model-shape
+classification. JSON (versioned, digest-bearing) by default; --text for a review view.
+"
 }
 
 
@@ -2123,6 +2403,78 @@ impl EffectTable {
     }
 }
 
+/// GH #806: an input `check` and `verify` needed and could not READ.
+///
+/// Not a [`hale_syntax::Diag`]: there is no text to position it in —
+/// the file never opened, or the target is not there at all. That is
+/// why it travelled as a bare `eprintln!` plus a non-zero exit for as
+/// long as it did, and why it was the last thing on the check path
+/// still doing so: under `--json` the stream was EMPTY and the exit
+/// was 1, the exact shape GH #777 retired for diagnostics, so a gate
+/// reading the stream could not tell a missing target or an
+/// unreadable file from a crash. It is a record like everything else
+/// now, at `"line":0,"col":0` — no position, because there is no text
+/// to have a position in — and the text channel prints exactly what
+/// it always printed.
+struct IoDiag {
+    /// The path the failure is about: the target itself when the
+    /// target cannot be read, otherwise the file that would not open.
+    path: PathBuf,
+    /// What the TEXT channel prints — byte for byte the line the
+    /// `eprintln!` at the failing site printed before this existed.
+    text: String,
+    /// The record's `message`: the OS error, which is the part a
+    /// consumer can act on.
+    message: String,
+}
+
+impl IoDiag {
+    /// A file that would not open. `text` is the failing site's own
+    /// sentence — it names the importing seed, or the file, as it
+    /// always did — and the record carries the OS error alone.
+    fn read(path: &Path, err: &std::io::Error, text: String) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            text,
+            message: err.to_string(),
+        }
+    }
+
+    /// A target (or an import target) whose `.hl` files could not be
+    /// collected. Those messages are prose — `not a file or
+    /// directory: …` — and for the commonest case of all, a path that
+    /// is simply not there, the OS has the better answer: ask it, and
+    /// the record says `No such file or directory (os error 2)`. A
+    /// target that DOES stat (an empty directory, a directory whose
+    /// `read_dir` failed with an error already in the sentence) keeps
+    /// the sentence.
+    fn target(path: &Path, text: String) -> Self {
+        let message = match fs::metadata(path) {
+            Err(e) => e.to_string(),
+            Ok(_) => text.clone(),
+        };
+        Self {
+            path: path.to_path_buf(),
+            text,
+            message,
+        }
+    }
+
+    /// The NDJSON record, through the one writer every `--json`
+    /// record is formatted by.
+    fn record(&self) -> String {
+        render_json_record(
+            &self.path.display().to_string(),
+            0,
+            0,
+            "error",
+            "io error",
+            &self.message,
+            "",
+        )
+    }
+}
+
 /// GH #775: one diagnostic raised while resolving the import graph.
 ///
 /// Every file of the graph is parsed at its own virtual base
@@ -2139,17 +2491,33 @@ impl EffectTable {
 /// `verify` take the other road, through [`CheckableFailure`], which
 /// has demultiplexed through `file_bases` since GH #770). Render
 /// through [`ImportDiag::render`], never by hand.
-struct ImportDiag {
-    /// The file the diagnostic was raised in, as the resolver reached
-    /// it — that spelling is what the user sees.
-    file: PathBuf,
-    /// The virtual base `file` was parsed at; 0 for the entry file,
-    /// which `parse_with_imports` parses unshifted.
-    base: u32,
-    diag: hale_syntax::Diag,
-    /// `file`'s own text: what the un-shifted span is resolved
-    /// against, and the snippet under the message is cut from.
-    source: String,
+///
+/// GH #806: a file of the graph that would not OPEN rides in the same
+/// vector, as [`ImportDiag::Io`]. It is the same failure to the
+/// callers — the import graph is incomplete, so the tree is refused —
+/// and putting it here is what carries it to them: the resolver used
+/// to print it and return a bare `Err(())`, which left `--json`
+/// empty. Every consumer of this vector already reports what is in
+/// it.
+enum ImportDiag {
+    /// A diagnostic raised in a file the resolver PARSED.
+    Located {
+        /// The file the diagnostic was raised in, as the resolver
+        /// reached it — that spelling is what the user sees.
+        file: PathBuf,
+        /// The virtual base `file` was parsed at; 0 for the entry
+        /// file, which `parse_with_imports` parses unshifted.
+        base: u32,
+        diag: hale_syntax::Diag,
+        /// `file`'s own text: what the un-shifted span is resolved
+        /// against, and the snippet under the message is cut from.
+        source: String,
+    },
+    /// GH #806: a file of the graph that could not be read at all.
+    /// It has no position to render — no text was ever loaded — so
+    /// [`ImportDiag::render`] prints the sentence its site printed
+    /// when the failure was an `eprintln!` there.
+    Io(IoDiag),
 }
 
 impl ImportDiag {
@@ -2162,11 +2530,19 @@ impl ImportDiag {
     /// and base, so there is no window to test and no call to
     /// [`hale_syntax::file_owns_offset`].
     fn render(&self) -> String {
-        self.diag.render_located(
-            &self.file.display().to_string(),
-            &self.source,
-            self.base,
-        )
+        match self {
+            ImportDiag::Located {
+                file,
+                base,
+                diag,
+                source,
+            } => diag.render_located(
+                &file.display().to_string(),
+                source,
+                *base,
+            ),
+            ImportDiag::Io(io) => io.text.clone(),
+        }
     }
 }
 
@@ -2286,7 +2662,18 @@ fn resolve_imports(
         let files = match collect_target_files(&target) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("import \"{}\": {}", imp.path, e);
+                // GH #806: the sentence goes to the caller in the
+                // errors vector rather than to stderr here, so the
+                // one caller with a machine-readable channel can
+                // emit it as a record instead.
+                let path = match &target {
+                    ImportTarget::Directory(d) => d.clone(),
+                    ImportTarget::SingleFile(f) => f.clone(),
+                };
+                errors.push(ImportDiag::Io(IoDiag::target(
+                    &path,
+                    format!("import \"{}\": {}", imp.path, e),
+                )));
                 return Err(());
             }
         };
@@ -2320,12 +2707,23 @@ fn resolve_imports(
             let source = match fs::read_to_string(&file) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!(
-                        "could not read imported file {} (from import \"{}\"): {}",
-                        file.display(),
-                        imp.path,
-                        e
-                    );
+                    // GH #806: an imported file that will not open is
+                    // reported like an imported file that will not
+                    // parse — carried to the caller, which is the
+                    // side that knows whether records or text are
+                    // wanted. It used to print here and return a bare
+                    // `Err(())`, so `check --json` said nothing at
+                    // all.
+                    errors.push(ImportDiag::Io(IoDiag::read(
+                        &file,
+                        &e,
+                        format!(
+                            "could not read imported file {} (from import \"{}\"): {}",
+                            file.display(),
+                            imp.path,
+                            e
+                        ),
+                    )));
                     return Err(());
                 }
             };
@@ -2345,7 +2743,7 @@ fn resolve_imports(
                         // GH #775: the base travels with the
                         // diagnostic. `d`'s span is an offset into the
                         // merged bundle; `source` is this file alone.
-                        errors.push(ImportDiag {
+                        errors.push(ImportDiag::Located {
                             file: file.clone(),
                             base,
                             diag: d,
@@ -2592,7 +2990,7 @@ fn parse_with_imports(
             for d in diags {
                 // The entry file is parsed unshifted (`parse_source`),
                 // so its own base is 0.
-                errors.push(ImportDiag {
+                errors.push(ImportDiag::Located {
                     file: entry.to_path_buf(),
                     base: 0,
                     diag: d,
@@ -2679,7 +3077,7 @@ fn parse_with_imports(
             // was raised at comes back out of it at render time, the
             // same way every other entry in this vector does.
             let src = sources.get(&u.file).cloned().unwrap_or_default();
-            errors.push(ImportDiag {
+            errors.push(ImportDiag::Located {
                 file: u.file,
                 base: u.base,
                 diag: u.diag,
@@ -3251,6 +3649,12 @@ fn render_located(
 /// against.
 struct ParseFailure {
     diags: Vec<hale_syntax::Diag>,
+    /// GH #806: the target's own files that would not OPEN. They have
+    /// no diagnostic — there is no text to raise one against — and
+    /// they used to be printed here and counted only as a non-zero
+    /// exit, so `check --json` on a seed it could not read emitted
+    /// nothing at all.
+    io: Vec<IoDiag>,
     file_bases: Vec<(u32, PathBuf, u32)>,
     sources: BTreeMap<PathBuf, String>,
 }
@@ -3261,6 +3665,13 @@ impl ParseFailure {
     /// — and hand back the exit status. `check` and `verify` take the
     /// other road, through [`CheckableFailure::report`].
     fn report_text(&self) -> ExitCode {
+        // The unreadable files first, in the order the walk hit them:
+        // that is where they printed from when the read failed, and a
+        // file that never opened explains anything else the seed is
+        // missing.
+        for io in &self.io {
+            eprintln!("{}", io.text);
+        }
         for d in &self.diags {
             eprintln!(
                 "{}",
@@ -3290,11 +3701,19 @@ fn parse_files(
     // GH #777: carried to the caller instead of printed here, so the
     // reporting path that honours `--json` sees them.
     let mut parse_diags: Vec<hale_syntax::Diag> = Vec::new();
+    // GH #806: and so does a file that would not open, for the same
+    // reason — it was the one remaining failure on this path still
+    // printed here and nowhere else.
+    let mut io_diags: Vec<IoDiag> = Vec::new();
     for f in files {
         let source = match fs::read_to_string(f) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("{}: {}", f.display(), e);
+                io_diags.push(IoDiag::read(
+                    f,
+                    &e,
+                    format!("{}: {}", f.display(), e),
+                ));
                 had_error = true;
                 continue;
             }
@@ -3319,6 +3738,7 @@ fn parse_files(
     if had_error {
         return Err(ParseFailure {
             diags: parse_diags,
+            io: io_diags,
             file_bases,
             sources,
         });
@@ -3328,30 +3748,35 @@ fn parse_files(
 
 /// GH #765: how [`collect_checkable`] failed.
 ///
-/// A bare `code` means the reason was already printed — a bad target,
-/// or a file that could not be read at all. `diags` carries findings
-/// the CALLER must render: something in the IMPORT GRAPH that did not
-/// parse, an import that could not be resolved at all, or (GH #777) a
-/// file the target itself owns that did not parse. Those have to reach
-/// the same reporting path every other check diagnostic takes, or
-/// `--json` emits nothing and the position comes out against the wrong
-/// file — the trap the pre-pass resolver comment in
+/// `code` is the exit status. `diags` carries findings the CALLER
+/// must render: something in the IMPORT GRAPH that did not parse, an
+/// import that could not be resolved at all, or (GH #777) a file the
+/// target itself owns that did not parse. `io` (GH #806) carries the
+/// inputs that could not be READ — a target that is not there, a file
+/// of the seed or of the import graph that would not open. Those have
+/// to reach the same reporting path every other check diagnostic
+/// takes, or `--json` emits nothing and the position comes out
+/// against the wrong file — the trap the pre-pass resolver comment in
 /// `run_check_impl_labelled` records. The file map travels with them
 /// because the spans are bundle-global offsets into files the caller
 /// never saw.
 struct CheckableFailure {
     code: u8,
     diags: Vec<hale_syntax::Diag>,
+    io: Vec<IoDiag>,
     file_bases: Vec<(u32, PathBuf, u32)>,
     sources: BTreeMap<PathBuf, String>,
 }
 
 impl CheckableFailure {
-    /// A failure already reported to the user.
-    fn code(code: u8) -> Self {
+    /// GH #806: an input that could not be read. Nothing has been
+    /// printed yet — [`Self::report`] prints the sentence on stderr
+    /// in text mode and the record on stdout under `--json`.
+    fn from_io(io: IoDiag) -> Self {
         Self {
-            code,
+            code: 1,
             diags: Vec::new(),
+            io: vec![io],
             file_bases: Vec::new(),
             sources: BTreeMap::new(),
         }
@@ -3365,6 +3790,7 @@ impl CheckableFailure {
         Self {
             code: 1,
             diags: f.diags,
+            io: f.io,
             file_bases: f.file_bases,
             sources: f.sources,
         }
@@ -3376,6 +3802,17 @@ impl CheckableFailure {
     /// in — then hand back the exit status.
     fn report(&self) -> u8 {
         let json_mode = std::env::args().any(|a| a == "--json");
+        // GH #806: an unreadable input is a record too, at line 0 /
+        // col 0 — it has no position, because it has no text. It
+        // comes first: a file that never opened is why anything else
+        // here is missing.
+        for io in &self.io {
+            if json_mode {
+                println!("{}", io.record());
+            } else {
+                eprintln!("{}", io.text);
+            }
+        }
         for d in &self.diags {
             if json_mode {
                 println!(
@@ -3417,8 +3854,12 @@ fn collect_checkable(
     let files = match collect_ap_files(target) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("{}", e);
-            return Err(CheckableFailure::code(1));
+            // GH #806: a target that is not there, or whose directory
+            // would not open, is a record under `--json` instead of a
+            // sentence on stderr with an empty stream behind it.
+            return Err(CheckableFailure::from_io(IoDiag::target(
+                target, e,
+            )));
         }
     };
     // GH #777: a parse failure in the target's own files travels the
@@ -3451,8 +3892,10 @@ fn collect_checkable(
     let merged = match merge_programs(programs.values()) {
         Some(m) => m,
         None => {
-            eprintln!("no .hl files in {}", target.display());
-            return Err(CheckableFailure::code(1));
+            return Err(CheckableFailure::from_io(IoDiag::target(
+                target,
+                format!("no .hl files in {}", target.display()),
+            )));
         }
     };
     let workspace_root = find_workspace_root(target);
@@ -3516,9 +3959,23 @@ fn collect_checkable(
     // — `--json` carries them, and the span resolves to the library
     // file instead of to whichever source happened to be first.
     if resolve_failed || !errors.is_empty() {
+        // GH #806: the vector carries two shapes now — a positioned
+        // diagnostic from a file that PARSED badly, and a file that
+        // would not open at all. They split here because they render
+        // differently: one resolves against `file_bases`, the other
+        // has no position to resolve.
+        let mut diags: Vec<hale_syntax::Diag> = Vec::new();
+        let mut io: Vec<IoDiag> = Vec::new();
+        for e in errors {
+            match e {
+                ImportDiag::Located { diag, .. } => diags.push(diag),
+                ImportDiag::Io(d) => io.push(d),
+            }
+        }
         return Err(CheckableFailure {
             code: 1,
-            diags: errors.into_iter().map(|e| e.diag).collect(),
+            diags,
+            io,
             file_bases,
             sources: path_sources,
         });
@@ -3550,6 +4007,7 @@ fn collect_checkable(
         return Err(CheckableFailure {
             code: 1,
             diags: unscoped.into_iter().map(|u| u.diag).collect(),
+            io: Vec::new(),
             file_bases,
             sources: path_sources,
         });
@@ -3884,23 +4342,7 @@ fn run_fleet(rest: &[String]) -> ExitCode {
             (sub.unwrap(), p)
         }
         _ => {
-            eprintln!("hale fleet check [plan.json]   compose and check");
-            eprintln!("                                (no plan: every fleet in [fleets];");
-            eprintln!("                                 --in <dir> another workspace's, --if-declared: none is ok)");
-            eprintln!("hale fleet dump  <plan.json>    write the fleet artifact");
-            eprintln!("hale fleet attest <plan.json>   binaries match the plan's sha256 rows");
-            eprintln!("hale fleet keygen <prefix>      ES256 keypair for signing");
-            eprintln!("hale fleet sign <file> --key K  detached .sig over exact bytes");
-            eprintln!();
-            eprintln!("check/dump take --trust <pub.pem> (repeatable):");
-            eprintln!("with trust roots declared, every component must");
-            eprintln!("verify under one of them.");
-            eprintln!();
-            eprintln!("A plan names exact application INSTANCES and the");
-            eprintln!("routes between them. It composes artifacts, never");
-            eprintln!("source: matching wire identities establish");
-            eprintln!("compatibility, but only an explicit route creates");
-            eprintln!("a fleet edge.");
+            eprint!("{}", fleet_usage());
             return ExitCode::from(2);
         }
     };
@@ -5544,6 +5986,39 @@ fn run_check_impl_labelled(
     0
 }
 
+/// The one NDJSON record writer for `hale check --json` and
+/// `hale verify --json`.
+///
+/// Both producers format here: a `Diag` through [`render_diag_json`],
+/// which resolves its position against the file windows first, and an
+/// unreadable input through [`IoDiag::record`] (GH #806), which has
+/// no position and passes `0, 0`. One writer is the point — the
+/// record shape is a consumed contract (`spec/projects.md`, the
+/// `hale check --json` row), and a second `format!` of it somewhere
+/// else is how the two drift.
+///
+/// `related` is already-formatted JSON, `,"related":[…]` or empty.
+fn render_json_record(
+    file: &str,
+    line: usize,
+    col: usize,
+    severity: &str,
+    kind: &str,
+    message: &str,
+    related: &str,
+) -> String {
+    format!(
+        "{{\"file\":\"{}\",\"line\":{},\"col\":{},\"severity\":\"{}\",\"kind\":\"{}\",\"message\":\"{}\"{}}}",
+        json_escape(file),
+        line,
+        col,
+        severity,
+        json_escape(kind),
+        json_escape(message),
+        related
+    )
+}
+
 /// One NDJSON diagnostic line for `hale check --json`.
 fn render_diag_json(
     d: &hale_syntax::Diag,
@@ -5612,15 +6087,14 @@ fn render_diag_json(
             format!(",\"related\":[{}]", entries.join(","))
         }
     };
-    format!(
-        "{{\"file\":\"{}\",\"line\":{},\"col\":{},\"severity\":\"{}\",\"kind\":\"{}\",\"message\":\"{}\"{}}}",
-        esc(&file),
+    render_json_record(
+        &file,
         line,
         col,
         severity,
-        esc(d.kind_str()),
-        esc(&d.message),
-        related
+        d.kind_str(),
+        &d.message,
+        &related,
     )
 }
 

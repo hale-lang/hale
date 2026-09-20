@@ -182,18 +182,23 @@ pub fn run_topology(rest: &[String]) -> ExitCode {
 }
 
 fn usage() {
-    eprintln!(
-        "usage: hale topology graph <artifact.json>\n\
-         \x20   [--view system|code|bus|claim|residue]   (default: system)\n\
-         \x20   [--format svg|mermaid|dot]               (default: svg)\n\
-         \x20   [--claim <name>]                         (required for --view claim)\n\
-         \x20   [--config <render-config.json>]\n\
-         \x20   [-o <path>]                              (default: stdout)\n\
-         \n\
-         Renders a `--dump-topology` artifact deterministically. An\n\
-         artifact client: reads only the committed JSON, never source.\n\
-         Experimental surface (pre-1.0)."
-    );
+    eprint!("{}", usage_text());
+}
+
+/// The same text the usage error prints, for `hale topology --help`
+/// to print on stdout (GH #817). One description of the flags, so a
+/// second copy cannot go stale.
+pub(crate) fn usage_text() -> &'static str {
+    "usage: hale topology graph <artifact.json>\n\
+     \x20   [--view system|code|bus|claim|residue]   (default: system)\n\
+     \x20   [--format svg|mermaid|dot]               (default: svg)\n\
+     \x20   [--claim <name>]                         (required for --view claim)\n\
+     \x20   [--config <render-config.json>]\n\
+     \x20   [-o <path>]                              (default: stdout)\n\
+     \n\
+     Renders a `--dump-topology` artifact deterministically. An\n\
+     artifact client: reads only the committed JSON, never source.\n\
+     Experimental surface (pre-1.0).\n"
 }
 
 fn flag_err(msg: &str) -> ExitCode {

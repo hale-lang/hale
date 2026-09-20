@@ -130,6 +130,11 @@ fn resolve_alias_targets(
                     if let TypeDeclBody::Alias(te) = &t.body {
                         // A generic alias template (`type A<T> = ...`)
                         // has no single target — leave it nominal.
+                        // Leaving it nominal is exactly what produced
+                        // the mismatch between two monomorph names
+                        // that GH #834 is about; the parser now
+                        // refuses the declaration, so this guard is a
+                        // backstop and no longer a reachable outcome.
                         if t.generics.is_empty() {
                             out.entry(t.name.name.clone())
                                 .or_insert_with(|| (te.clone(), t.span));

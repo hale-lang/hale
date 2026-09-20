@@ -10,6 +10,10 @@
 //!
 //! `--help` was the clearest symptom: it was interpreted as a path,
 //! printed `not a file or directory: --help`, and exited 0.
+//!
+//! GH #817 finished that job for the rest of the CLI: `--help` /
+//! `-h` as the first argument after ANY subcommand prints that
+//! subcommand's usage and exits 0.
 
 use std::process::Command;
 
@@ -36,6 +40,40 @@ fn hale(args: &[&std::ffi::OsStr]) -> (String, i32) {
         ),
         out.status.code().unwrap_or(-1),
     )
+}
+
+/// Same, from a scratch directory. A command that reads `--help` as
+/// a target acts where it stands — `hale init --help` scaffolds a
+/// project into a directory by that name, `hale fmt` rewrites the
+/// tree it is in — and the test that proves it no longer does must
+/// not do it inside the checkout.
+fn hale_in_scratch(tag: &str, args: &[&std::ffi::OsStr]) -> (String, i32) {
+    let dir = scratch_dir(tag);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .current_dir(&dir)
+        .args(args)
+        .output()
+        .expect("run hale");
+    (
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+/// Per-test, not per-process: these tests run in parallel, and a
+/// directory one of them removes is a directory another cannot spawn
+/// in.
+fn scratch_dir(tag: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "hale_argparse_help_{}_{}",
+        std::process::id(),
+        tag
+    ))
 }
 
 const OK_SRC: &str = r#"
@@ -150,6 +188,135 @@ fn dump_topology_never_overwrites_the_target() {
     assert!(
         out.contains("\"shape_hash\""),
         "a bare --dump-topology writes the artifact to stdout: {}",
+        out
+    );
+}
+
+// ---------------------------------------------------------------
+// GH #817: `--help` on every subcommand
+// ---------------------------------------------------------------
+
+/// Every command the top-level usage lists. `--help` is the one part
+/// of the surface all of them have, so all of them answer it.
+const SUBCOMMANDS: &[&str] = &[
+    "bench", "build", "check", "dna", "doc", "fetch", "fleet", "fmt",
+    "init", "inputs", "iris", "lex", "lsp", "mcp", "model", "node",
+    "parse", "replay", "run", "test", "topology", "verify",
+];
+
+#[test]
+fn every_subcommand_answers_help() {
+    for cmd in SUBCOMMANDS {
+        for flag in ["--help", "-h"] {
+            let (out, code) =
+                hale_in_scratch("every", &[cmd.as_ref(), flag.as_ref()]);
+            assert_eq!(
+                code, 0,
+                "`hale {} {}` must print usage and succeed: {}",
+                cmd, flag, out
+            );
+            assert!(
+                out.contains(&format!("hale {}", cmd)),
+                "`hale {} {}` must print a usage line naming the \
+                 command: {}",
+                cmd,
+                flag,
+                out
+            );
+            // The two shapes the flag used to take: a path, or a
+            // flag nobody recognized.
+            assert!(
+                !out.contains("not a file")
+                    && !out.contains("unknown flag"),
+                "`hale {} {}` must not be read as an argument: {}",
+                cmd,
+                flag,
+                out
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(scratch_dir("every"));
+}
+
+/// The reported symptom, and the second half of the ask: `hale
+/// build` has no `-o`, so its usage is the only place the output
+/// path is stated.
+#[test]
+fn build_help_says_where_the_binary_lands() {
+    let (out, code) =
+        hale_in_scratch("build", &["build".as_ref(), "--help".as_ref()]);
+    let _ = std::fs::remove_dir_all(scratch_dir("build"));
+    assert_eq!(code, 0, "`hale build --help` must succeed: {}", out);
+    assert!(
+        !out.contains("not a file"),
+        "`--help` must not be read as the target: {}",
+        out
+    );
+    assert!(
+        out.contains("no `-o`"),
+        "`hale build` takes no -o; the usage has to say so: {}",
+        out
+    );
+    assert!(
+        out.contains("myapp/myapp"),
+        "a directory target's binary lands inside it under the \
+         directory's own name — the part no flag reveals: {}",
+        out
+    );
+    for flag in ["--target", "--target-cpu", "--link", "--csrc", "--dev"]
+    {
+        assert!(
+            out.contains(flag),
+            "`hale build --help` must list `{}`: {}",
+            flag,
+            out
+        );
+    }
+}
+
+/// `hale --help` / `-h` / `help` keep listing the commands — the
+/// subcommand pre-pass sits after them, not in front of them.
+#[test]
+fn the_top_level_help_still_lists_the_commands() {
+    for arg in ["--help", "-h", "help"] {
+        let (out, code) = hale_in_scratch("toplevel", &[arg.as_ref()]);
+        assert_eq!(code, 0, "`hale {}` must succeed: {}", arg, out);
+        for line in ["hale build", "hale check", "hale test"] {
+            assert!(
+                out.contains(line),
+                "`hale {}` must still list `{}`: {}",
+                arg,
+                line,
+                out
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(scratch_dir("toplevel"));
+}
+
+/// Only the FIRST argument after the subcommand. Further along,
+/// `--help` belongs to whatever is parsing there: `check` answers it
+/// wherever it appears, and `build` — whose flags follow the target
+/// — still calls it an unknown flag rather than guessing.
+#[test]
+fn help_after_the_target_keeps_its_own_meaning() {
+    let path = write_tmp("help_after", OK_SRC);
+    let (out, code) =
+        hale(&["check".as_ref(), path.as_os_str(), "--help".as_ref()]);
+    assert_eq!(code, 0, "check answers --help anywhere: {}", out);
+    assert!(out.contains("--dump-topology"), "the flag list: {}", out);
+
+    let (out, code) =
+        hale(&["build".as_ref(), path.as_os_str(), "--help".as_ref()]);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        code, 2,
+        "a flag after the target is `build`'s to reject: {}",
+        out
+    );
+    assert!(
+        out.contains("unknown `hale build` flag"),
+        "and it says so: {}",
         out
     );
 }
