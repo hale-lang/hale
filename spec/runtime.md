@@ -154,7 +154,13 @@ the model: runtime is automatic; stdlib is explicit.
   outer locus's own drain. The subsequent dissolve cascade
   runs the outer's `closures → dissolve` body next, then per
   child `closures → dissolve → arena_destroy`, then outer's
-  arena_destroy. Pinned-thread tail still skips the cascade
+  arena_destroy. **The walk is recursive, to the leaves**: a
+  child's own `LocusRef` fields drain before the child does
+  and are dissolved (and their arenas destroyed) before the
+  child's arena, which holds their structs. Every level's
+  gate is that level's own ownership mask, so a subtree handed
+  in from outside is skipped wherever it appears and is torn
+  down once, by its real owner. Pinned-thread tail still skips the cascade
   per the v1 trade-off. An `accept`'d child is reclaimed on its
   OWN run-completion / `terminate` when it is a flow (see
   "Per-child reclamation" below) rather than waiting for the

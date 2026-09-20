@@ -2,7 +2,7 @@
 //! destroy + the m43 / k_max / draining helpers that run against a
 //! locus receiver. Round 4a of the codegen model-org refactor.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
     BirthCheckDecl, CapacitySlotKind, ProjectionClass,
@@ -418,6 +418,36 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
             }
+            // GH #750: descend. Inner's own locus-typed param
+            // fields are parent-owned exactly as inner is — their
+            // instantiation took the `parent_owns_via_field`
+            // no-op branch, so nothing else ever tears them down.
+            // Before this, the cascade stopped one level below the
+            // locus being dissolved: a grandchild's `dissolve()`
+            // body never ran, its capacity slots were never freed
+            // and its arena was never destroyed. The leak hid
+            // behind the chunk pool — the grandchild's arena
+            // pointer lives in the child's arena chunk, which goes
+            // back to `g_chunk_pool` intact, so LeakSanitizer still
+            // reached it — until some later allocation recycled
+            // that chunk and overwrote the last reference.
+            //
+            // Ordering mirrors this locus's own teardown: inner's
+            // `dissolve()` body ran above and could still read its
+            // fields; the grandchildren go now, and inner's arena
+            // (which holds their structs) goes after them.
+            if self.locus_cascade_path.iter().all(|n| n != &inner_name)
+                && inner_name != locus_name
+            {
+                self.locus_cascade_path.push(locus_name.to_string());
+                let deeper = self.emit_locus_field_dissolves(
+                    &inner_info,
+                    inner_ptr,
+                    &inner_name,
+                );
+                self.locus_cascade_path.pop();
+                deeper?;
+            }
             // Inner's arena_destroy. Even when inner allocates
             // nothing in its arena, the slot was created at birth
             // and must be destroyed for symmetry.
@@ -560,9 +590,24 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 None => continue,
             };
             let drain_fn = match inner_info.methods.get("drain") {
-                Some(f) if !inner_info.empty_lifecycle.contains("drain") => *f,
-                _ => continue,
+                Some(f) if !inner_info.empty_lifecycle.contains("drain") => {
+                    Some(*f)
+                }
+                _ => None,
             };
+            // GH #750: the drain half of the cascade descends too —
+            // "drain() cascades depth-first; children first, then
+            // self" holds at every level, not just the first.
+            // Unlike the dissolve half (where every descendant has
+            // an arena to destroy), a subtree with no `drain()`
+            // anywhere below it has nothing to emit, so skip it and
+            // keep the IR identical for the common shape.
+            let descend = inner_name != locus_name
+                && self.locus_cascade_path.iter().all(|n| n != &inner_name)
+                && self.locus_descendants_have_drain(&inner_name);
+            if drain_fn.is_none() && !descend {
+                continue;
+            }
             // F.29 follow-up: ownership branch (same gate as
             // emit_locus_field_dissolves). Externally-provided
             // fields skip the cascade — their real owner runs
@@ -597,13 +642,25 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                 .into_pointer_value();
-            self.builder
-                .build_call(
-                    drain_fn,
-                    &[inner_ptr.into()],
-                    &format!("{}.cascade.drain", inner_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            if descend {
+                self.locus_cascade_path.push(locus_name.to_string());
+                let deeper = self.emit_locus_field_drains(
+                    &inner_info,
+                    inner_ptr,
+                    &inner_name,
+                );
+                self.locus_cascade_path.pop();
+                deeper?;
+            }
+            if let Some(drain_fn) = drain_fn {
+                self.builder
+                    .build_call(
+                        drain_fn,
+                        &[inner_ptr.into()],
+                        &format!("{}.cascade.drain", inner_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
             if let Some(after_bb) = after_bb {
                 self.builder
                     .build_unconditional_branch(after_bb)
@@ -1582,4 +1639,61 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         Ok(())
     }
 
+}
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// GH #750: does any locus strictly BELOW `name` in the
+    /// parent-owned param-field tree declare a non-empty `drain()`?
+    ///
+    /// The drain half of the teardown cascade descends into a
+    /// child's own locus-typed fields, but a subtree with no drain
+    /// anywhere below it has nothing to emit — descending into it
+    /// would add an ownership-gate branch and a field load per
+    /// level for no calls. Answering this first keeps the emitted
+    /// IR identical for the (dominant) drain-less shape.
+    ///
+    /// The walk is over locus TYPES, so a type reachable from
+    /// itself would recur forever; `seen` bounds it. Skipping an
+    /// already-seen type is sound for the question asked: its own
+    /// drain, and its descendants', were already accounted for the
+    /// first time it was reached.
+    pub(crate) fn locus_descendants_have_drain(&self, name: &str) -> bool {
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        seen.insert(name.to_string());
+        self.locus_descendants_have_drain_walk(name, &mut seen)
+    }
+
+    fn locus_descendants_have_drain_walk(
+        &self,
+        name: &str,
+        seen: &mut BTreeSet<String>,
+    ) -> bool {
+        let children: Vec<String> = match self.user_loci.get(name) {
+            Some(info) => info
+                .fields
+                .values()
+                .filter_map(|(_, ty)| match ty {
+                    CodegenTy::LocusRef(n) => Some(n.clone()),
+                    _ => None,
+                })
+                .collect(),
+            None => return false,
+        };
+        for child in children {
+            if !seen.insert(child.clone()) {
+                continue;
+            }
+            let declares_drain =
+                self.user_loci.get(&child).map_or(false, |i| {
+                    i.methods.contains_key("drain")
+                        && !i.empty_lifecycle.contains("drain")
+                });
+            if declares_drain
+                || self.locus_descendants_have_drain_walk(&child, seen)
+            {
+                return true;
+            }
+        }
+        false
+    }
 }
