@@ -2207,6 +2207,27 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                             info.fields.get(fname.as_str()).map(|(_, t)| t),
                             Some(CodegenTy::LocusRef(_)) | Some(CodegenTy::Interface(_))
                         );
+                    // GH #836: the other half of that decision. The
+                    // gate above says the frame does not reclaim it;
+                    // this says WHO does. A fresh factory's result
+                    // transfers into the field, so the owner's
+                    // `__locus_ref_owned_mask` bit is set exactly as
+                    // a literal sets it and the F.29 cascade reaches
+                    // the child. Only a proven-fresh factory (the
+                    // GH #383 fixpoint) qualifies — a call that
+                    // hands back a locus somebody else holds leaves
+                    // the bit clear, as it always did.
+                    let factory_owned_by_field = match info
+                        .fields
+                        .get(fname.as_str())
+                        .map(|(_, t)| t)
+                    {
+                        Some(CodegenTy::LocusRef(l)) => {
+                            let l = l.clone();
+                            self.field_init_is_fresh_factory(expr, &l)
+                        }
+                        _ => false,
+                    };
                     let prev_sft = self.suppress_fresh_temp;
                     if field_owns_locus_rhs {
                         self.suppress_fresh_temp = true;
@@ -2217,7 +2238,8 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     self.params_init_initialized = inner_init;
                     self.in_params_default = inner_ipd;
                     self.params_init_self = inner_pis;
-                    let owned = !self.instantiating_for_parent_field;
+                    let owned = !self.instantiating_for_parent_field
+                        || factory_owned_by_field;
                     self.instantiating_for_parent_field = prev_field_flag;
                     let from_lit = matches!(
                         expr,
@@ -2257,6 +2279,21 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                                     info.fields.get(fname.as_str()).map(|(_, t)| t),
                                     Some(CodegenTy::LocusRef(_)) | Some(CodegenTy::Interface(_))
                                 );
+                            // GH #836, at the default site: a param
+                            // whose DEFAULT is a factory call is the
+                            // same transfer into the same field, so
+                            // it takes the same ownership bit.
+                            let factory_owned_by_field = match info
+                                .fields
+                                .get(fname.as_str())
+                                .map(|(_, t)| t)
+                            {
+                                Some(CodegenTy::LocusRef(l)) => {
+                                    let l = l.clone();
+                                    self.field_init_is_fresh_factory(e, &l)
+                                }
+                                _ => false,
+                            };
                             let prev_sft = self.suppress_fresh_temp;
                             if field_owns_locus_rhs {
                                 self.suppress_fresh_temp = true;
@@ -2265,7 +2302,8 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                             self.suppress_fresh_temp = prev_sft;
                             let r = r?;
                             self.in_params_default = saved_ipd;
-                            let owned = !self.instantiating_for_parent_field;
+                            let owned = !self.instantiating_for_parent_field
+                                || factory_owned_by_field;
                             self.instantiating_for_parent_field =
                                 prev_field_flag;
                             let from_lit = matches!(

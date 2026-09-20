@@ -159,8 +159,9 @@ because it's how Hale frees resources without a `defer` or a
   literal would. The two places the frame stays out of it are the
   places the handle is *handed on* rather than consumed — written
   straight into another locus's field (`Router { quick: make("q") }`,
-  which the router owns) and `return`ed to your caller (who owns
-  it).
+  which the router owns and reclaims with itself, exactly as it
+  would a `Quick { }` written there) and `return`ed to your caller
+  (who owns it).
 - **Long-lived** (the locus subscribes to the bus, or its `run()`
   hasn't returned): it stays alive until its scope exits,
   regardless of binding — it has to, to keep receiving messages.
@@ -173,13 +174,18 @@ may depend on the earlier, goes first).
 Whichever line you're on, the timing is the timing of the **whole
 tree** the locus owns. A locus you write as another locus's param
 field has no teardown moment of its own — it's the owner's, and so
-is the one *it* holds, all the way down. When the owner goes, every
-level's `drain()` has run (deepest first), every level's
-`dissolve()` body has run (outermost first) and every level's arena
-is gone. The exception is a handle you pass *in* — `Mid { leaf:
-shared }` borrows `shared`, so the cascade steps over it at
-whatever depth it sits, and `shared` is released once, by the scope
-that made it.
+is the one *it* holds, all the way down. That holds however you
+wrote it: a nested literal (`Mid { leaf: Leaf { } }`), a factory
+call (`Mid { leaf: make_leaf() }`, including `make_leaf() or
+raise`), and a param whose **default** is one, are the same
+program. When the
+owner goes, every level's `drain()` has run (deepest first), every
+level's `dissolve()` body has run (outermost first) and every
+level's arena is gone. The exception is a handle you pass *in* —
+`Mid { leaf: shared }` borrows `shared`, so the cascade steps over
+it at whatever depth it sits, and `shared` is released once, by the
+scope that made it. A call that hands back a locus it didn't build
+is the same borrow, written as a call.
 
 **The scope is the enclosing function, not the enclosing block** — a
 `let` is readable for the rest of the function, including after the

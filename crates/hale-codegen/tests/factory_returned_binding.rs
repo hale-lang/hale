@@ -164,6 +164,15 @@ fn an_or_substitute_tears_down_exactly_the_value_that_was_produced() {
 /// a literal belongs to that literal, in the `or` spelling as much as
 /// the bare one. The enclosing frame must not reclaim it — the field
 /// still points at it, and its owner tears it down.
+///
+/// GH #836: "and its owner tears it down" is now measured rather than
+/// assumed. This assertion originally read the two `router` lines and
+/// nothing else, because the F.17 gate kept the frame out of it while
+/// the owner's `__locus_ref_owned_mask` bit was still set only by a
+/// LITERAL field init — so the child was reclaimed by nobody, and the
+/// test passed on the strength of the double teardown it was written
+/// to catch. Naming the child's teardown is what makes this a guard
+/// against both failures at once.
 #[test]
 fn a_factory_result_in_a_param_field_is_owned_by_the_literal() {
     let src = format!(
@@ -185,10 +194,11 @@ fn a_factory_result_in_a_param_field_is_owned_by_the_literal() {
     assert!(verdict.is_empty(), "{}\n{}", verdict, out);
     assert_eq!(
         out,
-        "bare=5\nwrapped=6\nend\nrouter 2\nrouter 1\n",
+        "bare=5\nwrapped=6\nend\nrouter 2\nbye 6\nrouter 1\nbye 5\n",
         "the two spellings must agree: the field reads its own value \
-         after the statement that built it, and the frame contributes \
-         no teardown of its own for either"
+         after the statement that built it, the frame contributes no \
+         teardown of its own for either, and each owner's cascade \
+         reclaims its child exactly once, after its own dissolve body"
     );
 }
 

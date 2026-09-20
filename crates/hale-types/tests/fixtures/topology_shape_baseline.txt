@@ -434,6 +434,11 @@ crates/hale-codegen/tests/f22_cell_field_io.rs#0 e4bf886c66bddfa1
 crates/hale-codegen/tests/f22_cell_field_io.rs#1 6df4232a0f869f76
 crates/hale-codegen/tests/f22_cell_field_io.rs#2 f31e4db5e7bc38ec
 crates/hale-codegen/tests/f22_cell_field_io.rs#3 63ff43b1c8746faf
+crates/hale-codegen/tests/factory_field_ownership.rs#0 509309ce670b439c
+crates/hale-codegen/tests/factory_field_ownership.rs#1 dd20069ee61e746e
+crates/hale-codegen/tests/factory_field_ownership.rs#2 57e71d9ac7bf4fd2
+crates/hale-codegen/tests/factory_field_ownership.rs#3 3d81d0f4d8450a29
+crates/hale-codegen/tests/factory_field_ownership.rs#4 7d14dad571a55ad9
 crates/hale-codegen/tests/factory_locus_reclaim.rs#0 5bee09d4dbc4602d
 crates/hale-codegen/tests/factory_returned_binding.rs#0 967ae4cb6729fe31
 crates/hale-codegen/tests/factory_returned_binding.rs#1 b80a55cf498e1f4a
