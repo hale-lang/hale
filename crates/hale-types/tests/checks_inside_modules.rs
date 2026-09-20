@@ -23,11 +23,13 @@
 //! program once and wrapping it is deliberate: two hand-written
 //! copies drift, and a drifted control proves nothing.
 //!
-//! The programs are plain `"…"` literals rather than `r#"…"#` on
-//! purpose — `hale-corpus` harvests raw-string literals out of test
-//! files into the corpus-wide properties, and these are
+//! The programs are plain escaped string literals rather than raw
+//! strings on purpose — `hale-corpus` harvests raw-string literals
+//! out of test files into the corpus-wide properties, and these are
 //! *deliberately-diagnostic* programs whose only job is to be
-//! rejected here.
+//! rejected here. (The file therefore contains no raw-string opener
+//! at all, doc comments included: the harvester scans the text, not
+//! the parsed tokens.)
 
 use hale_syntax::parse_source;
 use hale_types::check_program;
