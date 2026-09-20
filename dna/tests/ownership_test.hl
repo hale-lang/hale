@@ -163,11 +163,11 @@ main locus App {
         self.acme.rehydrate();
         std::test::assert_eq_str(self.acme.metabolism.next_id(), "acme:t6", "after a restart the next id follows acme's own highest, not north's");
         // ---- a job for north's member is offered, not handed
-        self.acme.execute_plan("acme:t7", "", "chase the agency", "", dna::Plan { kind: "person", assignee: "bob", narrative: "bob calls them", by: "leader" });
+        self.acme.execute_plan(dna::WorkRequest { task_id: "acme:t7", objective: "chase the agency" }, dna::Plan { kind: "person", assignee: "bob", narrative: "bob calls them", by: "leader" });
         let offered = self.last(self.acme.journal, "task.transfer_requested");
         std::test::assert(std::str::contains(offered, "\"owner\": \"acme\"") && std::str::contains(offered, "\"to\": \"north\"") && std::str::contains(offered, "\"assignee\": \"bob\""), "the job is offered to north for bob: " + offered);
         std::test::assert(!std::str::contains(self.last(self.acme.journal, "task.handed"), "acme:t7"), "…and not handed by acme");
-        self.acme.execute_plan("acme:t8", "", "close the books", "", dna::Plan { kind: "person", assignee: "alice", narrative: "alice closes them", by: "leader" });
+        self.acme.execute_plan(dna::WorkRequest { task_id: "acme:t8", objective: "close the books" }, dna::Plan { kind: "person", assignee: "alice", narrative: "alice closes them", by: "leader" });
         std::test::assert(std::str::contains(self.last(self.acme.journal, "task.handed"), "\"assignee\": \"alice\""), "a job for acme's own member is handed as ever");
         // north's controller hands it only once one of its members accepted
         self.north.journal.append(self.north.journal.revision(), "task.transfer_requested", "acme:t7", offered);
