@@ -74,6 +74,72 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// GH #892: does the program's OWN `fn NAME` answer this call,
+    /// ahead of the bounded intrinsic of the same name?
+    ///
+    /// The six intrinsic names (`count` / `clear` / `truncate` /
+    /// `push` / `at` / `set`) are not claimed by the parser's
+    /// `BUILTIN_CALL_FORMS` — `dna/tests/books_slice_test.hl`
+    /// declares a free `fn count(app, kind, entity, needle)` and
+    /// calls it — so a declaration of any of them is legal and, for
+    /// every argument that is not a bounded receiver, already wins.
+    /// It was only the bounded receiver that the intrinsic took, and
+    /// it took it SILENTLY: `fn count(xs: bounded[Int; 8]) -> Int`
+    /// beside `count(w.samples)` printed the live count, never the
+    /// body, with no diagnostic from any layer.
+    ///
+    /// The rule that closes it is lexical scope, not a refusal:
+    /// **a declaration whose first parameter is the receiver's own
+    /// `bounded[T; N]` answers the call**, at any arity that
+    /// declaration accepts. Dispatch here is already type-directed —
+    /// the intrinsic arms fire only on a bounded receiver — so the
+    /// shadow is decidable at the call site, which is exactly why
+    /// this class can be resolved in the program's favour where
+    /// GH #880's flat-namespace names could not.
+    ///
+    /// Element type and capacity are part of the match, and that is
+    /// not fussiness: **the Hale-source standard library is merged
+    /// into this same global fn namespace**, and it calls the
+    /// intrinsics on its own buffers (`bounded[String; 8]` in
+    /// `http.hl`, `bounded[Float; 32]` / `bounded[Int; 33]` in
+    /// `metrics.hl`). A name-only shadow retargeted those calls at
+    /// the user's declaration — the `print` capture of
+    /// `PRINTER_CLAIM`, in the layer below. Matching the receiver
+    /// type keeps the shadow to the calls the author's own type can
+    /// reach.
+    ///
+    /// The checker holds the identical rule
+    /// (`user_fn_shadows_bounded_intrinsic` in
+    /// `crates/hale-types/src/check.rs`), so `hale check` and `hale
+    /// build` resolve the call to the same fn.
+    pub(crate) fn user_fn_shadows_bounded_intrinsic(
+        &self,
+        name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> bool {
+        let Some(sig) = self.user_fns.get(name) else {
+            return false;
+        };
+        let Some(CodegenTy::Bounded(param_elem, param_cap)) =
+            sig.params.first()
+        else {
+            return false;
+        };
+        // Defaults form a suffix (declare-time rule), so the
+        // required arity is the leading run of non-defaulted params.
+        let required =
+            sig.defaults.iter().take_while(|d| d.is_none()).count();
+        if args.len() < required || args.len() > sig.params.len() {
+            return false;
+        }
+        matches!(
+            self.bounded_recv_spec(args, scope),
+            Some((elem, cap))
+                if elem == **param_elem && cap == *param_cap
+        )
+    }
+
     /// Lower args[0] to the storage pointer (SSA of a bounded value
     /// IS the storage address) and return (len_ptr, data_base_ptr).
     fn bounded_storage_ptrs(
@@ -240,7 +306,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let mut at_args = Vec::with_capacity(2);
                 at_args.push(receiver.clone());
                 at_args.push(args[0].clone());
-                return self.try_lower_bounded_fallible_intrinsic(
+                return self.lower_bounded_fallible_intrinsic(
                     "at", &at_args, scope,
                 );
             }
@@ -335,7 +401,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }))
     }
 
+    /// The `or`-path entry: `push` / `at` / `set` written as a call
+    /// in the program's own text.
+    ///
+    /// GH #892: a declared `fn push` / `fn at` / `fn set` over this
+    /// receiver's own `bounded[T; N]` owns the name, so this yields
+    /// (`Ok(None)`) and `lower_fallible_call` resolves the call
+    /// through `user_fns` like any other.
     pub(crate) fn try_lower_bounded_fallible_intrinsic(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
+        if self.user_fn_shadows_bounded_intrinsic(name, args, scope) {
+            return Ok(None);
+        }
+        self.lower_bounded_fallible_intrinsic(name, args, scope)
+    }
+
+    /// The intrinsic itself, with no shadow check.
+    ///
+    /// `try_lower_collection_get` routes `f.get(i)` here directly:
+    /// `get` is the method-position accessor of the chain source
+    /// protocol (spec/types.md § `bounded[T; N]`), typed by the
+    /// checker off the RECEIVER and not off any free-fn name, so a
+    /// program that declares `fn at` must not change what `.get(i)`
+    /// means.
+    fn lower_bounded_fallible_intrinsic(
         &mut self,
         name: &str,
         args: &[Expr],
