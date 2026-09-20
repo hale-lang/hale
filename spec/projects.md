@@ -218,6 +218,31 @@ in that file and nothing else. The one exception is a `main.hl`
 in the importer's own directory, which stays a rule-1 single-file
 library: a seed does not import itself.
 
+**A file belongs to exactly one library.** So a rule-1 single-file
+import of a file that a directory import somewhere in the same
+build also takes is **refused**, with a located error at the
+single-file import's path literal naming the library that already
+holds it and where that import is written:
+
+```text
+/tmp/app/other.hl:1:8: type error: `../lib/helper` is already part of the library imported as `a` at /tmp/app/main.hl:1; a single file of a directory-imported library is not a library of its own — reach its declarations as `a::<name>` and drop this import
+    import "../lib/helper" as h;
+           ^^^^^^^^^^^^^^^
+```
+
+The two identities are genuinely different — one file against the
+whole seed — and they are not reconcilable the way the two
+spellings of one library are: resolution parses each file once, so
+`helper.hl` cannot carry two manglings. Before the refusal the
+resolver's file set was global and whichever identity resolved
+second was handed only the files the first had not taken, so half
+of one alias's names resolved to nothing with no diagnostic
+anywhere (2026-09-20, GH #820). The refusal is order-free: it names
+the file spelling whichever of the two resolved first, and the
+directory import is left alone. Both spellings of the SAME library
+(`../lib` and `../lib/main`) are unaffected — they are one
+`lib_key`, not two.
+
 ### Mangling scheme
 
 Each imported library's top-level decls are rewritten with a

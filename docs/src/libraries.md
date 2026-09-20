@@ -99,6 +99,24 @@ whichever file; there is one library either way.
 Any *other* single file is its own small library: `import
 "../lib/helper"` brings in `helper.hl` and nothing else.
 
+What you cannot do is have it both ways in one program. If some
+file of your app imports `"../lib"` — the whole directory — then
+`"../lib/helper"` is not a library of its own any more, it is a
+file of that one, and the second import is refused where you wrote
+it:
+
+```text
+/tmp/app/other.hl:1:8: type error: `../lib/helper` is already part of the library imported as `a` at /tmp/app/main.hl:1; a single file of a directory-imported library is not a library of its own — reach its declarations as `a::<name>` and drop this import
+    import "../lib/helper" as h;
+           ^^^^^^^^^^^^^^^
+```
+
+Those two imports really are different libraries — one file against
+the whole seed — and a file can only be compiled into one of them,
+so the compiler asks you which. The fix is in the message: drop the
+file import and spell the names you wanted through the alias the
+directory already has.
+
 ## When the path names nothing
 
 A path that resolves to none of those places fails the check where
