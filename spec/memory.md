@@ -685,6 +685,19 @@ retained it was done with it. Long-lived loci (with `bus subscribe`)
 continue to defer regardless of binding shape. See
 `spec/semantics.md` "Dissolve timing rules" for the full rule.
 
+A deferred entry's slot is one entry-block alloca per
+instantiation *site*, and so is the locus struct it points at,
+so a site inside a **loop** rewrites both every iteration. The
+instantiation therefore reclaims the slot's previous occupant
+before overwriting it — the same per-entry spine the flush
+emits, guarded by the slot's NULL sentinel so the first pass is
+a no-op — and the flush still owns the last instance. A loop's
+residency is one instance, not one per iteration (GH #815). The
+same applies to a `let` bound to a locus-returning factory,
+whose binding alloca *is* its dissolve slot, except where the
+binding is returned or `=`-moved: those keep the leak rather
+than risk freeing a value another name still holds.
+
 The F.4 cascade still falls out structurally — children
 dissolve before their parent, regardless of which mechanism
 handles each.

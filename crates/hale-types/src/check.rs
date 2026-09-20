@@ -1999,28 +1999,48 @@ fn hot_walk_expr(e: &Expr, cx: &mut HotPathCx) {
             // handler context fires at depth 0 too.
             if cx.loop_depth > 0 || cx.in_handler {
                 if let Some(name) = hot_locus_name(path, cx.top) {
-                    let where_ = if cx.loop_depth > 0 {
-                        "inside a loop — a fresh instance (its own arena / \
-                         heap buffer) is allocated every iteration"
-                    } else {
-                        "inside a bus handler — a fresh instance (its own \
-                         arena / heap buffer) is allocated every message"
-                    };
-                    cx.emit(
-                        *span,
+                    // GH #815 retired half of what this advisory used
+                    // to say: a locus created in a LOOP is now
+                    // reclaimed when the next iteration reaches the
+                    // same instantiation, so residency no longer grows
+                    // without bound and a `run()` read loop that never
+                    // returns is no longer the worst case. The
+                    // allocation itself is still per-iteration, which
+                    // is what the advisory is for, so say THAT — the
+                    // arena create/destroy pair on the hot path —
+                    // rather than a reclaim rule that no longer holds.
+                    // The handler-at-depth-0 half is unchanged: one
+                    // instantiation per message, reclaimed at the
+                    // handler's return.
+                    let message = if cx.loop_depth > 0 {
                         format!(
                             "hot-path allocation: locus `{}` is instantiated \
-                             {} and, being let-bound or subscription-bearing, \
-                             is only reclaimed when the enclosing method \
-                             returns (a `run()` read loop never returns). \
+                             inside a loop — a fresh instance (its own arena \
+                             / heap buffer) is allocated every iteration, and \
+                             reclaimed only when the next iteration replaces \
+                             it, so an arena create/destroy pair and the \
+                             instance's whole lifecycle are on the hot path. \
                              Hoist it to a reused field, `clear()` and refill \
-                             one builder, use a bare-statement per-iteration \
-                             child (eagerly dissolved), or acknowledge an \
-                             intentional shape with `@unbounded` on the \
-                             enclosing fn/hook.",
-                            name, where_
-                        ),
-                    );
+                             one builder, or acknowledge an intentional shape \
+                             with `@unbounded` on the enclosing fn/hook.",
+                            name
+                        )
+                    } else {
+                        format!(
+                            "hot-path allocation: locus `{}` is instantiated \
+                             inside a bus handler — a fresh instance (its own \
+                             arena / heap buffer) is allocated every message \
+                             and, being let-bound or subscription-bearing, is \
+                             only reclaimed when the enclosing method \
+                             returns. Hoist it to a reused field, `clear()` \
+                             and refill one builder, use a bare-statement \
+                             per-message child (eagerly dissolved), or \
+                             acknowledge an intentional shape with \
+                             `@unbounded` on the enclosing fn/hook.",
+                            name
+                        )
+                    };
+                    cx.emit(*span, message);
                 }
             }
         }
