@@ -335,14 +335,23 @@ impl Parser {
         true
     }
 
-    /// GH #863: a free `fn` may not take the name of a built-in call
-    /// form. `sum` / `prod` are claimed by this parser at expression
-    /// head; `min` / `max` are claimed by codegen's math-builtin arm
-    /// ahead of `user_fns`. Either way the declaration could never be
-    /// reached, so the old behavior was a check/build divergence
-    /// (`hale check` ok, `hale build` "unsupported in codegen v0",
-    /// unlocated) or — for a two-arg `min` / `max` — a silently
-    /// hijacked call that ran the builtin and never the body.
+    /// GH #863 / GH #880: a free `fn` may not take the name of a
+    /// built-in call form ([`BUILTIN_CALL_FORMS`]). `sum` / `prod`
+    /// are claimed by this parser at expression head; `min`, `max`,
+    /// `abs`, `to_string`, `Int`, `Float`, `len`, `starts_with` and
+    /// `contains` by codegen arms that match the callee name ahead
+    /// of `user_fns`; `check_closures` by the statement-position
+    /// dispatch. Either way the declaration could never be reached,
+    /// so the old behavior was a check/build divergence (`hale
+    /// check` ok, `hale build` "unsupported in codegen v0",
+    /// unlocated) or — for `abs`, `to_string`, `Int`, `Float` and a
+    /// two-arg `min` / `max` — a silently hijacked call that ran the
+    /// builtin and never the body.
+    ///
+    /// The four printers invert it: `user_fns` is consulted first,
+    /// so the declaration captures every `print(...)` in the program
+    /// AND in the merged Hale-source stdlib, which is why `fn
+    /// print(a: Int)` made an unrelated `println("hi")` unbuildable.
     ///
     /// Reported at the NAME, in the `reserved_word_as_name` shape,
     /// and recorded so the call sites recover as ordinary calls.
@@ -351,23 +360,31 @@ impl Parser {
     /// (`self.sum()`), which no builtin claims — `free` is false for
     /// those call sites.
     fn reject_builtin_call_form_as_fn(&mut self, name: &Ident) {
-        let Some(word) = builtin_call_form(&name.name) else {
+        let Some((word, why)) = builtin_call_form(&name.name) else {
             return;
         };
         if self.builtin_named_as_fn.contains(&word) {
             return;
         }
         self.builtin_named_as_fn.push(word);
+        let why = match why {
+            Some(w) => w.to_string(),
+            None => format!(
+                "every `{}(...)` call site lowers to the builtin",
+                word
+            ),
+        };
         self.diags.push(Diag::parse(
             name.span,
             format!(
-                "`{}` is a built-in call form and cannot name a fn; \
-                 rename it (every `{}(...)` call site lowers to the \
-                 builtin, so the declaration could never be reached \
-                 — spec/tokens.md § Built-in identifiers lists them). \
-                 A locus METHOD may still be named `{}`: it is reached \
-                 through a receiver, which no builtin claims.",
-                word, word, word
+                "`{w}` is a built-in call form and cannot name a fn; \
+                 rename it ({why}, so the declaration could never be \
+                 reached — spec/tokens.md § Built-in identifiers \
+                 lists them). A locus METHOD may still be named \
+                 `{w}`: it is reached through a receiver, which no \
+                 builtin claims.",
+                w = word,
+                why = why,
             ),
         ));
     }
@@ -7676,26 +7693,108 @@ fn reserved_name_message(kw: &str, what: &str) -> String {
     )
 }
 
-/// GH #863: the built-in call forms a free `fn` may not be named
-/// after — the chains / aggregate vocabulary the compiler claims at
-/// a BARE call site, where a user declaration is unreachable.
+/// Why the four printers are claimed — shared, because the reason is
+/// the same sentence for all of them and it is not the usual one.
+const PRINTER_CLAIM: &str =
+    "the printers are variadic over every printable type, and the \
+     Hale-source standard library is merged into this same global fn \
+     namespace — the declaration would capture the LIBRARY's own \
+     `print(...)` calls";
+
+/// GH #863 / GH #880: the built-in call forms a free `fn` may not be
+/// named after — every name the compiler answers at a BARE call site,
+/// where a user declaration of that name is unreachable (or, for the
+/// printers, reachable from code that never asked for it).
 ///
-/// - `sum` / `prod` are claimed by this parser: `sum(` at expression
-///   head produces [`Expr::Sum`] / [`Expr::Prod`], never a call.
-/// - `min` / `max` are claimed by codegen's math-builtin arm, which
-///   matches on the callee name ahead of `user_fns`.
+/// The second field is the clause the diagnostic splices in to say
+/// *why* the call site answers the name; `None` selects the common
+/// "every `NAME(...)` call site lowers to the builtin".
 ///
-/// The rest of the chains vocabulary (`map`, `filter`, `any`, `all`,
-/// `first`, `find`, `each`, `take`, `skip`, `enumerate`, `count`,
-/// `into`, `sort_into`, `reverse_into`, `group_count_into`) is
-/// recognized only AFTER a `.`, so those names are free at top level
-/// and are deliberately not listed here — `fn first(...)` is a real
-/// corpus declaration that works.
-const BUILTIN_CALL_FORMS: [&str; 4] = ["sum", "prod", "min", "max"];
+/// Names deliberately NOT listed, each probed at one and two
+/// arguments through `hale check`, `hale build` and a RUN of the
+/// built binary (GH #880):
+///
+/// - The rest of the element-chain vocabulary (`map`, `filter`,
+///   `any`, `all`, `first`, `find`, `each`, `take`, `skip`,
+///   `enumerate`, `count`, `into`, `sort_into`, `reverse_into`,
+///   `group_count_into`) is recognized only AFTER a `.`, so a free
+///   fn of that name is called as written —
+///   `crates/hale-codegen/tests/fixtures/lib-enum-persp/lib.hl`
+///   really does declare `fn first()`.
+/// - The `bounded[T; N]` intrinsics (`count`, `clear`, `truncate`,
+///   `push`, `at`, `set`) and the accumulator vocabulary (`count`,
+///   `mean`) are claimed only when the argument IS a bounded
+///   receiver, or inside a closure assertion. Outside that the user
+///   fn wins, and `dna/tests/books_slice_test.hl` declares a free
+///   `fn count(...)` that builds and runs its own body — claiming
+///   the name would break a real program.
+/// - `B`, `c`, `sigma`, `phi`, `k_max`, `span_max`, `length` and
+///   `empty` are in spec/tokens.md's built-in identifier table but
+///   no call site claims them; each builds and runs its own body.
+/// - `bubble` is a keyword, so GH #725 already refuses it.
+const BUILTIN_CALL_FORMS: &[(&str, Option<&str>)] = &[
+    // Claimed by THIS parser at expression head: `sum(` / `prod(`
+    // produce `Expr::Sum` / `Expr::Prod`, never a call.
+    ("sum", None),
+    ("prod", None),
+    // Claimed by codegen's `lower_expr` `Expr::Call` arms, each
+    // matched on the callee name ahead of `user_fns`. `min`, `max`,
+    // `abs`, `to_string`, `Int` and `Float` silently ran the BUILTIN
+    // and never the body until GH #863 / GH #880.
+    ("min", None),
+    ("max", None),
+    ("abs", None),
+    ("to_string", None),
+    (
+        "Int",
+        Some("`Int(x)` is the built-in Float → Int narrowing cast"),
+    ),
+    (
+        "Float",
+        Some("`Float(x)` is the built-in Int → Float widening cast"),
+    ),
+    (
+        "len",
+        Some(
+            "`len(...)` is polymorphic over String, Bytes and \
+             `bounded`, and is answered at the call site ahead of \
+             every user fn",
+        ),
+    ),
+    ("starts_with", None),
+    ("contains", None),
+    // Statement position. The four printers reach `user_fns` FIRST,
+    // so the declaration is not hijacked — it hijacks, which is
+    // worse: `fn print(a: Int)` retargeted the stdlib prelude's own
+    // `print("...")` calls and the program died as ``fn `print` arg
+    // 0 type mismatch: expected Int, got String``, pointing at
+    // neither the declaration nor any call the author wrote.
+    ("print", Some(PRINTER_CLAIM)),
+    ("println", Some(PRINTER_CLAIM)),
+    ("eprint", Some(PRINTER_CLAIM)),
+    ("eprintln", Some(PRINTER_CLAIM)),
+    (
+        "check_closures",
+        Some(
+            "`check_closures()` is the explicit-epoch closure \
+             surface and is answered at statement position ahead of \
+             every user fn",
+        ),
+    ),
+    (
+        FMT_BUILTIN,
+        Some(
+            "`__fmt(...)` is what an f-string interpolation \
+             desugars into",
+        ),
+    ),
+];
 
 /// The [`BUILTIN_CALL_FORMS`] entry `name` spells, if any.
-fn builtin_call_form(name: &str) -> Option<&'static str> {
-    BUILTIN_CALL_FORMS.iter().copied().find(|w| *w == name)
+fn builtin_call_form(
+    name: &str,
+) -> Option<(&'static str, Option<&'static str>)> {
+    BUILTIN_CALL_FORMS.iter().copied().find(|(w, _)| *w == name)
 }
 
 /// If the given keyword token is one we permit as an identifier

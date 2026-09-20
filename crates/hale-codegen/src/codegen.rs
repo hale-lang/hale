@@ -17598,6 +17598,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 }
                             }
                         } else if name == "check_closures" {
+                            // GH #880: this arm precedes `user_fns`,
+                            // so a declared `fn check_closures` would
+                            // never run.
+                            self.reject_builtin_over_user_fn(name)?;
                             // m44: explicit-epoch closure check
                             // surface. `check_closures();` from
                             // inside a locus body fires every
@@ -19249,6 +19253,52 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // any `break`s inside the body, so it's always Open.
         self.builder.position_at_end(exit_bb);
         Ok(BlockEnd::Open)
+    }
+
+    /// GH #880 backstop: a built-in arm is about to answer a call to
+    /// a name this program also DECLARES as a free fn.
+    ///
+    /// Every unconditional builtin arm below matches on the callee
+    /// name *before* `user_fns` is consulted, so without this the
+    /// builtin silently wins and the declaration is dead code — a
+    /// wrong answer with no diagnostic anywhere (`fn abs(a: Int)`
+    /// called as `abs(1)` printed the builtin's answer, and `fn
+    /// min(a, b)` ran `min` instead of the body).
+    ///
+    /// The rule that prevents it lives one layer up, in the parser's
+    /// `BUILTIN_CALL_FORMS`: those declarations do not parse. This
+    /// is the net under that rule — reaching here means the table
+    /// missed a name a codegen arm claims, and the right answer is
+    /// to refuse the build, not to run the builtin. Call it from
+    /// every arm that claims a name unconditionally.
+    ///
+    /// Deliberately NOT called from the arms whose guard already
+    /// proves the call is a builtin one — the `bounded[T; N]`
+    /// intrinsics (`count` / `clear` / `truncate` / `push` / `at` /
+    /// `set`, which require a bounded receiver) and the accumulator
+    /// vocabulary (`count()` / `mean(x)` inside a closure
+    /// assertion). Those names are free for a user fn by design
+    /// (`dna/tests/books_slice_test.hl` declares `fn count(...)`),
+    /// so refusing them here would invent a check/build divergence
+    /// rather than close one.
+    fn reject_builtin_over_user_fn(
+        &self,
+        name: &str,
+    ) -> Result<(), CodegenError> {
+        if self.user_fns.contains_key(name)
+            || self.generic_fn_templates.contains_key(name)
+        {
+            return Err(CodegenError::Unsupported(format!(
+                "`{name}(...)` is a built-in call form, but this \
+                 program also declares `fn {name}` — the builtin \
+                 answers every call site, so the declaration could \
+                 never be reached. Rename the fn. (The parser \
+                 refuses such a declaration for every name in \
+                 `BUILTIN_CALL_FORMS`; reaching codegen means that \
+                 table is missing `{name}` — GH #880.)"
+            )));
+        }
+        Ok(())
     }
 
     /// m36: lower a `len(x)` builtin call. v0 supports two
@@ -24177,6 +24227,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.lower_accumulator_load()
                 }
                 Expr::Ident(i) if i.name == "len" => {
+                    self.reject_builtin_over_user_fn("len")?;
                     self.lower_len_builtin(args, scope)
                 }
                 // bounded[T; N] intrinsics (2026-07-02): count/clear
@@ -24203,19 +24254,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                 }
                 Expr::Ident(i) if i.name == "to_string" => {
+                    self.reject_builtin_over_user_fn("to_string")?;
                     self.lower_to_string_builtin(args, scope)
                 }
                 Expr::Ident(i)
                     if i.name == hale_syntax::parser::FMT_BUILTIN =>
                 {
+                    self.reject_builtin_over_user_fn(
+                        hale_syntax::parser::FMT_BUILTIN,
+                    )?;
                     self.lower_fmt_builtin(args, scope)
                 }
                 Expr::Ident(i) if i.name == "Int" => {
                     // v1.x-11: explicit Float → Int narrowing.
+                    self.reject_builtin_over_user_fn("Int")?;
                     self.lower_int_cast_builtin(args, scope)
                 }
                 Expr::Ident(i) if i.name == "Float" => {
                     // GH #800: the widening half of the same pair.
+                    self.reject_builtin_over_user_fn("Float")?;
                     self.lower_float_cast_builtin(args, scope)
                 }
                 Expr::Ident(i)
@@ -24224,6 +24281,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         "min" | "max" | "abs"
                     ) =>
                 {
+                    self.reject_builtin_over_user_fn(&i.name)?;
                     self.lower_math_builtin(&i.name, args, scope)
                 }
                 Expr::Ident(i)
@@ -24232,6 +24290,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         "starts_with" | "contains"
                     ) =>
                 {
+                    self.reject_builtin_over_user_fn(&i.name)?;
                     self.lower_str_predicate_builtin(&i.name, args, scope)
                 }
                 Expr::Ident(i) if self.user_fns.contains_key(&i.name) => {

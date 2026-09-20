@@ -649,8 +649,125 @@ fn purity_bare_builtins_are_bare_callees() {
     );
 }
 
-/// GH #863 — a name the compiler claims at a bare call site cannot
-/// also be DECLARED.
+/// The names a free `fn` may not take: every bare builtin the
+/// compiler answers at a call site ahead of the program's own fns.
+///
+/// Mirrors `BUILTIN_CALL_FORMS` in `crates/hale-syntax/src/parser.rs`
+/// (private to that crate) and is kept honest against
+/// `BARE_BUILTIN_CALLEES` by `every_bare_builtin_name_is_classified`.
+const CLAIMED_BUILTIN_NAMES: &[&str] = &[
+    // GH #863: claimed by the parser (`sum` / `prod`) or by
+    // codegen's math-builtin arm (`min` / `max`).
+    "sum",
+    "prod",
+    "min",
+    "max",
+    // GH #880: the rest of codegen's unconditional `Expr::Call` arms
+    // plus the statement-position printers and closure surface.
+    "abs",
+    "to_string",
+    "Int",
+    "Float",
+    "len",
+    "starts_with",
+    "contains",
+    "print",
+    "println",
+    "eprint",
+    "eprintln",
+    "check_closures",
+    hale_syntax::parser::FMT_BUILTIN,
+];
+
+/// The bare-builtin names a free `fn` may still take, because no call
+/// site claims them unconditionally.
+///
+/// The first eight are spec/tokens.md's built-in identifier table
+/// minus the claimed names — framework spellings and two
+/// conventionally reserved words that nothing dispatches on. The rest
+/// are the `bounded[T; N]` intrinsics and the accumulator vocabulary,
+/// whose codegen arms fire only when the argument IS a bounded
+/// receiver or a closure assertion is being evaluated. `count` is the
+/// load-bearing one: `dna/tests/books_slice_test.hl` declares a free
+/// `fn count(app, kind, entity, needle)` and calls it.
+const UNCLAIMED_BUILTIN_NAMES: &[&str] = &[
+    "B",
+    "c",
+    "sigma",
+    "phi",
+    "k_max",
+    "span_max",
+    "length",
+    "empty",
+    "count",
+    "mean",
+    "clear",
+    "truncate",
+    "push",
+    "at",
+    "set",
+];
+
+/// The sentinel the probe's user body returns. A hijacked call
+/// returns the BUILTIN's answer instead, so its absence from stdout
+/// is the hijack.
+const PROBE_SENTINEL: i64 = 8801;
+
+/// `fn NAME(params) -> Int { return 8801; }` plus a `main` that
+/// prints the call.
+///
+/// Built from a template rather than by renaming the claimed spelling
+/// out of a finished program: `src.replace("println(", …)` would also
+/// rewrite `main`'s own printer and quietly turn the control into a
+/// different test.
+fn builtin_probe_source(decl: &str, arity: usize) -> String {
+    let (params, args) = if arity == 1 {
+        ("a: Int", "1")
+    } else {
+        ("a: Int, b: Int", "1, 2")
+    };
+    format!(
+        "fn {d}({params}) -> Int {{\n    return {s};\n}}\n\n\
+         fn main() {{\n    println(\"v=\", {d}({args}));\n}}\n",
+        d = decl,
+        params = params,
+        args = args,
+        s = PROBE_SENTINEL,
+    )
+}
+
+/// Build and run `src`, returning its stdout — or the reason it never
+/// produced any.
+fn build_and_run_probe(src: &str, tag: &str) -> Result<String, String> {
+    let program = hale_syntax::parse_source(src).map_err(|ds| {
+        let msgs: Vec<&str> = ds.iter().map(|d| d.message.as_str()).collect();
+        format!("does not parse: {}", msgs.join("; "))
+    })?;
+    let errs: Vec<String> = hale_types::check_program(&program)
+        .iter()
+        .filter(|d| d.is_error())
+        .map(|d| d.message.clone())
+        .collect();
+    if !errs.is_empty() {
+        return Err(format!("`hale check` refuses it: {}", errs.join("; ")));
+    }
+    let bin = harness::unique_bin(&format!("hale_builtin_probe_{}", tag));
+    build_executable(&program, &bin)
+        .map_err(|e| format!("`hale build` refuses it: {:?}", e))?;
+    let out = std::process::Command::new(&bin)
+        .output()
+        .map_err(|e| format!("could not run the built binary: {}", e));
+    let _ = std::fs::remove_file(&bin);
+    let out = out?;
+    if !out.status.success() {
+        return Err(format!("the built binary exited {}", out.status));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// GH #863 / GH #880 — a name the compiler claims at a bare call site
+/// cannot also be DECLARED, and a name it does not claim must run the
+/// declaration.
 ///
 /// The same divergence this file exists for, entered from the
 /// declaration side. A free `fn sum(a: Int) -> Int { … }` passed
@@ -659,39 +776,62 @@ fn purity_bare_builtins_are_bare_callees() {
 /// the parser gives `sum(` its own production, so the user's fn was
 /// never the callee. A two-arg `fn min(a: Int, b: Int)` was worse
 /// than a divergence: it BUILT, and ran codegen's math builtin
-/// instead of the body, silently.
+/// instead of the body, silently. GH #880 probed the whole
+/// bare-builtin table the same way and found four more of the silent
+/// kind (`abs`, `to_string`, `Int`, `Float`) and six of the late kind
+/// (`len`, `starts_with`, `contains`, `print`, `eprintln`, `__fmt`).
 ///
-/// The corpus sweeps above cannot see either one, because no corpus
-/// program declares these names — which is how both survived.
+/// Neither corpus sweep above can see the silent kind, because those
+/// programs BUILD. That is what the third column here is for: the
+/// probe's body returns a sentinel and the built binary is RUN, so a
+/// hijack shows up as the sentinel missing from stdout rather than as
+/// a green build.
 ///
-/// Agreement now holds the only way it can for a name codegen
-/// claims: the declaration is refused at parse, so `hale check` and
-/// `hale build` refuse the same programs with the same located
-/// sentence. Both halves are asserted, plus the control — the same
-/// program with the declaration renamed must still build, so the
-/// refusal is about the name and not the shape.
+/// Three assertions per name, at one and two arguments:
+///
+///   * a CLAIMED name is refused at parse, by the declaration rule —
+///     so `hale check` and `hale build` refuse the same program with
+///     the same located sentence;
+///   * its control, the identical program under `NAME_of`, checks,
+///     builds and prints the sentinel, so the refusal is about the
+///     name and not the shape;
+///   * an UNCLAIMED name checks, builds and prints the sentinel —
+///     the rule must not widen onto a name that works today.
 #[test]
-fn a_fn_named_after_a_claimed_builtin_is_refused_before_codegen() {
-    const CLAIMED: [&str; 4] = ["sum", "prod", "min", "max"];
+fn a_fn_named_after_a_bare_builtin_agrees_and_runs_its_own_body() {
+    let want = format!("v={}", PROBE_SENTINEL);
     let mut failures: Vec<String> = Vec::new();
-    for (i, word) in CLAIMED.iter().enumerate() {
-        for (arity, params, call) in [
-            (1usize, "a: Int".to_string(), format!("{}(1)", word)),
-            (2usize, "a: Int, b: Int".to_string(), format!("{}(1, 2)", word)),
-        ] {
-            let src = format!(
-                "fn {w}({params}) -> Int {{\n    return 1;\n}}\n\n\
-                 fn main() {{\n    println(\"{{}}\", {call});\n}}\n",
-                w = word,
-                params = params,
-                call = call,
-            );
+
+    for (i, word) in CLAIMED_BUILTIN_NAMES.iter().enumerate() {
+        for arity in [1usize, 2] {
+            let src = builtin_probe_source(word, arity);
             match hale_syntax::parse_source(&src) {
-                Ok(_) => failures.push(format!(
-                    "  `fn {}` / {} arg(s) still parses — `hale check` \
-                     accepts it and codegen claims the call",
-                    word, arity
-                )),
+                // Say what the unrefused declaration then DOES, so
+                // the failure separates the two classes without a
+                // second run: a silent hijack (it builds and prints
+                // the builtin's answer), a late unlocated refusal,
+                // or the codegen backstop catching it.
+                Ok(_) => {
+                    let then = match build_and_run_probe(
+                        &src,
+                        &format!("h{}_{}", i, arity),
+                    ) {
+                        Ok(stdout) if stdout.contains(&want) => {
+                            "builds and runs the body".to_string()
+                        }
+                        Ok(stdout) => format!(
+                            "BUILDS and prints {:?}, not {:?} — the \
+                             builtin answered, silently",
+                            stdout, want
+                        ),
+                        Err(why) => why,
+                    };
+                    failures.push(format!(
+                        "  `fn {}` / {} arg(s) still parses, so \
+                         `hale check` accepts it; it then {}",
+                        word, arity, then
+                    ));
+                }
                 Err(ds) => {
                     let msgs: Vec<&str> =
                         ds.iter().map(|d| d.message.as_str()).collect();
@@ -712,31 +852,39 @@ fn a_fn_named_after_a_claimed_builtin_is_refused_before_codegen() {
             }
 
             // The control: the same shape under a name nothing
-            // claims must still build.
-            let renamed =
-                src.replace(&format!("{}(", word), &format!("{}_of(", word));
-            let program = match hale_syntax::parse_source(&renamed) {
-                Ok(p) => p,
-                Err(ds) => {
-                    let msgs: Vec<&str> =
-                        ds.iter().map(|d| d.message.as_str()).collect();
-                    failures.push(format!(
-                        "  control `fn {}_of` does not parse: {}",
-                        word,
-                        msgs.join("; ")
-                    ));
-                    continue;
-                }
-            };
-            let bin =
-                harness::unique_bin(&format!("hale_claimed_{}_{}", i, arity));
-            match build_executable(&program, &bin) {
-                Ok(()) => {
-                    let _ = std::fs::remove_file(&bin);
-                }
-                Err(e) => failures.push(format!(
-                    "  control `fn {}_of` / {} arg(s) does not build — {:?}",
-                    word, arity, e
+            // claims must check, build AND run its own body.
+            let control = format!("{}_of", word);
+            let src = builtin_probe_source(&control, arity);
+            match build_and_run_probe(&src, &format!("c{}_{}", i, arity)) {
+                Ok(stdout) if stdout.contains(&want) => {}
+                Ok(stdout) => failures.push(format!(
+                    "  control `fn {}` / {} arg(s) built but printed {:?}, \
+                     not {:?} — the body did not run",
+                    control, arity, stdout, want
+                )),
+                Err(why) => failures.push(format!(
+                    "  control `fn {}` / {} arg(s) {}",
+                    control, arity, why
+                )),
+            }
+        }
+    }
+
+    for (i, word) in UNCLAIMED_BUILTIN_NAMES.iter().enumerate() {
+        for arity in [1usize, 2] {
+            let src = builtin_probe_source(word, arity);
+            match build_and_run_probe(&src, &format!("u{}_{}", i, arity)) {
+                Ok(stdout) if stdout.contains(&want) => {}
+                Ok(stdout) => failures.push(format!(
+                    "  `fn {}` / {} arg(s) built but printed {:?}, not \
+                     {:?} — a builtin answered the call instead of the \
+                     declaration",
+                    word, arity, stdout, want
+                )),
+                Err(why) => failures.push(format!(
+                    "  `fn {}` / {} arg(s) {} — this name is supposed to \
+                     stay available to a free fn",
+                    word, arity, why
                 )),
             }
         }
@@ -744,13 +892,47 @@ fn a_fn_named_after_a_claimed_builtin_is_refused_before_codegen() {
 
     assert!(
         failures.is_empty(),
-        "{} declaration(s) of a claimed built-in call form are not \
-         handled at parse, so `hale check` and `hale build` can \
-         disagree about them again (GH #863):\n{}\n\n\
+        "{} bare-builtin name(s) disagree between `hale check`, \
+         `hale build` and what the built program actually runs \
+         (GH #863, GH #880):\n{}\n\n\
          The rule lives in `BUILTIN_CALL_FORMS` / \
          `reject_builtin_call_form_as_fn` in \
-         `crates/hale-syntax/src/parser.rs`.",
+         `crates/hale-syntax/src/parser.rs`, with \
+         `reject_builtin_over_user_fn` in \
+         `crates/hale-codegen/src/codegen.rs` as the backstop.",
         failures.len(),
         failures.join("\n")
+    );
+}
+
+/// Every bare-name builtin the checker knows about is classified —
+/// either a free `fn` may not take the name, or the probe above
+/// proves it may.
+///
+/// Without this, adding a codegen arm (and its `BARE_BUILTIN_CALLEES`
+/// row) would quietly reopen GH #880 for the new name: nothing else
+/// notices a name that is in neither list.
+#[test]
+fn every_bare_builtin_name_is_classified() {
+    let classified: BTreeSet<&str> = CLAIMED_BUILTIN_NAMES
+        .iter()
+        .chain(UNCLAIMED_BUILTIN_NAMES.iter())
+        .copied()
+        .collect();
+    let unclassified: Vec<&str> = hale_types::check::BARE_BUILTIN_CALLEES
+        .iter()
+        .copied()
+        .filter(|n| !classified.contains(n))
+        .collect();
+    assert!(
+        unclassified.is_empty(),
+        "{:?} are bare-name builtins that this file does not classify. \
+         Decide for each whether a free `fn` of that name is claimed \
+         (add it to `BUILTIN_CALL_FORMS` in \
+         `crates/hale-syntax/src/parser.rs` and to \
+         `CLAIMED_BUILTIN_NAMES` here) or stays free (add it to \
+         `UNCLAIMED_BUILTIN_NAMES`, where the probe proves it runs \
+         its own body) — GH #880.",
+        unclassified
     );
 }
