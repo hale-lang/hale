@@ -3263,8 +3263,12 @@ PREDICATES — the owner's `__locus_ref_owned_mask` bit is
 `Owner::Field` on the value's own node, through an `or`'s
 branches, a carrier's arms and a composite's elements, so an
 interface- or perspective-typed field claims its value exactly as a
-locus-typed one does. The remaining flags still decide what they
-did. The
+locus-typed one does; and `placement_for_next_locus_instantiation`
+— a `placement { }` entry belongs to the instance the entry names,
+claimed by the instantiation whose owner is `Placement(entry)`
+rather than taken from a slot the next literal lowered could pick
+up. The `returns_this_locus` / `current_user_fn_ret` spoof is the
+last one, and still decides what it did. The
 observable rules in `spec/semantics.md` § *Dissolve timing rules* do
 not change — this makes them true by construction.
 

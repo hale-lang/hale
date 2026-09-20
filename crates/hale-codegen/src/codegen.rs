@@ -1557,7 +1557,7 @@ pub fn build_executable_with_options(
         locus_cascade_path: Vec::new(),
         locus_instantiation_path: Vec::new(),
         instantiating_into_payload_arena: false,
-        placement_for_next_locus_instantiation: None,
+        placement_for_field: None,
         numa_node_for_next_locus_instantiation: None,
         main_placement_replicas: BTreeMap::new(),
         params_init_self: None,
@@ -4587,18 +4587,20 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// them sees the flag still set as long as the parent's
     /// params-init loop holds it.
     pub(crate) instantiating_into_payload_arena: bool,
-    /// F.31 (2026-05-23): placement override for the next
-    /// `lower_locus_instantiation` call. The main-locus
-    /// params-init loop sets this per-field (looking up the
-    /// field name in `main_placement_map`) before lowering each
-    /// field's default expression; the adapter-binding emit path
-    /// sets it to `Pinned(None)` before lowering the adapter
-    /// locus literal (adapter loci instantiated inline in
-    /// `bindings { }` are pinned-equivalent by construction).
-    /// `lower_locus_instantiation` consumes via `mem::take` so
-    /// the first nested locus instantiation absorbs the override
-    /// and inner ones see None.
-    pub(crate) placement_for_next_locus_instantiation: Option<ScheduleClass>,
+    /// F.31 (2026-05-23): the placement a `placement { }` entry
+    /// gives one field, as `(entry, class)`.
+    ///
+    /// GH #921 A3, commit 5: this is no longer a slot the NEXT
+    /// instantiation takes. It used to be, and the slot could
+    /// survive the params-init loop — a `placement { }`'d field
+    /// initialised by anything but a locus literal left it untaken,
+    /// and when the placed field was the LAST one nothing reset it,
+    /// so a downstream instantiation could pick up a pinned thread
+    /// the author wrote for something else (PR #919's note). Now the
+    /// instantiation reads its own owner: `Owner::Placement(entry)`,
+    /// and only when `entry` is this one. The setter scopes it to the
+    /// field's initialiser and restores what was there.
+    pub(crate) placement_for_field: Option<(String, ScheduleClass)>,
     /// Topology arena-on-node (2026-07-05): parallel to
     /// `placement_for_next_locus_instantiation` — the resolved
     /// NUMA node for the field being instantiated, when its
@@ -7184,7 +7186,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     //
     //   * `owner_shadow_literal` — `lower_locus_instantiation`, after
     //     `instantiating_for_parent_field`,
-    //     `placement_for_next_locus_instantiation` and the
+    //     the placement a `placement { }` entry names and the
     //     `returns_this_locus` / `current_user_fn_ret` spoof have all
     //     been read;
     //   * `owner_shadow_call` — the GH #402 hook at the top of
@@ -11852,12 +11854,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let saved_ret = self.current_user_fn_ret.clone();
         self.current_user_fn_ret =
             Some(Some(CodegenTy::LocusRef(locus.name.clone())));
-        self.placement_for_next_locus_instantiation =
-            Some(ScheduleClass::Pinned(None));
+        self.placement_for_field = Some((
+            topic_name.to_string(),
+            ScheduleClass::Pinned(None),
+        ));
         let mut scope = Scope::default();
         let lowered = self.lower_expr(&locus_lit, &mut scope);
         self.owner_site = None;
         self.declared_owner = None;
+        self.placement_for_field = None;
         self.current_user_fn_ret = saved_ret;
         let (self_val, _self_ty) = lowered?;
 

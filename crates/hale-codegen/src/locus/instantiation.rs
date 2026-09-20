@@ -223,8 +223,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // lifecycle (which runs on the pthread). The deferred-
         // dissolve frame's flush handles pthread_join +
         // arena_destroy via the existing is_pinned_entry path.
-        let placement_override =
-            std::mem::take(&mut self.placement_for_next_locus_instantiation);
+        // GH #921 A3, commit 5: the placement a `placement { }`
+        // entry names belongs to the instance the entry names, and
+        // nothing else. The instantiation reads its OWN owner to
+        // claim it — `Owner::Placement(entry)` — instead of taking
+        // whatever the last setter left in a one-shot slot.
+        let placement_override = match (&site_owner, &self.placement_for_field)
+        {
+            (
+                Some(crate::ownership::Owner::Placement(entry)),
+                Some((field, class)),
+            ) if field == entry => Some(class.clone()),
+            _ => None,
+        };
         // GH #921 A2: the override is folded into `info` below, so the
         // shadow records the answer before it is consumed.
         let placement_overridden = placement_override.is_some();
@@ -2179,10 +2190,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // None (the recursive call will keep the locus's
             // own schedule_class — Cooperative under F.31).
             if is_main_locus {
-                self.placement_for_next_locus_instantiation = self
-                    .deployment.main_placement_map
+                self.placement_for_field = self
+                    .deployment
+                    .main_placement_map
                     .get(fname.as_str())
-                    .cloned();
+                    .cloned()
+                    .map(|c| (fname.clone(), c));
                 // F.31 Phase 4: parallel pool-name set. None when
                 // the field has no cooperative-pool entry (either
                 // pinned, default-pool main, or no placement).
@@ -2272,9 +2285,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         } else {
                             Some(cores[(i as usize) % cores.len()])
                         };
-                        self.placement_for_next_locus_instantiation = Some(
+                        self.placement_for_field = Some((
+                            fname.clone(),
                             ScheduleClass::Pinned(core.map(CoreSpec::Single)),
-                        );
+                        ));
                         self.numa_node_for_next_locus_instantiation = node;
                         // Replica keys: replica i's subscriptions
                         // register i as their `where key == replica`
@@ -2293,10 +2307,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                     // Restore replica 0's overrides for the normal path
                     // below — the loop clobbered them.
-                    self.placement_for_next_locus_instantiation = self
-                        .deployment.main_placement_map
+                    self.placement_for_field = self
+                        .deployment
+                        .main_placement_map
                         .get(fname.as_str())
-                        .cloned();
+                        .cloned()
+                        .map(|c| (fname.clone(), c));
                     self.numa_node_for_next_locus_instantiation = node;
                 }
             }
@@ -2554,6 +2570,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // routing to "the immediate locus literal in this
             // params-init slot."
             self.instantiating_into_payload_arena = false;
+            // GH #921 A3, commit 5 (PR #919's note): and neither do
+            // the placement overrides outlive the field they were
+            // looked up for. A `placement { }`'d field initialised by
+            // anything but a locus literal leaves them untaken, and
+            // when it is the LAST field nothing further in this loop
+            // resets them — so a later instantiation, in this
+            // program or the next declaration lowered, could take a
+            // pinned thread the author wrote for something else.
+            self.placement_for_field = None;
+            self.cooperative_pool_for_next_locus_instantiation = None;
+            self.numa_node_for_next_locus_instantiation = None;
+            self.replica_index_for_next_locus_instantiation = None;
             let (slot_idx, declared_ty) = info
                 .fields
                 .get(fname)
