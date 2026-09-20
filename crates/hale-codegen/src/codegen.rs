@@ -7086,6 +7086,56 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .unwrap_or(false)
     }
 
+    /// GH #837: does the expression a `let`, `return`, assignment or
+    /// field init NAMES take the `suppress_fresh_temp` decision
+    /// itself?
+    ///
+    /// The flag is one-shot and means "the value this site's
+    /// expression produces already has an owner — do not ALSO hand it
+    /// the frame temporary GH #402 gives an unowned factory result".
+    /// Nothing in the flag says which node it is about, so the taker
+    /// was whichever proven-fresh factory call lowering reached
+    /// first — and in `return combine(a, make());` that is the
+    /// ARGUMENT. `make()`'s result took the return's ownership and
+    /// nothing reclaimed it, while `combine`'s result — the value the
+    /// site actually named — was left to the rules for an ordinary
+    /// call. One value gained an owner it does not have and the other
+    /// lost the only one it could have had.
+    ///
+    /// So the site asks this before descending, and arms the flag
+    /// only for a node that can hand back the named value itself:
+    ///
+    ///   * a proven-fresh factory call — the GH #402 hook at the top
+    ///     of `lower_expr` takes the flag on that node, BEFORE
+    ///     descending into its arguments, so nested calls already see
+    ///     it clear;
+    ///   * an `or` wrapping one — `lower_or_expr` takes it on the
+    ///     outermost node (GH #793 / PR #835), which is this same fix
+    ///     for the one shape that had already bitten;
+    ///   * `if` / `match` / a block in value position, which hand
+    ///     back a nested expression's value unchanged, and where the
+    ///     flag reaches the arms exactly as it did before this rule.
+    ///     Per-ARM attribution (every arm's tail is its own named
+    ///     node, and only one of them runs) is a separate seam.
+    ///
+    /// Everything else — a call to a fn that is not a factory, a
+    /// method call, a struct literal, an operator — leaves the flag
+    /// clear, and every factory call inside it gets the frame
+    /// temporary an unowned result is supposed to get.
+    pub(crate) fn fresh_temp_decision_lands_on(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Call { callee, .. } => self
+                .callee_fn_name(callee)
+                .map(|f| self.fresh_locus_factories.contains_key(&f))
+                .unwrap_or(false),
+            Expr::Or { inner, .. } => {
+                self.fresh_temp_decision_lands_on(inner)
+            }
+            Expr::If(_) | Expr::Match(_) | Expr::Block(_) => true,
+            _ => false,
+        }
+    }
+
     /// GH #383 / #793: is `binding` a local this frame must NOT
     /// reclaim? Two things take a local out of the single-owner
     /// position the binding-scoped dissolve rule assumes:
@@ -17699,10 +17749,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // the ownership DECISION, carried in the same
                 // one-shot flag: keep the suppression only when the
                 // value is not ours to reclaim.
+                //
+                // GH #837: and for the RHS node this binding NAMES,
+                // not for whichever factory call lowering reaches
+                // first. `let x = combine(make(), make());` used to
+                // hand the binding's decision to the first ARGUMENT,
+                // which left that result with no owner at all while
+                // the second argument took the frame temporary it was
+                // always going to take.
                 let rhs_is_or = matches!(value_to_lower, Expr::Or { .. });
                 let prev_sft = self.suppress_fresh_temp;
-                self.suppress_fresh_temp = !rhs_is_or
-                    || self.binding_escapes_this_frame(&name.name);
+                self.suppress_fresh_temp = (!rhs_is_or
+                    || self.binding_escapes_this_frame(&name.name))
+                    && self.fresh_temp_decision_lands_on(value_to_lower);
                 let lower_result =
                     self.lower_expr_into(value_to_lower, scope, hint_ty.as_ref());
                 self.suppress_fresh_temp = prev_sft;
@@ -18372,8 +18431,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // GH #402 hook registers the result as a temporary
                 // THIS frame owns and reclaims it at exit while the
                 // binding (and then the caller) still holds it.
+                //
+                // GH #837: the decision is about the RHS node the
+                // assignment names. `local.field = pick(a, make());`
+                // set it for the whole subtree, so `make()`'s result
+                // took the slot's ownership and went unreclaimed.
                 let assign_owns_locus_rhs = matches!(op, AssignOp::Eq)
-                    && matches!(slot_ty, CodegenTy::LocusRef(_));
+                    && matches!(slot_ty, CodegenTy::LocusRef(_))
+                    && self.fresh_temp_decision_lands_on(value);
                 let prev_sft = self.suppress_fresh_temp;
                 if assign_owns_locus_rhs {
                     self.suppress_fresh_temp = true;
@@ -22469,9 +22534,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // it as a temporary and dissolve it on the way out. Same
         // rule the returned-BINDING guard enforces for `return m;`,
         // applied to `return make(...)` .
+        //
+        // GH #837: for the node this `return` NAMES, and no other.
+        // Set unconditionally, the one-shot flag was taken by the
+        // first fresh-factory call lowering reached — in
+        // `return combine(a, make());` the ARGUMENT — so `make()`'s
+        // result was recorded as the caller's and this frame never
+        // reclaimed it, though the caller never sees it. When the
+        // returned expression is not a node that takes the decision
+        // itself, every factory call inside it is an unowned
+        // temporary this frame owns (GH #402).
         let _sft_guard = ();
         let prev_sft = self.suppress_fresh_temp;
-        self.suppress_fresh_temp = true;
+        self.suppress_fresh_temp = expr
+            .map(|e| self.fresh_temp_decision_lands_on(e))
+            .unwrap_or(false);
         let r = self.lower_return_inner(expr, scope);
         self.suppress_fresh_temp = prev_sft;
         return r;

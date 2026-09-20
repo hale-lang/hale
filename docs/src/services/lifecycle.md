@@ -153,6 +153,11 @@ because it's how Hale frees resources without a `defer` or a
 - **A locus a function hands back** (`let t = make_ticker();`, or
   the call used directly — `serve(make_ticker())`): whatever
   consumes the handle owns it, so it behaves like the two above.
+  That owner is the expression *in that position*, and a factory
+  call nested deeper inside it is a handle of its own:
+  `let x = combine(a, make_ticker());` binds `combine`'s result to
+  `x`, while `make_ticker()`'s result is one nothing names — the
+  enclosing function owns that one and releases it at scope exit.
   A **fallible** factory is reached through `or`, and that changes
   nothing: `let c = std::process::spawn(argv) or raise;` closes
   the child's pipes and reaps it when the scope exits, just as a
