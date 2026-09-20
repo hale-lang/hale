@@ -26,6 +26,18 @@
 //! diagnostics now travel to the same site every other finding goes
 //! through, so `--json` carries one record per parse error and the
 //! text rendering is untouched.
+//!
+//! GH #775 is the fourth, on the other side of the split: the
+//! commands with no machine-readable channel — `build`, `run`, `test`,
+//! `bench`, `replay` — reported an IMPORTED file's diagnostic with a
+//! bare `d.render(source)`. Every file of an import graph is parsed at
+//! its own virtual base, so the span is an offset into the merged
+//! bundle while `source` is the one file; rendering one against the
+//! other printed the right file and the right message at a line and
+//! column that were not the error's. `check` and `verify` had been
+//! right since GH #770. The diagnostics now carry the base they were
+//! parsed at and render through it, so every command agrees with
+//! `check` about where the mistake is.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -525,5 +537,163 @@ fn a_clean_seed_emits_no_records() {
     let (stdout, _, code) = hale_check(&["--json"], &d);
     assert_eq!(code, 0, "the seed checks clean");
     assert!(stdout.trim().is_empty(), "nothing to report: {}", stdout);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// GH #775: an imported file's diagnostic is positioned in its own
+// file on the commands that do not go through the check reporting
+// path.
+
+/// The library's second file, broken on LINE 3 (the `;` before `}` is
+/// missing). It is the second file of the library alphabetically, so
+/// it is parsed at a non-zero base — and it is reached through an
+/// `import`, so it is the resolver's `errors` vector that carries it,
+/// not `parse_files`.
+const IMPORTED_BROKEN: &str = "// a helper file\n\
+                               fn ok() -> Int { return 1; }\n\
+                               fn broken(x: Int) -> Int { return x * 2 }\n";
+
+/// `<tmp>/app/{main,app_test}.hl` importing `<tmp>/lib/`, whose
+/// `second.hl` does not parse.
+fn import_seed(tag: &str) -> PathBuf {
+    let d = seed_dir(tag);
+    std::fs::create_dir_all(d.join("lib")).expect("mkdir lib");
+    std::fs::create_dir_all(d.join("app")).expect("mkdir app");
+    std::fs::write(
+        d.join("lib").join("main.hl"),
+        "fn greet() -> String {\n    return \"hi\";\n}\n",
+    )
+    .unwrap();
+    std::fs::write(d.join("lib").join("second.hl"), IMPORTED_BROKEN).unwrap();
+    std::fs::write(
+        d.join("app").join("main.hl"),
+        "import \"../lib\" as lib;\n\nfn main() {\n    \
+         println(lib::greet());\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("app").join("app_test.hl"),
+        "import \"../lib\" as lib;\n\nfn main() {\n    \
+         std::test::assert(lib::greet() == \"hi\", \"greet\");\n}\n",
+    )
+    .unwrap();
+    d
+}
+
+/// The one position every command must print: line 3, column 41, of
+/// the library's `second.hl`.
+fn assert_located_in_second_hl(what: &str, out: &str) {
+    assert!(
+        out.contains("second.hl:3:41: parse error: expected ;, got RBrace"),
+        "{what} must position the error in the file that holds it \
+         (second.hl, line 3, col 41):\n{out}"
+    );
+    assert!(
+        out.contains("fn broken(x: Int) -> Int { return x * 2 }")
+            && out.contains('^'),
+        "{what} must cut the snippet and caret from that file too:\n{out}"
+    );
+}
+
+/// `build` on both target shapes. The directory target reports the
+/// resolver's vector directly; the single-file target reports
+/// `parse_with_imports`'s `Err`. They are separate call sites and
+/// were wrong separately.
+#[test]
+fn build_positions_an_imported_parse_error_in_its_own_file() {
+    let d = import_seed("import775build");
+
+    let (_, stderr, code) = hale_cmd("build", &[], &d.join("app"));
+    assert_eq!(code, 1, "build must refuse the tree:\n{stderr}");
+    assert_located_in_second_hl("build <dir>", &stderr);
+
+    let (_, stderr, code) =
+        hale_cmd("build", &[], &d.join("app").join("main.hl"));
+    assert_eq!(code, 1, "build must refuse the entry too:\n{stderr}");
+    assert_located_in_second_hl("build <file>", &stderr);
+
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// `run` has the same two shapes and the same two sites.
+#[test]
+fn run_positions_an_imported_parse_error_in_its_own_file() {
+    let d = import_seed("import775run");
+
+    let (_, stderr, code) = hale_cmd("run", &[], &d.join("app"));
+    assert_eq!(code, 1, "run must refuse the tree:\n{stderr}");
+    assert_located_in_second_hl("run <dir>", &stderr);
+
+    let (_, stderr, code) =
+        hale_cmd("run", &[], &d.join("app").join("main.hl"));
+    assert_eq!(code, 1, "run must refuse the entry too:\n{stderr}");
+    assert_located_in_second_hl("run <file>", &stderr);
+
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// `test` compiles each `_test.hl` through its own pipeline and
+/// reports a compile failure as that test's message — on stdout, with
+/// the rest of the run's report.
+#[test]
+fn test_positions_an_imported_parse_error_in_its_own_file() {
+    let d = import_seed("import775test");
+
+    let (stdout, _, code) =
+        hale_cmd("test", &[], &d.join("app").join("app_test.hl"));
+    assert_eq!(code, 1, "the test must fail:\n{stdout}");
+    assert!(stdout.contains("0 passed, 1 failed"), "got:\n{stdout}");
+    assert_located_in_second_hl("test", &stdout);
+
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// `check` is the control: it has been right since GH #770, and the
+/// other commands now print exactly what it prints. Pinning them to
+/// each other is what stops the two paths drifting apart again.
+#[test]
+fn check_and_build_agree_about_the_position() {
+    let d = import_seed("import775agree");
+
+    let (_, check_err, check_code) = hale_check(&[], &d.join("app"));
+    let (_, build_err, build_code) = hale_cmd("build", &[], &d.join("app"));
+    assert_eq!(check_code, 1, "check refuses it:\n{check_err}");
+    assert_eq!(build_code, 1, "build refuses it:\n{build_err}");
+
+    let position = |out: &str| -> String {
+        out.lines()
+            .find(|l| l.contains("parse error"))
+            .and_then(|l| l.split("second.hl").nth(1))
+            .unwrap_or_else(|| panic!("no located parse error in:\n{out}"))
+            .to_string()
+    };
+    assert_eq!(
+        position(&check_err),
+        position(&build_err),
+        "check:\n{check_err}\nbuild:\n{build_err}"
+    );
+
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The control for the base-0 end of the same rule: a parse error in
+/// the ENTRY file of a single-file target is parsed unshifted, and
+/// must still come out at its own line and column rather than picking
+/// up a base that is not its.
+#[test]
+fn a_parse_error_in_the_entry_file_keeps_position_zero() {
+    let d = seed_dir("import775entry");
+    std::fs::write(
+        d.join("main.hl"),
+        "fn a() -> Int {\n    return 1;\n}\n\nfn b() -> Int { return 2 }\n",
+    )
+    .unwrap();
+
+    let (_, stderr, code) = hale_cmd("build", &[], &d.join("main.hl"));
+    assert_eq!(code, 1, "build must refuse it:\n{stderr}");
+    assert!(
+        stderr.contains("main.hl:5:26: parse error: expected ;, got RBrace"),
+        "the entry file's own position, unshifted:\n{stderr}"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }

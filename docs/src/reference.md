@@ -62,6 +62,13 @@ in the import graph — a library you import, or one it imports — fails
 them both, reported at that file's own line and column. Neither ever
 reports success on a tree `hale build` would refuse.
 
+Every command that follows imports reports it the same way. `build`,
+`run`, `test`, `bench` and `replay` print the same
+`path:line:col: kind: message`, with the offending line and a caret
+under it, positioned in the file that holds the mistake — so the
+line number you read is the line number you open, whichever command
+found it.
+
 With `--json` a parse error is reported exactly like a type error: one
 NDJSON record on stdout carrying the file, line, column and message,
 with `"kind":"parse error"`. Whatever fails, the machine-readable

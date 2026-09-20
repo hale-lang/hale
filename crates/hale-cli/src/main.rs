@@ -1558,9 +1558,7 @@ fn run_bench_file(
                 Err(errors) => {
                     let msg = errors
                         .iter()
-                        .map(|(p, d, src)| {
-                            format!("{}: {}", p.display(), d.render(src))
-                        })
+                        .map(ImportDiag::render)
                         .collect::<Vec<_>>()
                         .join("\n");
                     return Err(msg);
@@ -2081,6 +2079,62 @@ impl EffectTable {
     }
 }
 
+/// GH #775: one diagnostic raised while resolving the import graph.
+///
+/// Every file of the graph is parsed at its own virtual base
+/// (`parse_source_at`), so a diagnostic's span is an offset into the
+/// whole BUNDLE, not into the file it was raised in. The file's own
+/// text travels with the diagnostic so a caller can render it; the
+/// `base` is what turns one coordinate space into the other.
+///
+/// Without it, the bare `d.render(source)` every consumer of this
+/// vector used read a bundle offset as a position in a file that is
+/// almost always shorter than the offset — so the file name and the
+/// message came out right and the line and column did not, on
+/// `build`, `run`, `test`, `bench` and `replay` alike (`check` and
+/// `verify` take the other road, through [`CheckableFailure`], which
+/// has demultiplexed through `file_bases` since GH #770). Render
+/// through [`ImportDiag::render`], never by hand.
+struct ImportDiag {
+    /// The file the diagnostic was raised in, as the resolver reached
+    /// it — that spelling is what the user sees.
+    file: PathBuf,
+    /// The virtual base `file` was parsed at; 0 for the entry file,
+    /// which `parse_with_imports` parses unshifted.
+    base: u32,
+    diag: hale_syntax::Diag,
+    /// `file`'s own text: what the un-shifted span is resolved
+    /// against, and the snippet under the message is cut from.
+    source: String,
+}
+
+impl ImportDiag {
+    /// `path:line:col: kind: message`, positioned in the file that
+    /// holds the error — the same rendering `render_located` produces
+    /// for a merged-bundle span, and the one `check` prints.
+    ///
+    /// It reaches `Diag::render_located` directly rather than
+    /// searching `file_bases`: the entry already knows its own file
+    /// and base, so there is no window to test and no fourth copy of
+    /// [`file_owns_offset`].
+    fn render(&self) -> String {
+        self.diag.render_located(
+            &self.file.display().to_string(),
+            &self.source,
+            self.base,
+        )
+    }
+}
+
+/// Render every import diagnostic in `errors` to stderr, one per
+/// line-group, and hand back the failing exit code.
+fn report_import_diags(errors: &[ImportDiag]) -> ExitCode {
+    for e in errors {
+        eprintln!("{}", e.render());
+    }
+    ExitCode::from(1)
+}
+
 fn resolve_imports(
     imports: &[hale_syntax::ast::Import],
     importer_dir: &Path,
@@ -2091,7 +2145,7 @@ fn resolve_imports(
     // file is parsed at a distinct base so merged spans are globally
     // unique and a diagnostic can be demultiplexed back to its file.
     file_bases: &mut Vec<(u32, PathBuf, u32)>,
-    errors: &mut Vec<(PathBuf, hale_syntax::Diag, String)>,
+    errors: &mut Vec<ImportDiag>,
     merged_items: &mut Vec<hale_syntax::ast::TopDecl>,
     renames: &mut ImportRenames,
     // iris F.10: per-canonical-lib seed_renames cache. A lib
@@ -2244,7 +2298,15 @@ fn resolve_imports(
                 Ok(p) => p,
                 Err(diags) => {
                     for d in diags {
-                        errors.push((file.clone(), d, source.clone()));
+                        // GH #775: the base travels with the
+                        // diagnostic. `d`'s span is an offset into the
+                        // merged bundle; `source` is this file alone.
+                        errors.push(ImportDiag {
+                            file: file.clone(),
+                            base,
+                            diag: d,
+                            source: source.clone(),
+                        });
                     }
                     sources.insert(canon, source);
                     continue;
@@ -2459,10 +2521,10 @@ fn parse_with_imports(
         Vec<(u32, PathBuf, u32)>,
         EntryCtx,
     ),
-    Vec<(PathBuf, hale_syntax::Diag, String)>,
+    Vec<ImportDiag>,
 > {
     let mut sources: BTreeMap<PathBuf, String> = BTreeMap::new();
-    let mut errors: Vec<(PathBuf, hale_syntax::Diag, String)> = Vec::new();
+    let mut errors: Vec<ImportDiag> = Vec::new();
     let mut visited: std::collections::BTreeSet<PathBuf> =
         std::collections::BTreeSet::new();
 
@@ -2484,7 +2546,14 @@ fn parse_with_imports(
         Ok(p) => p,
         Err(diags) => {
             for d in diags {
-                errors.push((entry.to_path_buf(), d, entry_source.clone()));
+                // The entry file is parsed unshifted (`parse_source`),
+                // so its own base is 0.
+                errors.push(ImportDiag {
+                    file: entry.to_path_buf(),
+                    base: 0,
+                    diag: d,
+                    source: entry_source.clone(),
+                });
             }
             return Err(errors);
         }
@@ -2562,15 +2631,16 @@ fn parse_with_imports(
     );
     if !unscoped.is_empty() {
         for u in unscoped {
-            // This path renders each error against its own file's
-            // source, so the span comes back out of the merged
-            // coordinate space it was raised in.
+            // The span is in the merged coordinate space; the base it
+            // was raised at comes back out of it at render time, the
+            // same way every other entry in this vector does.
             let src = sources.get(&u.file).cloned().unwrap_or_default();
-            errors.push((
-                u.file,
-                u.diag.shifted(u.base.wrapping_neg()),
-                src,
-            ));
+            errors.push(ImportDiag {
+                file: u.file,
+                base: u.base,
+                diag: u.diag,
+                source: src,
+            });
         }
         return Err(errors);
     }
@@ -3375,7 +3445,7 @@ fn collect_checkable(
     let mut visited: std::collections::BTreeSet<PathBuf> =
         files.iter().filter_map(|f| f.canonicalize().ok()).collect();
     let mut file_bases = file_bases;
-    let mut errors: Vec<(PathBuf, hale_syntax::Diag, String)> = Vec::new();
+    let mut errors: Vec<ImportDiag> = Vec::new();
     let importer_dir = if target.is_dir() {
         target.to_path_buf()
     } else {
@@ -3422,7 +3492,7 @@ fn collect_checkable(
     if resolve_failed || !errors.is_empty() {
         return Err(CheckableFailure {
             code: 1,
-            diags: errors.into_iter().map(|(_, d, _)| d).collect(),
+            diags: errors.into_iter().map(|e| e.diag).collect(),
             file_bases,
             sources: path_sources,
         });
@@ -5780,8 +5850,9 @@ fn compile_test_binary(entry: &Path) -> Result<PathBuf, String> {
         Ok(x) => x,
         Err(errors) => {
             let mut msg = String::new();
-            for (path, d, src) in &errors {
-                msg.push_str(&format!("{}: {}\n", path.display(), d.render(src)));
+            for e in &errors {
+                msg.push_str(&e.render());
+                msg.push('\n');
             }
             return Err(msg.trim_end().to_string());
         }
@@ -6181,13 +6252,7 @@ fn run_replay(args: &[String]) -> ExitCode {
     let (program, renames, sources, file_bases, _ctx) =
         match parse_with_imports(&prog) {
             Ok(x) => x,
-            Err(errors) => {
-                for (path, d, src) in &errors {
-                    eprintln!("{}:", path.display());
-                    eprintln!("  {}", d.render(src));
-                }
-                return ExitCode::from(1);
-            }
+            Err(errors) => return report_import_diags(&errors),
         };
     let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
     bundle_programs.insert(prog.display().to_string(), &program);
@@ -6640,13 +6705,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         // same way `hale build` resolves them.
         let (program, renames, sources, file_bases, _ctx) = match parse_with_imports(target) {
             Ok(x) => x,
-            Err(errors) => {
-                for (path, d, src) in &errors {
-                    eprintln!("{}:", path.display());
-                    eprintln!("  {}", d.render(src));
-                }
-                return ExitCode::from(1);
-            }
+            Err(errors) => return report_import_diags(&errors),
         };
         let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
         bundle_programs.insert(target.display().to_string(), &program);
@@ -6737,7 +6796,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
             Err(_) => visited.insert(f.clone()),
         };
     }
-    let mut import_errors: Vec<(PathBuf, hale_syntax::Diag, String)> = Vec::new();
+    let mut import_errors: Vec<ImportDiag> = Vec::new();
     // GH #746: the directory is one seed; its aliases are scoped to it.
     let target_scope =
         target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
@@ -6767,11 +6826,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     .is_err()
         || !import_errors.is_empty()
     {
-        for (path, d, src) in &import_errors {
-            eprintln!("{}:", path.display());
-            eprintln!("  {}", d.render(src));
-        }
-        return ExitCode::from(1);
+        return report_import_diags(&import_errors);
     }
     let mut program = Program {
         declared_effects: effects.declared_indices(),
@@ -6869,13 +6924,7 @@ fn run_build(target: &Path) -> ExitCode {
     let (mut program, renames, sources, file_bases, output, entry_ctx) = if target.is_file() {
         let (program, renames, sources, file_bases, ctx) = match parse_with_imports(target) {
             Ok(x) => x,
-            Err(errors) => {
-                for (path, d, src) in &errors {
-                    eprintln!("{}:", path.display());
-                    eprintln!("  {}", d.render(src));
-                }
-                return ExitCode::from(1);
-            }
+            Err(errors) => return report_import_diags(&errors),
         };
         // hello-world.hl → hello-world
         let output = target.with_extension("");
@@ -6930,7 +6979,7 @@ fn run_build(target: &Path) -> ExitCode {
                 visited.insert(f.clone());
             }
         }
-        let mut import_errors: Vec<(PathBuf, hale_syntax::Diag, String)> = Vec::new();
+        let mut import_errors: Vec<ImportDiag> = Vec::new();
         // GH #746: the directory is one seed; its aliases are scoped
         // to it.
         let target_scope =
@@ -6959,19 +7008,9 @@ fn run_build(target: &Path) -> ExitCode {
             &mut alias_scopes,
         )
         .is_err()
+            || !import_errors.is_empty()
         {
-            for (path, d, src) in &import_errors {
-                eprintln!("{}:", path.display());
-                eprintln!("  {}", d.render(src));
-            }
-            return ExitCode::from(1);
-        }
-        if !import_errors.is_empty() {
-            for (path, d, src) in &import_errors {
-                eprintln!("{}:", path.display());
-                eprintln!("  {}", d.render(src));
-            }
-            return ExitCode::from(1);
+            return report_import_diags(&import_errors);
         }
         let mut with_imports = Program {
             declared_effects: effects.declared_indices(),
