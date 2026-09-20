@@ -57,6 +57,49 @@ buffer instead of N throwaway strings. Use it (or
 `std::json::Builder` for JSON output) anywhere you build a result
 incrementally.
 
+## A fixed scratch table is free
+
+A helper often wants a small fixed table — a lookup, a histogram,
+a seen-set. Written the obvious way it costs nothing:
+
+```hale
+fn top_bucket(samples: [Int; 64]) -> Int {
+    let mut counts: [Int; 16] = [0; 16];
+    let mut i = 0;
+    while i < 64 {
+        let b = samples[i] % 16;
+        counts[b] = counts[b] + 1;
+        i = i + 1;
+    }
+    let mut best = 0;
+    let mut j = 1;
+    while j < 16 {
+        if counts[j] > counts[best] {
+            best = j;
+        }
+        j = j + 1;
+    }
+    return best;
+}
+```
+
+`counts` lives in this function's stack frame and is gone when it
+returns. That matters because a free `fn` has no arena of its own
+— its values bump into the *caller's* region, so before this rule
+a fixed table inside a helper was per-call growth that nothing
+reclaimed until the calling loop finished. 200,000 calls to a
+helper holding a `[0; 1024]` table cost 1.69 GB.
+
+The rule is narrow on purpose. The array stays on the frame only
+while every use of the name is `t[i]` — an element read or an
+element write. Pass it to another function, return it, store it
+in a field, alias it with a second `let`, or walk it with `for`,
+and it goes back to the arena, because then something outside the
+frame could still be holding it. Two more limits: the element has
+to be a scalar, and one function's tables may take at most 8 KiB
+of frame in total (a cooperative-pool coroutine stack is 64 KiB).
+A bigger table is still correct — it just allocates.
+
 ## Resolve string keys to ints at boot
 
 If a hot path looks something up by string key in another locus,

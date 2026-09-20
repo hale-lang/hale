@@ -1462,6 +1462,9 @@ pub fn build_executable_with_options(
         fresh_locus_factories: compute_fresh_locus_factories(&merged, import_renames),
         returned_bindings: compute_returned_bindings(&merged),
         assign_moved_bindings: compute_assign_moved_bindings(&merged),
+        stack_array_bindings: compute_stack_array_bindings(&merged),
+        stack_array_bytes_used: BTreeMap::new(),
+        next_array_repeat_is_stack_local: false,
         model_hash: options.model_hash,
         exec_digest: options.exec_digest,
         obs_entity_ids: options.obs_entity_ids.clone(),
@@ -2955,6 +2958,381 @@ fn compute_assign_moved_bindings(
     m
 }
 
+/// GH #767: most stack bytes one fn's array literals may take.
+///
+/// 8 KiB is one eighth of `LOTUS_CORO_STACK_BYTES` (the 64 KiB
+/// cooperative-pool coroutine stack in `runtime/lotus_arena.c`).
+/// Whether a fn ends up on a coro stack is not knowable here — any
+/// free fn can be reached from an `async_io` handler — so the cap has
+/// to be safe for the smallest stack in the system, not the 8 MiB
+/// pthread default. A 64 KiB table would fill a coro stack outright;
+/// that is the class that took `udp` recv down (a 64 KiB `stack_buf`
+/// smashing the coro stack, fixed in #221), and it is why this number
+/// is not the whole stack. It is a per-fn TOTAL, so three tables in
+/// one body share the budget. `[0; 1024]` of `Int` — the table in the
+/// issue — is exactly 8 KiB and fits; anything larger keeps the arena
+/// path, where growth is the caller's problem but never a SIGSEGV.
+pub(crate) const STACK_ARRAY_MAX_BYTES: u64 = 8 * 1024;
+
+/// GH #767: fill an `[c; N]` with N separate `store`s only while N is
+/// this small. Past it the fill becomes one `llvm.memset` (constant
+/// all-zero `c`) or a counted loop. 16 is where the unrolled form
+/// stops paying for itself: SLP/loop-idiom recognition still collapses
+/// runs that short, and below it the stores are the shape the rest of
+/// codegen (and the IR tests) already expect. Above it the unrolled
+/// form is pure IR bloat — `[0; 1024]` emitted 1024 stores and 2090
+/// lines of IR for one local.
+const ARRAY_FILL_UNROLL_MAX: u64 = 16;
+
+/// GH #767: per-fn set of `let` bindings whose initializer is a
+/// literal `[c; N]` and whose every use in the enclosing fn body is an
+/// element read (`t[i]`) or an element write (`t[i] = v`). Those are
+/// the bindings whose storage can live in the fn's own frame instead
+/// of an arena.
+///
+/// Why it matters: a free fn's temporaries are allocated in the
+/// CALLER's arena and are not reclaimed until the caller returns, so a
+/// fixed scratch table inside a helper is per-call churn for the whole
+/// lifetime of the loop that calls it — 1.69 GB of RSS over 200k calls
+/// in the measurement on #754.
+///
+/// Conservative by construction, and it has to be: a wrong answer here
+/// is a dangling stack pointer, not a leak. The walker whitelists the
+/// two element-access shapes and treats EVERY other occurrence of the
+/// name — a bare mention, a call argument, a `return`, a field store, a
+/// publish, a `for ... in t`, an alias `let u = t;` — as an escape. Any
+/// `Expr`/`Stmt` variant added later must be handled explicitly: both
+/// walkers match exhaustively, with no `_` arm.
+///
+/// A name bound more than once in one body, shadowed by a parameter, or
+/// re-bound by a bare `t = ...` is dropped outright rather than
+/// reasoned about. Keys follow the `{locus}.{member}` LLVM naming
+/// convention (locus/decl.rs) that `compute_returned_bindings` uses, so
+/// the `current_fn` lookup at the `let` matches; a duplicate key keeps
+/// only the INTERSECTION, so a name collision can only ever shrink the
+/// set.
+fn compute_stack_array_bindings(
+    program: &Program,
+) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    /// Every occurrence of `name` in `e` is an element access.
+    fn expr_uses_are_elementwise(e: &Expr, name: &str) -> bool {
+        match e {
+            // A bare mention hands the array's ADDRESS to whatever
+            // context it sits in. Unclassifiable — treat as escape.
+            Expr::Ident(i) => i.name != name,
+            Expr::Index { receiver, index, .. } => {
+                let recv_ok = match receiver.as_ref() {
+                    // `t[i]` yields the ELEMENT, by value. The storage
+                    // address stops here.
+                    Expr::Ident(i) if i.name == name => true,
+                    other => expr_uses_are_elementwise(other, name),
+                };
+                recv_ok && expr_uses_are_elementwise(index, name)
+            }
+            Expr::Literal(_, _) | Expr::Path(_) | Expr::KwSelf(_) => true,
+            Expr::Binary { left, right, .. }
+            | Expr::Range { lo: left, hi: right, .. } => {
+                expr_uses_are_elementwise(left, name)
+                    && expr_uses_are_elementwise(right, name)
+            }
+            Expr::Unary { operand, .. } => {
+                expr_uses_are_elementwise(operand, name)
+            }
+            Expr::Call { callee, args, .. } => {
+                expr_uses_are_elementwise(callee, name)
+                    && args
+                        .iter()
+                        .all(|a| expr_uses_are_elementwise(a, name))
+            }
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
+                expr_uses_are_elementwise(receiver, name)
+            }
+            Expr::Tuple(xs, _) | Expr::Array(xs, _) => {
+                xs.iter().all(|x| expr_uses_are_elementwise(x, name))
+            }
+            Expr::Struct { inits, .. } => inits
+                .iter()
+                .all(|si| expr_uses_are_elementwise(&si.value, name)),
+            Expr::Block(b) => block_uses_are_elementwise(b, name),
+            Expr::If(i) => if_uses_are_elementwise(i, name),
+            Expr::Match(m) => match_uses_are_elementwise(m, name),
+            Expr::Sum(x, _) | Expr::Prod(x, _) => {
+                expr_uses_are_elementwise(x, name)
+            }
+            Expr::Approx { left, right, tolerance, .. } => {
+                expr_uses_are_elementwise(left, name)
+                    && expr_uses_are_elementwise(right, name)
+                    && expr_uses_are_elementwise(tolerance, name)
+            }
+            Expr::ArrayRepeat { val, .. } => {
+                expr_uses_are_elementwise(val, name)
+            }
+            Expr::Or { inner, .. } => expr_uses_are_elementwise(inner, name),
+        }
+    }
+
+    fn if_uses_are_elementwise(i: &IfStmt, name: &str) -> bool {
+        if !expr_uses_are_elementwise(&i.cond, name)
+            || !block_uses_are_elementwise(&i.then_block, name)
+        {
+            return false;
+        }
+        match i.else_block.as_deref() {
+            None => true,
+            Some(ElseBranch::Else(b)) => block_uses_are_elementwise(b, name),
+            Some(ElseBranch::ElseIf(inner)) => {
+                if_uses_are_elementwise(inner, name)
+            }
+        }
+    }
+
+    fn match_uses_are_elementwise(m: &MatchStmt, name: &str) -> bool {
+        if !expr_uses_are_elementwise(&m.scrutinee, name) {
+            return false;
+        }
+        m.arms.iter().all(|arm| {
+            let guard_ok = arm
+                .guard
+                .as_ref()
+                .map(|g| expr_uses_are_elementwise(g, name))
+                .unwrap_or(true);
+            let body_ok = match &arm.body {
+                MatchArmBody::Expr(e) => expr_uses_are_elementwise(e, name),
+                MatchArmBody::Block(b) => block_uses_are_elementwise(b, name),
+            };
+            guard_ok && body_ok
+        })
+    }
+
+    fn stmt_uses_are_elementwise(s: &Stmt, name: &str) -> bool {
+        match s {
+            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+                expr_uses_are_elementwise(value, name)
+            }
+            Stmt::Assign { target, value, .. } => {
+                let target_ok = if target.head.name == name {
+                    // `t[i] = v` writes an element. Anything else with
+                    // `t` at the head — `t = x` (a rebind), `t.f = x` —
+                    // is not an element write.
+                    match target.tail.as_slice() {
+                        [LValueSeg::Index(ix)] => {
+                            expr_uses_are_elementwise(ix, name)
+                        }
+                        _ => false,
+                    }
+                } else {
+                    target.tail.iter().all(|seg| match seg {
+                        LValueSeg::Index(ix) => {
+                            expr_uses_are_elementwise(ix, name)
+                        }
+                        LValueSeg::Field(_) => true,
+                    })
+                };
+                target_ok && expr_uses_are_elementwise(value, name)
+            }
+            Stmt::If(i) => if_uses_are_elementwise(i, name),
+            Stmt::Match(m) => match_uses_are_elementwise(m, name),
+            // `for x in t` reads elements, but the lowering walks the
+            // storage — left out on purpose, the conservative side.
+            Stmt::For { iter, body, .. } => {
+                expr_uses_are_elementwise(iter, name)
+                    && block_uses_are_elementwise(body, name)
+            }
+            Stmt::While { cond, body, .. } => {
+                expr_uses_are_elementwise(cond, name)
+                    && block_uses_are_elementwise(body, name)
+            }
+            Stmt::Return(v, _) => v
+                .as_ref()
+                .map(|e| expr_uses_are_elementwise(e, name))
+                .unwrap_or(true),
+            Stmt::Break(_)
+            | Stmt::Continue(_)
+            | Stmt::Yield(_)
+            | Stmt::Terminate(_)
+            | Stmt::Reperspective { .. } => true,
+            Stmt::Fail { value, .. } => expr_uses_are_elementwise(value, name),
+            Stmt::Block(b) => block_uses_are_elementwise(b, name),
+            Stmt::Recovery { args, .. } => {
+                args.iter().all(|a| expr_uses_are_elementwise(a, name))
+            }
+            Stmt::Violate { payload, .. } => payload
+                .as_ref()
+                .map(|e| expr_uses_are_elementwise(e, name))
+                .unwrap_or(true),
+            Stmt::Send { subject, value, .. } => {
+                expr_uses_are_elementwise(subject, name)
+                    && expr_uses_are_elementwise(value, name)
+            }
+            Stmt::ShmWrite { max, body, .. } => {
+                expr_uses_are_elementwise(max, name)
+                    && block_uses_are_elementwise(body, name)
+            }
+            Stmt::Expr(e) => expr_uses_are_elementwise(e, name),
+        }
+    }
+
+    fn block_uses_are_elementwise(b: &Block, name: &str) -> bool {
+        b.stmts.iter().all(|s| stmt_uses_are_elementwise(s, name))
+            && b.tail
+                .as_deref()
+                .map(|t| expr_uses_are_elementwise(t, name))
+                .unwrap_or(true)
+    }
+
+    /// Candidates (a `let` whose RHS is a literal `[c; N]`) and every
+    /// other name the body binds. A name in both — a shadow, a second
+    /// `let`, a loop variable — is dropped.
+    fn collect_binders(
+        b: &Block,
+        candidates: &mut Vec<String>,
+        other: &mut BTreeSet<String>,
+    ) {
+        fn visit_if(
+            i: &IfStmt,
+            candidates: &mut Vec<String>,
+            other: &mut BTreeSet<String>,
+        ) {
+            collect_binders(&i.then_block, candidates, other);
+            match i.else_block.as_deref() {
+                None => {}
+                Some(ElseBranch::Else(bb)) => {
+                    collect_binders(bb, candidates, other)
+                }
+                Some(ElseBranch::ElseIf(inner)) => {
+                    visit_if(inner, candidates, other)
+                }
+            }
+        }
+        for s in &b.stmts {
+            match s {
+                Stmt::Let { name, value, .. } => {
+                    if matches!(value, Expr::ArrayRepeat { .. }) {
+                        candidates.push(name.name.clone());
+                    } else {
+                        other.insert(name.name.clone());
+                    }
+                }
+                Stmt::LetTuple { names, .. } => {
+                    for n in names {
+                        other.insert(n.name.clone());
+                    }
+                }
+                Stmt::For { name, body, .. } => {
+                    other.insert(name.name.clone());
+                    collect_binders(body, candidates, other);
+                }
+                Stmt::While { body, .. }
+                | Stmt::Block(body)
+                | Stmt::ShmWrite { body, .. } => {
+                    collect_binders(body, candidates, other)
+                }
+                Stmt::If(i) => visit_if(i, candidates, other),
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        if let MatchArmBody::Block(bb) = &arm.body {
+                            collect_binders(bb, candidates, other);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn qualifying(params: &[Param], body: &Block) -> BTreeSet<String> {
+        let mut candidates: Vec<String> = Vec::new();
+        let mut other: BTreeSet<String> = BTreeSet::new();
+        collect_binders(body, &mut candidates, &mut other);
+        for p in params {
+            other.insert(p.name.name.clone());
+        }
+        let mut out = BTreeSet::new();
+        for c in &candidates {
+            if other.contains(c) {
+                continue;
+            }
+            // Bound twice in one body — two `[c; N]` literals under one
+            // name. Not worth reasoning about; drop it.
+            if candidates.iter().filter(|x| *x == c).count() != 1 {
+                continue;
+            }
+            if block_uses_are_elementwise(body, c) {
+                out.insert(c.clone());
+            }
+        }
+        out
+    }
+
+    let mut m: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut record = |key: String, params: &[Param], body: &Block| {
+        let set = qualifying(params, body);
+        match m.entry(key) {
+            std::collections::btree_map::Entry::Vacant(v) => {
+                if !set.is_empty() {
+                    v.insert(set);
+                }
+            }
+            // Two declarations landed on one LLVM name. Keep only what
+            // holds for both.
+            std::collections::btree_map::Entry::Occupied(mut o) => {
+                o.get_mut().retain(|n| set.contains(n));
+            }
+        }
+    };
+    for item in &program.items {
+        match item {
+            TopDecl::Fn(f) => {
+                record(f.name.name.clone(), &f.params, &f.body)
+            }
+            TopDecl::Locus(l) => {
+                for member in &l.members {
+                    match member {
+                        LocusMember::Fn(f) => record(
+                            format!("{}.{}", l.name.name, f.name.name),
+                            &f.params,
+                            &f.body,
+                        ),
+                        LocusMember::Mode(md) => {
+                            let mode_name = match md.kind {
+                                ModeKind::Bulk => "bulk",
+                                ModeKind::Harmonic => "harmonic",
+                                ModeKind::Resolution => "resolution",
+                            };
+                            record(
+                                format!("{}.{}", l.name.name, mode_name),
+                                &[],
+                                &md.body,
+                            );
+                        }
+                        LocusMember::Lifecycle(lc) => {
+                            let lc_name = match lc.kind {
+                                LifecycleKind::Birth => "birth",
+                                LifecycleKind::Accept => "accept",
+                                LifecycleKind::Release => "release",
+                                LifecycleKind::Run => "run",
+                                LifecycleKind::Drain => "drain",
+                                LifecycleKind::Dissolve => "dissolve",
+                            };
+                            record(
+                                format!("{}.{}", l.name.name, lc_name),
+                                &lc.params,
+                                &lc.body,
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    m.retain(|_, v| !v.is_empty());
+    m
+}
+
 fn compute_fresh_locus_factories(
     program: &Program,
     import_renames: &[(Vec<String>, String)],
@@ -4142,6 +4520,25 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// must not fire on either. See `compute_assign_moved_bindings`.
     pub(crate) assign_moved_bindings:
         std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// GH #767: fn name -> the `let` bindings whose initializer is a
+    /// literal `[c; N]` that provably never escapes the fn. Those get
+    /// an entry-block `alloca` instead of an arena allocation. See
+    /// `compute_stack_array_bindings`.
+    pub(crate) stack_array_bindings:
+        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// GH #767: fn name -> stack bytes already handed to array
+    /// literals in that fn, so the per-fn cap
+    /// (`STACK_ARRAY_MAX_BYTES`) counts the whole frame and not one
+    /// array at a time. Keyed by LLVM fn name rather than reset at fn
+    /// entry so a nested body lowered mid-expression (a closure) can
+    /// never hand the outer fn a fresh budget.
+    pub(crate) stack_array_bytes_used: std::collections::BTreeMap<String, u64>,
+    /// GH #767: set by `Stmt::Let` immediately before lowering an
+    /// `Expr::ArrayRepeat` RHS that `stack_array_bindings` cleared,
+    /// consumed by the `ArrayRepeat` arm (same one-shot handshake as
+    /// `defer_next_locus_dissolve`). Nested array literals inside the
+    /// RHS keep the arena path.
+    pub(crate) next_array_repeat_is_stack_local: bool,
     /// GH #402: set while lowering an expression whose fresh-factory
     /// result already has an owner decided by the caller — a `let`'s
     /// direct RHS (the binding owns it) or a `return`'s expression
@@ -17011,6 +17408,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         self.current_arena_override = Some(caller_arena);
                     }
                 }
+                // GH #767: a literal `[c; N]` bound here, whose every
+                // use in this fn is an element access, is a frame
+                // local, not an arena allocation. Signalled one-shot to
+                // the ArrayRepeat arm the same way the locus-dissolve
+                // deferral is: whichever arm lowers the OUTERMOST
+                // repeat takes the flag, and an arm that bails before
+                // taking it aborts the whole build anyway (a zero-count
+                // repeat is the only such path).
+                self.next_array_repeat_is_stack_local =
+                    matches!(value_to_lower, Expr::ArrayRepeat { .. })
+                        && !binding_is_returned
+                        && self
+                            .current_fn
+                            .map(|f| {
+                                f.get_name().to_string_lossy().to_string()
+                            })
+                            .and_then(|fname| {
+                                self.stack_array_bindings.get(&fname)
+                            })
+                            .map(|set| set.contains(&name.name))
+                            .unwrap_or(false);
                 // GH #402: the binding decides ownership for its own
                 // RHS (below), so suppress temporary registration for
                 // the top-level call — otherwise the value would be
@@ -17022,6 +17440,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.suppress_fresh_temp = prev_sft;
                 self.current_arena_override = saved_override_for_returned;
                 self.defer_next_locus_dissolve = false;
+                self.next_array_repeat_is_stack_local = false;
                 let (mut val, mut ty) = lower_result?;
                 // GH #383: a let-bound call to a proven-fresh locus
                 // factory is owned by THIS binding, so it dissolves
@@ -22250,6 +22669,219 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(slot)
     }
 
+    /// GH #767: element types whose LLVM value is a plain scalar, so a
+    /// `t[i]` read copies the element out and the array's storage
+    /// address never leaves the fn with it. The stack path is confined
+    /// to these: a `String`/`Bytes`/`TypeRef` element is a POINTER, and
+    /// while the pointee would still be arena-resident, reasoning about
+    /// what a read hands onward is exactly the thing this analysis
+    /// refuses to do.
+    pub(crate) fn array_elem_is_scalar(t: &CodegenTy) -> bool {
+        matches!(
+            t,
+            CodegenTy::Int
+                | CodegenTy::Float
+                | CodegenTy::Bool
+                | CodegenTy::Duration
+                | CodegenTy::Decimal
+                | CodegenTy::Enum(_)
+        )
+    }
+
+    /// GH #767: `v` is a compile-time constant whose bit pattern is all
+    /// zero, so N copies of it are one `llvm.memset` of 0. `-0.0` is
+    /// deliberately excluded — its bit pattern is not zero.
+    fn is_const_zero_bits(v: BasicValueEnum<'ctx>) -> bool {
+        match v {
+            BasicValueEnum::IntValue(i) => {
+                i.is_const() && i.get_zero_extended_constant() == Some(0)
+            }
+            BasicValueEnum::FloatValue(f) => f
+                .is_const()
+                .then(|| f.get_constant())
+                .flatten()
+                .map(|(x, _)| x == 0.0 && !x.is_sign_negative())
+                .unwrap_or(false),
+            BasicValueEnum::PointerValue(p) => p.is_null(),
+            _ => false,
+        }
+    }
+
+    /// GH #767: storage + fill for a literal `[c; N]`.
+    ///
+    /// Storage is an entry-block `alloca` when `want_stack` says the
+    /// binding this literal initializes provably does not escape the fn
+    /// (`compute_stack_array_bindings`), the element is a scalar, and
+    /// the fn's stack-array budget has room; the current arena
+    /// otherwise. A free fn's arena is the CALLER's, so the arena form
+    /// of a fixed local table is per-call churn that outlives the call
+    /// — 1.69 GB of RSS over 200k calls before this.
+    ///
+    /// The fill is one `llvm.memset` when `v` is the constant all-zero
+    /// bit pattern, a counted loop past `ARRAY_FILL_UNROLL_MAX`, and N
+    /// stores below it. That part applies to the arena path too: N
+    /// unrolled stores is IR bloat wherever the storage lives.
+    ///
+    /// The entry-block alloca is load-bearing, not a tidiness choice: a
+    /// `let` inside a loop body would otherwise grow the frame once per
+    /// iteration — the same class as the per-iteration slot in #815.
+    pub(crate) fn emit_array_repeat_storage(
+        &mut self,
+        elem_ty: &CodegenTy,
+        n: u64,
+        v: BasicValueEnum<'ctx>,
+        want_stack: bool,
+        tag: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let arr_ty = self.llvm_array_storage_type(elem_ty, n);
+        let size_bytes = self.target_data.get_abi_size(&arr_ty);
+        // Every block this helper appends must belong to the fn the
+        // builder is actually writing into; `current_fn` is the same fn
+        // on every normal path, and where it is not, fall back to the
+        // shape that needs neither (unrolled stores, arena storage).
+        let host_fn = self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent());
+        let host_is_current = match (host_fn, self.current_fn) {
+            (Some(h), Some(c)) => h == c,
+            _ => false,
+        };
+
+        let mut on_stack = false;
+        if want_stack
+            && host_is_current
+            && Self::array_elem_is_scalar(elem_ty)
+            && size_bytes <= STACK_ARRAY_MAX_BYTES
+        {
+            let fname = self
+                .current_fn
+                .map(|f| f.get_name().to_string_lossy().to_string())
+                .unwrap_or_default();
+            let used = *self.stack_array_bytes_used.get(&fname).unwrap_or(&0);
+            if used + size_bytes <= STACK_ARRAY_MAX_BYTES {
+                self.stack_array_bytes_used
+                    .insert(fname, used + size_bytes);
+                on_stack = true;
+            }
+        }
+
+        let arr_ptr = if on_stack {
+            self.alloca_in_entry(arr_ty.into(), &format!("{}.slot", tag))?
+        } else {
+            let bytes = arr_ty
+                .size_of()
+                .expect("array storage type has known size");
+            self.arena_alloc(bytes, &format!("{}.alloc", tag))?
+        };
+
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+
+        if Self::is_const_zero_bits(v) {
+            // One memset. `get_abi_alignment` is the alloca's actual
+            // alignment and a lower bound on the arena's (16), so it is
+            // the safe number for both.
+            let align = self.target_data.get_abi_alignment(&arr_ty);
+            self.builder
+                .build_memset(
+                    arr_ptr,
+                    align,
+                    self.context.i8_type().const_zero(),
+                    i64_t.const_int(size_bytes, false),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            return Ok(arr_ptr);
+        }
+
+        if n > ARRAY_FILL_UNROLL_MAX {
+            if let Some(func) = host_fn {
+                let i_slot = self
+                    .alloca_in_entry(i64_t.into(), &format!("{}.fill.i", tag))?;
+                self.builder
+                    .build_store(i_slot, i64_t.const_zero())
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let cond_bb =
+                    self.context.append_basic_block(func, "array.fill.cond");
+                let body_bb =
+                    self.context.append_basic_block(func, "array.fill.body");
+                let end_bb =
+                    self.context.append_basic_block(func, "array.fill.end");
+                self.builder
+                    .build_unconditional_branch(cond_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+                self.builder.position_at_end(cond_bb);
+                let i = self
+                    .builder
+                    .build_load(i64_t, i_slot, "array.fill.i")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_int_value();
+                let more = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::ULT,
+                        i,
+                        i64_t.const_int(n, false),
+                        "array.fill.more",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_conditional_branch(more, body_bb, end_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+                self.builder.position_at_end(body_bb);
+                let slot = unsafe {
+                    self.builder
+                        .build_gep(
+                            arr_ty,
+                            arr_ptr,
+                            &[i32_t.const_int(0, false), i],
+                            "array.fill.slot",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                };
+                self.builder
+                    .build_store(slot, v)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let next = self
+                    .builder
+                    .build_int_add(
+                        i,
+                        i64_t.const_int(1, false),
+                        "array.fill.next",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(i_slot, next)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_unconditional_branch(cond_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+                self.builder.position_at_end(end_bb);
+                return Ok(arr_ptr);
+            }
+        }
+
+        for i in 0..n {
+            let slot = unsafe {
+                self.builder
+                    .build_gep(
+                        arr_ty,
+                        arr_ptr,
+                        &[i32_t.const_int(0, false), i32_t.const_int(i, false)],
+                        &format!("{}.slot{}", tag, i),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            };
+            self.builder
+                .build_store(slot, v)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        Ok(arr_ptr)
+    }
+
     /// Null-init an EXISTING entry-block ptr slot that is about to
     /// become a deferred-dissolve entry: the store goes right
     /// after the slot's alloca, so any path that bypasses the
@@ -23408,34 +24040,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                          ascription mechanism)".into(),
                     ));
                 }
+                // GH #767: the OUTERMOST repeat consumes the `let`'s
+                // one-shot stack-slot signal, before `val` is lowered —
+                // a nested `[[0; 4]; 8]` must not take it instead.
+                let want_stack = std::mem::take(
+                    &mut self.next_array_repeat_is_stack_local,
+                );
                 let (v, elem_ty) = self.lower_expr(val, scope)?;
-                let i32_t = self.context.i32_type();
-                let arr_ty = self.llvm_array_storage_type(&elem_ty, n);
-                let bytes = arr_ty
-                    .size_of()
-                    .expect("array storage type has known size");
-                let arr_ptr =
-                    self.arena_alloc(bytes, "array.repeat.alloc")?;
-                for i in 0..n {
-                    let slot = unsafe {
-                        self.builder
-                            .build_gep(
-                                arr_ty,
-                                arr_ptr,
-                                &[
-                                    i32_t.const_int(0, false),
-                                    i32_t.const_int(i, false),
-                                ],
-                                &format!("array.rep.slot{}", i),
-                            )
-                            .map_err(|e| {
-                                CodegenError::LlvmEmit(e.to_string())
-                            })?
-                    };
-                    self.builder
-                        .build_store(slot, v)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
+                let arr_ptr = self.emit_array_repeat_storage(
+                    &elem_ty,
+                    n,
+                    v,
+                    want_stack,
+                    "array.repeat",
+                )?;
                 Ok((arr_ptr.into(), CodegenTy::Array(Box::new(elem_ty), n)))
             }
             Expr::Tuple(parts, _) => {
@@ -23714,6 +24332,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Some(CodegenTy::Array(elem_hint, want_n)),
                 Expr::ArrayRepeat { val, count, .. },
             ) if *count == *want_n && *count > 0 => {
+                // GH #767: an ASCRIBED `let t: [Int; N] = [0; N];`
+                // lands here, not in `lower_expr`'s ArrayRepeat arm —
+                // which is the shape the issue measured. Consume the
+                // stack-slot signal the same way, before `val` lowers.
+                let want_stack = std::mem::take(
+                    &mut self.next_array_repeat_is_stack_local,
+                );
                 let (v, got) =
                     self.lower_expr_into(val, scope, Some(elem_hint.as_ref()))?;
                 if &got != elem_hint.as_ref() {
@@ -23724,33 +24349,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )));
                 }
                 let n = *count;
-                let i32_t = self.context.i32_type();
-                let arr_ty = self.llvm_array_storage_type(elem_hint, n);
-                let bytes = arr_ty
-                    .size_of()
-                    .expect("array storage type has known size");
-                let arr_ptr =
-                    self.arena_alloc(bytes, "array.repeat.coerced.alloc")?;
-                for i in 0..n {
-                    let slot = unsafe {
-                        self.builder
-                            .build_gep(
-                                arr_ty,
-                                arr_ptr,
-                                &[
-                                    i32_t.const_int(0, false),
-                                    i32_t.const_int(i, false),
-                                ],
-                                &format!("array.rep.coerced.slot{}", i),
-                            )
-                            .map_err(|e| {
-                                CodegenError::LlvmEmit(e.to_string())
-                            })?
-                    };
-                    self.builder
-                        .build_store(slot, v)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                }
+                let arr_ptr = self.emit_array_repeat_storage(
+                    elem_hint,
+                    n,
+                    v,
+                    want_stack,
+                    "array.repeat.coerced",
+                )?;
                 Ok((
                     arr_ptr.into(),
                     CodegenTy::Array(elem_hint.clone(), n),

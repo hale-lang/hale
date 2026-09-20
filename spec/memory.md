@@ -267,6 +267,33 @@ child locus that dissolves per iteration. The compile-time
 analysis that surfaces this is GitHub issue #18 item 1
 (memory-bound proofs); see `spec/verification.md`.
 
+### Non-escaping fixed arrays are frame locals
+
+One value allocation is exempt: a fixed-size array literal
+(`[c; N]`) bound to a `let` whose every use inside the function
+is an element read (`t[i]`) or an element write (`t[i] = v`) is
+a **stack local** in that function's frame, not an arena
+allocation. It costs nothing at the arena and is gone when the
+function returns, so a fixed scratch table inside a helper is no
+longer per-call churn in the caller's region.
+
+The rule is deliberately narrow and one-sided — a literal `[c;
+N]` only, a `let` only, and any other use of the name
+(passing it to a function, returning it, storing it in a field
+or a form, publishing it, aliasing it with a second `let`,
+iterating it with `for`) puts the array back on the arena path.
+Two further limits keep the frame bounded: the element must be
+a scalar (`Int`, `Float`, `Bool`, `Duration`, `Decimal`, an
+enum), and one function's array literals may take at most
+**8 KiB** of frame in total. 8 KiB is one eighth of a
+cooperative-pool coroutine stack, and whether a given function
+runs on one is not knowable at its definition, so the cap holds
+everywhere. An array past the cap keeps the arena.
+
+This is a placement rule, not a semantic one: the values, the
+indexing, and the reclamation order a program can observe are
+unchanged.
+
 ## Bookkeeping reclamation (per-arena defrag)
 
 Per F.3: within a parent's arena, dissolved-coordinatee

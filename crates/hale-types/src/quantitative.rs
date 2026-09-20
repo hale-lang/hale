@@ -126,24 +126,61 @@ fn frame_bytes(fd: &FnDecl) -> u64 {
     const CALL_OVERHEAD: u64 = 32; // return addr + saved regs + align
     let mut n = CALL_OVERHEAD;
     n += fd.params.len() as u64 * SLOT;
+    /// Declared width of one local of type `t`, in bytes.
+    ///
+    /// GH #767: a fixed-size array local is no longer unconditionally
+    /// a pointer into an arena — a non-escaping `[c; N]` literal is a
+    /// frame slot now — so an array is charged its DECLARED extent,
+    /// `N * width(elem)`. Over-approximating is the contract here
+    /// ("the real frame is no larger than this"), so the charge also
+    /// stands for the arrays that still take the arena path.
+    fn width_of(t: &TypeExpr) -> u64 {
+        const SLOT: u64 = 8;
+        match t {
+            // A Bytes/String local carries a pointer; the buffer is
+            // arena/heap, not stack.
+            TypeExpr::Named { path, .. }
+                if path
+                    .segments
+                    .last()
+                    .map(|s| s.name == "Decimal")
+                    .unwrap_or(false) =>
+            {
+                16
+            }
+            TypeExpr::Array { elem, size, .. } => {
+                let count = match size {
+                    Some(Expr::Literal(Literal::Int(k), _)) if *k > 0 => {
+                        *k as u64
+                    }
+                    // An unsized or computed extent tells us nothing;
+                    // charge the pointer and let the premise tests in
+                    // hale-codegen catch a shape that outgrows it.
+                    _ => return SLOT,
+                };
+                count.saturating_mul(width_of(elem)).max(SLOT)
+            }
+            _ => SLOT,
+        }
+    }
     // Locals: one slot each, plus the known-wide shapes.
     fn count_block(b: &Block, n: &mut u64) {
         for st in &b.stmts {
             match st {
-                Stmt::Let { ty, .. } => {
+                Stmt::Let { ty, value, .. } => {
                     *n += match ty {
-                        // A Bytes/String local carries a pointer;
-                        // the buffer is arena/heap, not stack.
-                        Some(TypeExpr::Named { path, .. })
-                            if path
-                                .segments
-                                .last()
-                                .map(|s| s.name == "Decimal")
-                                .unwrap_or(false) =>
-                        {
-                            16
-                        }
-                        _ => 8,
+                        Some(t) => width_of(t),
+                        // No ascription: an array-repeat literal still
+                        // declares its extent at the RHS.
+                        None => match value {
+                            Expr::ArrayRepeat { count, .. } if *count > 0 => {
+                                count.saturating_mul(SLOT)
+                            }
+                            Expr::Array(xs, _) if !xs.is_empty() => {
+                                (xs.len() as u64).saturating_mul(SLOT)
+                            }
+                            _ => SLOT,
+                        },
                     };
                 }
                 Stmt::If(i) => {

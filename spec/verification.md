@@ -1703,8 +1703,9 @@ assume the others in a build:
 
     **What the estimate rests on** (#326, examined 2026-08-03). Frames
     are estimated from declared shapes: 32 bytes of call overhead, 8
-    per parameter, 8 per local. That unit is close to right *because
-    of Hale's memory model, not by luck* — fixed arrays, structs and
+    per parameter, 8 per local — except an array local, charged its
+    declared extent (`N × width(elem)`). That unit is close to right
+    *because of Hale's memory model, not by luck* — structs and
     string/bytes buffers are arena-allocated, so a local is a pointer
     and almost nothing but scalars is ever on the stack. The same
     estimator in C would be wrong by orders of magnitude. The premise
@@ -1712,6 +1713,14 @@ assume the others in a build:
     precisely because it is load-bearing: if a shape ever became
     stack-allocated, the estimate would silently under-count by the
     size of that shape.
+
+    That is not hypothetical — it happened once. GH #767 moved a
+    non-escaping `[c; N]` literal onto the frame (see
+    `spec/memory.md`), which is why an array is now charged its extent
+    rather than a pointer's 8 bytes. The charge is unconditional: an
+    array that still takes the arena path is over-charged, which is
+    the safe direction for a bound whose contract is "the real frame
+    is no larger than this".
 
     Inlining, the other obvious worry, cuts the safe way: the model
     charges `CALL_OVERHEAD` per level of call depth and inlining
