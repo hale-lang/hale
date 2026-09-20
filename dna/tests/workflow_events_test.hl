@@ -231,9 +231,19 @@ main locus App {
         std::test::assert(std::str::contains(dna::decode_refusal(std::str::replace(rftext, "\"why\":", "\"nowhy\":")).why, "a refusal names its why"), "a refusal that does not say why is refused");
         std::test::assert(std::str::contains(dna::decode_refusal(std::str::replace(rftext, "\"engine\": \"wf1\"", "\"engine\": \"wf2\"")).why, "another engine's refusal"), "and another engine's refusal");
 
+        // ---- an ask refused before any Task: its own kind, its own identity
+        std::test::assert_eq_str(dna::ask_refusal_id("w9", 2), "w9#2", "an ask refusal is the ask and its decision");
+        let aktext = dna::encode_ask_refusal(dna::RefusedAsk { request: "w9", decision: 2, definition: "close-month", revision: 1, why: "no free id within 64 of this owner's count", limits: limits, transition: dna::TransitionRef { scope: "org", key: "w9#2", proposal_id: "w9#2@refused" } });
+        let ak = dna::decode_ask_refusal(aktext);
+        std::test::assert(ak.ok && ak.value.request == "w9" && ak.value.decision == 2 && ak.value.definition == "close-month" && ak.value.revision == 1 && std::str::contains(ak.value.why, "no free id") && ak.value.limits.max_works == 99 && ak.value.transition.proposal_id == "w9#2@refused" && ak.value.transition.key == "w9#2" && ak.value.transition.scope == "org", "an ask refusal round-trips: " + ak.why);
+        std::test::assert(std::str::contains(dna::decode_ask_refusal(std::str::replace(aktext, "\"decision\": 2", "\"decision\": 0")).why, "decision 1 or later"), "a decision 0 is no decision");
+        std::test::assert(std::str::contains(dna::decode_ask_refusal(std::str::replace(aktext, "\"request\": \"w9\"", "\"request\": \"\"")).why, "names its request"), "an ask refusal names its ask");
+        std::test::assert(std::str::contains(dna::decode_ask_refusal(std::str::replace(aktext, "\"engine\": \"wf1\"", "\"engine\": \"wf2\"")).why, "another engine's ask refusal"), "and another engine's is refused");
+
         // ---- where these facts live
         self.routed("workflow.admitted", "an admission");
         self.routed("workflow.refused", "a refused admission");
+        self.routed("workflow.ask_refused", "an ask refused before any Task");
         self.routed("workflow.settled", "a settled execution");
         self.routed("step.registered", "a required set");
         self.routed("step.activated", "an activation");

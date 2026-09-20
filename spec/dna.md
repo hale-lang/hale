@@ -1013,8 +1013,70 @@ is the output of the attempt it settled on, readable only once it has
 settled; what an outstanding or superseded attempt said is never the
 Work's result.
 
-Nothing yet admits, records or executes a workflow; these are the
-durable shapes it is written in, and the state they add up to.
+## Workflow admission
+
+An application admits a defined workflow through the assembly
+(`Dna.admit_workflow(WorkflowAsk)`): which definition and revision, with
+what inputs, under an identity of the caller's. The durable fact precedes
+everything. The id is minted, the definition expanded under the
+assembly's `admission_limits` (its `catalog` holds what the application
+defined), and the admission — engine, bound recipe, limits, counts, the
+ask's identity — appended with exact compare-and-append before anything
+could run; only then the legacy `task.born` summary, so the tooling of
+the day lists the Task. A refusal, by the catalog or by the record, is a
+`workflow.refused` row under the id it minted and nothing else: no
+summary, no child, no work request. Nothing dispatches here; later cards
+execute.
+
+The ask's id is the admission's identity. Asked again — relayed after a
+lost answer, retried — it is one execution, found in the record by that
+id. One decision, one revision: the record is read once, at a revision
+the body captures; whether the ask already landed and whether a candidate
+id is already an execution's or a refusal's are decided against that
+reading; and the append is exact at that same revision. An exact append
+protects the revision it was given, not a decision taken at an older
+one, so when the record has moved — stale, or the store's unique claim on
+the id — the whole decision is taken again from a fresh reading. A taken
+id is skipped before any append. Two bodies contending for one Task id
+cannot both take it, and one ask admitted by another body between this
+body's reading and its append is found on the next reading, not
+admitted twice.
+
+Only the owner of the position admits (GH #664): the same rule `ask`
+applies, applied before an id is minted, so a body over a shared record
+that names no owner admits no workflow either — it answers the asker and
+writes nothing, the ask being the owner's to admit. A refusal, whether
+the catalog's or the store's, is written as the versioned
+`workflow.refused` and the write is checked: when the record will not
+take even that, the answer says the refusal went unrecorded rather than
+presenting it as recorded. A refusal bound to a Task id carries the
+admission's own guarantee — it is appended exactly at the revision that
+found the id free, and when the record has moved it is read again: the
+ask may have landed from another body, in which case that execution is
+the answer, and the id may be another execution's now, in which case the
+refusal is not a Task's at all. A refusal that reaches no Task — the id
+taken meanwhile, every id it would mint already taken, the record moved
+under it too often — is a fact of its own kind, `workflow.ask_refused`,
+under the ask's own identity and a decision ordinal (`<ask>#<n>`), which
+can share no identity with any Task under any owner's name; the
+projection holds it beside the executions, never as one. The same ask
+refused again for the same reason is the same decision, answered without
+another row; refused for another reason, it is the next ordinal. That
+decision, too, is one reading of the record: the decisions already taken
+on the ask are counted at a captured revision, the ordinal chosen against
+that count, and the append is exact at that revision, so another body
+deciding on the same ask meanwhile moves the record and the decision is
+taken again — its decision for the same reason becomes this body's
+answer, and for another reason takes the ordinal ahead of this body's.
+Nothing is appended as a changed body under a recorded identity, and a
+refusal never attaches to an execution another body admitted. A restart counts admitted and refused
+ids among those minted, so an id is never minted twice, and an admitted
+Task is never resumed as legacy edit work, with or without its summary
+row: the admission is the one positive discriminator, and its recovery
+belongs to the engine's own cards.
+
+Nothing yet executes a workflow; these are the durable shapes it is
+written in, the state they add up to, and the door it is admitted by.
 
 ## Storage interfaces
 

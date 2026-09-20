@@ -268,6 +268,7 @@ are added to `memory_of` explicitly. `task.*` names are not reused.
 |---|---|---|
 | `workflow.admitted` | Task | engine `wf1`, bound recipe, inputs |
 | `workflow.refused` | Task | the violated bound or validation |
+| `workflow.ask_refused` | an ask, by decision (`<ask>#<n>`) | a refusal that reached no Task: the id taken meanwhile, no free id, the record moved too often (card 07) |
 | `step.registered` | Step | the required-member set |
 | `step.activated` | Step | activation id |
 | `attempt.admitted` | Attempt | Work, attempt number, bound request |
@@ -308,7 +309,12 @@ One positive discriminator: `workflow.admitted` with `engine: wf1`
 marks a new-engine execution, written atomically with its bound recipe
 before anything runs. A Task without it keeps the legacy recovery path.
 A partial new admission never falls through to legacy `requires: edit`
-recovery. **[decided]**
+recovery. **[decided; proven: `workflow_admission_test.hl`,
+`workflow_admission_contention_test.hl`, card 07 — the admission is
+appended with exact compare-and-append before the `task.born` summary,
+a refusal writes no summary and requests no work, the same ask id is one
+execution, a contended id is re-minted, and a restart counts admitted
+ids and resumes no admitted Task as edit work]**
 
 **The committed proposal is reconstructable from the journal alone.**
 Every row a transition commits carries the scope, key and proposal id
@@ -484,6 +490,10 @@ equivalent definition.
 | transition identity: repeated, old and foreign answers ignored; re-sent proposals answered once | proven, card 03 (review) |
 | the shape works in a program that imports the DNA core, beside DNA's flow types | proven, card 03 |
 | `release` is type-wide | proven, card 03 |
+| definitions bind whole or refuse; capacity is checked before a node is built | proven, card 04 (#691) |
+| every fact is read whole or not at all; a recipe binds whole or not at all | proven, card 05 (#693) |
+| the join is by identity and kind against the admitted recipe; every transition has its basis; a cancelled ancestor fences all below it | proven, card 06 (#694) |
+| the admission precedes the summary; a refusal requests nothing and is recorded (or reported unrecorded), a Task-bound one exactly at the decision's revision and never on another body's execution, one that reached no Task as `workflow.ask_refused` under `<ask>#<n>`, decided and appended at one revision, the same decision replayed and a new one ordinal-numbered; one ask id is one execution, decided and appended at one revision; a taken id is skipped and a contended one re-minted; only the position's owner admits; an admitted Task is never legacy edit work after a restart | proven, card 07 |
 | delivery across off-thread bindings; restart | not yet, cards 12–13, 19 |
 
 Card 03 native runs: `HALE_BIN=target/release/hale HALE_DNA_SOURCE=$PWD
