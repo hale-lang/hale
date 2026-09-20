@@ -6524,6 +6524,74 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.import_renames.get(&key).cloned()
     }
 
+    /// GH #836: does this param-field initialiser hand the field a
+    /// locus the enclosing literal is the SOLE owner of?
+    ///
+    /// `Router { quick: make(5) }` — and its `or raise` twin —
+    /// leave the field holding a locus nobody else names, exactly
+    /// as `Router { quick: Quick { } }` does. The F.17 gate already
+    /// keeps the enclosing FRAME out of it ("the frame does not
+    /// reclaim it — the parent does"), but the parent's
+    /// `__locus_ref_owned_mask` bit was only ever set by a LITERAL,
+    /// so the F.29 cascade stepped over the factory-built child and
+    /// nothing tore it down at all.
+    ///
+    /// A call in that position is not always a factory. `pick(x, y,
+    /// n)` hands back a locus its own `let` still owns, and setting
+    /// the bit for that would dissolve it twice — once from the
+    /// parent's cascade and once from the binding's scope. The
+    /// discriminator is the one GH #383 and GH #402 already decide
+    /// ownership with: `fresh_locus_factories`, the fixpoint over
+    /// fns whose every return arm is a freshly built value of the
+    /// declared locus. An accessor's return arm is a parameter or a
+    /// field read, so it never qualifies.
+    ///
+    /// The declared return must also BE the field's locus: a
+    /// coercion, an interface-typed field or a disagreement between
+    /// the analysis and the lowered type leaves the bit clear,
+    /// which is the old leak rather than a double free.
+    pub(crate) fn field_init_is_fresh_factory(
+        &self,
+        e: &Expr,
+        field_locus: &str,
+    ) -> bool {
+        // `make(5)` and `make(5) or raise` are the same ownership
+        // question, because a DIVERGING err branch leaves the
+        // factory's result as the only value the field can hold.
+        //
+        // `or <substitute>` is a different question and this rule
+        // stays out of it. The field then holds one of two values
+        // decided at run time, and the substitute already has an
+        // owner of its own: a locus literal there consumes the
+        // parent-field flag and sets this same bit the ordinary way
+        // (so the shape is already right without us), while a call
+        // there takes a frame temporary (GH #402) and an external
+        // handle belongs to its own binding. Claiming the field in
+        // those cases would put a second owner on a value that has
+        // one — the direction this family of rules never goes, since
+        // a missed bit is the old leak and an extra one is a double
+        // free.
+        let call = match e {
+            Expr::Call { .. } => e,
+            Expr::Or { inner, disposition, .. }
+                if matches!(
+                    disposition,
+                    OrDisposition::Raise(_) | OrDisposition::Fail(..)
+                ) =>
+            {
+                inner.as_ref()
+            }
+            _ => return false,
+        };
+        let Expr::Call { callee, .. } = call else {
+            return false;
+        };
+        self.callee_fn_name(callee)
+            .and_then(|f| self.fresh_locus_factories.get(&f))
+            .map(|(l, _)| l == field_locus)
+            .unwrap_or(false)
+    }
+
     /// GH #383 / #793: is `binding` a local this frame must NOT
     /// reclaim? Two things take a local out of the single-owner
     /// position the binding-scoped dissolve rule assumes:
