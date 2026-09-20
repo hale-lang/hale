@@ -1883,6 +1883,46 @@ fn sanitize_identifier(s: &str) -> String {
     collapsed.trim_matches('_').to_string()
 }
 
+/// GH #763: `<dir>/main.hl` and `<dir>` name the SAME library.
+///
+/// A seed is a directory (F.19): every `.hl` file in it shares one
+/// declaration namespace, and `main.hl` is that seed's entry file,
+/// not a library of its own. So `import "../lib/main"` names the
+/// seed `../lib`, exactly as `import "../lib"` does, and this
+/// collapses the first spelling onto the second before anything
+/// downstream derives an identity from the target.
+///
+/// Without the collapse the two spellings produced two library
+/// identities — two `lib_key`s in `resolve_imports`, two `lib_id`s
+/// in `lib_canonical_id`, two sets of mangled symbols. The `visited`
+/// set is global across the build, so whichever spelling resolved
+/// second found every file already parsed, registered no rename rows
+/// under its own key, and its `alias::Name` references died at
+/// codegen as `unknown qualified name` while the other alias worked.
+///
+/// Any OTHER single file stays its own library: rule 1 of the
+/// resolution order (spec `projects.md`) is a real single-file
+/// library, and only the `main.hl` entry spelling is a second name
+/// for the directory around it.
+///
+/// `import "main"` from inside the directory itself is left alone —
+/// collapsing it would make a seed import itself.
+fn seed_dir_for_entry_file(single: &Path, importer_dir: &Path) -> Option<PathBuf> {
+    if single.file_name().and_then(|s| s.to_str()) != Some("main.hl") {
+        return None;
+    }
+    let dir = single.parent()?;
+    if !dir.is_dir() {
+        return None;
+    }
+    let canon_dir = dir.canonicalize().ok()?;
+    let canon_importer = importer_dir.canonicalize().ok()?;
+    if canon_dir == canon_importer {
+        return None;
+    }
+    Some(dir.to_path_buf())
+}
+
 fn resolve_import(
     importer_dir: &Path,
     workspace_root: Option<&Path>,
@@ -1890,6 +1930,10 @@ fn resolve_import(
 ) -> Option<ImportTarget> {
     let single = importer_dir.join(format!("{}.hl", import_path));
     if single.is_file() {
+        // GH #763: the entry file of a seed is the seed.
+        if let Some(dir) = seed_dir_for_entry_file(&single, importer_dir) {
+            return Some(ImportTarget::Directory(dir));
+        }
         return Some(ImportTarget::SingleFile(single));
     }
     let dir_local = importer_dir.join(import_path);
