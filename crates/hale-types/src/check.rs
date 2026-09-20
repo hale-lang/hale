@@ -2395,9 +2395,11 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
             _ => false,
         })
     }
+    // GH #825: a daemon-shaped locus inside a `module { … }` leaks
+    // accepted children exactly as one at the top level does.
     for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(l) = item else { continue };
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
             let mut accepts: Vec<(&LifecycleDecl, String)> = Vec::new();
             let mut releases: BTreeSet<String> = BTreeSet::new();
             let mut run_daemon = false;
@@ -2432,7 +2434,7 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                 }
             }
             if !run_daemon {
-                continue;
+                return;
             }
             for (ld, child_ty) in accepts {
                 if releases.contains(&child_ty) {
@@ -2456,7 +2458,7 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                     ),
                 ));
             }
-        }
+        });
     }
 }
 

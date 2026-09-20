@@ -147,3 +147,52 @@ fn unowned_subscriber_inside_a_module_is_flagged() {
         "instantiated unowned",
     );
 }
+
+// ---- check_accept_release ------------------------------------------
+//
+// The closest sibling to the hot-path lint, and the one GH #825 was
+// verified against first: a locus that accepts children and never
+// releases them, whose `run()` loops forever, accumulates resident
+// children until OOM. A warning — and it stayed a warning when the
+// walk reached inside the module, which is the other half of the
+// contract.
+
+const ACCEPT_WITHOUT_RELEASE: &str = "\
+locus Child {
+    params { n: Int = 0; }
+    run() { }
+}
+
+locus Pool {
+    params { n: Int = 0; }
+    accept(c: Child) { }
+    run() {
+        while true {
+            std::time::sleep(10ms);
+        }
+    }
+}
+
+main locus App {
+    params { p: Pool = Pool { }; }
+    run() { println(\"hi\"); }
+}
+";
+
+#[test]
+fn accept_without_release_inside_a_module_is_flagged() {
+    assert_module_matches_top_level(
+        ACCEPT_WITHOUT_RELEASE,
+        "declares no `release(",
+    );
+}
+
+#[test]
+fn a_module_nested_advisory_stays_a_warning() {
+    // Severity is part of the contract: reaching inside a module
+    // must not promote an advisory to an error.
+    let (flat, nested) =
+        control_and_nested(ACCEPT_WITHOUT_RELEASE, "declares no `release(");
+    assert!(!flat[0].0, "the control is a warning: {:?}", flat);
+    assert!(!nested[0].0, "so is the nested one: {:?}", nested);
+}
