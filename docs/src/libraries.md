@@ -62,6 +62,11 @@ the type wins and the alias becomes unreachable in path position.
 Aliases are lower-case by convention, which keeps them out of the
 way of type names.
 
+An alias also belongs to the seed that declares it: a library you
+vendor may call something `u` while your own program calls a
+different library `u`, and each `u::f()` means the one its own seed
+imported.
+
 ## The catalog
 
 **Persistence & data**
