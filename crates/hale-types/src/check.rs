@@ -4417,8 +4417,11 @@ fn transport_satisfies(
 ///   backpressure (GH #125), so shed bounds there would
 ///   misdescribe the actual contract.
 fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    // GH #825: a `topic` and a subscriber inside a `module { … }` are
+    // ordinary bundle members — `collect_subscriber_placements`
+    // already reads them, so only these two walks were short.
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Topic(t) = item {
                 match (t.bounded, t.on_full_fail) {
                     (Some((_, bspan)), None) => diags.push(Diag::ty(
@@ -4438,12 +4441,12 @@ fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                     _ => {}
                 }
             }
-        }
+        });
     }
     let placements = crate::bus_graph::collect_subscriber_placements(bundle);
     for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(l) = item else { continue };
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
             for member in &l.members {
                 let LocusMember::Bus(bb) = member else { continue };
                 for bm in &bb.members {
@@ -4473,7 +4476,7 @@ fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                     }
                 }
             }
-        }
+        });
     }
 }
 

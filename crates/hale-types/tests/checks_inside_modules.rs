@@ -391,6 +391,37 @@ fn contradictory_pool_affinity_inside_a_module_is_flagged() {
     );
 }
 
+// ---- check_bounded_bus ---------------------------------------------
+//
+// `bounded(N)` on a topic with no `on_full:` policy is a capacity
+// with no declared behavior — a hard error. It reads a `topic`
+// declaration, which is the one `TopDecl` variant none of the other
+// walks in this file touch.
+
+const BOUNDED_WITHOUT_POLICY: &str = "\
+type E { n: Int = 0; }
+
+topic Evt {
+    payload: E;
+    subject: \"evt\";
+    bounded(12);
+}
+
+main locus App {
+    params { n: Int = 0; }
+    bus { publish Evt; }
+    run() { }
+}
+";
+
+#[test]
+fn bounded_topic_without_policy_inside_a_module_is_flagged() {
+    assert_module_matches_top_level(
+        BOUNDED_WITHOUT_POLICY,
+        "requires `on_full: fail;`",
+    );
+}
+
 #[test]
 fn a_module_nested_advisory_stays_a_warning() {
     // Severity is part of the contract: reaching inside a module
