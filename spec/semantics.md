@@ -2626,7 +2626,7 @@ main locus App {
     refusal for embedders that bypass the checker. (GH #890,
     2026-09-20.)
 
-18. **Uncarriable bus payload (error).** An `of type T` clause on a
+19. **Uncarriable bus payload (error).** An `of type T` clause on a
     `publish` / `subscribe` must name a type the bus can carry — a
     user `type`, an enum with a payload variant, or `BytesView`
     (§ *Bus subscription dispatch* → *Payload type*, below, has the
