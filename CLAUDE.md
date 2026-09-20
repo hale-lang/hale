@@ -44,6 +44,16 @@ work, they are just slower and no longer buy anything:
 cargo test --release -p hale-codegen --test topic_phase2
 ```
 
+The DNA domain proof runs the same way, and its **slices may run
+in parallel** — each slice's leftover-process guard blames only
+the processes its own fixtures started, so a neighbouring slice,
+or another checkout's DNA run on the same box, cannot fail it
+(GH #872):
+
+```sh
+cargo test -p hale-cli --test dna_native_suite
+```
+
 The repo also tests the language *in* the language:
 
 ```sh
