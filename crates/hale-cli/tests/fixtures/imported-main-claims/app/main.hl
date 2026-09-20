@@ -1,0 +1,11 @@
+// The importer: a second seed that imports the whole application —
+// the shape an application's own test seed has. The imported main
+// locus is the only `main locus` in the merged world, so its inline
+// claims are the world law, and they must resolve the groups THEIR
+// seed declares.
+import "../seed" as chat;
+
+fn main() {
+    let r = chat::Room { room: 3 };
+    println("lines ", r.lines);
+}

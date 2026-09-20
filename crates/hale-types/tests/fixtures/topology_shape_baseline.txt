@@ -34,6 +34,13 @@ crates/hale-cli/tests/fixtures/hale-test-pass/strings_test.hl 7ba49c53bd84fd5d
 crates/hale-cli/tests/fixtures/hot-factory-ambig/plain.hl 5fbea6e08b712dbc
 crates/hale-cli/tests/fixtures/hot-factory-app/main.hl 865d341109268295
 crates/hale-cli/tests/fixtures/hot-factory-lib/matrix.hl f58a9d028a76a94b
+crates/hale-cli/tests/fixtures/imported-main-claims/app-adopt/main.hl f2c1228edb650960
+crates/hale-cli/tests/fixtures/imported-main-claims/app-bad-collision/main.hl c4d04e0410a37ec1
+crates/hale-cli/tests/fixtures/imported-main-claims/app-bad/main.hl f2c1228edb650960
+crates/hale-cli/tests/fixtures/imported-main-claims/app-missing/main.hl f2c1228edb650960
+crates/hale-cli/tests/fixtures/imported-main-claims/app/main.hl f2c1228edb650960
+crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl 653102d16139102d
+crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl 653102d16139102d
 crates/hale-cli/tests/fixtures/p3-namespace-method-app/main.hl b6eaa051f60dcfff
 crates/hale-cli/tests/fixtures/p3-namespace-method-lib/grid.hl 83dd3572f7c59f69
 crates/hale-cli/tests/fixtures/qualified-type-fwd-app/main.hl 6f6553a1d6df5be4

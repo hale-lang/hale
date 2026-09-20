@@ -1,0 +1,74 @@
+// `seed/chat.hl` with one edge added: a Participant carries its own
+// signer and stamps with it directly, so it reaches `secret_use`
+// without going through a Room. That is the path the inline claim
+// forbids — it must be reported when this seed is checked directly
+// AND when another seed imports it (GH #733).
+type ChatLine {
+    room: Int;
+    who: String;
+    text: String;
+}
+
+topic RoomTalk {
+    payload: ChatLine;
+    keyed_by room;
+}
+
+@sealed
+locus SessionSigner {
+    params {
+        key: Int = 40961;
+    }
+    @effects(is: { secret_use })
+    fn stamp(room: Int) -> Int {
+        return room * 31 + self.key % 997;
+    }
+}
+
+locus Room {
+    params {
+        room: Int = 0;
+        lines: Int = 0;
+        s: SessionSigner = SessionSigner { };
+    }
+    bus {
+        subscribe RoomTalk as post where key == self.room;
+    }
+    fn post(line: ChatLine) {
+        self.lines = self.lines + 1;
+        let tag = self.s.stamp(line.room);
+        println("[room ", line.room, " #", tag, "] ", line.who, ": ", line.text);
+    }
+}
+
+locus Participant {
+    params {
+        name: String = "guest";
+        room: Int = 0;
+        own: SessionSigner = SessionSigner { };
+    }
+    bus {
+        publish RoomTalk;
+    }
+    run() {
+        let mine = self.own.stamp(self.room);
+        println("self-signed ", mine);
+        RoomTalk <- ChatLine { room: self.room, who: self.name, text: "hello" };
+    }
+}
+
+group participants = { Participant };
+group rooms = { Room };
+
+main locus ChatServer {
+    params {
+        lobby: Room = Room { room: 0 };
+        ada: Participant = Participant { name: "ada", room: 0 };
+    }
+    claims {
+        guests_sign_only_via_rooms: forbid reaches(participants, effects(secret_use)) avoiding rooms;
+    }
+    run() {
+        std::time::sleep(10ms);
+    }
+}
