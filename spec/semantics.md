@@ -360,11 +360,13 @@ completes, so by then every child has been born.
 
 ### Dissolve timing rules
 
-Three shapes, three timings (m82 — "locus all the way down"):
+Four shapes, three timings (m82 — "locus all the way down";
+receiver position added by GH #710):
 
 - **Statement-position literal** (`LocusName { ... };`, no
-  binding): birth → run → drain → dissolve all fire at the
-  statement boundary. Fire-and-forget. The handle is discarded.
+  binding and no method call on it): birth → run → drain →
+  dissolve all fire at the statement boundary. Fire-and-forget.
+  The handle is discarded.
 - **Let-bound literal** (`let h = LocusName { ... };`): birth
   + run + drain fire at the construction site. Dissolve is
   **deferred to the enclosing fn's scope-exit flush**. The
@@ -373,6 +375,16 @@ Three shapes, three timings (m82 — "locus all the way down"):
   `let s = Stream { conn_fd: fd }; s.send(msg) or raise;` work — `s`
   stays valid for the method call because dissolve hasn't
   fired yet.
+- **Receiver-position literal** (`LocusName { ... }.method()`):
+  the call is the handle, so the literal has **the same timing as
+  a let-bound one** — dissolve is deferred to the enclosing fn's
+  scope-exit flush. The receiver and its whole child tree are
+  therefore alive for the entire call, including any allocation
+  churn or drain point inside it. `Queries { j: Journal { } }.count()`
+  and `let q = Queries { j: Journal { } }; q.count();` are the same
+  program. This holds in statement position too
+  (`LocusName { ... }.method();`): a literal that a method is
+  called on is never torn down at the literal's own boundary.
 - **Long-lived** (locus has `bus subscribe`): always deferred,
   irrespective of binding shape — the locus must stay alive to
   receive published events between birth and the enclosing
@@ -385,10 +397,11 @@ locus may depend on an earlier-created one, so the later one
 must dissolve first.
 
 The deferred-dissolve mechanism is fn-level, not block-level,
-in v0. Loops that bind a locus per iteration accumulate
-dissolves until fn exit. Per-iteration cleanup uses a helper
-free fn whose return is the per-iteration boundary (see
-`handle_one_connection` in `stdlib/io_tcp.hl`).
+in v0. Loops that bind a locus per iteration — or that call a
+method on a fresh literal per iteration — accumulate dissolves
+until fn exit. Per-iteration cleanup uses a helper free fn whose
+return is the per-iteration boundary (see `handle_one_connection`
+in `stdlib/io_tcp.hl`).
 
 ### `terminate`
 
@@ -2835,8 +2848,11 @@ let r = expr or self.handle_io(err);
 if !self.draining { Result <- r; }
 ```
 
-`self.draining` is the only synthetic field exposed by name to
-user code; `__drain_requested` is internal-only.
+`self.draining` is one of the three synthetic members exposed by
+name to user code (with `self.children` and `self.k_max`); its
+backing field `__drain_requested` is internal-only. All three
+names are reserved — a locus may not declare a member that
+shadows one; see `types.md` § Reserved member names.
 
 ### Rejection contexts
 
@@ -2894,6 +2910,21 @@ then `reperspective` on such a perspective is rejected. This is the perspective 
 structural satisfaction (and reuses its shape). The synthesized
 `is_stable` (from `stable_when`) is not a contract method the impl
 must provide.
+
+**Qualified contract names (2026-09-19, GH #724).** `P` may be an
+**imported** perspective, named through its import alias:
+`locus X : serves lib::Routing`, `perspective(lib::Routing)` and
+`reperspective self.r as lib::Double` all take a qualified path. The
+path resolves through the same cross-seed rename table as a
+qualified type or an `alias::fn()` call, so conformance is checked
+against the imported contract and every seed's holders reach the one
+program-global slot. A path that resolves to nothing — a nested
+alias, a typo — is a located typecheck error at the path, reported
+with the alias as written. The one exception is a tool that holds a
+seed *without* its imports (`hale lsp` bundles one directory's own
+files): there a path behind an unresolved alias is opaque, exactly as
+`lib::Grid` or `lib::f()` already is, and the contract is checked
+when the whole seed is.
 
 **The slot type `perspective(P)`.** A holder programs against
 `perspective(P)`, never a concrete impl. It is a handle: at the
@@ -3389,6 +3420,22 @@ References to library decls go through the alias as
    static `MOA_PATH_RENAMES`, and the per-build import table —
    when lowering any path-qualified type expression, struct
    literal, or method receiver. The first matching table wins.
+
+**A qualified literal checks like a local one.** `alias::Type {
+... }` resolves to the merged declaration before its
+initializers are validated, so field names, field types,
+interface and perspective coercions, and missing required
+fields are all checked exactly as they are for a literal on a
+locally declared type — an unknown field is the same
+`type T has no field f` error, at the offending initializer's
+span. A literal whose path resolves to no visible declaration
+keeps the permissive `Unknown` typing. Diagnostics name the
+spelling the author wrote (`alias::Type`), not the mangled
+symbol. (GH #707, 2026-09-19 — downstream handoff. Until then
+only the RESULT type was resolved: a misspelled field in an
+imported literal was dropped in silence and the field's default
+constructed instead, so `check` reported `ok` on a program the
+same literal on a local type would have rejected.)
 
 Cross-seed references in user code (`foo::Bar`) and intra-seed
 references inside the imported library (bare `Bar` from a file

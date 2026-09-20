@@ -75,6 +75,23 @@ fn init_attaches_the_dna_and_the_application_still_checks_builds_and_runs() {
     }
     let lock = std::fs::read_to_string(app.join("hale.lock")).unwrap();
     assert!(lock.contains("[dna]") && lock.contains("toolchain = "), "hale.lock pins the toolchain: {lock}");
+
+    // GH #726: what was materialized says which embedded source set it
+    // came from — a version does not identify it, and `vendor/dna` is
+    // the binary's copy, not the working tree's.
+    let digest = hale_dna::EMBEDDED_DIGEST;
+    assert!(out.contains(&format!("embedded dna {}", &digest[..16])), "init reports the embedded source it materialized: {out}");
+    let vendor_readme = std::fs::read_to_string(app.join("vendor/dna/README.md")).unwrap();
+    assert!(vendor_readme.contains(digest), "the vendored core's README names the source set: {vendor_readme}");
+    let prov = std::fs::read_to_string(app.join(".hale/dna/embedded.digest")).unwrap();
+    assert_eq!(prov, format!("hale {}\nembedded dna: {digest}\n", env!("CARGO_PKG_VERSION")), "and machine-readably, for a fixture or `hale dna status`");
+    // NOT in the organization's source: the digest changes with every
+    // edit to the DNA, and `dna/org/main.hl` is project-owned source
+    // the organism reviews, diffs and (in the recorded acceptance
+    // fixture) feeds to a model — a build-varying line there would
+    // make every such baseline miss.
+    let org_src = std::fs::read_to_string(app.join("dna/org/main.hl")).unwrap();
+    assert!(!org_src.contains(digest) && !org_src.contains(&digest[..16]), "the scaffold's source carries no build-varying digest");
     let manifest = std::fs::read_to_string(app.join("hale.toml")).unwrap();
     assert!(manifest.contains("no_base = true") && manifest.contains("[environments.local]") && manifest.contains("[environments.org]"), "{manifest}");
 
@@ -165,9 +182,15 @@ fn upgrade_rematerializes_vendor_without_touching_the_project_seed() {
     let vendored = app.join("vendor/dna/topics.hl");
     std::fs::write(&vendored, "// tampered\n").unwrap();
     std::fs::remove_file(app.join("vendor/dna/review.hl")).unwrap();
+    // GH #726: a tree materialized by another build says so until
+    // `upgrade` re-materializes it
+    let prov = app.join(".hale/dna/embedded.digest");
+    std::fs::write(&prov, "hale 0.0.1\nembedded dna: 0000000000000000000000000000000000000000000000000000000000000000\n").unwrap();
     let (ok, out) = hale(&["dna", "upgrade", "."], &app);
     assert!(ok, "{out}");
     assert!(out.contains("2 file(s) rewritten"), "{out}");
+    assert!(out.contains(&format!("embedded dna {}", &hale_dna::EMBEDDED_DIGEST[..16])), "upgrade reports the source set it materialized: {out}");
+    assert!(std::fs::read_to_string(&prov).unwrap().contains(hale_dna::EMBEDDED_DIGEST), "and refreshes what the tree came from: {}", std::fs::read_to_string(&prov).unwrap());
     assert!(std::fs::read_to_string(&vendored).unwrap().contains("topic ReviewVerdict"), "vendor restored");
     assert!(app.join("vendor/dna/review.hl").exists());
     assert_eq!(std::fs::read_to_string(&assembly).unwrap(), "// mine\n", "dna/ is the project's");

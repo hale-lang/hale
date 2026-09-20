@@ -5099,6 +5099,33 @@ fn stmt_definitely_non_allocating(
     }
 }
 
+/// GH #720 — stdlib path calls the FORM-3 classifier may treat as
+/// non-allocating. Deliberately a hand-verified allowlist rather
+/// than "anything PURE": `std::str::substring` is pure and
+/// allocates, so purity is the wrong predicate. Each entry below
+/// returns a numeric scalar and touches no arena, which is what
+/// the subregion exists to manage:
+///
+///   - `byte_at_unchecked` lowers to a GEP + load;
+///   - `byte_at` is `__str_byte_at` — a compare against the view's
+///     `n` plus that same load.
+///
+/// A wrong entry does not dangle — an elided body's allocations
+/// route to the caller's arena rather than being freed at return —
+/// but they then live as long as the CALLER's arena instead of the
+/// call, so a hot loop would grow instead of reusing. Add only
+/// scalar-returning, arena-free calls.
+const NONALLOC_STDLIB_PATHS: &[&[&str]] = &[
+    &["std", "str", "byte_at_unchecked"],
+    &["std", "str", "byte_at"],
+];
+
+fn path_call_is_nonalloc(q: &hale_syntax::ast::QualifiedName) -> bool {
+    let segs: Vec<&str> =
+        q.segments.iter().map(|s| s.name.as_str()).collect();
+    NONALLOC_STDLIB_PATHS.iter().any(|p| *p == segs.as_slice())
+}
+
 fn expr_definitely_non_allocating(
     e: &Expr,
     ctx: &AllocCtx,
@@ -5178,6 +5205,14 @@ fn expr_definitely_non_allocating(
                         // fnptr_numeric_ret.
                         || ctx.fnptr_numeric_ret.contains(&id.name)
                 }
+                // GH #720: a stdlib path call from the
+                // non-allocating allowlist. Without this, ANY helper
+                // fn that inspects a byte — the shape every parser
+                // has — was classified allocating, so each call paid
+                // a subregion create/destroy that the inlined body
+                // then never used (measured: ~15ns per call, 24ms vs
+                // 2ms over a 1 MiB scan).
+                Expr::Path(q) => path_call_is_nonalloc(q),
                 Expr::Field { receiver, name, .. }
                     if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
                 {
@@ -8255,6 +8290,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     hot: false,
                     effects: Vec::new(),
                     quantities: Vec::new(),
+                    decorators: Vec::new(),
                     body: Block {
                         stmts: Vec::new(),
                         tail: None,
@@ -12020,6 +12056,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 hot: fd.hot,
                 effects: Vec::new(),
                 quantities: Vec::new(),
+                decorators: Vec::new(),
                 body: Self::substitute_block_type_ascriptions(
                     &fd.body, subst,
                 ),
@@ -12270,6 +12307,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             hot: template.hot,
             effects: Vec::new(),
             quantities: Vec::new(),
+            decorators: Vec::new(),
             body: new_body,
             span: template.span.clone(),
         })
@@ -25062,6 +25100,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_str_byte_at_unchecked(args, scope)?;
                 Ok(())
             }
+            ["std", "str", "range_copy"] => {
+                let _ = self.lower_std_str_range_copy(args, scope)?;
+                Ok(())
+            }
             ["std", "json", "next_struct_or_quote"] => {
                 let _ = self.lower_json_scan("lotus_json_next_struct_or_quote", args, scope)?;
                 Ok(())
@@ -26234,6 +26276,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "str", "byte_at_unchecked"] => {
                 self.lower_std_str_byte_at_unchecked(args, scope)
             }
+            ["std", "str", "range_copy"] => {
+                self.lower_std_str_range_copy(args, scope)
+            }
             ["std", "json", "next_struct_or_quote"] => {
                 self.lower_json_scan("lotus_json_next_struct_or_quote", args, scope)
             }
@@ -26438,6 +26483,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 result.ok_or_else(|| CodegenError::Unsupported(
                     "std::json::find_string_field returns String but called in a position that expects no value".to_string()))
             }
+            // GH #719: the typed sibling of find_string_field. Returns
+            // a JsonString {kind, text} so null / missing / "" / a
+            // real string / a wrong-typed value are distinguishable;
+            // find_string_field stays permissive for its callers.
+            ["std", "json", "string_field"] => {
+                let result = self.lower_user_fn_call("__json_string_field", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::string_field returns JsonString but called in a position that expects no value".to_string()))
+            }
             ["std", "json", "find_int_field"] => {
                 let result = self.lower_user_fn_call("__json_find_int_field", args, scope)?;
                 result.ok_or_else(|| CodegenError::Unsupported(
@@ -26447,6 +26501,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let result = self.lower_user_fn_call("__json_find_bool_field", args, scope)?;
                 result.ok_or_else(|| CodegenError::Unsupported(
                     "std::json::find_bool_field returns Bool but called in a position that expects no value".to_string()))
+            }
+            // GH #754: RFC 8259 syntax validation, the strict
+            // counterpart to the permissive find_* scanners.
+            ["std", "json", "valid"] => {
+                let result = self.lower_user_fn_call("__json_valid", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::valid returns Bool but called in a position that expects no value".to_string()))
+            }
+            ["std", "json", "valid_object"] => {
+                let result = self.lower_user_fn_call("__json_valid_object", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::valid_object returns Bool but called in a position that expects no value".to_string()))
             }
             ["std", "json", "find_field_raw"] => {
                 let result = self.lower_user_fn_call("__json_find_field_raw", args, scope)?;
@@ -27872,7 +27938,42 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         )? {
             return Ok(slot_result);
         }
-        let (recv_val, recv_ty) = self.lower_expr(receiver_expr, scope)?;
+        // GH #710: a locus LITERAL in receiver position —
+        // `Queries { j: GitLike { } }.total()` — is a temporary whose
+        // owner is this call. Without an owner,
+        // `lower_locus_instantiation` takes the eager path and emits
+        // drain → dissolve → arena_destroy at the END OF THE LITERAL,
+        // so the method ran against a locus whose arena (and whose
+        // children's arenas and structs) were already freed. It read
+        // as "works sometimes": with no child, or a child whose birth
+        // allocates nothing, the freed bytes were still intact; an
+        // interface-typed child (fat pointer into the freed child
+        // struct) or a birth that churns the allocator (a subprocess
+        // drain, a @form(vec) push) recycled them first and the call
+        // took a SIGSEGV.
+        //
+        // Give the temporary the same owner `let` gives it: defer its
+        // dissolve to the enclosing fn's scope-exit flush, exactly as
+        // `Stmt::Let` does for `let q = Queries { ... };`. The receiver
+        // and its whole child tree then live until the fn returns —
+        // across the call, its allocation churn, and any drain point
+        // inside it — and are torn down by the one flush path
+        // (drain → __dissolve_closures → dissolve → arena_destroy),
+        // preserving F.4 ordering. Set immediately before lowering the
+        // receiver and cleared after, so only the OUTERMOST literal
+        // takes the flag (`lower_locus_instantiation` consumes it with
+        // `mem::take` at entry); nested child literals in its inits
+        // stay parent-owned, as in the `let` form.
+        let recv_is_locus_literal =
+            self.expr_is_locus_literal(receiver_expr);
+        if recv_is_locus_literal {
+            self.defer_next_locus_dissolve = true;
+        }
+        let recv_lowered = self.lower_expr(receiver_expr, scope);
+        if recv_is_locus_literal {
+            self.defer_next_locus_dissolve = false;
+        }
+        let (recv_val, recv_ty) = recv_lowered?;
         // F.20 Phase B: dispatch through an interface fat pointer.
         // The receiver value is a pointer to a `{data, vtable}`
         // struct laid out by `coerce_to_interface`. Load data

@@ -1,0 +1,73 @@
+// The control: the same law as `seed-bad`, written as a constitution
+// the main adopts. That form already resolved its groups in its own
+// seed through an import, and must keep doing so.
+type ChatLine {
+    room: Int;
+    who: String;
+    text: String;
+}
+
+topic RoomTalk {
+    payload: ChatLine;
+    keyed_by room;
+}
+
+@sealed
+locus SessionSigner {
+    params {
+        key: Int = 40961;
+    }
+    @effects(is: { secret_use })
+    fn stamp(room: Int) -> Int {
+        return room * 31 + self.key % 997;
+    }
+}
+
+locus Room {
+    params {
+        room: Int = 0;
+        lines: Int = 0;
+        s: SessionSigner = SessionSigner { };
+    }
+    bus {
+        subscribe RoomTalk as post where key == self.room;
+    }
+    fn post(line: ChatLine) {
+        self.lines = self.lines + 1;
+        let tag = self.s.stamp(line.room);
+        println("[room ", line.room, " #", tag, "] ", line.who, ": ", line.text);
+    }
+}
+
+locus Participant {
+    params {
+        name: String = "guest";
+        room: Int = 0;
+    }
+    bus {
+        publish RoomTalk;
+    }
+    run() {
+        RoomTalk <- ChatLine { room: self.room, who: self.name, text: "hello" };
+    }
+}
+
+group participants = { Participant };
+group rooms = { Room };
+
+constitution Chat {
+    guests_sign_only_via_rooms: forbid reaches(participants, effects(secret_use)) avoiding rooms;
+}
+
+main locus ChatServer {
+    params {
+        lobby: Room = Room { room: 0 };
+        ada: Participant = Participant { name: "ada", room: 0 };
+    }
+    claims {
+        adopt Chat;
+    }
+    run() {
+        std::time::sleep(10ms);
+    }
+}

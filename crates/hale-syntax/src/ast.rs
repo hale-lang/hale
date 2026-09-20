@@ -2104,6 +2104,27 @@ pub enum EffectAssert {
     NoPanic,
 }
 
+/// GH #723: one fn-level `@`-decorator as it was WRITTEN, kept with
+/// its span.
+///
+/// The contract decorators — `@unbounded`, `@hot`, `@budget(...)`, the
+/// `@no_*` effect-assertion sugar and the general `@effects(...)` —
+/// state orthogonal things and so STACK, in any order. Once parsed
+/// they merge into the flattened fields below (`unbounded` / `hot` /
+/// `budget` / `effects`), which no longer say how many decorators were
+/// written or where each one sat. The coherence rules over a stack (a
+/// decorator given twice, a pair that contradicts) are therefore
+/// check-time rules — see `hale-types::check` § decorator stacks — and
+/// this is the record they read: the spelling for the message, the
+/// span to point at.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FnDecorator {
+    /// The decorator as spelled, without the `@`: `unbounded`, `hot`,
+    /// `budget`, `no_syscall`, `deterministic`, `effects`, …
+    pub name: String,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnDecl {
     pub name: Ident,
@@ -2146,8 +2167,10 @@ pub struct FnDecl {
     /// known-allocating stdlib recv family; a loop-nested allocation is
     /// "unbounded per call"). Enforced as a hard error in
     /// [`crate`](hale-types)`::budget_check`. `@budget(alloc_per_call = 0)`
-    /// is the zero-alloc certificate. Mutually exclusive with `@unbounded`
-    /// (only one fn-prefix annotation parses).
+    /// is the zero-alloc certificate. Stacks with the other contract
+    /// decorators in any order (GH #723); `@budget(alloc_per_call = 0)`
+    /// with `@unbounded` is the one contradictory pair, diagnosed at
+    /// check time.
     pub budget: Option<u32>,
     /// Gap D (2026-07-17): `@hot fn` — the author certifies this fn
     /// (or handler) is a hot path (per-frame / tight-loop / 100s-per-
@@ -2163,6 +2186,10 @@ pub struct FnDecl {
     /// `alloc_per_call` — `stack_bytes`, `block_points`, `publish`,
     /// `fanout`. Checked in `hale-types::quantitative`.
     pub quantities: Vec<(QuantDim, u64)>,
+    /// GH #723: the contract decorators as written, in source order.
+    /// Only the coherence check reads this; every other consumer reads
+    /// the flattened fields. See [`FnDecorator`].
+    pub decorators: Vec<FnDecorator>,
     pub body: Block,
     pub span: Span,
 }
@@ -2932,5 +2959,22 @@ pub fn remap_user_effects(items: &mut [TopDecl], map: &[u16]) {
                 | ClaimForm::Count { .. } => {}
             }
         }
+    }
+}
+
+/// GH #746: the author's spelling of an import-alias path head.
+///
+/// An alias is scoped to the seed that declares it, but the
+/// path-rename table the whole build resolves `alias::Name` through is
+/// keyed by the alias as written. When two seeds bind the same alias
+/// name to DIFFERENT libraries, the CLI gives each binder its own head
+/// (`u` -> `u$0`) and re-heads that seed's own references, so the
+/// table can tell them apart. `$` cannot occur in an identifier, so a
+/// head carrying one is always a scoped alias, and the part before it
+/// is what the author wrote — the spelling a diagnostic shows.
+pub fn unscoped_alias(head: &str) -> &str {
+    match head.split_once('$') {
+        Some((author, _)) => author,
+        None => head,
     }
 }
