@@ -42,12 +42,23 @@ impl TopScope {
 /// assignability, for method / field lookup, and for codegen.
 /// Nothing attaches to the alias name itself.
 ///
+/// Carries the bundle's cross-seed import renames too — GH #833 —
+/// so a QUALIFIED type expression (`lib::Thing`) resolves to the
+/// merged declaration the build lowers it to instead of `Unknown`.
+///
 /// Derefs to the name → span map so every existing `contains_key`
 /// / `get` / `entry` use reads unchanged.
 #[derive(Debug, Default, Clone)]
 pub struct KnownNames {
     names: BTreeMap<String, Span>,
     aliases: BTreeMap<String, Ty>,
+    /// GH #833: `"alias::Name"` → the merged (mangled) declaration
+    /// name, from the build's import-rename table. Empty for every
+    /// single-seed bundle and for any caller that holds a program
+    /// whose imports were never resolved (the LSP's per-directory
+    /// bundle), which is what keeps the permissive `Unknown` where
+    /// the declaration genuinely is not in the bundle.
+    imports: BTreeMap<String, String>,
 }
 
 impl std::ops::Deref for KnownNames {
@@ -72,6 +83,23 @@ impl KnownNames {
     /// Record `name` as an alias of `ty` (already expanded).
     pub fn set_alias(&mut self, name: String, ty: Ty) {
         self.aliases.insert(name, ty);
+    }
+
+    /// GH #833: load the build's cross-seed rename table, keyed the
+    /// way a qualified type expression spells it (`alias::Name`).
+    /// Idempotent and additive — two aliases for one library give two
+    /// keys with the SAME mangled value, which is exactly why
+    /// `a::Thing` and `b::Thing` type as one nominal type.
+    pub fn set_imports(&mut self, renames: &[(Vec<String>, String)]) {
+        for (segs, mangled) in renames {
+            self.imports.insert(segs.join("::"), mangled.clone());
+        }
+    }
+
+    /// The merged declaration a qualified path names, if the bundle's
+    /// import-rename table has a row for it.
+    pub fn import_target(&self, path: &str) -> Option<&str> {
+        self.imports.get(path).map(|s| s.as_str())
     }
 }
 
@@ -221,6 +249,11 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     // (locus, type, perspective) so type expressions in a
     // second pass can resolve cross-file references.
     let mut known_names = KnownNames::default();
+    // GH #833: before anything resolves a type expression, so a
+    // qualified cross-seed path in ANY annotation position — a
+    // signature, a struct field, a locus param, a capacity slot,
+    // an alias target — resolves to the merged declaration.
+    known_names.set_imports(&bundle.import_renames);
     for program in bundle.programs.values() {
         collect_type_names(&program.items, &mut known_names, &mut diags);
     }
@@ -1631,12 +1664,44 @@ pub fn resolve_type_expr(te: &TypeExpr, known: &KnownNames) -> Ty {
                 // builtin namespaces with no Hale source, unsealed
                 // stdlib loci, cross-module paths — still lands on
                 // `Unknown` exactly as before.
+                //
+                // GH #833: the same rule for a CROSS-SEED path. When
+                // the bundle carries the build's import renames —
+                // `hale check <dir>`, `build`, `run`, `test`, all of
+                // which merge the imported seeds first — `lib::Thing`
+                // names a declaration that IS in the bundle, under the
+                // mangled name the merge gave it.
+                //
+                // The merge's `apply_qualified_path_renames` collapses
+                // a qualified path to that mangled name already, but
+                // only in a TOP-LEVEL declaration: a signature, a
+                // struct field, a locus `params` entry, a `capacity`
+                // slot, an alias target. It never walks a fn or method
+                // BODY, so the one annotation that lives in a body —
+                // `let x: T` / `let (a, b): T` — reached here still
+                // spelled `lib::Thing` and typed `Unknown`. That left
+                // it unchecked against whatever filled it:
+                // `let t: lib::Thing = "x";` passed `check` with `ok:
+                // 1 file(s) typechecked` and died in codegen with an
+                // unlocated `Unsupported("... type mismatch")`.
+                //
+                // Resolving the path HERE rather than widening that
+                // pre-pass makes the answer independent of which
+                // positions some earlier walk happens to reach. Two
+                // aliases for one library map to the same mangled
+                // name, so `a::Thing` and `b::Thing` are one type
+                // here, as they are one type at run time. A bundle
+                // with no rename table (the LSP's per-directory
+                // bundle; a single FILE of a multi-file seed, whose
+                // `import` line lives in a sibling) finds no row and
+                // keeps the old tolerance.
                 let segs: Vec<&str> =
                     path.segments.iter().map(|s| s.name.as_str()).collect();
                 let renamed = hale_stdlib::PATH_RENAMES
                     .iter()
                     .find(|(p, _)| *p == segs.as_slice())
-                    .map(|(_, m)| *m);
+                    .map(|(_, m)| *m)
+                    .or_else(|| known.import_target(&segs.join("::")));
                 match renamed {
                     // GH #759: transparent through a renamed
                     // stdlib alias too.

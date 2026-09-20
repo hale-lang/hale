@@ -427,7 +427,7 @@ pub fn check_bundle_scoped(
     strict_idents: bool,
 ) -> Vec<Diag> {
     let mut diags = Vec::new();
-    let known = collect_known_names(top);
+    let known = collect_known_names(top, &bundle.import_renames);
     // WASM plan: the bundle targets wasm if any program declares
     // `target wasm` / `target browser_js`. Drives stdlib gating below.
     let wasm_target = bundle.programs.values().any(|p| {
@@ -5999,8 +5999,17 @@ fn check_bus_backpressure(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     }
 }
 
-fn collect_known_names(top: &TopScope) -> KnownNames {
+fn collect_known_names(
+    top: &TopScope,
+    import_renames: &[(Vec<String>, String)],
+) -> KnownNames {
     let mut m = KnownNames::default();
+    // GH #833: the checker resolves type expressions against THIS
+    // table, rebuilt from the top scope — so without the bundle's
+    // rename rows a qualified cross-seed annotation would come back
+    // `Unknown` here even though `build_top_scope` had just typed the
+    // same annotation in a signature.
+    m.set_imports(import_renames);
     for (name, sym) in &top.symbols {
         if matches!(
             sym,
