@@ -168,7 +168,10 @@ fn main() {
 `println`, `print`, `to_string`, and `len` are *builtins* —
 called as plain functions, not methods. You write `len(s)`, not
 `s.len()`. (Methods with `.` come later, on loci and your own
-types.)
+types.) If you reach for the spelling another language uses —
+`s.len()`, `std::str::len(s)`, `std::math::abs(x)`,
+`std::io::println(x)` — the checker names the builtin for you
+rather than guessing at a near-miss stdlib name.
 
 Printing isn't limited to single values: a struct, tuple or array
 of printable things prints as a whole, recursively — which is
