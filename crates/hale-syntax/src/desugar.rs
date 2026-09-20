@@ -622,6 +622,7 @@ fn std_bytes_call(name: &str, args: Vec<Expr>, span: Span) -> Expr {
         span,
     };
     Expr::Call {
+        id: crate::ast::NodeId::NONE,
         callee: Box::new(Expr::Path(QualifiedName {
             segments: vec![seg("std"), seg("bytes"), seg(name)],
             span,
@@ -780,7 +781,7 @@ fn acc_match(m: &mut MatchStmt, w: &WireLayouts) {
 
 fn acc_expr(e: &mut Expr, w: &WireLayouts) {
     match e {
-        Expr::Call { callee, args, span } => {
+        Expr::Call { callee, args, span, .. } => {
             acc_expr(callee, w);
             for a in args.iter_mut() {
                 acc_expr(a, w);
@@ -1237,6 +1238,7 @@ fn build_chained_call(access_chain: &[String], value: Expr, span: Span) -> Expr 
         };
     }
     Expr::Call {
+        id: crate::ast::NodeId::NONE,
         callee: Box::new(Expr::Field {
             receiver: Box::new(receiver),
             name: Ident { name: method_name.clone(), span },

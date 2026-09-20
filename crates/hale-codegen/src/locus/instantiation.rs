@@ -126,6 +126,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // eager dissolve. Outermost instantiation owns it; nested
         // ones see false.
         let defer_for_let = std::mem::take(&mut self.defer_next_locus_dissolve);
+        // GH #921 A2: the site the pre-pass indexed for this literal,
+        // taken on the same one-shot discipline as the flags below so
+        // a nested literal does not read its parent's.
+        let owner_site = std::mem::take(&mut self.owner_site);
         // GH #253: high-water mark of the enclosing deferred-
         // dissolve frame. Every entry pushed past this point
         // during THIS call is a (transitive) child of this
@@ -170,6 +174,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // arena_destroy via the existing is_pinned_entry path.
         let placement_override =
             std::mem::take(&mut self.placement_for_next_locus_instantiation);
+        // GH #921 A2: the override is folded into `info` below, so the
+        // shadow records the answer before it is consumed.
+        let placement_overridden = placement_override.is_some();
         // Topology arena-on-node: consume the parallel NUMA-node
         // override (set for `pinned(node/l3)` fields) so the Fresh
         // arena create below binds this locus's arena to its node.
@@ -384,6 +391,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None => None,
         };
         let bubbled = bubble_owner_name.is_some();
+        // GH #921 A2 — shadow. Every flag that decides who reclaims
+        // this instance has now been read; say what they decided and
+        // compare with the owner table. Nothing is emitted either way.
+        {
+            let flag_disposition = if placement_overridden
+                || matches!(info.schedule_class, ScheduleClass::Pinned(_))
+            {
+                crate::ownership::Disposition::Placement
+            } else if returns_this_locus {
+                crate::ownership::Disposition::Caller
+            } else if parent_accepts_us || bubbled || parent_owns_via_field
+            {
+                crate::ownership::Disposition::Owned
+            } else {
+                // Deferred to the frame's flush, or dissolved eagerly
+                // at the end of its own expression — both are this
+                // frame reclaiming it. Inside a loop the deferred slot
+                // carries GH #815's reuse teardown, so it is reclaimed
+                // once per iteration.
+                crate::ownership::Disposition::Frame {
+                    per_iteration: !self.loops.is_empty(),
+                }
+            };
+            self.owner_shadow_literal(
+                locus_name,
+                owner_site,
+                flag_disposition,
+            )?;
+        }
         // Pool-inheritance fix (2026-05-29): is this locus owned
         // beyond the enclosing scope? Only owned loci may inherit
         // the current pool at runtime (post run() / pool-tag their
@@ -2702,6 +2738,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 _ => None,
                             },
                         });
+            // GH #921 A2 — shadow. This is the owner's
+            // `__locus_ref_owned_mask` bit in its final form: the
+            // field-ownership predicates decided it, GH #895's
+            // interface refinement just adjusted it, and nothing
+            // moves it again. Ask the table the same question.
+            if field_can_hold_locus {
+                let init_expr: Option<&Expr> =
+                    match overrides.get(fname.as_str()) {
+                        Some(e) => Some(e),
+                        None => match default {
+                            DefaultInit::Expr(e) => Some(e),
+                            _ => None,
+                        },
+                    };
+                if let Some(e) = init_expr {
+                    self.owner_shadow_field_init(
+                        locus_name,
+                        fname,
+                        e,
+                        owned_via_literal,
+                    )?;
+                }
+            }
             // Bus-arena reclaim follow-up (2026-05-21): when this
             // instantiation runs inside a method body, the
             // field-init expression's value may live in the

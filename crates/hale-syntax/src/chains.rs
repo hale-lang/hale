@@ -636,6 +636,7 @@ fn boolean(v: bool, sp: Span) -> Expr {
 }
 fn method(recv: Expr, name: &str, args: Vec<Expr>, sp: Span) -> Expr {
     Expr::Call {
+        id: crate::ast::NodeId::NONE,
         callee: Box::new(Expr::Field {
             receiver: Box::new(recv),
             name: id(name, sp),

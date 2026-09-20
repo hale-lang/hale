@@ -544,7 +544,7 @@ fn rewrite_match(m: &mut MatchStmt, names: &HashSet<String>) {
 
 fn rewrite_expr(e: &mut Expr, names: &HashSet<String>) {
     match e {
-        Expr::Call { callee, args, span } => {
+        Expr::Call { callee, args, span, .. } => {
             rewrite_expr(callee, names);
             for a in args.iter_mut() {
                 rewrite_expr(a, names);

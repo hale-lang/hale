@@ -813,7 +813,7 @@ fn collect_in_match(stmt: &MatchStmt, out: &mut Vec<(String, Span)>) {
 
 fn collect_in_expr(expr: &Expr, out: &mut Vec<(String, Span)>) {
     match expr {
-        Expr::Struct { path, inits, span } => {
+        Expr::Struct { path, inits, span, .. } => {
             if path.segments.len() == 1 {
                 out.push((path.segments[0].name.clone(), *span));
             }
@@ -1246,7 +1246,7 @@ fn find_blocking_in_match(m: &MatchStmt) -> Option<(String, Span)> {
 
 fn find_blocking_in_expr(expr: &Expr) -> Option<(String, Span)> {
     match expr {
-        Expr::Call { callee, args, span } => {
+        Expr::Call { callee, args, span, .. } => {
             if let Expr::Path(qn) = callee.as_ref() {
                 let segs: Vec<&str> =
                     qn.segments.iter().map(|s| s.name.as_str()).collect();
@@ -1588,7 +1588,7 @@ fn find_blocking_deep_in_expr(
     bs: &BTreeSet<String>,
 ) -> Option<(String, Span)> {
     match expr {
-        Expr::Call { callee, args, span } => {
+        Expr::Call { callee, args, span, .. } => {
             match callee.as_ref() {
                 Expr::Path(qn) => {
                     let segs: Vec<&str> =
@@ -2053,7 +2053,7 @@ fn hot_walk_stmt(s: &Stmt, cx: &mut HotPathCx) {
 
 fn hot_walk_expr(e: &Expr, cx: &mut HotPathCx) {
     match e {
-        Expr::Struct { path, inits, span } => {
+        Expr::Struct { path, inits, span, .. } => {
             for init in inits {
                 hot_walk_expr(&init.value, cx);
             }
@@ -2109,7 +2109,7 @@ fn hot_walk_expr(e: &Expr, cx: &mut HotPathCx) {
                 }
             }
         }
-        Expr::Call { callee, args, span } => {
+        Expr::Call { callee, args, span, .. } => {
             hot_walk_expr(callee, cx);
             for a in args {
                 hot_walk_expr(a, cx);
@@ -3866,7 +3866,7 @@ fn pinned_walk_stmt(s: &Stmt, cx: &mut PinnedLoopCx) {
 
 fn pinned_walk_expr(e: &Expr, cx: &mut PinnedLoopCx) {
     match e {
-        Expr::Struct { path, inits, span } => {
+        Expr::Struct { path, inits, span, .. } => {
             for init in inits {
                 pinned_walk_expr(&init.value, cx);
             }
@@ -4539,7 +4539,7 @@ fn walk_match_pool(stmt: &MatchStmt, cx: &mut PoolCheckCx) {
 }
 
 fn walk_expr_pool(expr: &Expr, cx: &mut PoolCheckCx) {
-    if let Expr::Call { callee, args, span } = expr {
+    if let Expr::Call { callee, args, span, .. } = expr {
         // F.31 Phase 5: flag `self.X.foo(args)` where the
         // field X's locus type is on a different pool than
         // the enclosing locus. Only the `Field` callee
@@ -14499,7 +14499,7 @@ impl<'a> Checker<'a> {
                 let elem = self.check_expr_local(val);
                 Ty::Array(Box::new(elem), Some(*count))
             }
-            Expr::Struct { path, inits, span } => self.check_struct_literal(path, inits, *span),
+            Expr::Struct { path, inits, span, .. } => self.check_struct_literal(path, inits, *span),
             Expr::Block(b) => self.check_block_as_expr(b),
             Expr::If(s) => self.check_if_as_expr(s),
             // Gap C (2026-07-17): match in expression position types

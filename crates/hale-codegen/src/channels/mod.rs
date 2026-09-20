@@ -612,6 +612,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // NULL-initialized in the entry block, which is what makes the
         // never-stored err path a skip at the flush rather than a
         // teardown of stack garbage.
+        let mut or_registered_temp = false;
         if let (Some(CodegenTy::LocusRef(lname)), Some(v), Some(fresh_l)) =
             (&call.success_ty, &ok_v_opt, &inner_fresh_locus)
         {
@@ -620,6 +621,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 && !self.deferred_dissolves.is_empty()
                 && v.is_pointer_value()
             {
+                or_registered_temp = true;
                 let lname = lname.clone();
                 let ptr = v.into_pointer_value();
                 let slot = self.deferred_dissolve_slot_alloca(&lname)?;
@@ -640,6 +642,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("checked non-empty")
                     .push((slot, lname, None));
             }
+        }
+        // GH #921 A2 — shadow. `suppress_fresh_temp` and
+        // `or_field_owner_locus` were both taken on this node above;
+        // say what they decided for the value the `or` hands back.
+        {
+            let (verdict, note) = if inner_fresh_locus.is_none() {
+                (
+                    crate::ownership::TempVerdict::Nobody,
+                    "the callee is not a proven-fresh factory",
+                )
+            } else if ok_owned_elsewhere {
+                (
+                    crate::ownership::TempVerdict::SiteOwned,
+                    "`suppress_fresh_temp` was armed",
+                )
+            } else if or_registered_temp {
+                // Unlike the GH #402 hook, this slot carries GH #815's
+                // reuse teardown inside a loop.
+                (
+                    crate::ownership::TempVerdict::FrameTemp {
+                        per_iteration: !self.loops.is_empty(),
+                    },
+                    "the GH #793 hook registered a temporary",
+                )
+            } else {
+                (
+                    crate::ownership::TempVerdict::Nobody,
+                    "a proven-fresh factory, but the GH #793 hook's \
+                     guards did not fire",
+                )
+            };
+            self.owner_shadow_call(inner, verdict, note)?;
         }
         let ok_end_bb = self
             .builder
@@ -2105,13 +2139,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let payload_ty = enclosing.payload_ty.clone();
         let rewritten;
         let e_to_lower: &Expr = match payload {
-            Expr::Struct { path, inits, span } => {
+            Expr::Struct { path, inits, span, id } => {
                 match self.resolve_generic_struct_path_for_codegen_ty(
                     path,
                     &payload_ty,
                 ) {
                     Some(new_path) => {
+                        // GH #921 A2: same source expression,
+                        // renamed path — it keeps its id.
                         rewritten = Expr::Struct {
+                            id: *id,
                             path: new_path,
                             inits: inits.clone(),
                             span: *span,
@@ -2519,13 +2556,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let rewritten;
         let payload_ty = fallible.payload_ty.clone();
         let e_to_lower: &Expr = match value {
-            Expr::Struct { path, inits, span } => {
+            Expr::Struct { path, inits, span, id } => {
                 match self.resolve_generic_struct_path_for_codegen_ty(
                     path,
                     &payload_ty,
                 ) {
                     Some(new_path) => {
+                        // GH #921 A2: same source expression,
+                        // renamed path — it keeps its id.
                         rewritten = Expr::Struct {
+                            id: *id,
                             path: new_path,
                             inits: inits.clone(),
                             span: *span,

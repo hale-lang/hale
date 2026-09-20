@@ -6984,6 +6984,7 @@ impl Parser {
                         let bspan = b.span;
                         let span2 = span.merge(bspan);
                         expr = Expr::Call {
+                            id: crate::ast::NodeId::NONE,
                             callee: Box::new(Expr::Field {
                                 receiver: Box::new(expr),
                                 name,
@@ -7022,6 +7023,7 @@ impl Parser {
                     let rp = self.expect(TokenKind::RParen, ")")?;
                     let span = expr.span().merge(rp.span);
                     expr = Expr::Call {
+                        id: crate::ast::NodeId::NONE,
                         callee: Box::new(expr),
                         args,
                         span,
@@ -7321,6 +7323,7 @@ impl Parser {
         let close = self.expect(TokenKind::RBrace, "}")?;
         let _ = lb;
         Ok(Expr::Struct {
+            id: crate::ast::NodeId::NONE,
             span: qn.span.merge(close.span),
             path: qn,
             inits,
@@ -7493,6 +7496,7 @@ impl Parser {
                     // text and are unrecoverable afterwards.
                     let call = match &spec_text {
                         Some(sp) => Expr::Call {
+                            id: crate::ast::NodeId::NONE,
                             callee: Box::new(Expr::Ident(Ident {
                                 name: FMT_BUILTIN.to_string(),
                                 span: isp,
@@ -7507,6 +7511,7 @@ impl Parser {
                             span: isp,
                         },
                         None => Expr::Call {
+                            id: crate::ast::NodeId::NONE,
                             callee: Box::new(Expr::Ident(Ident {
                                 name: "to_string".to_string(),
                                 span: isp,

@@ -3240,13 +3240,17 @@ multi-worker pool).
 
 ## Deferred & future work
 
-### Proposed F.39 — Locus ownership is resolved before lowering (the owner table)
+### F.39 — Locus ownership is resolved before lowering (the owner table)
 
-**Status: PROPOSED (GH #921, Phase A). Not shipped.** The shipped
-behaviour is the flag set described below; this entry becomes a locked
-commitment only when Riley approves it on #921 and the shadow-mode
-PR lands. The observable rules in `spec/semantics.md` § *Dissolve
-timing rules* do not change — this makes them true by construction.
+**Status: APPROVED (GH #921, 2026-09-20); shadow mode shipped (A2, PR
+#937); lowering still reads the flags until A3.** The table is
+computed on every compile and, under `LOTUS_OWNER_SHADOW`, CHECKED
+against what the seven one-shot flags decide; nothing reads it to
+decide anything yet. A3 switches the consumers over one flag per
+commit and deletes the flag. The shipped behaviour is still the flag
+set described below. The observable rules in `spec/semantics.md` §
+*Dissolve timing rules* do not change — this makes them true by
+construction.
 
 **Why.** Every teardown leak and use-after-free fixed in the 2026-09-20
 sweep (#711/#812, #750, #789, #793, #815, #836, #837, #853, #871,
@@ -3323,16 +3327,53 @@ fixes.
 fn-scoped with per-iteration slot reuse (#824). Struct values are not
 loci and are outside this table (#713 is a separate ruling).
 
-**Open questions for the approval.** (1) Is `Borrowed(from)` the right
-home for GH #730 (interface value flowing into a same-interface child
-field) and #731 (holding a designated perspective slot) — i.e. do we
-commit that a handle passed *in* is never owned by the receiver?
-(2) Should an instantiation with no owner be a hard `CodegenError`
-from the first A3 commit, or a warning until the matrix is fully
-green? (3) The bindings transport as `Placement(entry)`: it is
-program-lifetime by contract; confirm it should not become `Binding`
-in `fn main`'s frame (PR #918 chose the frame; the table would say
-`Placement`, dissolved at the same point).
+**Answered on approval (2026-09-20).** (1) `Borrowed(from)` is the
+home for GH #730 and #731: a handle passed *in* — an interface value
+from a parent's field, a designated perspective slot — is never owned
+by the receiver. (2) An instantiation with no owner is a hard
+`CodegenError` from the first A3 commit. In A2 it is an error under
+`LOTUS_OWNER_SHADOW=strict` and a log line otherwise, because A2
+changes no behaviour and a build that used to succeed must still
+succeed. (3) The bindings transport is `Placement(entry)` — program
+lifetime, dissolved at main exit — not `Binding` in `fn main`'s frame.
+
+**What A2 settled that the note left implicit.** Five things the
+shadow forced:
+
+* **The key is a node id, not an address and not a span.** Codegen
+  lowers CLONES of every declaration (`locus_decls`, `user_fn_decls`,
+  and a fresh `LocusInfo` — param defaults included — per
+  instantiation), so a node's address is not its identity; and the
+  stdlib is parsed in its own coordinate space and overlaps user file
+  ranges, so a span is not either. `hale_syntax::ast::NodeId` rides on
+  the two shapes that can produce a locus — a struct literal and a
+  call — and the pre-pass assigns it over the merged, desugared
+  program. Its `PartialEq` deliberately ignores the id, because
+  `Expr: PartialEq` is used across the frontend to compare shapes.
+* **A decision demotes when it passes through a delegating node.** An
+  `or`, a carrier and a composite hand `FrameTemp(innermost reclaim
+  scope)` to their branches, arms and elements where the site said
+  `Binding`: the binding names the join, not the arm, and the arm's
+  value is materialised in a temporary. `Caller`, `Field` and
+  `Placement` do not demote. The innermost reclaim scope is the frame,
+  or the enclosing loop body — the difference GH #921 A4's fourth
+  family is made of.
+* **A binding the frame hands back is `Caller`, not `Binding`** — the
+  carve-out `binding_escapes_this_frame` makes in lowering.
+* **An accept'd child is `Field(owner, "__children")`.** A literal of
+  `C` written in a member body of a locus whose `accept(c: C)` retains
+  it is reclaimed by that acceptor's cascade, not by the frame that
+  wrote it.
+* **Two instantiations have no source expression at all** — the
+  `@export` singleton's prelude and a `reperspective` swap — and a
+  third, the `bindings { T: unix(..) }` transport, is a literal
+  codegen builds itself. They declare themselves as synthesised sites;
+  A3 has to give them their owner directly rather than by reading a
+  table row.
+
+**Borrowed's key.** `Expr::Ident` carries no id, so a field
+initialised from a NAME is recorded against `(owner locus, field)`
+rather than against the expression.
 
 
 Forward-looking items lifted from the spec files. These are design
