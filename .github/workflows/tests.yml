@@ -32,9 +32,15 @@ name: tests
 # cargo cache keeps each warm build to ~3min). Wall-clock over CI
 # minutes, for branch-iteration velocity.
 
+# One run per commit. A push to a PR branch used to trigger this
+# twice — once as `push` (every branch) and once as `pull_request`
+# — in two concurrency groups, so neither cancelled the other:
+# 140 of 140 pull_request runs over 2026-09-18..20 had a twin push
+# run on the same SHA. Push runs are for main only now; a branch
+# gets its run through its PR.
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
