@@ -646,11 +646,6 @@ pub struct BuildOptions {
     /// for the spellings. Ignored under any sanitizer and on wasm32,
     /// exactly as the env spelling is.
     pub lto: Option<LtoMode>,
-    /// GH #921 A2: how loudly the ownership shadow speaks. `None`
-    /// reads `LOTUS_OWNER_SHADOW` (unset = off), which is what the
-    /// CLI and a corpus run use; a test passes the mode so it never
-    /// has to mutate the process environment.
-    pub owner_shadow: Option<crate::ownership::ShadowMode>,
 }
 
 /// The per-build source table for DWARF emission: each entry is one
@@ -1584,9 +1579,6 @@ pub fn build_executable_with_options(
         replica_index_for_next_locus_instantiation: None,
         current_instantiation_replica_index: 0,
         owner_table,
-        owner_shadow: options
-            .owner_shadow
-            .unwrap_or_else(crate::ownership::shadow_mode),
         owner_site: None,
         in_fresh_temp_hook: false,
         current_fn_skip_exit_drain: false,
@@ -4803,14 +4795,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// params/subscriptions lower — what a `where key == replica`
     /// filter registers as the subscription key.
     pub(crate) current_instantiation_replica_index: u64,
-    /// GH #921 A2: the owner every locus-producing expression was
-    /// given by the pre-pass, before lowering. Built on every compile
-    /// so the pre-pass itself is exercised; READ only by the shadow
-    /// check, which compares it with what the seven one-shot flags
-    /// decide. A3 switches the consumers over one flag at a time.
+    /// GH #921 A2 / A3: the owner every locus-producing expression
+    /// was given by the pre-pass, before lowering. Lowering READS it
+    /// — a locus instantiation with no row in it is a
+    /// `CodegenError`, which is F.39's rule.
     pub(crate) owner_table: crate::ownership::OwnerTable,
-    /// GH #921 A2: how loudly the shadow speaks (`LOTUS_OWNER_SHADOW`).
-    pub(crate) owner_shadow: crate::ownership::ShadowMode,
     /// GH #921 A2: where the value about to be instantiated came
     /// from. One-shot, taken at the top of
     /// `lower_locus_instantiation` exactly like the flags it shadows,
@@ -7189,28 +7178,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     // ---------------------------------------------------------------
-    // GH #921 A2 — the shadow check
+    // GH #921 A3 — the site of the instantiation being lowered
     // ---------------------------------------------------------------
     //
-    // Three observation points cover all seven one-shot flags, each
-    // placed where the flags are CONSUMED:
-    //
-    //   * `owner_shadow_literal` — `lower_locus_instantiation`, after
-    //     `instantiating_for_parent_field`,
-    //     the placement a `placement { }` entry names and the
-    //     `returns_this_locus` / `current_user_fn_ret` spoof have all
-    //     been read;
-    //   * `owner_shadow_call` — the GH #402 hook at the top of
-    //     `lower_expr` and the GH #793 hook in `lower_or_expr` (both
-    //     read the table directly since GH #921 A3 commit 1);
-    //   * `owner_shadow_field_init` — the params-init loop, where the
-    //     owner's mask bit is decided (the table's, since GH #921 A3
-    //     commit 4).
-    //
-    // Nothing here emits anything. Under `LOTUS_OWNER_SHADOW=strict` a
-    // disagreement is a `CodegenError`; under `=1` / `=log` it is one
-    // line; unset, the comparison does not run at all, so an ordinary
-    // build is byte-for-byte what it was.
+    // `lower_locus_instantiation` resolves its own owner from the
+    // table, keyed by the id the pre-pass wrote into the node. These
+    // hand it that id. A node codegen builds itself either carries
+    // the id of the source expression it stands for (the
+    // generic-struct path rewrites do) or declares its owner
+    // (`declared_owner`); anything else is refused there.
 
     /// The pre-pass's id for this node, or `Unindexed` when codegen
     /// built the node itself (a generic-struct path rewrite, a
@@ -7255,156 +7231,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
-    fn owner_shadow_off(&self) -> bool {
-        self.owner_shadow == crate::ownership::ShadowMode::Off
-    }
-
-    /// One disagreement: log it, or refuse the build under `strict`.
-    fn owner_shadow_say(&self, line: String) -> Result<(), CodegenError> {
-        match self.owner_shadow {
-            crate::ownership::ShadowMode::Off => Ok(()),
-            crate::ownership::ShadowMode::Log => {
-                crate::ownership::report(&line);
-                Ok(())
-            }
-            crate::ownership::ShadowMode::Strict => {
-                Err(CodegenError::Unsupported(format!(
-                    "owner-shadow (GH #921 A2): {line}"
-                )))
-            }
-        }
-    }
-
-    /// The site of the instantiation about to be lowered, described
-    /// for a disagreement line.
-    fn owner_shadow_site_desc(
-        site: Option<crate::ownership::Site>,
-    ) -> String {
-        match site {
-            Some(crate::ownership::Site::Expr(id)) => {
-                format!("expression #{}", id.0)
-            }
-            Some(crate::ownership::Site::Unindexed(sp)) => format!(
-                "a node the pre-pass never numbered (bytes {}..{})",
-                sp.start.0, sp.end.0
-            ),
-            Some(crate::ownership::Site::Synthesized(what)) => {
-                format!("a synthesised site ({what})")
-            }
-            None => "an uninstrumented site".to_string(),
-        }
-    }
-
-    /// The instantiation half. `flags` is the disposition the seven
-    /// flags just decided for this literal.
-    pub(crate) fn owner_shadow_literal(
-        &mut self,
-        locus_name: &str,
-        site: Option<crate::ownership::Site>,
-        flags: crate::ownership::Disposition,
-    ) -> Result<(), CodegenError> {
-        if self.owner_shadow_off() {
-            return Ok(());
-        }
-        let id = match site {
-            Some(crate::ownership::Site::Expr(id)) => id,
-            // A node codegen built rather than parsed, or a
-            // synthesised instantiation that declares itself: not a
-            // missing decision, but listed so a corpus run says how
-            // many there are.
-            other => {
-                return self.owner_shadow_say(format!(
-                    "unindexed literal `{}` at {} — flags say {}",
-                    locus_name,
-                    Self::owner_shadow_site_desc(other),
-                    flags
-                ));
-            }
-        };
-        let Some(entry) = self.owner_table.entry(id) else {
-            return self.owner_shadow_say(format!(
-                "MISSING: locus `{}` is instantiated at expression #{} \
-                 and the owner table has no decision for it — flags \
-                 say {}",
-                locus_name, id.0, flags
-            ));
-        };
-        let table = self.owner_table.disposition(entry);
-        if table == flags {
-            return Ok(());
-        }
-        let line = format!(
-            "literal: table says {}, flags say {} — {}",
-            table,
-            flags,
-            self.owner_table.describe(id)
-        );
-        self.owner_shadow_say(line)
-    }
-
-    /// The field-ownership-predicate half: does the owner's
-    /// `__locus_ref_owned_mask` bit claim this initialiser's value?
-    pub(crate) fn owner_shadow_field_init(
-        &mut self,
-        owner_locus: &str,
-        field: &str,
-        e: &Expr,
-        flags_owned: bool,
-    ) -> Result<(), CodegenError> {
-        if self.owner_shadow_off() {
-            return Ok(());
-        }
-        let (table_owned, what) = match self.owner_table.leaf_entry_of(e)
-        {
-            Some(entry) => (
-                matches!(
-                    &entry.owner,
-                    crate::ownership::Owner::Field { .. }
-                        | crate::ownership::Owner::Placement(_)
-                ),
-                format!(
-                    "{} `{}` in {} ({})",
-                    entry.what, entry.name, entry.decl, entry.position
-                ),
-            ),
-            // A name in field position carries no node id; GH #730's
-            // `Borrowed` rows are keyed by the field instead.
-            None => match self
-                .owner_table
-                .borrowed_entry(owner_locus, field)
-            {
-                Some(_) => (false, "a borrowed handle".to_string()),
-                None => return Ok(()),
-            },
-        };
-        if table_owned == flags_owned {
-            return Ok(());
-        }
-        let line = format!(
-            "field init `{}.{}`: table says the field {} the value, \
-             flags say it {} — {}",
-            owner_locus,
-            field,
-            if table_owned { "owns" } else { "does not own" },
-            if flags_owned { "does" } else { "does not" },
-            what
-        );
-        self.owner_shadow_say(line)
-    }
-
-    /// hale-bun upstream item 3: diagnostic for a qualified path
-    /// that resolves to nothing. The old message blamed the
-    /// *position* ("qualified-name struct literal in expression
-    /// position") when the actual problem is the *name* —
-    /// expression position is fully supported for names that
-    /// resolve, so `std::process::Output` (real name:
-    /// `ProcessOutput`) sent its reporter hunting a nonexistent
-    /// positional restriction. Name the real failure and suggest:
-    /// substring match against siblings under the same prefix
-    /// first (`Output` → `ProcessOutput` is edit-distance 7,
-    /// far past any sane nearest-name threshold, but exactly the
-    /// mistake users make), nearest-name second, then list what
-    /// the prefix actually provides.
     pub(crate) fn unknown_qualified_path_msg(&self, segs: &[&str]) -> String {
         let path = segs.join("::");
         let base = format!("unknown qualified name `{}`", path);
@@ -23843,12 +23669,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let verdict = self
                         .owner_table
                         .temp_verdict(self.owner_table.entry_of(e));
-                    // A row the table has no decision for is a
-                    // missing decision, not a value nobody owns —
-                    // F.39 gives every locus-producing expression an
-                    // owner. Until commit 7 makes that a hard
-                    // `CodegenError`, fall back to what an unarmed
-                    // flag did: this frame reclaims it.
+                    // No row is not "a value nobody owns" — F.39
+                    // gives every locus-producing expression an
+                    // owner. It is either a missing decision, which
+                    // the guard after the call refuses, or a factory
+                    // whose return is not a LOCUS at all:
+                    // `compute_fresh_locus_factories` does not check
+                    // that (`fn __http_parse_url(..) -> Url` is in
+                    // its map though `Url` is a `type`), and the
+                    // table filters those out because it has no
+                    // lowered type to filter on. Those reach here,
+                    // fail the `LocusRef` guard below, and register
+                    // nothing — exactly as they always did.
                     let (wants_temp, per_iteration) = match verdict {
                         crate::ownership::TempVerdict::SiteOwned => {
                             (false, false)
@@ -23892,6 +23724,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let res = self.lower_expr(e, scope);
                     self.in_fresh_temp_hook = false;
                     let (val, ty) = res?;
+                    // GH #921 A3, commit 7: F.39's rule on the call
+                    // half. A call that produced a LOCUS and has no
+                    // row is a node the pre-pass did not walk —
+                    // refuse it rather than pick a reclaim point.
+                    if ty == CodegenTy::LocusRef(lname.clone())
+                        && matches!(
+                            verdict,
+                            crate::ownership::TempVerdict::Nobody
+                        )
+                    {
+                        return Err(CodegenError::Unsupported(format!(
+                            "the call to `{}` produces locus `{}` and the \
+                             ownership pre-pass gave it no owner. Every \
+                             locus-producing expression is decided before \
+                             lowering — see spec/decisions.md F.39 — so \
+                             this is a compiler defect, not a program \
+                             error.",
+                            self.callee_fn_name(callee)
+                                .unwrap_or_else(|| "?".to_string()),
+                            lname
+                        )));
+                    }
                     if wants_temp
                         && ty == CodegenTy::LocusRef(lname.clone())
                         && !self.deferred_dissolves.is_empty()

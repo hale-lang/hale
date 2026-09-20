@@ -362,7 +362,17 @@ completes, so by then every child has been born.
 
 Five shapes, three timings (m82 — "locus all the way down";
 expression position generalized from receivers to every
-position by GH #711 / #812):
+position by GH #711 / #812).
+
+**Who reclaims a locus is decided before any code is emitted.**
+One pass over the program gives every locus-producing expression
+— a literal, a proven-fresh factory call, and each branch, arm
+and element of an `or`, a carrier or a composite separately — the
+owner the rules below name, and lowering reads that decision
+rather than making one as it goes. An instantiation the pass
+left undecided is refused, so the rules here hold by
+construction rather than by the order things happen to be
+lowered in (`spec/decisions.md` F.39).
 
 - **Statement-position literal** (`LocusName { ... };`, no
   binding and nothing done with the value): birth → run →
@@ -494,12 +504,16 @@ contract is a per-instantiation choice: a designation written
 at the literal (`Gateway { router: RouterV2 { } }`) overrides
 one written as the param's default, and the child torn down is
 the one that was actually constructed. Both spellings of
-construction reach an `interface`-typed param: `Queries { j:
-make_churner() }` — in the diverging-`or` spelling too — is the
-same transfer as `Queries { j: Churner { } }`, because the
-factory's declared return names the impl, and the child
-reclaimed is the impl the factory built rather than the one the
-param's default names (GH #895). A `reperspective` swap
+construction reach a param typed by a contract, whichever
+contract it is: `Queries { j: make_churner() }` is the same
+transfer as `Queries { j: Churner { } }`, and so is `Gateway {
+router: make_router_v1() }` into a `perspective(P)` param. The
+child reclaimed is the impl that was actually built rather than
+the one the param's default names (GH #895), and the `or`
+spellings transfer here exactly as they do into a locus-typed
+param — the diverging ones, where the factory's result is the
+only value the field can hold, and `or <substitute>`, where the
+field owns whichever branch ran. A `reperspective` swap
 does not change it either — the swap replaces code and keeps
 state, so the holder still owns the impl its designation built.
 
@@ -519,10 +533,13 @@ only the last one at scope exit. Control arriving at the same
 instantiation a second time is the end of the previous
 instance's life: it is torn down there, with the same
 `drain → dissolve → arena reclaim` the scope-exit flush runs,
-before the new one takes its place. This holds for both
-spellings — `let h = L { };` and a fresh literal used as a
-value — and for a `let` bound to a locus-returning factory, so
-a loop's residency is one instance, not one per iteration. A
+before the new one takes its place. This holds for every
+spelling — `let h = L { };`, a fresh literal used as a value, a
+`let` bound to a locus-returning factory, and a `let` whose RHS
+is an `if` / `match` / block or an ascribed array or tuple, where
+the reclaim is per ARM and per ELEMENT because that is where the
+value is built — so a loop's residency is one instance per
+site, not one per iteration. A
 locus that ESCAPES the iteration is unaffected, because it
 never had a slot here to begin with: a literal written directly
 as another locus's param field is parent-owned, and so are an

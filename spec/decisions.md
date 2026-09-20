@@ -3238,51 +3238,43 @@ backpressure questions, its own design conversation), and
 thread; parallelism is more single-threaded units, never a
 multi-worker pool).
 
-## Deferred & future work
-
 ### F.39 — Locus ownership is resolved before lowering (the owner table)
 
-**Status: APPROVED (GH #921, 2026-09-20); shadow mode shipped (A2, PR
-#937); A3 is switching the consumers over, one flag per commit.**
-Retired so far: `suppress_fresh_temp` — the frame-temporary question
-at a factory call is the table's `Owner` for that call's own node,
-and the proven-fresh-factory fixpoint counts carrier tails and
-resolves a returned binding through its own `let`, so `return if c {
-make(1) } else { make(2) }` and its `let`-named twin are both
-factories; and `defer_next_locus_dissolve` — a literal is reclaimed
-at the enclosing frame's flush whenever the table says the frame owns
-it (`Binding` or `FrameTemp`), and eagerly, at the end of its own
-expression, only where the spec already calls the value
-fire-and-forget: a bare statement literal; and
-`instantiating_for_parent_field` — a param field owns its
-initialiser's value because the table gave THAT node
-`Owner::Field`, so the receiver written inside a non-literal
-initialiser (`Holder { c: make(Cfg { }.seed()) }`, GH #896) is the
-enclosing frame's and is reclaimed there; and the FIELD-OWNERSHIP
-PREDICATES — the owner's `__locus_ref_owned_mask` bit is
-`Owner::Field` on the value's own node, through an `or`'s
-branches, a carrier's arms and a composite's elements, so an
-interface- or perspective-typed field claims its value exactly as a
-locus-typed one does; and `placement_for_next_locus_instantiation`
-— a `placement { }` entry belongs to the instance the entry names,
-claimed by the instantiation whose owner is `Placement(entry)`
-rather than taken from a slot the next literal lowered could pick
-up; and the `returns_this_locus` / `current_user_fn_ret` spoof —
-split in two, because it answered two questions. STORAGE
-("allocate where the caller can still see it") stays the
-conservative fact about the enclosing fn's declared return type;
-OWNERSHIP ("nobody here reclaims it") is the table's
-`Owner::Caller`, decided per node. A `bindings { }` transport,
-adapter or codec says the first explicitly and takes
-`Owner::Placement` for the second, instead of spoofing the fn's
-return type to get both. All seven are gone. The
-observable rules in `spec/semantics.md` § *Dissolve timing rules* do
-not change — this makes them true by construction.
+**Status: SHIPPED.** Approved on GH #921 (2026-09-20), computed and
+checked in shadow mode by A2 (PR #937), and read by lowering since A3.
+All seven one-shot flags are gone:
+
+| flag | what reads the decision now |
+|---|---|
+| `suppress_fresh_temp` | the table's `Owner` for the factory call's own node, at the GH #402 and GH #793 hooks |
+| `or_field_owner_locus` | nothing: the `or` substitute is its own node and carries the field's decision |
+| `defer_next_locus_dissolve` | `Owner::Binding` / `Owner::FrameTemp` — the frame owns it, so the frame's flush reclaims it |
+| `instantiating_for_parent_field` | `Owner::Field` (or `Owner::Placement`) on the node the field's initialiser names |
+| the field-ownership predicates | the same row: the owner's `__locus_ref_owned_mask` bit is `Owner::Field`, whatever the field's declared type |
+| `placement_for_next_locus_instantiation` | `Owner::Placement(entry)`, claimed by the instantiation the entry names |
+| `returns_this_locus` / the `current_user_fn_ret` spoof | split: STORAGE stays the declared-return-type fact, OWNERSHIP is `Owner::Caller` |
+
+Reaching a locus instantiation the table has no row for is a
+`CodegenError` naming the expression — the answer to this note's
+second open question, and the reason the rules below hold by
+construction rather than by the order things happen to be lowered
+in. A literal codegen SYNTHESISES states its owner at the site
+(`Cx::declared_owner`): the `@export` singleton's prelude, a
+`reperspective` swap, and the `bindings { }` transport, adapter and
+codec preludes.
+
+The observable rules in `spec/semantics.md` § *Dissolve timing rules*
+do not change — this makes them true by construction. Two behaviours
+they already promised became true here: a `perspective(P)`-typed
+param owns a factory's result exactly as an `interface`-typed one
+does, and a carrier or composite `let` RHS inside a loop is reclaimed
+per ITERATION like every other loop-bound locus.
 
 **Why.** Every teardown leak and use-after-free fixed in the 2026-09-20
 sweep (#711/#812, #750, #789, #793, #815, #836, #837, #853, #871,
 #883, #890, #893, #895) was one of seven one-shot flags in
-`crates/hale-codegen` consumed by "the next literal (or call) lowered":
+`crates/hale-codegen` consumed by "the next literal (or call)
+lowered":
 `suppress_fresh_temp`, `defer_next_locus_dissolve`,
 `instantiating_for_parent_field`, `placement_for_next_locus_instantiation`,
 `or_field_owner_locus`, `returns_this_locus` (with the
@@ -3337,17 +3329,18 @@ with the placement machinery (`Placement`). Reaching an instantiation
 with no entry is a `CodegenError` — the assertion that turns "the flag
 was consumed by the wrong node" into a build failure with a span.
 
-**Shadow mode first (A2).** The table is computed and, in the first PR,
-only *checked* against what the flags decide, on every corpus program
-and every cell of the ownership shape matrix (A4); a disagreement is a
-test failure listing the expression. No behaviour changes. Then A3
-switches consumers one flag per commit and deletes the flag —
-`suppress_fresh_temp` → `defer_next_locus_dissolve` →
-`instantiating_for_parent_field` → `or_field_owner_locus` →
-`placement_for_next_locus_instantiation` → `returns_this_locus`
-(split into `Caller` and `Placement`; the adapter/codec binding
-preludes stop spoofing) — each commit un-marks the matrix cells it
-fixes.
+**How it shipped.** A2 computed the table and only *checked* it
+against what the flags decided, on every corpus program and every cell
+of the ownership shape matrix (A4), so a disagreement was a test
+failure listing the expression and no behaviour changed. A3 then
+switched the consumers over one flag per commit, each commit deleting
+its flag and un-marking the matrix cells it closed:
+`suppress_fresh_temp` (with `or_field_owner_locus`, whose only job was
+to carry the field's decision into `lower_or_expr`) →
+`defer_next_locus_dissolve` → `instantiating_for_parent_field` → the
+field-ownership predicates → `placement_for_next_locus_instantiation`
+→ the `returns_this_locus` spoof → the missing-owner rule. The 200
+open cells A4 listed went to zero.
 
 **Non-goals.** No new syntax. No change to when things dissolve
 (`spec/semantics.md` stays the contract). `let` inside a loop stays
@@ -3358,10 +3351,10 @@ loci and are outside this table (#713 is a separate ruling).
 home for GH #730 and #731: a handle passed *in* — an interface value
 from a parent's field, a designated perspective slot — is never owned
 by the receiver. (2) An instantiation with no owner is a hard
-`CodegenError` from the first A3 commit. In A2 it is an error under
+`CodegenError`. In A2 it was an error under
 `LOTUS_OWNER_SHADOW=strict` and a log line otherwise, because A2
-changes no behaviour and a build that used to succeed must still
-succeed. (3) The bindings transport is `Placement(entry)` — program
+changed no behaviour and a build that used to succeed had to still
+succeed; A3 made it the rule and retired the knob with the shadow. (3) The bindings transport is `Placement(entry)` — program
 lifetime, dissolved at main exit — not `Binding` in `fn main`'s frame.
 
 **What A2 settled that the note left implicit.** Five things the
@@ -3391,21 +3384,40 @@ shadow forced:
   `C` written in a member body of a locus whose `accept(c: C)` retains
   it is reclaimed by that acceptor's cascade, not by the frame that
   wrote it.
-* **Two instantiations have no source expression at all** — the
-  `@export` singleton's prelude and a `reperspective` swap — and a
-  third, the `bindings { T: unix(..) }` transport, is a literal
-  codegen builds itself. They declare themselves as synthesised sites;
-  A3 has to give them their owner directly rather than by reading a
-  table row.
+* **Some instantiations have no source expression at all** — the
+  `@export` singleton's prelude, a `reperspective` swap, and the
+  `bindings { }` transport, adapter and codec preludes, which are
+  literals codegen builds itself. They declare their owner at the site
+  (`Cx::declared_owner`) rather than reading a table row.
 
 **Borrowed's key.** `Expr::Ident` carries no id, so a field
 initialised from a NAME is recorded against `(owner locus, field)`
 rather than against the expression.
 
+**What A3 settled.** Three more:
+
+* **A bare `=` to a name the frame hands back is `Caller`**, the same
+  carve-out `let` already had. `fn f() -> Buf { let mut a = make(); a
+  = Buf { }; return a; }` otherwise gives the literal to the frame's
+  flush and the caller a reclaimed locus.
+* **The fresh-factory fixpoint resolves a returned BINDING**, not only
+  a returned expression, so `let t = <carrier>; return t;` is the same
+  program as `return <carrier>;` — which is what
+  `spec/semantics.md` § *Dissolve timing rules* already says. Once,
+  and only when the name is bound exactly once and never re-assigned.
+* **A `placement { }` entry is not a slot.** It travels as `(entry,
+  class)` scoped to the field's initialiser and is claimed by the
+  instantiation whose owner is `Placement(entry)`. As a one-shot slot
+  it could survive the params-init loop — a placed field whose
+  initialiser never reaches the instantiation lowering left a pinned
+  class behind for the next literal anywhere to take.
+
 
 Forward-looking items lifted from the spec files. These are design
 intent, **not current behavior** — grouped by the spec area they came
 from.
+
+## Deferred & future work
 
 ### semantics — What's deferred
 

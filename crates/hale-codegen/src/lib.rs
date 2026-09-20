@@ -52,8 +52,8 @@ pub(crate) mod stdlib;
 pub(crate) mod types;
 
 pub use ownership::{
-    resolve_owners, Disposition, Entry as OwnerEntry, ExprId, Owner,
-    OwnerTable, ScopeId, ScopeKind, ShadowMode, SlotId,
+    resolve_owners, Entry as OwnerEntry, ExprId, Owner, OwnerTable,
+    Produced, ScopeId, ScopeKind, SlotId,
 };
 
 pub use codegen::{

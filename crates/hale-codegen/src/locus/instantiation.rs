@@ -125,15 +125,62 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // which has no source expression for a table row to key on
         // and so states its owner at the site instead.
         let owner_site = std::mem::take(&mut self.owner_site);
-        let site_owner: Option<crate::ownership::Owner> =
+        //
+        // GH #921 A3, commit 7: F.39's rule, and no longer a shadow
+        // assertion. Every locus-producing expression is given an
+        // owner before lowering begins, so reaching an instantiation
+        // without one is a compiler defect — a node the pre-pass did
+        // not walk, or one codegen synthesised and did not declare an
+        // owner for. Refuse it, with the span, rather than emit a
+        // program whose teardown is decided by whatever ran last.
+        let site_owner: crate::ownership::Owner =
             match std::mem::take(&mut self.declared_owner) {
-                Some(o) => Some(o),
+                Some(o) => o,
                 None => match owner_site {
                     Some(crate::ownership::Site::Expr(id)) => self
                         .owner_table
                         .entry(id)
-                        .map(|e| e.owner.clone()),
-                    _ => None,
+                        .map(|e| e.owner.clone())
+                        .ok_or_else(|| {
+                            CodegenError::Unsupported(format!(
+                                "locus `{}` is instantiated at an \
+                                 expression the ownership pre-pass gave \
+                                 no owner (expression #{}). Every \
+                                 locus-producing expression is decided \
+                                 before lowering — see spec/decisions.md \
+                                 F.39 — so this is a compiler defect, not \
+                                 a program error.",
+                                locus_name, id.0
+                            ))
+                        })?,
+                    Some(crate::ownership::Site::Unindexed(sp)) => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "locus `{}` is instantiated at a node the \
+                             ownership pre-pass never numbered (bytes \
+                             {}..{}); a node codegen builds itself has to \
+                             carry the id of the source expression it \
+                             stands for, or declare its owner. See \
+                             spec/decisions.md F.39.",
+                            locus_name, sp.start.0, sp.end.0
+                        )));
+                    }
+                    Some(crate::ownership::Site::Synthesized(what)) => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "locus `{}` is instantiated at a synthesised \
+                             site ({}) that declares no owner. See \
+                             spec/decisions.md F.39.",
+                            locus_name, what
+                        )));
+                    }
+                    None => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "locus `{}` is instantiated at an \
+                             uninstrumented site: nothing handed \
+                             `lower_locus_instantiation` the expression \
+                             it is lowering. See spec/decisions.md F.39.",
+                            locus_name
+                        )));
+                    }
                 },
             };
         // GH #253: high-water mark of the enclosing deferred-
@@ -178,10 +225,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let defer_for_let = !is_bare_stmt
             && !matches!(
                 site_owner,
-                Some(crate::ownership::Owner::Field { .. })
-                    | Some(crate::ownership::Owner::Caller)
-                    | Some(crate::ownership::Owner::Placement(_))
-                    | Some(crate::ownership::Owner::Borrowed(_))
+                crate::ownership::Owner::Field { .. }
+                    | crate::ownership::Owner::Caller
+                    | crate::ownership::Owner::Placement(_)
+                    | crate::ownership::Owner::Borrowed(_)
             );
         // Phase-2 (2): the parent locus is constructing us as a
         // field default / override, so it owns us — no eager
@@ -203,8 +250,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // initialiser.
         let parent_owns_via_field = matches!(
             site_owner,
-            Some(crate::ownership::Owner::Field { .. })
-                | Some(crate::ownership::Owner::Placement(_))
+            crate::ownership::Owner::Field { .. }
+                | crate::ownership::Owner::Placement(_)
         );
         // F.31 (2026-05-23): consume any placement override the
         // caller set. The override is applied to a LOCAL clone of
@@ -231,14 +278,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let placement_override = match (&site_owner, &self.placement_for_field)
         {
             (
-                Some(crate::ownership::Owner::Placement(entry)),
+                crate::ownership::Owner::Placement(entry),
                 Some((field, class)),
             ) if field == entry => Some(class.clone()),
             _ => None,
         };
-        // GH #921 A2: the override is folded into `info` below, so the
-        // shadow records the answer before it is consumed.
-        let placement_overridden = placement_override.is_some();
         // Topology arena-on-node: consume the parallel NUMA-node
         // override (set for `pinned(node/l3)` fields) so the Fresh
         // arena create below binds this locus's arena to its node.
@@ -410,7 +454,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             })
             .unwrap_or(false);
         let returns_this_locus =
-            matches!(site_owner, Some(crate::ownership::Owner::Caller));
+            matches!(site_owner, crate::ownership::Owner::Caller);
         // A literal codegen builds for a program-lifetime slot — a
         // `bindings { }` transport, adapter or codec — needs the same
         // STORAGE and none of the ownership. It used to get both by
@@ -480,35 +524,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None => None,
         };
         let bubbled = bubble_owner_name.is_some();
-        // GH #921 A2 — shadow. Every flag that decides who reclaims
-        // this instance has now been read; say what they decided and
-        // compare with the owner table. Nothing is emitted either way.
-        {
-            let flag_disposition = if placement_overridden
-                || matches!(info.schedule_class, ScheduleClass::Pinned(_))
-            {
-                crate::ownership::Disposition::Placement
-            } else if returns_this_locus {
-                crate::ownership::Disposition::Caller
-            } else if parent_accepts_us || bubbled || parent_owns_via_field
-            {
-                crate::ownership::Disposition::Owned
-            } else {
-                // Deferred to the frame's flush, or dissolved eagerly
-                // at the end of its own expression — both are this
-                // frame reclaiming it. Inside a loop the deferred slot
-                // carries GH #815's reuse teardown, so it is reclaimed
-                // once per iteration.
-                crate::ownership::Disposition::Frame {
-                    per_iteration: !self.loops.is_empty(),
-                }
-            };
-            self.owner_shadow_literal(
-                locus_name,
-                owner_site,
-                flag_disposition,
-            )?;
-        }
         // Pool-inheritance fix (2026-05-29): is this locus owned
         // beyond the enclosing scope? Only owned loci may inherit
         // the current pool at runtime (post run() / pool-tag their
@@ -2406,36 +2421,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 continue;
             }
-            // GH #871: arm the parent-owned flag only for a field
-            // that can actually HOLD the locus the flag hands over.
-            //
-            // The flag is consumed by the first locus literal
-            // lowered while it is set, and that literal is then
-            // parent-owned: no eager dissolve, its struct allocated
-            // in the owner's arena, and — the part that bites — never
-            // pushed onto a deferred-dissolve frame, because the
-            // owner's cascade is supposed to reach it. For an `Int`
-            // (or `String`, or any other non-locus) field the owner
-            // has nowhere to put it, so the cascade never can:
-            // `Lonely { n: Queries { j: Churner { } }.total() }` left
-            // the whole `Queries` tree alive at exit, while the same
-            // literal written as a statement or a `let` is reclaimed.
-            // Arming on the DECLARED FIELD TYPE keeps the transfer
-            // exactly where an owner exists; everywhere else the
-            // literal stays an ordinary expression-position temporary
-            // owned by the enclosing fn scope (GH #711 / #814).
-            let field_can_hold_locus = match info.fields.get(fname.as_str())
-            {
-                Some((_, ty)) => matches!(
-                    ty,
-                    CodegenTy::LocusRef(_)
-                        | CodegenTy::Interface(_)
-                        | CodegenTy::Perspective(_)
-                ),
-                // Can't happen (declare_locus_struct declares every
-                // param); keep the old behavior if it ever does.
-                None => true,
-            };
+            // GH #871's rule — a transfer into a field only where
+            // the field can actually HOLD a locus, since for an `Int`
+            // (or `String`, or anything else) the owner has nowhere
+            // to put it and its cascade can never reach it — is the
+            // table's: `walk_field_init` gives `Owner::Field` only to
+            // a HOLDER field's initialiser, and everything else stays
+            // an expression-position temporary of the enclosing frame
+            // (GH #711 / #814). `Lonely { n: Queries { j: Churner { }
+            // }.total() }` left the whole `Queries` tree alive at
+            // exit before that rule existed.
             // 2026-05-24: if THIS locus is m90-routed to payload
             // arena, route each child literal there too. Child's
             // own `lower_locus_instantiation` consumes the flag
@@ -2708,29 +2703,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                      got {:?}",
                     locus_name, fname, declared_ty, val_ty
                 )));
-            }
-            // GH #921 A2 — shadow. This is the owner's
-            // `__locus_ref_owned_mask` bit in its final form: the
-            // field-ownership predicates decided it, GH #895's
-            // interface refinement just adjusted it, and nothing
-            // moves it again. Ask the table the same question.
-            if field_can_hold_locus {
-                let init_expr: Option<&Expr> =
-                    match overrides.get(fname.as_str()) {
-                        Some(e) => Some(e),
-                        None => match default {
-                            DefaultInit::Expr(e) => Some(e),
-                            _ => None,
-                        },
-                    };
-                if let Some(e) = init_expr {
-                    self.owner_shadow_field_init(
-                        locus_name,
-                        fname,
-                        e,
-                        owned_via_literal,
-                    )?;
-                }
             }
             // Bus-arena reclaim follow-up (2026-05-21): when this
             // instantiation runs inside a method body, the

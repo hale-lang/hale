@@ -1,5 +1,4 @@
-//! The ownership pre-pass — GH #921 A2, retired into lowering by
-//! A3.
+//! The ownership pre-pass — GH #921 A2, read by lowering since A3.
 //!
 //! Two halves, both about `hale_codegen::ownership`:
 //!
@@ -7,16 +6,18 @@
 //!      F.39 names, asserting the owner the table gives the
 //!      locus-producing expression there. These are the contract
 //!      lowering reads, so they are stated positively and not as
-//!      "whatever the flags do". They seed the fresh-factory fixpoint
-//!      EMPTY on purpose, so a derivation never passes because
-//!      `compute_fresh_locus_factories` happened to agree.
-//!   2. **the shadow** — the same programs built under
-//!      `ShadowMode::Strict`, where a disagreement between the table
-//!      and a flag that still decides something is a `CodegenError`.
-//!      A4's four `KNOWN_OPEN` families were pinned here as
-//!      `disagrees` cases and were A3's checklist; all four are
-//!      closed, so every shape is an `agrees` case and each names
-//!      the commit that closed it.
+//!      "whatever lowering happens to do". They seed the
+//!      fresh-factory fixpoint EMPTY on purpose, so a derivation
+//!      never passes because `compute_fresh_locus_factories`
+//!      happened to agree.
+//!   2. **the build** — the same programs compiled. Reaching a locus
+//!      instantiation the table has no row for is a `CodegenError`
+//!      (F.39's rule, A3 commit 7), so a build that succeeds is the
+//!      statement that every locus in the program was decided before
+//!      lowering began. A4's four `KNOWN_OPEN` families were pinned
+//!      here as shadow-mode DISAGREEMENTS and were A3's checklist;
+//!      all four are closed, and each is a shape here naming the
+//!      commit that closed it.
 //!
 //! Every program is assembled from ordinary `"…"` constants, never a
 //! RAW string literal, because `hale_corpus::embedded` harvests raw
@@ -27,7 +28,6 @@ use std::collections::BTreeMap;
 
 use hale_codegen::ownership::{
     resolve_owners, Entry, ExprId, Owner, OwnerTable, ScopeKind,
-    ShadowMode,
 };
 
 #[path = "support/harness.rs"]
@@ -490,7 +490,7 @@ fn a_factory_into_a_perspective_field_is_the_fields() {
 }
 
 #[test]
-fn the_shadow_is_green_on_a_factory_into_a_perspective_field() {
+fn every_locus_is_decided_in_a_factory_into_a_perspective_field() {
     let src = [
         PERSP_DECLS,
         "\nfn main() {\n    let h = PHolder { r: makep() };\n",
@@ -576,27 +576,15 @@ fn the_table_numbers_every_locus_producing_node_it_decides() {
 }
 
 // ===================================================================
-// 2 — the shadow
+// 2 — the build
 // ===================================================================
 
-fn strict() -> hale_codegen::BuildOptions {
-    hale_codegen::BuildOptions {
-        owner_shadow: Some(ShadowMode::Strict),
-        ..Default::default()
-    }
-}
-
-/// Build under `strict` and hand back the refusal, if any.
-fn shadow(src: &str, tag: &str) -> Option<String> {
+/// Build the program and hand back the refusal, if any.
+fn build(src: &str, tag: &str) -> Option<String> {
     let p = hale_syntax::parse_source(src)
         .unwrap_or_else(|e| panic!("{tag}: does not parse: {e:?}\n{src}"));
     let bin = harness::unique_bin(&["ownertab_", tag].concat());
-    let r = hale_codegen::build_executable_with_options(
-        &p,
-        &bin,
-        &[],
-        &strict(),
-    );
+    let r = hale_codegen::build_executable(&p, &bin);
     let _ = std::fs::remove_file(&bin);
     match r {
         Ok(()) => None,
@@ -604,17 +592,21 @@ fn shadow(src: &str, tag: &str) -> Option<String> {
     }
 }
 
+/// Every locus in this program is decided before lowering begins.
+/// A row the table does not have is a `CodegenError` naming the
+/// expression (F.39's rule, GH #921 A3 commit 7), so a clean build
+/// IS the assertion.
 fn agrees(src: &str, tag: &str) {
-    if let Some(e) = shadow(src, tag) {
+    if let Some(e) = build(src, tag) {
         panic!(
-            "{tag}: the owner table and the lowering flags disagree, and \
-             this shape is supposed to be green:\n{e}"
+            "{tag}: this shape must build — a locus the owner table \
+             has no row for is refused:\n{e}"
         );
     }
 }
 
 #[test]
-fn the_shadow_is_green_on_the_shapes_the_matrix_is_green_on() {
+fn every_locus_is_decided_in_the_shapes_the_matrix_is_green_on() {
     for (tag, payload) in [
         ("let_literal", "    let a = Subj { n: 1 };\n    println(\"u=\", a.probe());"),
         ("bare_stmt", "    Subj { n: 1 };"),
@@ -666,7 +658,7 @@ fn the_shadow_is_green_on_the_shapes_the_matrix_is_green_on() {
 /// that retired `suppress_fresh_temp`; they are green shapes now, and
 /// the matrix holds their cells to it.
 #[test]
-fn the_shadow_is_green_on_the_families_commit_one_closed() {
+fn every_locus_is_decided_in_the_families_commit_one_closed() {
     let carrier = [
         DECLS,
         "\nfn produce(c: Bool) -> Subj {\n",
@@ -711,7 +703,7 @@ fn the_shadow_is_green_on_the_families_commit_one_closed() {
 /// node itself now, and the table decided the receiver and the
 /// field's value separately.
 #[test]
-fn the_shadow_is_green_on_the_family_commit_three_closed() {
+fn every_locus_is_decided_in_the_family_commit_three_closed() {
     agrees(
         &program(
             "    let h = Holder { c: make(Cfg { }.seed()) };\n    println(\"u=\", h.peek());",
@@ -721,7 +713,7 @@ fn the_shadow_is_green_on_the_family_commit_three_closed() {
 }
 
 #[test]
-fn the_shadow_is_green_on_a_returned_literal_and_a_returned_factory() {
+fn every_locus_is_decided_in_a_returned_literal_and_a_returned_factory() {
     for (tag, produce) in [
         ("return_literal", "fn produce() -> Subj { return Subj { n: 1 }; }\n"),
         ("return_factory", "fn produce() -> Subj { return make(1); }\n"),
@@ -745,7 +737,7 @@ fn the_shadow_is_green_on_a_returned_literal_and_a_returned_factory() {
 /// interface-typed field does not have, so neither branch got the
 /// owner's mask bit and the frame had already stood back (F.17).
 #[test]
-fn the_shadow_is_green_on_the_family_commit_four_closed() {
+fn every_locus_is_decided_in_the_family_commit_four_closed() {
     agrees(
         &program(
             "    let h = IHolder { c: make_f(1) or make2(1) };\n    println(\"u=\", h.peek());",
