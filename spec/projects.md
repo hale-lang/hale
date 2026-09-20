@@ -335,6 +335,30 @@ where the same source produced different symbols.
 walk; a lib that imports itself or two libs that mutually import
 each other resolve once each and stop.
 
+**An alias binds in its own seed only, through the rename table
+too.** Two seeds in one build may choose the same alias for
+*different* libraries: if `a` says `import "../libx" as u;` and
+the app says `import "../liby" as u;`, `u::f()` in `a` is
+`libx`'s `f` and `u::f()` in the app is `liby`'s. Each reference
+resolves against the aliases of the seed it is written in, and
+the seed's files share one alias namespace exactly as they share
+one declaration namespace.
+
+The build holds that guarantee through the per-build path-rename
+table (`alias::Name -> mangled symbol`), which is keyed by the
+alias as written. When two seeds bind one alias name to different
+libraries the compiler gives each binder a scoped head of its own
+and rewrites that seed's own references to match, so the two
+cannot be confused; the alias the author wrote is what
+diagnostics show. Until GH #746 the table was flat: the last
+binding registered won, both seeds resolved to one library, and
+nothing reported it (`hale check` passed and the binary computed
+the wrong value).
+
+One seed whose own files disagree — the same alias bound to two
+libraries inside a single namespace — resolves to one of them, as
+it always has; the compiler does not (yet) reject that shape.
+
 ### No `pub` / `export`
 
 Every top-level decl in an imported seed is exported. There is
