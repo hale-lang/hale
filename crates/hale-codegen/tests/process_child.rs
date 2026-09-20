@@ -17,7 +17,9 @@
 //!    (within ~200ms grace; well under the 60s the child would
 //!    otherwise run).
 //! 5. an owner's dissolve reaps an unwaited child — the pid is gone
-//!    after the program exits, checked from outside it.
+//!    after the program exits, checked from outside it — for both
+//!    ways a handle comes to rest: moved into a field with `adopt`,
+//!    and named by a plain `let` at the factory call (GH #793).
 //!
 //! Resolves pond/subprocess FRICTION "no-async-child-lifecycle"
 //! and pond/agent/sandbox FRICTION "no-supervised-subprocess".
@@ -194,18 +196,13 @@ fn dissolve_reaps_unwaited_child() {
     // The claim is now checked where it is observable: from outside,
     // after the parent is gone.
     //
-    // The shape is the one that HAS an owner (GH #716): the handle is
-    // moved into a locus's `params` field with
+    // The shape here is the one that has an owner by MOVE (GH #716):
+    // the handle goes into a locus's `params` field with
     // `std::process::adopt`, and the owner's dissolve tears it down.
-    // A handle that is only `let`-bound from the factory does NOT
-    // reap today, and cannot be used to assert this: an instantiation
-    // that escapes by `return` is deliberately not pushed onto the
-    // caller's `deferred_dissolves` frame (`returns_this_locus` in
-    // `locus/instantiation.rs`, the m90 3f decision — "the locus
-    // leaks … live until process exit"), and the `let` at the call
-    // site registers nothing either, so no teardown runs for it
-    // anywhere. That is the GH #383 factory-return class, reported
-    // separately; `spec/memory.md` § Bound handles states it.
+    // The other shape — a handle only `let`-bound from the factory —
+    // is `dissolve_reaps_a_let_bound_child` below; it did not reap
+    // until GH #793, and this test's original form could not have
+    // caught either (it asserted only that the program exited).
     let src = r#"
         locus Job {
             params { child: std::process::Child = std::process::Child { }; }
@@ -245,6 +242,60 @@ fn dissolve_reaps_unwaited_child() {
         pid
     );
     // And the teardown must not block on the child's own 30s.
+    assert!(
+        elapsed.as_secs() < 10,
+        "dissolve-driven reap took {:?}, expected < 10s",
+        elapsed
+    );
+}
+
+#[test]
+fn dissolve_reaps_a_let_bound_child() {
+    // The plainest spelling there is — one `let`, no owner named —
+    // and the one GH #793 reported: the `sleep 30` was still in the
+    // process table with PPID 1 after the program exited, and the
+    // handle's arena and three pipe fds went with it.
+    //
+    // The cause was not `Child`-specific. A factory-returned locus is
+    // owned by the binding that names it (GH #383), and an unbound
+    // one by the frame (GH #402) — but both rules match on
+    // `Expr::Call`, and a FALLIBLE factory is reached through `or`,
+    // which is an `Expr::Or`. `spawn` is fallible, as is every
+    // factory that opens a descriptor, so the shape that most needs
+    // reclaiming was the shape neither rule saw.
+    //
+    // Checked from outside the program for the same reason as the
+    // adopt-shaped test above: `comm`, not the command line — a
+    // zombie keeps its comm and has an empty cmdline, so a cmdline
+    // check reads an unreaped child as gone.
+    let src = r#"
+        fn main() {
+            let c = std::process::spawn("sleep\n30") or raise;
+            println(c.pid);
+        }
+    "#;
+    let start = Instant::now();
+    let (stdout, stderr, status) =
+        build_and_run("dissolve_reaps_let_bound", src);
+    let elapsed = start.elapsed();
+    assert!(
+        status.success(),
+        "non-zero exit: {:?}, stderr: {}",
+        status,
+        stderr
+    );
+    let pid = stdout.trim();
+    assert!(
+        pid.parse::<i64>().map(|n| n > 0).unwrap_or(false),
+        "expected the spawned pid on stdout; got: {:?}",
+        stdout
+    );
+    assert!(
+        !sleep_alive(pid),
+        "the let-bound child ({}) outlived the program — the \
+         binding's scope did not kill + reap it (GH #793)",
+        pid
+    );
     assert!(
         elapsed.as_secs() < 10,
         "dissolve-driven reap took {:?}, expected < 10s",

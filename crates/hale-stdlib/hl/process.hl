@@ -50,24 +50,22 @@
 // of killing the parent.
 //
 // **fd cleanup and who runs it.** Child.dissolve() closes all three
-// pipe fds and reaps the process — but it only runs for a Child some
-// owner reclaims, and a Child that a FACTORY returned has no such
-// owner. `std::process::spawn` is a free fn returning a locus, and a
-// factory-returned locus is routed to a program-lifetime arena and
-// never reclaimed (GH #383 — "the leak is the safety mechanism"), so
-// its dissolve never runs:
+// pipe fds and reaps the process (TERM → wait 100ms → KILL →
+// waitpid), and it runs for whatever owns the handle. A `let` owns
+// what it names, so the plainest spelling cleans itself up:
 //
 //   let c = std::process::spawn("sleep\n30") or raise;
-//   // …fn returns: c's dissolve does NOT run. The pipe fds stay
-//   // open, the handle's arena leaks, and the child is still
-//   // running when the program exits.
+//   // …scope exits: c's dissolve closes the three pipe fds, kills
+//   // and reaps the child, and gives back the handle's arena.
 //
-// (This block used to claim the opposite — that scope exit cleaned a
-// let-bound spawn up. It did once, under m82; #383's ownership
-// decision changed it, and the comment drifted.)
+// (Until GH #793 it did not: a factory-returned locus went to a
+// program-lifetime arena, so the child was still running with PPID 1
+// after the program exited. The `or` a fallible factory is reached
+// through hid the call from the ownership rule.)
 //
-// To get teardown, the handle has to belong to something that IS
-// reclaimed — a locus's own `params` field:
+// To keep a child PAST the scope that spawned it, the handle has to
+// belong to something that outlives it — a locus's own `params`
+// field:
 //
 //   locus Job {
 //       params { child: std::process::Child = std::process::Child { }; }
@@ -77,8 +75,10 @@
 //       }
 //   }
 //
-// Now the owner's dissolve closes the pipes and reaps the child, and
-// `adopt` does the same for a handle it displaces.
+// `adopt` moves the pid and the three fds into the field and disarms
+// the source, so `s`'s own dissolve at the end of `start` releases
+// nothing and the OWNER's dissolve closes the pipes and reaps the
+// child — as does `adopt` itself for a handle it displaces.
 
 // User-facing capture-output struct. Returned by `std::process::run`.
 /// A finished child's exit code + captured stdout/stderr
@@ -113,9 +113,10 @@ type __StdProcessWaitOutcome {
 }
 
 // Lifecycle-bound subprocess handle. Construct via
-// `std::process::spawn(argv)` and move it into a Child an owner
-// reclaims — see "fd cleanup and who runs it" above; a let-bound
-// factory result is never reclaimed, so its dissolve never runs.
+// `std::process::spawn(argv)`; the binding that names it owns it and
+// its dissolve closes the pipes and reaps the child at scope exit.
+// To keep the child past that scope, move it into a Child an owner
+// reclaims — see "fd cleanup and who runs it" above.
 //
 // Methods are absent on purpose — the two-channel rule blocks
 // locus methods from declaring `fallible(E)`, and every
@@ -266,12 +267,11 @@ fn __std_process_adopt(dest: std::process::Child, src: std::process::Child) {
     __std_process_release(dest);
     // argv is CLONED, not aliased: the field's copy must be owned by
     // the field (the single-owner rule for cells), not a pointer into
-    // the arena `src` was built in. Not observable today — a
-    // factory-returned locus's arena is never reclaimed (GH #383,
-    // "the leak is the safety mechanism"), so the alias survives —
-    // which is exactly why the rule has to be kept by hand here: the
-    // day those loci get a real lifetime, an aliased argv is a read
-    // of freed memory rather than a stale string.
+    // the arena `src` was built in. This is now load-bearing rather
+    // than defensive — since GH #793 a factory-returned locus IS
+    // reclaimed, so `src`'s arena goes at the end of the scope that
+    // spawned it, and an aliased argv would be a read of freed
+    // memory rather than a stale string.
     dest.argv = std::str::clone(src.argv);
     dest.pid = src.pid;
     dest.stdin_fd = src.stdin_fd;

@@ -360,7 +360,7 @@ completes, so by then every child has been born.
 
 ### Dissolve timing rules
 
-Four shapes, three timings (m82 — "locus all the way down";
+Five shapes, three timings (m82 — "locus all the way down";
 expression position generalized from receivers to every
 position by GH #711 / #812):
 
@@ -391,6 +391,23 @@ position by GH #711 / #812):
   statement position too (`LocusName { ... }.method();`): only
   a literal whose value is *discarded* is torn down at the
   literal's own boundary.
+- **Factory result** (`let h = make(...);`, or the call used
+  directly as a value — `serve(make(...))`): the locus is built
+  inside the callee and handed back, so the expression that
+  consumes the handle is its owner, with **the same timing as a
+  let-bound literal**. A binding owns what it names; a call
+  result nothing names is owned by the enclosing fn's scope. This
+  is the same rule in the **fallible** spelling, where the call
+  is reached through `or` — `let c = std::process::spawn(argv)
+  or raise;` is reclaimed exactly as `let h = make(argv);` is,
+  and so is `or <substitute>`, where whichever branch produced
+  the value is the branch that gives it an owner (GH #793). Two
+  positions are excluded, because there the handle is *handed
+  on* rather than consumed: a result written directly as a locus-
+  or interface-typed **field of a locus literal**, which the
+  literal owns (F.17), and a binding the enclosing fn **returns**,
+  which the caller owns — dissolving either would free a value
+  another owner still holds.
 - **Long-lived** (locus has `bus subscribe`): always deferred,
   irrespective of binding shape — the locus must stay alive to
   receive published events between birth and the enclosing
