@@ -608,6 +608,11 @@ pub const SURFACES: &[NsSurface] = &[
         fns: &[
             e("__kill_escalate", EffectSet::SYSCALL), e("__pipe_read", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("__pipe_write", EffectSet::SYSCALL),
             e("__signal_pid", EffectSet::SYSCALL), e("__spawn", EffectSet::SYSCALL), e("__try_wait_pid", EffectSet::SYSCALL), e("__wait_pid", EffectSet::SYSCALL.union(EffectSet::BLOCK)),
+            // GH #716: adopt closes the outgoing handle's fds and
+            // TERM/KILL-reaps its process, so it carries the same
+            // syscall class as kill — not PURE, despite reading like
+            // an assignment.
+            e("adopt", EffectSet::SYSCALL),
             e("dump_arena_residency", EffectSet::SYSCALL), e("dump_pool_residency", EffectSet::SYSCALL),
             e("exit", EffectSet::SYSCALL), e("kill", EffectSet::SYSCALL), e("pid", EffectSet::SYSCALL), e("read_stderr", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("read_stdout", EffectSet::SYSCALL.union(EffectSet::BLOCK)),
             e("rss_bytes", EffectSet::SYSCALL), e("run", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("signal", EffectSet::SYSCALL), e("spawn", EffectSet::SYSCALL), e("try_wait", EffectSet::SYSCALL), e("wait", EffectSet::SYSCALL.union(EffectSet::BLOCK)),

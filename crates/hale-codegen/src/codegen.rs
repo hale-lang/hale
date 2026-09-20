@@ -25695,6 +25695,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "process", "exit"] => {
                 self.lower_std_process_exit(args, scope)
             }
+            // GH #716: std::process::adopt(dest, src) — move a
+            // spawned Child's pid + pipe fds into a Child the caller
+            // already owns (typically its own `params` field) and
+            // disarm the source, so exactly one handle owns the
+            // process. Non-fallible Unit, so statement position is
+            // the only position it has; the Hale-source body is
+            // `__std_process_adopt` in `hl/process.hl`.
+            ["std", "process", "adopt"] => {
+                let _ = self.lower_user_fn_call(
+                    "__std_process_adopt",
+                    args,
+                    scope,
+                )?;
+                Ok(())
+            }
             // 2026-05-16: word-tokenize into a caller-supplied
             // @form(vec) of String. Replaces the ~30-line byte-
             // walk loop every wordfreq agent reinvented. Returns
