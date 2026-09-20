@@ -2961,3 +2961,20 @@ pub fn remap_user_effects(items: &mut [TopDecl], map: &[u16]) {
         }
     }
 }
+
+/// GH #746: the author's spelling of an import-alias path head.
+///
+/// An alias is scoped to the seed that declares it, but the
+/// path-rename table the whole build resolves `alias::Name` through is
+/// keyed by the alias as written. When two seeds bind the same alias
+/// name to DIFFERENT libraries, the CLI gives each binder its own head
+/// (`u` -> `u$0`) and re-heads that seed's own references, so the
+/// table can tell them apart. `$` cannot occur in an identifier, so a
+/// head carrying one is always a scoped alias, and the part before it
+/// is what the author wrote — the spelling a diagnostic shows.
+pub fn unscoped_alias(head: &str) -> &str {
+    match head.split_once('$') {
+        Some((author, _)) => author,
+        None => head,
+    }
+}
