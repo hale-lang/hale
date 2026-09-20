@@ -1,0 +1,25 @@
+import "../core" as dna;
+
+fn check() {
+    let codec = dna::NativeJson { };
+    let b = std::bytes::BytesBuilder { };
+    let mut i = 1;
+    while i < 32 { b.append_u8(i); i = i + 1; }
+    b.append_str(" é 🧭 <literal> \\\"");
+    let exact = std::str::from_bytes(b.snapshot());
+    let doc = std::json::Builder { };
+    doc.begin_object(); doc.string_field("value", exact); doc.end_object();
+    std::test::assert_eq_str(dna::native_json_string(doc.result(), "value"), exact, "native field decoder preserves every non-NUL control and Unicode byte");
+    std::test::assert_eq_str(codec.decode("\"\\u00e9 \\uD83E\\uDDED\""), "é 🧭", "escaped BMP and paired supplementary scalars decode exactly");
+    std::test::assert_eq_str(codec.decode("\"\\u0000\""), "", "NUL is not a native string value");
+    std::test::assert_eq_str(codec.decode("\"\\uD83E\""), "", "unpaired high surrogate refuses");
+    std::test::assert_eq_str(codec.decode("\"\\uDDED\""), "", "unpaired low surrogate refuses");
+    std::test::assert_eq_str(codec.decode("\"\\u00xz\""), "", "invalid hex refuses");
+    std::test::assert_eq_str(codec.decode("\"\\q\""), "", "unknown escape refuses");
+    let verdict = dna::Verdict { command_id: "command/exact", review_id: "k:exact", subject_digest: "sha256:exact", verdict: "abstain", reviewer: "board-member", authority: "board", comment: exact };
+    let decision = dna::review_command_body(verdict, true, "", false, "");
+    std::test::assert(dna::review_command_matches(decision, verdict), "Review command decision round-trips its exact comment");
+    std::test::assert_eq_str(dna::review_command_verdict(verdict.command_id, decision).comment, exact, "Review replay retains control bytes");
+}
+main locus App { run() { check(); } }
+fn main() { App { }; }

@@ -8,6 +8,8 @@
 // the watermark and converges. The proposed and declined tiers are
 // kept too, so the graph shows what was asked and what was refused.
 
+import "../operations" as ops;
+
 type Applied {
     rows: Int = 0; // rows walked
     ratified: Int = 0;
@@ -24,12 +26,12 @@ type Applied {
 fn idea_of(digest: String, doc: String, provenance: String, accepted: Bool, revision: Int) -> dna::Idea {
     return dna::Idea {
         id: digest,
-        kind: std::json::find_string_field(doc, "kind"),
-        text: std::json::find_string_field(doc, "text"),
-        author: std::json::find_string_field(doc, "author"),
+        kind: dna::native_json_string(doc, "kind"),
+        text: dna::native_json_string(doc, "text"),
+        author: dna::native_json_string(doc, "author"),
         provenance: provenance, revision: revision, accepted: accepted,
-        name: std::json::find_string_field(doc, "name"),
-        supersedes: std::json::find_string_field(doc, "supersedes")
+        name: dna::native_json_string(doc, "name"),
+        supersedes: dna::native_json_string(doc, "supersedes")
     };
 }
 
@@ -84,14 +86,14 @@ fn apply_record(store: KnowledgeStore, j: dna::Journal, receipts: dna::Receipts)
                 out.error = "no receipt for " + digest + " (row " + to_string(i) + ")";
                 return out;
             }
-            let target = std::json::find_string_field(doc, "target");
+            let target = dna::native_json_string(doc, "target");
             let class = std::json::find_string_field(e.body, "class");
             if e.kind == "knowledge.ratified" {
                 // a retirement proposal carries no idea of its own: its
                 // effect is the `knowledge.retired` row that follows
-                if std::json::find_string_field(doc, "kind") != "retirement" {
+                if dna::native_json_string(doc, "kind") != "retirement" {
                     if !store.upsert(idea_of(digest, doc, "ratified", true, i), i) { out.error = store.last_error(); return out; }
-                    if !store.bind(dna::KnowledgeBinding { idea: digest, target: target, author: std::json::find_string_field(doc, "author"), class: class }) { out.error = store.last_error(); return out; }
+                    if !store.bind(dna::KnowledgeBinding { idea: digest, target: target, author: dna::native_json_string(doc, "author"), class: class }) { out.error = store.last_error(); return out; }
                 }
                 out.ratified = out.ratified + 1;
             } else if e.kind == "knowledge.proposed" {
@@ -115,6 +117,67 @@ fn apply_record(store: KnowledgeStore, j: dna::Journal, receipts: dna::Receipts)
         if e.kind == "knowledge.retired" {
             if !store.retire(e.entity, i) { out.error = store.last_error(); return out; }
             out.retired = out.retired + 1;
+        }
+        if e.kind == "knowledge.edge.linked" || e.kind == "knowledge.edge.unlinked" {
+            // Admission committed the effect and its exact command together.
+            // The graph is only a projection: validate the whole fact before
+            // applying, and replay the same tuple if a crash lost the watermark.
+            // Receipt restrictions remain the graph reader's policy; projecting
+            // an edge never independently makes either endpoint visible.
+            let codec = ops::KnowledgeCommandCodec { };
+            let fact = codec.decode_fact(e);
+            if !fact.valid || fact.context.application_id != j.read(0).digest {
+                out.error = "invalid knowledge edge fact (row " + to_string(i) + ")";
+                return out;
+            }
+            let c = fact.command;
+            let edge = dna::KnowledgeEdge { from: c.from_id, to: c.to_id, rel: c.rel };
+            let applied = if e.kind == "knowledge.edge.linked" { store.link(edge) } else { store.unlink(edge) };
+            if !applied {
+                let error = store.last_error();
+                out.error = if len(error) > 0 { error } else { "knowledge edge projection failed (row " + to_string(i) + ")" };
+                return out;
+            }
+        }
+        if e.kind == "knowledge.binding.bound" || e.kind == "knowledge.binding.unbound" {
+            let codec = dna::KnowledgeBindingCodec { }; let outer = ops::KnowledgeBindingCommandCodec { };
+            let effect = codec.effect_of(j, e); let r = effect.request;
+            let incoming = codec.fact(j, "knowledge.binding.requested", r.request_id, e.seq);
+            let admitted = outer.decode_fact(incoming);
+            if !effect.ok || !admitted.valid || admitted.context.application_id != j.read(0).digest || codec.started(admitted.binding) != codec.started(r) {
+                out.error = "invalid knowledge binding effect (row " + to_string(i) + ")"; return out;
+            }
+            let basis = codec.basis(j, receipts, r, e.seq);
+            if !basis.ok || basis.event_id != r.binding_basis {
+                out.error = "invalid knowledge binding basis (row " + to_string(i) + ")"; return out;
+            }
+            let subject = codec.subject_at(j, receipts, r.idea_id, e.seq);
+            if !subject.ok || !subject.ratified || (e.kind == "knowledge.binding.bound" && !subject.active) {
+                out.error = "invalid knowledge binding subject (row " + to_string(i) + ")"; return out;
+            }
+            let binding = dna::KnowledgeBinding { idea: r.idea_id, target: r.target, author: r.author, class: dna::classify_binding(r.author, r.target) };
+            let applied = if e.kind == "knowledge.binding.bound" { store.bind(binding) } else { store.unbind(binding) };
+            if !applied { out.error = "knowledge binding projection failed (row " + to_string(i) + ")"; return out; }
+        }
+        if e.kind == "knowledge.edge.reviewed_linked" || e.kind == "knowledge.edge.reviewed_unlinked" {
+            let codec = dna::KnowledgeEdgeCodec { }; let outer = ops::KnowledgeEdgeCommandCodec { }; let direct = ops::StrictKnowledgeDirectEdgeFacts { };
+            let effect = codec.effect_of(j, e); let r = effect.request;
+            let incoming = codec.fact(j, "knowledge.edge.requested", r.request_id, e.seq);
+            let admitted = outer.decode_fact(incoming);
+            if !effect.ok || !admitted.valid || admitted.context.application_id != j.read(0).digest || codec.started(admitted.edge) != codec.started(r) {
+                out.error = "invalid reviewed knowledge edge effect (row " + to_string(i) + ")"; return out;
+            }
+            let basis = codec.basis(j, receipts, direct, r, e.seq);
+            if !basis.ok || basis.event_id != r.edge_basis {
+                out.error = "invalid reviewed knowledge edge basis (row " + to_string(i) + ")"; return out;
+            }
+            let endpoints = codec.endpoints(j, receipts, r, e.seq);
+            if !endpoints.ok || !endpoints.ratified || (e.kind == "knowledge.edge.reviewed_linked" && !endpoints.active) {
+                out.error = "invalid reviewed knowledge edge endpoints (row " + to_string(i) + ")"; return out;
+            }
+            let edge = dna::KnowledgeEdge { from: r.from_id, to: r.to_id, rel: r.rel };
+            let applied = if e.kind == "knowledge.edge.reviewed_linked" { store.link(edge) } else { store.unlink(edge) };
+            if !applied { out.error = "reviewed knowledge edge projection failed (row " + to_string(i) + ")"; return out; }
         }
         i = i + 1;
         if !store.set_watermark(i) { out.error = store.last_error(); return out; }

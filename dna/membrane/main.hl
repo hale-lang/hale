@@ -25,6 +25,9 @@ main locus Client {
         publish dna::PressureRaised;
         publish dna::ConcernRaised;
         publish dna::PracticeRequested;
+        publish dna::KnowledgeNodeRequested;
+        publish dna::KnowledgeBindingRequested;
+        publish dna::KnowledgeEdgeRequested;
     }
     run() {
         if self.kind == "intent" {
@@ -36,12 +39,13 @@ main locus Client {
             };
         } else if self.kind == "verdict" {
             dna::ReviewVerdict <- dna::Verdict {
-                review_id: std::json::find_string_field(self.body, "review_id"),
-                subject_digest: std::json::find_string_field(self.body, "subject_digest"),
-                verdict: std::json::find_string_field(self.body, "verdict"),
-                reviewer: std::json::find_string_field(self.body, "reviewer"),
-                authority: std::json::find_string_field(self.body, "authority"),
-                comment: std::json::find_string_field(self.body, "comment")
+                command_id: dna::native_json_string(self.body, "command_id"),
+                review_id: dna::native_json_string(self.body, "review_id"),
+                subject_digest: dna::native_json_string(self.body, "subject_digest"),
+                verdict: dna::native_json_string(self.body, "verdict"),
+                reviewer: dna::native_json_string(self.body, "reviewer"),
+                authority: dna::native_json_string(self.body, "authority"),
+                comment: dna::native_json_string(self.body, "comment")
             };
         } else if self.kind == "observed" {
             dna::ExpressionObserved <- dna::Observation {
@@ -65,15 +69,28 @@ main locus Client {
             };
         } else if self.kind == "practice" {
             dna::PracticeRequested <- dna::PracticeRequest {
-                request_id: std::json::find_string_field(self.body, "request_id"),
-                name: std::json::find_string_field(self.body, "name"),
-                text: std::json::find_string_field(self.body, "text"),
-                by: std::json::find_string_field(self.body, "by"),
-                because: std::json::find_string_field(self.body, "because"),
-                supersedes: std::json::find_string_field(self.body, "supersedes")
+                request_id: dna::native_json_string(self.body, "request_id"),
+                name: dna::native_json_string(self.body, "name"),
+                text: dna::native_json_string(self.body, "text"),
+                by: dna::native_json_string(self.body, "by"),
+                because: dna::native_json_string(self.body, "because"),
+                supersedes: dna::native_json_string(self.body, "supersedes")
             };
+        } else if self.kind == "knowledge-node" {
+            let codec = dna::KnowledgeNodeRequestCodec { };
+            let request = codec.decode(self.body);
+            if !codec.valid(request) { println("membrane: invalid knowledge-node request"); return; }
+            dna::KnowledgeNodeRequested <- request;
+        } else if self.kind == "knowledge-binding" {
+            let codec = dna::KnowledgeBindingCodec { }; let request = codec.decode(self.body);
+            if !codec.valid(request) { println("membrane: invalid knowledge-binding request"); return; }
+            dna::KnowledgeBindingRequested <- request;
+        } else if self.kind == "knowledge-edge" {
+            let codec = dna::KnowledgeEdgeCodec { }; let request = codec.decode(self.body);
+            if !codec.valid(request) { println("membrane: invalid knowledge-edge request"); return; }
+            dna::KnowledgeEdgeRequested <- request;
         } else {
-            println("membrane: unknown kind `", self.kind, "` (intent | verdict | observed | pressure | concern | practice)");
+            println("membrane: unknown kind `", self.kind, "` (intent | verdict | observed | pressure | concern | practice | knowledge-node | knowledge-binding | knowledge-edge)");
             return;
         }
         // let the connect-role fanout flush before the process ends

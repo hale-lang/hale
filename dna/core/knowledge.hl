@@ -171,17 +171,17 @@ locus Knowledge {
 // `knowledge.ratified` names, and what the knowledge service applies
 // idempotently are all this digest.
 fn knowledge_document(i: Idea, target: String) -> String {
-    let b = std::json::Builder { };
-    b.begin_object();
-    b.string_field("kind", i.kind);
-    b.string_field("text", i.text);
-    b.string_field("author", i.author);
-    b.string_field("target", target);
-    b.string_field("provenance", if len(i.provenance) > 0 { i.provenance } else { "proposed" });
-    if len(i.name) > 0 { b.string_field("name", i.name); }
-    if len(i.supersedes) > 0 { b.string_field("supersedes", i.supersedes); }
-    b.end_object();
-    return b.result();
+    // Preserve the historical Builder bytes (field order, spaces and escape
+    // spelling) without accumulating a growing prefix for each text byte.
+    let b = std::bytes::BytesBuilder { };
+    b.append_str("{\"kind\": "); b.append_str(record_json_quote(i.kind));
+    b.append_str(", \"text\": "); b.append_str(record_json_quote(i.text));
+    b.append_str(", \"author\": "); b.append_str(record_json_quote(i.author));
+    b.append_str(", \"target\": "); b.append_str(record_json_quote(target));
+    b.append_str(", \"provenance\": "); b.append_str(record_json_quote(if len(i.provenance) > 0 { i.provenance } else { "proposed" }));
+    if len(i.name) > 0 { b.append_str(", \"name\": "); b.append_str(record_json_quote(i.name)); }
+    if len(i.supersedes) > 0 { b.append_str(", \"supersedes\": "); b.append_str(record_json_quote(i.supersedes)); }
+    b.append_str("}"); return std::str::from_bytes(b.snapshot());
 }
 
 // The review id a proposal's digest is known by: `k:` and the first

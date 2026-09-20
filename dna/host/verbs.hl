@@ -3,6 +3,7 @@
 // queue, a report, pressure, the fleet; and the catalog's probe.
 
 import "../core" as dna;
+import "../organization_runtime" as org_runtime;
 
 // One verb's answer: lines to print, or an error.
 type Answer {
@@ -911,11 +912,7 @@ fn schedule_verb(root: String, sub: String, id: String, who_flag: String) -> Ans
 // reader for a purpose, as a row in your name; `receipt show <digest>
 // --purpose <p>` reads it through the knowledge service in your name.
 
-fn knowledge_url(root: String) -> String {
-    if std::env::var_exists("HALE_DNA_KNOWLEDGE_URL") { return std::env::var("HALE_DNA_KNOWLEDGE_URL"); }
-    let saved = std::io::fs::read_file(root + "/.hale/dna/knowledge.url") or "";
-    return dna::trim_nl(saved);
-}
+fn knowledge_url(root: String) -> String { let authority = org_runtime::HostAuthority { root: root }; return authority.knowledge_url(); }
 
 fn vault_failed(e: std::http::HttpError) -> std::http::ClientResponse {
     return std::http::ClientResponse { status: 0, body: std::bytes::from_string("{\"error\": \"the knowledge service did not answer: " + e.kind + "\"}") };

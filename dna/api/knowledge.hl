@@ -1,0 +1,298 @@
+// Public Knowledge is an authenticated, read-only adapter. The private service
+// owns graph projection, visibility and pagination; browser input never supplies
+// a reader or authority. This seed deliberately does not import dna/knowledge.
+import "../core" as dna;
+import "../operations" as ops;
+
+type KnowledgeQuery {
+    ok: Bool = false;
+    id: String = "";
+    target: String = "";
+    cursor: String = "";
+    snapshot: String = "";
+    limit: Int = 25;
+}
+type KnowledgeRequest {
+    source: Source;
+    reader: String;
+    kind: String;
+    query: KnowledgeQuery;
+}
+type KnowledgeUpstream {
+    transport_ok: Bool = false;
+    status: Int = 0;
+    body: String = "";
+}
+interface KnowledgeProvider {
+    fn supported() -> Bool;
+    fn read(request: KnowledgeRequest) -> KnowledgeUpstream;
+}
+locus NoKnowledge {
+    params { }
+    fn supported() -> Bool { return false; }
+    fn read(request: KnowledgeRequest) -> KnowledgeUpstream { return KnowledgeUpstream { }; }
+}
+locus ConfiguredKnowledge {
+    params { url: String = ""; read_key: String = ""; }
+    fn supported() -> Bool { return len(self.url) > 0 && len(self.read_key) > 0; }
+    fn configured() -> Bool {
+        if !self.supported() || len(self.read_key) < 32 || len(self.read_key) > 4096 || len(self.url) > 2048 { return false; }
+        let mut i = 0;
+        while i < len(self.read_key) {
+            let c = std::str::byte_at_unchecked(self.read_key, i);
+            if c < 32 || c == 127 { return false; }
+            i = i + 1;
+        }
+        if !std::str::starts_with(self.url, "http://") && !std::str::starts_with(self.url, "https://") { return false; }
+        i = 0;
+        while i < len(self.url) {
+            let c = std::str::byte_at_unchecked(self.url, i);
+            if c <= 32 || c == 127 || c == 64 || c == 63 || c == 35 { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn read(request: KnowledgeRequest) -> KnowledgeUpstream {
+        if !self.configured() { return KnowledgeUpstream { }; }
+        let wire = KnowledgeWire { };
+        let body = wire.request_json(request);
+        if len(body) > 16384 { return KnowledgeUpstream { }; }
+        let base = if std::str::ends_with(self.url, "/") { self.url[0..(len(self.url) - 1)] } else { self.url };
+        let url = std::http::parse_url(base + "/graph/read") or std::http::Url { host: "" };
+        if len(url.host) == 0 { return KnowledgeUpstream { }; }
+        // Current native Client does not consume timeout_ms. A real enforced
+        // transport deadline remains a deployment prerequisite, not a claim
+        // made by this adapter. Zero retries also avoids replay/backoff.
+        let client = std::http::Client { max_retries: 0, max_body: 1048576 };
+        let bytes = std::bytes::BytesBuilder { };
+        let size = len(body);
+        let mut i = 0;
+        while i < size { bytes.append_u8(std::str::byte_at_unchecked(body, i)); i = i + 1; }
+        let response = client.request(std::http::ClientRequest {
+            method: "POST", url: url,
+            headers: "Authorization: Bearer " + self.read_key + "\r\nContent-Type: application/json",
+            body: bytes.snapshot()
+        }) or std::http::ClientResponse { status: 0, headers: "", body: b"" };
+        let text = std::str::from_bytes(response.body);
+        // Reject embedded NUL rather than accepting a truncated native String.
+        if len(text) != len(response.body) { return KnowledgeUpstream { }; }
+        return KnowledgeUpstream { transport_ok: response.status > 0, status: response.status, body: text };
+    }
+}
+
+locus KnowledgeWire {
+    params { }
+    fn raw(object: String, key: String) -> String { return std::json::find_field_raw(object, key); }
+    fn text(raw: String) -> Bool { return len(raw) >= 2 && std::str::starts_with(raw, "\"") && std::str::ends_with(raw, "\""); }
+    fn string(object: String, key: String) -> String {
+        let raw = self.raw(object, key);
+        if !self.text(raw) { return ""; }
+        let syntax = ops::OrganizationJson { };
+        return syntax.decode(raw);
+    }
+    fn integer(raw: String) -> Bool {
+        if len(raw) == 0 || len(raw) > 20 { return false; }
+        let number = std::str::parse_int(raw) or 0;
+        return to_string(number) == raw;
+    }
+    fn decimal(object: String, key: String, signed: Bool) -> Bool {
+        if !self.text(self.raw(object, key)) { return false; }
+        let value = self.string(object, key);
+        return self.integer(value) && (signed || !std::str::starts_with(value, "-"));
+    }
+    fn fields(object: String, names: String) -> Bool {
+        if !std::str::starts_with(std::str::trim(object), "{") { return false; }
+        let mut it = std::json::object_first(object);
+        let mut count = 0;
+        while !it.done {
+            let key = std::json::obj_key_string(it, object);
+            if !std::str::contains(" " + names + " ", " " + key + " ") { return false; }
+            count = count + 1;
+            it = std::json::object_next(it, object);
+        }
+        return count == dna::word_count(names);
+    }
+    fn texts(object: String, names: String) -> Bool {
+        let mut i = 0;
+        while i < dna::word_count(names) {
+            if !self.text(self.raw(object, dna::nth_word(names, i))) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn query(raw: String, kind: String) -> KnowledgeQuery {
+        let http = Http { };
+        let mut q = KnowledgeQuery { ok: true };
+        if len(raw) > 16384 { return KnowledgeQuery { }; }
+        let mut seen = "|";
+        let mut start = 0;
+        while start < len(raw) {
+            let tail = raw[start..len(raw)];
+            let amp = std::str::index_of(tail, "&");
+            let part = if amp < 0 { tail } else { tail[0..amp] };
+            let equals = std::str::index_of(part, "=");
+            if equals < 1 { return KnowledgeQuery { }; }
+            let key = http.decode(part[0..equals]);
+            let value = http.decode(part[(equals + 1)..len(part)]);
+            if !key.ok || !value.ok || len(value.text) == 0 || std::str::contains(key.text, "|") || std::str::contains(seen, "|" + key.text + "|") { return KnowledgeQuery { }; }
+            seen = seen + key.text + "|";
+            if key.text == "id" { if len(value.text) > 256 { return KnowledgeQuery { }; } q.id = value.text; }
+            else if key.text == "target" { if len(value.text) > 1024 { return KnowledgeQuery { }; } q.target = value.text; }
+            else if key.text == "cursor" { if len(value.text) > 8192 { return KnowledgeQuery { }; } q.cursor = value.text; }
+            else if key.text == "snapshot" { if len(value.text) > 256 { return KnowledgeQuery { }; } q.snapshot = value.text; }
+            else if key.text == "limit" {
+                let limit = http.integer(value.text, 100);
+                if limit < 1 || to_string(limit) != value.text { return KnowledgeQuery { }; }
+                q.limit = limit;
+            } else { return KnowledgeQuery { }; }
+            if amp < 0 { break; }
+            start = start + amp + 1;
+            if start == len(raw) { return KnowledgeQuery { }; }
+        }
+        if kind != "nodes" && kind != "edges" && kind != "bindings" && kind != "dependents" { return KnowledgeQuery { }; }
+        if kind != "nodes" && len(q.id) == 0 { return KnowledgeQuery { }; }
+        if len(q.id) > 0 && !dna::digest_well_formed(q.id) { return KnowledgeQuery { }; }
+        if len(q.snapshot) > 0 && !dna::digest_well_formed(q.snapshot) { return KnowledgeQuery { }; }
+        if len(q.cursor) > 0 && len(q.snapshot) == 0 { return KnowledgeQuery { }; }
+        return q;
+    }
+    fn request_json(request: KnowledgeRequest) -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("record_id", request.source.identity);
+        b.string_field("record_head", request.source.head);
+        b.string_field("record_revision", to_string(request.source.revision));
+        b.string_field("reader", request.reader);
+        b.string_field("kind", request.kind);
+        b.string_field("id", request.query.id);
+        b.string_field("target", request.query.target);
+        b.int_field("limit", request.query.limit);
+        b.string_field("cursor", request.query.cursor);
+        b.string_field("snapshot", request.query.snapshot);
+        b.end_object();
+        return b.result();
+    }
+    fn row(row: String, request: KnowledgeRequest) -> Bool {
+        if request.kind == "nodes" {
+            if !self.fields(row, "id kind text author projection_state revision accepted name supersedes ratified_seq source_provenance") || !self.texts(row, "id kind text author projection_state revision name supersedes ratified_seq") { return false; }
+            let accepted = self.raw(row, "accepted");
+            if (accepted != "true" && accepted != "false") || self.raw(row, "source_provenance") != "null" || !self.decimal(row, "revision", true) || !self.decimal(row, "ratified_seq", true) { return false; }
+            return dna::digest_well_formed(self.string(row, "id")) && (len(request.query.id) == 0 || self.string(row, "id") == request.query.id);
+        }
+        if request.kind == "edges" {
+            if !self.fields(row, "id from_id to_id rel") || !self.texts(row, "id from_id to_id rel") { return false; }
+            return dna::digest_well_formed(self.string(row, "id")) && dna::digest_well_formed(self.string(row, "from_id")) && dna::digest_well_formed(self.string(row, "to_id")) && (self.string(row, "from_id") == request.query.id || self.string(row, "to_id") == request.query.id);
+        }
+        if !self.fields(row, "id idea_id target author class applicability") || !self.texts(row, "id idea_id target author class applicability") { return false; }
+        let applicability = self.string(row, "applicability");
+        let target = self.string(row, "target");
+        if len(request.query.target) == 0 {
+            if applicability != "unfiltered" { return false; }
+        } else if target == request.query.target {
+            if applicability != "exact" { return false; }
+        } else if applicability != "ancestor" || !dna::is_ancestor(target, request.query.target) { return false; }
+        return dna::digest_well_formed(self.string(row, "id")) && self.string(row, "idea_id") == request.query.id;
+    }
+    fn source_token(value: String) -> Bool {
+        let size = len(value);
+        if size == 0 || size > 128 { return false; }
+        let mut i = 0;
+        while i < size {
+            let c = std::str::byte_at_unchecked(value, i);
+            if c < 32 || c == 127 { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn basis(basis: String, request: KnowledgeRequest) -> Bool {
+        if !self.fields(basis, "record_id projection_record_head projection_record_revision projection_watermark store_generation routing_version visibility_record_head visibility_record_revision visibility_ledger_head visibility_ledger_revision reader_scope target coverage") { return false; }
+        if !self.texts(basis, "record_id projection_record_head projection_record_revision projection_watermark store_generation routing_version visibility_record_head visibility_record_revision reader_scope target coverage") { return false; }
+        let numbers = "projection_record_revision projection_watermark store_generation routing_version visibility_record_revision";
+        let mut i = 0;
+        while i < dna::word_count(numbers) {
+            if !self.decimal(basis, dna::nth_word(numbers, i), false) { return false; }
+            i = i + 1;
+        }
+        let ledger_head = self.raw(basis, "visibility_ledger_head");
+        let ledger_revision = self.raw(basis, "visibility_ledger_revision");
+        if self.string(basis, "routing_version") == "0" {
+            if ledger_head != "null" || ledger_revision != "null" { return false; }
+        } else if !self.text(ledger_head) || !self.source_token(self.string(basis, "visibility_ledger_head")) || !self.decimal(basis, "visibility_ledger_revision", false) { return false; }
+        return self.string(basis, "record_id") == request.source.identity && self.string(basis, "projection_record_head") == request.source.head && self.string(basis, "visibility_record_head") == request.source.head && self.string(basis, "projection_record_revision") == to_string(request.source.revision) && self.string(basis, "visibility_record_revision") == to_string(request.source.revision) && self.string(basis, "projection_watermark") == to_string(request.source.revision) && self.string(basis, "reader_scope") == dna::digest_of("knowledge-reader/1\n" + request.reader) && self.string(basis, "target") == request.query.target && self.string(basis, "coverage") == "native_ideas_edges_bindings";
+    }
+    fn basis_snapshot(basis: String) -> String {
+        // Same fixed serialization order as the private graph protocol. Raw
+        // whitespace/key order or equivalent Unicode escapes cannot alter it.
+        let names = "record_id projection_record_head projection_record_revision projection_watermark store_generation routing_version visibility_record_head visibility_record_revision visibility_ledger_head visibility_ledger_revision reader_scope target coverage";
+        let b = std::json::Builder { };
+        b.begin_object();
+        let mut i = 0;
+        while i < dna::word_count(names) {
+            let key = dna::nth_word(names, i);
+            if self.raw(basis, key) == "null" { b.field(key, "null"); }
+            else { b.string_field(key, self.string(basis, key)); }
+            i = i + 1;
+        }
+        b.end_object();
+        return dna::digest_of(b.result());
+    }
+    fn unavailable() -> std::http::Response {
+        let http = Http { };
+        return http.error(503, "knowledge_unavailable", "the Knowledge read service is unavailable", true);
+    }
+    fn response(request: KnowledgeRequest, upstream: KnowledgeUpstream) -> std::http::Response {
+        let http = Http { };
+        let syntax = ops::OrganizationJson { };
+        if !upstream.transport_ok || len(upstream.body) > 1048576 || !syntax.valid(upstream.body) { return self.unavailable(); }
+        if upstream.status != 200 { return self.failure(upstream); }
+        let body = upstream.body;
+        if !self.fields(body, "api_version source data") || self.string(body, "api_version") != API_VERSION { return self.unavailable(); }
+        let source = self.raw(body, "source");
+        if !self.fields(source, "record_id record_head record_revision") || !self.texts(source, "record_id record_head record_revision") || !self.decimal(source, "record_revision", false) { return self.unavailable(); }
+        if self.string(source, "record_id") != request.source.identity || self.string(source, "record_head") != request.source.head || self.string(source, "record_revision") != to_string(request.source.revision) { return http.error(503, "knowledge_scope_mismatch", "the Knowledge source does not match this Record", true); }
+        let data = self.raw(body, "data");
+        if !self.fields(data, "items page basis coverage") { return self.unavailable(); }
+        let page = self.raw(data, "page");
+        if !self.fields(page, "limit returned has_more next_cursor snapshot") || !self.integer(self.raw(page, "limit")) || !self.integer(self.raw(page, "returned")) || !self.text(self.raw(page, "snapshot")) { return self.unavailable(); }
+        let snapshot = self.string(page, "snapshot");
+        let more = self.raw(page, "has_more");
+        let cursor = self.raw(page, "next_cursor");
+        if len(snapshot) == 0 || len(snapshot) > 256 || (more != "true" && more != "false") || (more == "false" && cursor != "null") || (more == "true" && (!self.text(cursor) || len(self.string(page, "next_cursor")) == 0 || len(self.string(page, "next_cursor")) > 8192)) { return self.unavailable(); }
+        if len(request.query.snapshot) > 0 && snapshot != request.query.snapshot { return http.error(409, "snapshot_changed", "the Knowledge view changed; begin a new page sequence", true); }
+        let limit = std::str::parse_int(self.raw(page, "limit")) or 0;
+        let returned = std::str::parse_int(self.raw(page, "returned")) or -1;
+        if limit != request.query.limit || returned < 0 || returned > limit || (more == "true" && returned == 0) { return self.unavailable(); }
+        if !self.basis(self.raw(data, "basis"), request) { return http.error(503, "knowledge_scope_mismatch", "the Knowledge basis does not match this reader and Record", true); }
+        if self.basis_snapshot(self.raw(data, "basis")) != snapshot { return self.unavailable(); }
+        let coverage = self.raw(data, "coverage");
+        if !self.fields(coverage, "bindings runs definitions practices") || self.string(coverage, "bindings") != "complete" || self.string(coverage, "runs") != "unavailable" || self.string(coverage, "definitions") != "unavailable" || self.string(coverage, "practices") != "unavailable" { return self.unavailable(); }
+        let items = self.raw(data, "items");
+        if !std::str::starts_with(items, "[") { return self.unavailable(); }
+        let mut rows = std::json::array_first(items);
+        let mut count = 0;
+        while !rows.done {
+            count = count + 1;
+            if count > limit || !self.row(rows.element, request) { return self.unavailable(); }
+            rows = std::json::array_next(rows);
+        }
+        if count != returned || (request.kind == "nodes" && len(request.query.id) > 0 && (count != 1 || more != "false")) { return self.unavailable(); }
+        // Rebuild the public envelope only from schema-checked data and the
+        // captured local Source. No upstream error text or extra fields pass.
+        let b = std::json::Builder { };
+        b.begin_object(); b.field("items", items); b.field("page", page);
+        b.field("basis", self.raw(data, "basis")); b.field("coverage", coverage); b.end_object();
+        return http.success(request.source, b.result());
+    }
+    fn failure(upstream: KnowledgeUpstream) -> std::http::Response {
+        let http = Http { };
+        if !self.fields(upstream.body, "api_version error") || self.string(upstream.body, "api_version") != API_VERSION { return self.unavailable(); }
+        let error = self.raw(upstream.body, "error");
+        if !self.fields(error, "code message retryable") || !self.texts(error, "code message") || (self.raw(error, "retryable") != "true" && self.raw(error, "retryable") != "false") { return self.unavailable(); }
+        let code = self.string(error, "code");
+        if upstream.status == 400 && code == "invalid_query" { return http.error(400, code, "the Knowledge query is invalid", false); }
+        if upstream.status == 404 && code == "knowledge_not_found" { return http.error(404, code, "no such visible Knowledge node", false); }
+        if upstream.status == 409 && code == "snapshot_changed" { return http.error(409, code, "the Knowledge view changed; begin a new page sequence", true); }
+        if upstream.status == 503 && (code == "knowledge_unsupported" || code == "knowledge_unavailable" || code == "knowledge_visibility_unavailable" || code == "knowledge_projection_unavailable" || code == "knowledge_scope_mismatch" || code == "knowledge_read_limit") { return http.error(503, code, "the Knowledge read is unavailable", code != "knowledge_unsupported"); }
+        return self.unavailable();
+    }
+}

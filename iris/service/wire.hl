@@ -1,0 +1,269 @@
+// Transport validation and encoding only. Providers own decisions and storage.
+import "../../dna/operations/organization_json" as syntax;
+
+const APPLICATION_PROFILE: String = "hale.application.v1";
+const APPLICATION_PREFIX: String = "/api/hale/v1/applications";
+
+type HeaderValue { valid: Bool = true; count: Int = 0; value: String = ""; }
+
+locus ApplicationWire {
+    params { }
+    fn text_ok(value: String, maximum: Int, nonempty: Bool) -> Bool {
+        let size = len(value);
+        let json = syntax::OrganizationJson { };
+        if size > maximum || (nonempty && size == 0) || !json.utf8(value, size) { return false; }
+        let mut i = 0;
+        while i < size {
+            let c = std::str::byte_at_unchecked(value, i);
+            if c < 32 || c == 127 { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn actor_ok(actor: Actor) -> Bool {
+        return actor.mode == "trusted_local" && self.identifier(actor.name);
+    }
+    fn identifier(value: String) -> Bool {
+        let size = len(value);
+        if size < 1 || size > 128 { return false; }
+        let mut i = 0;
+        while i < size {
+            let c = std::str::byte_at_unchecked(value, i);
+            if !((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 46 || c == 95 || c == 58 || c == 45) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn hex_id(value: String) -> Bool {
+        if len(value) != 64 { return false; }
+        let mut i = 0;
+        while i < 64 {
+            let c = std::str::byte_at_unchecked(value, i);
+            if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn decimal(value: String) -> Bool {
+        let size = len(value);
+        if size < 1 || size > 19 || (size > 1 && std::str::starts_with(value, "0")) { return false; }
+        let maximum = "9223372036854775807";
+        let mut equal = true; let mut i = 0;
+        while i < size {
+            let c = std::str::byte_at_unchecked(value, i);
+            if c < 48 || c > 57 { return false; }
+            if size == 19 && equal {
+                let m = std::str::byte_at_unchecked(maximum, i);
+                if c > m { return false; }
+                if c < m { equal = false; }
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn raw(object: String, key: String) -> String { return std::json::find_field_raw(object, key); }
+    fn text(object: String, key: String) -> String {
+        let value = self.raw(object, key);
+        if len(value) < 2 || !std::str::starts_with(value, "\"") || !std::str::ends_with(value, "\"") { return ""; }
+        let json = syntax::OrganizationJson { };
+        return json.decode(value);
+    }
+    // Used only after OrganizationJson.valid rejects duplicates and escaped keys.
+    fn fields(object: String, names: String, expected: Int) -> Bool {
+        if !std::str::starts_with(std::str::trim(object), "{") { return false; }
+        let mut count = 0; let mut it = std::json::object_first(object);
+        while !it.done {
+            let key = std::json::obj_key_string(it, object);
+            if !std::str::contains(" " + names + " ", " " + key + " ") { return false; }
+            count = count + 1; it = std::json::object_next(it, object);
+        }
+        return count == expected;
+    }
+    fn parse(body: String, application_id: String) -> Command {
+        let json = syntax::OrganizationJson { };
+        if len(body) > 8192 || !json.valid(body) || !self.fields(body, "request_id operation operation_version context target preconditions arguments", 7) { return Command { }; }
+        let context = self.raw(body, "context"); let target = self.raw(body, "target");
+        let conditions = self.raw(body, "preconditions"); let arguments = self.raw(body, "arguments");
+        let actor = self.raw(conditions, "principal");
+        if !self.fields(context, "application_id", 1) || !self.fields(target, "application_id kind id", 3) || !self.fields(conditions, "incarnation_id revision principal", 3) || !self.fields(actor, "mode name", 2) || !self.fields(arguments, "value", 1) { return Command { }; }
+        let command = Command {
+            request_id: self.text(body, "request_id"), operation: self.text(body, "operation"), operation_version: self.text(body, "operation_version"),
+            application_id: self.text(context, "application_id"), target_application_id: self.text(target, "application_id"),
+            target_kind: self.text(target, "kind"), target_id: self.text(target, "id"),
+            incarnation_id: self.text(conditions, "incarnation_id"), revision: self.text(conditions, "revision"),
+            expected_principal_mode: self.text(actor, "mode"), expected_principal_name: self.text(actor, "name"), value: self.text(arguments, "value")
+        };
+        if command.application_id != application_id || command.target_application_id != application_id || !self.hex_id(application_id) || command.target_kind != "application.control" || !self.identifier(command.target_id) || !self.identifier(command.request_id) || !self.identifier(command.operation) || !self.identifier(command.operation_version) || !self.hex_id(command.incarnation_id) || !self.decimal(command.revision) || !self.actor_ok(Actor { mode: command.expected_principal_mode, name: command.expected_principal_name }) || !self.identifier(command.value) { return Command { }; }
+        let mut result = command; result.valid = true; return result;
+    }
+    fn header(headers: String, name: String) -> HeaderValue {
+        let size = len(headers);
+        if size > 16384 { return HeaderValue { valid: false }; }
+        let mut result = HeaderValue { }; let mut start = 0;
+        while start < size {
+            let tail = headers[start..size]; let split = std::str::index_of(tail, "\r\n");
+            let line = if split < 0 { tail } else { tail[0..split] };
+            let colon = std::str::index_of(line, ":");
+            if colon < 1 { return HeaderValue { valid: false }; }
+            let key = line[0..colon]; let mut i = 0;
+            while i < len(key) {
+                let c = std::str::byte_at_unchecked(key, i);
+                if !((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || std::str::contains("!#$%&'*+-.^_`|~", key[i..(i + 1)])) { return HeaderValue { valid: false }; }
+                i = i + 1;
+            }
+            let value = std::str::trim(line[(colon + 1)..len(line)]);
+            i = 0;
+            while i < len(value) {
+                let c = std::str::byte_at_unchecked(value, i);
+                if c < 32 || c == 127 { return HeaderValue { valid: false }; }
+                i = i + 1;
+            }
+            if std::str::lower(key) == std::str::lower(name) { result.count = result.count + 1; result.value = value; }
+            if split < 0 { break; }
+            start = start + split + 2;
+        }
+        return result;
+    }
+    fn guard(req: std::http::Request, host: String, origin: String) -> String {
+        let h = self.header(req.headers, "host"); let o = self.header(req.headers, "origin");
+        let length = self.header(req.headers, "content-length"); let transfer = self.header(req.headers, "transfer-encoding");
+        let content = self.header(req.headers, "content-type"); let intent = self.header(req.headers, "x-iris-command");
+        if !h.valid || !o.valid || !length.valid || !transfer.valid || !content.valid || !intent.valid || h.count != 1 || o.count > 1 || length.count > 1 || transfer.count > 0 || content.count > 1 || intent.count > 1 { return "invalid_headers"; }
+        if h.value != host { return "invalid_host"; }
+        if (o.count == 1 && o.value != origin) || (req.method == "POST" && o.count != 1) { return "origin_forbidden"; }
+        if req.method == "POST" {
+            // Native Strings are NUL-terminated. Matching the transport length
+            // also rejects a literal NUL that would otherwise hide a body suffix.
+            if length.count != 1 || length.value != to_string(len(req.body)) || len(req.body) < 1 || len(req.body) > 8192 { return "invalid_command"; }
+            if content.count != 1 || intent.count != 1 { return "invalid_headers"; }
+            if content.value != "application/json" { return "unsupported_media_type"; }
+            if intent.value != "1" { return "command_intent_required"; }
+        }
+        return "";
+    }
+    fn lookup_id(query: String) -> String {
+        if len(query) > 512 || !std::str::starts_with(query, "request_id=") || std::str::contains(query, "&") { return ""; }
+        let value = query[11..len(query)]; let b = std::bytes::BytesBuilder { }; let json = syntax::OrganizationJson { };
+        let mut i = 0;
+        while i < len(value) {
+            let c = std::str::byte_at_unchecked(value, i);
+            if c == 37 {
+                if i + 2 >= len(value) || !json.hex(std::str::byte_at_unchecked(value, i + 1)) || !json.hex(std::str::byte_at_unchecked(value, i + 2)) { return ""; }
+                let decoded = json.hex_value(std::str::byte_at_unchecked(value, i + 1)) * 16 + json.hex_value(std::str::byte_at_unchecked(value, i + 2));
+                if decoded == 0 { return ""; }
+                b.append_u8(decoded); i = i + 3;
+            } else { b.append_u8(c); i = i + 1; }
+        }
+        let result = std::str::from_bytes(b.snapshot());
+        return if self.identifier(result) { result } else { "" };
+    }
+    fn state_ok(s: ApplicationState, application_id: String) -> Bool {
+        if !(s.application_id == application_id && self.hex_id(s.application_id) && self.hex_id(s.incarnation_id) && self.text_ok(s.name, 512, true) && self.identifier(s.control_id) && self.text_ok(s.control_label, 512, true) && self.decimal(s.revision) && self.identifier(s.value) && ((s.effective_revision == "" && s.effective_value == "") || (self.decimal(s.effective_revision) && self.identifier(s.effective_value))) && self.text_ok(s.activity_label, 512, true) && self.decimal(s.activity_count) && self.decimal(s.observation_tick)) { return false; }
+        if s.runtime_process_key != "" && (!s.online || !self.hex_id(s.runtime_process_key) || !self.decimal(s.runtime_pid) || s.runtime_pid == "0") { return false; }
+        if s.effective_revision == "" { return true; }
+        if (std::str::parse_int(s.effective_revision) or - 1) > (std::str::parse_int(s.revision) or - 1) { return false; }
+        return s.effective_revision != s.revision || s.effective_value == s.value;
+    }
+    fn choices_ok(choices: String) -> Bool {
+        let json = syntax::OrganizationJson { };
+        if len(choices) > 8192 || !json.valid(choices) || !std::str::starts_with(std::str::trim(choices), "[") { return false; }
+        let mut count = 0; let mut it = std::json::array_first(choices);
+        while !it.done {
+            let item = it.element;
+            if !self.fields(item, "value label", 2) || !self.identifier(self.text(item, "value")) || !self.text_ok(self.text(item, "label"), 512, true) { return false; }
+            let mut prior = std::json::array_first(choices); let mut j = 0;
+            while j < count {
+                if self.text(prior.element, "value") == self.text(item, "value") { return false; }
+                prior = std::json::array_next(prior); j = j + 1;
+            }
+            count = count + 1;
+            if count > 32 { return false; }
+            it = std::json::array_next(it);
+        }
+        return count > 0;
+    }
+    fn choice(choices: String, value: String) -> Bool {
+        let mut it = std::json::array_first(choices);
+        while !it.done {
+            if self.text(it.element, "value") == value { return true; }
+            it = std::json::array_next(it);
+        }
+        return false;
+    }
+    fn operation_ok(op: Operation) -> Bool {
+        return self.identifier(op.id) && self.identifier(op.version) && self.text_ok(op.label, 512, true) && op.target_kind == "application.control" && self.identifier(op.target_id) && self.text_ok(op.input_label, 512, true) && self.choices_ok(op.choices) && self.text_ok(op.success_meaning, 512, true) && (op.supported || (!op.available && !op.authorized));
+    }
+    fn fingerprint(actor: Actor, command: Command) -> String {
+        let frame = APPLICATION_PROFILE + "\n" + actor.mode + "\n" + actor.name + "\n" + command.application_id + "\n" + command.request_id + "\n" + command.operation + "\n" + command.operation_version + "\n" + command.target_kind + "\n" + command.target_id + "\n" + command.incarnation_id + "\n" + command.revision + "\n" + command.value;
+        let hash = std::crypto::sha256(std::bytes::from_string(frame));
+        let digits = "0123456789abcdef"; let b = std::bytes::BytesBuilder { }; let mut i = 0;
+        while i < len(hash) {
+            let byte = std::bytes::at(hash, i) or 0;
+            b.append_u8(std::str::byte_at_unchecked(digits, byte / 16)); b.append_u8(std::str::byte_at_unchecked(digits, byte % 16)); i = i + 1;
+        }
+        return "sha256:" + std::str::from_bytes(b.snapshot());
+    }
+    fn receipt_ok(r: Receipt, actor: Actor, application_id: String, command: Command, submitted: Bool) -> Bool {
+        if r.application_id != application_id || r.principal_mode != actor.mode || r.principal_name != actor.name || r.request_id != command.request_id || !self.identifier(r.command_id) || !self.identifier(r.request_id) || !self.identifier(r.operation) || !self.identifier(r.operation_version) || r.target_kind != "application.control" || !self.identifier(r.target_id) || !self.hex_id(r.incarnation_id) || !self.decimal(r.expected_revision) || !self.identifier(r.value) || !self.text_ok(r.reason, 512, false) || !self.decimal(r.resulting_revision) || !self.identifier(r.resulting_value) { return false; }
+        let canonical = Command { application_id: r.application_id, request_id: r.request_id, operation: r.operation, operation_version: r.operation_version, target_kind: r.target_kind, target_id: r.target_id, incarnation_id: r.incarnation_id, revision: r.expected_revision, value: r.value };
+        if r.fingerprint != self.fingerprint(actor, canonical) || (r.state != "succeeded" && r.state != "refused") { return false; }
+        if r.state == "refused" && (r.changed || len(r.reason) == 0) { return false; }
+        if r.state == "succeeded" {
+            if r.resulting_value != r.value || len(r.reason) != 0 { return false; }
+            if r.changed {
+                if r.expected_revision == "9223372036854775807" || r.resulting_revision != to_string((std::str::parse_int(r.expected_revision) or - 1) + 1) { return false; }
+            } else if r.resulting_revision != r.expected_revision { return false; }
+        }
+        return !submitted || (r.operation == command.operation && r.operation_version == command.operation_version && r.target_kind == command.target_kind && r.target_id == command.target_id && r.incarnation_id == command.incarnation_id && r.expected_revision == command.revision && r.value == command.value);
+    }
+    fn principal(actor: Actor) -> String {
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("mode", actor.mode); b.string_field("name", actor.name); b.end_object(); return b.result();
+    }
+    fn application(s: ApplicationState) -> String {
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("id", s.application_id); b.string_field("kind", "hale"); b.string_field("name", s.name); b.string_field("incarnation_id", s.incarnation_id); b.end_object(); return b.result();
+    }
+    fn state(s: ApplicationState) -> String {
+        let b = std::json::Builder { }; b.begin_object(); b.field("application", self.application(s)); b.bool_field("online", s.online);
+        if s.runtime_process_key != "" { b.begin_object_field("runtime"); b.string_field("profile", "hale.iris.process.v1"); b.string_field("process_key", s.runtime_process_key); b.string_field("pid", s.runtime_pid); b.end_object(); }
+        b.begin_object_field("control"); b.string_field("kind", "application.control"); b.string_field("id", s.control_id); b.string_field("label", s.control_label); b.string_field("revision", s.revision); b.string_field("value", s.value); b.string_field("effective_revision", s.effective_revision); b.string_field("effective_value", s.effective_value); b.end_object();
+        b.begin_object_field("activity"); b.string_field("label", s.activity_label); b.string_field("count", s.activity_count); b.string_field("observation_tick", s.observation_tick); b.end_object(); b.end_object(); return b.result();
+    }
+    fn operation(op: Operation) -> String {
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("id", op.id); b.string_field("version", op.version); b.string_field("label", op.label);
+        b.begin_object_field("target"); b.string_field("kind", op.target_kind); b.string_field("id", op.target_id); b.end_object();
+        b.bool_field("supported", op.supported); b.bool_field("available", op.available); b.bool_field("authorized", op.authorized);
+        b.begin_object_field("input"); b.string_field("profile", "enum-value.v1"); b.string_field("label", op.input_label); b.field("choices", op.choices); b.end_object();
+        b.field("preconditions", "[\"incarnation_id\",\"revision\",\"principal\"]"); b.string_field("success_meaning", op.success_meaning);
+        b.begin_object_field("recovery"); b.string_field("lookup", "request_id"); b.string_field("retention", "application_store_lifetime"); b.end_object(); b.end_object(); return b.result();
+    }
+    fn receipt(r: Receipt) -> String {
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("command_id", r.command_id); b.string_field("request_id", r.request_id); b.string_field("application_id", r.application_id); b.field("principal", self.principal(Actor { mode: r.principal_mode, name: r.principal_name }));
+        b.string_field("operation", r.operation); b.string_field("operation_version", r.operation_version);
+        b.begin_object_field("target"); b.string_field("application_id", r.application_id); b.string_field("kind", r.target_kind); b.string_field("id", r.target_id); b.end_object();
+        b.begin_object_field("preconditions"); b.string_field("incarnation_id", r.incarnation_id); b.string_field("revision", r.expected_revision); b.end_object();
+        b.begin_object_field("arguments"); b.string_field("value", r.value); b.end_object();
+        b.string_field("fingerprint", r.fingerprint); b.string_field("state", r.state); b.string_field("reason", r.reason);
+        b.begin_object_field("result"); b.bool_field("changed", r.changed); b.string_field("revision", r.resulting_revision); b.string_field("value", r.resulting_value); b.end_object(); b.end_object(); return b.result();
+    }
+    fn response(status: Int, body: String) -> std::http::Response {
+        return std::http::Response { status: status, content_type: "application/json; charset=utf-8", headers: "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer", body: body };
+    }
+    fn success(actor: Actor, data: String) -> std::http::Response {
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("api_version", "hale.v1"); b.string_field("profile", APPLICATION_PROFILE); b.field("principal", self.principal(actor)); b.field("data", data); b.end_object(); return self.response(200, b.result());
+    }
+    fn error(code: String) -> std::http::Response {
+        let status = if code == "not_found" || code == "application_not_found" || code == "command_not_found" { 404 } else if code == "method_not_allowed" { 405 } else if code == "unsupported_media_type" { 415 } else if code == "command_forbidden" || code == "origin_forbidden" || code == "invalid_host" { 403 } else if code == "request_conflict" || code == "command_context_changed" { 409 } else if code == "invalid_command" || code == "command_invalid" || code == "invalid_query" || code == "invalid_headers" || code == "command_intent_required" || code == "unsupported_operation" { 400 } else { 503 };
+        let safe = if status != 503 || code == "receipt_capacity" { code } else { "provider_unavailable" };
+        let message = if safe == "command_not_found" { "No retained command exists for this actor and request identity. Do not resubmit automatically." } else if safe == "request_conflict" { "This request identity is already bound to different intent." } else if safe == "command_context_changed" { "The expected principal differs from the configured actor." } else if safe == "receipt_capacity" { "The application cannot retain another request identity. Existing recovery remains available." } else if status == 503 { "The registered application could not establish an authoritative result." } else if status == 403 { "This request is not permitted in the configured local context." } else { "The request does not satisfy this application API contract." };
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("api_version", "hale.v1"); b.string_field("profile", APPLICATION_PROFILE); b.begin_object_field("error"); b.string_field("code", safe); b.string_field("message", message); b.end_object(); b.end_object(); return self.response(status, b.result());
+    }
+    fn command_response(actor: Actor, application_id: String, command: Command, result: CommandResult, submitted: Bool) -> std::http::Response {
+        if !result.ok { return self.error(result.code); }
+        if !self.receipt_ok(result.receipt, actor, application_id, command, submitted) { return self.error("provider_unavailable"); }
+        let refused = submitted && result.receipt.state == "refused";
+        if result.status != (if refused { 409 } else { 200 }) || (len(result.code) > 0 && !(refused && result.code == "command_refused")) { return self.error("provider_unavailable"); }
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("api_version", "hale.v1"); b.string_field("profile", APPLICATION_PROFILE); b.field("principal", self.principal(actor));
+        if refused { b.begin_object_field("error"); b.string_field("code", "command_refused"); b.string_field("message", "The application retained a refusal for this exact request."); b.end_object(); }
+        b.begin_object_field("data"); b.field("receipt", self.receipt(result.receipt)); b.end_object(); b.end_object(); return self.response(if refused { 409 } else { 200 }, b.result());
+    }
+}

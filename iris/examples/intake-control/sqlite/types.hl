@@ -1,0 +1,77 @@
+// pond/sqlite — shape types
+//
+// Per CONTRACTS.md the public data surface is:
+//
+//   type DbError    { kind, sqlite_code, detail }
+//   type Row        { data }            // tab-separated columns, v0
+//   type Rows       { csv }             // newline-separated rows,  v0
+//   type ExecResult { rows_affected, last_insert_rowid }
+//
+// All four are pure-data records (pattern 5). DbError is the
+// fallible(DbError) payload across every SQL member fn on the Db
+// locus (db.hl); Row / Rows / ExecResult are the success-channel
+// return shapes.
+
+// DbError — fallible(DbError) payload for every fallible surface.
+//
+// `kind` vocabulary:
+//   "open_failed"     — sqlite3_open failed at birth (or the Db
+//                       was never birthed); reported by the first
+//                       SQL call, not by birth() (lifecycle
+//                       methods can't be fallible)
+//   "exec_failed"     — sqlite3_exec returned an error
+//   "prepare_failed"  — statement compilation failed (syntax, ...)
+//   "step_failed"     — sqlite3_step returned an engine error
+//   "bind_failed"     — parameter bind rejected (range, ...)
+//   "finalize_failed" — finalize reported the last step's error
+//   "no_row"          — query_one matched zero rows, or step hit
+//                       SQLITE_DONE
+//   "busy"            — SQLITE_BUSY / SQLITE_LOCKED (overrides the
+//                       per-op kind)
+//   "constraint"      — SQLITE_CONSTRAINT (overrides the per-op kind)
+//   "io"              — SQLITE_IOERR (overrides the per-op kind)
+//
+// `sqlite_code` carries the raw SQLITE_* result code (1 = ERROR,
+// 5 = BUSY, 19 = CONSTRAINT, 100 = ROW, 101 = DONE, ...) so
+// callers who care about the underlying engine state can branch
+// on it. `detail` is sqlite3_errmsg at the moment of failure
+// (cloned — see db.hl's ownership note), suitable for log
+// emission.
+type DbError {
+    kind: String = "";
+    sqlite_code: Int = 0;
+    detail: String = "";
+}
+
+// Row — a single result row's columns, joined by tab ("\t") in
+// `data`. The tab-separated shape mirrors stdlib's
+// `list_dir_at` / kv-string convention and avoids the
+// parametric `String[]` Hale v1 doesn't have. Empty `data`
+// = no columns selected; NULL columns read as "" (no NULL
+// channel in the v0 row shape).
+type Row {
+    data: String = "";
+}
+
+// Rows — a result set as newline-separated rows; each row is
+// itself tab-separated columns. So a 2x3 result reads:
+//
+//     a\tb\tc\nd\te\tf
+//
+// Empty `csv` = zero rows (a successful empty result, distinct
+// from query_one's "no_row" fail). The "csv" field name matches
+// CONTRACTS.md's spelling even though the separator is tab+newline
+// rather than comma; the substantive shape is "tabular rows as
+// String," not literal CSV.
+type Rows {
+    csv: String = "";
+}
+
+// ExecResult — what a non-query (INSERT / UPDATE / DELETE / DDL)
+// statement reports back. `rows_affected` is SQLite's `changes()`;
+// `last_insert_rowid` is `last_insert_rowid()` (0 if not an INSERT
+// into a rowid table).
+type ExecResult {
+    rows_affected: Int = 0;
+    last_insert_rowid: Int = 0;
+}

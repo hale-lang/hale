@@ -1,0 +1,59 @@
+// Source publication has an explicit deployment grant. Historical Practice
+// and Knowledge Review permissions never imply authority over executable source.
+import "../core" as dna;
+
+type OrganizationAuthorityPolicy {
+    valid: Bool = false;
+    application_id: String = "";
+    document: String = "";
+    basis: String = "";
+    sign: Bool = false;
+}
+
+locus OrganizationAuthorityPolicyCodec {
+    params { }
+    fn decode(document: String, application_id: String, trust: String) -> OrganizationAuthorityPolicy {
+        let syntax = OrganizationJson { }; let common = GovernanceCommandCodec { }; let fields = AuthorityPolicyCodec { };
+        if len(document) == 0 || len(document) > 65536 || !syntax.valid(document)
+            || !fields.fields(document, "format application_id grants", 3)
+            || fields.text(document, "format") != "dna.organization-authority/1"
+            || fields.text(document, "application_id") != application_id || !common.bounded(application_id, 256, true, false)
+            || (trust != "local" && trust != "signed") { return OrganizationAuthorityPolicy { }; }
+        let grants = std::json::find_field_raw(document, "grants");
+        if !std::str::starts_with(grants, "[") { return OrganizationAuthorityPolicy { }; }
+        let mut seen = "\n"; let mut count = 0; let mut it = std::json::array_first(grants);
+        while !it.done {
+            let row = it.element;
+            let ownership = std::json::find_field_raw(row, "organization_ownership_propose");
+            if count >= 128 || !fields.fields(row, "mode name authority organization_propose organization_review recover" + (if ownership != "" { " organization_ownership_propose" } else { "" }), if ownership == "" { 6 } else { 7 })
+                || (ownership != "" && ownership != "true" && ownership != "false")
+                || !fields.boolean(row, "organization_propose") || !fields.boolean(row, "organization_review") || !fields.boolean(row, "recover") { return OrganizationAuthorityPolicy { }; }
+            let context = GovernanceContext { application_id: application_id, principal_mode: fields.text(row, "mode"), principal_name: fields.text(row, "name") };
+            if !common.context_valid(context) || !fields.authority(fields.text(row, "authority")) { return OrganizationAuthorityPolicy { }; }
+            let key = common.identity(context, "organization-authority-member");
+            if std::str::contains(seen, "\n" + key + "\n") { return OrganizationAuthorityPolicy { }; }
+            seen = seen + key + "\n"; count = count + 1; it = std::json::array_next(it);
+        }
+        return OrganizationAuthorityPolicy { valid: true, application_id: application_id, document: document,
+            basis: "dna.organization-authority/1:" + dna::digest_of(document) + ":trust=" + trust, sign: trust == "signed" };
+    }
+}
+
+@sealed locus FixedOrganizationAuthority {
+    params { policy: OrganizationAuthorityPolicy = OrganizationAuthorityPolicy { }; }
+    fn authorize(context: GovernanceContext, operation: String, recovery: Bool, journal: dna::Journal) -> GovernanceGrant {
+        let common = GovernanceCommandCodec { }; let fields = AuthorityPolicyCodec { };
+        if !self.policy.valid || len(self.policy.basis) == 0 || context.application_id != self.policy.application_id || !common.context_valid(context)
+            || (operation == "" && !recovery) || (operation != "" && operation != "dna.organization.propose" && operation != "dna.organization.ownership.propose" && operation != "dna.review.verdict") { return GovernanceGrant { }; }
+        let mut it = std::json::array_first(std::json::find_field_raw(self.policy.document, "grants"));
+        while !it.done {
+            let row = it.element;
+            if fields.text(row, "mode") == context.principal_mode && fields.text(row, "name") == context.principal_name {
+                let field = if recovery { "recover" } else if operation == "dna.organization.propose" { "organization_propose" } else if operation == "dna.organization.ownership.propose" { "organization_ownership_propose" } else { "organization_review" };
+                return GovernanceGrant { allowed: std::json::find_field_raw(row, field) == "true", authority: fields.text(row, "authority"), basis: self.policy.basis };
+            }
+            it = std::json::array_next(it);
+        }
+        return GovernanceGrant { };
+    }
+}

@@ -13,12 +13,19 @@ fn main() {
         // Port is unused; supplying it avoids probing sockets during seeding.
         let f = fixtures::Fixture { root: root, port: 1 };
         let count = std::str::parse_int(std::env::arg_or(3, "3")) or 3;
+        let command_subject = std::env::arg_or(4, "") == "commands";
         std::test::assert(count >= 0 && count <= 100, "bounded browser fixture size");
-        let p = if count > 0 { f.practice("acceptance/résumé <review>", "Première ligne — ✓\n第二行 / preserve\n<img src=x onerror=\"window.__injected=true\">", "org/support/équipe", "org/reviews/決定:α?part=one#fragment", false) } else { fixtures::Practice { } };
+        let p = if count > 0 { f.practice("acceptance/résumé <review>", "Première ligne — ✓\n第二行 / preserve\n<img src=x onerror=\"window.__injected=true\">", if command_subject { "org" } else { "org/support/équipe" }, "org/reviews/決定:α?part=one#fragment", false) } else { fixtures::Practice { } };
         if count > 0 { f.append("review.settled", p.review_id, "approve by alice"); }
+        if command_subject && count > 0 {
+            let q = std::json::Builder { };
+            f.append("knowledge.ratified", p.digest, "{\"digest\":" + q.quote(p.digest) + ",\"author\":\"org\",\"target\":\"org\",\"class\":\"goal\"}");
+        }
+        let mut pending = fixtures::Practice { };
         let mut i = 1;
         while i < count {
             let q = f.practice("practice/" + to_string(i), "Ordinary practice " + to_string(i), "org", "", false);
+            if i == 1 { pending = q; }
             i = i + 1;
         }
         let b = std::json::Builder { };
@@ -30,6 +37,10 @@ fn main() {
         b.string_field("text", p.text);
         b.string_field("question", p.question);
         b.string_field("rationale", "Two lines\nexplain why / pourquoi");
+        b.string_field("pending_practice", pending.digest);
+        b.string_field("pending_review", pending.review_id);
+        b.string_field("pending_text", pending.text);
+        b.string_field("pending_question", pending.question);
         b.end_object();
         std::io::fs::write_file(root + "/fixture.json", b.result()) or discard;
         // Transfer scratch ownership to the Node orchestrator, which retains
@@ -39,8 +50,8 @@ fn main() {
     } else {
         let journal = dna::GitJournal { repo: root };
         let manifest = std::io::fs::read_file(root + "/fixture.json") or "";
-        let digest = std::json::find_string_field(manifest, "practice");
-        let result = if action == "redact" {
+        let digest = std::json::find_string_field(manifest, if action == "redact-pending" { "pending_practice" } else { "practice" });
+        let result = if action == "redact" || action == "redact-pending" {
             journal.append(journal.revision(), "receipt.redacted", digest, "{\"by\":\"browser-fixture\",\"why\":\"retention\",\"policy\":\"test\"}")
         } else {
             journal.append(journal.revision(), "browser.fixture", "refresh", "another writer advanced the Record")

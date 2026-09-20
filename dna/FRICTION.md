@@ -739,7 +739,10 @@ a `hale run` program prints nothing, not even that it died by signal.
 caller's copy and `set` / `push` store the vec's copy, whatever arena
 the value came from — and `hale run` reports a death by signal.
 
-## F.19 — imported helper name collides with its seed's import alias
+## F.21 — imported helper name collides with its seed's import alias
+
+**Numbering:** originally labeled F.19; renumbered to preserve the earlier
+handler-owned subscriber entry's identity.
 
 Found while the read-only API reused `dna/ui`'s OIDC session methods.
 `ui/main.hl` imported the core as `dna` and also declared a free helper
@@ -777,3 +780,186 @@ distinct organisms in one process need distinct `org_id` values. The
 and checks the cache, append revision and first-claim ownership. Existing
 projects get an upgrade advisory to change their live loop; direct `tick`
 is only for isolated callers or calls already inside the owner's handler.
+
+---
+
+The following entries consolidate the API and operations port notes. Their
+reproducers, toolchain observations and measurements are historical evidence;
+consolidation did not rerun them. Relative paths retain the original context
+stated with each entry.
+
+## F.22 — Unicode escape decoding differs from the expected string
+
+**Original context:** `dna/api/contract/v1`; preserved port observations.
+
+During this port, a program built with this worktree's `target/release/hale`
+printed `?` for `std::json::unescape_string("\\u0031")`; the expected string
+was `1`. The contract regression also observed `"hale.v\\u0031"` decoding
+to `hale.v?`, which could not match the constant `hale.v1`. This records the
+observed behavior, not a diagnosed compiler or runtime cause.
+
+The validator uses a small native decoder in `validator/syntax.hl` after
+strict JSON syntax validation. It reads each four-digit escape as a code
+point, combines a validated surrogate pair when present, appends its UTF-8
+bytes to a let-bound `std::bytes::BytesBuilder`, and returns
+`std::str::from_bytes(bytes.snapshot())`. The same decoder handles both
+schema and response strings, so escaped constants, enums and local reference
+names cannot be interpreted differently between validation stages.
+
+`tests/validator_test.hl` covers ASCII escapes in constants and references,
+BMP and surrogate-pair character counts, and escaped/literal astral-string
+equality. Escaped U+0000 is rejected before decoding because the native
+string operations used here are NUL-terminated; it must not truncate a
+constant or enum comparison into an unintended match.
+
+## F.23 — Successful native assertions must be silent
+
+**Original context:** `dna/api/tests`; preserved port observations.
+
+The port was checked and built with this worktree's `target/release/hale`.
+
+- `hale test` expects a successful assertion-based program to be silent. Printing
+  routine case names made the runner reject an otherwise successful exit. The
+  single native test program runs all 25 named cases without progress output.
+
+## F.24 — Native child handles need explicit ownership transfer
+
+**Original context:** `dna/api/tests`; preserved port observations.
+
+- A returned `std::process::Child` cannot be assigned directly into a locus field.
+  The fixture constructs the field with the returned OS handles, then disarms the
+  temporary wrapper. Stopping a child explicitly closes and clears its pipe
+  descriptors before a subsequent spawn can reuse them.
+
+## F.25 — Failed assertions require independent child and scratch cleanup
+
+**Original context:** `dna/api/tests`; preserved port observations.
+
+- A failed `std::test::assert` exits without dissolving fixture loci. The suite
+  therefore installs an owned-scratch exit watcher before starting children. A
+  disposable native smoke program deliberately failed after starting the real
+  API; its child was gone and its scratch directory removed afterward.
+
+## F.26 — Cached journal genesis can be empty immediately after the first append
+
+**Original context:** `dna/api/tests`; preserved port observations.
+
+- Immediately after the first native journal append, cached journal genesis was
+  empty. Fixtures read authoritative identity through `GitRecord.identity()`.
+
+## F.27 — The local compiler does not recognize eprint
+
+**Original context:** `dna/api/tests`; preserved port observations.
+
+- Direct `hale check dna/api/tests` with the September 18 local compiler rejects
+  `eprint` as an unknown free function. The cleanup re-exec prints nonempty child
+  stderr with `eprintln` instead; success remains silent for the test runner.
+
+## F.28 — Temporary query literal followed by a method call
+
+**Original context:** `dna/operations`; preserved port observations.
+
+While extending the native Git fixture, this expression typechecked and built but
+the test process terminated by signal:
+
+```hale
+let count = ops::Queries { j: dna::GitJournal { repo: repo } }.practice_count();
+```
+
+The supported let-bound child shape passes the same fixture:
+
+```hale
+let queries = ops::Queries { j: dna::GitJournal { repo: repo } };
+let count = queries.practice_count();
+```
+
+This is an observed test failure, not a diagnosed compiler root cause. Keep query
+loci explicitly owned for the query lifetime; do not rely on a temporary literal
+receiver. No compiler changes were made for this slice.
+
+## F.29 — JSON nullable fields are not optional strings
+
+**Original context:** `dna/operations`; preserved port observations.
+
+The stdlib's `find_string_field` returns the raw scalar spelling when a field
+is not a JSON string. For a native topology root's `owner: null`, that is the
+string `"null"`, not an empty value. The Organization reader first inspects the
+raw field, validates `null | string`, and explicitly maps null to an absent
+parent. Otherwise it would invent a parent instance named `null`. The native
+compiler fixture covers both the root and real containment edges.
+
+## F.30 — Cache the String byte length in parser scans
+
+**Original context:** `dna/operations`; preserved port observations.
+
+Native `len(String)` calls `strlen`; checked one-byte string slices also inspect
+the source length. Repeating them while walking a large artifact made strict
+JSON validation quadratic. A generated DNA organization's 1 MiB artifact took
+10.6 seconds to validate even though source acquisition took under one second.
+The parser now passes one cached length through recursive helpers and uses
+`byte_at_unchecked` only after explicit bounds checks. Keys are copied from their
+already validated ranges into a small byte builder. The same artifact validates
+in about 17 ms; the one MiB native regression retains a generous three-second
+bound. Parent indices are also resolved once before containment traversal, so
+following a deep chain does not perform another linear identity search per edge.
+
+## F.31 — Native JSON string encoding can exhaust the host before a timeout
+
+**Original context:** `dna/operations`; preserved port observations.
+
+The Definitions 600,000-byte shared-leaf regression exposed quadratic allocation
+in the toolchain's JSON escape helper: immutable per-byte concatenation retains
+each growing prefix in its arena. Native unescaping has the same pattern. Linux
+recorded generated tests using 23–24 GiB of RAM and exhausting swap; systemd then
+stopped their containing desktop scope. Retrying with a shorter wall timeout did
+not prevent another OOM. A hard 512 MiB process address-space limit reproduced the
+failure locally in the encoder without shutting down the desktop.
+
+An application's document-size check runs after provider capture and cannot bound
+encoder scratch allocations. Capability discovery now calls `supported()` without
+capturing the catalog. Native browser fixtures on Linux have hard memory/CPU
+limits. Keep the large-field regression; do not shrink it to conceal this failure.
+The stdlib repair must replace both escape/unescape loops with byte builders.
+Application code must also cache String lengths in closure scans; the native
+workflow `json_whole` scanner now captures its input length once.
+
+## F.32 — Inline mutable provider passed through an interface to an HTTP head
+
+Related to F.28's temporary receiver observation, but this fixture passes a
+mutable locus through a function/interface boundary rather than calling a method
+on a temporary receiver. Direct handler tests passed, and live HTTP capability
+reads worked, with this composition in `dna/api/tests/commands/main.hl`:
+
+```hale
+api::serve_with_commands(root, port, web, ops::NoWorkflowCatalog { }, ScriptedCommands { root: root });
+```
+
+The first live POST closed the connection without an HTTP response. Under the
+same 512 MiB native runtime cap, GDB caught SIGSEGV in `ScriptedCommands.submit`
+at its first updates of retained provider fields. Authentication, Origin checks,
+and request parsing had already completed.
+
+A named binding retained for the full server lifetime is the working shape:
+
+```hale
+let commands = ScriptedCommands { root: root };
+api::serve_with_commands(root, port, web, ops::NoWorkflowCatalog { }, commands);
+```
+
+That single composition change made real HTTP POST return 202 and subsequent
+exact-request GETs return 200; scripted approval versus adoption refusal and a
+malformed receipt's 503 also passed. No runtime limits were raised for the
+native server. This confirms the fixture composition failure and working shape,
+not a compiler root-cause diagnosis or compiler repair. No core or compiler
+source changed.
+
+## F.33 — Native HTTP Client discards 5xx response bodies
+
+The Knowledge command integration returned a typed `commands_unsupported`
+refusal when policy required an unavailable Review path. Sending that private
+RPC result with status 503 lost its body in `std::http::Client`, even with
+`max_retries: 0`, and the public API could report only an unknown transport
+failure. The client returns statuses below 500 and raises on exhausted 5xx.
+The private RPC now transports these typed outcomes with status 200; the public
+adapter assigns the appropriate 503 and preserves the domain refusal. No
+compiler/stdlib change or additional POST retry is introduced.

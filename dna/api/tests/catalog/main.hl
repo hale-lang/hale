@@ -1,0 +1,63 @@
+// Real, application-owned catalogs composed into the native API head. The
+// browser harness owns the Record, lifecycle and failure-injection marker.
+import "../../../core" as dna;
+import "../../../operations" as ops;
+import "../.." as api;
+
+fn populate(catalog: dna::WorkflowCatalog, updated: Bool) {
+    let a = catalog.define("close", 1, 2, "Close the month — équipe <workflow>");
+    let b = catalog.define("close", 2, 1, "New closing procedure");
+    let c = catalog.define("collect", 9007199254740993, 1, "Collect evidence");
+    let d = catalog.child("close", 1, 0, "gather", "collect", 9007199254740993);
+    let e = catalog.leaf("close", 1, 1, "publish", dna::WorkRequest { objective: "Publish after evidence collection", output_contract: "MonthlyReport", target: "org/finance" }, 1);
+    let f = catalog.leaf("close", 2, 0, "reconcile", dna::WorkRequest { objective: "Use the new procedure" }, 1);
+    let g = catalog.leaf("collect", 9007199254740993, 0, "human", dna::WorkRequest {
+        objective: "Ask a human\nfor evidence — ✓\n<img src=x onerror=\"window.__injected=true\">",
+        context_digest: "sha256:context-for-this-definition", knowledge_bindings: "opaque exact binding specification",
+        output_contract: "Evidence", data_class: "internal", requires: "judgment", target: "org/finance",
+        cost_ceiling: 9223372036854775807
+    }, 2);
+    let mut i = 0;
+    while i < 26 {
+        let id = "procedure-" + to_string(i);
+        let added = catalog.define(id, 1, 1, "Procedure " + to_string(i));
+        let member = catalog.leaf(id, 1, 0, "perform", dna::WorkRequest { objective: "Do procedure " + to_string(i) }, 1);
+        i = i + 1;
+    }
+    if updated {
+        let h = catalog.define("close", 3, 1, "Latest procedure");
+        let j = catalog.leaf("close", 3, 0, "next", dna::WorkRequest { objective: "A later publication" }, 1);
+    }
+}
+
+locus FixtureProvider {
+    params { root: String = ""; original: ops::DeclaredWorkflowCatalog; updated: ops::DeclaredWorkflowCatalog; }
+    fn supported() -> Bool { return true; }
+    fn snapshot() -> ops::DefinitionSnapshot {
+        let mode = std::io::fs::read_file(self.root + "/catalog-mode") or "original";
+        if mode == "unavailable" { return ops::DefinitionSnapshot { supported: true, error: "The application's catalog is temporarily unavailable" }; }
+        if mode == "invalid" {
+            return ops::DefinitionSnapshot { supported: true, available: true, document: "{}", digest: dna::digest_of("{}"), provenance: self.original.provenance };
+        }
+        return if mode == "updated" { self.updated.snapshot() } else { self.original.snapshot() };
+    }
+}
+
+fn main() {
+    let root = std::env::arg(1);
+    let port = std::str::parse_int(std::env::arg(2)) or 0;
+    let web = api::WebAssets { };
+    std::test::assert(web.load(std::env::arg(3)), "fixture web assets");
+    let original = dna::WorkflowCatalog { };
+    let updated = dna::WorkflowCatalog { };
+    populate(original, false); populate(updated, true);
+    let host = FixtureProvider { root: root,
+        original: ops::DeclaredWorkflowCatalog { catalog: original, provenance: ops::DefinitionProvenance {
+            source_revision: "fixture-catalog-v1", source_path: "app/workflows.hl", dependency_digest: "fixture-dependencies-v1"
+        } },
+        updated: ops::DeclaredWorkflowCatalog { catalog: updated, provenance: ops::DefinitionProvenance {
+            source_revision: "fixture-catalog-v2", source_path: "app/workflows.hl", dependency_digest: "fixture-dependencies-v1"
+        } }
+    };
+    api::serve(root, port, web, host);
+}

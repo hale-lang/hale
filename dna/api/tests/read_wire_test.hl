@@ -1,0 +1,58 @@
+// Candidate and Review field serialization only; actual HTTP/domain behavior
+// is covered separately by the native node acceptance harness.
+import ".." as api;
+import "../../operations" as ops;
+
+locus ReadWireCases {
+    params { wire: api::Wire = api::Wire { }; json: ops::OrganizationJson = ops::OrganizationJson { }; }
+    fn raw(body: String, key: String) -> String { return std::json::find_field_raw(body, key); }
+    fn repeated(n: Int, byte: Int) -> String {
+        let b = std::bytes::BytesBuilder { }; let mut i = 0;
+        while i < n { b.append_u8(byte); i = i + 1; }
+        return std::str::from_bytes(b.snapshot());
+    }
+    fn parity(value: String) {
+        let old = std::json::Builder { }; old.begin_object(); old.string_field("value", value); old.end_object();
+        let expected = self.raw(old.result(), "value");
+        let candidate = self.wire.practice(ops::PracticeRow { text: value });
+        let review = self.wire.review(ops::ReviewRow { question: value, text_available: true });
+        std::test::assert_eq_str(self.raw(candidate, "text"), expected, "candidate text keeps historical encoded bytes");
+        std::test::assert_eq_str(self.raw(review, "question"), expected, "Review question keeps historical encoded bytes");
+    }
+    fn run_cases() {
+        self.parity(""); self.parity("literal \"quoted\" \\ slash / text");
+        self.parity("Café 東京 🧭\r\n\t" + self.repeated(1, 1));
+        let suffix = "Café 東京 🧭\r\n";
+        let text = self.repeated(8192 - len(suffix), 1) + suffix;
+        std::test::assert_eq_int(len(text), 8192, "exact decoded byte boundary");
+        let candidate = self.wire.practice(ops::PracticeRow { text: text, text_available: true, text_status: "available" });
+        std::test::assert(self.json.valid(candidate), "large candidate remains strict JSON");
+        std::test::assert_eq_str(self.json.decode(self.raw(candidate, "text")), text, "large canonical text roundtrips all controls and Unicode");
+        let question = "Ratify this exact knowledge?\n" + text;
+        let review = self.wire.review(ops::ReviewRow { question: question, text_available: true, text_status: "available" });
+        std::test::assert(self.json.valid(review), "large Review remains strict JSON");
+        std::test::assert_eq_str(self.json.decode(self.raw(review, "question")), question, "large Review question roundtrips exact bytes");
+        let hidden = self.wire.review(ops::ReviewRow { question: question, text_available: false, text_status: "restricted" });
+        std::test::assert_eq_str(self.json.decode(self.raw(hidden, "question")), "", "restricted Review question stays hidden");
+        let ordinary = self.wire.review(ops::ReviewRow { question: "ordinary Record question", text_available: false, text_status: "not_applicable" });
+        std::test::assert_eq_str(self.json.decode(self.raw(ordinary, "question")), "ordinary Record question", "ordinary Record Review remains readable");
+    }
+    fn captured_record(root: String, expected_head: String, expected_revision: Int) {
+        let reader = api::SourceReader { root: root };
+        let source = reader.read();
+        std::test::assert(source.ok, "preserved actual large-node Record is a valid API source: " + source.code);
+        std::test::assert_eq_str(source.head, expected_head, "source retains exact captured Record head");
+        std::test::assert_eq_int(source.revision, expected_revision, "source retains exact captured revision");
+        let commands = api::KnowledgeCommandWire { };
+        let context = api::CommandContext { root: root, source: source, principal_mode: "local", principal_name: "alice" };
+        let request = commands.private_request(context, "lookup", ops::KnowledgeCommand { }, "preserved-fixture-query");
+        let nested = self.raw(request, "context");
+        std::test::assert_eq_str(self.json.decode(self.raw(nested, "application_id")), source.identity, "lookup context uses the same validated Record identity");
+    }
+}
+
+fn main() {
+    let cases = ReadWireCases { }; cases.run_cases();
+    let root = std::env::arg(1);
+    if len(root) > 0 { cases.captured_record(root, std::env::arg(2), std::str::parse_int(std::env::arg(3)) or - 1); }
+}

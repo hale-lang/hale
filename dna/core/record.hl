@@ -138,25 +138,44 @@ interface Record {
 
 // ---- the line format ---------------------------------------------------
 
+// A command contains its canonical payload inside a native event, itself
+// inside a Record row. Quote that row linearly: repeated growing String
+// prefixes exhaust the process budget for valid, heavily escaped payloads.
+fn record_json_quote(value: String) -> String {
+    let b = std::bytes::BytesBuilder { }; let digits = "0123456789abcdef";
+    b.append_u8(34); let mut i = 0; let size = len(value);
+    while i < size {
+        let c = std::str::byte_at_unchecked(value, i);
+        if c == 34 || c == 92 { b.append_u8(92); b.append_u8(c); }
+        else if c == 8 { b.append_str("\\b"); }
+        else if c == 12 { b.append_str("\\f"); }
+        else if c == 10 { b.append_str("\\n"); }
+        else if c == 13 { b.append_str("\\r"); }
+        else if c == 9 { b.append_str("\\t"); }
+        else if c < 32 {
+            b.append_str("\\u00"); b.append_u8(std::str::byte_at_unchecked(digits, c / 16)); b.append_u8(std::str::byte_at_unchecked(digits, c % 16));
+        } else { b.append_u8(c); }
+        i = i + 1;
+    }
+    b.append_u8(34); return std::str::from_bytes(b.snapshot());
+}
 fn row_line(seq: Int, row: Row, author: String) -> String {
-    let b = std::json::Builder { };
-    b.begin_object();
-    b.int_field("seq", seq);
-    b.string_field("kind", row.kind);
-    b.string_field("entity", row.entity);
-    b.string_field("body", row.body);
-    b.string_field("author", author);
-    b.end_object();
-    return b.result() + "\n";
+    let b = std::bytes::BytesBuilder { };
+    b.append_str("{\"seq\": "); b.append_str(to_string(seq));
+    b.append_str(", \"kind\": "); b.append_str(record_json_quote(row.kind));
+    b.append_str(", \"entity\": "); b.append_str(record_json_quote(row.entity));
+    b.append_str(", \"body\": "); b.append_str(record_json_quote(row.body));
+    b.append_str(", \"author\": "); b.append_str(record_json_quote(author));
+    b.append_str("}\n"); return std::str::from_bytes(b.snapshot());
 }
 
 fn parse_row(line: String, id: String) -> Row {
     return Row {
         seq: std::json::find_int_field(line, "seq"),
-        kind: std::json::find_string_field(line, "kind"),
-        entity: std::json::find_string_field(line, "entity"),
-        body: std::json::find_string_field(line, "body"),
-        author: std::json::find_string_field(line, "author"),
+        kind: native_json_string(line, "kind"),
+        entity: native_json_string(line, "entity"),
+        body: native_json_string(line, "body"),
+        author: native_json_string(line, "author"),
         id: id
     };
 }
@@ -923,13 +942,13 @@ locus GitJournal {
             if len(line) > 0 {
                 self.rows.push(Event {
                     seq: std::json::find_int_field(line, "seq"),
-                    kind: std::json::find_string_field(line, "kind"),
-                    entity: std::json::find_string_field(line, "entity"),
-                    body: std::json::find_string_field(line, "body"),
+                    kind: native_json_string(line, "kind"),
+                    entity: native_json_string(line, "entity"),
+                    body: native_json_string(line, "body"),
                     prev: prev,
                     digest: sha
                 });
-                self.authors.push(std::json::find_string_field(line, "author"));
+                self.authors.push(native_json_string(line, "author"));
                 self.loaded = self.loaded + 1;
                 prev = sha;
             }
@@ -1027,9 +1046,13 @@ locus GitJournal {
     // built on it, the swap refused if another writer moved the chain in
     // between — and then stale, never retried at the tail.
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        let expected_head = std::str::clone(self.head_sha);
         let moved = self.refresh();
         let seq = self.rows.len();
-        if expected != seq { return AppendResult { error: "stale_revision", expected: expected, actual: seq }; }
+        // Reconciliation can replace the chain without changing its row
+        // count. A decision made from the previously loaded rows must then
+        // be reevaluated, exactly as when another writer adds a row.
+        if self.head_sha != expected_head || expected != seq { return AppendResult { error: "stale_revision", expected: expected, actual: seq }; }
         let row = Row { kind: kind, entity: entity, body: body, author: self.author };
         let a = self.record.append(self.chain(), self.head_sha, row, false, "");
         if a.ok { return self.landed(a, kind, entity, body, row_line(seq, row, self.author)); }

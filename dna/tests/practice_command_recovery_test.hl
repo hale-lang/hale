@@ -1,0 +1,245 @@
+// Interrupted native Practice/Review progression over Git. These fixtures
+// supply durable request inputs; they never author proposal, Review decision,
+// settlement, ratification or retirement outputs. Public command admission is
+// tested separately in operations/API. Each reconstructed body is a real Dna.
+import "../core" as dna;
+
+fn exact_text() -> String {
+    let b = std::bytes::BytesBuilder { };
+    b.append_str("Exact — équipe 🧭 <literal>\\n\r\n");
+    let mut i = 1;
+    while i < 32 { b.append_u8(i); i = i + 1; }
+    b.append_str(" after controls.");
+    return std::str::from_bytes(b.snapshot());
+}
+
+locus PracticeStageJournal {
+    params {
+        inner: dna::GitJournal = dna::GitJournal { };
+        blocked_kind: String = "";
+        blocked: Bool = false;
+        blocks: Int = 0;
+    }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if self.blocked && kind == self.blocked_kind { self.blocks = self.blocks + 1; return dna::AppendResult { error: "io" }; }
+        return self.inner.append(expected, kind, entity, body);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if self.blocked && kind == self.blocked_kind { self.blocks = self.blocks + 1; return dna::AppendResult { error: "io" }; }
+        return self.inner.append_exact(expected, kind, entity, body);
+    }
+}
+
+@unbounded
+fn event(j: dna::Journal, kind: String, entity: String) -> dna::Event {
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind && e.entity == entity { return e; }
+        i = i + 1;
+    }
+    return dna::Event { };
+}
+
+@unbounded
+fn count(j: dna::Journal, kind: String, entity: String) -> Int {
+    let mut i = 0;
+    let mut n = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == kind && e.entity == entity { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+fn request(j: dna::Journal, id: String, text: String, old: String) -> dna::PracticeRequest {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("command_format", "dna.governance-command/1");
+    b.string_field("command_id", id);
+    b.string_field("request_id", id);
+    b.string_field("name", "practice/receipts");
+    b.string_field("text", text);
+    b.string_field("by", "riley");
+    b.string_field("because", exact_text());
+    b.string_field("supersedes", old);
+    b.end_object();
+    let appended = j.append_exact(j.revision(), "practice.requested", id, b.result());
+    std::test::assert(appended.ok, "durable native request input: " + appended.error);
+    return dna::PracticeRequest { request_id: id, name: "practice/receipts", text: text, by: "riley", because: exact_text(), supersedes: old };
+}
+
+fn body_once(repo: String, j: PracticeStageJournal, delivered: dna::PracticeRequest) {
+    let body = dna::Dna {
+        journal: j,
+        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+        membrane: dna::Board { who: "board" }
+    };
+    if len(delivered.request_id) > 0 { body.on_practice_requested(delivered); }
+    body.reconcile_governance();
+}
+
+main locus App {
+    bus { publish dna::ReviewVerdict; }
+    fn repo(label: String) -> String {
+        let root = "/tmp/dna-practice-recovery-" + to_string(std::process::pid()) + "-" + label;
+        std::io::fs::mkdir(root) or discard;
+        let init = dna::run_tool("git\n-C\n" + root + "\ninit\n-q\n-b\nmain");
+        std::test::assert_eq_int(init.code, 0, "temporary native Record");
+        return root;
+    }
+    fn proposal(stage: String) {
+        let repo = self.repo(stage);
+        let j = PracticeStageJournal { inner: dna::GitJournal { repo: repo }, blocked_kind: stage, blocked: true };
+        let delivered = request(j, "command/proposal", exact_text(), "");
+        body_once(repo, j, dna::PracticeRequest { });
+        std::test::assert_eq_int(count(j, "practice.started", "command/proposal"), 0, "unverified incoming rows are not treated as delivered");
+        std::test::assert_eq_int(j.blocks, 0, "birth does not bypass the host's trust check");
+        body_once(repo, j, delivered);
+        std::test::assert(j.blocks > 0, "interrupted the actual " + stage + " append");
+        std::test::assert_eq_int(count(j, "practice.proposed", "command/proposal"), 0, "incomplete proposal is not reported created");
+        std::test::assert_eq_int(count(j, "practice.refused", "command/proposal"), 0, "storage failure is not a domain refusal");
+        let fresh = PracticeStageJournal { inner: dna::GitJournal { repo: repo } };
+        body_once(repo, fresh, dna::PracticeRequest { });
+        body_once(repo, fresh, dna::PracticeRequest { });
+        let proposed = event(fresh, "practice.proposed", "command/proposal");
+        let digest = std::json::find_string_field(proposed.body, "digest");
+        let review = std::json::find_string_field(proposed.body, "review_id");
+        std::test::assert(len(digest) > 0 && len(review) > 0, "restart creates the exact native candidate and Review");
+        std::test::assert_eq_int(count(fresh, "knowledge.proposed", digest), 1, "one knowledge proposal across restart");
+        std::test::assert_eq_int(count(fresh, "review.requested", "review:" + review), 1, "one durable Review request across restart");
+        std::test::assert_eq_int(count(fresh, "practice.proposed", "command/proposal"), 1, "one correlated proposal outcome across restart");
+        let receipts = dna::GitReceipts { repo: repo };
+        let document = receipts.read(digest[7..len(digest)]);
+        std::test::assert_eq_str(dna::native_json_string(document, "text"), exact_text(), "all non-NUL controls and Unicode survive interrupted native proposal");
+        std::test::assert_eq_str(dna::native_json_string(proposed.body, "because"), exact_text(), "proposal rationale survives restart exactly");
+        let removed = dna::run_tool("rm\n-rf\n" + repo);
+    }
+    fn approve(command: String, digest: String) {
+        dna::ReviewVerdict <- dna::Verdict {
+            command_id: command, review_id: dna::knowledge_review_id(digest), subject_digest: digest,
+            verdict: "approve", reviewer: "board-member", authority: "board", comment: exact_text()
+        };
+    }
+    fn wait_event(j: dna::Journal, kind: String, entity: String) {
+        let mut ticks = 0;
+        while len(event(j, kind, entity).kind) == 0 && ticks < 200 {
+            std::time::sleep(20ms);
+            ticks = ticks + 1;
+        }
+        std::test::assert(len(event(j, kind, entity).kind) > 0, "native " + kind + " arrived for " + entity);
+    }
+    fn interrupt_settlement(repo: String, j: PracticeStageJournal) -> String {
+        let body = dna::Dna {
+            journal: j,
+            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+            membrane: dna::Board { who: "board" }
+        };
+        body.on_practice_requested(request(j, "command/seed", "Collect a receipt.", ""));
+        let old = std::json::find_string_field(event(j, "practice.proposed", "command/seed").body, "digest");
+        self.approve("command/seed-approval", old);
+        self.wait_event(j, "knowledge.ratified", old);
+        body.on_practice_requested(request(j, "command/replacement", "Collect the receipt and its provenance.", old));
+        body.on_practice_requested(request(j, "command/competitor", "Collect another exact replacement.", old));
+        let candidate = std::json::find_string_field(event(j, "practice.proposed", "command/replacement").body, "digest");
+        let competitor = std::json::find_string_field(event(j, "practice.proposed", "command/competitor").body, "digest");
+        j.blocked = true;
+        self.approve("command/replacement-approval", candidate);
+        let mut ticks = 0;
+        while j.blocks == 0 && ticks < 200 { std::time::sleep(20ms); ticks = ticks + 1; }
+        std::test::assert(j.blocks > 0, "interrupted the actual " + j.blocked_kind + " consequence");
+        let decided = dna::review_command_decision(j, "command/replacement-approval");
+        std::test::assert(std::json::find_bool_field(decided, "accepted"), "the exact command's approval already stands");
+        if j.blocked_kind == "knowledge.retired" {
+            self.approve("command/competing-approval", competitor);
+            self.wait_event(j, "knowledge.refused", competitor);
+            std::test::assert_eq_int(count(j, "knowledge.ratified", competitor), 0, "a ratified successor reserves the predecessor before retirement completes");
+        }
+        return candidate;
+    }
+    fn settlement(stage: String) {
+        let repo = self.repo(stage);
+        let j = PracticeStageJournal { inner: dna::GitJournal { repo: repo }, blocked_kind: stage };
+        let candidate = self.interrupt_settlement(repo, j);
+        let old = std::json::find_string_field(event(j, "practice.proposed", "command/seed").body, "digest");
+        let fresh = PracticeStageJournal { inner: dna::GitJournal { repo: repo } };
+        body_once(repo, fresh, dna::PracticeRequest { });
+        body_once(repo, fresh, dna::PracticeRequest { });
+        let review = dna::knowledge_review_id(candidate);
+        std::test::assert_eq_int(count(fresh, "review.command_decided", "command/replacement-approval"), 1, "restart preserves one accepted decision");
+        std::test::assert_eq_int(count(fresh, "review.settled", review), 1, "restart completes settlement exactly once");
+        std::test::assert_eq_str(event(fresh, "review.reasoned", review).body, exact_text(), "interrupted reasoning is restored byte-for-byte from the decision");
+        std::test::assert_eq_int(count(fresh, "knowledge.ratified", candidate), 1, "restart completes exact candidate ratification");
+        std::test::assert_eq_int(count(fresh, "knowledge.retired", old), 1, "restart completes exact predecessor retirement");
+        std::test::assert_eq_str(std::json::find_string_field(event(fresh, "knowledge.retired", old).body, "by"), candidate, "the predecessor is retired by this candidate");
+        let removed = dna::run_tool("rm\n-rf\n" + repo);
+    }
+    fn verdict_input(j: dna::Journal, command: String, digest: String) {
+        let b = std::json::Builder { };
+        b.begin_object(); b.string_field("command_format", "dna.governance-command/1");
+        b.string_field("command_id", command); b.string_field("review_id", dna::knowledge_review_id(digest));
+        b.string_field("subject_digest", digest); b.string_field("verdict", "approve");
+        b.string_field("reviewer", "board-member"); b.string_field("authority", "board");
+        b.string_field("comment", exact_text()); b.end_object();
+        let input = j.append_exact(j.revision(), "review.verdict", dna::knowledge_review_id(digest), b.result());
+        std::test::assert(input.ok, "pending native verdict input");
+    }
+    fn settled_before_restart(repo: String, j: PracticeStageJournal) -> String {
+        let body = dna::Dna {
+            journal: j,
+            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+            membrane: dna::Board { who: "board" }
+        };
+        body.on_practice_requested(request(j, "command/late-seed", "One exact pending Practice.", ""));
+        let digest = dna::native_json_string(event(j, "practice.proposed", "command/late-seed").body, "digest");
+        self.verdict_input(j, "command/first", digest);
+        self.verdict_input(j, "command/late", digest);
+        self.approve("command/first", digest);
+        self.wait_event(j, "knowledge.ratified", digest);
+        std::test::assert_eq_int(count(j, "review.command_decided", "command/late"), 0, "second admitted input has not been delivered before crash");
+        return digest;
+    }
+    fn late_verdict() {
+        let repo = self.repo("late-verdict");
+        let j = PracticeStageJournal { inner: dna::GitJournal { repo: repo } };
+        let digest = self.settled_before_restart(repo, j);
+        let fresh = PracticeStageJournal { inner: dna::GitJournal { repo: repo } };
+        let body = dna::Dna {
+            journal: fresh,
+            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+            membrane: dna::Board { who: "board" }
+        };
+        std::test::assert_eq_int(count(fresh, "review.command_decided", "command/late"), 0, "restoration does not bypass trusted delivery of pending verdict");
+        self.approve("command/late", digest);
+        self.wait_event(fresh, "review.command_decided", "command/late");
+        let decision = dna::review_command_decision(fresh, "command/late");
+        std::test::assert(!std::json::find_bool_field(decision, "accepted"), "fresh settled knowledge Review gives the late command its own refusal");
+        std::test::assert(!std::json::find_bool_field(decision, "settled"), "late refusal does not borrow original approval");
+        std::test::assert_eq_str(dna::native_json_string(decision, "outcome"), "", "late refusal has no settlement outcome");
+        std::test::assert(std::str::starts_with(dna::native_json_string(decision, "refusal"), "already settled:"), "late verdict has a concrete settled-Review refusal");
+        std::test::assert_eq_str(dna::native_json_string(decision, "comment"), exact_text(), "late refusal preserves its own exact comment");
+        body.reconcile_governance();
+        std::test::assert_eq_int(count(fresh, "review.command_decided", "command/late"), 1, "one command-specific late refusal");
+        std::test::assert_eq_int(count(fresh, "review.settled", dna::knowledge_review_id(digest)), 1, "original Review settlement remains singular");
+        std::test::assert_eq_int(count(fresh, "knowledge.ratified", digest), 1, "original activation remains singular");
+        let removed = dna::run_tool("rm\n-rf\n" + repo);
+    }
+    run() {
+        self.proposal("knowledge.proposed");
+        self.proposal("review.requested");
+        self.proposal("practice.proposed");
+        self.settlement("review.settled");
+        self.settlement("review.reasoned");
+        self.settlement("knowledge.ratified");
+        self.settlement("knowledge.retired");
+        self.late_verdict();
+    }
+}
+
+fn main() { App { }; }

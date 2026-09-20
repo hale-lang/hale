@@ -1,0 +1,150 @@
+import "sqlite" as sqlite;
+import "../../service" as service;
+
+const MAX_EXACT: Int = 9223372036854775807;
+const RECEIPT_LIMIT: Int = 4096;
+
+// Each statement has one owner and finalizes on every early return.
+locus Statement {
+    params { db: Int = 0; sql: String = ""; handle: Int = 0; good: Bool = true; }
+    birth() { if self.db > 0 { self.handle = sqlite::lotus_sqlite_prepare(self.db, self.sql); } self.good = self.handle > 0; }
+    dissolve() { if self.handle > 0 { let _ = sqlite::lotus_sqlite_finalize(self.handle); self.handle = 0; } }
+    fn text(index: Int, value: String) { if self.good { self.good = sqlite::lotus_sqlite_bind_text(self.handle, index, value) == 0; } }
+    fn number(index: Int, value: Int) { if self.good { self.good = sqlite::lotus_sqlite_bind_int(self.handle, index, value) == 0; } }
+    fn step() -> Int { if !self.good { return -1; } return sqlite::lotus_sqlite_step(self.handle); }
+    fn string_at(index: Int) -> String { return std::str::clone(sqlite::lotus_sqlite_column_text(self.handle, index)); }
+    fn int_at(index: Int) -> Int { return sqlite::lotus_sqlite_column_int(self.handle, index); }
+    fn type_at(index: Int) -> Int { return sqlite::lotus_sqlite_column_type(self.handle, index); }
+    fn finish() -> Bool {
+        if self.handle < 1 { return false; }
+        let rc = sqlite::lotus_sqlite_finalize(self.handle); self.handle = 0;
+        return self.good && rc == 0;
+    }
+    fn execute() -> Bool { let rc = self.step(); let clean = self.finish(); return rc == 101 && clean; }
+}
+
+type StoredState {
+    ok: Bool = false; application_id: String = ""; owner: String = ""; incarnation: String = "";
+    revision: Int = 0; value: String = ""; effective_revision: Int = -1; effective_value: String = "";
+    activity: Int = 0; tick: Int = 0; heartbeat: Int = 0; receipt_count: Int = 0;
+}
+type FoundReceipt { ok: Bool = false; found: Bool = false; receipt: service::Receipt = service::Receipt { }; }
+
+locus Rules {
+    params { }
+    fn hex(bytes: Bytes) -> String {
+        let digits = "0123456789abcdef"; let mut out = ""; let mut i = 0;
+        while i < len(bytes) { let v = std::bytes::at(bytes, i) or 0; out = out + digits[(v / 16)..(v / 16 + 1)] + digits[(v % 16)..(v % 16 + 1)]; i = i + 1; }
+        return out;
+    }
+    fn digest(value: String) -> String { return self.hex(std::crypto::sha256(std::bytes::from_string(value))); }
+    fn fresh() -> String { let bytes = std::os::getrandom(32) or b""; if len(bytes) != 32 { return ""; } return self.hex(bytes); }
+    fn safe(value: String) -> Bool { return len(value) > 0 && len(value) <= 128 && std::regex::matches("[A-Za-z0-9._:-]+", value); }
+    fn identity(value: String) -> Bool { return len(value) == 64 && std::regex::matches("[0-9a-f]+", value); }
+    fn mode(value: String) -> Bool { return value == "running" || value == "paused"; }
+    fn decimal(value: String) -> Bool {
+        if len(value) < 1 || len(value) > 19 || !std::regex::matches("[0-9]+", value) { return false; }
+        if len(value) > 1 && value[0..1] == "0" { return false; }
+        // Lexical decimal bounds without lossy conversion.
+        if len(value) == 19 {
+            let top = "9223372036854775807"; let mut i = 0;
+            while i < 19 { let a = value[i..(i + 1)]; let b = top[i..(i + 1)]; if a < b { return true; } if a > b { return false; } i = i + 1; }
+        }
+        return true;
+    }
+    fn field(value: String) -> String { return to_string(len(value)) + ":" + value; }
+    fn fingerprint(actor: service::Actor, c: service::Command) -> String {
+        return "sha256:" + self.digest("hale.application.v1\n" + actor.mode + "\n" + actor.name + "\n" + c.application_id + "\n" + c.request_id + "\n" + c.operation + "\n" + c.operation_version + "\n" + c.target_kind + "\n" + c.target_id + "\n" + c.incarnation_id + "\n" + c.revision + "\n" + c.value);
+    }
+    fn valid(actor: service::Actor, c: service::Command) -> Bool {
+        return c.valid && self.safe(c.request_id) && actor.mode == "trusted_local" && self.safe(actor.name)
+            && c.expected_principal_mode == actor.mode && c.expected_principal_name == actor.name
+            && c.operation == "example.intake.set_mode" && c.operation_version == "1"
+            && self.identity(c.application_id) && c.target_application_id == c.application_id
+            && c.target_kind == "application.control" && c.target_id == "intake"
+            && self.identity(c.incarnation_id) && self.decimal(c.revision) && self.mode(c.value);
+    }
+    fn online(s: StoredState) -> Bool {
+        let now = std::time::monotonic_ns();
+        return s.heartbeat > 0 && now >= s.heartbeat && now - s.heartbeat <= 2000000000;
+    }
+    fn authorized(actor: service::Actor, s: StoredState) -> Bool { return actor.mode == "trusted_local" && actor.name == s.owner; }
+    fn command(r: service::Receipt) -> service::Command {
+        return service::Command { valid: true, request_id: r.request_id, operation: r.operation, operation_version: r.operation_version,
+            application_id: r.application_id, target_application_id: r.application_id, target_kind: r.target_kind, target_id: r.target_id,
+            incarnation_id: r.incarnation_id, revision: r.expected_revision, expected_principal_mode: r.principal_mode, expected_principal_name: r.principal_name, value: r.value };
+    }
+    fn receipt_valid(r: service::Receipt) -> Bool {
+        let actor = service::Actor { mode: r.principal_mode, name: r.principal_name }; let c = self.command(r);
+        if !self.valid(actor, c) || !self.identity(r.command_id) || r.fingerprint != self.fingerprint(actor, c) || !self.decimal(r.resulting_revision) || !self.mode(r.resulting_value) { return false; }
+        if r.command_id != self.digest("intake-receipt/1" + r.fingerprint) { return false; }
+        if r.state == "succeeded" {
+            if r.reason != "" || r.resulting_value != r.value { return false; }
+            if !r.changed { return r.resulting_revision == r.expected_revision; }
+            if r.expected_revision == "9223372036854775807" { return false; }
+            return r.resulting_revision == to_string((std::str::parse_int(r.expected_revision) or - 1) + 1);
+        }
+        return r.state == "refused" && !r.changed && (r.reason == "stale_incarnation" || r.reason == "stale_revision" || r.reason == "application_offline" || r.reason == "revision_exhausted");
+    }
+}
+
+// A request-scoped connection wrapper. No error can leave a live transaction.
+locus Store {
+    params { db: sqlite::Db; good: Bool = false; }
+    birth() {
+        self.good = self.db.conn_handle > 0;
+        if self.good { self.good = sqlite::lotus_sqlite_busy_timeout(self.db.conn_handle, 100) == 0; }
+        if self.good { self.good = sqlite::lotus_sqlite_exec(self.db.conn_handle, "PRAGMA synchronous=FULL") == 0; }
+    }
+    dissolve() { if self.db.conn_handle > 0 && sqlite::lotus_sqlite_autocommit(self.db.conn_handle) == 0 { let _ = sqlite::lotus_sqlite_exec(self.db.conn_handle, "ROLLBACK"); } }
+    fn exec(sql: String) -> Bool { return self.good && sqlite::lotus_sqlite_exec(self.db.conn_handle, sql) == 0; }
+    fn begin() -> Bool { return self.exec("BEGIN IMMEDIATE") && sqlite::lotus_sqlite_autocommit(self.db.conn_handle) == 0; }
+    fn commit() -> Bool { return self.exec("COMMIT") && sqlite::lotus_sqlite_autocommit(self.db.conn_handle) != 0; }
+    fn state() -> StoredState {
+        if !self.good { return StoredState { }; }
+        let q = Statement { db: self.db.conn_handle, sql: "SELECT schema_version,application_id,owner,incarnation,revision,value,effective_revision,effective_value,activity,tick,heartbeat,(SELECT count(*) FROM intake_receipts),(SELECT count(*) FROM intake_store) FROM intake_store WHERE singleton=1" };
+        if q.step() != 100 { return StoredState { }; }
+        let mut i = 0;
+        while i < 13 { let expected = if i == 1 || i == 2 || i == 3 || i == 5 || i == 7 { 3 } else { 1 }; if q.type_at(i) != expected { return StoredState { }; } i = i + 1; }
+        if q.int_at(0) != 1 || q.int_at(12) != 1 || q.int_at(11) < 0 || q.int_at(11) > RECEIPT_LIMIT { return StoredState { }; }
+        let s = StoredState { ok: true, application_id: q.string_at(1), owner: q.string_at(2), incarnation: q.string_at(3), revision: q.int_at(4), value: q.string_at(5), effective_revision: q.int_at(6), effective_value: q.string_at(7), activity: q.int_at(8), tick: q.int_at(9), heartbeat: q.int_at(10), receipt_count: q.int_at(11) };
+        if q.step() != 101 || !q.finish() { return StoredState { }; }
+        let r = Rules { };
+        if !r.identity(s.application_id) || !r.safe(s.owner) || !r.identity(s.incarnation) || s.revision < 0 || !r.mode(s.value) || s.activity < 0 || s.tick < 0 || s.heartbeat < 0 { return StoredState { }; }
+        if s.effective_revision < -1 || s.effective_revision > s.revision { return StoredState { }; }
+        if (s.effective_revision == -1 && s.effective_value != "") || (s.effective_revision >= 0 && !r.mode(s.effective_value)) { return StoredState { }; }
+        return s;
+    }
+    fn initialize(owner: String, app: String, incarnation: String) -> Bool {
+        let rules = Rules { };
+        if !rules.safe(owner) || !rules.identity(app) || !rules.identity(incarnation) || !self.begin() { return false; }
+        // No IF NOT EXISTS and no reset: existing/incompatible stores refuse.
+        if !self.exec("CREATE TABLE intake_store(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL CHECK(schema_version=1),application_id TEXT NOT NULL,owner TEXT NOT NULL,incarnation TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=0),value TEXT NOT NULL CHECK(value IN ('running','paused')),effective_revision INTEGER NOT NULL,effective_value TEXT NOT NULL,activity INTEGER NOT NULL CHECK(activity>=0),tick INTEGER NOT NULL CHECK(tick>=0),heartbeat INTEGER NOT NULL CHECK(heartbeat>=0)) STRICT") { return false; }
+        if !self.exec("CREATE TABLE intake_receipts(principal_mode TEXT NOT NULL,principal_name TEXT NOT NULL,request_id TEXT NOT NULL,command_id TEXT NOT NULL UNIQUE,application_id TEXT NOT NULL,operation TEXT NOT NULL,operation_version TEXT NOT NULL,target_kind TEXT NOT NULL,target_id TEXT NOT NULL,incarnation TEXT NOT NULL,expected_revision TEXT NOT NULL,value TEXT NOT NULL,fingerprint TEXT NOT NULL,state TEXT NOT NULL,reason TEXT NOT NULL,changed INTEGER NOT NULL,resulting_revision TEXT NOT NULL,resulting_value TEXT NOT NULL,PRIMARY KEY(principal_mode,principal_name,request_id)) STRICT") { return false; }
+        let q = Statement { db: self.db.conn_handle, sql: "INSERT INTO intake_store VALUES(1,1,?1,?2,?3,0,'running',-1,'',0,0,0)" };
+        q.text(1, app); q.text(2, owner); q.text(3, incarnation);
+        return q.execute() && self.commit();
+    }
+    fn receipt(actor: service::Actor, request: String, app: String) -> FoundReceipt {
+        let q = Statement { db: self.db.conn_handle, sql: "SELECT command_id,request_id,application_id,principal_mode,principal_name,operation,operation_version,target_kind,target_id,incarnation,expected_revision,value,fingerprint,state,reason,changed,resulting_revision,resulting_value FROM intake_receipts WHERE principal_mode=?1 AND principal_name=?2 AND request_id=?3" };
+        q.text(1, actor.mode); q.text(2, actor.name); q.text(3, request);
+        let code = q.step(); if code == 101 { return FoundReceipt { ok: q.finish() }; } if code != 100 { return FoundReceipt { }; }
+        let mut i = 0; while i < 18 { if q.type_at(i) != (if i == 15 { 1 } else { 3 }) { return FoundReceipt { }; } i = i + 1; }
+        let changed = q.int_at(15); if changed < 0 || changed > 1 { return FoundReceipt { }; }
+        let r = service::Receipt { command_id: q.string_at(0), request_id: q.string_at(1), application_id: q.string_at(2), principal_mode: q.string_at(3), principal_name: q.string_at(4), operation: q.string_at(5), operation_version: q.string_at(6), target_kind: q.string_at(7), target_id: q.string_at(8), incarnation_id: q.string_at(9), expected_revision: q.string_at(10), value: q.string_at(11), fingerprint: q.string_at(12), state: q.string_at(13), reason: q.string_at(14), changed: changed == 1, resulting_revision: q.string_at(16), resulting_value: q.string_at(17) };
+        if q.step() != 101 || !q.finish() { return FoundReceipt { }; }
+        let rules = Rules { };
+        if r.application_id != app || r.principal_mode != actor.mode || r.principal_name != actor.name || r.request_id != request || !rules.receipt_valid(r) { return FoundReceipt { }; }
+        return FoundReceipt { ok: true, found: true, receipt: r };
+    }
+    fn count() -> Int {
+        let q = Statement { db: self.db.conn_handle, sql: "SELECT count(*) FROM intake_receipts" };
+        if q.step() != 100 || q.type_at(0) != 1 { return -1; }
+        let n = q.int_at(0); if q.step() != 101 || !q.finish() { return -1; } return n;
+    }
+    fn save(r: service::Receipt) -> Bool {
+        let q = Statement { db: self.db.conn_handle, sql: "INSERT INTO intake_receipts VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)" };
+        q.text(1, r.principal_mode); q.text(2, r.principal_name); q.text(3, r.request_id); q.text(4, r.command_id); q.text(5, r.application_id); q.text(6, r.operation); q.text(7, r.operation_version); q.text(8, r.target_kind); q.text(9, r.target_id); q.text(10, r.incarnation_id); q.text(11, r.expected_revision); q.text(12, r.value); q.text(13, r.fingerprint); q.text(14, r.state); q.text(15, r.reason); q.number(16, if r.changed { 1 } else { 0 }); q.text(17, r.resulting_revision); q.text(18, r.resulting_value);
+        return q.execute();
+    }
+}

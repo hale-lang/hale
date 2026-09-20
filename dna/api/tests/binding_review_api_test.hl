@@ -1,0 +1,91 @@
+// Actual Git admission and Body-created canonical binding candidate. This
+// checks exact read/Review admission boundaries, not graph effect delivery.
+import ".." as api;
+import "../../operations" as ops;
+import "../../core" as dna;
+
+locus BindingReadAuthority {
+    params { }
+    fn authorize(context: ops::GovernanceContext, operation: String, recovery: Bool, j: dna::Journal) -> ops::KnowledgeGrant {
+        return ops::KnowledgeGrant { allowed: context.principal_name == "alice", mode: if recovery { "direct" } else { "review" }, authority: "board", basis: "fixed-binding-read-policy", scopes: "[{\"author\":\"org\",\"target\":\"org/support\"}]" };
+    }
+}
+locus BindingReviewAuthority {
+    params { role: String = "board"; }
+    fn authorize(context: ops::GovernanceContext, operation: String, recovery: Bool, j: dna::Journal) -> ops::GovernanceGrant {
+        return ops::GovernanceGrant { allowed: true, authority: self.role, basis: "fixed-review-test-policy" };
+    }
+}
+locus BindingReviewReadCases {
+    params { }
+    fn append(j: dna::Journal, kind: String, entity: String, body: String) {
+        let refreshed = j.refresh(); std::test::assert(j.append_exact(j.revision(), kind, entity, body).ok, "fixture " + kind);
+    }
+    fn verdict(app: String, review_id: String, digest: String, key: String) -> ops::GovernanceCommand {
+        return ops::GovernanceCommand { request_id: key, operation: "dna.review.verdict", application_id: app, target_kind: "dna.review", target_id: review_id, subject_digest: digest, expected_review_state: "pending", verdict: "approve", comment: "Exact binding decision." };
+    }
+    fn run_cases(root: String) {
+        let record = dna::GitRecord { repo: root }; std::test::assert_eq_int(record.git("init\n-q").code, 0, "initialize isolated Record");
+        let journal = dna::GitJournal { repo: root }; let receipts = dna::GitReceipts { repo: root };
+        self.append(journal, "application.observed", "org", "{}");
+        let idea = "sha256:" + receipts.store(dna::knowledge_document(dna::Idea { kind: "concept", text: "Original item unchanged.", author: "org" }, "org"));
+        self.append(journal, "knowledge.ratified", idea, "{\"class\":\"initiative\"}");
+        let authority = BindingReadAuthority { }; let commands = ops::KnowledgeCommands { record: record, authority: authority };
+        let alice = ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: "alice" };
+        let bytes = std::bytes::BytesBuilder { }; bytes.append_str("Exact é 🧭\r\n"); bytes.append_u8(1); let why = std::str::from_bytes(bytes.snapshot());
+        let command = ops::KnowledgeCommand { request_id: "binding-read", operation: "dna.knowledge.binding.bind", application_id: alice.application_id, target_id: idea, idea_id: idea, record_head: record.head("journal"), author: "org", target: "org/support", rationale: why };
+        let admitted = commands.submit(alice, command); std::test::assert(admitted.ok, "native admission: " + admitted.code);
+        let captured = ops::GovernanceJournal { snapshot: commands.capture() }; let codec = ops::KnowledgeCommandCodec { }; let fact = codec.decode_fact(captured.read(admitted.receipt.sequence));
+        std::test::assert(fact.valid, "original request retains exact command and grant");
+        let body_journal = dna::GitJournal { repo: root }; let body = dna::Dna { journal: body_journal, verification: dna::HaleVerification { receipts: receipts, repo: root }, membrane: dna::Board { who: "board" } };
+        body.on_knowledge_binding_requested(fact.binding);
+        let created = commands.lookup(alice, command.request_id); std::test::assert(created.ok && created.receipt.binding.proposal_state == "created", "actual Body creates exact binding candidate");
+        let request = fact.binding; let native = dna::KnowledgeBindingCodec { }; let review_id = native.review_id(request.candidate_digest);
+        // A canonical fact copied into another application cannot establish a
+        // candidate there, even when the remaining historical rows match.
+        let original_snapshot = commands.capture(); let first_cut = std::str::index_of(original_snapshot.ids, "\n");
+        let foreign = ops::GovernanceJournal { snapshot: ops::GovernanceSnapshot { ok: true, application_id: "foreign-application", head: original_snapshot.head, revision: original_snapshot.revision, ids: "foreign-application\n" + original_snapshot.ids[(first_cut + 1)..len(original_snapshot.ids)], text: original_snapshot.text } };
+        let projection_view = ops::GovernanceProjection { };
+        std::test::assert(foreign.valid && !projection_view.binding_fact(foreign, request.candidate_digest, review_id).valid, "foreign application cannot borrow a canonical admitted candidate");
+        let api_head = api::Api { root: root, local_name: "bob" }; let prefix = api::API_PREFIX + "/" + alice.application_id; let head = record.head("journal");
+        let path = prefix + "/dna/reviews/candidate?id=" + dna::url_encode(review_id) + "&snapshot=" + head;
+        let response = api_head.handle(std::http::Request { method: "GET", path: path });
+        std::test::assert_eq_int(response.status, 200, response.body);
+        let wire = api::CommandWire { }; let data = wire.raw(response.body, "data");
+        std::test::assert_eq_str(wire.text(data, "kind"), "knowledge_binding_change", "typed read is not a Knowledge node");
+        std::test::assert_eq_str(wire.text(data, "document"), native.document(request), "exact canonical grant/tuple/rationale document");
+        std::test::assert_eq_str(wire.text(data, "candidate_digest"), dna::digest_of(wire.text(data, "document")), "canonical document hash is exact");
+        std::test::assert_eq_int(api_head.handle(std::http::Request { method: "GET", path: path + "&limit=1" }).status, 400, "candidate read has no paging fields");
+        std::test::assert_eq_int(api_head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews/candidate?id=" + dna::url_encode(review_id) }).status, 400, "candidate read requires snapshot");
+        let review_response = api_head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews?id=" + dna::url_encode(review_id) + "&snapshot=" + head });
+        std::test::assert_eq_int(review_response.status, 200, "binding Review readable at candidate source");
+        let review_items = std::json::array_first(wire.raw(wire.raw(review_response.body, "data"), "items")); let row = review_items.element;
+        std::test::assert_eq_str(wire.text(row, "knowledge_binding_digest"), request.candidate_digest, "binding discriminator is explicit");
+        std::test::assert_eq_str(wire.text(row, "knowledge_digest"), "", "binding never masquerades as a node proposal");
+        std::test::assert_eq_str(wire.text(row, "author"), "alice", "Review author is the actual proposer");
+        std::test::assert_eq_str(wire.text(row, "target"), "org/support", "exact applicable locus is visible");
+        let review_authority = BindingReviewAuthority { }; let governance = ops::GovernanceCommands { record: record, authority: review_authority };
+        std::test::assert_eq_str(governance.submit(alice, self.verdict(alice.application_id, review_id, request.candidate_digest, "self")).code, "forbidden", "proposer cannot approve own binding change");
+        let bob = ops::GovernanceContext { application_id: alice.application_id, principal_mode: "local", principal_name: "bob" };
+        std::test::assert_eq_str(governance.submit(bob, self.verdict(alice.application_id, review_id, idea, "wrong-subject")).code, "stale_subject", "Review pins binding document, not original idea");
+        let weak = BindingReviewAuthority { role: "reviewer" }; let denied = ops::GovernanceCommands { record: record, authority: weak };
+        std::test::assert_eq_str(denied.submit(bob, self.verdict(alice.application_id, review_id, request.candidate_digest, "weak")).code, "forbidden", "binding Review retains board authority");
+        let accepted = governance.submit(bob, self.verdict(alice.application_id, review_id, request.candidate_digest, "exact"));
+        std::test::assert(accepted.ok && accepted.receipt.verdict_state == "pending", "independent exact Review command is admitted");
+        std::test::assert_eq_int(api_head.handle(std::http::Request { method: "GET", path: path }).status, 409, "old candidate snapshot is stale after admission");
+        self.append(journal, "receipt.withheld", idea, "{}");
+        let hidden_head = record.head("journal");
+        let hidden = api_head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews/candidate?id=" + dna::url_encode(review_id) + "&snapshot=" + hidden_head });
+        std::test::assert_eq_int(hidden.status, 404, "protected underlying item hides candidate exactly like missing");
+        let missing = api_head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews/candidate?id=missing&snapshot=" + hidden_head });
+        std::test::assert_eq_str(hidden.body, missing.body, "hidden and missing candidate responses are identical");
+        let protected_review = api_head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews?id=" + dna::url_encode(review_id) + "&snapshot=" + hidden_head });
+        std::test::assert(!std::str::contains(protected_review.body, "org/support") && !std::str::contains(protected_review.body, "goal") && !std::str::contains(protected_review.body, why), "hidden binding Review cannot leak scope or rationale");
+        std::test::assert_eq_str(governance.submit(bob, self.verdict(alice.application_id, review_id, request.candidate_digest, "hidden")).code, "stale_subject", "hidden candidate cannot acquire a new verdict");
+    }
+}
+fn main() {
+    let root = "/tmp/dna-binding-review-api-" + to_string(std::process::pid()); std::io::fs::mkdir(root) or raise;
+    let cases = BindingReviewReadCases { }; cases.run_cases(root);
+    let removed = dna::run_tool("rm\n-rf\n" + root);
+}

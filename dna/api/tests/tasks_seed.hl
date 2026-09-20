@@ -1,0 +1,40 @@
+// Actual Task birth/handoff input for the API proof. Kept separate from the
+// API binary so the bounded native build does not assemble both full heads.
+import "../../core" as dna;
+
+locus TaskApiPlanner {
+    params { }
+    bus { subscribe dna::PlanRequested as plan where key == "task-api"; publish dna::TaskPlanned; }
+    fn plan(r: dna::PlanRequest) {
+        dna::TaskPlanned <- dna::Plan { org: r.org, task_id: r.task_id, work_id: r.work_id, kind: "person", change_class: "none", target: "none", count: 1,
+            assignee: "alex", obligation: "review", narrative: "A person's open responsibility", by: "task-api-planner", parsed: true };
+    }
+}
+locus TaskApiWork {
+    params { body: dna::Dna = dna::Dna { planned: true, org_id: "task-api", initiative: false }; planner: TaskApiPlanner = TaskApiPlanner { }; }
+    fn bind(j: dna::Journal, receipts: dna::Receipts) { self.body.journal = j; self.body.review_journal.bind(j); self.body.verification.receipts = receipts; self.body.ownership.me = "task-api"; }
+    fn ask(id: String, outcome: String) -> String { return self.body.ask(dna::Intent { id: id, from: "requester", to: "org", outcome: outcome }, dna::Knobs { steps: 1, fan: 1, routed: true, requires: "edit" }); }
+}
+locus TaskApiSeed {
+    params { }
+    fn handed(j: dna::Journal, id: String) -> dna::Event {
+        let mut tries = 0;
+        while tries < 100 { let refreshed = j.refresh(); let mut i = 0;
+            while i < j.revision() { let e = j.read(i); if e.kind == "task.handed" && e.entity == id { return e; } i = i + 1; }
+            std::time::sleep(20ms); tries = tries + 1;
+        }
+        std::test::assert(false, "actual native handoff"); return dna::Event { };
+    }
+    fn seed(root: String, evidence: String, browser: Bool) {
+        let record = dna::GitRecord { repo: root };
+        std::test::assert(record.append("journal", "", dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "fresh application identity");
+        // Eligibility input only, not proof of the person retirement command.
+        if browser { std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "person.retired", entity: "retired", body: "{\"by\":\"fixture\",\"to\":\"\",\"transferred\":0}", author: "fixture" }, false, "").ok, "explicit recipient-retirement eligibility fixture"); }
+        let journal = dna::GitJournal { repo: root }; let receipts = dna::GitReceipts { repo: root }; let work = TaskApiWork { }; work.bind(journal, receipts);
+        let first_id = work.ask("task-api-first", "Human review\r\nΔ <literal & markup>"); let first = self.handed(journal, first_id);
+        let second_id = work.ask("task-api-second", "Another person's responsibility"); let second = self.handed(journal, second_id);
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("application_id", record.identity()); b.string_field("first_id", first_id); b.string_field("second_id", second_id); b.string_field("first_handoff", first.digest); b.string_field("second_handoff", second.digest); b.end_object();
+        std::io::fs::write_file(evidence + "/task-fixture.json", b.result()) or raise; println("READY actual native Task handoffs");
+    }
+}
+fn main() { let seed = TaskApiSeed { }; seed.seed(std::env::arg(1), std::env::arg(2), std::env::arg_or(3, "") == "seed"); }

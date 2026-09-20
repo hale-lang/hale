@@ -1,0 +1,86 @@
+// Read adapter acceptance over a copied actual native Host fixture. The script
+// supplies the retained Git repository and real metadata; this test does not
+// create a candidate, application, launch, observation or rollback outcome.
+import ".." as api;
+import "../../core" as dna;
+import "../../operations" as ops;
+
+locus StatusRuntimeProbe {
+    params { root: String = ""; calls: Int = 0; race: Bool = false; }
+    fn current(application_id: String, request_id: String, attempt_id: String) -> dna::OrganizationRuntimeAssociation {
+        self.calls = self.calls + 1;
+        if self.race { let j = dna::GitJournal { repo: self.root }; std::test::assert(j.append_exact(j.revision(), "status.test.read", "race", "{}").ok, "owned read race input"); }
+        return dna::OrganizationRuntimeAssociation { };
+    }
+}
+locus OrganizationStatusCases {
+    params { }
+    fn request(root: String, id: String, authority: ops::FixedOrganizationAuthority, name: String, suffix: String) -> std::http::Response {
+        let record = dna::GitRecord { repo: root }; let reader = api::OrganizationCandidateWire { authority: authority }; let head = api::Api { root: root, local_name: name, organization_candidates: reader };
+        return head.handle(std::http::Request { method: "GET", path: api::API_PREFIX + "/" + record.identity() + "/dna/organization/source-status?id=" + dna::url_encode(id) + suffix });
+    }
+    fn run_cases(root: String, metadata: String, evidence: String) {
+        let w = api::CommandWire { }; let meta = std::io::fs::read_file(metadata) or raise; let id = w.text(meta, "mutation_id");
+        let record = dna::GitRecord { repo: root }; let app = record.identity(); std::test::assert(id != "" && app == w.text(meta, "application_id"), "actual fixture identity");
+        let codec = ops::OrganizationAuthorityPolicyCodec { };
+        let policy = codec.decode("{\"format\":\"dna.organization-authority/1\",\"application_id\":\"" + app + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"reviewer\",\"authority\":\"board\",\"organization_propose\":false,\"organization_review\":false,\"recover\":true}]}", app, "local");
+        std::test::assert(policy.valid, "separate recovery-only read grant"); let authority = ops::FixedOrganizationAuthority { policy: policy };
+        let suffix = "&snapshot=" + record.head("journal"); let response = self.request(root, id, authority, "reviewer", suffix);
+        std::test::assert_eq_int(response.status, 200, response.body); let data = w.raw(response.body, "data");
+        std::test::assert_eq_str(w.text(data, "profile"), "dna.organization.source-status.v1", "typed status");
+        std::test::assert_eq_str(w.text(data, "review_id"), id, "exact Review identity"); std::test::assert_eq_str(w.text(w.raw(data, "source"), "candidate_commit"), w.text(meta, "candidate_commit"), "exact native candidate");
+        std::test::assert_eq_str(w.text(w.raw(data, "application"), "state"), "applied", "actual native application projected");
+        std::test::assert_eq_str(w.text(w.raw(data, "restart_handoff"), "state"), "requested", "actual handoff stays distinct");
+        std::test::assert_eq_str(w.text(w.raw(data, "launch"), "state"), "launched", "actual Host launch acknowledgment");
+        std::test::assert_eq_str(w.text(w.raw(data, "observation"), "state"), std::env::arg_or(4, "healthy"), "actual historical Host observation");
+        std::test::assert_eq_str(w.text(w.raw(data, "rollback"), "state"), std::env::arg_or(5, "unavailable"), "actual rollback is a separate stage");
+        std::test::assert_eq_str(w.raw(w.raw(data, "current_running"), "available"), "false", "no running inferred from history");
+        std::test::assert_eq_str(w.text(w.raw(data, "current_running"), "process_key"), "", "no stale process navigation");
+        std::test::assert(!std::str::contains(response.body, root) && !std::str::contains(response.body, "request_id") && !std::str::contains(response.body, "source_text") && !std::str::contains(response.body, "rationale") && !std::str::contains(response.body, "body_holder"), "no private request inputs or local host paths");
+        std::test::assert_eq_int(self.request(root, id, authority, "reviewer", "").status, 200, "fresh polling needs no saved head");
+        std::test::assert_eq_int(self.request(root, id, authority, "reviewer", "&snapshot=stale").status, 409, "exact snapshot fence");
+        std::test::assert_eq_int(self.request(root, id, authority, "reviewer", "&limit=1").status, 400, "not a paginated resource");
+        std::test::assert_eq_int(self.request(root, id, authority, "reviewer", "&request_id=private").status, 400, "no raw request lookup alias");
+        std::test::assert_eq_int(self.request(root, id, authority, "reviewer", "&id=duplicate").status, 400, "duplicate exact id refused");
+        std::test::assert_eq_int(self.request(root, id, authority, "outsider", "").status, 403, "independent read grant required");
+        let absent = ops::FixedOrganizationAuthority { };
+        std::test::assert_eq_int(self.request(root, id, absent, "reviewer", "").status, 403, "default read denied");
+        std::test::assert_eq_int(self.request(root, "missing", authority, "outsider", "").status, 403, "permission checked before existence");
+        if evidence != "" {
+            let selected_reader = api::OrganizationCandidateWire { authority: authority }; let selected_head = api::Api { root: root, local_name: "reviewer", organization_candidates: selected_reader };
+            let reviews = selected_head.handle(std::http::Request { method: "GET", path: api::API_PREFIX + "/" + app + "/dna/reviews?id=" + dna::url_encode(id) + suffix });
+            std::test::assert_eq_int(reviews.status, 200, reviews.body);
+            std::test::assert_eq_str(w.raw(reviews.body, "source"), w.raw(response.body, "source"), "matching Review export captured at exact status Source");
+            std::io::fs::write_file(evidence + "/reviews-response.json", reviews.body) or raise;
+            std::io::fs::write_file(evidence + "/status-response.json", response.body) or raise; std::io::fs::write_file(evidence + "/status-data.json", data) or raise;
+        }
+        let capture = ops::GovernanceCommands { record: record }; let snapshot = capture.capture(); let journal = ops::GovernanceJournal { snapshot: snapshot }; let native = ops::OrganizationProjection { };
+        let candidate = native.candidate(journal, id, snapshot.text); let reviewed = native.review_evidence(journal, candidate, snapshot.text); let applications = ops::OrganizationApplication { }; let application = applications.read(journal, candidate, reviewed);
+        let status_wire = api::OrganizationStatusWire { }; let status = status_wire.project(record, journal, candidate, application, "local");
+        let original = status.launched; let attempt = status.attempt;
+        // A typed provider fixture proves only adapter identity checks, never
+        // actual liveness. Actual host liveness belongs to the Host proof.
+        let exact = dna::OrganizationRuntimeAssociation { available: true, application_id: app, request_id: candidate.request.request_id, attempt_id: attempt.attempt_id, launch_event_id: original.launch_event_id,
+            candidate_commit: candidate.candidate_commit, binary_digest: attempt.binary_digest, topology_digest: attempt.topology_digest, topology_shape: attempt.topology_shape, pid: original.pid, process_key: original.process_key };
+        let accepted = status_wire.current(exact, candidate, status);
+        std::test::assert(accepted.available == (status.exit_state == "unavailable" && status.rollback_state == "unavailable" && status.observation_state != "crashed"), "exact current identity accepted only with consistent historical stages");
+        let wrong = dna::OrganizationRuntimeAssociation { available: true, application_id: app, request_id: candidate.request.request_id, attempt_id: attempt.attempt_id, launch_event_id: original.launch_event_id,
+            candidate_commit: candidate.candidate_commit, binary_digest: attempt.binary_digest, topology_digest: attempt.topology_digest, topology_shape: attempt.topology_shape, pid: original.pid, process_key: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" };
+        std::test::assert(!status_wire.current(wrong, candidate, status).available, "another process cannot borrow candidate artifacts");
+        let reader = api::OrganizationCandidateWire { authority: authority }; let probe = StatusRuntimeProbe { root: root, race: true }; let raced = api::Api { root: root, local_name: "reviewer", organization_candidates: reader, organization_runtime: probe };
+        let path = api::API_PREFIX + "/" + app + "/dna/organization/source-status?id=" + dna::url_encode(id);
+        std::test::assert_eq_int(raced.handle(std::http::Request { method: "GET", path: path }).status, 409, "runtime read cannot bypass final Record fence"); std::test::assert_eq_int(probe.calls, 1, "one optional provider read");
+        let denied = api::Api { root: root, local_name: "outsider", organization_candidates: reader, organization_runtime: probe };
+        std::test::assert_eq_int(denied.handle(std::http::Request { method: "GET", path: path }).status, 403, "denied runtime read"); std::test::assert_eq_int(probe.calls, 1, "denial occurs before provider");
+        let native_codec = dna::OrganizationSourceRequestCodec { }; let forged = native_codec.fact(journal, "organization.source.launched", attempt.attempt_id);
+        std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: forged.kind, entity: forged.entity, author: "forged", body: forged.body }, false, "").ok, "owned malformed-author input");
+        let malformed = self.request(root, id, authority, "reviewer", ""); std::test::assert_eq_int(malformed.status, 200, malformed.body);
+        std::test::assert_eq_str(w.text(w.raw(w.raw(malformed.body, "data"), "launch"), "state"), "unknown", "wrong-author stage fails closed");
+        std::test::assert_eq_str(w.text(w.raw(w.raw(malformed.body, "data"), "observation"), "state"), "unknown", "later observation cannot repair invalid launch");
+        std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "receipt.withheld", entity: journal.read(reviewed.review.sequence).digest, author: "test", body: "{}" }, false, "").ok, "owned privacy input");
+        let hidden = self.request(root, id, authority, "reviewer", ""); let missing = self.request(root, "missing", authority, "reviewer", "");
+        std::test::assert_eq_int(hidden.status, 404, "withheld exact Review settlement hides stage summaries: " + hidden.body); std::test::assert_eq_str(hidden.body, missing.body, "protected and missing status indistinguishable");
+        println("PASS Organization source status: actual native history, recovery-only grant, staged evidence, privacy, typed runtime identity and final fence");
+    }
+}
+fn main() { let cases = OrganizationStatusCases { }; cases.run_cases(std::env::arg(1), std::env::arg(2), std::env::arg_or(3, "")); }

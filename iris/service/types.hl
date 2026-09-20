@@ -1,0 +1,51 @@
+// Application-owned enum control profile. No Record, position or observer ID.
+type Actor { mode: String = "trusted_local"; name: String = ""; }
+type Operation {
+    id: String = ""; version: String = "1"; label: String = "";
+    target_kind: String = "application.control"; target_id: String = "";
+    supported: Bool = false; available: Bool = false; authorized: Bool = false;
+    input_label: String = ""; choices: String = "[]";
+    success_meaning: String = "";
+}
+type ApplicationState {
+    application_id: String = ""; name: String = ""; incarnation_id: String = "";
+    online: Bool = false;
+    control_id: String = ""; control_label: String = "";
+    revision: String = ""; value: String = "";
+    effective_revision: String = ""; effective_value: String = "";
+    activity_label: String = ""; activity_count: String = "";
+    observation_tick: String = "";
+    // Optional evidence association, never command authority.
+    runtime_pid: String = ""; runtime_process_key: String = "";
+}
+type StateResult { ok: Bool = false; code: String = "provider_unavailable"; state: ApplicationState = ApplicationState { }; }
+type Command {
+    valid: Bool = false;
+    request_id: String = ""; operation: String = ""; operation_version: String = "";
+    application_id: String = ""; target_application_id: String = "";
+    target_kind: String = ""; target_id: String = "";
+    incarnation_id: String = ""; revision: String = "";
+    expected_principal_mode: String = ""; expected_principal_name: String = "";
+    value: String = "";
+}
+type Receipt {
+    command_id: String = ""; request_id: String = ""; application_id: String = "";
+    principal_mode: String = ""; principal_name: String = "";
+    operation: String = ""; operation_version: String = "";
+    target_kind: String = ""; target_id: String = "";
+    incarnation_id: String = ""; expected_revision: String = ""; value: String = "";
+    fingerprint: String = ""; state: String = ""; reason: String = "";
+    changed: Bool = false; resulting_revision: String = ""; resulting_value: String = "";
+}
+type CommandResult {
+    ok: Bool = false; status: Int = 503; code: String = "provider_unavailable";
+    receipt: Receipt = Receipt { };
+}
+interface ApplicationProvider {
+    fn application_id() -> String;
+    fn inspect(actor: Actor) -> StateResult;
+    fn operation_count() -> Int;
+    fn operation_at(actor: Actor, index: Int) -> Operation;
+    fn submit(actor: Actor, command: Command) -> CommandResult;
+    fn lookup(actor: Actor, request_id: String) -> CommandResult;
+}

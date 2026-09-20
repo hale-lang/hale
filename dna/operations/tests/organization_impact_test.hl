@@ -1,0 +1,158 @@
+// Read-only assessment fixtures: real native wf1 canonical facts, plus recorded
+// legacy lifecycle rows. No writer fence or source-application proof is claimed.
+import ".." as ops;
+import "../../core" as dna;
+
+locus ImpactCases {
+    params { }
+    fn append(j: dna::Journal, kind: String, id: String, body: String) { std::test::assert(j.append_exact(j.revision(), kind, id, body).ok, "append " + kind); }
+    fn read(j: dna::Journal) -> ops::OrganizationImpactAssessment {
+        let q = ops::Queries { j: j }; let r = ops::OrganizationImpact { j: j, visibility: q }; return r.assess();
+    }
+    fn legacy(mode: String) {
+        let j = dna::MemJournal { }; self.append(j, "application.observed", "app", "{}");
+        if mode != "empty" {
+            self.append(j, "intent.offered", "i1", "an ask");
+            if mode != "intent" { self.append(j, "task.born", "t1", "i1: an ask"); }
+        }
+        if mode == "handed" || mode == "decision" || mode == "rejected" || mode == "private" || mode == "reference" {
+            self.append(j, "task.handed", "t1", "{\"assignee\":\"alex\",\"acceptance\":\"sha256:acceptance\",\"evidence_required\":true}");
+        }
+        if mode == "decision" || mode == "rejected" { self.append(j, "decision.reported", "t1", if mode == "decision" { "{\"accepted\":true}" } else { "{\"accepted\":false}" }); }
+        if mode == "private" { self.append(j, "receipt.withheld", j.read(j.revision() - 1).digest, "{}"); }
+        if mode == "reference" { self.append(j, "receipt.withheld", "sha256:acceptance", "{}"); }
+        if mode == "transfer" { self.append(j, "task.transfer_requested", "t1", "{\"owner\":\"local\",\"to\":\"remote\",\"assignee\":\"alex\"}"); self.append(j, "task.transfer_accepted", "t1", "{\"owner\":\"remote\",\"from\":\"local\",\"by\":\"alex\",\"assignee\":\"alex\",\"note\":\"\"}"); }
+        if mode == "done" { self.append(j, "task.done", "t1", "by alex"); }
+        if mode == "invalid" { self.append(j, "decision.reported", "t1", "{\"accepted\":true}"); }
+        if mode == "unsupported" { self.append(j, "task.future_state", "t1", "unknown"); }
+        let before = j.head(); let n = j.revision(); let result = self.read(j);
+        std::test::assert_eq_str(j.head(), before, "read appends no facts"); std::test::assert_eq_int(j.revision(), n, "read leaves revision unchanged");
+        std::test::assert(result.record_head == before && result.revision == n, "captured basis retained");
+        if mode == "invalid" || mode == "unsupported" {
+            std::test::assert(!result.available && result.details_visible && result.code == (if mode == "invalid" { "impact_source_invalid" } else { "impact_unsupported_history" }), "unsupported/malformed is not absence"); return;
+        }
+        std::test::assert(result.available, "legacy supported " + mode);
+        if mode == "private" || mode == "reference" { std::test::assert(!result.details_visible && result.open_legacy_tasks == 1, "hidden work still assessed internally"); }
+        else { std::test::assert(result.details_visible, "visible legacy " + mode); }
+        if mode == "empty" || mode == "done" || mode == "decision" { std::test::assert_eq_str(result.state, "none_observed", "completed/empty observed only"); }
+        else { std::test::assert_eq_str(result.state, "obligations_observed", "open remains obligation"); }
+        if mode == "intent" { std::test::assert_eq_int(result.unresolved_intents, 1, "unborn intent"); }
+        if mode == "transfer" { std::test::assert(result.open_legacy_tasks == 1 && result.handed_tasks == 0, "accepted transfer is not completed work"); }
+        if mode == "rejected" { std::test::assert_eq_int(result.handed_tasks, 1, "unaccepted report leaves handed task open"); }
+    }
+    fn future(mode: String) {
+        let j = dna::MemJournal { }; self.append(j, "application.observed", "app", "{}");
+        if mode == "schedule" { self.append(j, "schedule.declared", "s1", dna::schedule_json(dna::Schedule { id: "s1", every_ms: 1000, ask: "later" })); self.append(j, "schedule.paused", "s1", "by operator"); }
+        else if mode == "split" { self.append(j, "ledger.adopted", "app", "{\"routing\":1}"); self.append(j, "ledger.abandoned", "app", "{}"); }
+        else if mode == "unknown" { self.append(j, "spend.reserved", "spend", "{}"); }
+        else {
+            self.append(j, "effect.requested", "effect1", "exact effect");
+            if mode == "uncertain" { self.append(j, "effect.result", "effect1", "unknown after restart"); }
+            if mode == "effectdone" { self.append(j, "effect.result", "effect1", "ok"); }
+        }
+        let r = self.read(j);
+        if mode == "split" || mode == "unknown" { std::test::assert(!r.available && r.record_head == j.head(), "unavailable keeps basis"); std::test::assert_eq_str(r.code, if mode == "split" { "impact_source_unavailable" } else { "impact_unsupported_history" }, "coverage reason"); }
+        else { std::test::assert(r.available && r.details_visible, "future read available");
+            if mode == "schedule" { std::test::assert_eq_int(r.schedules, 1, "paused schedule remains future responsibility"); }
+            if mode == "pending" { std::test::assert_eq_int(r.pending_effects, 1, "unfinished effect"); }
+            if mode == "uncertain" { std::test::assert_eq_int(r.unknown_effects, 1, "uncertain effect"); }
+            if mode == "effectdone" { std::test::assert_eq_str(r.state, "none_observed", "completed effect"); }
+        }
+    }
+    fn workflow(mode: String) {
+        let j = dna::MemJournal { }; self.append(j, "application.observed", "app", "{}");
+        let cat = dna::WorkflowCatalog { }; std::test::assert_eq_str(cat.define("one", 1, 1, "one job"), "", "definition");
+        let request = dna::WorkRequest { objective: "finish work", data_class: if mode == "private" { "confidential" } else { "internal" } };
+        std::test::assert_eq_str(cat.leaf("one", 1, 0, "a", request, 1), "", "leaf");
+        let limits = dna::AdmissionLimits { }; std::test::assert(cat.expand("t1", "one", 1, limits).ok, "bound recipe");
+        self.append(j, "workflow.admitted", "t1", dna::encode_admission(dna::AdmittedWorkflow { task_id: "t1", definition: "one", revision: 1, recipe: cat.encode_bound(), limits: limits, works: 1, tasks: 1, steps: 1, depth: 1 }));
+        let step = "t1/wf1/s0"; let work = step + "/a"; let attempt = dna::attempt_id_of(work, 0);
+        self.append(j, "step.registered", step, dna::encode_members(dna::RegisteredMembers { step_id: step, task_id: "t1", workflow_id: "t1/wf1", step_index: 0, members: "a:leaf:" + work }));
+        self.append(j, "step.activated", step, dna::encode_activation(dna::ActivatedStep { step_id: step, task_id: "t1", workflow_id: "t1/wf1", step_index: 0, dispatched: "a" }));
+        self.append(j, "attempt.admitted", attempt, dna::encode_attempt(dna::AdmittedAttempt { attempt_id: attempt, work_id: work, step_id: step, task_id: "t1", attempt_no: 0, performer_kind: "agent", request: request }));
+        if mode == "done" {
+            self.append(j, "attempt.outcome", attempt, dna::encode_attempt_outcome(dna::AttemptOutcome { attempt_id: attempt, work_id: work, disposition: "done", performer: "agent", result: "complete" }));
+            self.append(j, "work.settled", work, dna::encode_work_outcome(dna::WorkOutcome { work_id: work, step_id: step, attempt_id: attempt, disposition: "done" }));
+            self.append(j, "step.completed", step, dna::encode_step_outcome(dna::StepOutcome { step_id: step, task_id: "t1", disposition: "completed", members: "a" }));
+            self.append(j, "workflow.settled", "t1", dna::encode_workflow_outcome(dna::WorkflowOutcome { task_id: "t1", disposition: "done" }));
+        }
+        if mode == "cancelled" { self.append(j, "workflow.settled", "t1", dna::encode_workflow_outcome(dna::WorkflowOutcome { task_id: "t1", disposition: "cancelled", reason: "stop admitting" })); }
+        if mode == "bad" { self.append(j, "work.settled", work, "{}"); }
+        let r = self.read(j);
+        if mode == "bad" { std::test::assert(!r.available && r.code == "impact_source_invalid", "native replay rejects malformed transition"); return; }
+        std::test::assert(r.available, "native wf1 replay " + mode); std::test::assert_eq_int(r.workflow_tasks, 1, "native task count");
+        if mode == "done" { std::test::assert(r.open_workflow_tasks == 0 && r.open_works == 0 && r.outstanding_attempts == 0 && r.state == "none_observed", "fully settled native tree"); }
+        else { std::test::assert(r.open_works == 1 && r.outstanding_attempts == 1 && r.state == "obligations_observed", "admitted work survives parent cancellation"); }
+        if mode == "cancelled" { std::test::assert_eq_int(r.open_workflow_tasks, 0, "cancelled Task is terminal but Work remains"); }
+        if mode == "private" { std::test::assert(!r.details_visible, "protected recipe suppresses public counts"); }
+    }
+    fn diagnostic(mode: String) {
+        let j = dna::MemJournal { }; self.append(j, "application.observed", "app", "{}");
+        let claim = if mode == "forced" { "{\"token\":1,\"forced\":true,\"from\":\"holder\",\"by\":\"operator\"}" }
+        else if mode == "token" { "{\"token\":0,\"forced\":false,\"by\":\"host\"}" }
+        else if mode == "extra" { "{\"token\":1,\"forced\":false,\"by\":\"host\",\"extra\":true}" }
+        else { "{\"token\": 1, \"forced\": false, \"by\": \"host\"}" };
+        self.append(j, "body.claimed", "holder", claim);
+        let only_claim = mode == "claim" || mode == "forced" || mode == "token" || mode == "extra";
+        if !only_claim {
+            self.append(j, "intent.offered", "i1", "ongoing human responsibility");
+            self.append(j, "task.born", "t1", "i1: ongoing human responsibility");
+            self.append(j, "task.handed", "t1", "{\"assignee\":\"alex\"}");
+            let candidate = "1111111111111111111111111111111111111111";
+            let request = "{\"mutation_id\":\"m1\",\"candidate_commit\":\"" + candidate + "\",\"task_id\":\"" + (if mode == "dangling" { "missing" } else { "t1" }) + "\",\"fitness_signals\":\"readability +\",\"diff_json\":\"sha256:diff\"}";
+            self.append(j, "review.requested", "review:m1", request);
+            let request_digest = j.read(j.revision() - 1).digest;
+            if mode == "ambiguous" { self.append(j, "review.requested", "review:m1", request + " "); }
+            self.append(j, "mutation.applied", "m1", candidate);
+            if mode != "missing" { self.append(j, "expression.observed", "m1", (if mode == "crashed" { "crashed" } else { "healthy" }) + " shape:1 exact observation"); }
+            let observation_digest = j.read(j.revision() - 1).digest;
+            self.append(j, "pressure.remeasured", "m1", "task " + (if mode == "dangling" { "missing" } else { "t1" }) + " fitness readability +: " + (if mode == "crashed" { "crashed" } else { "healthy" }) + " " + (if mode == "mismatch" { "different observation" } else { "exact observation" }));
+            if mode == "private" { self.append(j, "receipt.withheld", observation_digest, "{}"); }
+            if mode == "private_request" { self.append(j, "receipt.withheld", request_digest, "{}"); }
+            if mode == "private_ref" { self.append(j, "receipt.withheld", "sha256:diff", "{}"); }
+        }
+        let r = self.read(j);
+        if mode == "claim" { std::test::assert(r.available && r.state == "none_observed", "historical claim adds no work and proves no live ownership"); }
+        else if mode == "healthy" || mode == "private" || mode == "private_request" || mode == "private_ref" {
+            std::test::assert(r.available && r.open_legacy_tasks == 1 && r.handed_tasks == 1 && r.state == "obligations_observed", "healthy diagnostic never closes the Task");
+            std::test::assert(r.details_visible == (mode == "healthy"), "all diagnostic supporting privacy participates");
+        } else { std::test::assert(!r.available && r.code == "impact_unsupported_history", "unproven diagnostic unavailable " + mode); }
+    }
+    fn transfer(mode: String) {
+        let j = dna::MemJournal { }; self.append(j, "application.observed", "app", "{}");
+        self.append(j, "task.born", "acme:t7", "i7: cross-owner work");
+        self.append(j, "task.transfer_requested", "acme:t7", "{\"owner\":\"acme\",\"to\":\"north\",\"assignee\":\"bob\",\"obligation\":\"review\",\"acceptance\":\"\",\"evidence_required\":false}");
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field(if mode == "legacy_to" { "to" } else { "owner" }, if mode == "owner" { "other" } else { "north" });
+        b.string_field("from", if mode == "from" { "other" } else { "acme" }); b.string_field("by", "bob");
+        b.string_field("assignee", if mode == "assignee" { "carol" } else { "bob" }); b.string_field("note", "accepted"); b.end_object();
+        self.append(j, "task.transfer_accepted", "acme:t7", b.result());
+        if mode == "handed" || mode == "done" {
+            self.append(j, "task.handed", "acme:t7", "{\"work\":\"\",\"assignee\":\"bob\",\"obligation\":\"review\",\"acceptance\":\"\",\"evidence_required\":false,\"by\":\"north\",\"transferred_from\":\"acme\",\"accepted_by\":\"bob\",\"narrative\":\"accepted transfer\"}");
+        }
+        if mode == "done" { self.append(j, "task.done", "acme:t7", "by bob"); }
+        let result = self.read(j);
+        if mode == "accepted" || mode == "handed" || mode == "done" {
+            std::test::assert(result.available && result.details_visible, "canonical native transfer shape recognized");
+            std::test::assert_eq_int(result.open_legacy_tasks, if mode == "done" { 0 } else { 1 }, "acceptance and handoff remain responsibility until settlement");
+            std::test::assert_eq_int(result.handed_tasks, if mode == "handed" { 1 } else { 0 }, "actual receiver handoff separately recorded");
+        } else { std::test::assert(!result.available && result.code == "impact_source_invalid", "wrong native transfer tuple unavailable " + mode); }
+    }
+    fn limits() {
+        let j = dna::MemJournal { }; let text = std::bytes::BytesBuilder { }; let mut i = 0; while i < 65537 { text.append_u8(120); i = i + 1; }
+        self.append(j, "application.observed", "app", std::str::from_bytes(text.snapshot()));
+        let r = self.read(j); std::test::assert(!r.available && r.details_visible && r.code == "impact_read_limit" && r.record_head == j.head(), "oversized captured fact unavailable");
+    }
+    fn run_cases() {
+        let cases = "empty intent handed decision rejected private reference transfer done invalid unsupported"; let mut i = 0;
+        while i < dna::word_count(cases) { self.legacy(dna::nth_word(cases, i)); i = i + 1; }
+        self.future("schedule"); self.future("split"); self.future("unknown"); self.future("pending"); self.future("uncertain"); self.future("effectdone");
+        self.workflow("open"); self.workflow("done"); self.workflow("cancelled"); self.workflow("private"); self.workflow("bad"); self.limits();
+        let diagnostics = "claim forced token extra healthy private private_request private_ref missing mismatch crashed ambiguous dangling"; i = 0;
+        while i < dna::word_count(diagnostics) { self.diagnostic(dna::nth_word(diagnostics, i)); i = i + 1; }
+        let transfers = "accepted handed done owner from assignee legacy_to"; i = 0;
+        while i < dna::word_count(transfers) { self.transfer(dna::nth_word(transfers, i)); i = i + 1; }
+        println("PASS bounded Organization operational impact assessment");
+    }
+}
+fn main() { let cases = ImpactCases { }; cases.run_cases(); }

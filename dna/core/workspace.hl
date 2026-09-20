@@ -612,6 +612,15 @@ locus MutationGateway {
     // Commit the worktree's state as a candidate. `step` names the
     // commit within the Mutation, so each is its own idempotent effect.
     fn commit(j: Journal, mutation_id: String, step: String, message: String, token: Int, now: Int) -> GateResult {
+        return self.commit_key(j, mutation_id, step, message, mutation_id, token, now);
+    }
+    // Prepared source retains owner-qualified IDs under a Git-safe pointer.
+    // The Record entity and native mutation routing remain the full ID.
+    fn commit_prepared(j: Journal, mutation_id: String, step: String, message: String, candidate_key: String, token: Int, now: Int) -> GateResult {
+        if candidate_key != "source-" + hex_digest(mutation_id) { return self.refuse("invalid prepared candidate key"); }
+        return self.commit_key(j, mutation_id, step, message, candidate_key, token, now);
+    }
+    fn commit_key(j: Journal, mutation_id: String, step: String, message: String, candidate_key: String, token: Int, now: Int) -> GateResult {
         if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) { return self.refuse("stale or missing lease"); }
         let key = "commit:" + mutation_id + ":" + step;
         let fresh = effect_request(j, key, message);
@@ -625,9 +634,51 @@ locus MutationGateway {
         let sha = self.repo.commit_all(self.workspaces.path_of(mutation_id), message);
         let r = effect_result(j, key, sha != "");
         if sha == "" { return self.refuse("commit failed"); }
-        let kept = self.repo.mark_candidate(mutation_id, sha);
+        let kept = self.repo.mark_candidate(candidate_key, sha);
         let j = j.append(j.revision(), "mutation.candidate", mutation_id, sha);
         return GateResult { ok: true, value: sha };
+    }
+    // A prepared-source caller has proved this exact owned worktree's commit,
+    // parent and complete tree through its source guard. Repair acknowledgments
+    // of the already-claimed commit; this method NEVER creates another commit.
+    fn recover_prepared_commit(j: Journal, mutation_id: String, step: String, candidate: String, candidate_key: String, token: Int, now: Int) -> GateResult {
+        if candidate_key != "source-" + hex_digest(mutation_id) { return self.refuse("invalid prepared candidate key"); }
+        if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) { return self.refuse("stale or missing lease"); }
+        let key = "commit:" + mutation_id + ":" + step;
+        let refreshed = j.refresh(); let st = effect_status(j, key);
+        if !st.requested || (st.done && !st.ok && !st.unknown) { return self.refuse("no recoverable commit claim"); }
+        if len(candidate) == 0 || self.repo.head(self.workspaces.path_of(mutation_id)) != candidate { return self.refuse("candidate moved during commit recovery"); }
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "mutation.candidate" && e.entity == mutation_id && e.body != candidate { return self.refuse("a different candidate was already recorded"); }
+            i = i + 1;
+        }
+        if !self.repo.mark_candidate(candidate_key, candidate) { return self.refuse("candidate pointer unavailable"); }
+        let mut tries = 0;
+        while tries < 20 {
+            let moved = j.refresh(); let revision = j.revision();
+            let mut recorded = false; let mut k = 0;
+            while k < revision {
+                let e = j.read(k);
+                if e.kind == "mutation.candidate" && e.entity == mutation_id {
+                    if e.body != candidate { return self.refuse("a different candidate was already recorded"); }
+                    recorded = true;
+                }
+                k = k + 1;
+            }
+            if recorded { break; }
+            let appended = j.append_exact(revision, "mutation.candidate", mutation_id, candidate);
+            if !appended.ok && appended.error != "stale_revision" { return self.refuse("candidate acknowledgment pending"); }
+            tries = tries + 1;
+        }
+        if self.recorded(j, key) != candidate { return self.refuse("candidate acknowledgment pending"); }
+        let current = effect_status(j, key);
+        if !(current.done && current.ok) {
+            let completed = j.append_exact(j.revision(), "effect.result", key, "ok (exact prepared candidate recovered)");
+            if !completed.ok { return self.refuse("commit result acknowledgment pending"); }
+        }
+        return GateResult { ok: true, value: candidate, replayed: true };
     }
     // Apply the exact candidate to the repository. Keyed by the
     // candidate itself: a crashed and retried apply cannot commit twice.
@@ -684,7 +735,7 @@ locus MutationGateway {
         let mut i = 0;
         while i < j.revision() {
             let e = j.read(i);
-            if e.kind == "mutation.candidate" && std::str::contains(key, e.entity) { out = e.body; }
+            if e.kind == "mutation.candidate" && std::str::starts_with(key, "commit:" + e.entity + ":") { out = e.body; }
             i = i + 1;
         }
         return out;

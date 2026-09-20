@@ -1,0 +1,85 @@
+// Source preparation only: fixed module, captured assembly, native compiler.
+// Publication and activation belong to the application's governed source path.
+import "../operations" as ops;
+import "../core" as dna;
+import "../organization_source" as orgsource;
+
+locus OrganizationDraftWire {
+    params { }
+    fn capability() -> String {
+        return "{\"profile\":\"dna.organization.draft.v1\",\"supported\":true,\"validation\":true,\"publication\":false,\"module\":\"dna/org/main.hl\",\"max_request_bytes\":\"32768\",\"max_source_bytes\":\"16384\",\"max_instances\":\"256\"}";
+    }
+    fn base(artifact: orgsource::OrganizationArtifact, source: Source) -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("source_head", artifact.source_head);
+        b.string_field("dependency_digest", artifact.dependency_digest);
+        b.string_field("dependency_source", artifact.dependency_source);
+        b.string_field("module_digest", artifact.module_digest);
+        b.string_field("record_head", source.head);
+        b.end_object();
+        return b.result();
+    }
+    fn same_base(raw: String, artifact: orgsource::OrganizationArtifact, source: Source) -> Bool {
+        let w = CommandWire { };
+        return w.fields(raw, "source_head dependency_digest dependency_source module_digest record_head", 5) && w.text(raw, "source_head") == artifact.source_head && w.text(raw, "dependency_digest") == artifact.dependency_digest && w.text(raw, "dependency_source") == artifact.dependency_source && w.text(raw, "module_digest") == artifact.module_digest && w.text(raw, "record_head") == source.head;
+    }
+    fn project(artifact: orgsource::OrganizationArtifact, source: Source) -> String {
+        let q = ops::Organization { artifact: artifact.artifact, owners: artifact.owners, source_head: artifact.source_head, source_root: artifact.source_root, dependency_digest: artifact.dependency_digest, dependency_source: artifact.dependency_source, record_head: source.head };
+        if !q.load() || q.count() > 256 { return ""; }
+        let b = std::json::Builder { };
+        b.begin_object(); b.begin_array_field("items");
+        let mut i = 0;
+        while i < q.count() { b.value(q.row_json(q.at(i))); i = i + 1; }
+        b.end_array(); b.field("basis", q.basis_json()); b.end_object();
+        return b.result();
+    }
+    fn handle(req: std::http::Request, has_query: Bool, context: CommandContext, organization: orgsource::OrganizationSource, origin: String) -> std::http::Response {
+        let http = Http { };
+        let w = CommandWire { };
+        if !organization.allow_drafts || !w.origin_valid(origin) { return http.error(503, "organization_drafts_unsupported", "this host has not enabled organization source drafting", false); }
+        if has_query { return http.error(400, "invalid_query", "organization source drafting takes no query", false); }
+        let drafting = req.method == "POST";
+        if !drafting && req.method != "GET" { return http.error(405, "method_not_allowed", "organization source drafting supports GET and POST", false); }
+        let mut candidate = "";
+        let mut base = "";
+        if drafting {
+            let framing = DefinitionDraftWire { };
+            let guard = framing.guard(req, origin);
+            if len(guard) > 0 {
+                if guard == "invalid_origin" { return http.error(403, guard, "the request origin is not permitted", false); }
+                if guard == "unsupported_media_type" { return http.error(415, guard, "organization drafts require application/json", false); }
+                return http.error(if len(req.body) > 32768 { 413 } else { 400 }, "invalid_organization_draft", "invalid organization draft framing or request size", false);
+            }
+            let syntax = ops::OrganizationJson { };
+            if !syntax.valid(req.body) || !w.fields(req.body, "profile application_id principal base source_text", 5) || w.text(req.body, "profile") != "dna.organization.draft.v1" || w.text(req.body, "application_id") != context.source.identity || !w.is_text(w.raw(req.body, "source_text")) { return http.error(400, "invalid_organization_draft", "invalid organization draft fields", false); }
+            let principal = w.raw(req.body, "principal");
+            if !w.fields(principal, "mode name", 2) { return http.error(400, "invalid_organization_draft", "invalid principal fields", false); }
+            if w.text(principal, "mode") != context.principal_mode || w.text(principal, "name") != context.principal_name { return http.error(409, "organization_draft_context_changed", "the authenticated principal changed; reload before validating", false); }
+            candidate = w.text(req.body, "source_text");
+            if len(candidate) > 16384 { return http.error(413, "organization_draft_too_large", "organization source exceeds the 16 KiB draft limit", false); }
+            base = w.raw(req.body, "base");
+        }
+        let original = organization.read();
+        if !original.ok { return http.error(if original.code == "snapshot_changed" { 409 } else { 503 }, original.code, original.error, false); }
+        if len(original.module_digest) == 0 { return http.error(503, "organization_source_unsupported", "the committed dna/org/main.hl module must be present and at most 16 KiB", false); }
+        if drafting && !self.same_base(base, original, context.source) { return http.error(409, "snapshot_changed", "organization source, dependencies or Record changed; reload before validating", false); }
+        let result = if drafting { organization.draft(original, candidate) } else { original };
+        let record = dna::GitRecord { repo: context.root };
+        if !organization.unchanged(original) || record.head("journal") != context.source.head { return http.error(409, "snapshot_changed", "organization source, dependencies or Record changed during validation", false); }
+        if !result.ok { return http.error(if result.code == "snapshot_changed" { 409 } else if result.code == "organization_check_failed" { 422 } else { 503 }, result.code, result.error, false); }
+        let projected = self.project(result, context.source);
+        if len(projected) == 0 { return http.error(503, "organization_draft_projection_unavailable", "the checked draft must have a valid projection with at most 256 static instances", false); }
+        let text = if drafting { candidate } else { original.module_text };
+        let codec = ops::DefinitionDraftCodec { };
+        let b = std::json::Builder { };
+        b.begin_object(); b.string_field("profile", "dna.organization.draft.v1");
+        b.begin_object_field("principal"); b.string_field("mode", context.principal_mode); b.string_field("name", context.principal_name); b.end_object();
+        b.field("base", self.base(original, context.source));
+        b.begin_object_field("module"); b.string_field("path", "dna/org/main.hl"); b.field("text", codec.quote_json(text)); b.string_field("digest", dna::digest_of(text)); b.end_object();
+        b.field("projection", projected); b.string_field("validation", if drafting { "valid_draft" } else { "checked_source" }); b.string_field("publication", "unavailable"); b.end_object();
+        // The projection is built before the final race check as well.
+        if !organization.unchanged(original) || record.head("journal") != context.source.head { return http.error(409, "snapshot_changed", "the inspected basis changed while building the response", false); }
+        return http.success(context.source, b.result());
+    }
+}

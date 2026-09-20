@@ -1,0 +1,108 @@
+// Native setup/read side of the actual Host.run acceptance. The Node driver
+// starts the unchanged host lifecycle; no terminal source or launch row is seeded.
+import "../../../core" as dna;
+import "../../../operations" as ops;
+import "../../../organization_source" as source;
+import "../.." as host;
+import "../../../organization_runtime" as org_runtime;
+
+fn body(repo: String, request_id: String) {
+    let app = dna::Dna {
+        journal: dna::GitJournal { repo: repo }, organization_source_facts: ops::StrictOrganizationSourceFacts { },
+        organization_source_inputs: source::OrganizationPublicationInputs { root: repo },
+        organization_source_apply_inputs: source::OrganizationPublicationInputs { root: repo },
+        gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
+        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
+        review_policy: dna::OrgPolicy { }, membrane: dna::Board { }
+    };
+    if len(request_id) > 0 { app.on_organization_source_requested(dna::OrganizationSourceTrigger { request_id: request_id }); }
+}
+fn prepare(repo: String) {
+    let j = dna::GitJournal { repo: repo };
+    let genesis = j.append_exact(j.revision(), "application.observed", "org", "{}"); std::test::assert(genesis.ok, "actual application genesis");
+    let input = source::OrganizationSource { root: repo, allow_drafts: true }; let basis = input.read(); std::test::assert(basis.ok, "captured native base: " + basis.code);
+    let context = ops::GovernanceContext { application_id: j.read(0).digest, principal_mode: "local", principal_name: "alice" };
+    let original = std::io::fs::read_file(repo + "/dna/org/main.hl") or "";
+    let c = ops::GovernanceCommand { application_id: context.application_id, request_id: "prepared-launch", operation: "dna.organization.propose", target_kind: "dna.organization.module", target_id: "dna/org/main.hl",
+        subject_digest: basis.module_digest, source_head: basis.source_head, dependency_source: basis.dependency_source, dependency_digest: basis.dependency_digest,
+        record_head: std::str::clone(j.head()), source_text: std::str::replace(original, "\"Original\"", "\"Prepared\""), rationale: "Publish exact Organization for actual host launch." };
+    let codec = ops::OrganizationCommandCodec { }; let guard = source::OrganizationPublicationInputs { root: repo };
+    let r = codec.request(context, c, ops::GovernanceGrant { allowed: true, authority: "organization-editor", basis: "native-launch-test-policy" }, "");
+    let prepared = guard.prepare(r); std::test::assert(prepared.ok, "retained native input: " + prepared.code);
+    j.author = "alice";
+    let incoming = j.append_exact(j.revision(), "organization.source.requested", prepared.request.request_id, codec.fact(context, c, prepared.request)); std::test::assert(incoming.ok, "admitted source");
+    body(repo, prepared.request.request_id);
+    let refresh = j.refresh(); let native = dna::OrganizationSourceRequestCodec { }; let id = native.mutation_id(prepared.request);
+    let req = native.fact(j, "review.requested", "review:" + id); let candidate = dna::native_json_string(req.body, "subject_digest"); std::test::assert(len(candidate) > 0, "native candidate Review");
+    let reviewer = ops::GovernanceContext { application_id: context.application_id, principal_mode: "local", principal_name: "bob" };
+    let command = ops::GovernanceCommand { application_id: context.application_id, request_id: "launch-approval", operation: "dna.review.verdict", target_kind: "dna.review", target_id: id,
+        subject_digest: candidate, expected_review_state: "pending", verdict: "approve", comment: "Independently approve exact prepared candidate." };
+    let review_codec = ops::OrganizationReviewCommandCodec { }; let common = ops::GovernanceCommandCodec { };
+    j.author = "bob";
+    let admitted = j.append_exact(j.revision(), "review.verdict", id, review_codec.fact(reviewer, command, ops::GovernanceGrant { allowed: true, authority: "board", basis: "native-launch-review-policy" }, j.head()));
+    std::test::assert(admitted.ok, "tagged independent Review command"); j.author = "host";
+    let verdict = dna::Verdict { command_id: common.identity(reviewer, command.request_id), review_id: id, subject_digest: candidate, verdict: "approve", reviewer: "bob", authority: "board", comment: command.comment };
+    let review = dna::Review { journal: j, review_id: id, subject_digest: candidate, organization_source_request: prepared.request,
+        organization_source_facts: ops::StrictOrganizationSourceFacts { }, required_authority: dna::native_json_string(req.body, "required_authority"), author: "alice" };
+    let decision = review.command_decide(verdict); std::test::assert(len(decision) > 0, "actual Review decision");
+    body(repo, "");
+    let source = org_runtime::OrganizationLaunchSource { root: repo }; let exact = source.basis(id); std::test::assert(exact.ok, "native candidate, applied effect and restart handoff agree");
+    let out = std::json::Builder { }; out.begin_object(); out.string_field("application_id", context.application_id);
+    out.string_field("request_id", prepared.request.request_id); out.string_field("mutation_id", id); out.string_field("candidate_commit", candidate);
+    out.string_field("source_head", prepared.request.source_head); out.string_field("source_digest", prepared.request.source_digest);
+    out.string_field("restart_event_id", exact.handoff.digest); out.end_object(); println(out.result());
+}
+fn runtime(repo: String, id: String) {
+    let source = org_runtime::OrganizationLaunchSource { root: repo }; let b = source.basis(id); let a = source.attempt(b); let codec = dna::OrganizationLaunchCodec { };
+    let runtime = org_runtime::OrganizationRuntime { root: repo }; let current = runtime.current(a.application_id, a.request_id, a.attempt_id);
+    let launched = source.launched(a); let observed = source.observed(launched); let exited = source.exited(a); let rollback = host::OrganizationRollbackCodec { };
+    let out = std::json::Builder { }; out.begin_object(); out.bool_field("basis", b.ok); out.bool_field("attempt", codec.valid(a));
+    out.bool_field("launched", launched.valid); out.bool_field("observed", observed.valid); out.string_field("outcome", observed.outcome); out.bool_field("exited", exited.valid);
+    out.bool_field("rollback", rollback.answered(source, b, a)); out.bool_field("available", current.available);
+    out.string_field("attempt_id", a.attempt_id); out.string_field("launch_event_id", launched.launch_event_id);
+    out.string_field("application_id", a.application_id); out.string_field("request_id", a.request_id); out.string_field("candidate_commit", a.candidate_commit);
+    out.string_field("binary_digest", a.binary_digest); out.string_field("topology_digest", a.topology_digest); out.string_field("topology_shape", a.topology_shape);
+    out.int_field("pid", launched.pid); out.string_field("process_key", launched.process_key); out.string_field("current_process_key", current.process_key);
+    out.end_object(); println(out.result());
+}
+// Byte parity for the three original host-only factories, plus closed-body
+// rejection. These synthetic values exercise the pure codec only.
+fn codec_parity() {
+    let c = dna::OrganizationLaunchCodec { }; let native = dna::OrganizationSourceRequestCodec { };
+    let app = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; let handoff = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let failure = "cccccccccccccccccccccccccccccccccccccccc"; let base = "dddddddddddddddddddddddddddddddddddddddd";
+    let key = dna::hex_digest("process"); let id = "command-parity";
+    let a = dna::OrganizationLaunchAttempt { attempt_id: c.attempt_id(handoff), application_id: app, request_id: id,
+        command_fingerprint: dna::digest_of("command"), mutation_id: "source-" + dna::hex_digest(id), candidate_commit: app,
+        source_digest: dna::digest_of("source"), applied_event_id: failure, restart_event_id: handoff,
+        body_holder: "fixture holder", body_token: 1, host_pid: 7, host_started: "10", binary_digest: dna::digest_of("binary"),
+        topology_digest: dna::digest_of("topology"), topology_shape: "0123456789abcdef", observation_seconds: 1 };
+    std::test::assert(c.valid(a), "pure codec fixture is valid");
+    let attempt_pin = dna::record_json_quote(dna::digest_of(c.attempt_body(a)));
+    let reset = "{\"format\":\"dna.organization-rollback/1\",\"attempt_id\":" + dna::record_json_quote(a.attempt_id)
+        + ",\"attempt_digest\":" + attempt_pin + ",\"failure_event_id\":" + dna::record_json_quote(failure) + ",\"base_commit\":" + dna::record_json_quote(base) + "}";
+    std::test::assert_eq_str(c.rollback_body(a, failure, base), reset, "reset body preserves exact original host bytes");
+    let reset_event = dna::Event { kind: "organization.source.rollback_requested", entity: a.attempt_id, body: reset, digest: app };
+    std::test::assert(c.decode_rollback(reset_event, a).valid, "exact reset body decodes");
+    std::test::assert(!c.decode_rollback(dna::Event { kind: reset_event.kind, entity: a.attempt_id, body: reset + " ", digest: app }, a).valid, "noncanonical reset body refuses");
+    let binary = dna::digest_of("base binary"); let topology = dna::digest_of("base topology");
+    let launch = "{\"format\":\"dna.organization-rollback-launch/1\",\"attempt_id\":" + dna::record_json_quote(a.attempt_id)
+        + ",\"attempt_digest\":" + attempt_pin + ",\"rollback_event_id\":" + dna::record_json_quote(failure)
+        + ",\"binary_digest\":" + dna::record_json_quote(binary) + ",\"topology_digest\":" + dna::record_json_quote(topology) + "}";
+    std::test::assert_eq_str(c.rollback_launch_body(a, failure, binary, topology), launch, "launch claim preserves exact original host bytes");
+    let launch_event = dna::Event { kind: "organization.source.rollback_launch_requested", entity: a.attempt_id, body: launch, digest: app };
+    std::test::assert(c.decode_rollback_launch(launch_event, a).valid, "exact launch claim decodes");
+    std::test::assert(!c.decode_rollback_launch(dna::Event { kind: launch_event.kind, entity: "another-attempt", body: launch, digest: app }, a).valid, "cross-attempt claim refuses");
+    let receipt = "{\"format\":\"dna.organization-rollback-launched/1\",\"attempt_id\":" + dna::record_json_quote(a.attempt_id)
+        + ",\"launch_event_id\":" + dna::record_json_quote(app) + ",\"pid\":19,\"process_key\":" + dna::record_json_quote(key) + ",\"process_started\":\"23\"}";
+    std::test::assert_eq_str(c.rollback_launched_body(a, app, 19, key, "23"), receipt, "launch receipt preserves exact original host bytes");
+    let receipt_event = dna::Event { kind: "organization.source.rollback_launched", entity: a.attempt_id, body: receipt, digest: failure };
+    std::test::assert(c.decode_rollback_launched(receipt_event, a).valid, "exact receipt decodes");
+    std::test::assert(!c.decode_rollback_launched(dna::Event { kind: receipt_event.kind, entity: a.attempt_id, body: std::str::replace(receipt, "\"pid\":19", "\"pid\":0"), digest: failure }, a).valid, "nonpositive process identity refuses");
+    std::test::assert(!c.decode_rollback_launched(dna::Event { kind: receipt_event.kind, entity: a.attempt_id, body: std::str::replace(receipt, "\"pid\":19", "\"pid\":19,\"extra\":true"), digest: failure }, a).valid, "extra fields refuse");
+    println("PASS pure rollback codec parity and closed fields");
+}
+fn main() {
+    let mode = std::env::arg_or(1, ""); let repo = std::env::arg_or(2, "");
+    if mode == "codec" { codec_parity(); } else if mode == "prepare" { prepare(repo); } else { runtime(repo, std::env::arg_or(3, "")); }
+}

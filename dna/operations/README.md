@@ -109,3 +109,34 @@ ownership distinctions, then checks digest corruption, incompatible schemas,
 malformed contracts, duplicate instances, dangling parents and containment cycles.
 It also checks a deep containment chain, exact wide integer descriptors and a
 one MiB strict-JSON scan with a generous regression bound.
+
+## Application workflow catalog
+
+`Definitions` reads one snapshot from a `WorkflowCatalogProvider`. Its
+`supported()` method is independent of `snapshot()`, so capability discovery does
+not serialize application data. `NoWorkflowCatalog` reports unsupported;
+`DeclaredWorkflowCatalog` captures the application's actual `dna::WorkflowCatalog`,
+declared `AdmissionLimits`, and loaded-source `DefinitionProvenance` together.
+The host owns catalog construction and serializes changes against capture.
+
+After `load()`, `count/at/definition_of` expose exact revisions, `member_count/at`
+expose native Step specifications, and `dependent_at` exposes exact reverse child
+references. `row_json` preserves revisions and costs as decimal strings, including
+native signed values. Leaf specifications and child definitions remain distinct
+from admitted Work. Validation uses the native catalog preflight; it neither
+expands an execution nor changes the host's already-bound executions.
+
+The query first checks strict syntax, native fields/types, exact Int64 spelling
+and identifiers, then normalizes Unicode escapes before using the native decoder.
+Failure exposes no partial rows or basis. The default read budgets are one MiB of
+captured document, 64 definitions, 1,024 members, 256 bytes per identity/key, and
+validation bounds of 1,024 Works, depth 32, 256 Steps, and 512 members per Step.
+These are query resource budgets, distinct from the application's admission policy.
+`definition_read_limit` means the reader could not validate within its budget; it
+does not declare a native definition invalid.
+
+`basis_json` names the captured document digest, loaded module and source revision,
+optional dependency digest and admission limits. Provenance is an explicit trusted
+host claim; the adapter does not substitute today's checkout HEAD or assert that
+the inspected catalog is the one deployed elsewhere. API pagination combines this
+basis with its Record head. The public API authenticates before provider capture.

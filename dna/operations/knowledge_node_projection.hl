@@ -1,0 +1,31 @@
+// A durable request, a native proposal, Review, and adoption are separate
+// facts. Never turn an accepted request or an approval into an adopted node.
+import "../core" as dna;
+
+locus KnowledgeNodeProjection {
+    params { }
+    fn unknown() -> KnowledgeNodeOutcome { return KnowledgeNodeOutcome { proposal_state: "unknown" }; }
+    fn project(j: GovernanceJournal, found: KnowledgeFound) -> KnowledgeNodeOutcome {
+        let f = found.fact; let request = f.node; let native = dna::KnowledgeNodeRequestCodec { };
+        let view = GovernanceProjection { }; let wire = GovernanceCommandCodec { };
+        let proposed = view.fact(j, "knowledge.node.proposed", f.command_id, false);
+        let refused = view.fact(j, "knowledge.node.refused", f.command_id, false);
+        if proposed.invalid || refused.invalid || (proposed.found && refused.found) { return self.unknown(); }
+        if refused.found {
+            let why = wire.string(refused.body, "why");
+            if refused.sequence <= found.event.seq || !view.object(refused.body) || !wire.bounded(why, 2048, true, true) || refused.body != native.refused(request, why) { return self.unknown(); }
+            return KnowledgeNodeOutcome { proposal_state: "refused", reason: "The native Knowledge proposal was refused." };
+        }
+        if !proposed.found { return KnowledgeNodeOutcome { }; }
+        if proposed.sequence <= found.event.seq || proposed.body != native.proposed(request) { return self.unknown(); }
+        let digest = request.candidate_digest; let review_id = dna::knowledge_review_id(digest);
+        let candidate = view.candidate(j, digest, review_id); let review = view.review(j, review_id, digest);
+        if !candidate.ok || !review.ok || candidate.kind != request.kind || candidate.author != request.author || candidate.target != request.target || candidate.name != request.name || candidate.supersedes != request.supersedes { return self.unknown(); }
+        let activation = view.activation(j, GovernanceReceipt { }, digest, review_id, request.supersedes, review);
+        return KnowledgeNodeOutcome {
+            proposal_state: "created", candidate_digest: digest, review_id: review_id,
+            review_state: review.state, review_outcome: review.outcome,
+            activation_state: activation.activation_state, activation_reason: activation.activation_reason
+        };
+    }
+}

@@ -1,0 +1,132 @@
+// Explicit handed-Task projection inputs; every retirement/move outcome is
+// produced by the real shared Record batch provider in an isolated Git repo.
+import ".." as ops;
+import "../../core" as dna;
+
+locus RetirementFaultBatch {
+    params { inner: dna::GitRecord; mode: String = ""; builds: Int = 0; swaps: Int = 0; }
+    fn identity() -> String { return self.inner.identity(); }
+    fn head(chain: String) -> String { return self.inner.head(chain); }
+    fn build(at: String, row: dna::Row, sign: Bool, note: String) -> String {
+        self.builds = self.builds + 1;
+        if self.mode == "partial" && self.builds == 2 { return ""; }
+        if self.mode == "wrong-author" && row.kind == "task.reassigned" { return self.inner.build(at, dna::Row { kind: row.kind, entity: row.entity, body: row.body, author: "intruder" }, sign, note); }
+        if self.mode == "wrong-manifest" && row.kind == "person.retired" {
+            let common = ops::GovernanceCommandCodec { }; let codec = ops::PersonRetirementCodec { }; let payload = common.string(row.body, "command_payload");
+            let context = ops::GovernanceContext { application_id: common.string(payload, "application_id"), principal_mode: common.string(payload, "principal_mode"), principal_name: common.string(payload, "principal_name") };
+            let c = codec.decode(context, payload); let grant = ops::GovernanceGrant { allowed: true, authority: common.string(row.body, "command_authority"), basis: common.string(row.body, "command_authority_basis") };
+            let forged = codec.fact(context, c, grant, common.string(row.body, "command_record_head"), "[]", 2);
+            return self.inner.build(at, dna::Row { kind: row.kind, entity: row.entity, body: forged, author: row.author }, sign, note);
+        }
+        return self.inner.build(at, row, sign, note);
+    }
+    fn move_chain(chain: String, id: String, expected: String) -> Bool {
+        self.swaps = self.swaps + 1;
+        if self.mode == "unknown" { return false; }
+        if self.mode == "arrival" {
+            let a = self.inner.append("journal", expected, dna::Row { kind: "task.born", entity: "arriving task", body: "Arrival wins retirement CAS", author: "leader" }, false, "");
+            std::test::assert(a.ok, "concurrent native arrival birth");
+            let h = self.inner.append("journal", a.id, dna::Row { kind: "task.handed", entity: "arriving task", body: "{\"assignee\":\"alice\",\"by\":\"leader\"}", author: "leader" }, false, "");
+            std::test::assert(h.ok, "concurrent native arrival handoff");
+        }
+        if self.mode == "successor" { std::test::assert(self.inner.append("journal", expected, dna::Row { kind: "person.retired", entity: "bob", body: "{\"by\":\"leader\",\"to\":\"charlie\",\"transferred\":0}", author: "leader" }, false, "").ok, "successor retirement wins CAS"); }
+        let okay = self.inner.move_chain(chain, id, expected);
+        return if self.mode == "lost" { false } else { okay };
+    }
+}
+locus RetirementCases {
+    params { }
+    fn append(j: dna::Journal, kind: String, id: String, body: String) { std::test::assert(j.append_exact(j.revision(), kind, id, body).ok, "fixture " + kind); }
+    fn context(app: String) -> ops::GovernanceContext { return ops::GovernanceContext { application_id: app, principal_mode: "local", principal_name: "operator" }; }
+    fn policy(app: String, flag: String) -> ops::TaskAuthorityPolicy {
+        let common = ops::GovernanceCommandCodec { }; let codec = ops::TaskAuthorityPolicyCodec { };
+        return codec.decode("{\"format\":\"dna.task-authority/1\",\"application_id\":" + common.quote(app) + ",\"owner\":\"fixed-group\",\"members\":[\"alice\",\"bob\",\"charlie\"],\"grants\":[{\"mode\":\"local\",\"name\":\"operator\",\"reassign\":true,\"recover\":true" + flag + "}]}", app, "local");
+    }
+    fn hand(j: dna::Journal, id: String, who: String) {
+        let common = ops::GovernanceCommandCodec { }; self.append(j, "task.born", id, "Preserve exact acceptance\r\nUnicode é 🧭");
+        self.append(j, "task.handed", id, "{\"assignee\":" + common.quote(who) + ",\"obligation\":\"approval\",\"acceptance\":\"retained acceptance\",\"evidence_required\":true,\"by\":\"leader\"}");
+    }
+    fn command(context: ops::GovernanceContext, plan: ops::RetirementPlan, key: String, to: String) -> ops::GovernanceCommand {
+        return ops::GovernanceCommand { request_id: key, application_id: context.application_id, operation: "dna.person.retire", target_kind: "dna.person", target_id: plan.person, subject_digest: plan.subject_digest, new_assignee: to };
+    }
+    fn plan_case(mode: String) {
+        let j = dna::MemJournal { }; self.append(j, "application.observed", "app", "{}"); self.hand(j, "task / one é", "alice"); let service = ops::PersonRetirement { }; let before = service.plan(j, "alice", "policy");
+        std::test::assert(before.ok && before.transferred == 1, "complete visible plan");
+        if mode == "hidden" { self.append(j, "receipt.withheld", "task / one é", "{}"); }
+        if mode == "hidden-terminal" { self.append(j, "task.done", "task / one é", "explicit terminal projection input"); self.append(j, "receipt.withheld", j.read(j.revision() - 1).digest, "{}"); }
+        if mode == "reference" { self.append(j, "receipt.withheld", "retained acceptance", "{}"); }
+        if mode == "transfer" { self.append(j, "task.transfer_requested", "task / one é", "{\"owner\":\"x\",\"to\":\"y\",\"assignee\":\"alice\"}"); }
+        if mode == "unsupported" { self.append(j, "task.future", "task / one é", "opaque"); }
+        if mode == "ledger" { self.append(j, "ledger.adopted", "ledger", "{}"); }
+        if mode == "done" { self.append(j, "task.done", "task / one é", "native completion projection fixture"); }
+        if mode == "arrival" { self.hand(j, "second task", "alice"); }
+        if mode == "other" { self.hand(j, "unrelated task", "bob"); }
+        if mode == "aba" { let codec = ops::PersonRetirementCodec { }; self.append(j, "task.reassigned", "task / one é", codec.move_body("alice", "bob", "operator")); self.append(j, "task.reassigned", "task / one é", codec.move_body("bob", "alice", "operator")); }
+        if mode == "limit" { let mut n = 1; while n < 33 { self.hand(j, "task " + to_string(n), "alice"); n = n + 1; } }
+        let after = service.plan(j, "alice", "policy");
+        if mode == "hidden" || mode == "hidden-terminal" || mode == "reference" || mode == "transfer" || mode == "unsupported" || mode == "ledger" || mode == "limit" { std::test::assert(!after.ok && after.tasks == "[]", "incomplete/protected/unsupported plan refuses with no partial list " + mode); }
+        else if mode == "other" { std::test::assert(after.subject_digest == before.subject_digest, "unrelated responsibilities do not force a new plan"); }
+        else { std::test::assert(after.ok && after.subject_digest != before.subject_digest, "exact affected lifecycle changes plan " + mode); }
+        std::test::assert(service.plan(j, "alice", "different policy").subject_digest != before.subject_digest, "authority basis participates");
+        println("plan " + mode + " passed");
+    }
+    fn policy_case() {
+        let j = dna::MemJournal { }; self.append(j, "application.observed", "app", "{}"); let context = self.context("app");
+        let old = self.policy("app", ""); let no = ops::FixedTaskAuthority { policy: old };
+        std::test::assert(old.valid && !old.retirement_enabled && no.authorize(context, "dna.task.reassign", false, j).allowed && !no.authorize(context, "dna.person.retire", false, j).allowed, "old policy bytes remain valid, no implied retirement grant");
+        let revoked = self.policy("app", ",\"retire\":false"); let recovery = ops::FixedTaskAuthority { policy: revoked };
+        std::test::assert(revoked.valid && revoked.retirement_enabled && !recovery.authorize(context, "dna.person.retire", false, j).allowed && recovery.authorize(context, "dna.person.retire", true, j).allowed, "explicit false keeps recovery profile");
+        std::test::assert(!self.policy("app", ",\"retire\":\"true\"").valid && !self.policy("app", ",\"retire\":true,\"retire\":false").valid, "retirement grant strict type and duplicate fields");
+        let service = ops::PersonRetirement { }; let plan = service.plan(j, "alice", "policy"); let c = self.command(context, plan, "key", ""); let codec = ops::PersonRetirementCodec { };
+        std::test::assert(codec.valid(context, c) && codec.canonical(context, codec.decode(context, codec.canonical(context, c))) == codec.canonical(context, c), "zero-held no-successor exact variant roundtrip");
+        println("policy and codec passed");
+    }
+    fn native(repo: String, mode: String) {
+        let record = dna::GitRecord { repo: repo }; std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git"); let j = dna::GitJournal { repo: repo };
+        if mode != "empty" { self.hand(j, "task / one é", "alice"); self.hand(j, "task two", "alice"); }
+        else { self.append(j, "application.observed", "app", "{}"); }
+        let context = self.context(record.identity()); let policy = self.policy(context.application_id, ",\"retire\":true"); let authority = ops::FixedTaskAuthority { policy: policy }; let service = ops::PersonRetirement { };
+        let plan = service.plan(j, "alice", policy.basis); std::test::assert(plan.ok, "plan available"); let command = self.command(context, plan, "retirement-key", if mode == "empty" || mode == "no-successor" { "" } else { "bob" });
+        let batch = RetirementFaultBatch { inner: record, mode: mode }; let provider = ops::GovernanceCommands { record: record, tasks_enabled: true, task_authority: authority, retirement_enabled: true, retirement_record: batch };
+        let before = record.head("journal"); let revision = record.count("journal"); let result = provider.submit(context, command);
+        if mode == "wrong-manifest" || mode == "wrong-author" { std::test::assert(!result.ok && result.code == "command_history_invalid" && batch.swaps == 1, "corrupt exact batch evidence never claims success " + mode); println("native " + mode + " passed"); return; }
+        if mode == "partial" { std::test::assert(!result.ok && record.head("journal") == before && record.count("journal") == revision && batch.swaps == 0, "off-ref partial build publishes nothing"); println("native partial passed"); return; }
+        if mode == "no-successor" { std::test::assert(!result.ok && result.code == "forbidden" && record.head("journal") == before && batch.builds == 0, "held work cannot be dropped"); println("native no-successor passed"); return; }
+        if mode == "unknown" || mode == "arrival" || mode == "successor" {
+            std::test::assert(result.ok && result.receipt.state == "outcome_unknown" && result.receipt.person.transferred == -1 && batch.swaps == 1, "uncertain CAS never repeats " + result.code);
+            if mode == "unknown" { std::test::assert(record.head("journal") == before, "no effect invented"); }
+            let fresh = dna::GitJournal { repo: repo }; std::test::assert(service.active(fresh, "alice"), "failed CAS leaves target active"); let q = ops::Queries { j: fresh }; let view = ops::TaskProjection { j: fresh, visibility: q };
+            std::test::assert(view.load() && view.task_of("task / one é").assignee == "alice", "failed CAS publishes no earlier move"); println("native " + mode + " passed"); return;
+        }
+        std::test::assert(result.ok && result.receipt.state == "succeeded" && result.receipt.person.state == "applied" && result.receipt.person.transferred == plan.transferred && result.receipt.person.event_id != "", "exact native final retirement recovered " + result.code);
+        std::test::assert(record.count("journal") == revision + plan.transferred + 1 && batch.swaps == 1, "one published atomic chain");
+        let fresh_provider = ops::GovernanceCommands { record: record, task_authority: authority }; let recovered = fresh_provider.lookup(context, "retirement-key");
+        std::test::assert(recovered.ok && recovered.receipt.person.event_id == result.receipt.person.event_id && fresh_provider.submit(context, command).ok, "retired-target write-disabled restart and idempotent recovery");
+        std::test::assert(fresh_provider.submit(context, self.command(context, plan, "retirement-key", "charlie")).code == "request_conflict", "changed successor cannot reuse key");
+        let current = dna::GitJournal { repo: repo }; let final = current.read(current.revision() - 1); let codec = ops::PersonRetirementCodec { }; let fact = codec.decode_fact(final, current);
+        std::test::assert(fact.valid && codec.visible(current, fact), "exact manifest/chain decoder");
+        let observed = service.plan(current, "alice", policy.basis); std::test::assert(observed.ok && observed.state == "retired" && observed.event_id == final.digest && observed.successor == command.new_assignee && observed.transferred == 0, "native retired person readback");
+        if mode != "empty" {
+            let q = ops::Queries { j: current }; let view = ops::TaskProjection { j: current, visibility: q }; std::test::assert(view.load(), "ordinary projection after batch"); let task = view.task_of("task / one é");
+            std::test::assert(task.assignee == "bob" && task.obligation == "approval" && task.acceptance_digest == "retained acceptance" && task.evidence_required, "retirement retains exact acceptance and obligation");
+            if mode == "retired-actor" {
+                self.append(current, "person.retired", "operator", "{\"by\":\"leader\",\"to\":\"\",\"transferred\":0}");
+                let next_plan = service.plan(current, "bob", policy.basis);
+                std::test::assert(next_plan.ok && provider.submit(context, self.command(context, next_plan, "retired-actor-new", "charlie")).code == "forbidden", "retired actor cannot admit fresh retirement");
+                let move = ops::GovernanceCommand { request_id: "retired-actor-reassign", operation: "dna.task.reassign", application_id: context.application_id, target_kind: "dna.task", target_id: task.id, subject_digest: task.assignment_digest, expected_assignee: "bob", new_assignee: "charlie" };
+                std::test::assert(provider.submit(context, move).code == "forbidden", "retired actor cannot admit fresh Task reassignment");
+                std::test::assert(fresh_provider.lookup(context, "retirement-key").ok && provider.submit(context, command).ok, "retired actor retains exact existing-command recovery");
+            }
+            self.append(current, "receipt.withheld", "retained acceptance", "{}"); std::test::assert(fresh_provider.lookup(context, "retirement-key").code == "forbidden", "recovery suppresses private affected evidence");
+        }
+        println("native " + mode + " passed");
+    }
+}
+@unbounded
+fn main() {
+    let cases = RetirementCases { }; cases.policy_case();
+    cases.plan_case("hidden"); cases.plan_case("hidden-terminal"); cases.plan_case("reference"); cases.plan_case("transfer"); cases.plan_case("unsupported"); cases.plan_case("ledger"); cases.plan_case("done"); cases.plan_case("arrival"); cases.plan_case("other"); cases.plan_case("aba"); cases.plan_case("limit");
+    let base = std::env::arg(1); std::test::assert(base != "", "owned fixture path"); let modes = "normal lost partial unknown arrival successor empty no-successor wrong-manifest wrong-author retired-actor"; let mut i = 0;
+    while i < dna::word_count(modes) { let mode = dna::nth_word(modes, i); std::io::fs::mkdir(base + "/" + mode) or discard; cases.native(base + "/" + mode, mode); i = i + 1; }
+    println("person retirement native cases passed");
+}

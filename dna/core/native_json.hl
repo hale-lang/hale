@@ -1,0 +1,65 @@
+// Exact string decoding at the native governance boundary. The owning codec
+// still validates the document and its field schema. Unlike the stdlib's
+// permissive decoder, every non-NUL escaped byte and Unicode scalar survives.
+locus NativeJson {
+    params { }
+    fn hex(c: Int) -> Int {
+        if c >= 48 && c <= 57 { return c - 48; }
+        if c >= 65 && c <= 70 { return c - 55; }
+        if c >= 97 && c <= 102 { return c - 87; }
+        return -1;
+    }
+    fn codepoint(raw: String, at: Int, size: Int) -> Int {
+        if at + 4 > size { return -1; }
+        let mut cp = 0;
+        let mut i = at;
+        while i < at + 4 {
+            let value = self.hex(std::str::byte_at_unchecked(raw, i));
+            if value < 0 { return -1; }
+            cp = cp * 16 + value;
+            i = i + 1;
+        }
+        return cp;
+    }
+    fn decode(raw: String) -> String {
+        let size = len(raw);
+        if size < 2 || std::str::byte_at_unchecked(raw, 0) != 34 || std::str::byte_at_unchecked(raw, size - 1) != 34 { return ""; }
+        let bytes = std::bytes::BytesBuilder { };
+        let mut i = 1;
+        while i < size - 1 {
+            let c = std::str::byte_at_unchecked(raw, i);
+            if c < 32 || c == 34 { return ""; }
+            if c != 92 { bytes.append_u8(c); i = i + 1; continue; }
+            if i + 1 >= size - 1 { return ""; }
+            let escaped = std::str::byte_at_unchecked(raw, i + 1);
+            if escaped != 117 {
+                if escaped != 34 && escaped != 92 && escaped != 47 && escaped != 98 && escaped != 102 && escaped != 110 && escaped != 114 && escaped != 116 { return ""; }
+                let decoded = if escaped == 98 { 8 } else if escaped == 102 { 12 } else if escaped == 110 { 10 } else if escaped == 114 { 13 } else if escaped == 116 { 9 } else { escaped };
+                bytes.append_u8(decoded); i = i + 2; continue;
+            }
+            let mut cp = self.codepoint(raw, i + 2, size - 1);
+            if cp <= 0 || (cp >= 56320 && cp <= 57343) { return ""; }
+            if cp >= 55296 && cp <= 56319 {
+                if i + 12 > size - 1 || std::str::byte_at_unchecked(raw, i + 6) != 92 || std::str::byte_at_unchecked(raw, i + 7) != 117 { return ""; }
+                let low = self.codepoint(raw, i + 8, size - 1);
+                if low < 56320 || low > 57343 { return ""; }
+                cp = 65536 + (cp - 55296) * 1024 + low - 56320;
+                i = i + 6;
+            }
+            if cp < 128 { bytes.append_u8(cp); }
+            else if cp < 2048 { bytes.append_u8(192 + cp / 64); bytes.append_u8(128 + cp % 64); }
+            else if cp < 65536 {
+                bytes.append_u8(224 + cp / 4096); bytes.append_u8(128 + (cp / 64) % 64); bytes.append_u8(128 + cp % 64);
+            } else {
+                bytes.append_u8(240 + cp / 262144); bytes.append_u8(128 + (cp / 4096) % 64); bytes.append_u8(128 + (cp / 64) % 64); bytes.append_u8(128 + cp % 64);
+            }
+            i = i + 6;
+        }
+        return std::str::from_bytes(bytes.snapshot());
+    }
+}
+
+fn native_json_string(document: String, key: String) -> String {
+    let codec = NativeJson { };
+    return codec.decode(std::json::find_field_raw(document, key));
+}

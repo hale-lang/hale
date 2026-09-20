@@ -1,0 +1,161 @@
+// Real native admission + Body proposal projection over disposable Git Records.
+// Scope, exact predecessor and durable identity are service decisions.
+import ".." as ops;
+import "../../core" as dna;
+
+const SCOPES: String = "[{\"author\":\"org\",\"target\":\"org\"}]";
+
+locus NodeAuthority {
+    params { scopes: String = SCOPES; mode: String = "review"; writes: Bool = true; }
+    fn authorize(context: ops::GovernanceContext, operation: String, recovery: Bool, j: dna::Journal) -> ops::KnowledgeGrant {
+        return ops::KnowledgeGrant { allowed: context.principal_name == "alice" && (recovery || self.writes), mode: if recovery { "direct" } else { self.mode }, authority: "board", basis: "explicit-node-test-policy", scopes: self.scopes };
+    }
+}
+locus NodeFaultRecord {
+    params { inner: dna::GitRecord = dna::GitRecord { }; fault: String = ""; appends: Int = 0; }
+    fn identity() -> String { return self.inner.identity(); }
+    fn head(chain: String) -> String { return self.inner.head(chain); }
+    fn count(chain: String) -> Int { return self.inner.count(chain); }
+    fn between(from: String, to: String) -> String { return self.inner.between(from, to); }
+    fn text_at(id: String) -> String { return self.inner.text_at(id); }
+    fn body(digest: String) -> dna::Kept { return self.inner.body(digest); }
+    fn append(chain: String, at: String, row: dna::Row, sign: Bool, note: String) -> dna::Appended {
+        self.appends = self.appends + 1; let fault = std::str::clone(self.fault); self.fault = "";
+        if fault == "unknown" { return dna::Appended { error: "io" }; }
+        let result = self.inner.append(chain, at, row, sign, note);
+        if fault == "lost" { std::test::assert(result.ok, "lost response follows a real commit"); return dna::Appended { error: "io" }; }
+        return result;
+    }
+}
+locus NodeAdmissionCases {
+    params { }
+    fn append(j: dna::Journal, kind: String, entity: String, body: String) {
+        let moved = j.refresh();
+        let result = j.append_exact(j.revision(), kind, entity, body);
+        std::test::assert(result.ok, "prior native fixture " + kind);
+    }
+    fn setup(repo: String) {
+        std::io::fs::mkdir(repo) or discard;
+        let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        std::test::assert_eq_int(init.code, 0, "initialize isolated Record");
+        let j = dna::GitJournal { repo: repo }; self.append(j, "application.observed", "org", "{}");
+    }
+    fn who(record: ops::GovernanceRecord) -> ops::GovernanceContext {
+        return ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: "alice" };
+    }
+    fn command(context: ops::GovernanceContext, head: String, id: String, operation: String, old: String, author: String, target: String) -> ops::KnowledgeCommand {
+        let retire = operation == "retire";
+        return ops::KnowledgeCommand {
+            request_id: id, application_id: context.application_id, operation: "dna.knowledge.node." + operation,
+            target_id: if operation == "propose" { target } else { old }, record_head: head,
+            node_kind: if retire { "" } else { "idea" }, name: if retire { "" } else { "Working idea 🧭" },
+            text: if retire { "" } else { "An exact idea é\r\nsecond line." },
+            author: if retire { "" } else { author }, target: if retire { "" } else { target },
+            supersedes: if operation == "revise" { old } else { "" }, rationale: "Record this exact change."
+        };
+    }
+    fn old(repo: String, author: String, target: String, name: String) -> String {
+        let receipts = dna::GitReceipts { repo: repo }; let j = dna::GitJournal { repo: repo };
+        let digest = "sha256:" + receipts.store(dna::knowledge_document(dna::Idea { kind: "concept", name: name, text: "Earlier retained knowledge.", author: author }, target));
+        self.append(j, "knowledge.ratified", digest, "{}"); return digest;
+    }
+    fn fact(commands: ops::KnowledgeCommands, sequence: Int) -> ops::KnowledgeFact {
+        let j = ops::GovernanceJournal { snapshot: commands.capture() }; let codec = ops::KnowledgeCommandCodec { };
+        return codec.decode_fact(j.read(sequence));
+    }
+    fn recovery(repo: String) {
+        self.setup(repo); let record = NodeFaultRecord { inner: dna::GitRecord { repo: repo } }; let context = self.who(record);
+        let commands = ops::KnowledgeCommands { record: record, authority: NodeAuthority { } };
+        let c = self.command(context, record.head("journal"), "create", "propose", "", "org", "org");
+        let cap = commands.capability_for(context, c.operation);
+        std::test::assert(cap.available && cap.authorized && cap.mode == "review", "native node Review is a submittable capability");
+        record.fault = "lost";
+        let admitted = commands.submit(context, c);
+        std::test::assert(admitted.ok && admitted.receipt.state == "recorded" && admitted.receipt.node.proposal_state == "pending", "lost response recovers actual pending request: " + admitted.code);
+        std::test::assert_eq_int(record.appends, 1, "ambiguous reply cannot append a second request");
+        let f = self.fact(commands, admitted.receipt.sequence); let native = dna::KnowledgeNodeRequestCodec { };
+        std::test::assert(f.valid && f.node.request_id == admitted.receipt.command_id, "one canonical fact binds original browser identity to native request");
+        std::test::assert_eq_str(f.node.candidate_digest, dna::digest_of(native.document(f.node)), "candidate binds exact Unicode and CRLF");
+        let fresh = ops::KnowledgeCommands { record: dna::GitRecord { repo: repo }, authority: NodeAuthority { writes: false } };
+        let repeated = fresh.submit(context, c);
+        std::test::assert(repeated.ok && repeated.receipt.event_id == admitted.receipt.event_id, "restart and removed write grant recover exact request");
+        let changed = self.command(context, c.record_head, c.request_id, "propose", "", "org", "org"); changed.text = "Different content.";
+        std::test::assert_eq_str(fresh.submit(context, changed).code, "request_conflict", "same identity cannot silently change the candidate");
+        let retired = self.command(context, c.record_head, c.request_id, "retire", f.node.candidate_digest, "", "");
+        std::test::assert_eq_str(fresh.submit(context, retired).code, "request_conflict", "request namespace is shared by node operations");
+        let j = dna::GitJournal { repo: repo };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" } };
+        body.on_knowledge_node_requested(f.node);
+        let proposed = fresh.lookup(context, c.request_id);
+        std::test::assert(proposed.ok && proposed.receipt.state == "succeeded" && proposed.receipt.node.proposal_state == "created", "real Body creates the exact proposal");
+        std::test::assert_eq_str(proposed.receipt.node.candidate_digest, f.node.candidate_digest, "receipt uses the native candidate");
+        std::test::assert(proposed.receipt.node.review_state == "pending" && proposed.receipt.node.activation_state == "unknown", "proposal does not pretend Review or adoption completed");
+        self.append(j, "receipt.withheld", f.node.candidate_digest, "{}");
+        let hidden = fresh.lookup(context, c.request_id);
+        std::test::assert(hidden.ok && !hidden.receipt.details_visible && hidden.receipt.target_id == "" && hidden.receipt.node.candidate_digest == "" && hidden.receipt.node.review_id == "" && hidden.receipt.node.proposal_state == "unknown", "later visibility loss masks all node outcome identities");
+        std::test::assert_eq_int(record.appends, 1, "all lookup and retry paths add no second command");
+    }
+    fn subjects(repo: String) {
+        self.setup(repo); let old = self.old(repo, "org", "org", "");
+        let record = NodeFaultRecord { inner: dna::GitRecord { repo: repo } }; let context = self.who(record);
+        let commands = ops::KnowledgeCommands { record: record, authority: NodeAuthority { } };
+        let revise = self.command(context, record.head("journal"), "revision", "revise", old, "org", "org");
+        std::test::assert(commands.submit(context, revise).ok, "visible ratified unnamed predecessor is revisable");
+        let retire = self.command(context, record.head("journal"), "retirement", "retire", old, "", "");
+        let retired = commands.submit(context, retire);
+        std::test::assert(retired.ok, "retirement requests native governance");
+        let f = self.fact(commands, retired.receipt.sequence);
+        std::test::assert(f.node.kind == "retirement" && f.node.supersedes == old && f.node.name == "" && f.node.author == "org" && f.node.target == "org" && f.node.text == retire.rationale, "service derives exact retirement metadata from canonical old receipt");
+        let no_scope = ops::KnowledgeCommands { record: record, authority: NodeAuthority { scopes: "[{\"author\":\"org.child\",\"target\":\"org.child\"}]" } };
+        std::test::assert_eq_str(no_scope.submit(context, self.command(context, record.head("journal"), "unauthorized-old", "revise", old, "org.child", "org.child")).code, "forbidden", "new scope grant cannot replace an old item outside its grant");
+        std::test::assert_eq_str(commands.submit(context, self.command(context, record.head("journal"), "unauthorized-new", "revise", old, "org.child", "org.child")).code, "forbidden", "old scope grant cannot move a revision outside its grant");
+        let direct = ops::KnowledgeCommands { record: record, authority: NodeAuthority { mode: "direct" } };
+        std::test::assert(!direct.capability_for(context, "dna.knowledge.node.propose").available, "direct grant never bypasses native node Review");
+        std::test::assert_eq_str(direct.submit(context, self.command(context, record.head("journal"), "direct", "propose", "", "org", "org")).code, "commands_unsupported", "direct node submission cannot skip governance");
+        std::test::assert_eq_int(record.appends, 2, "denied changes never append requests");
+        let stale = self.command(context, record.head("journal"), "stale", "retire", old, "", "");
+        let j = dna::GitJournal { repo: repo }; self.append(j, "application.observed", "org", "{}");
+        std::test::assert_eq_str(commands.submit(context, stale).code, "stale_subject", "new command cannot rebase checked head");
+        let successor = dna::digest_of("reserved successor");
+        self.append(j, "knowledge.proposed", successor, "{\"supersedes\":\"" + old + "\"}");
+        self.append(j, "knowledge.ratified", successor, "{}");
+        std::test::assert_eq_str(commands.submit(context, self.command(context, record.head("journal"), "reserved", "retire", old, "", "")).code, "stale_subject", "ratified successor reserves predecessor before retirement recovery");
+        record.fault = "unknown";
+        std::test::assert_eq_str(commands.submit(context, self.command(context, record.head("journal"), "unknown", "propose", "", "org", "org")).code, "command_outcome_unknown", "unresolved append remains unknown without an automatic second attempt");
+        std::test::assert_eq_int(record.appends, 3, "unknown append attempted exactly once");
+    }
+    fn policy() {
+        let codec = ops::KnowledgePolicyCodec { }; let journal = dna::MemJournal { };
+        let base = "{\"mode\":\"local\",\"name\":\"alice\",\"authority\":\"board\",\"edge_link\":\"deny\",\"recover\":true";
+        let prefix = "{\"format\":\"dna.knowledge-authority/1\",\"application_id\":\"app\",\"grants\":[";
+        let document = prefix + base + ",\"node_propose\":\"review\",\"node_revise\":\"review\",\"node_retire\":\"review\",\"node_scopes\":" + SCOPES + "}]}";
+        std::test::assert(codec.decode(document, "app", "local").valid, "explicit node operations and exact scope pairs form a valid policy");
+        std::test::assert(!codec.decode(std::str::replace(document, ",\"node_scopes\":" + SCOPES, ""), "app", "local").valid, "node permission without explicit scopes refuses startup");
+        std::test::assert(!codec.decode(std::str::replace(document, "\"node_propose\":\"review\"", "\"node_propose\":\"direct\""), "app", "local").valid, "node Review has no direct bypass mode");
+        std::test::assert(!codec.decode(std::str::replace(document, SCOPES, "[{\"author\":\"org.a\",\"target\":\"org.b\"}]"), "app", "local").valid, "lateral scopes are invalid");
+        let legacy = ops::FixedKnowledgeAuthority { policy: codec.decode(prefix + base + "}]}", "app", "local") };
+        std::test::assert(!legacy.authorize(ops::GovernanceContext { application_id: "app", principal_name: "alice", principal_mode: "local" }, "dna.knowledge.node.propose", false, journal).allowed, "legacy policy grants no new node operation");
+    }
+    fn contradictory_outcome(repo: String) {
+        self.setup(repo); let record = dna::GitRecord { repo: repo }; let context = self.who(record);
+        let commands = ops::KnowledgeCommands { record: record, authority: NodeAuthority { } };
+        let c = self.command(context, record.head("journal"), "exact-outcome", "propose", "", "org", "org");
+        let admitted = commands.submit(context, c); let f = self.fact(commands, admitted.receipt.sequence);
+        let native = dna::KnowledgeNodeRequestCodec { }; let codec = ops::KnowledgeNodeCommandCodec { };
+        let bad = std::str::replace(codec.fact(context, c, NodeAuthority { }.authorize(context, c.operation, false, dna::MemJournal { }), f.node), f.node.candidate_digest, dna::digest_of("wrong candidate"));
+        std::test::assert(!codec.decode_fact(dna::Event { kind: "knowledge.node.requested", entity: f.command_id, prev: c.record_head, body: bad }).valid, "mismatched candidate cannot be recovered as a canonical request");
+        let j = dna::GitJournal { repo: repo };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" } };
+        body.on_knowledge_node_requested(f.node);
+        std::test::assert_eq_str(commands.lookup(context, c.request_id).receipt.node.proposal_state, "created", "actual proposal established before contradictory acknowledgment");
+        self.append(j, "knowledge.node.proposed", f.command_id, std::str::replace(native.proposed(f.node), "Working idea", "Unrelated idea"));
+        let unknown = commands.lookup(context, c.request_id);
+        std::test::assert(unknown.ok && unknown.receipt.state == "outcome_unknown" && unknown.receipt.node.candidate_digest == "" && unknown.receipt.node.review_state == "unavailable", "conflicting correlated outcomes never borrow native success");
+    }
+    fn check() {
+        let root = "/tmp/dna-node-admission-" + to_string(std::process::pid()); std::io::fs::mkdir(root) or discard;
+        self.policy(); self.recovery(root + "/recovery"); self.subjects(root + "/subjects"); self.contradictory_outcome(root + "/contradiction");
+        let removed = dna::run_tool("rm\n-rf\n" + root);
+    }
+}
+fn main() { let cases = NodeAdmissionCases { }; cases.check(); }

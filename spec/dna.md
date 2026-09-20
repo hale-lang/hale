@@ -517,8 +517,12 @@ repository:
   the organism's own name, taking the ordinary road. The org chart
   declares them in its `birth()` — `self.core.schedule(Schedule {
   id, every_ms | cron, ask, requires })` — and the substrate's clock
-  (the org program's loop, `tick` with a millisecond monotonic clock)
-  checks them. A declaration is a row, `schedule.declared <id>
+  (the org program's loop, `request_tick` with a millisecond monotonic
+  clock) queues their processing through the organization's keyed
+  `TickRequested` handler. Synchronous `tick` is for that handler or
+  isolated callers with no incoming bus work; a live loop uses
+  `request_tick` so incoming work cannot enter during journal refresh.
+  A declaration is a row, `schedule.declared <id>
   {action, every_ms, cron, ask, requires}`, when new or changed; a
   malformed cron (five fields, minute hour day-of-month month
   day-of-week; `*`, `a`, `a-b`, `*/n`, lists; ranges checked) is
@@ -553,7 +557,7 @@ repository:
   `schedule.fired optimize` row.
 - **The optimize pass (GH #596 O).** On a cadence the org chart sets
   (`optimize_every_ms` on the substrate; 0 is never; the org program's
-  loop ticks it with a millisecond monotonic clock), the substrate
+  loop calls `request_tick` with a millisecond monotonic clock), the substrate
   first asks the budget — the pass is model-backed work, and none is
   routed on an exhausted window: `optimize.refused <org>`, and the
   pass waits for the next window — then reads the record's structural signals
@@ -2254,18 +2258,49 @@ authority.
   `kind`, `target`, `class`, `at`); any other outcome appends
   `knowledge.declined`. A pending knowledge Review is re-born from the
   record at birth like a mutation's.
+- **Binding changes preserve the item.** The service's reviewed
+  `dna.knowledge.binding.bind@1` and `.unbind@1` operations address one
+  `(idea, target, author)` tuple. Independent explicit grants admit a
+  `knowledge.binding.requested` fact. The Body records delivery before
+  creating the canonical `dna.knowledge-binding-change/1` candidate and
+  its exact Review (`knowledge_binding_digest`, not `knowledge_digest`).
+  The candidate pins the original command, grant and latest Record
+  directive for the tuple. Approval produces `knowledge.binding.bound`
+  or `.unbound`; an intervening tuple change or newly inactive bind
+  subject produces a separate apply refusal. Each consequence belongs
+  to the original request identity. Projection changes future package
+  applicability, preserving the item receipt and earlier Work packages.
+  A visible retired item permits exact unbinding. This is the service's
+  reviewed command profile, not a universal Review requirement on the
+  in-process `Knowledge.bind` primitive. See
+  `dna/knowledge/service/COMMANDS.md` for authority, recovery and visibility.
+- **Relationship policy selects direct or reviewed admission.** The existing
+  `dna.knowledge.edge.link@1` and `.unlink@1` commands retain their exact directed
+  `(from, to, rel)` identity and command encoding. A `review` grant instead admits
+  `knowledge.edge.requested`, pinning the latest direct or reviewed directive for
+  that tuple in a canonical `dna.knowledge-edge-change/1` candidate. Its Review
+  carries `knowledge_edge_digest`; the candidate is not a Knowledge node. The
+  Body derives ownership from both endpoint receipts and requires its owner to
+  admit all four author/target positions in this reference profile. An independent
+  approval produces `knowledge.edge.reviewed_linked` or `.reviewed_unlinked` only
+  while the pinned tuple basis and endpoint eligibility still hold. A changed
+  basis or ineligible endpoint produces a separate apply refusal. A retired,
+  ratified endpoint permits exact unlinking. Recovery follows the original
+  admitted variant even if policy later changes mode. Native effects replay in
+  Record order; approval alone does not establish a graph change. This policy
+  does not add a universal Review requirement to the graph primitives.
 - **The store holds the live half.** `dna/knowledge` (embedded in the
   toolchain beside the core, with pond's Postgres driver pinned under
   `dna/pond`) declares `KnowledgeStore`: `open`, `watermark` /
   `set_watermark` (the next record seq to apply; it only advances),
   `upsert(idea, ratified_seq)` (idempotent by id, which is the
-  digest), `bind`, `link`, `idea(id)`, `context_ids(target, budget)`
+  digest), `bind`, `unbind`, `link`, `unlink`, `idea(id)`, `context_ids(target, budget)`
   (accepted ideas bound to the target or any prefix of its path —
   goals flow down, initiatives stay local — in ratification order),
   `count(what)`. `Pq` is Postgres (six tables: `knowledge_meta`,
   `knowledge_ideas`, `knowledge_bindings`, `knowledge_edges`,
   `knowledge_structure`, `knowledge_signals`; the schema migrated at
-  `open`; every write an upsert; rows come back as
+  `open`; node writes are upserts and removals delete exact tuples; rows come back as
   JSON built by the server, since the driver's tab- and
   newline-separated rows cannot carry an ordinary paragraph; a signal
   counts once per record row, keyed on that row's sequence, because
@@ -2796,4 +2831,3 @@ Review's diff is the edited seed's; the deploy row names the instances
 it reaches), pressure raised from services' typed metrics (`hale dna
 pressure raise` is the spelling; nothing raises it for a node), and
 the organization as an instance of its own plan.
-

@@ -1,0 +1,205 @@
+// Immutable native source evidence only. This reader neither checks a moving
+// checkout nor starts a compiler, worktree, Review, apply, or deployment.
+import "../operations" as ops;
+import "../core" as dna;
+import "../organization_source" as orgsource;
+
+type OrganizationCandidateBlob { ok: Bool = false; text: String = ""; object: String = ""; }
+type OrganizationCandidateRead {
+    ok: Bool = false;
+    code: String = "candidate_not_found";
+    candidate: ops::OrganizationCandidateEvidence = ops::OrganizationCandidateEvidence { };
+    base_text: String = "";
+    candidate_text: String = "";
+    changed: Bool = false;
+    semantic_diff: String = "";
+    diff_text: OrganizationCandidateBlob = OrganizationCandidateBlob { };
+    diff_json: OrganizationCandidateBlob = OrganizationCandidateBlob { };
+}
+
+locus OrganizationCandidateWire {
+    // Recovery explicitly grants source evidence reads, including independent
+    // reviewers with recover=true and propose=false. No grant is inferred
+    // from a Knowledge/Practice permission or an Organization chart view.
+    params { authority: ops::GovernanceAuthority = ops::NoGovernanceAuthority { }; }
+    fn source_review(row: ops::ReviewRow) -> Bool { return row.organization_source; }
+    fn allowed(context: CommandContext, journal: ops::GovernanceJournal) -> Bool {
+        let who = ops::GovernanceContext { application_id: context.source.identity, principal_mode: context.principal_mode, principal_name: context.principal_name };
+        let grant = self.authority.authorize(who, "dna.organization.propose", true, journal);
+        let service = ops::GovernanceCommands { }; return service.grant_valid(grant);
+    }
+    fn ref_id(record: dna::GitRecord, ref: String, kind: String) -> String {
+        let codec = ops::OrganizationCommandCodec { };
+        let object = record.git_out("rev-parse\n--verify\n" + ref);
+        if !codec.commit_id(object) || record.git_out("cat-file\n-t\n" + object) != kind { return ""; }
+        return object;
+    }
+    fn receipt(record: dna::GitRecord, digest: String) -> OrganizationCandidateBlob {
+        let raw = ops::raw_digest(digest);
+        if !dna::digest_well_formed("sha256:" + raw) { return OrganizationCandidateBlob { }; }
+        let ref = record.ref_of("receipts/" + raw); let object = self.ref_id(record, ref, "blob");
+        if object == "" { return OrganizationCandidateBlob { }; }
+        let size = std::str::parse_int(record.git_out("cat-file\n-s\n" + object)) or - 1;
+        if size < 1 || size > 131072 { return OrganizationCandidateBlob { }; }
+        let body = record.git("cat-file\n-p\n" + object);
+        if body.code != 0 || len(body.stdout) != size || dna::digest_of(body.stdout) != "sha256:" + raw { return OrganizationCandidateBlob { }; }
+        let text = ops::GovernanceCommandCodec { };
+        if !text.bounded(body.stdout, 131072, true, true) { return OrganizationCandidateBlob { }; }
+        return OrganizationCandidateBlob { ok: true, text: body.stdout, object: object };
+    }
+    fn module_blob(record: dna::GitRecord, commit: String) -> OrganizationCandidateBlob {
+        let listed = record.git("ls-tree\n" + commit + "\n--\ndna/org/main.hl");
+        if listed.code != 0 || (!std::str::starts_with(listed.stdout, "100644 blob ") && !std::str::starts_with(listed.stdout, "100755 blob ")) { return OrganizationCandidateBlob { }; }
+        let object = self.ref_id(record, commit + ":dna/org/main.hl", "blob");
+        if object == "" { return OrganizationCandidateBlob { }; }
+        let size = std::str::parse_int(record.git_out("cat-file\n-s\n" + object)) or - 1;
+        if size < 1 || size > 16384 { return OrganizationCandidateBlob { }; }
+        let body = record.git("cat-file\n-p\n" + object); let text = ops::GovernanceCommandCodec { };
+        if body.code != 0 || len(body.stdout) != size || !text.bounded(body.stdout, 16384, true, true) { return OrganizationCandidateBlob { }; }
+        return OrganizationCandidateBlob { ok: true, text: body.stdout, object: object };
+    }
+    fn visible(journal: ops::GovernanceJournal, candidate: ops::OrganizationCandidateEvidence) -> Bool {
+        if !candidate.ok { return false; }
+        let q = ops::Queries { j: journal }; let text = ops::GovernanceCommandCodec { }; let r = candidate.request;
+        return q.receipt_status(r.module_digest) == "available" && q.receipt_status(r.source_digest) == "available"
+            && q.receipt_status(r.source_head) == "available" && q.receipt_status(candidate.candidate_commit) == "available"
+            && q.receipt_status(text.string(candidate.review_body, "diff_text")) == "available"
+            && q.receipt_status(text.string(candidate.review_body, "diff_json")) == "available";
+    }
+    fn semantic_token(value: String, limit: Int) -> Bool {
+        let text = ops::GovernanceCommandCodec { };
+        return text.bounded(value, limit, true, false) && !std::str::contains(value, "/") && !std::str::contains(value, "\\");
+    }
+    fn semantic_count(raw: String) -> Bool {
+        if raw == "" || len(raw) > 9 || (len(raw) > 1 && raw[0..1] == "0") { return false; }
+        let mut i = 0; while i < len(raw) { if raw[i..(i + 1)] < "0" || raw[i..(i + 1)] > "9" { return false; } i = i + 1; }
+        return true;
+    }
+    // This explicitly selected read projection excludes compiler locations and
+    // raw diagnostics. Its own digest differs from the retained native receipt.
+    fn semantic(document: String) -> String {
+        let text = ops::GovernanceCommandCodec { };
+        if text.string(document, "schema") != "1.0" { return ""; }
+        let classification = text.string(document, "classification");
+        if classification != "identical" && classification != "source-only" && classification != "contract" && classification != "model-shape" { return ""; }
+        let original = text.string(std::json::find_field_raw(document, "a"), "shape_hash");
+        let prepared = text.string(std::json::find_field_raw(document, "b"), "shape_hash");
+        if !self.semantic_token(original, 128) || !self.semantic_token(prepared, 128) { return ""; }
+        let summary = std::json::find_field_raw(document, "summary");
+        let names = "added removed renamed moved split joined ambiguous contract_deltas effect_deltas certificate_deltas law_deltas";
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("format", "dna.organization-semantic-diff/1");
+        b.string_field("coverage", "classification_summary_declarations"); b.string_field("classification", classification);
+        b.string_field("base_shape", original); b.string_field("candidate_shape", prepared); b.begin_object_field("summary");
+        let mut i = 0; while i < dna::word_count(names) {
+            let name = dna::nth_word(names, i); let count = std::json::find_field_raw(summary, name);
+            if !self.semantic_count(count) { return ""; } b.field(name, count); i = i + 1;
+        }
+        b.end_object(); b.begin_array_field("declarations");
+        let declarations = std::json::find_field_raw(document, "declarations");
+        if !std::str::starts_with(declarations, "[") { return ""; }
+        let mut it = std::json::array_first(declarations); let mut count = 0;
+        while !it.done {
+            let row = it.element; let change = text.string(row, "change"); let kind = text.string(row, "kind"); let name = text.string(row, "name");
+            if count >= 512 || !self.semantic_token(change, 64) || !self.semantic_token(kind, 64) || !self.semantic_token(name, 256) { return ""; }
+            b.begin_object(); b.string_field("change", change); b.string_field("kind", kind); b.string_field("name", name); b.end_object();
+            count = count + 1; it = std::json::array_next(it);
+        }
+        b.end_array(); b.end_object(); return b.result();
+    }
+    // Immutable source proof shared by status reads, which return no semantic
+    // diff. The candidate renderer adds its existing bounded receipt parsing.
+    fn source_objects(record: dna::GitRecord, journal: ops::GovernanceJournal, candidate: ops::OrganizationCandidateEvidence) -> OrganizationCandidateRead {
+        if !self.visible(journal, candidate) { return OrganizationCandidateRead { }; }
+        let r = candidate.request; let commit = candidate.candidate_commit;
+        let native = dna::OrganizationSourceRequestCodec { };
+        if self.ref_id(record, record.ref_of("candidates/" + candidate.candidate_key), "commit") != commit
+            || self.ref_id(record, r.source_head, "commit") != r.source_head { return OrganizationCandidateRead { }; }
+        let parents = record.git("rev-list\n--parents\n-n\n1\n" + commit);
+        if parents.code != 0 || dna::trim_nl(parents.stdout) != commit + " " + r.source_head { return OrganizationCandidateRead { }; }
+        let paths = record.git("diff\n--name-only\n--no-renames\n" + r.source_head + "\n" + commit + "\n--");
+        if paths.code != 0 { return OrganizationCandidateRead { code: "candidate_unavailable" }; }
+        let changed = dna::trim_nl(paths.stdout);
+        if changed != "" && changed != native.module_for(r) { return OrganizationCandidateRead { }; }
+        if native.ownership(r) {
+            let inputs = orgsource::OrganizationPublicationInputs { root: record.repo, source_owner: r.source_owner };
+            let quorum = inputs.ownership_quorum(r, commit); let text = ops::GovernanceCommandCodec { };
+            if !quorum.ok || quorum.approvers != text.string(candidate.review_body, "approvers") { return OrganizationCandidateRead { }; }
+            let base_map = inputs.ownership_blob(record, r.source_head); let next_map = inputs.ownership_blob(record, commit);
+            if !base_map.present || !next_map.present { return OrganizationCandidateRead { }; }
+            return OrganizationCandidateRead { ok: true, candidate: candidate, base_text: base_map.text, candidate_text: next_map.text, changed: changed != "" };
+        }
+        let base = self.module_blob(record, r.source_head); let prepared = self.module_blob(record, commit);
+        if !base.ok || !prepared.ok || dna::digest_of(base.text) != r.module_digest || dna::digest_of(prepared.text) != r.source_digest || prepared.text != r.source_text { return OrganizationCandidateRead { }; }
+        return OrganizationCandidateRead { ok: true, candidate: candidate, base_text: base.text, candidate_text: prepared.text, changed: changed != "" };
+    }
+    fn objects(record: dna::GitRecord, journal: ops::GovernanceJournal, candidate: ops::OrganizationCandidateEvidence) -> OrganizationCandidateRead {
+        let source = self.source_objects(record, journal, candidate);
+        if !source.ok { return source; }
+        let text = ops::GovernanceCommandCodec { }; let plain = self.receipt(record, text.string(candidate.review_body, "diff_text")); let structured = self.receipt(record, text.string(candidate.review_body, "diff_json"));
+        let syntax = ops::OrganizationJson { };
+        if !plain.ok || !structured.ok || !syntax.valid(structured.text) { return OrganizationCandidateRead { }; }
+        let semantic = self.semantic(structured.text);
+        if semantic == "" { return OrganizationCandidateRead { code: "candidate_unavailable" }; }
+        return OrganizationCandidateRead { ok: true, semantic_diff: semantic, candidate: candidate, base_text: source.base_text, candidate_text: source.candidate_text, changed: source.changed, diff_text: plain, diff_json: structured };
+    }
+    fn source_unchanged(record: dna::GitRecord, source: ops::GovernanceSnapshot, read: OrganizationCandidateRead) -> Bool {
+        let c = read.candidate;
+        return read.ok && record.head("journal") == source.head
+            && self.ref_id(record, record.ref_of("candidates/" + c.candidate_key), "commit") == c.candidate_commit
+            && self.ref_id(record, c.request.source_head, "commit") == c.request.source_head;
+    }
+    fn unchanged(record: dna::GitRecord, source: ops::GovernanceSnapshot, read: OrganizationCandidateRead) -> Bool {
+        let text = ops::GovernanceCommandCodec { }; let c = read.candidate;
+        return self.source_unchanged(record, source, read)
+            && self.ref_id(record, record.ref_of("receipts/" + ops::raw_digest(text.string(c.review_body, "diff_text"))), "blob") == read.diff_text.object
+            && self.ref_id(record, record.ref_of("receipts/" + ops::raw_digest(text.string(c.review_body, "diff_json"))), "blob") == read.diff_json.object;
+    }
+    fn document(read: OrganizationCandidateRead, journal: ops::GovernanceJournal, rows: String) -> String {
+        let c = read.candidate; let r = c.request; let text = ops::GovernanceCommandCodec { }; let view = ops::OrganizationProjection { };
+        let native = dna::OrganizationSourceRequestCodec { };
+        let review = view.review_evidence(journal, c, rows); let progress = review.review.ok && review.review.state != "unavailable";
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("format", if native.ownership(r) { "dna.organization-ownership-candidate/1" } else { "dna.organization-source-candidate/1" });
+        b.string_field("application_id", r.application_id); b.string_field("command_id", r.request_id); b.string_field("mutation_id", c.mutation_id);
+        b.begin_object_field("base"); b.string_field("source_head", r.source_head); b.string_field("module_digest", r.module_digest);
+        b.string_field("dependency_source", r.dependency_source); b.string_field("dependency_digest", r.dependency_digest); b.string_field("record_head", r.record_head); b.end_object();
+        b.begin_object_field("module"); b.string_field("path", native.module_for(r)); b.field("base_text", dna::record_json_quote(read.base_text)); b.field("text", dna::record_json_quote(read.candidate_text)); b.string_field("digest", r.source_digest); b.end_object();
+        b.begin_object_field("candidate"); b.string_field("commit", c.candidate_commit); b.string_field("parent", r.source_head); b.string_field("shape", text.string(c.review_body, "candidate_shape")); b.end_object();
+        b.begin_array_field("changed_files"); if read.changed { b.string_value(native.module_for(r)); } b.end_array();
+        if native.ownership(r) {
+            let ownership = OwnershipDraftWire { };
+            b.field("ownership_impact", ownership.impact(read.base_text, read.candidate_text));
+        }
+        b.begin_object_field("verification"); b.string_field("evidence", text.string(c.review_body, "evidence"));
+        b.begin_object_field("semantic_diff"); b.string_field("receipt_digest", "sha256:" + ops::raw_digest(text.string(c.review_body, "diff_json"))); b.string_field("digest", dna::digest_of(read.semantic_diff)); b.field("document", dna::record_json_quote(read.semantic_diff)); b.end_object(); b.end_object();
+        b.begin_object_field("review"); b.string_field("required_authority", text.string(c.review_body, "required_authority")); b.string_field("approvers", text.string(c.review_body, "approvers"));
+        b.begin_object_field("quorum"); b.string_field("state", if progress { "available" } else { "unavailable" }); b.string_field("required_owners", if progress { review.required_owners } else { "" }); b.string_field("approved_owners", if progress { review.approved_owners } else { "" }); b.end_object(); b.end_object();
+        b.end_object(); return b.result();
+    }
+    fn read(context: CommandContext, source: ops::GovernanceSnapshot, journal: ops::GovernanceJournal, id: String) -> std::http::Response {
+        let http = Http { };
+        if !source.ok || !journal.valid || source.application_id != context.source.identity || source.head != context.source.head || source.revision != context.source.revision { return http.error(409, "snapshot_changed", "the Record changed while capturing the candidate", true); }
+        if !self.allowed(context, journal) { return http.error(403, "forbidden", "source evidence read/recovery permission is required", false); }
+        let view = ops::OrganizationProjection { }; let candidate = view.candidate(journal, id, source.text);
+        let record = dna::GitRecord { repo: context.root }; let read = self.objects(record, journal, candidate);
+        if !read.ok { return http.error(if read.code == "candidate_unavailable" { 503 } else { 404 }, read.code, "no visible canonical candidate was found", read.code == "candidate_unavailable"); }
+        let document = self.document(read, journal, source.text);
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("kind", "organization_source_change"); b.string_field("review_id", id); b.string_field("candidate_commit", candidate.candidate_commit); b.field("document", dna::record_json_quote(document)); b.end_object();
+        let response = http.success(context.source, b.result());
+        if !self.unchanged(record, source, read) { return http.error(409, "snapshot_changed", "the Record or retained candidate changed while reading", true); }
+        return response;
+    }
+    fn mask(row: ops::ReviewRow) -> ops::ReviewRow {
+        let q = ops::Queries { }; return q.mask_source_review(row);
+    }
+    fn review_row(context: CommandContext, row: ops::ReviewRow) -> ops::ReviewRow {
+        if !self.source_review(row) { return row; }
+        let record = dna::GitRecord { repo: context.root }; let capture = ops::GovernanceCommands { record: record }; let source = capture.capture();
+        if !source.ok || source.application_id != context.source.identity || source.head != context.source.head || source.revision != context.source.revision { return self.mask(row); }
+        let journal = ops::GovernanceJournal { snapshot: source };
+        if !journal.valid || !self.allowed(context, journal) { return self.mask(row); }
+        let view = ops::OrganizationProjection { }; let candidate = view.candidate(journal, row.id, source.text);
+        let read = self.objects(record, journal, candidate);
+        if !read.ok || !self.unchanged(record, source, read) { return self.mask(row); }
+        return row;
+    }
+}

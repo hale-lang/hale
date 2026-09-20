@@ -54,6 +54,7 @@
 // leaked ~2 MB/s.
 
 import "attach" as fz;
+import "../../process_identity" as identity;
 // GH #527 B6: the DNA core's typed control topics. A verdict or an
 // intent published from the browser is the SAME declaration the
 // organism binds on its membrane sockets (dna/organism/main.hl);
@@ -109,7 +110,7 @@ const META_CELLS: Int = 6;
 // from (PROTOCOL §3, proto >= 0.2). "" means the emitter predates
 // the field and said nothing — which is NOT the same as
 // "0000000000000000", an emitter that positively has no model.
-type SegRow { h: Int = -1; pid: Int = 0; name: String = ""; dead: Int = 0; restarts: Int = 0; reg: String = ""; model: String = ""; }
+type SegRow { h: Int = -1; pid: Int = 0; name: String = ""; dead: Int = 0; restarts: Int = 0; reg: String = ""; model: String = ""; process_key: String = ""; started: String = ""; }
 type LocusRow { seg: Int = -1; inst: Int = 0; tname: String = ""; parent: Int = 0; alive: Int = 0; pub: Int = 0; dlv: Int = 0; }
 type TopicRow { key: String = ""; name: String = ""; shape: String = ""; slot: Int = -1; }
 type TopicSeg { topic: Int = -1; seg: Int = -1; local_id: Int = -1; line: Int = -1; sends: Int = 0; delivers: Int = 0; }
@@ -394,6 +395,9 @@ locus Cycle {
             if std::str::index_of(name, ".json") >= 0 {
                 let p = self.reg_dir + "/" + name;
                 if !self.known_reg(p) {
+                    let identity_reader = identity::Identity { };
+                    let registered_pid = identity_reader.registered_pid(p);
+                    let before = identity_reader.capture(registered_pid);
                     let h = fz::fz_attach(p);
                     if h >= 0 {
                         if fz::fz_alive(h) == 0 {
@@ -405,11 +409,14 @@ locus Cycle {
                             fz::fz_unlink(p);
                             fz::fz_unlink("/dev/shm/hale-obs-" + stale_pid);
                         } else {
+                            let after = identity_reader.capture(fz::fz_pid(h));
+                            let same = registered_pid == fz::fz_pid(h) && before.key != "" && before.key == after.key;
                             self.segs.push(SegRow {
                                 h: h, pid: fz::fz_pid(h),
                                 name: basename(fz::fz_exe(h)),
                                 dead: 0, restarts: 0, reg: p,
-                                model: fz::fz_model_hash_hex(h)
+                                model: fz::fz_model_hash_hex(h),
+                                process_key: if same { after.key } else { "" }, started: if same { after.started } else { "" }
                             });
                             self.index_topics(self.segs.len() - 1);
                             println("fuse-hl: attached pid " + fz::fz_pid(h));
@@ -1030,9 +1037,12 @@ locus Cycle {
             if i > 0 { s = s + ","; }
             let mut state = "live";
             if g.dead == 1 { state = "dead"; }
+            let identity_reader = identity::Identity { };
+            let process_key = if g.dead == 0 && g.process_key != "" && identity_reader.start_ticks(g.pid) == g.started { g.process_key } else { "" };
             s = s + "{\"pid\":" + g.pid + ",\"name\":\"" + jstr(g.name)
                 + "\",\"state\":\"" + state + "\""
                 + ",\"model\":\"" + g.model + "\""
+                + ",\"process_key\":\"" + process_key + "\""
                 + ",\"records\":" + fz::fz_counter(g.h, 0, CG_RECORDS_TOTAL)
                 + ",\"overruns\":" + fz::fz_overruns(g.h)
                 + ",\"restarts\":" + g.restarts + ",\"loci\":[";

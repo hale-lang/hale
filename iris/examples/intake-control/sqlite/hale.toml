@@ -1,0 +1,20 @@
+# hale.toml — link surface for pond/sqlite consumers.
+#
+# When an Hale program imports `vendor/pond/sqlite`, the build
+# picks up `csrc` and `link` from this file automatically
+# (spec/ffi.md § "hale.toml [ffi] auto-pickup").
+#
+# Requires the libsqlite3 development package on the build host:
+#   apt:  sudo apt install libsqlite3-dev
+#   brew: brew install sqlite3
+# Only the runtime .so is needed on deploy hosts.
+#
+# NOTE (transitive FFI): auto-pickup only scans the entry seed's
+# direct imports. A lib that imports pond/sqlite internally
+# (pond/jobs, pond/migrations) does NOT propagate this [ffi]
+# section — the end app must import pond/sqlite itself (which
+# pond's no-transitive-deps rule already requires).
+
+[ffi]
+csrc = ["glue.c"]
+link = ["sqlite3"]

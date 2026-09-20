@@ -1,0 +1,188 @@
+// Real Record admission and restart recovery. The injected source guard is a
+// controlled service boundary; filesystem/dependency capture has its own proof.
+import ".." as ops;
+import "../../core" as dna;
+
+locus Authority {
+    params { writes: Bool = true; reads: Bool = true; }
+    fn authorize(context: ops::GovernanceContext, operation: String, recovery: Bool, journal: dna::Journal) -> ops::GovernanceGrant {
+        return ops::GovernanceGrant { allowed: context.principal_name == "alice" && (if recovery { self.reads } else { self.writes }), authority: "board", basis: "isolated-source-policy/1" };
+    }
+}
+locus SourceInputs {
+    params { fault: String = ""; preparations: Int = 0; checks: Int = 0; }
+    fn prepare(r: dna::OrganizationSourceRequest) -> dna::OrganizationSourcePreparation {
+        self.preparations = self.preparations + 1;
+        let mut out = r;
+        if r.dependency_source == "local_vendor_snapshot" { out.dependency_receipt = dna::digest_of("retained dependency manifest"); }
+        if self.fault == "source" { out.source_text = r.source_text + " "; out.source_digest = dna::digest_of(out.source_text); }
+        if self.fault == "authority" { out.authority = "maintainer"; }
+        if self.fault == "basis" { out.authority_basis = "different-policy"; }
+        if self.fault == "owner" { out.source_owner = "another"; }
+        if self.fault == "principal" { out.by = "another"; }
+        if self.fault == "record" { out.record_head = "different-record-head"; }
+        if self.fault == "dependency" { out.dependency_digest = dna::digest_of("different dependencies"); }
+        if self.fault == "missing_receipt" { out.dependency_receipt = ""; }
+        return dna::OrganizationSourcePreparation { ok: true, request: out };
+    }
+    fn current(r: dna::OrganizationSourceRequest) -> dna::OrganizationSourceCheck {
+        self.checks = self.checks + 1;
+        return dna::OrganizationSourceCheck { ok: self.fault != "drift", code: if self.fault == "drift" { "stale_subject" } else { "" } };
+    }
+}
+locus FaultRecord {
+    params { inner: dna::GitRecord = dna::GitRecord { }; fault: String = ""; appends: Int = 0; }
+    fn identity() -> String { return self.inner.identity(); }
+    fn head(chain: String) -> String { return self.inner.head(chain); }
+    fn count(chain: String) -> Int { return self.inner.count(chain); }
+    fn between(from: String, to: String) -> String { return self.inner.between(from, to); }
+    fn text_at(id: String) -> String { return self.inner.text_at(id); }
+    fn body(digest: String) -> dna::Kept { return self.inner.body(digest); }
+    fn append(chain: String, at: String, row: dna::Row, sign: Bool, note: String) -> dna::Appended {
+        self.appends = self.appends + 1; let fault = self.fault; self.fault = "";
+        if fault == "stale" {
+            let changed = self.inner.append(chain, at, dna::Row { kind: "fixture.changed", entity: "other", body: "{}", author: "fixture" }, false, "");
+            std::test::assert(changed.ok, "concurrent Record change persists");
+            return dna::Appended { error: "stale" };
+        }
+        if fault == "unknown" { return dna::Appended { error: "io: outcome unknown" }; }
+        let result = self.inner.append(chain, at, row, sign, note);
+        if fault == "lost" { std::test::assert(result.ok, "lost acknowledgement persisted"); return dna::Appended { error: "io: acknowledgement lost" }; }
+        return result;
+    }
+}
+fn initialize(repo: String) -> ops::GovernanceContext {
+    let record = dna::GitRecord { repo: repo };
+    std::test::assert_eq_int(record.git("init\n--quiet").code, 0, "initialize isolated Record");
+    let j = dna::GitJournal { repo: repo }; let genesis = j.append(0, "fixture.genesis", "fixture", "{}");
+    std::test::assert(genesis.ok, "initialize application identity");
+    return ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: "alice" };
+}
+fn command(repo: String, context: ops::GovernanceContext, key: String) -> ops::GovernanceCommand {
+    let record = dna::GitRecord { repo: repo };
+    return ops::GovernanceCommand { request_id: key, operation: "dna.organization.propose", application_id: context.application_id,
+        target_kind: "dna.organization.module", target_id: "dna/org/main.hl", subject_digest: dna::digest_of("original module"),
+        source_head: context.application_id, dependency_source: "local_vendor_snapshot", dependency_digest: dna::digest_of("original dependencies"),
+        record_head: record.head("journal"), source_text: "// Exact é 🧭\r\nlocus Org { params { } }\r\n", rationale: "Clarify responsibility." };
+}
+fn legacy(context: ops::GovernanceContext, key: String) -> ops::GovernanceCommand {
+    return ops::GovernanceCommand { request_id: key, operation: "dna.practice.propose", application_id: context.application_id,
+        target_kind: "dna.practice", target_id: "prior-practice", subject_digest: "prior-practice", text: "Keep evidence.", rationale: "Preserve evidence." };
+}
+fn test_recovery(repo: String) {
+    let context = initialize(repo); let c = command(repo, context, "exact/source/é");
+    let inputs = SourceInputs { }; let authority = Authority { }; let record = dna::GitRecord { repo: repo };
+    let service = ops::GovernanceCommands { record: record, authority: authority, organization_enabled: true, organization_owner: "owner_one", organization_authority: authority, organization_inputs: inputs };
+    let admitted = service.submit(context, c);
+    std::test::assert(admitted.ok && admitted.receipt.state == "recorded", "source request is durably admitted: " + admitted.code);
+    std::test::assert_eq_str(admitted.receipt.organization.proposal_state, "pending", "admission cannot manufacture a candidate");
+    std::test::assert_eq_str(admitted.receipt.verdict_state, "", "source admission is not a verdict");
+    std::test::assert_eq_str(admitted.receipt.activation_state, "unknown", "admission cannot claim activation");
+    let org = ops::OrganizationCommandCodec { }; let wire = ops::GovernanceCommandCodec { }; let native = dna::OrganizationSourceRequestCodec { };
+    let snapshot = service.capture(); let j = ops::GovernanceJournal { snapshot: snapshot }; let e = j.read(j.revision() - 1); let fact = org.decode_fact(e);
+    std::test::assert(fact.valid && native.valid(fact.request), "strict native fact retained with dependencies");
+    std::test::assert_eq_str(fact.request.source_text, c.source_text, "source Unicode and CRLF remain exact");
+    std::test::assert_eq_str(fact.request.dependency_receipt, dna::digest_of("retained dependency manifest"), "captured dependency identity retained");
+    std::test::assert_eq_str(fact.request.source_owner, "owner_one", "source owner comes from service composition");
+    std::test::assert_eq_str(wire.string(dna::line_at(snapshot.text, e.seq), "author"), "alice", "raw Record attribution matches principal");
+    inputs.fault = "drift";
+    let fresh = ops::GovernanceCommands { record: record, authority: authority, organization_owner: "changed_owner", organization_authority: authority, organization_inputs: inputs };
+    std::test::assert(!fresh.supported(c.operation, "1"), "new Organization writes remain disabled by default");
+    let recovered = fresh.lookup(context, c.request_id);
+    std::test::assert(recovered.ok && recovered.receipt.fingerprint == admitted.receipt.fingerprint, "restart recovers when source writes disabled and destination moved");
+    std::test::assert(fresh.submit(context, c).ok, "same request recovers before new source checks");
+    std::test::assert_eq_int(inputs.preparations, 1, "recovery never prepares dependencies again");
+    std::test::assert_eq_int(inputs.checks, 1, "recovery never checks a new source basis");
+    let mut changed = c; changed.source_text = c.source_text + " ";
+    std::test::assert_eq_str(fresh.submit(context, changed).code, "request_conflict", "changed exact source conflicts before stale/disabled checks");
+    changed = c; changed.record_head = record.head("journal");
+    std::test::assert_eq_str(fresh.submit(context, changed).code, "request_conflict", "changed Record basis cannot silently rebase the request");
+    std::test::assert_eq_str(fresh.submit(context, legacy(context, c.request_id)).code, "request_conflict", "legacy operation cannot reuse source key");
+    std::test::assert_eq_int(record.count("journal"), admitted.revision, "recovery and conflicts append nothing");
+    let denied = ops::GovernanceCommands { record: record, authority: authority, organization_enabled: true, organization_inputs: inputs };
+    std::test::assert_eq_str(denied.lookup(context, c.request_id).code, "forbidden", "legacy authority never recovers source receipts by itself");
+    let current = command(repo, context, "drift");
+    std::test::assert_eq_str(service.submit(context, current).code, "stale_subject", "fresh source drift is refused");
+    let started = native.started(fact.request); let advanced = record.append("journal", record.head("journal"), dna::Row { kind: "organization.source.started", entity: e.entity, body: started, author: "body" }, false, "");
+    std::test::assert(advanced.ok, "native stage fixture retained");
+    let pending = fresh.lookup(context, c.request_id);
+    std::test::assert(pending.ok && pending.receipt.state == "recorded" && pending.receipt.organization.proposal_state == "pending", "exact started proof is pending until a candidate and Review exist");
+    std::test::assert_eq_str(pending.receipt.organization.candidate_commit, "", "started alone exposes no candidate commit");
+}
+fn test_races(repo: String) {
+    let context = initialize(repo); let record = FaultRecord { inner: dna::GitRecord { repo: repo } }; let inputs = SourceInputs { }; let authority = Authority { };
+    let service = ops::GovernanceCommands { record: record, organization_enabled: true, organization_authority: authority, organization_inputs: inputs };
+    record.fault = "lost";
+    let lost = service.submit(context, command(repo, context, "lost"));
+    std::test::assert(lost.ok && lost.receipt.state == "recorded", "lost acknowledgement recovers stored exact source");
+    std::test::assert_eq_int(record.appends, 1, "lost acknowledgement never repeats domain trigger");
+    record.fault = "unknown";
+    let unknown = service.submit(context, command(repo, context, "unknown"));
+    std::test::assert(unknown.ok && unknown.receipt.state == "outcome_unknown", "uncertain absent append stays unknown");
+    std::test::assert_eq_int(record.appends, 2, "unknown result never blindly appends again");
+    std::test::assert_eq_str(service.lookup(context, "unknown").code, "command_not_found", "lookup reports actual absence without a synthetic receipt");
+    record.fault = "stale";
+    let stale = service.submit(context, command(repo, context, "stale"));
+    std::test::assert_eq_str(stale.code, "stale_subject", "moved Record head refuses original basis");
+    std::test::assert_eq_int(record.appends, 3, "stale source request is not rebased to a new Record head");
+}
+fn test_preparation(repo: String) {
+    let context = initialize(repo); let c = command(repo, context, "capture"); let inputs = SourceInputs { }; let authority = Authority { }; let record = dna::GitRecord { repo: repo };
+    let service = ops::GovernanceCommands { record: record, organization_enabled: true, organization_owner: "owner_one", organization_authority: authority, organization_inputs: inputs };
+    let fields = "source authority basis owner principal record dependency missing_receipt"; let mut i = 0;
+    while i < dna::word_count(fields) {
+        inputs.fault = dna::nth_word(fields, i);
+        std::test::assert_eq_str(service.submit(context, c).code, "organization_source_unavailable", "prepared input cannot rewrite " + inputs.fault);
+        i = i + 1;
+    }
+    std::test::assert_eq_int(record.count("journal"), 1, "invalid source preparation admits nothing");
+    std::test::assert_eq_int(inputs.checks, 0, "invalid enrichment never proceeds to destination checks");
+    let default_inputs = ops::GovernanceCommands { record: record, organization_enabled: true, organization_authority: authority };
+    std::test::assert_eq_str(default_inputs.submit(context, c).code, "organization_source_unavailable", "default source guard denies");
+}
+fn test_legacy_occupation(repo: String) {
+    let context = initialize(repo); let record = dna::GitRecord { repo: repo }; let authority = Authority { }; let inputs = SourceInputs { };
+    let service = ops::GovernanceCommands { record: record, authority: authority, organization_enabled: true, organization_authority: authority, organization_inputs: inputs };
+    let old = legacy(context, "occupied"); let codec = ops::GovernanceCommandCodec { };
+    let body = service.fact(context, old, "evidence", ops::GovernanceGrant { allowed: true, authority: "board", basis: "fixture-policy" }, record.head("journal"));
+    let inserted = record.append("journal", record.head("journal"), dna::Row { kind: "practice.requested", entity: codec.identity(context, old.request_id), body: body, author: "alice" }, false, "");
+    std::test::assert(inserted.ok, "legacy admitted key fixture");
+    std::test::assert_eq_str(service.submit(context, command(repo, context, old.request_id)).code, "request_conflict", "source operation cannot reuse legacy key");
+    std::test::assert_eq_int(inputs.preparations, 0, "cross-operation conflict precedes source preparation");
+}
+fn test_wrong_author(repo: String) {
+    let context = initialize(repo); let record = dna::GitRecord { repo: repo }; let c = command(repo, context, "wrong-author");
+    let org = ops::OrganizationCommandCodec { }; let inputs = SourceInputs { }; let authority = Authority { };
+    let request = org.request(context, c, ops::GovernanceGrant { allowed: true, authority: "board", basis: "fixture" }, ""); let prepared = inputs.prepare(request);
+    let result = record.append("journal", c.record_head, dna::Row { kind: "organization.source.requested", entity: prepared.request.request_id, author: "other", body: org.fact(context, c, prepared.request) }, false, "");
+    std::test::assert(result.ok, "wrong raw-author fixture retained");
+    let service = ops::GovernanceCommands { record: record, organization_authority: authority };
+    std::test::assert_eq_str(service.lookup(context, c.request_id).code, "command_history_invalid", "canonical payload cannot override raw row author");
+}
+fn test_policy() {
+    let context = ops::GovernanceContext { application_id: "application", principal_mode: "local", principal_name: "alice" }; let j = dna::MemJournal { };
+    let old_codec = ops::AuthorityPolicyCodec { }; let org_codec = ops::OrganizationAuthorityPolicyCodec { };
+    let legacy_document = "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"application\",\"grants\":[{\"mode\":\"local\",\"name\":\"alice\",\"authority\":\"board\",\"practice_propose\":true,\"review_verdict\":true,\"recover\":true}]}";
+    let old = old_codec.decode(legacy_document, "application", "local"); let old_authority = ops::FixedAuthority { policy: old };
+    std::test::assert(old.valid && old_authority.authorize(context, "dna.review.verdict", false, j).allowed, "legacy policy still grants its exact operations");
+    std::test::assert(!old_authority.authorize(context, "dna.organization.propose", false, j).allowed, "legacy Review grant does not grant source writes");
+    let document = "{\"format\":\"dna.organization-authority/1\",\"application_id\":\"application\",\"grants\":[{\"mode\":\"local\",\"name\":\"alice\",\"authority\":\"board\",\"organization_propose\":true,\"organization_review\":false,\"recover\":true}]}";
+    let policy = org_codec.decode(document, "application", "local"); let auth = ops::FixedOrganizationAuthority { policy: policy };
+    std::test::assert(policy.valid && auth.authorize(context, "dna.organization.propose", false, j).allowed, "explicit source grant works");
+    std::test::assert(!auth.authorize(context, "dna.review.verdict", false, j).allowed, "source proposer does not automatically gain source Review authority");
+    std::test::assert(!auth.authorize(context, "dna.practice.propose", false, j).allowed, "source authority cannot grant legacy Practice writes");
+    std::test::assert(auth.authorize(context, "dna.organization.propose", true, j).allowed, "source recovery has independent permission");
+    std::test::assert(!old_codec.decode(document, "application", "local").valid && !org_codec.decode(legacy_document, "application", "local").valid, "policy document families cannot be confused");
+    let duplicate = std::str::replace(document, "\"organization_review\":false", "\"organization_review\":false,\"organization_review\":true");
+    std::test::assert(!org_codec.decode(duplicate, "application", "local").valid, "duplicate authority fields are rejected");
+}
+fn main() {
+    let base = std::env::arg(1); std::test::assert(base != "", "isolated fixture path required");
+    std::io::fs::mkdir(base + "/recovery") or discard; test_recovery(base + "/recovery");
+    std::io::fs::mkdir(base + "/races") or discard; test_races(base + "/races");
+    std::io::fs::mkdir(base + "/preparation") or discard; test_preparation(base + "/preparation");
+    std::io::fs::mkdir(base + "/legacy") or discard; test_legacy_occupation(base + "/legacy");
+    std::io::fs::mkdir(base + "/author") or discard; test_wrong_author(base + "/author");
+    test_policy();
+    println("organization-admission: recovery, races, exact enrichment, identity, author and explicit authority passed");
+}

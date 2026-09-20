@@ -1,0 +1,74 @@
+// Node edits use explicit author/target scope pairs. A current graph projection
+// cannot establish either write authority or an exact active predecessor.
+import "../core" as dna;
+
+type KnowledgeNodeSubject { ok: Bool = false; name: String = ""; author: String = ""; target: String = ""; }
+type KnowledgeNodePreparation { ok: Bool = false; code: String = "stale_subject"; request: dna::KnowledgeNodeRequest = dna::KnowledgeNodeRequest { }; }
+
+locus KnowledgeNodeAdmission {
+    params { }
+    fn scope(grant: KnowledgeGrant, author: String, target: String) -> Bool {
+        let policy = KnowledgePolicyCodec { }; let wire = GovernanceCommandCodec { };
+        if grant.mode != "review" || !policy.scopes(grant.scopes) { return false; }
+        let mut it = std::json::array_first(grant.scopes);
+        while !it.done {
+            if wire.string(it.element, "author") == author && wire.string(it.element, "target") == target { return true; }
+            it = std::json::array_next(it);
+        }
+        return false;
+    }
+    @unbounded
+    fn subject(record: GovernanceRecord, j: GovernanceJournal, digest: String) -> KnowledgeNodeSubject {
+        let codec = KnowledgeCommandCodec { }; let commands = KnowledgeCommands { }; let wire = GovernanceCommandCodec { };
+        if !codec.digest(digest) || !commands.visible(j, digest) { return KnowledgeNodeSubject { }; }
+        let mut ratified = false; let mut replacements = "\n"; let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.entity == digest {
+                if e.kind == "knowledge.retired" { return KnowledgeNodeSubject { }; }
+                if e.kind == "knowledge.ratified" { ratified = true; }
+            }
+            if e.kind == "knowledge.proposed" && codec.digest(e.entity) && wire.string(e.body, "supersedes") == digest { replacements = replacements + e.entity + "\n"; }
+            i = i + 1;
+        }
+        if !ratified { return KnowledgeNodeSubject { }; }
+        // Native ratification reserves a predecessor before its separate
+        // retirement row. Do not offer another edit in that recovery window.
+        i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "knowledge.ratified" && std::str::contains(replacements, "\n" + e.entity + "\n") { return KnowledgeNodeSubject { }; }
+            i = i + 1;
+        }
+        let kept = record.body(raw_digest(digest)); let syntax = OrganizationJson { }; let fields = DefinitionCodec { };
+        if !kept.present || len(kept.text) > 98304 || !syntax.valid(kept.text) || dna::digest_of(kept.text) != digest { return KnowledgeNodeSubject { }; }
+        let optional = (if len(std::json::find_field_raw(kept.text, "name")) > 0 { " name" } else { "" })
+            + (if len(std::json::find_field_raw(kept.text, "supersedes")) > 0 { " supersedes" } else { "" })
+            + (if len(std::json::find_field_raw(kept.text, "toolchain")) > 0 { " toolchain" } else { "" });
+        if !fields.fields(kept.text, "kind text author target provenance" + optional, "") { return KnowledgeNodeSubject { }; }
+        let kind = wire.string(kept.text, "kind"); let name = wire.string(kept.text, "name");
+        let author = wire.string(kept.text, "author"); let target = wire.string(kept.text, "target");
+        if !wire.bounded(kind, 128, true, false) || kind == "retirement" || !wire.bounded(name, 256, false, false)
+            || !wire.bounded(author, 256, true, false) || !wire.bounded(target, 256, true, false) || dna::classify_binding(author, target) == "lateral" { return KnowledgeNodeSubject { }; }
+        return KnowledgeNodeSubject { ok: true, name: name, author: author, target: target };
+    }
+    fn prepare(context: GovernanceContext, c: KnowledgeCommand, grant: KnowledgeGrant, record: GovernanceRecord, j: GovernanceJournal) -> KnowledgeNodePreparation {
+        let codec = KnowledgeNodeCommandCodec { }; let edge = KnowledgeCommandCodec { }; let native = dna::KnowledgeNodeRequestCodec { };
+        if !codec.valid(context, c) { return KnowledgeNodePreparation { code: "invalid_command" }; }
+        let retire = c.operation == "dna.knowledge.node.retire";
+        let old = if c.operation == "dna.knowledge.node.propose" { KnowledgeNodeSubject { ok: true } } else { self.subject(record, j, c.target_id) };
+        if !old.ok { return KnowledgeNodePreparation { }; }
+        if c.operation != "dna.knowledge.node.propose" && !self.scope(grant, old.author, old.target) { return KnowledgeNodePreparation { code: "forbidden" }; }
+        let author = if retire { old.author } else { c.author }; let target = if retire { old.target } else { c.target };
+        if !self.scope(grant, author, target) { return KnowledgeNodePreparation { code: "forbidden" }; }
+        let mut request = dna::KnowledgeNodeRequest {
+            request_id: edge.identity(context, c.request_id), operation: c.operation,
+            kind: if retire { "retirement" } else { c.node_kind }, name: if retire { old.name } else { c.name },
+            text: if retire { c.rationale } else { c.text }, author: author, target: target,
+            supersedes: if retire { c.target_id } else { c.supersedes }, by: context.principal_name, because: c.rationale
+        };
+        request.candidate_digest = dna::digest_of(native.document(request));
+        if !native.valid(request) { return KnowledgeNodePreparation { code: "invalid_command" }; }
+        return KnowledgeNodePreparation { ok: true, code: "", request: request };
+    }
+}

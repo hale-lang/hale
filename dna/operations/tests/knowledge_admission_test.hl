@@ -1,0 +1,327 @@
+// Real Git admission and replay. Fixture rows establish prior accepted native
+// Knowledge only; each relationship effect is created by KnowledgeCommands.
+// The browser, HTTP transport and application policy have separate gates.
+import ".." as ops;
+import "../../core" as dna;
+import "../../knowledge" as know;
+
+const MISSING: String = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+const RELATION: String = "supports \"équipe 🧭\" <literal> \\";
+
+type Endpoints { left: String = ""; right: String = ""; }
+
+locus EdgeAuthority {
+    params { writes: Bool = true; reads: Bool = true; mode: String = "direct"; }
+    fn authorize(context: ops::GovernanceContext, operation: String, recovery: Bool, journal: dna::Journal) -> ops::KnowledgeGrant {
+        return ops::KnowledgeGrant {
+            allowed: (context.principal_name == "alice" || context.principal_name == "bob") && if recovery { self.reads } else { self.writes },
+            authority: "knowledge-editors", basis: "fixed native edge test grant", mode: self.mode
+        };
+    }
+}
+
+locus EdgeFaultRecord {
+    params { inner: dna::GitRecord = dna::GitRecord { }; fault: String = ""; appends: Int = 0; }
+    fn identity() -> String { return self.inner.identity(); }
+    fn head(chain: String) -> String { return self.inner.head(chain); }
+    fn count(chain: String) -> Int { return self.inner.count(chain); }
+    fn between(from: String, to: String) -> String { return self.inner.between(from, to); }
+    fn text_at(id: String) -> String { return self.inner.text_at(id); }
+    fn body(digest: String) -> dna::Kept { return self.inner.body(digest); }
+    fn append(chain: String, at: String, row: dna::Row, sign: Bool, note: String) -> dna::Appended {
+        self.appends = self.appends + 1;
+        let fault = std::str::clone(self.fault); self.fault = "";
+        if fault == "stale" {
+            let moved = self.inner.append(chain, at, dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "fixture" }, false, "");
+            std::test::assert(moved.ok, "concurrent unrelated Record fact landed");
+            return dna::Appended { error: "stale" };
+        }
+        if fault == "unknown" { return dna::Appended { error: "io: result unknown" }; }
+        let result = self.inner.append(chain, at, row, sign, note);
+        if fault == "lost" { std::test::assert(result.ok, "lost append reply really persisted"); return dna::Appended { error: "io: response lost" }; }
+        return result;
+    }
+}
+
+locus KnowledgeAdmissionCases {
+    params { }
+    bus { publish dna::ReviewVerdict; }
+    fn append(j: dna::Journal, kind: String, entity: String, body: String) {
+        let result = j.append_exact(j.revision(), kind, entity, body);
+        std::test::assert(result.ok, "prior native fixture " + kind);
+    }
+    fn node(j: dna::Journal, receipts: dna::Receipts, name: String, accepted: Bool) -> String {
+        let doc = dna::knowledge_document(dna::Idea { kind: "knowledge", name: name, text: "Exact " + name + " é 🧭.", author: "org", provenance: "fixture" }, "org");
+        let id = "sha256:" + receipts.store(doc); let review = dna::knowledge_review_id(id);
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("kind", "knowledge"); b.string_field("name", name); b.string_field("author", "org"); b.string_field("target", "org");
+        b.string_field("class", "initiative"); b.string_field("review_id", review); b.string_field("supersedes", ""); b.end_object();
+        self.append(j, "knowledge.proposed", id, b.result());
+        self.append(j, "review.requested", "review:" + review, "{\"subject_digest\":\"" + id + "\",\"knowledge_digest\":\"" + id + "\",\"required_authority\":\"board\",\"author\":\"org\",\"target\":\"org\",\"class\":\"initiative\"}");
+        if accepted { self.append(j, "knowledge.ratified", id, "{}"); }
+        return id;
+    }
+    fn setup(repo: String, accepted: Bool) -> Endpoints {
+        std::io::fs::mkdir(repo) or discard;
+        let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        std::test::assert_eq_int(init.code, 0, "initialize isolated Git Record");
+        let j = dna::GitJournal { repo: repo }; let receipts = dna::GitReceipts { repo: repo };
+        return Endpoints { left: self.node(j, receipts, "source", true), right: self.node(j, receipts, "destination", accepted) };
+    }
+    fn who(repo: String, name: String, mode: String) -> ops::GovernanceContext {
+        let record = dna::GitRecord { repo: repo };
+        return ops::GovernanceContext { application_id: record.identity(), principal_mode: mode, principal_name: name };
+    }
+    fn command(context: ops::GovernanceContext, endpoints: Endpoints, head: String, key: String, rel: String) -> ops::KnowledgeCommand {
+        return ops::KnowledgeCommand {
+            request_id: key, application_id: context.application_id, target_id: endpoints.left, record_head: head,
+            from_id: endpoints.left, to_id: endpoints.right, rel: rel, rationale: "Exact rationale é\r\nsecond line 🧭."
+        };
+    }
+    fn recovery(repo: String) {
+        let endpoints = self.setup(repo, true); let context = self.who(repo, "alice", "local");
+        let record = dna::GitRecord { repo: repo };
+        let head = record.head("journal"); let before = record.count("journal");
+        let command = self.command(context, endpoints, head, "request/équipe/1", RELATION);
+        let provider = ops::KnowledgeCommands { record: record, authority: EdgeAuthority { } };
+        let capability = provider.capability(context);
+        std::test::assert(capability.available && capability.authorized && capability.mode == "direct", "explicit direct grant exposes native edge admission");
+        let first = provider.submit(context, command);
+        std::test::assert(first.ok && first.receipt.state == "recorded", "edge authority is one recorded fact: " + first.code);
+        std::test::assert_eq_int(record.count("journal"), before + 1, "admission appends exactly one native effect");
+        let codec = ops::KnowledgeCommandCodec { };
+        std::test::assert_eq_str(first.receipt.command_id, codec.identity(context, command.request_id), "public command identity scopes principal and application");
+        std::test::assert_eq_str(first.receipt.edge_id, codec.edge_id(endpoints.left, endpoints.right, RELATION), "receipt names exact directed native edge");
+        std::test::assert_eq_str(first.receipt.admission_head, head, "receipt keeps checked Record basis");
+        std::test::assert(first.receipt.details_visible, "eligible endpoints permit receipt details");
+
+        let fresh = ops::KnowledgeCommands { record: dna::GitRecord { repo: repo }, authority: EdgeAuthority { } };
+        let restored = fresh.lookup(context, command.request_id);
+        std::test::assert(restored.ok, "new provider recovers durable command");
+        std::test::assert_eq_str(restored.receipt.fingerprint, first.receipt.fingerprint, "recovery preserves exact native payload fingerprint");
+        let same = fresh.submit(context, command);
+        std::test::assert(same.ok && same.receipt.event_id == first.receipt.event_id, "same request reuses exact event even with old checked head");
+        std::test::assert_eq_int(record.count("journal"), before + 1, "retry adds no effect");
+        let changed = self.command(context, endpoints, head, command.request_id, RELATION + " ");
+        std::test::assert_eq_str(fresh.submit(context, changed).code, "request_conflict", "changed command cannot reuse request identity");
+        std::test::assert_eq_str(fresh.lookup(self.who(repo, "bob", "local"), command.request_id).code, "command_not_found", "another granted actor cannot read this command");
+        std::test::assert_eq_str(fresh.lookup(self.who(repo, "alice", "oidc"), command.request_id).code, "command_not_found", "authentication modes cannot alias");
+        let other_app = ops::GovernanceContext { application_id: "another-application", principal_mode: "local", principal_name: "alice" };
+        std::test::assert_eq_str(fresh.lookup(other_app, command.request_id).code, "command_context_changed", "another application cannot recover this command");
+        std::test::assert_eq_str(fresh.lookup(self.who(repo, "outsider", "local"), command.request_id).code, "forbidden", "receipt recovery requires current grant");
+        let denied = ops::KnowledgeCommands { record: dna::GitRecord { repo: repo } };
+        std::test::assert_eq_str(denied.submit(context, command).code, "forbidden", "default composition denies even a known command");
+        let read_only = ops::KnowledgeCommands { record: dna::GitRecord { repo: repo }, authority: EdgeAuthority { writes: false } };
+        std::test::assert(read_only.lookup(context, command.request_id).ok, "recovery grant may survive lost write grant");
+
+        let journal = dna::GitJournal { repo: repo }; let receipts = dna::GitReceipts { repo: repo }; let graph = know::Mem { };
+        let applied = know::apply_record(graph, journal, receipts);
+        std::test::assert_eq_str(applied.error, "", "admitted effect replays into fresh native graph");
+        std::test::assert_eq_int(graph.count("edges"), 1, "fresh graph contains exactly the admitted edge");
+        let edge = graph.edges.get(0) or dna::KnowledgeEdge { };
+        std::test::assert(edge.from == endpoints.left && edge.to == endpoints.right && edge.rel == RELATION, "native replay preserves direction and literal label");
+        std::test::assert_eq_int(graph.watermark(), journal.revision(), "graph checkpoint reaches admitted Record head");
+
+        self.append(journal, "receipt.withheld", endpoints.right, "{}");
+        let protected = fresh.lookup(context, command.request_id);
+        std::test::assert(protected.ok && !protected.receipt.details_visible, "restriction preserves scoped receipt existence without graph details");
+        std::test::assert(protected.receipt.target_id == "" && protected.receipt.edge_id == "", "restricted endpoint masks both target and relationship identity");
+        std::test::assert_eq_str(protected.receipt.event_id, first.receipt.event_id, "redacted recovery still identifies the caller's original event");
+        self.append(journal, "person.retired", "alice", "{}");
+        std::test::assert_eq_str(fresh.lookup(context, command.request_id).code, "forbidden", "retired membership cannot recover an old receipt");
+    }
+    fn races(repo: String) {
+        let endpoints = self.setup(repo, true); let context = self.who(repo, "alice", "local");
+        let record = EdgeFaultRecord { inner: dna::GitRecord { repo: repo } };
+        let provider = ops::KnowledgeCommands { record: record, authority: EdgeAuthority { } };
+        record.fault = "lost";
+        let lost = provider.submit(context, self.command(context, endpoints, record.head("journal"), "lost", RELATION));
+        std::test::assert(lost.ok && lost.receipt.state == "recorded", "lost append reply recovers persisted exact effect");
+        std::test::assert_eq_int(record.appends, 1, "lost reply never appends twice");
+        record.fault = "unknown";
+        let unknown = provider.submit(context, self.command(context, endpoints, record.head("journal"), "unknown", RELATION));
+        std::test::assert(!unknown.ok && unknown.code == "command_outcome_unknown", "uncertain absence remains unknown");
+        std::test::assert_eq_int(record.appends, 2, "uncertain reply never blindly retries append");
+        std::test::assert_eq_str(provider.lookup(context, "unknown").code, "command_not_found", "lookup never invents an outcome or effect");
+        std::test::assert_eq_int(record.appends, 2, "lookup is read-only");
+        record.fault = "stale";
+        let stale = provider.submit(context, self.command(context, endpoints, record.head("journal"), "raced", RELATION));
+        std::test::assert_eq_str(stale.code, "stale_subject", "CAS conflict refuses despite unchanged endpoint eligibility");
+        std::test::assert_eq_int(record.appends, 3, "CAS conflict never rebases command onto new Record head");
+        let old = self.command(context, endpoints, record.head("journal"), "old-basis", RELATION);
+        let j = dna::GitJournal { repo: repo }; self.append(j, "application.observed", "org", "{}");
+        std::test::assert_eq_str(provider.submit(context, old).code, "stale_subject", "already moved Record head refuses before append");
+        std::test::assert_eq_int(record.appends, 3, "old basis never attempts an append");
+    }
+    fn eligibility(repo: String, mode: String) {
+        let endpoints = self.setup(repo, mode != "pending"); let context = self.who(repo, "alice", "local");
+        let j = dna::GitJournal { repo: repo };
+        if mode == "withheld" { self.append(j, "receipt.withheld", endpoints.right, "{}"); }
+        if mode == "classified" { self.append(j, "receipt.classified", endpoints.right, "{\"class\":\"private\"}"); }
+        if mode == "escaped-public" { self.append(j, "receipt.classified", endpoints.right, "{\"class\":\"pub\\u006cic\"}"); }
+        if mode == "retired" { self.append(j, "knowledge.retired", endpoints.right, "{}"); }
+        let selected = if mode == "missing" { Endpoints { left: endpoints.left, right: MISSING } } else { endpoints };
+        let record = dna::GitRecord { repo: repo }; let before = record.count("journal");
+        let provider = ops::KnowledgeCommands { record: record, authority: EdgeAuthority { } };
+        let result = provider.submit(context, self.command(context, selected, record.head("journal"), "ineligible", RELATION));
+        std::test::assert_eq_str(result.code, "stale_subject", mode + " has the same safe refusal as unavailable Knowledge");
+        std::test::assert_eq_int(record.count("journal"), before, mode + " creates no durable relationship");
+    }
+    fn review_policy(repo: String) {
+        let endpoints = self.setup(repo, true); let context = self.who(repo, "alice", "local");
+        let record = EdgeFaultRecord { inner: dna::GitRecord { repo: repo } }; let before = record.count("journal");
+        let provider = ops::KnowledgeCommands { record: record, authority: EdgeAuthority { mode: "review" } };
+        let capability = provider.capability(context);
+        std::test::assert(capability.authorized && capability.available && capability.mode == "review", "native Review policy exposes reviewed admission");
+        let direct = ops::KnowledgeCommands { record: record, authority: EdgeAuthority { } };
+        let old = direct.submit(context, self.command(context, endpoints, record.head("journal"), "old-direct", "old direct relationship"));
+        std::test::assert(old.ok && !old.receipt.reviewed, "old direct admission keeps its receipt variant");
+        let recovered_direct = provider.lookup(context, "old-direct");
+        std::test::assert(recovered_direct.ok && !recovered_direct.receipt.reviewed && recovered_direct.receipt.event_id == old.receipt.event_id, "Review policy recovers the original direct fact without reinterpretation");
+        let c = self.command(context, endpoints, record.head("journal"), "review-required", RELATION);
+        record.fault = "lost";
+        let result = provider.submit(context, c);
+        std::test::assert(result.ok && result.receipt.reviewed && result.receipt.state == "recorded" && result.receipt.relationship.proposal_state == "pending", "lost real append reply recovers reviewed admission only");
+        std::test::assert_eq_int(record.appends, 2, "direct effect and reviewed request each append once");
+        std::test::assert_eq_int(record.count("journal"), before + 2, "request admission writes no synthetic Review or graph effect");
+        let codec = ops::KnowledgeCommandCodec { }; let native = dna::KnowledgeEdgeCodec { }; let outer = ops::KnowledgeEdgeCommandCodec { };
+        let captured = ops::GovernanceJournal { snapshot: provider.capture() }; let event = captured.read(result.receipt.sequence); let fact = codec.decode_fact(event);
+        std::test::assert(fact.valid && event.kind == "knowledge.edge.requested" && fact.edge.edge_basis == "", "new exact tuple captures absence despite another label's direct effect");
+        std::test::assert_eq_str(fact.edge.candidate_digest, dna::digest_of(native.document(fact.edge)), "canonical candidate binds exact command, grant and tuple basis");
+        std::test::assert_eq_str(result.receipt.edge_id, codec.edge_id(c.from_id, c.to_id, c.rel), "pending reviewed receipt still identifies its exact tuple");
+        let bad = dna::Event { kind: event.kind, entity: event.entity, prev: event.prev, body: std::str::replace(event.body, fact.edge.candidate_digest, MISSING) };
+        std::test::assert(!outer.decode_fact(bad).valid, "changed candidate cannot recover as exact original intent");
+        let changed = self.command(context, endpoints, c.record_head, c.request_id, RELATION + " changed");
+        std::test::assert_eq_str(direct.submit(context, changed).code, "request_conflict", "policy mode changes do not split the shared request namespace");
+        let fresh = ops::KnowledgeCommands { record: dna::GitRecord { repo: repo }, authority: EdgeAuthority { writes: false } };
+        std::test::assert(fresh.lookup(context, c.request_id).receipt.reviewed, "restart with direct recovery and writes removed retains reviewed variant");
+        let j = dna::GitJournal { repo: repo }; let receipts = dna::GitReceipts { repo: repo }; let graph = know::Mem { };
+        let before_review = know::apply_record(graph, j, receipts);
+        std::test::assert(before_review.error == "" && graph.count("edges") == 1, "pending request cannot project a second direct relationship");
+        let direct_facts = ops::StrictKnowledgeDirectEdgeFacts { };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: receipts, repo: repo }, membrane: dna::Board { who: "board" }, edge_facts: direct_facts };
+        body.on_knowledge_edge_requested(fact.edge);
+        let proposed = fresh.lookup(context, c.request_id);
+        std::test::assert(proposed.ok && proposed.receipt.reviewed && proposed.receipt.relationship.proposal_state == "created" && proposed.receipt.relationship.review_state == "pending" && proposed.receipt.relationship.effect_state == "unknown", "actual Body proposal stays distinct from effect under changed policy");
+        dna::ReviewVerdict <- dna::Verdict { command_id: "edge-provider/decision", review_id: native.review_id(fact.edge.candidate_digest), subject_digest: fact.edge.candidate_digest, verdict: "approve", reviewer: "bob", authority: "board" };
+        let mut tries = 0; let mut applied = false;
+        while tries < 100 && !applied {
+            let moved = j.refresh(); applied = native.fact(j, "knowledge.edge.reviewed_linked", fact.command_id, j.revision()).kind == "knowledge.edge.reviewed_linked";
+            if !applied { std::time::sleep(20ms); } tries = tries + 1;
+        }
+        std::test::assert(applied, "actual independent native Review creates the relationship consequence");
+        let finished = fresh.lookup(context, c.request_id);
+        std::test::assert(finished.ok && finished.receipt.reviewed && finished.receipt.relationship.review_outcome == "approve" && finished.receipt.relationship.effect_state == "linked", "provider projects the exact committed native consequence");
+        let replayed = know::apply_record(graph, j, receipts);
+        std::test::assert(replayed.error == "" && graph.count("edges") == 2, "reviewed effect and earlier direct relationship replay together");
+        self.append(j, "receipt.withheld", endpoints.right, "{}");
+        let hidden = fresh.lookup(context, c.request_id);
+        std::test::assert(hidden.ok && hidden.receipt.reviewed && !hidden.receipt.details_visible && hidden.receipt.edge_id == "" && hidden.receipt.relationship.candidate_digest == "" && hidden.receipt.relationship.review_id == "" && hidden.receipt.relationship.proposal_state == "unknown", "protected endpoint keeps reviewed discriminator but clears relationship details");
+    }
+    fn direct_ratification(repo: String) {
+        std::io::fs::mkdir(repo) or discard;
+        let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        std::test::assert_eq_int(init.code, 0, "initialize direct-ratification Record");
+        let j = dna::GitJournal { repo: repo }; let receipts = dna::GitReceipts { repo: repo };
+        let left = "sha256:" + receipts.store(dna::knowledge_document(dna::Idea { kind: "knowledge", text: "Unnamed source.", author: "org" }, "org"));
+        let right = "sha256:" + receipts.store(dna::knowledge_document(dna::Idea { kind: "knowledge", text: "Unnamed destination.", author: "org" }, "org"));
+        let blob = "sha256:" + receipts.store(dna::knowledge_document(dna::Idea { kind: "knowledge", text: "Only a receipt blob.", author: "org" }, "org"));
+        self.append(j, "knowledge.ratified", left, "{\"digest\":\"" + left + "\",\"author\":\"org\",\"target\":\"org\",\"class\":\"initiative\"}");
+        self.append(j, "knowledge.ratified", right, "{\"digest\":\"" + right + "\",\"author\":\"org\",\"target\":\"org\",\"class\":\"initiative\"}");
+        let context = self.who(repo, "alice", "local"); let record = dna::GitRecord { repo: repo };
+        let provider = ops::KnowledgeCommands { record: record, authority: EdgeAuthority { } };
+        let linked = provider.submit(context, self.command(context, Endpoints { left: left, right: right }, record.head("journal"), "direct-ratification", RELATION));
+        std::test::assert(linked.ok, "directly ratified unnamed Knowledge is eligible without Practice proposal metadata: " + linked.code);
+        let before = record.count("journal");
+        let refused = provider.submit(context, self.command(context, Endpoints { left: left, right: blob }, record.head("journal"), "blob-only", RELATION));
+        std::test::assert_eq_str(refused.code, "stale_subject", "canonical receipt blob alone cannot establish accepted graph membership");
+        std::test::assert_eq_int(record.count("journal"), before, "unratified receipt creates no edge");
+        let bytes = std::bytes::BytesBuilder { };
+        bytes.append_str("{ \"kind\": \"knowledge\", \"text\": \"");
+        let mut i = 0; while i < 30000 { bytes.append_u8(120); i = i + 1; }
+        bytes.append_str("\", \"author\": \"org\", \"target\": \"org\", \"provenance\": \"native direct ratification\" }");
+        let large = "sha256:" + receipts.store(std::str::from_bytes(bytes.snapshot()));
+        let moved = j.refresh(); self.append(j, "knowledge.ratified", large, "{\"class\":\"initiative\"}");
+        let large_result = provider.submit(context, self.command(context, Endpoints { left: left, right: large }, record.head("journal"), "large-native-receipt", RELATION));
+        std::test::assert(large_result.ok, "30 KB schema-valid native receipt admits without document re-encoding: " + large_result.code);
+    }
+
+    fn legacy_codec() {
+        let codec = ops::KnowledgeCommandCodec { };
+        let context = ops::GovernanceContext { application_id: "legacy-app", principal_mode: "local", principal_name: "alice" };
+        // Fixed pre-unlink v1 bytes, independent of the current encoder.
+        let historical = "{\"format\":\"dna.knowledge-command/1\",\"application_id\":\"legacy-app\",\"principal_mode\":\"local\",\"principal_name\":\"alice\",\"request_id\":\"legacy-request\",\"operation\":\"dna.knowledge.edge.link\",\"operation_version\":\"1\",\"position_id\":\"org\",\"target_id\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"record_head\":\"legacy-head\",\"from_id\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"to_id\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"rel\":\"supports\",\"rationale\":\"Historical command.\"}";
+        let c = codec.decode(context, historical);
+        std::test::assert(codec.valid(context, c), "historical link command still decodes");
+        std::test::assert_eq_str(codec.canonical(context, c), historical, "link canonical bytes remain exactly v1");
+        std::test::assert_eq_str(codec.fingerprint(context, c), "sha256:6c6bb6ef0269add51e8cd8375ea5245d6e20db58aae3a3d46abdbdee323c595a", "old link receipt fingerprint survives unlink support");
+        let illegal = std::str::replace(historical, "\"rel\":", "\"edge_id\":\"\",\"rel\":");
+        std::test::assert(!codec.valid(context, codec.decode(context, illegal)), "link canonical shape still forbids edge_id even empty");
+    }
+    fn removal(context: ops::GovernanceContext, endpoints: Endpoints, head: String, key: String) -> ops::KnowledgeCommand {
+        let codec = ops::KnowledgeCommandCodec { };
+        return ops::KnowledgeCommand { operation: "dna.knowledge.edge.unlink", request_id: key, application_id: context.application_id,
+            target_id: endpoints.left, record_head: head, edge_id: codec.edge_id(endpoints.left, endpoints.right, RELATION),
+            from_id: endpoints.left, to_id: endpoints.right, rel: RELATION, rationale: "Remove this exact directed relationship." };
+    }
+    fn unlink(repo: String) {
+        let endpoints = self.setup(repo, true); let context = self.who(repo, "alice", "local");
+        let record = EdgeFaultRecord { inner: dna::GitRecord { repo: repo } };
+        let provider = ops::KnowledgeCommands { record: record, authority: EdgeAuthority { } };
+        let linked = provider.submit(context, self.command(context, endpoints, record.head("journal"), "link", RELATION));
+        std::test::assert(linked.ok, "setup native link before removal");
+        let head = std::str::clone(record.head("journal"));
+        let command = self.removal(context, endpoints, head, "remove");
+        let codec = ops::KnowledgeCommandCodec { };
+        let bad = self.removal(context, endpoints, head, "wrong-edge"); bad.edge_id = MISSING;
+        std::test::assert_eq_str(provider.submit(context, bad).code, "invalid_command", "wrong selected edge cannot remove another tuple");
+        let conflict = self.removal(context, endpoints, head, "link");
+        std::test::assert_eq_str(provider.submit(context, conflict).code, "request_conflict", "request namespace is shared across link and unlink");
+        record.fault = "lost";
+        let removed = provider.submit(context, command);
+        std::test::assert(removed.ok && removed.receipt.operation == "dna.knowledge.edge.unlink", "lost removal reply resolves exact persisted operation");
+        std::test::assert_eq_int(record.appends, 2, "removal lost reply adds only one effect");
+        let j = dna::GitJournal { repo: repo }; let receipts = dna::GitReceipts { repo: repo }; let graph = know::Mem { };
+        let applied = know::apply_record(graph, j, receipts);
+        std::test::assert(applied.error == "" && graph.count("edges") == 0, "fresh graph replays ordered link and removal");
+        let fresh = ops::KnowledgeCommands { record: dna::GitRecord { repo: repo }, authority: EdgeAuthority { writes: false } };
+        let restored = fresh.lookup(context, command.request_id);
+        std::test::assert(restored.ok && restored.receipt.event_id == removed.receipt.event_id && restored.receipt.operation == "dna.knowledge.edge.unlink", "restart and lost write grant preserve authorized original removal lookup");
+        let duplicate = fresh.submit(context, command);
+        std::test::assert(duplicate.ok && duplicate.receipt.event_id == removed.receipt.event_id, "same removal request recovers even old basis");
+        let again = provider.submit(context, self.removal(context, endpoints, record.head("journal"), "ensure-absent"));
+        std::test::assert(again.ok, "a new exact removal can ensure an already absent tuple");
+        let old = self.removal(context, endpoints, head, "old-unlink");
+        std::test::assert_eq_str(provider.submit(context, old).code, "stale_subject", "new removal never rebases a stale Record head");
+        record.fault = "unknown";
+        let unknown = provider.submit(context, self.removal(context, endpoints, record.head("journal"), "unknown-unlink"));
+        std::test::assert_eq_str(unknown.code, "command_outcome_unknown", "unknown removal remains unresolved without retrying append");
+        std::test::assert_eq_int(record.appends, 4, "unknown removal never retries append");
+        let refreshed = j.refresh(); self.append(j, "knowledge.retired", endpoints.right, "{}");
+        let retired = provider.submit(context, self.removal(context, endpoints, record.head("journal"), "retired-unlink"));
+        std::test::assert(retired.ok, "visible retired knowledge can have historical relationships removed");
+        let updated = j.refresh(); self.append(j, "receipt.withheld", endpoints.right, "{}");
+        std::test::assert_eq_str(provider.submit(context, self.removal(context, endpoints, record.head("journal"), "hidden-unlink")).code, "stale_subject", "hidden endpoint cannot be targeted by removal");
+        let hidden = provider.lookup(context, command.request_id);
+        std::test::assert(hidden.ok && !hidden.receipt.details_visible && hidden.receipt.edge_id == "", "historical removal lookup masks newly hidden relationship");
+        let review = ops::KnowledgeCommands { record: dna::GitRecord { repo: repo }, authority: EdgeAuthority { mode: "review" } };
+        let capability = review.capability_for(context, "dna.knowledge.edge.unlink");
+        std::test::assert(capability.authorized && capability.available && capability.mode == "review", "removal Review policy advertises the supported reviewed path");
+        std::test::assert_eq_str(review.submit(context, self.removal(context, endpoints, record.head("journal"), "review-unlink")).code, "stale_subject", "Review-required removal still refuses the protected endpoint");
+    }
+    fn check() {
+        let root = "/tmp/dna-knowledge-admission-" + to_string(std::process::pid());
+        std::io::fs::mkdir(root) or discard;
+        self.legacy_codec(); self.unlink(root + "/unlink");
+        self.recovery(root + "/recovery"); self.races(root + "/races");
+        self.eligibility(root + "/missing", "missing"); self.eligibility(root + "/pending", "pending");
+        self.eligibility(root + "/withheld", "withheld"); self.eligibility(root + "/classified", "classified"); self.eligibility(root + "/retired", "retired");
+        self.eligibility(root + "/escaped-public", "escaped-public");
+        self.review_policy(root + "/review");
+        self.direct_ratification(root + "/direct-ratification");
+        let removed = dna::run_tool("rm\n-rf\n" + root);
+    }
+}
+
+main locus App { run() { let cases = KnowledgeAdmissionCases { }; cases.check(); } }
+fn main() { App { }; }

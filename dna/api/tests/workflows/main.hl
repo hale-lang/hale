@@ -1,0 +1,107 @@
+// Native recorded-fact fixture for the Iris execution reader. This is not an
+// executor: the scenario appends declared facts using native codecs, and the
+// browser reads their real Git Record through the native projection.
+import "../../../core" as dna;
+import "../../../operations" as ops;
+import "../fixture" as fixtures;
+import "../.." as api;
+
+const ROOT: String = "close-2026-09";
+const CHILD: String = "close-2026-09.s0.evidence";
+const BANK: String = "close-2026-09/wf7/s0/bank";
+const HUMAN: String = "close-2026-09.s0.evidence/wf3/s0/confirm";
+
+locus Story {
+    params { j: dna::Journal; }
+    fn append(kind: String, id: String, body: String) {
+        let r = self.j.append(self.j.revision(), kind, id, body);
+        std::test::assert(r.ok, "append browser execution fact: " + r.error);
+    }
+    fn step(task: String, index: Int, members: String, keys: String) {
+        let id = task + (if task == ROOT { "/wf7/s" } else { "/wf3/s" }) + to_string(index);
+        self.append("step.registered", id, dna::encode_members(dna::RegisteredMembers { step_id: id, task_id: task, workflow_id: task + (if task == ROOT { "/wf7" } else { "/wf3" }), step_index: index, members: members }));
+        self.append("step.activated", id, dna::encode_activation(dna::ActivatedStep { step_id: id, task_id: task, workflow_id: task + (if task == ROOT { "/wf7" } else { "/wf3" }), step_index: index, dispatched: keys }));
+    }
+    fn attempt(work: String, step: String, task: String, no: Int, request: dna::WorkRequest, performer: String) {
+        self.append("attempt.admitted", dna::attempt_id_of(work, no), dna::encode_attempt(dna::AdmittedAttempt { attempt_id: dna::attempt_id_of(work, no), work_id: work, step_id: step, task_id: task, attempt_no: no, performer_kind: performer, request: request }));
+    }
+    fn outcome(work: String, no: Int, disposition: String, text: String) {
+        self.append("attempt.outcome", dna::attempt_id_of(work, no), dna::encode_attempt_outcome(dna::AttemptOutcome { attempt_id: dna::attempt_id_of(work, no), work_id: work, disposition: disposition, performer: "sample-reviewer", result: text, evidence_ref: "sha256:iris-evidence", narrative: "Recorded sample evidence — équipe" }));
+    }
+    fn settled(work: String, step: String, no: Int) {
+        self.append("work.settled", work, dna::encode_work_outcome(dna::WorkOutcome { work_id: work, step_id: step, attempt_id: dna::attempt_id_of(work, no), disposition: "done" }));
+    }
+    fn complete_step(task: String, index: Int, members: String) {
+        let id = task + (if task == ROOT { "/wf7/s" } else { "/wf3/s" }) + to_string(index);
+        self.append("step.completed", id, dna::encode_step_outcome(dna::StepOutcome { step_id: id, task_id: task, disposition: "completed", members: members }));
+    }
+    fn complete_task(task: String, parent: String, step: String) {
+        self.append("workflow.settled", task, dna::encode_workflow_outcome(dna::WorkflowOutcome { task_id: task, parent_task: parent, spawning_step: step, disposition: "done" }));
+    }
+    fn seed() {
+        let cat = dna::WorkflowCatalog { };
+        std::test::assert_eq_str(cat.define("monthly-close", 7, 2, "Close the month"), "", "root definition");
+        std::test::assert_eq_str(cat.define("evidence", 3, 1, "Confirm supporting evidence"), "", "child definition");
+        let bank = dna::WorkRequest { objective: "Reconcile bank feed — équipe <result>", target: "org/finance", output_contract: "reconciliation", knowledge_bindings: "exact historical binding v7" };
+        let human = dna::WorkRequest { objective: "Confirm supporting evidence", target: "org/support", requires: "human", output_contract: "approval" };
+        let publication = dna::WorkRequest { objective: "Publish close report", target: "org/finance" };
+        std::test::assert_eq_str(cat.leaf("monthly-close", 7, 0, "bank", bank, 2), "", "bank member");
+        std::test::assert_eq_str(cat.child("monthly-close", 7, 0, "evidence", "evidence", 3), "", "child member");
+        std::test::assert_eq_str(cat.leaf("monthly-close", 7, 1, "publish", publication, 1), "", "publish member");
+        std::test::assert_eq_str(cat.leaf("evidence", 3, 0, "confirm", human, 1), "", "human member");
+        let limits = dna::AdmissionLimits { };
+        let bound = cat.expand(ROOT, "monthly-close", 7, limits);
+        std::test::assert(bound.ok, "bound sample recipe: " + bound.why);
+        self.append("workflow.admitted", ROOT, dna::encode_admission(dna::AdmittedWorkflow { task_id: ROOT, definition: "monthly-close", revision: 7, recipe: cat.encode_bound(), limits: limits, works: 3, tasks: 2, steps: 3, depth: 2 }));
+        self.step(ROOT, 0, "bank:leaf:" + BANK + " evidence:child:" + CHILD, "bank evidence");
+        self.attempt(BANK, ROOT + "/wf7/s0", ROOT, 0, bank, "agent");
+        self.outcome(BANK, 0, "failed", "An earlier incomplete reconciliation");
+        self.attempt(BANK, ROOT + "/wf7/s0", ROOT, 1, bank, "agent");
+        self.outcome(BANK, 1, "done", "Reconciled ✓\n<img src=x onerror=\"window.bad=true\">");
+        self.settled(BANK, ROOT + "/wf7/s0", 1);
+        self.append("workflow.admitted", CHILD, dna::encode_admission(dna::AdmittedWorkflow { task_id: CHILD, definition: "evidence", revision: 3, parent_task: ROOT, spawning_step: ROOT + "/wf7/s0", member_key: "evidence", recipe: cat.encode_bound_under(CHILD), limits: limits, works: 1, tasks: 1, steps: 1, depth: 2 }));
+        self.step(CHILD, 0, "confirm:leaf:" + HUMAN, "confirm");
+        self.attempt(HUMAN, CHILD + "/wf3/s0", CHILD, 0, human, "human");
+        self.append("workflow.refused", "refused-close", dna::encode_refusal(dna::RefusedWorkflow { task_id: "refused-close", definition: "monthly-close", revision: 7, why: "Required binding is unavailable" }));
+        self.append("task.born", "legacy-task", "sample legacy Task birth");
+    }
+    fn finish_members() {
+        self.outcome(HUMAN, 0, "done", "Human evidence confirmed");
+        self.settled(HUMAN, CHILD + "/wf3/s0", 0);
+        self.complete_step(CHILD, 0, "confirm");
+        self.complete_task(CHILD, ROOT, ROOT + "/wf7/s0");
+    }
+    fn finish() {
+        self.complete_step(ROOT, 0, "bank evidence");
+        self.step(ROOT, 1, "publish:leaf:" + ROOT + "/wf7/s1/publish", "publish");
+        self.attempt(ROOT + "/wf7/s1/publish", ROOT + "/wf7/s1", ROOT, 0, dna::WorkRequest { objective: "Publish close report", target: "org/finance" }, "agent");
+        self.outcome(ROOT + "/wf7/s1/publish", 0, "done", "Close report published");
+        self.settled(ROOT + "/wf7/s1/publish", ROOT + "/wf7/s1", 0);
+        self.complete_step(ROOT, 1, "publish"); self.complete_task(ROOT, "", "");
+    }
+}
+fn main() {
+    let root = std::env::arg_or(1, ""); let action = std::env::arg_or(2, "seed");
+    std::test::assert(std::str::starts_with(root, "/tmp/hale-iris-browser."), "owned execution fixture scratch");
+    if action == "seed" {
+        let f = fixtures::Fixture { root: root, port: 1 };
+        let j = dna::GitJournal { repo: root }; let story = Story { j: j }; story.seed();
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("application", f.identity); b.string_field("execution", ROOT); b.string_field("child", CHILD); b.string_field("bank", BANK); b.string_field("human", HUMAN); b.end_object();
+        std::io::fs::write_file(root + "/fixture.json", b.result()) or discard;
+        f.root = "";
+    } else {
+        let story = Story { j: dna::GitJournal { repo: root } };
+        if action == "members" { story.finish_members(); }
+        else if action == "finish" { story.finish(); }
+        else if action == "cancel" { story.append("workflow.settled", ROOT, dna::encode_workflow_outcome(dna::WorkflowOutcome { task_id: ROOT, disposition: "cancelled", reason: "Operator cancelled the sample execution" })); }
+        else if action == "redact" { story.append("receipt.redacted", "sha256:iris-evidence", "{\"why\":\"visibility changed\"}"); }
+        else if action == "adopt" { story.append("ledger.adopted", "routing", "{\"version\":1}"); }
+        else if action == "invalid" { story.append("step.completed", ROOT + "/wf7/s1", dna::encode_step_outcome(dna::StepOutcome { step_id: ROOT + "/wf7/s1", task_id: ROOT, disposition: "completed", members: "publish" })); }
+        else { std::test::assert(false, "unknown execution fixture action"); }
+    }
+    if action != "adopt" && action != "invalid" {
+        let j = dna::GitJournal { repo: root };
+        let q = api::WorkflowRead { j: j, visibility: ops::Queries { j: j, receipts: ops::NoReceipts { } } };
+        std::test::assert(q.load(), "native projection accepts the fixture: " + q.problem);
+    }
+}

@@ -1,0 +1,74 @@
+// General Knowledge proposals retain the domain's native Review lifecycle.
+// This codec binds caller intent to the durable request; it does not adopt it.
+import "../core" as dna;
+
+locus KnowledgeNodeCommandCodec {
+    params { }
+    fn known(operation: String) -> Bool {
+        return operation == "dna.knowledge.node.propose" || operation == "dna.knowledge.node.revise" || operation == "dna.knowledge.node.retire";
+    }
+    fn kind(kind: String) -> Bool { return kind == "idea" || kind == "concept" || kind == "practice" || kind == "task_concept"; }
+    fn valid(context: GovernanceContext, c: KnowledgeCommand) -> Bool {
+        let common = GovernanceCommandCodec { }; let edge = KnowledgeCommandCodec { };
+        if !self.known(c.operation) || !common.context_valid(context) || context.application_id != c.application_id || c.position_id != "org" || c.operation_version != "1" { return false; }
+        if !common.bounded(c.request_id, 128, true, false) || !common.bounded(c.record_head, 256, true, false) || !common.bounded(c.rationale, 2048, true, true) { return false; }
+        if c.from_id != "" || c.to_id != "" || c.rel != "" || c.edge_id != "" || c.idea_id != "" || c.binding_id != "" { return false; }
+        if c.operation == "dna.knowledge.node.retire" {
+            return edge.digest(c.target_id) && c.node_kind == "" && c.name == "" && c.text == "" && c.author == "" && c.target == "" && c.supersedes == "";
+        }
+        if !self.kind(c.node_kind) || !common.bounded(c.name, 256, true, false) || !common.bounded(c.text, 8192, true, true) || !common.bounded(c.author, 256, true, false) || !common.bounded(c.target, 256, true, false) { return false; }
+        if c.operation == "dna.knowledge.node.propose" { return c.target_id == c.target && c.supersedes == ""; }
+        return edge.digest(c.target_id) && c.target_id == c.supersedes;
+    }
+    fn fields(b: std::bytes::BytesBuilder, c: KnowledgeCommand) {
+        let edge = KnowledgeCommandCodec { };
+        if c.operation != "dna.knowledge.node.retire" {
+            edge.field(b, "node_kind", c.node_kind); edge.field(b, "name", c.name); edge.field(b, "text", c.text);
+            edge.field(b, "author", c.author); edge.field(b, "target", c.target); edge.field(b, "supersedes", c.supersedes);
+        }
+        edge.field(b, "rationale", c.rationale);
+    }
+    fn decode(context: GovernanceContext, document: String) -> KnowledgeCommand {
+        let syntax = OrganizationJson { }; let schema = DefinitionCodec { }; let common = GovernanceCommandCodec { };
+        if len(document) > 98304 || !syntax.valid(document) { return KnowledgeCommand { }; }
+        let operation = common.string(document, "operation");
+        let extra = if operation == "dna.knowledge.node.retire" { "" } else { " node_kind name text author target supersedes" };
+        if !schema.fields(document, "format application_id principal_mode principal_name request_id operation operation_version position_id target_id record_head rationale" + extra, "") { return KnowledgeCommand { }; }
+        if common.string(document, "format") != "dna.knowledge-command/1" || common.string(document, "principal_mode") != context.principal_mode || common.string(document, "principal_name") != context.principal_name { return KnowledgeCommand { }; }
+        let c = KnowledgeCommand {
+            request_id: common.string(document, "request_id"), operation: operation, operation_version: common.string(document, "operation_version"),
+            application_id: common.string(document, "application_id"), position_id: common.string(document, "position_id"), target_id: common.string(document, "target_id"), record_head: common.string(document, "record_head"),
+            node_kind: common.string(document, "node_kind"), name: common.string(document, "name"), text: common.string(document, "text"), author: common.string(document, "author"), target: common.string(document, "target"), supersedes: common.string(document, "supersedes"), rationale: common.string(document, "rationale")
+        };
+        if !self.valid(context, c) { return KnowledgeCommand { }; }
+        return c;
+    }
+    fn matches(context: GovernanceContext, c: KnowledgeCommand, r: dna::KnowledgeNodeRequest) -> Bool {
+        let edge = KnowledgeCommandCodec { }; let native = dna::KnowledgeNodeRequestCodec { };
+        if !self.valid(context, c) || !native.valid(r) || dna::digest_of(native.document(r)) != r.candidate_digest || r.request_id != edge.identity(context, c.request_id) || r.operation != c.operation || r.by != context.principal_name || r.because != c.rationale { return false; }
+        if c.operation == "dna.knowledge.node.retire" { return r.kind == "retirement" && r.text == c.rationale && r.supersedes == c.target_id; }
+        return r.kind == c.node_kind && r.name == c.name && r.text == c.text && r.author == c.author && r.target == c.target && r.supersedes == c.supersedes;
+    }
+    fn fact(context: GovernanceContext, c: KnowledgeCommand, grant: KnowledgeGrant, r: dna::KnowledgeNodeRequest) -> String {
+        let edge = KnowledgeCommandCodec { };
+        if !self.matches(context, c, r) || !edge.grant_valid(grant) || grant.mode != "review" { return ""; }
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.knowledge-node.request/1\"");
+        edge.field(b, "request_id", r.request_id); edge.field(b, "operation", r.operation); edge.field(b, "kind", r.kind);
+        edge.field(b, "name", r.name); edge.field(b, "text", r.text); edge.field(b, "author", r.author); edge.field(b, "target", r.target);
+        edge.field(b, "supersedes", r.supersedes); edge.field(b, "by", r.by); edge.field(b, "because", r.because); edge.field(b, "candidate_digest", r.candidate_digest);
+        edge.field(b, "command_id", edge.identity(context, c.request_id)); edge.field(b, "command_payload", edge.canonical(context, c)); edge.field(b, "command_fingerprint", edge.fingerprint(context, c));
+        edge.field(b, "authority", grant.authority); edge.field(b, "authority_basis", grant.basis); edge.field(b, "record_head", c.record_head);
+        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn decode_fact(e: dna::Event) -> KnowledgeFact {
+        let syntax = OrganizationJson { }; let schema = DefinitionCodec { }; let common = GovernanceCommandCodec { }; let edge = KnowledgeCommandCodec { };
+        if e.kind != "knowledge.node.requested" || len(e.body) > 262144 || !syntax.valid(e.body) || !schema.fields(e.body, "format request_id operation kind name text author target supersedes by because candidate_digest command_id command_payload command_fingerprint authority authority_basis record_head", "") { return KnowledgeFact { }; }
+        let payload = common.string(e.body, "command_payload");
+        if len(payload) > 98304 || !syntax.valid(payload) { return KnowledgeFact { }; }
+        let context = GovernanceContext { application_id: common.string(payload, "application_id"), principal_mode: common.string(payload, "principal_mode"), principal_name: common.string(payload, "principal_name") };
+        let c = self.decode(context, payload); let native = dna::KnowledgeNodeRequestCodec { }; let r = native.decode(e.body);
+        let grant = KnowledgeGrant { allowed: true, mode: "review", authority: common.string(e.body, "authority"), basis: common.string(e.body, "authority_basis") };
+        if !self.matches(context, c, r) || e.prev != c.record_head || e.entity != edge.identity(context, c.request_id) || payload != edge.canonical(context, c) || e.body != self.fact(context, c, grant, r) { return KnowledgeFact { }; }
+        return KnowledgeFact { valid: true, context: context, command: c, command_id: e.entity, fingerprint: edge.fingerprint(context, c), authority: grant.authority, authority_basis: grant.basis, node: r };
+    }
+}

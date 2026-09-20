@@ -1,0 +1,11 @@
+// Explicit terminal read-projection input over an actual prior native handoff.
+// This helper does not prove a Task completion command or decision lifecycle.
+import "../../core" as dna;
+fn main() {
+    let record = dna::GitRecord { repo: std::env::arg(1) }; let task = std::env::arg(2);
+    let j = dna::GitJournal { repo: std::env::arg(1) }; let mut i = 0; let mut handed = false;
+    while i < j.revision() { let e = j.read(i); if e.kind == "task.handed" && e.entity == task { handed = true; } i = i + 1; }
+    std::test::assert(handed, "terminal projection fixture requires an actual prior handoff");
+    std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "task.done", entity: task, body: "Explicit terminal read-projection fixture", author: "fixture" }, false, "").ok, "terminal projection input committed");
+    println("READY labelled terminal read-projection input");
+}

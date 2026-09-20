@@ -1,0 +1,60 @@
+// Exact tuple store semantics only. Body/Record authority and ordered replay
+// are exercised by dna/tests/knowledge_binding_recovery_test.hl.
+import "../../core" as dna;
+import ".." as know;
+const IDEA: String = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+locus BindingStoreCases {
+    params { }
+    fn binding(target: String, author: String) -> dna::KnowledgeBinding { return dna::KnowledgeBinding { idea: IDEA, target: target, author: author, class: dna::classify_binding(author, target) }; }
+    fn check(store: know::KnowledgeStore, graph: know::GraphStore, label: String) {
+        std::test::assert(store.open(), label + " opens");
+        std::test::assert(store.upsert(dna::Idea { id: IDEA, text: "Known knowledge.", accepted: true }, 0), label + " idea exists");
+        let original = self.binding("org/source", "org"); let chosen = self.binding("org/support", "org"); let different_author = self.binding("org/support", "org/support");
+        std::test::assert(store.bind(original) && store.bind(chosen) && store.bind(different_author), label + " three exact native tuples");
+        let generation = graph.graph_generation();
+        std::test::assert(store.bind(chosen), label + " identical bind replays");
+        std::test::assert_eq_int(graph.graph_generation(), generation, label + " identical bind does not mutate rows");
+        std::test::assert(store.unbind(self.binding("org/missing", "org")), label + " absent unbind succeeds");
+        std::test::assert_eq_int(graph.graph_generation(), generation, label + " absent unbind does not mutate rows");
+        std::test::assert(store.unbind(dna::KnowledgeBinding { idea: IDEA, target: chosen.target, author: chosen.author, class: "ignored display metadata" }), label + " removal uses tuple rather than class");
+        std::test::assert_eq_int(store.count("bindings"), 2, label + " only exact chosen tuple removed");
+        std::test::assert_eq_int(graph.graph_generation(), generation + 1, label + " actual removal changes generation once");
+        std::test::assert_eq_str(store.context_ids("org/source/child", 10), IDEA, label + " different target retained");
+        std::test::assert_eq_str(store.context_ids("org/support/child", 10), IDEA, label + " different author retained");
+        std::test::assert(store.unbind(chosen), label + " removal replay is idempotent");
+        std::test::assert_eq_int(graph.graph_generation(), generation + 1, label + " removal replay does not mutate rows");
+        std::test::assert(store.bind(chosen), label + " exact tuple can be rebound");
+        std::test::assert_eq_int(store.count("bindings"), 3, label + " rebind creates only one row");
+        std::test::assert(store.unbind(chosen) && store.unbind(different_author), label + " remove both support tuples independently");
+        std::test::assert_eq_str(store.context_ids("org/support/child", 10), "", label + " last relevant tuple controls future membership");
+        std::test::assert_eq_str(store.context_ids("org/source", 10), IDEA, label + " original applicability remains");
+    }
+    fn memory() {
+        let store = know::Mem { }; self.check(store, store, "Mem");
+        let chosen = self.binding("org/support", "org"); let mut i = 0;
+        while i < 256 {
+            std::test::assert(store.bind(chosen) && store.unbind(chosen), "repeated binding cycle");
+            std::test::assert_eq_int(store.bindings.len(), 1, "swap/pop leaves no accumulated tombstones"); i = i + 1;
+        }
+    }
+    fn postgres() {
+        let dsn = know::parse_dsn(std::env::var("HALE_DNA_KNOWLEDGE_DSN")); std::test::assert(dsn.ok, "existing test DSN");
+        let id = "bindingstore" + to_string(std::process::pid());
+        let store = know::Pq { conn: know::pq_conn(dsn), record_id: id }; self.check(store, store, "Pq");
+        let generation = store.graph_generation(); let fresh = know::Pq { conn: know::pq_conn(dsn), record_id: id };
+        std::test::assert(fresh.open(), "fresh PostgreSQL connection opens");
+        std::test::assert_eq_int(fresh.count("bindings"), 1, "exact removal persists across connection restart");
+        std::test::assert(fresh.unbind(self.binding("org/support", "org")), "absent DELETE replay succeeds");
+        std::test::assert_eq_int(fresh.graph_generation(), generation, "zero-row DELETE fires no row generation trigger");
+        fresh.close(); let dropped = store.conn.exec("DROP SCHEMA " + know::schema_for(id) + " CASCADE"); std::test::assert(dropped.ok, "isolated test schema cleaned"); store.close();
+    }
+}
+main locus App {
+    run() {
+        let cases = BindingStoreCases { }; cases.memory();
+        if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") && len(std::env::var("HALE_DNA_KNOWLEDGE_DSN")) > 0 && std::env::var("HALE_DNA_KNOWLEDGE_DSN") != "memory" { cases.postgres(); }
+        else { eprintln("binding_store_test: PostgreSQL not exercised (no test DSN)"); }
+    }
+}
+fn main() { App { }; }

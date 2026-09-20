@@ -1,9 +1,15 @@
+import "../core" as dna;
+
 // Strict syntax before the stdlib's deliberately permissive JSON cursors.
 // Carry one byte length through the parser: len(String) is a native strlen,
 // so calling it or making checked one-byte slices in the scan is quadratic.
 // Keys are literal/unescaped; values accept Unicode and paired surrogates.
 locus OrganizationJson {
     params { }
+    fn decode(raw: String) -> String {
+        let codec = dna::NativeJson { };
+        return codec.decode(raw);
+    }
     fn utf8(text: String, size: Int) -> Bool {
         let mut i = 0;
         while i < size {
