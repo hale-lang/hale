@@ -59,6 +59,7 @@ locus WorkflowRuntime {
         holder: String = "";
         token: Int = 0;
         stray_reports: Int = 0; // reports whose outcome names another attempt than the report does (card 15)
+        reports_refused: Int = 0; // reports whose outcome the record would not take, or that a fence stopped (card 15)
         now: Int = 0;
         fenced_off: Int = 0; // what the fence refused
         cursor: Int = 0; // rows applied to the projection
@@ -354,6 +355,10 @@ locus WorkflowRuntime {
             return;
         }
         let x = self.settle(r.attempt_id, r.result);
+        // refused by the record — or fenced — the outcome is not recorded;
+        // the adapter keeps its report and puts it again when the record
+        // resumes (card 15)
+        if !x.ok { self.reports_refused = self.reports_refused + 1; }
     }
     // A reply that arrives later goes to its Work the same way.
     fn settle(attempt_id: String, r: WorkResult) -> Executed {

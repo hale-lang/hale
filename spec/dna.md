@@ -1537,14 +1537,24 @@ attempt is performed once, the Mutation it produces is bound to it
 escalated or released, failed when preparation failed before a
 candidate; a later verdict changes nothing about it. `Applied` (or
 `Approved`) is the candidate approved and applied: the Work performs
-nothing and waits for the review of the candidate a Work of its Task
-prepared — answered at once when that review has settled already, and
-when it settles otherwise: approved (and applied) is done, rejected or
-sent back is failed. An attempt asked again — a redelivery after a
-restart — is answered from the Mutation bound to it and edits nothing
-twice, so the edit kind's reconciliation is a replay. A request row
-the record refuses starts nothing: the attempt is held, and `redrive`
-puts it again.
+nothing and waits on one exact candidate — the Mutation bound (card
+14) to the Work its request names in `target`, as `<step>/<key>`
+within the workflow (`s0/e`) or a whole Work id; a Work naming none
+fails at once, with why, since the dependency is explicit and never a
+Task-wide guess. It is answered from that candidate's durable state
+alone: rejected or sent back is failed; approved and applied (or
+retained) is done; approved and rolled back is failed; approved but
+not applied — the apply gate refused, an application pending or
+unresolved — is no outcome yet, and the Work keeps waiting, to be
+answered when the application lands, on a first approval or on an
+approval again. An attempt asked again — a redelivery after a restart
+— is answered from the Mutation bound to it and edits nothing twice,
+so the edit kind's reconciliation is a replay. A request row the
+record refuses starts nothing: the attempt is held, and `redrive` puts
+it again. A published report is not a durable one: the assembly keeps
+every report until the record is seen to hold the attempt's outcome,
+and puts a kept one again when the record resumes or on `redrive` —
+the validated outcome re-persisted, never the edit performed again.
 
 ## Storage interfaces
 

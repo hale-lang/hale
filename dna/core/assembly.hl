@@ -188,6 +188,26 @@ locus HeldPlans { capacity { heap rows of Plan; } }
 // start, re-driven by `redrive`.
 @form(vec)
 locus EditAsks { capacity { heap rows of EditAsk; } }
+// Outcomes reported to the engine (card 15), kept until the record holds
+// the attempt's outcome: a report the record refused is put again when
+// the record resumes, or on `redrive` — never by editing again.
+@form(vec)
+locus Reports { capacity { heap rows of AttemptReport; } }
+
+// The Work whose candidate an `Applied` Work waits on (card 15): named
+// in the request's `target`, as `<step>/<key>` within the same workflow
+// (`s0/e`) or as a whole Work id. "" when none is named: the dependency
+// is explicit, never a Task-wide guess.
+fn producer_of(req: WorkRequest) -> String {
+    if len(req.target) == 0 { return ""; }
+    if std::str::contains(req.target, "/wf") { return req.target; }
+    let wf = std::str::index_of(req.work_id, "/wf");
+    if wf < 0 { return ""; }
+    let rest = req.work_id[(wf + 1)..len(req.work_id)];
+    let sl = std::str::index_of(rest, "/");
+    if sl < 0 { return ""; }
+    return req.work_id[0..(wf + 1 + sl)] + "/" + req.target;
+}
 
 // The two output contracts an edit Work declares (card 15). `Patch` —
 // the default for an edit leaf — is "a candidate prepared for review":
@@ -257,6 +277,8 @@ locus Dna {
         waiting_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose contract is a review's outcome, waiting for it
         held_edits: EditAsks = EditAsks { }; // card 15: engine attempts whose Mutation's request row the record refused
         edits_reported: Int = 0; // card 15: outcomes reported to the engine, by attempt
+        pending_reports: Reports = Reports { }; // card 15: reports the record has not yet been seen to hold, put again on resume
+        reports_retried: Int = 0;
         record_refusals: Int = 0; // association writes the record refused: nothing proceeded past them
         plans: Int = 0;
         // GH #596 O: the optimize pass. `org_id` keys the exchange with
@@ -336,6 +358,7 @@ locus Dna {
         // engine's edit performer (the runtime's scope is this organism's
         // id); its outcome goes back for that exact attempt
         subscribe EditRequested as on_edit_requested where key == self.org_id;
+        subscribe RecordResumed as on_record_resumed where key == self.org_id;
         publish AttemptReported;
         subscribe OrgReviewed as on_org_reviewed where key == self.org_id;
         publish OptimizeRequested;
@@ -634,6 +657,8 @@ locus Dna {
     // `hale dna status` and `history` read).
     @unbounded
     fn on_review_settled(r: ReviewSettlement) {
+        // the engine's rows are another writer's (card 15): read fresh
+        let moved = self.journal.refresh();
         if r.refusal != "" {
             let x = self.journal.append(self.journal.revision(), "review.refused", r.review_id, r.refusal);
             return;
@@ -656,6 +681,9 @@ locus Dna {
             }
             let a = self.journal.append(self.journal.revision(), "mutation.apply_retried", r.review_id, "approved again by " + r.decided_by + "; the gate runs again");
             let y = self.apply_reviewed(r.review_id, std::time::now());
+            // card 15: an application that landed on the retry answers the
+            // attempts waiting on this candidate
+            self.settle_waiting(r.review_id);
             // and the record answers the verdict as it answers a first
             // one, so `hale dna review … approve` hears it: it waits on
             // `review.settled` or `review.refused` and nothing else, and
@@ -1291,10 +1319,23 @@ locus Dna {
     // admitted execution settles its Task: the engine's workflow does.
     @unbounded
     fn on_edit_requested(e: EditAsk) {
+        // the engine's rows — the admission, the attempt — are another
+        // writer's: read them fresh before deciding on them; and the
+        // reports the record has been seen to hold since are released
+        let moved = self.journal.refresh();
+        self.release_recorded();
         let req = e.request;
         if review_waiting(req.output_contract) {
-            let decided = self.decided_candidate_of(req.task_id);
-            if len(decided) > 0 { self.report_review(e, decided); return; }
+            // the Work names the Work whose candidate it waits on; that
+            // Work's Mutation (card 14) is the candidate — exactly that one,
+            // on this path and when a review settles later
+            let producer = producer_of(req);
+            if len(producer) == 0 {
+                self.report(e, "failed", "", "an Applied Work names, in its target, the Work whose candidate it waits on; none is named");
+                return;
+            }
+            let m = self.mutation_of_work(producer);
+            if len(m) > 0 && self.report_review(e, m) { return; }
             self.waiting_edits.push(e);
             return;
         }
@@ -1321,23 +1362,82 @@ locus Dna {
         if d == "failed" || d == "deny" || d == "refused" { self.report(e, "failed", mutation_id + ": " + d, "preparation failed"); return; }
         // in flight: its outcome is reported when it is one
     }
-    // The outcome of a review-waiting attempt, from the settled review of
-    // its Task's candidate: approved (and applied) is done; rejected or
-    // sent back is failed.
-    fn report_review(e: EditAsk, mutation_id: String) {
+    // The outcome of a review-waiting attempt, from the durable state of
+    // the candidate it waits on: rejected or sent back is failed;
+    // approved AND applied (or retained) is done; approved and rolled
+    // back is failed; approved but not applied — the apply refused,
+    // pending, unresolved — is not an outcome yet, and the Work keeps
+    // waiting. Whether it was settled.
+    fn report_review(e: EditAsk, mutation_id: String) -> Bool {
         let verdict = self.review_outcome_of(mutation_id);
-        if verdict == "approve" {
-            self.report(e, "done", mutation_id + ": " + self.disposition_of(mutation_id), "the candidate was approved");
-            return;
+        if len(verdict) == 0 { return false; }
+        if verdict != "approve" {
+            self.report(e, "failed", mutation_id + ": " + verdict, "the candidate was " + (if verdict == "revise" { "sent back" } else { "rejected" }));
+            return true;
         }
-        self.report(e, "failed", mutation_id + ": " + verdict, "the candidate was " + (if verdict == "revise" { "sent back" } else { "rejected" }));
+        let d = self.disposition_of(mutation_id);
+        if d == "applied" || d == "retained" {
+            self.report(e, "done", mutation_id + ": " + d, "the candidate was approved and applied");
+            return true;
+        }
+        if d == "rolled_back" {
+            self.report(e, "failed", mutation_id + ": " + d, "the candidate was applied and rolled back");
+            return true;
+        }
+        return false;
     }
+    // Bounded by the attempts the engine admits: a kept report is released
+    // when the record is seen to hold its outcome.
+    @unbounded
     fn report(e: EditAsk, disposition: String, result: String, narrative: String) {
         self.edits_reported = self.edits_reported + 1;
-        AttemptReported <- AttemptReport {
+        let r = AttemptReport {
             scope: e.scope, attempt_id: e.attempt_id,
             result: WorkResult { disposition: disposition, result: result, narrative: narrative, performer: e.performer, attempt_id: e.attempt_id }
         };
+        AttemptReported <- r;
+        // a published report is not a durable one: kept until the record
+        // is seen to hold the outcome — now, when the runtime settled it
+        // in place, or on the next resume or redrive
+        let moved = self.journal.refresh();
+        if !self.has_row("attempt.outcome", e.attempt_id) { self.pending_reports.push(r); }
+    }
+    // Every held report whose outcome the record holds is released.
+    @unbounded
+    fn release_recorded() {
+        let mut i = 0;
+        while i < self.pending_reports.len() {
+            let r = self.pending_reports.get(i) or AttemptReport { };
+            if len(r.attempt_id) > 0 && self.has_row("attempt.outcome", r.attempt_id) { self.pending_reports.set(i, AttemptReport { }) or discard; }
+            i = i + 1;
+        }
+    }
+    // Every report the record has not been seen to hold is put again;
+    // one it holds is released. The edit is never performed again: the
+    // report is the validated outcome, re-persisted. How many were put.
+    @unbounded
+    fn retry_reports() -> Int {
+        let moved = self.journal.refresh();
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.pending_reports.len() {
+            let r = self.pending_reports.get(i) or AttemptReport { };
+            if len(r.attempt_id) > 0 {
+                if self.has_row("attempt.outcome", r.attempt_id) {
+                    self.pending_reports.set(i, AttemptReport { }) or discard;
+                } else {
+                    self.reports_retried = self.reports_retried + 1;
+                    n = n + 1;
+                    AttemptReported <- r;
+                }
+            }
+            i = i + 1;
+        }
+        return n;
+    }
+    // The record is writable again: what it refused is put again.
+    fn on_record_resumed(r: RecordResume) {
+        let n = self.retry_reports();
     }
     // The Mutation bound to an attempt (card 14), by the attempt's id in
     // the Mutation's own request row; "" when none.
@@ -1349,19 +1449,6 @@ locus Dna {
         while i < n {
             let e = self.journal.read(i);
             if e.kind == "mutation.requested" && decode_binding(e.body).attempt_id == attempt_id { return e.entity; }
-            i = i + 1;
-        }
-        return "";
-    }
-    // The first Mutation of the Task (by the Work that asked for it, card
-    // 14) whose review has settled; "" when none has.
-    @unbounded
-    fn decided_candidate_of(task_id: String) -> String {
-        let n = self.journal.revision();
-        let mut i = 0;
-        while i < n {
-            let e = self.journal.read(i);
-            if e.kind == "mutation.requested" && decode_binding(e.body).task_id == task_id && len(self.review_outcome_of(e.entity)) > 0 { return e.entity; }
             i = i + 1;
         }
         return "";
@@ -1383,18 +1470,17 @@ locus Dna {
         }
         return out;
     }
-    // A review settled on a Mutation of an admitted execution answers the
-    // attempts waiting on that Task's candidate (card 15), each once.
+    // A review settled — or an application landed — on a Mutation
+    // answers the attempts waiting on exactly that candidate (card 15):
+    // each whose named producing Work's Mutation it is, once, and only
+    // when its state is an outcome; the others keep waiting.
     @unbounded
     fn settle_waiting(mutation_id: String) {
-        let task = self.task_of_mutation(mutation_id);
-        if len(task) == 0 { return; }
         let mut i = 0;
         while i < self.waiting_edits.len() {
             let e = self.waiting_edits.get(i) or EditAsk { };
-            if len(e.attempt_id) > 0 && e.request.task_id == task {
-                self.waiting_edits.set(i, EditAsk { }) or discard;
-                self.report_review(e, mutation_id);
+            if len(e.attempt_id) > 0 && self.mutation_of_work(producer_of(e.request)) == mutation_id {
+                if self.report_review(e, mutation_id) { self.waiting_edits.set(i, EditAsk { }) or discard; }
             }
             i = i + 1;
         }
@@ -1407,7 +1493,7 @@ locus Dna {
     // How many were driven.
     @unbounded
     fn redrive() -> Int {
-        let mut n = 0;
+        let mut n = self.retry_reports();
         let edits = self.held_edits.len();
         let mut k = 0;
         while k < edits {
