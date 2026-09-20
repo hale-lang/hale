@@ -935,6 +935,23 @@ never escapes the handler). A subscriber on the same thread as
 its publisher, or a payload with no owned fields, is unaffected
 (no wire cell, no subregion).
 
+**"The instant the handler returns" includes parks (GH #781,
+2026-09-19).** On a `where async_io` pool the handler runs on a
+coroutine, so its return may come after any number of parks — and
+until this fix the delivery's payload was only sound up to the point
+the coro *first yielded*, not to the point the handler returned: the
+drain's stack cell (which the handler's pointer aimed into) was
+overwritten by the next dequeue, while the spilled heap payload and
+the subregion were never reclaimed at all on that path. All of a
+delivery's payload storage — the cell's inline bytes, a spilled heap
+payload, and the per-delivery subregion above — therefore belongs to
+the coro, is released exactly once when the handler returns, and is
+never shared with another delivery. The single-owner rule (§ cell
+stores) is what makes that sufficient: a handler that keeps payload
+data past its own return has deep-copied it into the locus arena, so
+reclaiming the delivery's storage at return can never orphan
+retained state.
+
 **Phase-2 (4) `g_bus_payload_arena` reclaim investigation
 (2026-05-19; superseded by Phase-3 Task 9).**
 The handoff posed: "should `lotus_bus_dispatch_wire`'s

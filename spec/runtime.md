@@ -786,6 +786,24 @@ lock) and drained at pool teardown, so a busy async pool retains up
 to 64 × 64 KiB (~4 MiB) of coro stacks at steady state. Transparent
 to user code — a pure allocation optimization, no behavior change.
 
+**A handler's payload is its own until it returns, across parks**
+(GH #781, 2026-09-19). The storage a delivery's payload lives in
+belongs to the coroutine that runs the handler, for the whole
+invocation: the cell's inline payload bytes are copied into the coro
+when it starts, a spilled heap payload and the wire path's
+per-delivery subregion transfer to it, and all three are released
+once the handler *returns* — however many parks later. So a handler
+that parks on a `sleep`, a socket read, or a subprocess drain and
+then reads its payload parameter again reads what it read at entry;
+concurrent deliveries to the same subscriber never share payload
+storage. This did not hold before: the drain dequeued each cell into
+a stack local and handed the handler a pointer into it, so a parked
+handler returned to a frame the next dequeue had already reused, and
+every parked delivery read the LAST published value (the same
+mechanism leaked a >512-byte spilled payload per park). Pinned
+subscribers were never affected — a mailbox cell outlives the
+handler it dispatches, which has no coro to park on.
+
 Typecheck rules:
 
 - All placement entries on the same named cooperative pool must

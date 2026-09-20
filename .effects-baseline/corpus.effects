@@ -347,6 +347,12 @@ Churner::count  does={alloc}
 Queries::announce  does={syscall,alloc}
 Queries::total  does={alloc}
 main  does={syscall,alloc}
+### 88-async-handler-payload
+App::run  does={syscall,block,publish,time,alloc}
+Parker::on_frame  does={syscall,block,publish,time,alloc}
+Parker::on_job  does={syscall,block,publish,time,alloc}
+Prompt::on_job  does={publish,alloc}
+main  does={alloc}
 ### docs-server
 __docs_dir  does={env}
 __render_doc  does={syscall,env,alloc}
