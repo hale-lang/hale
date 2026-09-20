@@ -22473,6 +22473,20 @@ static int64_t g_test_passes = 0;
 void lotus_test_note_pass(void) { g_test_passes++; }
 int64_t lotus_test_passes(void) { return g_test_passes; }
 
+/* GH #717: the recorded-failure latch. A failing std::test assert
+ * used to call exit(1) from inside the assertion, which jumped
+ * over `fn main`'s teardown — children a fixture spawned stayed
+ * alive and scratch a fixture owned survived into the next run.
+ * The assert now RECORDS the failure here and returns; the
+ * call-site check emitted by codegen reads the latch and leaves
+ * main through main's ordinary teardown with exit code 1. The
+ * latch is also what makes "the first failure short-circuits"
+ * hold once assertions no longer terminate the process: every
+ * later assert sees it set and is a no-op. */
+static int g_test_failed = 0;
+void lotus_test_note_fail(void) { g_test_failed = 1; }
+int64_t lotus_test_failed(void) { return (int64_t)g_test_failed; }
+
 double lotus_math_nan(void) {
     return (double)NAN;
 }

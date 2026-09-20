@@ -33,12 +33,69 @@ The contract is exit-code based, and it's the whole model:
   doesn't count, so print progress there if you want it.
 - **Fail** — the first failing assertion prints
   `ASSERTION FAILED: <msg>` (and, for `assert_eq_*`, the expected and
-  actual values) and exits non-zero immediately. There's no "collect
+  actual values) and the program exits non-zero. There's no "collect
   all failures" — the first one stops the run.
 
 Because a test is an ordinary binary, you can also just run it
 directly: `hale run arith_test.hl` passes silently or prints the
 failure.
+
+## A failing test still cleans up after itself
+
+"The first failure stops the run" doesn't mean the program is shot
+where it stands. A failing assertion prints its line, records the
+failure, and then `main` **exits the way it always does** — pools
+joined, bus drained, and every locus you `let`-bound in `main`
+dissolved in reverse order — before the process returns `1`.
+
+That matters the moment a test owns something real. Suppose a test
+starts a server under test and writes into a scratch directory:
+
+```hale
+locus Sandbox {
+    params {
+        dir: String = "";
+        pid: Int = -1;
+    }
+    dissolve() {
+        // Runs on every exit from main — including a failed
+        // assertion. Cleans exactly what this test created.
+        let _stop = std::process::run(f"sh\n-c\nkill {self.pid}; rm -rf {self.dir}")
+            or std::process::ProcessOutput { code: -1, signal: 0, stdout: "", stderr: "" };
+    }
+}
+
+fn main() {
+    let dir = "/tmp/my_suite_scratch";
+    std::io::fs::mkdir(dir) or discard;
+    let srv = std::process::spawn("./build/server") or raise;
+    let sandbox = Sandbox { dir: dir, pid: srv.pid };
+
+    std::test::assert_eq_str(fetch("/health"), "ok", "server is up");
+}
+```
+
+If `assert_eq_str` fails, `Sandbox.dissolve()` still runs: the server
+is stopped and the scratch directory is gone. The next run starts
+clean. Put cleanup in a `dissolve()` and you never need a hand-rolled
+exit watcher.
+
+Three edges are worth knowing:
+
+- **Only what you own.** `dissolve()` is your code; it cleans your
+  child, your directory, your lock file. Nothing cleans up on your
+  behalf.
+- **Assertions belong in `main`.** An assertion that fails inside a
+  helper `fn` or a locus method has no `main` frame to return
+  through, and ends the process on the spot without the dissolve
+  cascade. Keep the assertions that guard owned resources at the top
+  level.
+- **`kill -9` is different.** If something SIGKILLs the test process,
+  nothing runs — not `dissolve()`, not an atexit hook. That's the
+  platform, not Hale; an external reaper is the only answer.
+
+`spec/testing.md` § "What runs after a failed assertion" is the
+normative version of this.
 
 ## Running the suite
 
