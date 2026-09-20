@@ -209,6 +209,17 @@ the seed being checked exited non-zero with an empty stream — a gate
 saw a failure with nothing explaining it. Every parse diagnostic is
 now a record like any other.
 
+An input that could not be READ answers the same way. A target that
+is not there, a `.hl` file of the seed that will not open, a file of
+the import graph that will not open: each is one record,
+`"kind":"io error"`, naming the path with the OS error as its
+message and no position — `"line":0,"col":0`, because a file that
+never opened has no text to be positioned in (2026-09-20, GH #806;
+before it these printed a sentence on stderr and left `--json`
+empty, so an environment failure and a crash were the same thing to
+a gate). The text rendering is unchanged, and so is every command
+without a machine-readable channel.
+
 The **position** is not command-scoped. Every command that resolves
 imports — `build`, `run`, `test`, `bench`, `replay`, as well as
 `check` and `verify` — reports a diagnostic from an imported file as

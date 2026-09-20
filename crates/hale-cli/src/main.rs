@@ -2123,6 +2123,78 @@ impl EffectTable {
     }
 }
 
+/// GH #806: an input `check` and `verify` needed and could not READ.
+///
+/// Not a [`hale_syntax::Diag`]: there is no text to position it in —
+/// the file never opened, or the target is not there at all. That is
+/// why it travelled as a bare `eprintln!` plus a non-zero exit for as
+/// long as it did, and why it was the last thing on the check path
+/// still doing so: under `--json` the stream was EMPTY and the exit
+/// was 1, the exact shape GH #777 retired for diagnostics, so a gate
+/// reading the stream could not tell a missing target or an
+/// unreadable file from a crash. It is a record like everything else
+/// now, at `"line":0,"col":0` — no position, because there is no text
+/// to have a position in — and the text channel prints exactly what
+/// it always printed.
+struct IoDiag {
+    /// The path the failure is about: the target itself when the
+    /// target cannot be read, otherwise the file that would not open.
+    path: PathBuf,
+    /// What the TEXT channel prints — byte for byte the line the
+    /// `eprintln!` at the failing site printed before this existed.
+    text: String,
+    /// The record's `message`: the OS error, which is the part a
+    /// consumer can act on.
+    message: String,
+}
+
+impl IoDiag {
+    /// A file that would not open. `text` is the failing site's own
+    /// sentence — it names the importing seed, or the file, as it
+    /// always did — and the record carries the OS error alone.
+    fn read(path: &Path, err: &std::io::Error, text: String) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            text,
+            message: err.to_string(),
+        }
+    }
+
+    /// A target (or an import target) whose `.hl` files could not be
+    /// collected. Those messages are prose — `not a file or
+    /// directory: …` — and for the commonest case of all, a path that
+    /// is simply not there, the OS has the better answer: ask it, and
+    /// the record says `No such file or directory (os error 2)`. A
+    /// target that DOES stat (an empty directory, a directory whose
+    /// `read_dir` failed with an error already in the sentence) keeps
+    /// the sentence.
+    fn target(path: &Path, text: String) -> Self {
+        let message = match fs::metadata(path) {
+            Err(e) => e.to_string(),
+            Ok(_) => text.clone(),
+        };
+        Self {
+            path: path.to_path_buf(),
+            text,
+            message,
+        }
+    }
+
+    /// The NDJSON record, through the one writer every `--json`
+    /// record is formatted by.
+    fn record(&self) -> String {
+        render_json_record(
+            &self.path.display().to_string(),
+            0,
+            0,
+            "error",
+            "io error",
+            &self.message,
+            "",
+        )
+    }
+}
+
 /// GH #775: one diagnostic raised while resolving the import graph.
 ///
 /// Every file of the graph is parsed at its own virtual base
@@ -2139,17 +2211,33 @@ impl EffectTable {
 /// `verify` take the other road, through [`CheckableFailure`], which
 /// has demultiplexed through `file_bases` since GH #770). Render
 /// through [`ImportDiag::render`], never by hand.
-struct ImportDiag {
-    /// The file the diagnostic was raised in, as the resolver reached
-    /// it — that spelling is what the user sees.
-    file: PathBuf,
-    /// The virtual base `file` was parsed at; 0 for the entry file,
-    /// which `parse_with_imports` parses unshifted.
-    base: u32,
-    diag: hale_syntax::Diag,
-    /// `file`'s own text: what the un-shifted span is resolved
-    /// against, and the snippet under the message is cut from.
-    source: String,
+///
+/// GH #806: a file of the graph that would not OPEN rides in the same
+/// vector, as [`ImportDiag::Io`]. It is the same failure to the
+/// callers — the import graph is incomplete, so the tree is refused —
+/// and putting it here is what carries it to them: the resolver used
+/// to print it and return a bare `Err(())`, which left `--json`
+/// empty. Every consumer of this vector already reports what is in
+/// it.
+enum ImportDiag {
+    /// A diagnostic raised in a file the resolver PARSED.
+    Located {
+        /// The file the diagnostic was raised in, as the resolver
+        /// reached it — that spelling is what the user sees.
+        file: PathBuf,
+        /// The virtual base `file` was parsed at; 0 for the entry
+        /// file, which `parse_with_imports` parses unshifted.
+        base: u32,
+        diag: hale_syntax::Diag,
+        /// `file`'s own text: what the un-shifted span is resolved
+        /// against, and the snippet under the message is cut from.
+        source: String,
+    },
+    /// GH #806: a file of the graph that could not be read at all.
+    /// It has no position to render — no text was ever loaded — so
+    /// [`ImportDiag::render`] prints the sentence its site printed
+    /// when the failure was an `eprintln!` there.
+    Io(IoDiag),
 }
 
 impl ImportDiag {
@@ -2162,11 +2250,19 @@ impl ImportDiag {
     /// and base, so there is no window to test and no fourth copy of
     /// [`file_owns_offset`].
     fn render(&self) -> String {
-        self.diag.render_located(
-            &self.file.display().to_string(),
-            &self.source,
-            self.base,
-        )
+        match self {
+            ImportDiag::Located {
+                file,
+                base,
+                diag,
+                source,
+            } => diag.render_located(
+                &file.display().to_string(),
+                source,
+                *base,
+            ),
+            ImportDiag::Io(io) => io.text.clone(),
+        }
     }
 }
 
@@ -2286,7 +2382,18 @@ fn resolve_imports(
         let files = match collect_target_files(&target) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("import \"{}\": {}", imp.path, e);
+                // GH #806: the sentence goes to the caller in the
+                // errors vector rather than to stderr here, so the
+                // one caller with a machine-readable channel can
+                // emit it as a record instead.
+                let path = match &target {
+                    ImportTarget::Directory(d) => d.clone(),
+                    ImportTarget::SingleFile(f) => f.clone(),
+                };
+                errors.push(ImportDiag::Io(IoDiag::target(
+                    &path,
+                    format!("import \"{}\": {}", imp.path, e),
+                )));
                 return Err(());
             }
         };
@@ -2320,12 +2427,23 @@ fn resolve_imports(
             let source = match fs::read_to_string(&file) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!(
-                        "could not read imported file {} (from import \"{}\"): {}",
-                        file.display(),
-                        imp.path,
-                        e
-                    );
+                    // GH #806: an imported file that will not open is
+                    // reported like an imported file that will not
+                    // parse — carried to the caller, which is the
+                    // side that knows whether records or text are
+                    // wanted. It used to print here and return a bare
+                    // `Err(())`, so `check --json` said nothing at
+                    // all.
+                    errors.push(ImportDiag::Io(IoDiag::read(
+                        &file,
+                        &e,
+                        format!(
+                            "could not read imported file {} (from import \"{}\"): {}",
+                            file.display(),
+                            imp.path,
+                            e
+                        ),
+                    )));
                     return Err(());
                 }
             };
@@ -2345,7 +2463,7 @@ fn resolve_imports(
                         // GH #775: the base travels with the
                         // diagnostic. `d`'s span is an offset into the
                         // merged bundle; `source` is this file alone.
-                        errors.push(ImportDiag {
+                        errors.push(ImportDiag::Located {
                             file: file.clone(),
                             base,
                             diag: d,
@@ -2592,7 +2710,7 @@ fn parse_with_imports(
             for d in diags {
                 // The entry file is parsed unshifted (`parse_source`),
                 // so its own base is 0.
-                errors.push(ImportDiag {
+                errors.push(ImportDiag::Located {
                     file: entry.to_path_buf(),
                     base: 0,
                     diag: d,
@@ -2679,7 +2797,7 @@ fn parse_with_imports(
             // was raised at comes back out of it at render time, the
             // same way every other entry in this vector does.
             let src = sources.get(&u.file).cloned().unwrap_or_default();
-            errors.push(ImportDiag {
+            errors.push(ImportDiag::Located {
                 file: u.file,
                 base: u.base,
                 diag: u.diag,
@@ -3269,6 +3387,12 @@ fn file_owns_offset(base: u32, len: u32, off: u32) -> bool {
 /// against.
 struct ParseFailure {
     diags: Vec<hale_syntax::Diag>,
+    /// GH #806: the target's own files that would not OPEN. They have
+    /// no diagnostic — there is no text to raise one against — and
+    /// they used to be printed here and counted only as a non-zero
+    /// exit, so `check --json` on a seed it could not read emitted
+    /// nothing at all.
+    io: Vec<IoDiag>,
     file_bases: Vec<(u32, PathBuf, u32)>,
     sources: BTreeMap<PathBuf, String>,
 }
@@ -3279,6 +3403,13 @@ impl ParseFailure {
     /// — and hand back the exit status. `check` and `verify` take the
     /// other road, through [`CheckableFailure::report`].
     fn report_text(&self) -> ExitCode {
+        // The unreadable files first, in the order the walk hit them:
+        // that is where they printed from when the read failed, and a
+        // file that never opened explains anything else the seed is
+        // missing.
+        for io in &self.io {
+            eprintln!("{}", io.text);
+        }
         for d in &self.diags {
             eprintln!(
                 "{}",
@@ -3308,11 +3439,19 @@ fn parse_files(
     // GH #777: carried to the caller instead of printed here, so the
     // reporting path that honours `--json` sees them.
     let mut parse_diags: Vec<hale_syntax::Diag> = Vec::new();
+    // GH #806: and so does a file that would not open, for the same
+    // reason — it was the one remaining failure on this path still
+    // printed here and nowhere else.
+    let mut io_diags: Vec<IoDiag> = Vec::new();
     for f in files {
         let source = match fs::read_to_string(f) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("{}: {}", f.display(), e);
+                io_diags.push(IoDiag::read(
+                    f,
+                    &e,
+                    format!("{}: {}", f.display(), e),
+                ));
                 had_error = true;
                 continue;
             }
@@ -3337,6 +3476,7 @@ fn parse_files(
     if had_error {
         return Err(ParseFailure {
             diags: parse_diags,
+            io: io_diags,
             file_bases,
             sources,
         });
@@ -3346,30 +3486,35 @@ fn parse_files(
 
 /// GH #765: how [`collect_checkable`] failed.
 ///
-/// A bare `code` means the reason was already printed — a bad target,
-/// or a file that could not be read at all. `diags` carries findings
-/// the CALLER must render: something in the IMPORT GRAPH that did not
-/// parse, an import that could not be resolved at all, or (GH #777) a
-/// file the target itself owns that did not parse. Those have to reach
-/// the same reporting path every other check diagnostic takes, or
-/// `--json` emits nothing and the position comes out against the wrong
-/// file — the trap the pre-pass resolver comment in
+/// `code` is the exit status. `diags` carries findings the CALLER
+/// must render: something in the IMPORT GRAPH that did not parse, an
+/// import that could not be resolved at all, or (GH #777) a file the
+/// target itself owns that did not parse. `io` (GH #806) carries the
+/// inputs that could not be READ — a target that is not there, a file
+/// of the seed or of the import graph that would not open. Those have
+/// to reach the same reporting path every other check diagnostic
+/// takes, or `--json` emits nothing and the position comes out
+/// against the wrong file — the trap the pre-pass resolver comment in
 /// `run_check_impl_labelled` records. The file map travels with them
 /// because the spans are bundle-global offsets into files the caller
 /// never saw.
 struct CheckableFailure {
     code: u8,
     diags: Vec<hale_syntax::Diag>,
+    io: Vec<IoDiag>,
     file_bases: Vec<(u32, PathBuf, u32)>,
     sources: BTreeMap<PathBuf, String>,
 }
 
 impl CheckableFailure {
-    /// A failure already reported to the user.
-    fn code(code: u8) -> Self {
+    /// GH #806: an input that could not be read. Nothing has been
+    /// printed yet — [`Self::report`] prints the sentence on stderr
+    /// in text mode and the record on stdout under `--json`.
+    fn from_io(io: IoDiag) -> Self {
         Self {
-            code,
+            code: 1,
             diags: Vec::new(),
+            io: vec![io],
             file_bases: Vec::new(),
             sources: BTreeMap::new(),
         }
@@ -3383,6 +3528,7 @@ impl CheckableFailure {
         Self {
             code: 1,
             diags: f.diags,
+            io: f.io,
             file_bases: f.file_bases,
             sources: f.sources,
         }
@@ -3394,6 +3540,17 @@ impl CheckableFailure {
     /// in — then hand back the exit status.
     fn report(&self) -> u8 {
         let json_mode = std::env::args().any(|a| a == "--json");
+        // GH #806: an unreadable input is a record too, at line 0 /
+        // col 0 — it has no position, because it has no text. It
+        // comes first: a file that never opened is why anything else
+        // here is missing.
+        for io in &self.io {
+            if json_mode {
+                println!("{}", io.record());
+            } else {
+                eprintln!("{}", io.text);
+            }
+        }
         for d in &self.diags {
             if json_mode {
                 println!(
@@ -3435,8 +3592,12 @@ fn collect_checkable(
     let files = match collect_ap_files(target) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("{}", e);
-            return Err(CheckableFailure::code(1));
+            // GH #806: a target that is not there, or whose directory
+            // would not open, is a record under `--json` instead of a
+            // sentence on stderr with an empty stream behind it.
+            return Err(CheckableFailure::from_io(IoDiag::target(
+                target, e,
+            )));
         }
     };
     // GH #777: a parse failure in the target's own files travels the
@@ -3469,8 +3630,10 @@ fn collect_checkable(
     let merged = match merge_programs(programs.values()) {
         Some(m) => m,
         None => {
-            eprintln!("no .hl files in {}", target.display());
-            return Err(CheckableFailure::code(1));
+            return Err(CheckableFailure::from_io(IoDiag::target(
+                target,
+                format!("no .hl files in {}", target.display()),
+            )));
         }
     };
     let workspace_root = find_workspace_root(target);
@@ -3534,9 +3697,23 @@ fn collect_checkable(
     // — `--json` carries them, and the span resolves to the library
     // file instead of to whichever source happened to be first.
     if resolve_failed || !errors.is_empty() {
+        // GH #806: the vector carries two shapes now — a positioned
+        // diagnostic from a file that PARSED badly, and a file that
+        // would not open at all. They split here because they render
+        // differently: one resolves against `file_bases`, the other
+        // has no position to resolve.
+        let mut diags: Vec<hale_syntax::Diag> = Vec::new();
+        let mut io: Vec<IoDiag> = Vec::new();
+        for e in errors {
+            match e {
+                ImportDiag::Located { diag, .. } => diags.push(diag),
+                ImportDiag::Io(d) => io.push(d),
+            }
+        }
         return Err(CheckableFailure {
             code: 1,
-            diags: errors.into_iter().map(|e| e.diag).collect(),
+            diags,
+            io,
             file_bases,
             sources: path_sources,
         });
@@ -3568,6 +3745,7 @@ fn collect_checkable(
         return Err(CheckableFailure {
             code: 1,
             diags: unscoped.into_iter().map(|u| u.diag).collect(),
+            io: Vec::new(),
             file_bases,
             sources: path_sources,
         });
@@ -5562,6 +5740,39 @@ fn run_check_impl_labelled(
     0
 }
 
+/// The one NDJSON record writer for `hale check --json` and
+/// `hale verify --json`.
+///
+/// Both producers format here: a `Diag` through [`render_diag_json`],
+/// which resolves its position against the file windows first, and an
+/// unreadable input through [`IoDiag::record`] (GH #806), which has
+/// no position and passes `0, 0`. One writer is the point — the
+/// record shape is a consumed contract (`spec/projects.md`, the
+/// `hale check --json` row), and a second `format!` of it somewhere
+/// else is how the two drift.
+///
+/// `related` is already-formatted JSON, `,"related":[…]` or empty.
+fn render_json_record(
+    file: &str,
+    line: usize,
+    col: usize,
+    severity: &str,
+    kind: &str,
+    message: &str,
+    related: &str,
+) -> String {
+    format!(
+        "{{\"file\":\"{}\",\"line\":{},\"col\":{},\"severity\":\"{}\",\"kind\":\"{}\",\"message\":\"{}\"{}}}",
+        json_escape(file),
+        line,
+        col,
+        severity,
+        json_escape(kind),
+        json_escape(message),
+        related
+    )
+}
+
 /// One NDJSON diagnostic line for `hale check --json`.
 fn render_diag_json(
     d: &hale_syntax::Diag,
@@ -5630,15 +5841,14 @@ fn render_diag_json(
             format!(",\"related\":[{}]", entries.join(","))
         }
     };
-    format!(
-        "{{\"file\":\"{}\",\"line\":{},\"col\":{},\"severity\":\"{}\",\"kind\":\"{}\",\"message\":\"{}\"{}}}",
-        esc(&file),
+    render_json_record(
+        &file,
         line,
         col,
         severity,
-        esc(d.kind_str()),
-        esc(&d.message),
-        related
+        d.kind_str(),
+        &d.message,
+        &related,
     )
 }
 

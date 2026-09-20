@@ -74,3 +74,11 @@ NDJSON record on stdout carrying the file, line, column and message,
 with `"kind":"parse error"`. Whatever fails, the machine-readable
 stream says why — so for a gate reading it, an empty stream means the
 seed is clean and nothing else does.
+
+That holds for the inputs themselves, not just for what is in them: a
+target that does not exist, or a file `check` cannot open — one of the
+seed's own, or one reached through an `import` — is a record with
+`"kind":"io error"`, the path in `"file"` and the operating system's
+error in `"message"`. It carries `"line":0` and `"col":0`, since a
+file that never opened has no text to point into. In text mode you
+read the same sentence you always did, on stderr.

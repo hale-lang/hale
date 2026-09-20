@@ -38,6 +38,14 @@
 //! right since GH #770. The diagnostics now carry the base they were
 //! parsed at and render through it, so every command agrees with
 //! `check` about where the mistake is.
+//!
+//! GH #806 is the last of the family, and the one failure that is not
+//! a `Diag` at all: an input that could not be READ — a target that
+//! is not there, a file of the seed or of the import graph that would
+//! not open. It printed a sentence on stderr and left `--json` empty
+//! with exit 1. It is now one record per unreadable input, at
+//! `"line":0,"col":0` under `"kind":"io error"`, written by the same
+//! writer every other record goes through.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -695,5 +703,216 @@ fn a_parse_error_in_the_entry_file_keeps_position_zero() {
         stderr.contains("main.hl:5:26: parse error: expected ;, got RBrace"),
         "the entry file's own position, unshifted:\n{stderr}"
     );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// GH #806: an input that could not be READ is a record too — the
+// last text-only hole on the check path. A target that is not there,
+// a file of the seed that would not open, or a file of the IMPORT
+// GRAPH that would not open printed a sentence on stderr and left
+// `--json` empty with exit 1: the same false picture #777 retired
+// for diagnostics, for a class that is an environment failure rather
+// than a program one. A gate driving `--json` reads an empty stream
+// plus a non-zero exit as "the tool crashed" either way.
+
+/// Make `path` unreadable and answer whether it actually is. Running
+/// as root (CI containers often do) defeats `chmod 000`, and a test
+/// that silently asserts nothing is worse than one that skips.
+fn make_unreadable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(path).unwrap().permissions();
+    perms.set_mode(0o000);
+    std::fs::set_permissions(path, perms).unwrap();
+    std::fs::read_to_string(path).is_err()
+}
+
+fn make_readable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(md) = std::fs::metadata(path) {
+        let mut perms = md.permissions();
+        perms.set_mode(0o644);
+        let _ = std::fs::set_permissions(path, perms);
+    }
+}
+
+/// The one record an unreadable input produces: positionless (there
+/// is no text to have a position in), naming the path it is about,
+/// under a kind a consumer can branch on.
+fn assert_io_record(line: &str, ends_with: &str) -> serde_json::Value {
+    let v: serde_json::Value =
+        serde_json::from_str(line).expect("stdout is NDJSON");
+    assert_eq!(v["kind"], "io error", "got: {}", line);
+    assert_eq!(v["severity"], "error", "got: {}", line);
+    assert_eq!(v["line"], 0, "no position to report: {}", line);
+    assert_eq!(v["col"], 0, "no position to report: {}", line);
+    assert!(
+        v["file"].as_str().unwrap().ends_with(ends_with),
+        "the record names the input it is about ({}): {}",
+        ends_with,
+        line
+    );
+    v
+}
+
+#[test]
+fn a_missing_target_is_one_record() {
+    let d = seed_dir("io806missing");
+    let missing = d.join("not_here.hl");
+
+    let (stdout, stderr, code) = hale_check(&["--json"], &missing);
+    assert_eq!(code, 1, "a target that is not there fails the check");
+    assert!(
+        !stdout.trim().is_empty(),
+        "--json must not answer a missing target with an empty \
+         stream (stderr was: {})",
+        stderr
+    );
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 1, "exactly one record: {}", stdout);
+    let v = assert_io_record(lines[0], "not_here.hl");
+    assert!(
+        v["message"].as_str().unwrap().contains("os error 2"),
+        "the OS says why, rather than the prose text mode prints: {}",
+        lines[0]
+    );
+    assert!(
+        stderr.trim().is_empty(),
+        "under --json the report belongs on stdout: {}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_unreadable_file_of_the_seed_is_one_record() {
+    let d = seed_dir("io806own");
+    let f = d.join("main.hl");
+    std::fs::write(&f, "fn main() {\n    println(\"x\");\n}\n").unwrap();
+    if !make_unreadable(&f) {
+        eprintln!("skipped: this user can read a 0o000 file (root?)");
+        let _ = std::fs::remove_dir_all(&d);
+        return;
+    }
+
+    let (stdout, stderr, code) = hale_check(&["--json"], &d);
+    assert_eq!(code, 1, "a seed that cannot be read fails the check");
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 1, "exactly one record: {}", stdout);
+    let v = assert_io_record(lines[0], "main.hl");
+    assert!(
+        v["message"].as_str().unwrap().contains("os error 13"),
+        "the OS error, verbatim: {}",
+        lines[0]
+    );
+    assert!(
+        stderr.trim().is_empty(),
+        "under --json the report belongs on stdout: {}",
+        stderr
+    );
+
+    make_readable(&f);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A file reached only through an `import` is the same shape. The
+/// resolver printed it and returned a bare failure, so the records
+/// the rest of the import graph produces stopped exactly where a file
+/// would not open — a library made unreadable by a bad checkout
+/// looked, to a gate, like a clean seed that crashed the tool.
+#[test]
+fn an_unreadable_imported_file_is_one_record() {
+    let d = import_seed("io806import");
+    let broken = d.join("lib").join("second.hl");
+    if !make_unreadable(&broken) {
+        eprintln!("skipped: this user can read a 0o000 file (root?)");
+        make_readable(&broken);
+        let _ = std::fs::remove_dir_all(&d);
+        return;
+    }
+
+    let (stdout, stderr, code) = hale_check(&["--json"], &d.join("app"));
+    assert_eq!(code, 1, "the tree is refused");
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 1, "exactly one record: {}", stdout);
+    let v = assert_io_record(lines[0], "second.hl");
+    assert!(
+        v["message"].as_str().unwrap().contains("os error 13"),
+        "the OS error, verbatim: {}",
+        lines[0]
+    );
+    assert!(
+        stderr.trim().is_empty(),
+        "under --json the report belongs on stdout: {}",
+        stderr
+    );
+
+    make_readable(&broken);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The human path is the control: the same sentences on stderr and
+/// nothing on stdout. `build` and `run` share two of these sites and
+/// have no machine-readable channel at all, so that text is the whole
+/// report there and must not move.
+#[test]
+fn an_unreadable_input_keeps_its_text_rendering() {
+    let d = seed_dir("io806text");
+    let missing = d.join("not_here.hl");
+    let (stdout, stderr, code) = hale_check(&[], &missing);
+    assert_eq!(code, 1);
+    assert!(
+        stdout.trim().is_empty(),
+        "text mode writes no stdout: {}",
+        stdout
+    );
+    assert!(
+        stderr.contains("not a file or directory:")
+            && stderr.contains("not_here.hl"),
+        "the sentence it always printed: {}",
+        stderr
+    );
+
+    let f = d.join("main.hl");
+    std::fs::write(&f, "fn main() {\n    println(\"x\");\n}\n").unwrap();
+    if make_unreadable(&f) {
+        let (stdout, stderr, code) = hale_check(&[], &d);
+        assert_eq!(code, 1);
+        assert!(
+            stdout.trim().is_empty(),
+            "text mode writes no stdout: {}",
+            stdout
+        );
+        assert!(
+            stderr.contains("main.hl: Permission denied"),
+            "`path: os error`, as before: {}",
+            stderr
+        );
+
+        // `build` has no `--json` at all; its text is unchanged too.
+        let (_, stderr, code) = hale_cmd("build", &[], &d);
+        assert_eq!(code, 1);
+        assert!(
+            stderr.contains("main.hl: Permission denied"),
+            "build prints the same line: {}",
+            stderr
+        );
+    }
+
+    make_readable(&f);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// `verify` shares the reporting path, so a gate built on it sees the
+/// same record rather than an empty stream and a bare exit 1.
+#[test]
+fn verify_json_reports_an_unreadable_input_too() {
+    let d = seed_dir("io806verify");
+    let missing = d.join("not_here.hl");
+
+    let (stdout, _, code) = hale_cmd("verify", &["--json"], &missing);
+    assert_ne!(code, 0, "verify refuses a target it cannot read");
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(lines.len(), 1, "exactly one record: {}", stdout);
+    assert_io_record(lines[0], "not_here.hl");
     let _ = std::fs::remove_dir_all(&d);
 }
