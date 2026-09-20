@@ -2595,6 +2595,26 @@ main locus App {
     about the whole call graph. Codegen keeps a matching refusal for
     embedders that bypass the checker. (GH #826, 2026-09-20.)
 
+18. **Uncarriable bus payload (error).** An `of type T` clause on a
+    `publish` / `subscribe` must name a type the bus can carry — a
+    user `type`, an enum with a payload variant, or `BytesView`
+    (§ *Bus subscription dispatch* → *Payload type*, below, has the
+    full statement of what the wire carries). A primitive, a tuple,
+    an array, `bounded[T; N]` or a no-payload enum is rejected at
+    the clause's own span. Before this rule `of type Int` checked
+    clean and
+    could not be lowered: codegen refused the publish
+    (`bus send payload must be a user-type or has-payload enum
+    value`) and the subscribe (`m60 requires a TypeRef, has-payload
+    Enum, or BytesView`), unlocated and from another layer. A
+    payload type the bundle cannot *resolve* — a qualified path into
+    a seed it does not hold, a generic instantiation, a name nothing
+    declares — is left alone: the rule is about what the bus
+    carries, not about which names are in scope. A `topic`'s
+    `payload:` is under the same contract, but the checker does not
+    desugar topics (lowering does), so that half is still diagnosed
+    during lowering. (GH #876, 2026-09-20.)
+
 ### Single-threaded-method invariant
 
 A locus's methods may be invoked only on the OS thread that
@@ -2858,17 +2878,34 @@ If HANDLER panics:
 - The subscription itself is *not* removed; future messages
   continue to dispatch.
 
-### Payload type — primitives + nested structs + String
+### Payload type — what a subject may carry
 
-The wire format supports primitives (`Int`, `Float`, `Bool`,
-`Decimal`, `Duration`, `Time`, `String`), `Bytes`, and
-**nested user struct types** (`type T { ... }`) recursively
-composed. A bus payload may carry a struct whose fields are
-primitives, Strings, Bytes, or other nested structs, at any
-depth. Serialize walks the field tree in declaration order;
-deserialize allocates each nested struct in the lazy global
-payload arena and recurses. Arrays, tuples, and enums as bus
-payload fields are post-v1 polish.
+A subject's payload type — `T` in `of type T`, or a `topic`'s
+`payload:` — must be one of exactly three things:
+
+- a user `type` (`type T { ... }`);
+- an `enum` with at least one variant that carries a payload,
+  which travels as that enum's storage struct;
+- `BytesView` (`std::bytes::BytesView`), the raw-frame path: the
+  payload is not typed at all, and the handler receives a bounded
+  view over each record. This is how a foreign writer's ring is
+  consumed.
+
+A delivery is a *serialized struct*, so the payload needs a field
+layout: `of type Int` has none, and neither does a tuple, an
+array, or a no-payload enum. An `of type` clause naming one is
+rejected at typecheck, at the clause (rule 18 above); a `topic`
+whose `payload:` names one is refused during lowering.
+
+**Within** a payload, the wire format supports primitives (`Int`,
+`Float`, `Bool`, `Decimal`, `Duration`, `Time`, `String`),
+`Bytes`, and **nested user struct types** recursively composed. A
+bus payload may carry a struct whose fields are primitives,
+Strings, Bytes, or other nested structs, at any depth. Serialize
+walks the field tree in declaration order; deserialize allocates
+each nested struct in the lazy global payload arena and recurses.
+Arrays, tuples, and enums as bus payload *fields* are post-v1
+polish.
 
 ## Closure-test evaluation
 

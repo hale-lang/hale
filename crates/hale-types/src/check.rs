@@ -698,6 +698,11 @@ pub fn check_bundle_scoped(
     // the wrong type. Declared `topic`s are already unified by their
     // declaration; this closes the literal-subject gap.
     check_bus_subject_types(bundle, &mut diags);
+    // GH #876: the declared payload must be a type the bus can
+    // CARRY. The rule above relates two sites to each other; this one
+    // relates one site to the runtime, which takes a user type, a
+    // has-payload enum or `BytesView` and nothing else.
+    check_bus_payload_carriable(bundle, top, &known, &mut diags);
     diags
 }
 
@@ -6583,6 +6588,170 @@ fn check_bus_subject_types(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                 ),
             ));
         }
+    }
+}
+
+/// What the bus can do with a type written in an `of type` clause.
+enum Carriage {
+    /// A field layout a cell can serialize, or the raw-frame opt-out.
+    Carried,
+    /// Resolved, and the runtime has no way to put it on the wire.
+    /// Carries the repair that fits the shape.
+    NotCarried(&'static str),
+    /// Not resolvable from this bundle, so not this check's to judge.
+    Unresolved,
+}
+
+/// GH #876: can a cell carry a payload of this type?
+///
+/// The accepted set is the runtime's, and it is small because a
+/// delivery is a serialized STRUCT: the payload needs a field layout
+/// — a user `type`, or the storage struct of an enum that has at
+/// least one variant with fields — or it opts out of typing
+/// altogether with `BytesView`, the raw-frame path a foreign ring
+/// writes. A primitive has neither: there is no `__serialize_Int`,
+/// and codegen says so (`bus/dispatch.rs`, `locus/decl.rs`).
+///
+/// [`Carriage::Unresolved`] is the permissive half, and it is
+/// deliberately where RESOLUTION stops rather than where the rule
+/// stops — this check must not turn "I cannot see that name" into "no
+/// such payload":
+///
+///   - a qualified path (`shared::Metric`) whose seed is not in this
+///     bundle, which is what a single-file check of a multi-file seed
+///     holds — `resolve_type_expr` types it `Unknown` by design;
+///   - a generic instantiation (`Box<Int>`), whose mangled monomorph
+///     is synthesized during lowering and is no bundle symbol yet;
+///   - a bare name nothing in the bundle declares, which is a missing
+///     declaration rather than an uncarriable payload, and is named
+///     as such by the rule for unknown type names.
+fn payload_carriage(
+    te: &TypeExpr,
+    top: &TopScope,
+    known: &KnownNames,
+) -> Carriage {
+    if let TypeExpr::Named { generic_args, .. } = te {
+        if !generic_args.is_empty() {
+            return Carriage::Unresolved;
+        }
+    }
+    match resolve_type_expr(te, known) {
+        // The raw-frame path: no struct type, bounded view per record.
+        Ty::Prim(PrimType::BytesView) => Carriage::Carried,
+        Ty::Named(n) => match top.symbols.get(&n) {
+            Some(TopSymbol::Type(ti)) => match &ti.kind {
+                TypeKind::Struct(_) => Carriage::Carried,
+                // A no-payload enum has no storage struct to
+                // serialize — codegen refuses it by name.
+                TypeKind::Enum(variants) => {
+                    if variants.iter().any(|v| !v.fields.is_empty()) {
+                        Carriage::Carried
+                    } else {
+                        Carriage::NotCarried(
+                            "give one variant a payload, or wrap the enum \
+                             in a user `type`",
+                        )
+                    }
+                }
+                // Aliases are transparent through
+                // `resolve_type_expr`, so this arm is unreachable in
+                // practice; judging it would be judging a name.
+                TypeKind::Alias(_) => Carriage::Unresolved,
+            },
+            // A locus, interface, perspective or topic name in
+            // payload position is a different mistake, reported
+            // elsewhere (the handler-signature rule names the
+            // topic-as-type one).
+            _ => Carriage::Unresolved,
+        },
+        Ty::Unknown => Carriage::Unresolved,
+        // Every remaining shape — the other primitives, arrays,
+        // tuples, `bounded[T; N]`, projections, fn types — reaches
+        // codegen as something other than a TypeRef and is refused
+        // there.
+        _ => Carriage::NotCarried("wrap it in a user `type`"),
+    }
+}
+
+/// GH #876: a bus subject's declared payload must be a type the bus
+/// can carry.
+///
+/// `bus { publish "org.metrics" of type Int; }` typechecked clean and
+/// could not be lowered. The publish side died with `bus send payload
+/// must be a user-type or has-payload enum value; got Int` and the
+/// subscribe side with `missing or unsupported payload type (m60
+/// requires a TypeRef, has-payload Enum, or BytesView)` — both from
+/// codegen, with no span, on a declaration that is among the first
+/// things an author writes. That is the check/build divergence class
+/// `corpus_check_build_agreement` gates, and three corpus programs
+/// carried its ratchet rows.
+///
+/// PR #458's rule compares a handler's parameter against the declared
+/// payload; it never asks whether the declared payload is a payload at
+/// all. This asks exactly that, once per `of type` clause, at the
+/// clause's own span.
+///
+/// Scope: the `of type` clause on a `publish` / `subscribe`. A
+/// `topic T { payload: Int; }` is under the same contract and is
+/// still refused during lowering, because the checker never runs
+/// `desugar_topics` (codegen does) — so a topic-ref subscribe
+/// carries no `ty` at this layer and there is nothing here to judge.
+/// Closing that half means reading `TopicDecl.payload`, which moves
+/// its own set of ratchet rows; it is deliberately not this change.
+fn check_bus_payload_carriable(
+    bundle: &Bundle<'_>,
+    top: &TopScope,
+    known: &KnownNames,
+    diags: &mut Vec<Diag>,
+) {
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
+            for m in &l.members {
+                let LocusMember::Bus(bb) = m else { continue };
+                for bm in &bb.members {
+                    let (verb, subject, ty) = match bm {
+                        BusMember::Subscribe { subject, ty, .. } => {
+                            ("subscribe", subject, ty)
+                        }
+                        BusMember::Publish { subject, ty, .. } => {
+                            ("publish", subject, ty)
+                        }
+                    };
+                    let Some(ty) = ty else { continue };
+                    // A topic ref takes its payload from the topic
+                    // declaration, and an `of type` clause on one is
+                    // already an error ("forbidden on topic refs").
+                    // Judging the stray clause too would report one
+                    // mistake twice.
+                    if !matches!(subject, BusSubject::Literal { .. }) {
+                        continue;
+                    }
+                    let Carriage::NotCarried(repair) =
+                        payload_carriage(ty, top, known)
+                    else {
+                        continue;
+                    };
+                    diags.push(Diag::ty(
+                        ty.span(),
+                        format!(
+                            "{} `{}`: a bus subject's payload must be a type \
+                             the bus can carry — a user `type`, an enum with \
+                             a payload variant, or `BytesView` \
+                             (`std::bytes::BytesView`, the raw-frame path). \
+                             `{}` is not carried on the bus: a delivery is a \
+                             serialized struct, so the payload needs a field \
+                             layout. To send one, {} and declare the subject \
+                             `of type` that.",
+                            verb,
+                            subject.canonical(),
+                            resolve_type_expr(ty, known).display(),
+                            repair,
+                        ),
+                    ));
+                }
+            }
+        });
     }
 }
 

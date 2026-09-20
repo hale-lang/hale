@@ -57,7 +57,7 @@ crates/hale-cli/tests/fixtures/unbounded-alloc-opt-in/app.hl c90bc96e9e961826
 crates/hale-cli/tests/fixtures/ws33-lib-hb/topics.hl a7db3ea340a6c86c
 crates/hale-cli/tests/fixtures/ws33-run-dir-app/main.hl 6b252d43f7af41c8
 crates/hale-cli/tests/fixtures/xseed-claims-cover-ok/lib/topics/t.hl c41c55b5767cfd40
-crates/hale-cli/tests/fixtures/xseed-claims/lib/delta/d.hl b89b65ecd60971a3
+crates/hale-cli/tests/fixtures/xseed-claims/lib/delta/d.hl c288aee3f49c70ca
 crates/hale-cli/tests/fixtures/xseed-claims/lib/gamma/g.hl 0e15724545744a1a
 crates/hale-cli/tests/fixtures/xseed-cqrs/app/main.hl 0dcc2f399e4e2cc9
 crates/hale-cli/tests/fixtures/xseed-cqrs/lib/mat/m.hl bf060e593f77f631
@@ -1476,7 +1476,6 @@ crates/hale-types/tests/model_builder.rs#13 2327a382bb6673fa
 crates/hale-types/tests/model_builder.rs#15 37db42879cb43bd9
 crates/hale-types/tests/model_builder.rs#18 f7bc90fa5e60e4b6
 crates/hale-types/tests/model_builder.rs#22 37db42879cb43bd9
-crates/hale-types/tests/model_builder.rs#24 3f3520e7c184bc9f
 crates/hale-types/tests/model_builder.rs#25 16638d003fd75bff
 crates/hale-types/tests/model_builder.rs#3 13c7bdc059e6600b
 crates/hale-types/tests/model_builder.rs#5 052aed15dd1f7840
