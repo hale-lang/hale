@@ -11,6 +11,31 @@
 //! Paths are relative to a materialization root and keep the repo's
 //! layout (`dna/core/<file>.hl`), so `import "../core"` from a sibling
 //! seed resolves unchanged.
+//!
+//! What a binary embeds has a NAME (GH #726): `EMBEDDED_DIGEST`, a
+//! framed SHA-256 over the sorted `(path, content)` pairs of every
+//! file below, computed by `build.rs` over the tree it was built
+//! from. Two binaries reporting one `hale --version` can carry
+//! different source; the digest is what tells them apart.
+
+/// The digest of the embedded source set, and the algorithm the
+/// build script shares with the crate (see the file's own notes).
+pub mod digest;
+
+pub use digest::{digest_of_pairs, digest_of_tree, EMBEDDED_DIRS};
+
+/// The DNA source this binary embeds, as one 64-hex SHA-256 over the
+/// sorted, length-framed `(path, content)` pairs of every file in
+/// `embedded_pairs()`. Computed by `build.rs` from the working tree
+/// it was built from; `hale dna --embedded-digest` prints it, and
+/// `--from-tree <dir>` prints another tree's for comparison.
+pub const EMBEDDED_DIGEST: &str = env!("HALE_DNA_EMBEDDED_DIGEST");
+
+/// The first 16 hex digits of `EMBEDDED_DIGEST` — enough to tell two
+/// builds apart at a glance (`hale --version`, `hale dna status`).
+pub fn embedded_short() -> &'static str {
+    &EMBEDDED_DIGEST[..16]
+}
 
 pub struct EmbeddedFile {
     pub path: &'static str,
@@ -137,6 +162,20 @@ pub const KNOWLEDGE_FILES: &[EmbeddedFile] = at![
 pub const KNOWLEDGE_SEED: &str = "dna/knowledge/service";
 pub const KNOWLEDGE_BIN: &str = "dna/knowledge/service/service";
 
+/// Every embedded file as a `(path, content)` pair: the core, the
+/// host, the membrane client, the surface and the knowledge set —
+/// the whole of what `EMBEDDED_DIGEST` names.
+pub fn embedded_pairs() -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for f in FILES.iter().chain(HOST_FILES).chain(KNOWLEDGE_FILES) {
+        out.push((f.path.to_string(), f.content.to_string()));
+    }
+    for f in [&MEMBRANE_CLIENT, &UI_MAIN, &UI_HTML] {
+        out.push((f.path.to_string(), f.content.to_string()));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,5 +222,41 @@ mod tests {
         let mut know_embedded: Vec<String> = KNOWLEDGE_FILES.iter().map(|f| f.path.to_string()).collect();
         know_embedded.sort();
         assert_eq!(know_embedded, know_on_disk, "a dna/knowledge or dna/pond file was added or removed without updating hale-dna");
+    }
+
+    /// GH #726: the build's snapshot is coherent. `build.rs` digested
+    /// the on-disk `dna/` tree; `embedded_pairs()` is what the
+    /// compiler actually included. They are the same source set or
+    /// this binary cannot say what it carries — a file added without
+    /// updating the lists above, or source edited *while* the build
+    /// ran, fails here rather than shipping an unverifiable digest.
+    #[test]
+    fn the_digest_names_exactly_what_is_embedded() {
+        assert_eq!(EMBEDDED_DIGEST.len(), 64, "a SHA-256 in lower hex: {EMBEDDED_DIGEST}");
+        assert!(EMBEDDED_DIGEST.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "lower hex: {EMBEDDED_DIGEST}");
+        assert_eq!(digest_of_pairs(&embedded_pairs()), EMBEDDED_DIGEST, "the compiled-in set and the tree build.rs digested are the same source");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        assert_eq!(digest_of_tree(&root).expect("digest the repository's dna/ tree"), EMBEDDED_DIGEST, "the working tree this test runs against is the one the binary embeds");
+        assert_eq!(embedded_short(), &EMBEDDED_DIGEST[..16]);
+    }
+
+    /// The digest is a digest: one byte of content, one path, one
+    /// file more or fewer changes it, and order does not.
+    #[test]
+    fn the_digest_follows_content_paths_and_membership() {
+        let p = |a: &str, b: &str| (a.to_string(), b.to_string());
+        let base = vec![p("dna/core/a.hl", "locus A { }\n"), p("dna/core/b.hl", "locus B { }\n")];
+        let edited = vec![p("dna/core/a.hl", "locus A { }\n"), p("dna/core/b.hl", "locus B { }\n// one comment\n")];
+        let renamed = vec![p("dna/core/a.hl", "locus A { }\n"), p("dna/core/c.hl", "locus B { }\n")];
+        let added = vec![p("dna/core/a.hl", "locus A { }\n"), p("dna/core/b.hl", "locus B { }\n"), p("dna/core/c.hl", "")];
+        let reordered = vec![p("dna/core/b.hl", "locus B { }\n"), p("dna/core/a.hl", "locus A { }\n")];
+        let d = digest_of_pairs(&base);
+        assert_ne!(d, digest_of_pairs(&edited), "a file's content is in the digest");
+        assert_ne!(d, digest_of_pairs(&renamed), "a file's path is in the digest");
+        assert_ne!(d, digest_of_pairs(&added), "an added file is in the digest");
+        assert_eq!(d, digest_of_pairs(&reordered), "the order the pairs are collected in is not");
+        // and the framing is not defeated by moving bytes across the
+        // boundary between a path and its content
+        assert_ne!(digest_of_pairs(&vec![p("dna/core/ab.hl", "x")]), digest_of_pairs(&vec![p("dna/core/a", "b.hlx")]));
     }
 }

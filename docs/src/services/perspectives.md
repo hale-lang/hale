@@ -43,6 +43,14 @@ pointing at the `serves` clause. `serves` shares the locus header's
 post-`:` list with annotations, so `locus RouterV1 : serves Router,
 tier 2` is fine.
 
+The contract can live in another seed: `serves` takes a qualified
+path, so a locus in your program can implement a perspective an
+imported library declares — `locus RouterV1 : serves lib::Router`,
+with `perspective(lib::Router)` for the slot and `reperspective
+self.router as lib::RouterV2` for the swap. Conformance is checked
+against the imported contract exactly as it is against a local one,
+and an alias path that names nothing is an error at the path.
+
 ## Holding and calling through a perspective
 
 A holder programs against `perspective(Router)` — never a concrete

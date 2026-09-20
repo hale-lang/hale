@@ -16,7 +16,9 @@
 //!
 //! What stays here is what genuinely needs the Rust side: the two
 //! DIAGNOSTIC tests, which assert on compiler output rather than
-//! program behaviour.
+//! program behaviour — and, since GH #720, the ByteView SCALING
+//! test, which needs a clock and megabytes of input (the behaviour
+//! of the view lives in `tests/hale/str_byte_view_test.hl`).
 
 use std::process::Command;
 
@@ -90,5 +92,124 @@ fn std_str_parse_user_parse_error_collision_diagnoses_cleanly() {
             && msg.contains("std::str::ParseError"),
         "expected clean diag naming the qualified-path fix, got: {}",
         msg
+    );
+}
+
+/// GH #720 — a ByteView scan is LINEAR in the input, not quadratic.
+///
+/// What this replaces was quadratic for a structural reason: a
+/// checked one-byte slice `s[i..(i + 1)]` clamps its range with its
+/// own `strlen`, so a bounded loop over an n-byte String did O(n)
+/// work per byte. Measured on this machine at 1 MiB: 13.2 s for the
+/// naive loop, 7.7 s with the length hoisted into a local (the
+/// slice's own strlen is the dominant term, not `len`), against
+/// ~29 us for the view.
+///
+/// The bite is therefore the absolute bound as much as the ratio:
+/// the naive loop at 4 MiB would run for minutes, so a regression
+/// that reintroduced a per-access strlen could not hide under the
+/// 5-second cap. The ratio check is what catches a subtler one — a
+/// per-access cost that is sublinear but not constant.
+///
+/// The program times each size nine times and reports the fastest,
+/// so a scheduler hiccup inflates a measurement rather than the
+/// ratio — CI runs this binary alongside every other one. It
+/// deliberately does NOT run the quadratic loop at 4 MiB.
+#[test]
+fn byte_view_scan_scales_linearly() {
+    let src = r#"
+        fn scan(s: String) -> Int {
+            let v = std::str::bytes_view(s);
+            let mut count = 0;
+            let mut i = 0;
+            while i < v.n {
+                let c = std::str::byte_at(v, i);
+                if c == 101 { count = count + 1; }
+                i = i + 1;
+            }
+            return count;
+        }
+        fn best_of_nine(s: String, label: String) {
+            let mut best = -1;
+            let mut counted = 0;
+            let mut k = 0;
+            while k < 9 {
+                let t0 = std::time::monotonic_ns();
+                let c = scan(s);
+                let t1 = std::time::monotonic_ns();
+                let ns = t1 - t0;
+                counted = c;
+                if best < 0 || ns < best { best = ns; }
+                k = k + 1;
+            }
+            println(label, " count=", counted, " ns=", best);
+        }
+        fn main() {
+            let one = std::str::repeat("abcdefgh", 131072);
+            let two = std::str::repeat("abcdefgh", 262144);
+            let four = std::str::repeat("abcdefgh", 524288);
+            best_of_nine(one, "mib1");
+            best_of_nine(two, "mib2");
+            best_of_nine(four, "mib4");
+        }
+    "#;
+    let (stdout, status) = build_and_run("byte_view_scaling", src);
+    assert!(status.success(), "build/run failed: {:?}", stdout);
+
+    let read = |label: &str, key: &str| -> i64 {
+        let line = stdout
+            .lines()
+            .find(|l| l.starts_with(label))
+            .unwrap_or_else(|| panic!("no {} line in:\n{}", label, stdout));
+        let after = line
+            .split(key)
+            .nth(1)
+            .unwrap_or_else(|| panic!("no {} in {:?}", key, line));
+        after
+            .split_whitespace()
+            .next()
+            .unwrap_or_else(|| panic!("empty {} in {:?}", key, line))
+            .parse()
+            .unwrap_or_else(|e| panic!("bad {} in {:?}: {}", key, line, e))
+    };
+
+    // Every byte was actually visited — 'e' is one byte in eight.
+    assert_eq!(read("mib1", "count="), 131072, "1 MiB scan visited 1 MiB");
+    assert_eq!(read("mib2", "count="), 262144, "2 MiB scan visited 2 MiB");
+    assert_eq!(read("mib4", "count="), 524288, "4 MiB scan visited 4 MiB");
+
+    let ns1 = read("mib1", "ns=");
+    let ns2 = read("mib2", "ns=");
+    let ns4 = read("mib4", "ns=");
+    assert!(
+        ns1 > 0 && ns2 > 0 && ns4 > 0,
+        "monotonic clock gave a non-positive span: {} / {} / {}",
+        ns1,
+        ns2,
+        ns4
+    );
+
+    // Absolute cap: four megabytes of safe byte access is
+    // microseconds of work. Five seconds is ~40,000x the measured
+    // cost and still far below the minutes a quadratic scan needs.
+    assert!(
+        ns4 < 5_000_000_000,
+        "4 MiB scan took {} ns — a linear scan is microseconds, so this \
+         is the quadratic shape #720 reported",
+        ns4
+    );
+
+    // Shape: 4x the input for well under 6x the time. Measured 3.9x
+    // (29 / 57 / 114 us); the quadratic form is 16x or worse, so 6x
+    // sits between the two with room for a noisy box on both sides —
+    // the point of the bound is to separate O(n) from O(n^2), not to
+    // police a constant factor.
+    assert!(
+        ns4 < ns1 * 6,
+        "4 MiB ({} ns) should cost well under 6x 1 MiB ({} ns) — 2 MiB \
+         was {} ns; a per-access cost that grows with the input is back",
+        ns4,
+        ns1,
+        ns2
     );
 }

@@ -71,7 +71,9 @@ main locus App {
         let host = dna::trim_nl(in_dir(scratch, cache, "sh\n-c\nfind \"$1\" -path '*/dna/host/host' -type f | head -1\nsh\n" + cache).stdout);
         let membrane = dna::trim_nl(in_dir(scratch, cache, "sh\n-c\nfind \"$1\" -path '*/dna/membrane/membrane' -type f | head -1\nsh\n" + cache).stdout);
         std::test::assert(len(host) > 0 && len(membrane) > 0, "the host and the membrane client are built: " + built.stdout + built.stderr);
-        let version = dna::trim_nl(in_dir(scratch, cache, toolchain() + "\n--version").stdout);
+        // the first line alone is the version: `hale --version` has a
+        // second one since GH #726 (the embedded DNA digest)
+        let version = dna::trim_nl(in_dir(scratch, cache, "sh\n-c\n\"$1\" --version | head -1\nsh\n" + toolchain()).stdout);
 
         // a git that, while `block` exists, hangs a journal fetch, takes
         // seven seconds over a lease read, and hangs a lease write

@@ -7,6 +7,9 @@ hale dna init [app-dir]      generate the organization (dna/org) for an existing
 hale dna new <name> [--profile local|remote-body --remote <url> [--body <user@host>]]
                              a greenfield application with its organization; the profile sets pieces
 hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain (and write a catalog for an organization from before it)
+hale dna --embedded-digest [--from-tree <dir>]
+                             the digest of the DNA source this binary embeds, alone on stdout; with a
+                             checkout, what that tree would embed (unequal = the binary predates it)
 hale dna models [project]    the catalog (dna/org/models.hl): every backend, one small request to each
 hale dna knowledge [project] [--port N]
                              the knowledge service in the foreground (HALE_DNA_KNOWLEDGE_DSN: postgres://…, or memory)
@@ -176,7 +179,7 @@ sequence either way — see [The record](./record.md).
 | `receipt.held` / `receipt.hold_released` | ledger | a digest | a hold that refuses redaction, and its release: by, why |
 | `receipt.redacted` | ledger | a digest | the body removed, the digest kept: by, why, policy, class, store |
 | `grant.revoked` | record | a child | the parent revoked the grant, recorded before it takes effect and restored at birth: by, parent, epoch |
-| `concern.requested` / `concern.raised` | ledger | a source | a concern raised from a locus path about the part above it: what, severity, by |
+| `concern.requested` / `concern.raised` | ledger | a source | a concern raised from a locus path about the part above it: what, severity, by; several concerns share one source, so a request carries its own `request` id and its answer is one object (`what`, `severity`, `occurrence`, `request`) — a concern's words are never read as the metadata around them — and one request is one concern, however often it is delivered |
 | `concern.refused` | ledger | a source | one the organization would not admit, and why |
 | `concern.proposed` | record | a source | three raises became a proposal: the practice's digest, or `refused`, after `<n>` raise(s) |
 | `body.claimed` / `body.released` | ledger | the holder | who is running this record, by the lease's token: token, forced, from, by |
@@ -216,7 +219,7 @@ last_restart_request, last_observed }`, `intents`, `tasks[]`,
 | `refs/dna/revisions/<rev>` | revisions a deploy asked for |
 | `refs/dna/candidates/<mutation>` | a Mutation's candidate, kept whatever its Review decided |
 | `refs/dna/exchange/<identity>` | a connected record's mailbox for this one |
-| `.hale/dna/` | sockets, `status.json`, `worktrees/<id>/`, `scratch/`, the artifacts as attached / running / before the last restart |
+| `.hale/dna/` | sockets, `status.json`, `worktrees/<id>/`, `scratch/`, `embedded.digest` (which toolchain build materialized `vendor/dna`), the artifacts as attached / running / before the last restart |
 | `.hale/node/<name>/` | on a node: `<instance>.pid`, `<instance>.topology` |
 | `<plan>.plan.json` | the fleet plan (schema 1.2: `seed`, `node` on an instance) |
 

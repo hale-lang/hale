@@ -34,6 +34,83 @@ pub fn parse(tokens: Vec<Token>, _source: &str) -> Result<Program, Vec<Diag>> {
     }
 }
 
+/// GH #723: the fn-level contract decorators collected from one run.
+///
+/// `@unbounded` (the memory-bound advisory carve-out), `@hot` (hot-path
+/// certification), `@budget(...)` (quantitative ceilings) and the
+/// effect assertions (`@no_*` sugar and the general `@effects(...)`)
+/// state orthogonal things, so the parser accepts whatever is written
+/// in whatever order and merges it onto the fn. Whether the resulting
+/// STACK makes sense is a check-time question (see
+/// `FnDecl::decorators`), so nothing here rejects a combination.
+#[derive(Default)]
+struct FnDecorators {
+    unbounded: bool,
+    hot: bool,
+    budget: Option<u32>,
+    quantities: Vec<(QuantDim, u64)>,
+    effects: Vec<EffectAssert>,
+    /// Every decorator as written, in source order — the record the
+    /// coherence check points at.
+    written: Vec<FnDecorator>,
+    /// The decorators' merged span, folded into the fn's span so the
+    /// declaration still starts at its first `@`.
+    span: Option<Span>,
+}
+
+impl FnDecorators {
+    fn note(&mut self, name: &str, span: Span) {
+        self.written.push(FnDecorator {
+            name: name.to_string(),
+            span,
+        });
+        self.span = Some(match self.span {
+            Some(prev) => prev.merge(span),
+            None => span,
+        });
+    }
+
+    /// True when nothing that constrains a fn was written. An
+    /// `@effects(depends: {…})` is exactly this case: a locus-level
+    /// clause spelled with the fn decorators' syntax.
+    fn is_contract_free(&self) -> bool {
+        !self.unbounded
+            && !self.hot
+            && self.budget.is_none()
+            && self.quantities.is_empty()
+            && self.effects.is_empty()
+    }
+
+    /// The decorators as written, for a diagnostic: "`@unbounded`,
+    /// `@no_syscall`".
+    fn written_list(&self) -> String {
+        self.written
+            .iter()
+            .map(|d| format!("`@{}`", d.name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Stamp the run onto the fn it precedes.
+    fn apply_to_fn(self, fn_decl: &mut FnDecl) {
+        if self.unbounded {
+            fn_decl.unbounded = true;
+        }
+        if self.hot {
+            fn_decl.hot = true;
+        }
+        if self.budget.is_some() {
+            fn_decl.budget = self.budget;
+        }
+        fn_decl.quantities.extend(self.quantities);
+        fn_decl.effects.extend(self.effects);
+        fn_decl.decorators = self.written;
+        if let Some(s) = self.span {
+            fn_decl.span = s.merge(fn_decl.span);
+        }
+    }
+}
+
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
@@ -62,6 +139,15 @@ struct Parser {
     /// `fail` lexes and parses as an ordinary identifier (so
     /// `let fail = 0;` outside a fallible body stays admissible).
     in_fallible_body: bool,
+    /// GH #725: reserved words this parse has already reported as a
+    /// name. A word written where a name belongs is ONE authoring
+    /// mistake, but it is read back at every use site (`self.epoch`,
+    /// a call to the misnamed fn, the loop that reads the local), so
+    /// repeating the diagnostic per occurrence buries the one line
+    /// that says what to rename. The first occurrence — the
+    /// declaration, in ordinary source order — is reported; later
+    /// occurrences of the SAME word recover silently.
+    reserved_as_name: Vec<&'static str>,
 }
 
 impl Parser {
@@ -75,6 +161,7 @@ impl Parser {
             effect_defs: Vec::new(),
             domains: Vec::new(),
             in_fallible_body: false,
+            reserved_as_name: Vec::new(),
         }
     }
 
@@ -204,6 +291,48 @@ impl Parser {
         ))
     }
 
+    /// GH #725: the one diagnostic for a reserved word written where
+    /// a name belongs. It names the word, the declaration context it
+    /// was written in, and where it is — `spec/tokens.md` § Reserved
+    /// words is the canonical list, and Hale has no escaped-identifier
+    /// form, so renaming is the only fix.
+    ///
+    /// Returns `true` the first time a given word is reported and
+    /// `false` afterwards, so a caller can tell "reported here" from
+    /// "already said, recover quietly" (see `reserved_as_name`).
+    fn reserved_word_as_name(
+        &mut self,
+        kw: &'static str,
+        span: Span,
+        what: &str,
+    ) -> bool {
+        if self.reserved_as_name.contains(&kw) {
+            return false;
+        }
+        self.reserved_as_name.push(kw);
+        self.diags
+            .push(Diag::parse(span, reserved_name_message(kw, what)));
+        true
+    }
+
+    /// Reserved-word recovery for a DECLARATION name (GH #725):
+    /// record the one located diagnostic, then carry on with the
+    /// keyword's own spelling as the name so the rest of the
+    /// declaration — and the rest of the file — still parses. The
+    /// recovered tree is never handed back ([`parse`] fails whenever
+    /// `diags` is non-empty), so this buys diagnostic locality only:
+    /// the author sees the reserved word where they wrote it instead
+    /// of the wreckage the abandoned declaration causes downstream.
+    fn expect_decl_name(&mut self, what: &str) -> Result<Ident, Diag> {
+        if let Some(kw) = self.peek().keyword_lexeme() {
+            let span = self.peek_token().span;
+            self.reserved_word_as_name(kw, span, what);
+            self.bump();
+            return Ok(Ident { name: kw.to_string(), span });
+        }
+        self.expect_ident(what)
+    }
+
     fn expect_ident(&mut self, what: &str) -> Result<Ident, Diag> {
         match self.peek().clone() {
             TokenKind::Ident(name) => {
@@ -214,21 +343,13 @@ impl Parser {
             other => {
                 let span = self.peek_token().span;
                 if let Some(kw) = other.keyword_lexeme() {
-                    let category = match other {
-                        TokenKind::Birth
-                        | TokenKind::Accept
-                        | TokenKind::Run
-                        | TokenKind::Drain
-                        | TokenKind::Dissolve
-                        | TokenKind::OnFailure => "a reserved lifecycle keyword",
-                        _ => "a reserved keyword",
-                    };
+                    // GH #725: the same sentence the recovering path
+                    // (`expect_decl_name`) emits — a position that
+                    // cannot resynchronize still says what to rename.
+                    self.reserved_as_name.push(kw);
                     return Err(Diag::parse(
                         span,
-                        format!(
-                            "expected {}, but `{}` is {} in Hale — pick another name",
-                            what, kw, category
-                        ),
+                        reserved_name_message(kw, what),
                     ));
                 }
                 Err(Diag::parse(
@@ -245,7 +366,15 @@ impl Parser {
     /// (notably `closure` on a `ClosureViolation` value). The
     /// post-`.` position is unambiguous, so admitting reserved
     /// words here is always safe.
-    fn expect_member_name(&mut self) -> Result<Ident, Diag> {
+    ///
+    /// `what` names the position for the diagnostic — a struct-decl
+    /// body declares "a field", a post-`.` access reads "a field or
+    /// method". A reserved word that `try_member_keyword_as_name`
+    /// does NOT admit (e.g. `rich`, `restart`) gets the GH #725
+    /// reserved-word sentence and recovers with the keyword's own
+    /// spelling, so the surrounding `type` body or expression keeps
+    /// parsing and the author sees one error at the word they wrote.
+    fn expect_member_name(&mut self, what: &str) -> Result<Ident, Diag> {
         if let Some(name) = try_member_keyword_as_name(self.peek()) {
             let span = self.peek_token().span;
             self.bump();
@@ -259,9 +388,14 @@ impl Parser {
             }
             other => {
                 let span = self.peek_token().span;
+                if let Some(kw) = other.keyword_lexeme() {
+                    self.reserved_word_as_name(kw, span, what);
+                    self.bump();
+                    return Ok(Ident { name: kw.to_string(), span });
+                }
                 Err(Diag::parse(
                     span,
-                    format!("expected member name, got {:?}", other),
+                    format!("expected {}, got {:?}", what, other),
                 ))
             }
         }
@@ -278,6 +412,28 @@ impl Parser {
             return Ok(Ident { name: name.to_string(), span });
         }
         self.expect_ident(what)
+    }
+
+    /// GH #724: a perspective-contract reference that may be
+    /// QUALIFIED by an import alias — `serves lib::Routing`,
+    /// `perspective(lib::Routing)`, `reperspective self.f as
+    /// lib::Impl`. The three positions keep their `Ident` shape with
+    /// the path joined by `::`, exactly as a `bindings { }` entry's
+    /// imported topic does (GH #527 B6); the cross-seed rename pass
+    /// collapses the joined name to the mangled decl before
+    /// typecheck, so the checker and codegen both see the one name
+    /// the imported declaration ends up at.
+    fn expect_qualified_ident(&mut self, what: &str) -> Result<Ident, Diag> {
+        let mut name = self.expect_ident(what)?;
+        while matches!(self.peek(), TokenKind::ColonColon) {
+            self.bump();
+            let seg = self.expect_ident(what)?;
+            name = Ident {
+                name: format!("{}::{}", name.name, seg.name),
+                span: name.span.merge(seg.span),
+            };
+        }
+        Ok(name)
     }
 
     // === top level ========================================
@@ -451,18 +607,18 @@ impl Parser {
             // GH #436: `@sealed locus` — state confinement.
             let is_sealed = matches!(&kind_tok,
                 TokenKind::Ident(s) if s == "sealed");
-            let is_unbounded =
-                matches!(&kind_tok, TokenKind::Ident(s) if s == "unbounded");
-            let is_budget =
-                matches!(&kind_tok, TokenKind::Ident(s) if s == "budget");
-            let is_hot =
-                matches!(&kind_tok, TokenKind::Ident(s) if s == "hot");
-            // #265: `@no_recursion` / `@no_ffi` / `@no_block` — bare
-            // flags before a fn, stackable with each other and with
-            // `@hot` / `@budget(...)`.
-            let is_effect = matches!(&kind_tok,
-                TokenKind::Ident(s) if Self::effect_assert_for(s).is_some()
-                    || Self::is_effects_form(s));
+            // GH #723: the fn-level CONTRACT decorators — `@unbounded`,
+            // `@hot`, `@budget(...)`, and the effect assertions
+            // (`@no_syscall` … and the general `@effects(...)`). They
+            // state orthogonal things, so they stack in any order and
+            // are parsed as one run. The spelling is kept for the
+            // fn-only diagnostic, which names the one that was written.
+            let fn_deco_name: Option<String> = match &kind_tok {
+                TokenKind::Ident(s) if Self::is_fn_decorator(s) => {
+                    Some(s.clone())
+                }
+                _ => None,
+            };
             if is_export {
                 // WASM entry-inversion. `@export fn …` is a free-fn
                 // module export; `@export locus …` is the persistent
@@ -576,97 +732,40 @@ impl Parser {
                 });
                 continue;
             }
-            if is_unbounded {
-                // fn-only carve-out. Mirrors `@ffi` / `@export fn`: consume
-                // the marker, parse the fn, tag it. It can't sit on a locus
-                // (a locus opts *in* with `@bounded`; `@unbounded` opts a
-                // single fn *out*).
+            if let Some(deco_name) = &fn_deco_name {
+                // GH #723: one run, any order. Each of these used to
+                // parse the `fn` itself and return, so a second
+                // decorator met a parser already past the point where
+                // an `@` could appear — `@unbounded @no_syscall fn`
+                // failed with "expected `fn` after `@unbounded`", and
+                // the reverse order failed symmetrically. They are
+                // orthogonal contracts (`@unbounded` speaks to the
+                // memory-bound advisory, an effect assertion to the
+                // reachable effect set), so they compose.
+                //
+                // All of them are fn-only: a locus opts *in* with
+                // `@bounded`, and `@form(...)` / `@locality(...)` /
+                // `@export locus` precede a `locus`.
                 if form.is_some() || locality.is_some() || export_locus
                     || bounded_locus
                 {
                     return Err(Diag::parse(
                         self.peek_token().span,
-                        "`@unbounded` is fn-only; it can't stack with \
-                         `@form(...)` / `@locality(...)` / `@bounded` / \
-                         `@export locus` (those precede `locus`)",
+                        format!(
+                            "`@{}` is fn-only; it can't stack with \
+                             `@form(...)` / `@locality(...)` / `@bounded` / \
+                             `@export locus` (those precede `locus`)",
+                            deco_name
+                        ),
                     ));
                 }
-                let at = self.expect(TokenKind::At, "@")?;
-                self.bump(); // consume `unbounded`
-                if !matches!(self.peek(), TokenKind::Fn) {
-                    return Err(Diag::parse(
-                        self.peek_token().span,
-                        "expected `fn` after `@unbounded` — it acknowledges an \
-                         intentionally-unbounded fn, so a `locus` opts in with \
-                         `@bounded` instead",
-                    ));
-                }
-                let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
-                fn_decl.unbounded = true;
-                fn_decl.span = at.span.merge(fn_decl.span);
-                return Ok(TopDecl::Fn(fn_decl));
-            }
-            if is_budget {
-                // fn-only, like `@unbounded` / `@ffi` / `@export fn`.
-                if form.is_some() || locality.is_some() || export_locus
-                    || bounded_locus
-                {
-                    return Err(Diag::parse(
-                        self.peek_token().span,
-                        "`@budget(...)` is fn-only; it can't stack with \
-                         `@form(...)` / `@locality(...)` / `@bounded` / \
-                         `@export locus` (those precede `locus`)",
-                    ));
-                }
-                let (budget, qdims, bspan) = self.parse_budget_full()?;
-                if !matches!(self.peek(), TokenKind::Fn) {
-                    return Err(Diag::parse(
-                        self.peek_token().span,
-                        "expected `fn` after `@budget(alloc_per_call = N)` — \
-                         it is a per-call allocation contract on a fn",
-                    ));
-                }
-                let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
-                fn_decl.budget = budget;
-                fn_decl.quantities = qdims;
-                fn_decl.span = bspan.merge(fn_decl.span);
-                return Ok(TopDecl::Fn(fn_decl));
-            }
-            if is_effect {
-                let (effects, espan, dep) =
-                    self.parse_effect_asserts_inner()?;
-                let espan = espan.expect("at least one assertion parsed");
-                if let Some(d) = dep {
-                    if depends.is_some() {
-                        return Err(Diag::parse(
-                            d.span,
-                            "duplicate `depends:` clause",
-                        ));
-                    }
-                    depends = Some(d);
-                }
-                // Optional `@hot` and/or `@budget(...)` may follow.
-                let mut hot = false;
-                if matches!(self.peek(), TokenKind::At)
-                    && matches!(self.peek_at(1), TokenKind::Ident(s) if s == "hot")
-                {
-                    self.bump();
-                    self.bump();
-                    hot = true;
-                }
-                let budget = if matches!(self.peek(), TokenKind::At)
-                    && matches!(self.peek_at(1), TokenKind::Ident(s) if s == "budget")
-                {
-                    Some(self.parse_budget_full()?)
-                } else {
-                    None
-                };
+                let decos = self.parse_fn_decorators(&mut depends)?;
                 // RFC #330: a `depends:`-only `@effects(...)` precedes
                 // a LOCUS, not a fn — dependence enters through
                 // subscriptions. Fall through to the locus path,
                 // carrying the clause.
                 if depends.is_some()
-                    && effects.is_empty()
+                    && decos.is_contract_free()
                     && !matches!(self.peek(), TokenKind::Fn)
                 {
                     continue;
@@ -691,59 +790,17 @@ impl Parser {
                 if !matches!(self.peek(), TokenKind::Fn) {
                     return Err(Diag::parse(
                         self.peek_token().span,
-                        "expected `fn` after an effect assertion \
-                         (`@no_recursion` / `@no_ffi` / `@no_block`) — they \
-                         are contracts over what a fn can reach",
+                        format!(
+                            "expected `fn` after {} — `@unbounded`, `@hot`, \
+                             `@budget(...)` and the effect assertions are \
+                             contracts on a fn; a `locus` opts in with \
+                             `@bounded` instead",
+                            decos.written_list()
+                        ),
                     ));
                 }
                 let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
-                fn_decl.effects = effects;
-                fn_decl.hot = hot;
-                if let Some((b, q, _)) = budget {
-                    fn_decl.budget = b;
-                    fn_decl.quantities = q;
-                }
-                fn_decl.span = espan.merge(fn_decl.span);
-                return Ok(TopDecl::Fn(fn_decl));
-            }
-            if is_hot {
-                // Gap D (2026-07-17): `@hot fn` — hot-path
-                // certification; promotes the hot-path allocation
-                // lint to errors inside this fn and enables the
-                // stricter perf hints. fn-only. Stacks with a
-                // FOLLOWING `@budget(...)`:
-                //   `@hot @budget(alloc_per_call = 0) fn send(...)`.
-                if form.is_some() || locality.is_some() || export_locus
-                    || bounded_locus
-                {
-                    return Err(Diag::parse(
-                        self.peek_token().span,
-                        "`@hot` is fn-only; it can't stack with \
-                         `@form(...)` / `@locality(...)` / `@bounded` / \
-                         `@export locus` (those precede `locus`)",
-                    ));
-                }
-                let at = self.expect(TokenKind::At, "@")?;
-                self.bump(); // consume `hot`
-                let budget = if matches!(self.peek(), TokenKind::At) {
-                    Some(self.parse_budget_full()?)
-                } else {
-                    None
-                };
-                if !matches!(self.peek(), TokenKind::Fn) {
-                    return Err(Diag::parse(
-                        self.peek_token().span,
-                        "expected `fn` (or `@budget(...) fn`) after `@hot` \
-                         — it certifies a fn as a hot path",
-                    ));
-                }
-                let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
-                fn_decl.hot = true;
-                if let Some((b, q, _)) = budget {
-                    fn_decl.budget = b;
-                    fn_decl.quantities = q;
-                }
-                fn_decl.span = at.span.merge(fn_decl.span);
+                decos.apply_to_fn(&mut fn_decl);
                 return Ok(TopDecl::Fn(fn_decl));
             }
             if is_form {
@@ -2608,29 +2665,41 @@ impl Parser {
         (self.effect_names.len() - 1) as u16
     }
 
-    fn parse_effect_asserts(&mut self) -> Result<(Vec<EffectAssert>, Option<Span>), Diag> {
-        let (a, s, dep) = self.parse_effect_asserts_inner()?;
-        if let Some(d) = dep {
-            // RFC #330: dependence enters through subscriptions, which
-            // are a locus-level declaration, so there is nothing for a
-            // fn-level `depends:` to mean. Rejected explicitly rather
-            // than silently ignored — a contract that parses and does
-            // nothing is the failure mode this whole surface exists to
-            // avoid.
-            return Err(Diag::parse(
-                d.span,
-                "`depends:` is a locus-level contract — put                  `@effects(depends: {…})` on the `locus`, not on a fn.                  Dependence enters through the subscriptions declared                  in the locus's `bus {}` block.",
-            ));
-        }
-        Ok((a, s))
+    /// GH #723: is `name` (the ident right after `@`) one of the
+    /// fn-level CONTRACT decorators? They stack in any order, so they
+    /// are parsed as one run by [`Parser::parse_fn_decorators`].
+    ///
+    /// `@ffi(...)` and `@export` are deliberately NOT here: they say
+    /// what a declaration IS (an external binding, a wasm export), not
+    /// what it promises, and each is exclusive with the other.
+    fn is_fn_decorator(name: &str) -> bool {
+        name == "unbounded"
+            || name == "hot"
+            || name == "budget"
+            || Self::effect_assert_for(name).is_some()
+            || Self::is_effects_form(name)
     }
 
-    fn parse_effect_asserts_inner(
+    /// GH #723: parse a run of fn-level contract decorators in ANY
+    /// order — `@unbounded`, `@hot`, `@budget(...)`, the `@no_*`
+    /// assertions and the general `@effects(...)`.
+    ///
+    /// Each one used to parse the `fn` itself and return, which is why
+    /// they could not stack: the second decorator arrived at a parser
+    /// already past the point where an `@` was admissible. Collecting
+    /// them first and stamping the fn once makes order irrelevant, and
+    /// leaves the *coherence* of a stack (a decorator twice, a
+    /// contradictory pair) to check time, where the diagnostic can
+    /// point at a decorator and name the other one.
+    ///
+    /// `depends` carries an RFC #330 `@effects(depends: {…})` clause
+    /// back out: that clause is LOCUS-level, so only the caller knows
+    /// whether what follows is a `locus` (legal) or a `fn` (rejected).
+    fn parse_fn_decorators(
         &mut self,
-    ) -> Result<(Vec<EffectAssert>, Option<Span>, Option<DependsSet>), Diag> {
-        let mut out = Vec::new();
-        let mut span: Option<Span> = None;
-        let mut depends: Option<DependsSet> = None;
+        depends: &mut Option<DependsSet>,
+    ) -> Result<FnDecorators, Diag> {
+        let mut out = FnDecorators::default();
         loop {
             if !matches!(self.peek(), TokenKind::At) {
                 break;
@@ -2639,37 +2708,47 @@ impl Parser {
                 TokenKind::Ident(s) => s.clone(),
                 _ => break,
             };
+            if !Self::is_fn_decorator(&name) {
+                break;
+            }
+            if name == "budget" {
+                let (alloc, dims, bspan) = self.parse_budget_full()?;
+                if alloc.is_some() {
+                    out.budget = alloc;
+                }
+                out.quantities.extend(dims);
+                out.note("budget", bspan);
+                continue;
+            }
             if Self::is_effects_form(&name) {
                 let (mut asserts, aspan, dep) =
                     self.parse_effects_annotation_inner()?;
-                if dep.is_some() {
-                    depends = dep;
+                if let Some(d) = dep {
+                    if depends.is_some() {
+                        return Err(Diag::parse(
+                            d.span,
+                            "duplicate `depends:` clause",
+                        ));
+                    }
+                    *depends = Some(d);
                 }
-                out.append(&mut asserts);
-                span = Some(match span {
-                    Some(prev) => prev.merge(aspan),
-                    None => aspan,
-                });
+                out.effects.append(&mut asserts);
+                out.note("effects", aspan);
                 continue;
             }
-            let Some(eff) = Self::effect_assert_for(&name) else {
-                break;
-            };
             let at = self.expect(TokenKind::At, "@")?;
-            self.bump(); // the assertion ident
-            if out.contains(&eff) {
-                return Err(Diag::parse(
-                    at.span,
-                    format!("duplicate `@{}` assertion", name),
-                ));
+            self.bump(); // the decorator ident
+            match name.as_str() {
+                "unbounded" => out.unbounded = true,
+                "hot" => out.hot = true,
+                _ => out.effects.push(
+                    Self::effect_assert_for(&name)
+                        .expect("is_fn_decorator admitted this name"),
+                ),
             }
-            out.push(eff);
-            span = Some(match span {
-                Some(prev) => prev.merge(at.span),
-                None => at.span,
-            });
+            out.note(&name, at.span);
         }
-        Ok((out, span, depends))
+        Ok(out)
     }
 
     /// Lever 2 (2026-07-16): `@budget(alloc_per_call = N)` — an opt-in
@@ -2923,14 +3002,14 @@ impl Parser {
 
     fn parse_interface_decl(&mut self) -> Result<InterfaceDecl, Diag> {
         let kw = self.expect(TokenKind::Interface, "interface")?;
-        let name = self.expect_ident("interface name")?;
+        let name = self.expect_decl_name("interface name")?;
         self.expect(TokenKind::LBrace, "{")?;
         let mut methods = Vec::new();
         while !matches!(self.peek(), TokenKind::RBrace) {
             // Each method: `fn name(params...) -> ret;` — bodyless.
             // Default methods (with bodies) are deferred.
             let kw_fn = self.expect(TokenKind::Fn, "fn")?;
-            let mname = self.expect_ident("method name")?;
+            let mname = self.expect_decl_name("method name")?;
             self.expect(TokenKind::LParen, "(")?;
             let mut params = Vec::new();
             if !matches!(self.peek(), TokenKind::RParen) {
@@ -2976,7 +3055,7 @@ impl Parser {
             self.bump();
         }
         let kw = self.expect(TokenKind::Locus, "locus")?;
-        let name = self.expect_ident("locus name")?;
+        let name = self.expect_decl_name("locus name")?;
         // m63: optional `<K, V, ...>` generic param list right
         // after the locus name. Same shape as fn / type generic
         // params — codegen monomorphizes on use sites.
@@ -3084,7 +3163,11 @@ impl Parser {
     ) -> Result<(), Diag> {
         if matches!(self.peek(), TokenKind::Ident(s) if s == "serves") {
             self.bump(); // `serves`
-            serves.push(self.expect_ident("perspective contract name")?);
+            // GH #724: the contract may be an IMPORTED perspective,
+            // named through its alias — `serves lib::Routing`.
+            serves.push(
+                self.expect_qualified_ident("perspective contract name")?,
+            );
             Ok(())
         } else {
             annotations.push(self.parse_locus_annotation()?);
@@ -3307,120 +3390,47 @@ impl Parser {
             TokenKind::OnFailure => self.parse_failure_decl().map(LocusMember::Failure),
             TokenKind::Closure => self.parse_closure_decl().map(LocusMember::Closure),
             TokenKind::Fn => self.parse_fn_decl().map(LocusMember::Fn),
-            // GH #18 item 1: `@unbounded` carve-out on a locus member —
-            // either a method (`@unbounded fn`, the common case: silence
-            // one handler) or a lifecycle hook (`@unbounded run { … }`, a
-            // `run`-loop accumulation). The only `@`-annotation valid on a
-            // member.
+            // The fn-level contract decorators on a locus member:
+            // `@unbounded` (GH #18 item 1 — on a method or on a
+            // lifecycle hook, `@unbounded run { … }`), `@budget(...)`,
+            // `@hot`, and the #265 effect assertions. GH #723: they
+            // stack in any order, so the run is collected first and
+            // stamped on the member once.
             TokenKind::At => {
-                let kind_tok = self.peek_at(1);
-                // `@budget(alloc_per_call = N)` on a method — the hot-path
-                // allocation contract. fn-only (a lifecycle `run()` is
-                // one-shot; the contract is about per-call cost).
-                if matches!(&kind_tok, TokenKind::Ident(s) if s == "budget") {
-                    let (budget, qdims, bspan) = self.parse_budget_full()?;
-                    if !matches!(self.peek(), TokenKind::Fn) {
-                        return Err(Diag::parse(
-                            self.peek_token().span,
-                            "expected `fn` after `@budget(alloc_per_call = N)` \
-                             — it is a per-call allocation contract on a \
-                             method",
-                        ));
-                    }
-                    let mut fn_decl = self.parse_fn_decl()?;
-                    fn_decl.budget = budget;
-                    fn_decl.quantities = qdims;
-                    fn_decl.span = bspan.merge(fn_decl.span);
-                    return Ok(LocusMember::Fn(fn_decl));
-                }
-                // #265: effect assertions on a method/handler (the
-                // common placement — a bus handler is a member fn).
-                if matches!(&kind_tok,
-                    TokenKind::Ident(s) if Self::effect_assert_for(s).is_some()
-                        || Self::is_effects_form(s))
-                {
-                    let (effects, espan) = self.parse_effect_asserts()?;
-                    let espan = espan.expect("at least one assertion parsed");
-                    let mut hot = false;
-                    if matches!(self.peek(), TokenKind::At)
-                        && matches!(self.peek_at(1), TokenKind::Ident(s) if s == "hot")
-                    {
-                        self.bump();
-                        self.bump();
-                        hot = true;
-                    }
-                    let budget = if matches!(self.peek(), TokenKind::At)
-                        && matches!(self.peek_at(1), TokenKind::Ident(s) if s == "budget")
-                    {
-                        Some(self.parse_budget_full()?)
-                    } else {
-                        None
-                    };
-                    if !matches!(self.peek(), TokenKind::Fn) {
-                        return Err(Diag::parse(
-                            self.peek_token().span,
-                            "expected `fn` after an effect assertion on a \
-                             method (`@no_recursion` / `@no_ffi` / \
-                             `@no_block`)",
-                        ));
-                    }
-                    let mut fn_decl = self.parse_fn_decl()?;
-                    fn_decl.effects = effects;
-                    fn_decl.hot = hot;
-                    if let Some((b, q, _)) = budget {
-                        fn_decl.budget = b;
-                        fn_decl.quantities = q;
-                    }
-                    fn_decl.span = espan.merge(fn_decl.span);
-                    return Ok(LocusMember::Fn(fn_decl));
-                }
-                // Gap D (2026-07-17): `@hot fn` on a method/handler —
-                // the common placement (a bus handler is a member fn).
-                // Optionally followed by `@budget(...)`.
-                if matches!(&kind_tok, TokenKind::Ident(s) if s == "hot") {
-                    let at = self.expect(TokenKind::At, "@")?;
-                    self.bump(); // consume `hot`
-                    let budget = if matches!(self.peek(), TokenKind::At) {
-                        Some(self.parse_budget_full()?)
-                    } else {
-                        None
-                    };
-                    if !matches!(self.peek(), TokenKind::Fn) {
-                        return Err(Diag::parse(
-                            self.peek_token().span,
-                            "expected `fn` (or `@budget(...) fn`) after \
-                             `@hot` — it certifies a method/handler as a \
-                             hot path",
-                        ));
-                    }
-                    let mut fn_decl = self.parse_fn_decl()?;
-                    fn_decl.hot = true;
-                    if let Some((b, q, _)) = budget {
-                        fn_decl.budget = b;
-                        fn_decl.quantities = q;
-                    }
-                    fn_decl.span = at.span.merge(fn_decl.span);
-                    return Ok(LocusMember::Fn(fn_decl));
-                }
-                if !matches!(&kind_tok, TokenKind::Ident(s) if s == "unbounded") {
+                let is_fn_deco = matches!(self.peek_at(1),
+                    TokenKind::Ident(s) if Self::is_fn_decorator(s));
+                if !is_fn_deco {
                     return Err(Diag::parse(
                         self.peek_token().span,
                         "the only `@` annotations valid on a locus member are \
                          `@unbounded` (on a `fn` or a lifecycle hook — \
                          acknowledge an intentionally-unbounded body), \
                          `@budget(alloc_per_call = N)` (on a `fn` — a per-call \
-                         allocation contract), and `@hot` (on a `fn` — \
+                         allocation contract), `@hot` (on a `fn` — \
                          hot-path certification, promotes the hot-path lint \
-                         to errors)",
+                         to errors), and the effect assertions (`@no_syscall` \
+                         … / `@effects(...)`, on a `fn`)",
                     ));
                 }
-                let at = self.expect(TokenKind::At, "@")?;
-                self.bump(); // consume `unbounded`
+                // A member-level `depends:` has no locus to belong to
+                // here (it precedes the `locus` itself), so the clause
+                // is rejected rather than parsed into silence.
+                let mut depends: Option<DependsSet> = None;
+                let decos = self.parse_fn_decorators(&mut depends)?;
+                if let Some(d) = depends {
+                    return Err(Diag::parse(
+                        d.span,
+                        "`depends:` is a locus-level contract — put \
+                         `@effects(depends: {…})` on the `locus`, not on \
+                         one of its members. Dependence enters through \
+                         the subscriptions declared in the locus's \
+                         `bus {}` block.",
+                    ));
+                }
                 match self.peek() {
                     TokenKind::Fn => {
                         let mut fn_decl = self.parse_fn_decl()?;
-                        fn_decl.unbounded = true;
-                        fn_decl.span = at.span.merge(fn_decl.span);
+                        decos.apply_to_fn(&mut fn_decl);
                         Ok(LocusMember::Fn(fn_decl))
                     }
                     TokenKind::Birth
@@ -3429,15 +3439,51 @@ impl Parser {
                     | TokenKind::Run
                     | TokenKind::Drain
                     | TokenKind::Dissolve => {
+                        // A lifecycle hook takes `@unbounded` and
+                        // nothing else: a hook is one-shot (so a
+                        // per-call ceiling has no calls to divide by)
+                        // and it is not a fn a caller can assert over.
+                        // `LifecycleDecl` therefore carries the one
+                        // flag rather than a decorator list, which is
+                        // also why a repeat is caught here instead of
+                        // at check time.
+                        if let Some((i, d)) = decos
+                            .written
+                            .iter()
+                            .enumerate()
+                            .find(|(i, d)| *i > 0 || d.name != "unbounded")
+                        {
+                            return Err(Diag::parse(
+                                d.span,
+                                if i > 0 && d.name == "unbounded" {
+                                    "duplicate `@unbounded` on a lifecycle \
+                                     hook — state it once"
+                                        .to_string()
+                                } else {
+                                    format!(
+                                        "`@{}` can't precede a lifecycle hook \
+                                         — a hook takes `@unbounded` and \
+                                         nothing else. Put the other \
+                                         contracts on a `fn` the hook calls.",
+                                        d.name
+                                    )
+                                },
+                            ));
+                        }
                         let mut lc = self.parse_lifecycle_decl()?;
                         lc.unbounded = true;
-                        lc.span = at.span.merge(lc.span);
+                        if let Some(s) = decos.span {
+                            lc.span = s.merge(lc.span);
+                        }
                         Ok(LocusMember::Lifecycle(lc))
                     }
                     _ => Err(Diag::parse(
                         self.peek_token().span,
-                        "expected `fn` or a lifecycle hook (`run`, `birth`, \
-                         …) after `@unbounded`",
+                        format!(
+                            "expected `fn` after {} (or a lifecycle hook \
+                             — `run`, `birth`, … — after `@unbounded`)",
+                            decos.written_list()
+                        ),
                     )),
                 }
             }
@@ -4595,7 +4641,7 @@ impl Parser {
     }
 
     fn parse_param_decl(&mut self) -> Result<ParamDecl, Diag> {
-        let name = self.expect_ident("param name")?;
+        let name = self.expect_decl_name("params field name")?;
         let ty = if self.eat(&TokenKind::Colon) {
             // Could be inferred or a type expression. Check next.
             if self.at(&TokenKind::Inferred) {
@@ -4995,7 +5041,7 @@ impl Parser {
             self.bump();
             secret = true;
         }
-        let name = self.expect_ident("parameter name")?;
+        let name = self.expect_decl_name("parameter name")?;
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
         let default = if self.eat(&TokenKind::Eq) {
@@ -5283,7 +5329,7 @@ impl Parser {
 
     fn parse_perspective_decl(&mut self) -> Result<PerspectiveDecl, Diag> {
         let kw = self.expect(TokenKind::Perspective, "perspective")?;
-        let name = self.expect_ident("perspective name")?;
+        let name = self.expect_decl_name("perspective name")?;
         let generics = self.parse_generic_params_opt()?;
         self.expect(TokenKind::LBrace, "{")?;
         let mut members = Vec::new();
@@ -5325,7 +5371,7 @@ impl Parser {
 
     fn parse_type_decl(&mut self) -> Result<TypeDecl, Diag> {
         let kw = self.expect(TokenKind::Type, "type")?;
-        let name = self.expect_ident("type name")?;
+        let name = self.expect_decl_name("type name")?;
         let generics = self.parse_generic_params_opt()?;
 
         // Three forms:
@@ -5388,7 +5434,7 @@ impl Parser {
         // inside a struct-decl body the parsing position is
         // unambiguous, so reserving these words at field-name
         // position would just block useful patterns.
-        let name = self.expect_member_name()?;
+        let name = self.expect_member_name("field name")?;
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
         let default = if self.eat(&TokenKind::Eq) {
@@ -5449,7 +5495,7 @@ impl Parser {
     }
 
     fn parse_generic_param(&mut self) -> Result<GenericParam, Diag> {
-        let name = self.expect_ident("generic param name")?;
+        let name = self.expect_decl_name("generic param name")?;
         let bound = if self.eat(&TokenKind::Colon) {
             Some(self.parse_type_expr()?)
         } else {
@@ -5461,7 +5507,7 @@ impl Parser {
 
     fn parse_const_decl(&mut self) -> Result<ConstDecl, Diag> {
         let kw = self.expect(TokenKind::Const, "const")?;
-        let name = self.expect_ident("const name")?;
+        let name = self.expect_decl_name("const name")?;
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
         self.expect(TokenKind::Eq, "=")?;
@@ -5502,7 +5548,7 @@ impl Parser {
         allow_bodyless: bool,
     ) -> Result<FnDecl, Diag> {
         let kw = self.expect(TokenKind::Fn, "fn")?;
-        let name = self.expect_ident("function name")?;
+        let name = self.expect_decl_name("function name")?;
         let generics = self.parse_generic_params_opt()?;
         self.expect(TokenKind::LParen, "(")?;
         let mut params = Vec::new();
@@ -5565,6 +5611,7 @@ impl Parser {
                 hot: false,
                 effects: Vec::new(),
                 quantities: Vec::new(),
+                decorators: Vec::new(),
                 span: kw.span.merge(semi.span),
                 body,
             });
@@ -5593,6 +5640,7 @@ impl Parser {
                 hot: false,
                 effects: Vec::new(),
                 quantities: Vec::new(),
+                decorators: Vec::new(),
                 span: kw.span.merge(semi.span),
                 body,
             });
@@ -5614,9 +5662,10 @@ impl Parser {
             export: false,
             unbounded: false,
             budget: None,
-                hot: false,
-                effects: Vec::new(),
-                quantities: Vec::new(),
+            hot: false,
+            effects: Vec::new(),
+            quantities: Vec::new(),
+            decorators: Vec::new(),
             span: kw.span.merge(body.span),
             body,
         })
@@ -5678,7 +5727,10 @@ impl Parser {
             TokenKind::Perspective => {
                 let kw = self.bump();
                 self.expect(TokenKind::LParen, "expected `(` after `perspective`")?;
-                let name = self.expect_ident("perspective contract name")?;
+                // GH #724: `perspective(lib::Routing)` — the slot's
+                // contract may live in an imported seed.
+                let name =
+                    self.expect_qualified_ident("perspective contract name")?;
                 let close = self.expect(
                     TokenKind::RParen,
                     "expected `)` after `perspective(P)`",
@@ -5831,7 +5883,7 @@ impl Parser {
         let mut span = first.span;
         let mut segments = vec![first];
         while self.eat(&TokenKind::ColonColon) {
-            let next = self.expect_member_name()?;
+            let next = self.expect_member_name("name after `::`")?;
             span = span.merge(next.span);
             segments.push(next);
         }
@@ -6042,7 +6094,10 @@ impl Parser {
                 ));
             }
         }
-        let impl_name = self.expect_ident("implementation locus name")?;
+        // GH #724: the new impl may be an IMPORTED locus,
+        // `reperspective self.f as lib::Impl;`.
+        let impl_name =
+            self.expect_qualified_ident("implementation locus name")?;
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(Stmt::Reperspective {
             field,
@@ -6127,12 +6182,12 @@ impl Parser {
         // Tuple destructure form: `let (a, b) = expr;`.
         if self.at(&TokenKind::LParen) {
             self.bump();
-            let mut names = vec![self.expect_ident("variable name")?];
+            let mut names = vec![self.expect_decl_name("variable name")?];
             while self.eat(&TokenKind::Comma) {
                 if self.at(&TokenKind::RParen) {
                     break;
                 }
-                names.push(self.expect_ident("variable name")?);
+                names.push(self.expect_decl_name("variable name")?);
             }
             self.expect(TokenKind::RParen, ")")?;
             let ty = if self.eat(&TokenKind::Colon) {
@@ -6151,7 +6206,7 @@ impl Parser {
                 span: kw.span.merge(semi.span),
             });
         }
-        let name = self.expect_ident("variable name")?;
+        let name = self.expect_decl_name("variable name")?;
         let ty = if self.eat(&TokenKind::Colon) {
             Some(self.parse_type_expr()?)
         } else {
@@ -6407,7 +6462,7 @@ impl Parser {
 
     fn parse_for_stmt(&mut self) -> Result<Stmt, Diag> {
         let kw = self.expect(TokenKind::For, "for")?;
-        let name = self.expect_ident("loop variable")?;
+        let name = self.expect_decl_name("loop variable")?;
         self.expect(TokenKind::In, "in")?;
         let iter = self.parse_expr()?;
         let body = self.parse_block()?;
@@ -6779,7 +6834,7 @@ impl Parser {
                         self.bump();
                         Ident { name: n.to_string(), span }
                     } else {
-                        self.expect_member_name()?
+                        self.expect_member_name("field or method name")?
                     };
                     let span = expr.span().merge(name.span);
                     // Chain terminal `each { ... }` (2026-08-04):
@@ -6816,7 +6871,7 @@ impl Parser {
                 }
                 TokenKind::ColonColon => {
                     self.bump();
-                    let name = self.expect_member_name()?;
+                    let name = self.expect_member_name("name after `::`")?;
                     let span = expr.span().merge(name.span);
                     expr = Expr::Path2 {
                         receiver: Box::new(expr),
@@ -7026,10 +7081,32 @@ impl Parser {
                     Ok(Expr::Path(qn))
                 }
             }
-            other => Err(Diag::parse(
-                span,
-                format!("expected expression, got {:?}", other),
-            )),
+            other => {
+                // GH #725: a reserved word this parse ALREADY
+                // reported as a name is read back here — the body of
+                // the declaration that named it (`return tier + 1;`,
+                // `println("{}", where)`). The mistake has been
+                // stated once, at the declaration; re-stating it at
+                // every use is the cascade the author had to dig
+                // through. Take it as the identifier it was meant to
+                // be and keep parsing. Never for a word that has not
+                // been reported: a keyword in expression position
+                // with no misnamed declaration behind it is a
+                // different mistake and keeps its own message.
+                if let Some(kw) = other.keyword_lexeme() {
+                    if self.reserved_as_name.contains(&kw) {
+                        self.bump();
+                        return Ok(Expr::Ident(Ident {
+                            name: kw.to_string(),
+                            span,
+                        }));
+                    }
+                }
+                Err(Diag::parse(
+                    span,
+                    format!("expected expression, got {:?}", other),
+                ))
+            }
         }
     }
 
@@ -7054,7 +7131,17 @@ impl Parser {
             TokenKind::RBrace => true,
             TokenKind::Ident(_) => matches!(self.peek_at(2), TokenKind::Colon),
             other => {
-                try_member_keyword_as_name(other).is_some()
+                // GH #725: and a reserved word this parse already
+                // reported as a name — the type it belongs to was
+                // declared with that field, so the literal that
+                // fills it must still read as a literal. Otherwise
+                // one bad field declaration resurrects exactly the
+                // `expected ;, got LBrace` misdirection above at
+                // every construction site.
+                let recovered = other
+                    .keyword_lexeme()
+                    .is_some_and(|kw| self.reserved_as_name.contains(&kw));
+                (try_member_keyword_as_name(other).is_some() || recovered)
                     && matches!(self.peek_at(2), TokenKind::Colon)
             }
         }
@@ -7085,7 +7172,7 @@ impl Parser {
         // v1.x-8: parity with parse_struct_field — admit
         // framework keywords as field names in struct literals
         // so `Cmd { run: my_fn }` parses.
-        let name = self.expect_member_name()?;
+        let name = self.expect_member_name("field name")?;
         self.expect(TokenKind::Colon, ":")?;
         let value = self.parse_expr()?;
         let span = name.span.merge(value.span());
@@ -7192,7 +7279,21 @@ impl Parser {
                         t.span = shift_span(t.span, start, end);
                     }
                     let mut sub = Parser::new(tokens);
-                    let expr = sub.parse_expr().map_err(|d| {
+                    // GH #725: the sub-parser recovers from a
+                    // reserved word used as a name by RECORDING a
+                    // diagnostic and returning a placeholder, so its
+                    // `diags` are load-bearing — dropping them would
+                    // let `f"{x.restart}"` parse silently. Carry the
+                    // already-reported set in (so a word named once
+                    // in the enclosing file isn't re-reported inside
+                    // an interpolation) and carry both back out.
+                    sub.reserved_as_name =
+                        std::mem::take(&mut self.reserved_as_name);
+                    let parsed = sub.parse_expr();
+                    self.reserved_as_name =
+                        std::mem::take(&mut sub.reserved_as_name);
+                    self.diags.append(&mut sub.diags);
+                    let expr = parsed.map_err(|d| {
                         Diag::parse(
                             // The inner diag's span is already
                             // shifted; keep it, so the caret lands on
@@ -7389,6 +7490,47 @@ fn bin_op_bp(op: BinOp) -> (u8, u8) {
     }
 }
 
+/// GH #725: the sentence for a reserved word written where a name
+/// belongs. `what` is the declaration context the parser was in
+/// ("params field name", "variable name", ...), so the message says
+/// both which word is reserved and what the author was declaring.
+/// The lifecycle words get a parenthetical because a `let run = ...`
+/// is usually a collision with the lifecycle vocabulary rather than
+/// with syntax. `spec/tokens.md` § Reserved words is the canonical
+/// list; Hale has no escaped-identifier form, so renaming is the
+/// only fix and the message says so instead of leaving the author
+/// hunting for an escape.
+fn reserved_name_message(kw: &str, what: &str) -> String {
+    // The call sites spell the context as "<thing> name" so the
+    // non-keyword fallback can read "expected param name, got ...".
+    // Here the sentence already says "name", so drop the suffix.
+    let thing = what.strip_suffix(" name").unwrap_or(what);
+    let article = match thing.as_bytes().first() {
+        Some(b'a') | Some(b'e') | Some(b'i') | Some(b'o') | Some(b'u') => "an",
+        _ => "a",
+    };
+    let kind = if matches!(
+        kw,
+        "birth"
+            | "accept"
+            | "release"
+            | "run"
+            | "drain"
+            | "dissolve"
+            | "on_failure"
+    ) {
+        "a reserved word (a lifecycle keyword)"
+    } else {
+        "a reserved word"
+    };
+    format!(
+        "`{}` is {} and cannot name {} {}; rename it (Hale has no \
+         escaped-identifier form — spec/tokens.md lists every \
+         reserved word)",
+        kw, kind, article, thing
+    )
+}
+
 /// If the given keyword token is one we permit as an identifier
 /// in expression / path / member position, return its textual
 /// name. Otherwise None.
@@ -7543,17 +7685,20 @@ fn main() {
     #[test]
     fn let_with_lifecycle_keyword_names_the_keyword() {
         let errs = parse_str("fn main() { let accept = 1; }").unwrap_err();
+        assert_eq!(errs.len(), 1, "one diagnostic; got: {errs:?}");
         let msg = &errs[0].message;
         assert!(msg.contains("`accept`"), "got: {msg}");
-        assert!(msg.contains("reserved lifecycle keyword"), "got: {msg}");
+        assert!(msg.contains("a lifecycle keyword"), "got: {msg}");
+        assert!(msg.contains("cannot name a variable"), "got: {msg}");
     }
 
     #[test]
     fn let_with_reserved_keyword_names_the_keyword() {
         let errs = parse_str("fn main() { let match = 1; }").unwrap_err();
+        assert_eq!(errs.len(), 1, "one diagnostic; got: {errs:?}");
         let msg = &errs[0].message;
         assert!(msg.contains("`match`"), "got: {msg}");
-        assert!(msg.contains("is a reserved keyword"), "got: {msg}");
+        assert!(msg.contains("is a reserved word"), "got: {msg}");
         assert!(!msg.contains("lifecycle"), "got: {msg}");
     }
 
@@ -7856,6 +8001,85 @@ main locus App {
         let msg = format!("{:?}", err);
         assert!(
             msg.contains("opts in with `@bounded`"),
+            "wrong error: {msg}"
+        );
+    }
+
+    /// GH #723: `@unbounded` and an effect assertion are orthogonal
+    /// contracts and stack on one fn in EITHER order. Each decorator
+    /// used to parse the `fn` itself and return, so the second one met
+    /// a parser already past the point where an `@` was admissible —
+    /// both orders were parse errors, and a `@unbounded` method needed
+    /// a free `@no_syscall` wrapper to carry both contracts.
+    #[test]
+    fn parse_unbounded_stacks_with_effect_assertions_either_order() {
+        for src in [
+            "@unbounded @no_syscall fn f() { }",
+            "@no_syscall @unbounded fn f() { }",
+        ] {
+            let prog = parse_str(src).unwrap_or_else(|e| {
+                panic!("{src} must parse, got {e:?}");
+            });
+            let TopDecl::Fn(f) = &prog.items[0] else {
+                panic!("expected fn");
+            };
+            assert!(f.unbounded, "{src}: `@unbounded` lost");
+            assert_eq!(
+                f.effects,
+                vec![EffectAssert::Forbid(vec![EffectClass::Syscall])],
+                "{src}: the assertion was lost"
+            );
+            // Both decorators are on the record the coherence check
+            // reads, in source order.
+            let names: Vec<&str> =
+                f.decorators.iter().map(|d| d.name.as_str()).collect();
+            assert_eq!(names.len(), 2, "{src}: {names:?}");
+            assert!(names.contains(&"unbounded") && names.contains(&"no_syscall"));
+        }
+    }
+
+    /// A whole stack, in an order no single-slot parser could take —
+    /// and on a METHOD, the placement the wrapper worked around.
+    #[test]
+    fn parse_full_decorator_stack_on_a_method() {
+        let src = r#"
+locus L {
+    @no_syscall @unbounded @deterministic @budget(alloc_per_call = 3)
+    fn handle() { }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let TopDecl::Locus(l) = &prog.items[0] else {
+            panic!("expected locus");
+        };
+        let LocusMember::Fn(f) = &l.members[0] else {
+            panic!("expected method");
+        };
+        assert!(f.unbounded);
+        assert_eq!(f.budget, Some(3));
+        assert_eq!(f.effects.len(), 2, "no_syscall + deterministic");
+        assert_eq!(f.decorators.len(), 4);
+    }
+
+    /// A lifecycle hook still takes `@unbounded` and nothing else: it is
+    /// one-shot (so a per-call ceiling has no calls to divide by) and
+    /// `LifecycleDecl` carries the one flag rather than a stack.
+    #[test]
+    fn parse_lifecycle_hook_rejects_other_decorators() {
+        let err = parse_str("locus L { @no_syscall @unbounded run() { } }")
+            .expect_err("expected parse error");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("can't precede a lifecycle hook"),
+            "wrong error: {msg}"
+        );
+        // …and a repeat on a hook is caught in the same place (a hook
+        // has no decorator list for the check-time rule to read).
+        let err = parse_str("locus L { @unbounded @unbounded run() { } }")
+            .expect_err("expected parse error");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("duplicate `@unbounded` on a lifecycle hook"),
             "wrong error: {msg}"
         );
     }
@@ -9984,6 +10208,60 @@ fn main() { }
             l.serves.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
             vec!["Router"]
         );
+    }
+
+    #[test]
+    fn parse_qualified_serves_and_perspective_slot() {
+        // GH #724: all three perspective positions accept a path
+        // qualified by an import alias. The path is kept as ONE
+        // `Ident` joined by `::` (the `bindings { }` shape) — the
+        // cross-seed rename pass collapses it to the imported decl's
+        // mangled name before typecheck.
+        let src = r#"
+import "lib" as lib;
+locus RouterV1 : serves lib::Router, tier 2 {
+    fn route(c: Int) -> Int { return c; }
+}
+main locus App {
+    params { r: perspective(lib::Router) = RouterV1 { }; }
+    run() { reperspective self.r as lib::RouterV2; }
+}
+fn main() { App { }; }
+"#;
+        let prog = parse_str(src).expect("parse");
+        let l = prog.items.iter().find_map(|d| match d {
+            TopDecl::Locus(l) if l.name.name == "RouterV1" => Some(l),
+            _ => None,
+        }).expect("locus");
+        assert_eq!(l.serves.len(), 1);
+        assert_eq!(l.serves[0].name, "lib::Router");
+        assert_eq!(l.annotations.len(), 1);
+        let app = prog.items.iter().find_map(|d| match d {
+            TopDecl::Locus(l) if l.name.name == "App" => Some(l),
+            _ => None,
+        }).expect("main locus");
+        let slot = app.members.iter().find_map(|m| match m {
+            LocusMember::Params(pb) => pb.params[0].ty.clone(),
+            _ => None,
+        }).expect("slot type");
+        match slot {
+            TypeExpr::Perspective { name, .. } => {
+                assert_eq!(name.name, "lib::Router")
+            }
+            other => panic!("expected a perspective slot, got {:?}", other),
+        }
+        let swapped = app.members.iter().find_map(|m| match m {
+            LocusMember::Lifecycle(lc) => lc.body.stmts.iter().find_map(|s| {
+                match s {
+                    Stmt::Reperspective { impl_name, .. } => {
+                        Some(impl_name.name.clone())
+                    }
+                    _ => None,
+                }
+            }),
+            _ => None,
+        }).expect("reperspective stmt");
+        assert_eq!(swapped, "lib::RouterV2");
     }
 
     #[test]
