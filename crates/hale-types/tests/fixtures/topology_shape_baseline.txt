@@ -528,7 +528,7 @@ crates/hale-codegen/tests/fixtures/examples/85-bindings-unix/main.hl c610fbb420c
 crates/hale-codegen/tests/fixtures/examples/86-formatting/main.hl f2c1228edb650960
 crates/hale-codegen/tests/fixtures/examples/87-temp-locus-receiver/main.hl 16381b7a9428a375
 crates/hale-codegen/tests/fixtures/examples/88-async-handler-payload/main.hl 35fece95d337b084
-crates/hale-codegen/tests/fixtures/examples/89-nested-locus-teardown/main.hl 10752f290e4e7986
+crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions/main.hl 530c777d0fe0f765
 crates/hale-codegen/tests/fixtures/examples/claim-forms.hl fc7429933db197c9
 crates/hale-codegen/tests/fixtures/examples/constitutions.hl 3e28431eef6c20e2
 crates/hale-codegen/tests/fixtures/examples/docs-server/main.hl 1c46881b16096baf
@@ -816,13 +816,6 @@ crates/hale-codegen/tests/log_routing.rs#0 e9b3a90b0626e56f
 crates/hale-codegen/tests/log_routing.rs#1 e9b3a90b0626e56f
 crates/hale-codegen/tests/lto_modes.rs#0 865d341109268295
 crates/hale-codegen/tests/main_return_call_teardown.rs#0 c47d911d810acd9a
-crates/hale-codegen/tests/main_return_dissolve_frame.rs#0 f7f08146f24ab2d8
-crates/hale-codegen/tests/main_return_dissolve_frame.rs#1 f7f08146f24ab2d8
-crates/hale-codegen/tests/main_return_dissolve_frame.rs#2 f7f08146f24ab2d8
-crates/hale-codegen/tests/main_return_dissolve_frame.rs#3 f7f08146f24ab2d8
-crates/hale-codegen/tests/main_return_dissolve_frame.rs#4 f7f08146f24ab2d8
-crates/hale-codegen/tests/main_return_dissolve_frame.rs#5 f7f08146f24ab2d8
-crates/hale-codegen/tests/main_return_dissolve_frame.rs#6 8a523af861ebf77e
 crates/hale-codegen/tests/match_expression.rs#0 a3895c156268ffc9
 crates/hale-codegen/tests/match_expression.rs#1 52f8f1ad8fcc1be0
 crates/hale-codegen/tests/match_expression.rs#2 dfef156c23c7c29b
@@ -1184,8 +1177,11 @@ crates/hale-codegen/tests/unit_fallible.rs#2 2691ab444051ef98
 crates/hale-codegen/tests/unit_fallible.rs#3 2691ab444051ef98
 crates/hale-codegen/tests/unit_fallible.rs#4 2691ab444051ef98
 crates/hale-codegen/tests/unit_fallible.rs#5 340fa633f2a05645
-crates/hale-codegen/tests/unowned_literal_pair_leak.rs#0 5e57c7417243a97d
-crates/hale-codegen/tests/unowned_literal_pair_leak.rs#5 69883b8a498b001f
+crates/hale-codegen/tests/unowned_literal_positions.rs#0 99e6e56298920264
+crates/hale-codegen/tests/unowned_literal_positions.rs#1 afc7b677f6394ae2
+crates/hale-codegen/tests/unowned_literal_positions.rs#2 80dc0896eef92fb5
+crates/hale-codegen/tests/unowned_literal_positions.rs#3 a804d3c14b6b5bce
+crates/hale-codegen/tests/unowned_literal_positions.rs#4 72d030425029c679
 crates/hale-codegen/tests/view_coerce_e1.rs#0 78a473791628c164
 crates/hale-codegen/tests/view_coerce_e1.rs#1 ccd9c4998f940d14
 crates/hale-codegen/tests/view_coerce_e1.rs#2 f2c1228edb650960
