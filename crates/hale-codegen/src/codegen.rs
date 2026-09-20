@@ -6605,15 +6605,32 @@ pub(crate) struct LocusInfo<'ctx> {
     /// (parent-owned). Zero means externally provided (variable
     /// reference override, etc.) — the cascade skips it.
     pub(crate) locus_ref_owned_mask_field_idx: u32,
-    /// F.29 follow-up: bit-index map for LocusRef-typed param
+    /// F.29 follow-up: bit-index map for locus-carrying param
     /// fields. Keys are the field names; values are the bit
     /// position within `__locus_ref_owned_mask`. Built in
     /// declaration order over the locus's params (filtering on
-    /// `CodegenTy::LocusRef`). Used by the cascade emitters to
-    /// branch on ownership and by the field-init loop to set the
-    /// bit when the initializing expression produced a parent-
-    /// owned locus literal.
+    /// the field types that can HOLD a locus — `LocusRef`, and,
+    /// since GH #871, `Interface` / `Perspective`). Used by the
+    /// cascade emitters to branch on ownership and by the
+    /// field-init loop to set the bit when the initializing
+    /// expression produced a parent-owned locus literal.
     pub(crate) locus_ref_bit_per_field: BTreeMap<String, u32>,
+    /// GH #871: index of the synthetic `__owned_child_reclaim_<f>:
+    /// ptr` field, one per param field whose declared type carries
+    /// a locus WITHOUT naming it — an `interface` slot or a
+    /// `perspective(P)` handle. Keys are those field names.
+    ///
+    /// The cascade tears a child down by calling its
+    /// `__reclaim_<Impl>`, and for a `LocusRef` field the impl is
+    /// the field's declared type. For these two it is not: the
+    /// declared type is a contract, and which locus satisfies it
+    /// is decided per instantiation (`Queries { j: Churner { } }`,
+    /// `Gateway { router: RouterV2 { } }` against a `= RouterV1 { }`
+    /// default). So the instantiation that owns the child records
+    /// ITS reclaim fn here, and the cascade — emitted once per
+    /// owner TYPE — loads and indirect-calls it. NULL (the
+    /// zero-init) means no owned child, and the cascade skips.
+    pub(crate) owned_child_reclaim_field_idxs: BTreeMap<String, u32>,
     /// v1.x-3: index of the synthetic `__recpool: ptr` field —
     /// the parent-side handle into a recognition pool. Set at
     /// instantiation iff this locus's projection class is

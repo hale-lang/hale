@@ -187,6 +187,31 @@ it at whatever depth it sits, and `shared` is released once, by the
 scope that made it. A call that hands back a locus it didn't build
 is the same borrow, written as a call.
 
+**How the field is declared doesn't change the answer.** A param
+typed by an `interface` the child satisfies, or by a
+`perspective(P)` it serves, holds an owned child on the same terms
+as a locus-typed param — the cascade reaches it and everything
+under it:
+
+```hale,fragment
+locus Queries {
+    params { j: Counter = Churner { }; }   // an interface slot
+}
+locus Gateway {
+    params { router: perspective(Router) = RouterV1 { }; }
+}
+```
+
+Both children go when their holder goes, and so does whatever they
+hold. Designating a different impl at the literal (`Gateway { router:
+RouterV2 { } }`) reclaims the one you actually built.
+
+One shape that is *not* a transfer: a locus written inside the
+initializer of a param that can't hold a locus. In `Lonely { n:
+Queries { }.total() }` the `Queries` is just an expression — it has
+no field to live in — so it belongs to the enclosing function's
+scope, exactly as if you had written it on a line of its own.
+
 **The scope is the enclosing function, not the enclosing block** — a
 `let` is readable for the rest of the function, including after the
 loop that bound it. But a locus created **in a loop** is reclaimed

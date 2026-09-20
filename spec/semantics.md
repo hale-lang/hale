@@ -438,17 +438,41 @@ A locus held as another locus's param field never has a
 teardown of its own — its instantiation is parent-owned, and
 the owner's teardown cascades into it (F.29). That cascade
 runs to the leaves: a grandchild's `drain()`, its `dissolve()`
-body, its capacity slots and its arena are the owner's
+body, its capacity slots and **its arena** are the owner's
 responsibility just as a child's are, at exactly the moment
-the owner's timing fires. "Constructed by the owner" covers
-both spellings of construction: a nested literal (`Mid { leaf:
-Leaf { } }`) and a factory call whose result the field takes
-(`Mid { leaf: make_leaf() }`, in the diverging-`or` spelling
-too, and as a param default). A field the owner did NOT
-construct (`Mid { leaf: shared }`, an external handle passed in;
-or a call that hands back a locus somebody else built) is
-excluded at whatever depth it appears, and is torn down once by
-its real owner, at its owner's timing.
+the owner's timing fires. Every level's arena is destroyed,
+none outlives the owner, and the count of live arenas a
+finished program leaves behind is zero. "Constructed by the
+owner" covers both spellings of construction: a nested literal
+(`Mid { leaf: Leaf { } }`) and a factory call whose result the
+field takes (`Mid { leaf: make_leaf() }`, in the
+diverging-`or` spelling too, and as a param default). A field
+the owner did NOT construct (`Mid { leaf: shared }`, an
+external handle passed in; or a call that hands back a locus
+somebody else built) is excluded at whatever depth it appears,
+and is torn down once by its real owner, at its owner's timing.
+
+**What the field is DECLARED as does not change any of this.**
+A param typed by a *contract* — an `interface` the child
+satisfies (`params { j: Counter = Churner { } }`) or a
+`perspective(P)` the child serves (`params { router:
+perspective(Router) = RouterV1 { } }`) — holds a parent-owned
+child exactly as a locus-typed param does, and the cascade
+reaches it and everything under it. Which locus satisfies the
+contract is a per-instantiation choice: a designation written
+at the literal (`Gateway { router: RouterV2 { } }`) overrides
+one written as the param's default, and the child torn down is
+the one that was actually constructed. A `reperspective` swap
+does not change it either — the swap replaces code and keeps
+state, so the holder still owns the impl its designation built.
+
+A locus literal written inside the initializer of a param that
+**cannot hold a locus** is not an ownership transfer, because
+there is no field for the owner to cascade from. In `Lonely { n:
+Queries { }.total() }` the `Queries` literal is an ordinary
+expression-position literal, owned by the enclosing fn's scope
+and reclaimed by its scope-exit flush, exactly as it would be
+written on a line of its own.
 
 A deferred dissolve is scoped to the enclosing **fn**, not to
 the enclosing block — a `let` is readable for the rest of the
