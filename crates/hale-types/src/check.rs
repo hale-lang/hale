@@ -4507,12 +4507,22 @@ fn check_phase3_fallback_subscribers(
             return false;
         }
         let tname = &path.segments[0].name;
+        // GH #825: the payload struct can be declared in a module
+        // too, and a payload this lookup cannot find reads as "not a
+        // String key", which decides the `where key == replica` rule.
+        // First declaration wins, exactly as the nested `for` it
+        // replaces did — a second one of the same name is a
+        // duplicate the resolver reports.
+        let mut answer: Option<bool> = None;
         for program in bundle.programs.values() {
-            for item in &program.items {
+            walk_decls(&program.items, &mut |item| {
+                if answer.is_some() {
+                    return;
+                }
                 if let TopDecl::Type(td) = item {
                     if &td.name.name == tname {
                         if let TypeDeclBody::Struct(fields) = &td.body {
-                            return fields.iter().any(|f| {
+                            answer = Some(fields.iter().any(|f| {
                                 f.name.name == field
                                     && matches!(
                                         &f.ty,
@@ -4521,16 +4531,16 @@ fn check_phase3_fallback_subscribers(
                                             _,
                                         )
                                     )
-                            });
+                            }));
                         }
                     }
                 }
-            }
+            });
         }
-        false
+        answer.unwrap_or(false)
     };
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Topic(t) = item {
                 by_name.insert(
                     t.name.name.clone(),
@@ -4551,7 +4561,7 @@ fn check_phase3_fallback_subscribers(
                 key_shape_by_wire.insert(wire.clone(), key_shape);
                 by_wire.insert(wire, (t.on_unmatched, t.span));
             }
-        }
+        });
     }
 
     // Walk every subscriber. For each `where key == _` filter,
@@ -4564,8 +4574,8 @@ fn check_phase3_fallback_subscribers(
         }
     }
     for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(l) = item else { continue };
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
             for m in &l.members {
                 let LocusMember::Bus(bb) = m else { continue };
                 for bm in &bb.members {
@@ -4671,7 +4681,7 @@ fn check_phase3_fallback_subscribers(
                     }
                 }
             }
-        }
+        });
     }
     for (name, has) in &fallback_has_catchall {
         if *has {

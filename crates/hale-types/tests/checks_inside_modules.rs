@@ -422,6 +422,80 @@ fn bounded_topic_without_policy_inside_a_module_is_flagged() {
     );
 }
 
+// ---- check_phase3_fallback_subscribers -----------------------------
+//
+// `on_unmatched: fallback` with no `where key == _` subscriber is a
+// hard error: an unmatched-key publish would have nowhere to go.
+// The topic side and the subscriber side are separate walks, so
+// there are two regressions.
+
+const FALLBACK_WITHOUT_CATCHALL: &str = "\
+type Reading { sensor: Int = 0; v: Int = 0; }
+
+topic Readings {
+    payload: Reading;
+    subject: \"sense.reading\";
+    keyed_by sensor;
+    on_unmatched: fallback;
+}
+
+main locus App {
+    params { seen: Int = 0; }
+    bus { subscribe Readings as on_r where key == replica; }
+    fn on_r(r: Reading) { self.seen = self.seen + 1; }
+}
+";
+
+#[test]
+fn fallback_topic_without_catchall_inside_a_module_is_flagged() {
+    assert_module_matches_top_level(
+        FALLBACK_WITHOUT_CATCHALL,
+        "no subscriber declares `where key == _`",
+    );
+}
+
+#[test]
+fn a_module_nested_catchall_subscriber_satisfies_a_top_level_topic() {
+    // The subscriber-side walk, and the direction that matters most:
+    // it must not turn a CORRECT program red. The topic is at the top
+    // level and its catch-all subscriber is in a module — before the
+    // fix the subscriber was invisible, so the topic was reported as
+    // having no catch-all at all.
+    let src = "\
+type Reading { sensor: Int = 0; v: Int = 0; }
+
+topic Readings {
+    payload: Reading;
+    subject: \"sense.reading\";
+    keyed_by sensor;
+    on_unmatched: fallback;
+}
+
+module inner {
+    locus Catcher {
+        params { seen: Int = 0; }
+        bus { subscribe Readings as on_any where key == _; }
+        fn on_any(r: Reading) { self.seen = self.seen + 1; }
+    }
+}
+
+main locus App {
+    params { c: Catcher = Catcher { }; }
+    run() { }
+}
+
+fn main() { App { }; }
+";
+    let ds = diags(src);
+    assert!(
+        !ds.iter()
+            .any(|(_, m)| m.contains("no subscriber declares `where key == _`")),
+        "a module-nested catch-all subscriber satisfies the topic; got: \
+         {:?}",
+        ds
+    );
+}
+
 #[test]
 fn a_module_nested_advisory_stays_a_warning() {
     // Severity is part of the contract: reaching inside a module
