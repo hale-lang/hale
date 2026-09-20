@@ -496,6 +496,87 @@ fn main() { App { }; }
     );
 }
 
+// ---- check_main_and_bindings ---------------------------------------
+//
+// At most one `main` locus per bundle, and every `bindings` entry
+// names a declared topic. The main count is the sharpest case in
+// GH #825: a count that skips half the declarations is not a count,
+// and hiding a second `main locus` in a module made the bundle look
+// singular.
+
+const TWO_MAINS: &str = "\
+main locus App {
+    params { n: Int = 0; }
+    run() { }
+}
+
+main locus Other {
+    params { n: Int = 0; }
+    run() { }
+}
+";
+
+#[test]
+fn a_second_main_locus_inside_a_module_is_counted() {
+    // Both mains at the top level: two findings (one per main).
+    let flat = format!("{}\n{}", TWO_MAINS, MAIN);
+    let flat_ds: Vec<_> = diags(&flat)
+        .into_iter()
+        .filter(|(_, m)| m.contains("more than one `main` locus"))
+        .collect();
+    assert_eq!(flat_ds.len(), 2, "top-level control: {:?}", flat_ds);
+
+    // The second one one brace deeper is still a second one.
+    let hidden = "\
+main locus App {
+    params { n: Int = 0; }
+    run() { }
+}
+
+module inner {
+    main locus Other {
+        params { n: Int = 0; }
+        run() { }
+    }
+}
+
+fn main() { App { }; }
+";
+    let hidden_ds: Vec<_> = diags(hidden)
+        .into_iter()
+        .filter(|(_, m)| m.contains("more than one `main` locus"))
+        .collect();
+    assert_eq!(
+        hidden_ds.len(),
+        2,
+        "a `main locus` inside a module is still a main locus; got: {:?}",
+        hidden_ds
+    );
+    assert!(
+        hidden_ds.iter().all(|(is_err, _)| *is_err),
+        "and still an error: {:?}",
+        hidden_ds
+    );
+}
+
+const UNKNOWN_BOUND_TOPIC: &str = "\
+main locus App {
+    params { n: Int = 0; }
+    bindings {
+        Missing: unix(\"/tmp/hale-825.sock\", role: listen);
+    }
+    run() { }
+}
+";
+
+#[test]
+fn binding_on_an_unknown_topic_inside_a_module_is_flagged() {
+    assert_module_matches_top_level(
+        UNKNOWN_BOUND_TOPIC,
+        "binding references unknown topic",
+    );
+}
+
 #[test]
 fn a_module_nested_advisory_stays_a_warning() {
     // Severity is part of the contract: reaching inside a module

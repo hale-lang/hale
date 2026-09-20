@@ -4722,8 +4722,14 @@ fn check_main_and_bindings(
     let programs_vec: Vec<&Program> = bundle.programs.values().copied().collect();
     let purity_map = crate::purity::infer_purity_for_bundle(&programs_vec, top);
 
+    // GH #825: a `main locus` and a `bindings { }` block inside a
+    // `module { … }` are ordinary bundle members. The at-most-one-main
+    // rule in particular is a whole-bundle count, and a count that
+    // skips half the declarations is not a count.
+    // (`collect_topic_pub_sub`, which feeds role inference, already
+    // recursed — it grew its own `TopDecl::Module` arm.)
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 if l.is_main {
                     mains.push((l.name.name.clone(), l.span));
@@ -4998,7 +5004,7 @@ fn check_main_and_bindings(
                     }
                 }
             }
-        }
+        });
     }
     if mains.len() > 1 {
         for (name, span) in &mains {
