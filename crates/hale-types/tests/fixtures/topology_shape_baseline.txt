@@ -1,4 +1,9 @@
 crates/hale-cli/tests/check_arg_parsing.rs#0 f428caff9d863411
+crates/hale-cli/tests/cross_seed_qualified_serves.rs#0 b8c97b016886b822
+crates/hale-cli/tests/cross_seed_qualified_serves.rs#1 cb403528917b1d2f
+crates/hale-cli/tests/cross_seed_qualified_serves.rs#2 cb403528917b1d2f
+crates/hale-cli/tests/cross_seed_qualified_serves.rs#3 cb403528917b1d2f
+crates/hale-cli/tests/cross_seed_qualified_serves.rs#4 cb403528917b1d2f
 crates/hale-cli/tests/debug_info.rs#0 a8a553c534907f76
 crates/hale-cli/tests/dispatch_plan_cli.rs#0 e9ff5fe335d31b65
 crates/hale-cli/tests/dna_apply.rs#0 f2c1228edb650960
@@ -1434,6 +1439,7 @@ crates/hale-types/tests/ownership_graph.rs#9 13d329996d7ce475
 crates/hale-types/tests/perspective_serves.rs#0 f21b62040e0c874a
 crates/hale-types/tests/perspective_serves.rs#11 6d6475d19d1277c1
 crates/hale-types/tests/perspective_serves.rs#12 ae46862519d0c480
+crates/hale-types/tests/perspective_serves.rs#17 cb403528917b1d2f
 crates/hale-types/tests/perspective_serves.rs#6 9d87f878c811fca5
 crates/hale-types/tests/perspective_serves.rs#9 346f6dea45e5833a
 crates/hale-types/tests/phase_effects.rs#5 3feb2df4ea2f1631
