@@ -26438,6 +26438,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 result.ok_or_else(|| CodegenError::Unsupported(
                     "std::json::find_string_field returns String but called in a position that expects no value".to_string()))
             }
+            // GH #719: the typed sibling of find_string_field. Returns
+            // a JsonString {kind, text} so null / missing / "" / a
+            // real string / a wrong-typed value are distinguishable;
+            // find_string_field stays permissive for its callers.
+            ["std", "json", "string_field"] => {
+                let result = self.lower_user_fn_call("__json_string_field", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::string_field returns JsonString but called in a position that expects no value".to_string()))
+            }
             ["std", "json", "find_int_field"] => {
                 let result = self.lower_user_fn_call("__json_find_int_field", args, scope)?;
                 result.ok_or_else(|| CodegenError::Unsupported(

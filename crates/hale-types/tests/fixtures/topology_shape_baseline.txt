@@ -1196,7 +1196,7 @@ crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8
 crates/hale-stdlib/hl/http_client.hl fccb52d86a539447
 crates/hale-stdlib/hl/io_tcp.hl 170732f0b5edc9ab
 crates/hale-stdlib/hl/iter.hl 907139175ae346a1
-crates/hale-stdlib/hl/json.hl 0ea8406fd0989293
+crates/hale-stdlib/hl/json.hl e5fee8eddcd17603
 crates/hale-stdlib/hl/lang.hl 2a31148c08652a87
 crates/hale-stdlib/hl/log.hl 8f96d39abe5b312b
 crates/hale-stdlib/hl/metrics.hl b9dee86669b92506

@@ -504,6 +504,14 @@ fn __json_codepoint_utf8(out: std::bytes::BytesBuilder, cp: Int) {
 //   - Nested objects + arrays NOT supported as values.
 //   - Doesn't decode \uHHHH escapes inside strings (defers to
 //     unescape_string for explicit handling).
+//
+// This helper is PERMISSIVE by contract, and it stays that way:
+// a non-String value comes back as its raw scalar spelling, so
+// `"owner": null` reads as the four-character String "null" and
+// is indistinguishable from `"owner": "null"` or from a missing
+// field. When the difference matters — an optional field whose
+// absence is not an empty name — use `std::json::string_field`
+// (GH #719), which answers WHICH JSON shape the value had.
 fn __json_find_string_field(json: String, name: String) -> String {
     let raw = __json_find_field_raw(json, name);
     if len(raw) == 0 { return ""; }
@@ -524,6 +532,130 @@ fn __json_find_int_field(json: String, name: String) -> Int {
 fn __json_find_bool_field(json: String, name: String) -> Bool {
     let raw = __json_find_field_raw(json, name);
     return raw == "true";
+}
+
+// ===== 2026-09-19 (GH #719) — typed field access =====
+//
+// `find_string_field` answers with a String whatever the value
+// was, so eight different documents give the same answer and a
+// caller cannot tell them apart:
+//
+//   {"owner": null}      -> "null"   (an identity named `null`)
+//   {"owner": "null"}    -> "null"
+//   {"owner": ""}        -> ""
+//   {}                   -> ""       (absent)
+//   {"owner": 7}         -> "7"
+//   {"owner": true}      -> "true"
+//   {"owner": []}        -> "[]"
+//   {"owner": {"a": 1}}  -> "{\"a\": 1}"
+//
+// `string_field` returns the shape alongside the text, so the
+// optional-field read is one comparison instead of a hand-written
+// validator per call site:
+//
+//   let owner = std::json::string_field(body, "owner");
+//   if owner.kind == "string" { adopt(owner.text); }
+//   else if owner.kind == "null" || owner.kind == "missing" { root(); }
+//   else { reject(); }
+//
+// The kind is not string-specific — an Int or Bool reader can
+// gate `find_int_field` / `find_bool_field` on
+// `string_field(json, name).kind == "number"` / `== "bool"`
+// before trusting the coercion.
+/// One field read as a String: which JSON shape the value had,
+/// and its decoded text when that shape was a string.
+type __JsonString {
+    // "string" | "null" | "missing" | "number" | "bool" |
+    // "array" | "object" | "invalid"
+    kind: String;
+    // The decoded text — escapes resolved, surrounding quotes
+    // gone — and ONLY when kind is "string". Every other kind
+    // carries "", so a caller that forgets to look at kind gets
+    // an empty name rather than a plausible wrong one.
+    text: String;
+}
+
+// Read `name` from the top-level object in `json`.
+//
+//   - "string"  — a quoted value; `text` is its decoded content
+//                 (`\uHHHH` included, per GH #709).
+//   - "null"    — the JSON literal null.
+//   - "missing" — `json` IS an object, and has no such member.
+//   - "number" / "bool" / "array" / "object" — the value is
+//                 there and is that shape; `text` stays "".
+//   - "invalid" — `json` is not an object at all, or the member's
+//                 value is not a JSON value the scanner can name
+//                 (an unterminated string, a bare token).
+//
+// A key repeated inside one object resolves to the FIRST member
+// with that name, which is what `find_string_field` does too —
+// both walk the same top-level object cursor and stop at the
+// first match.
+fn __json_string_field(json: String, name: String) -> std::json::JsonString {
+    let total = len(json);
+    let p = std::json::next_non_ws(json, 0, total);
+    // 123 = `{`. A non-object carries no named members, so the
+    // answer is "invalid" rather than "missing" — the caller's
+    // input is wrong, not the document's content.
+    if p >= total || std::str::byte_at_unchecked(json, p) != 123 {
+        return std::json::JsonString { kind: "invalid", text: "" };
+    }
+    let mut it = __json_obj_first_span(json);
+    while !it.done {
+        if __json_obj_key_eq(it, json, name) {
+            return __json_classify_value(json, it.val_start, it.val_end);
+        }
+        it = __json_obj_next_span(it, json);
+    }
+    return std::json::JsonString { kind: "missing", text: "" };
+}
+
+// Name the JSON value in [start, end_pos) — a range the object
+// cursor has already bounded — and decode it when it is a string.
+fn __json_classify_value(json: String, start: Int, end_pos: Int)
+    -> std::json::JsonString
+{
+    if end_pos <= start {
+        return std::json::JsonString { kind: "invalid", text: "" };
+    }
+    let first = std::str::byte_at_unchecked(json, start);
+    if first == 34 { // `"`
+        // Both ends must be quotes: the cursor stops at the end of
+        // the source for an unterminated string, and that half-value
+        // is not a string the caller can use.
+        if end_pos - start < 2 {
+            return std::json::JsonString { kind: "invalid", text: "" };
+        }
+        if std::str::byte_at_unchecked(json, end_pos - 1) != 34 {
+            return std::json::JsonString { kind: "invalid", text: "" };
+        }
+        return std::json::JsonString {
+            kind: "string",
+            text: __json_unescape_string(json[(start + 1)..(end_pos - 1)])
+        };
+    }
+    if first == 123 { // `{`
+        return std::json::JsonString { kind: "object", text: "" };
+    }
+    if first == 91 { // `[`
+        return std::json::JsonString { kind: "array", text: "" };
+    }
+    if std::str::range_eq(json, start, end_pos, "null") {
+        return std::json::JsonString { kind: "null", text: "" };
+    }
+    if std::str::range_eq(json, start, end_pos, "true") {
+        return std::json::JsonString { kind: "bool", text: "" };
+    }
+    if std::str::range_eq(json, start, end_pos, "false") {
+        return std::json::JsonString { kind: "bool", text: "" };
+    }
+    // 45 = `-`, 48..57 = `0`..`9`. The rest of the token is not
+    // validated here — `find_int_field` / `std::str::parse_*` are
+    // where a malformed number is refused.
+    if first == 45 || (first >= 48 && first <= 57) {
+        return std::json::JsonString { kind: "number", text: "" };
+    }
+    return std::json::JsonString { kind: "invalid", text: "" };
 }
 
 // Locate `"<name>":` in `json` and return the value token

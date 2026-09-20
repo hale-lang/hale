@@ -309,6 +309,8 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "json", "ObjectIterSpan"], "__JsonObjectIterSpan"),
     (&["std", "json", "Builder"], "__StdJsonBuilder"),
     (&["std", "json", "JsonFieldRange"], "__JsonFieldRange"),
+    // GH #719: the typed field read's result shape.
+    (&["std", "json", "JsonString"], "__JsonString"),
     (&["std", "lang", "Lang"], "__StdLangLang"),
     (&["std", "lang", "Morpheme"], "__StdLangMorpheme"),
     (&["std", "log", "ConsoleSink"], "__StdLogConsoleSink"),
