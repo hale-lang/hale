@@ -148,6 +148,15 @@ struct Parser {
     /// declaration, in ordinary source order — is reported; later
     /// occurrences of the SAME word recover silently.
     reserved_as_name: Vec<&'static str>,
+    /// GH #863: built-in call forms ([`BUILTIN_CALL_FORMS`]) this
+    /// parse has already reported as a free `fn` name. Same ledger
+    /// idea as `reserved_as_name`, one layer out: the mistake is the
+    /// declaration, so once it is reported the call sites stop being
+    /// claimed by the builtin and parse as ordinary calls. Without
+    /// that, `fn sum(...)` followed by `sum(a, b)` reported the
+    /// declaration AND `expected ), got Comma` at the call — two
+    /// messages for one rename.
+    builtin_named_as_fn: Vec<&'static str>,
 }
 
 impl Parser {
@@ -162,6 +171,7 @@ impl Parser {
             domains: Vec::new(),
             in_fallible_body: false,
             reserved_as_name: Vec::new(),
+            builtin_named_as_fn: Vec::new(),
         }
     }
 
@@ -323,6 +333,43 @@ impl Parser {
         self.diags
             .push(Diag::parse(span, reserved_name_message(kw, what)));
         true
+    }
+
+    /// GH #863: a free `fn` may not take the name of a built-in call
+    /// form. `sum` / `prod` are claimed by this parser at expression
+    /// head; `min` / `max` are claimed by codegen's math-builtin arm
+    /// ahead of `user_fns`. Either way the declaration could never be
+    /// reached, so the old behavior was a check/build divergence
+    /// (`hale check` ok, `hale build` "unsupported in codegen v0",
+    /// unlocated) or — for a two-arg `min` / `max` — a silently
+    /// hijacked call that ran the builtin and never the body.
+    ///
+    /// Reported at the NAME, in the `reserved_word_as_name` shape,
+    /// and recorded so the call sites recover as ordinary calls.
+    /// Locus methods, interface methods and perspective contract fns
+    /// are NOT affected: they are reached through a receiver
+    /// (`self.sum()`), which no builtin claims — `free` is false for
+    /// those call sites.
+    fn reject_builtin_call_form_as_fn(&mut self, name: &Ident) {
+        let Some(word) = builtin_call_form(&name.name) else {
+            return;
+        };
+        if self.builtin_named_as_fn.contains(&word) {
+            return;
+        }
+        self.builtin_named_as_fn.push(word);
+        self.diags.push(Diag::parse(
+            name.span,
+            format!(
+                "`{}` is a built-in call form and cannot name a fn; \
+                 rename it (every `{}(...)` call site lowers to the \
+                 builtin, so the declaration could never be reached \
+                 — spec/tokens.md § Built-in identifiers lists them). \
+                 A locus METHOD may still be named `{}`: it is reached \
+                 through a receiver, which no builtin claims.",
+                word, word, word
+            ),
+        ));
     }
 
     /// Reserved-word recovery for a DECLARATION name (GH #725):
@@ -644,7 +691,7 @@ impl Parser {
                              `@locality(...)` / `@export locus`",
                         ));
                     }
-                    let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
+                    let mut fn_decl = self.parse_fn_decl_with_ffi(None, false, true)?;
                     if fn_decl.ffi.is_some() {
                         return Err(Diag::parse(
                             at.span,
@@ -687,7 +734,7 @@ impl Parser {
                         "expected `fn` after `@ffi(...)` annotation",
                     ));
                 }
-                let mut fn_decl = self.parse_fn_decl_with_ffi(Some(ffi.clone()), false)?;
+                let mut fn_decl = self.parse_fn_decl_with_ffi(Some(ffi.clone()), false, true)?;
                 fn_decl.span = ffi.span.merge(fn_decl.span);
                 return Ok(TopDecl::Fn(fn_decl));
             }
@@ -809,7 +856,7 @@ impl Parser {
                         ),
                     ));
                 }
-                let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
+                let mut fn_decl = self.parse_fn_decl_with_ffi(None, false, true)?;
                 decos.apply_to_fn(&mut fn_decl);
                 return Ok(TopDecl::Fn(fn_decl));
             }
@@ -1110,7 +1157,7 @@ impl Parser {
             TokenKind::Perspective => self.parse_perspective_decl().map(TopDecl::Perspective),
             TokenKind::Type => self.parse_type_decl().map(TopDecl::Type),
             TokenKind::Const => self.parse_const_decl().map(TopDecl::Const),
-            TokenKind::Fn => self.parse_fn_decl().map(TopDecl::Fn),
+            TokenKind::Fn => self.parse_fn_decl(true).map(TopDecl::Fn),
             TokenKind::Module => self.parse_module_decl().map(TopDecl::Module),
             TokenKind::Interface => self.parse_interface_decl().map(TopDecl::Interface),
             // `topic` is a contextual keyword recognized only here
@@ -3399,7 +3446,7 @@ impl Parser {
             }
             TokenKind::OnFailure => self.parse_failure_decl().map(LocusMember::Failure),
             TokenKind::Closure => self.parse_closure_decl().map(LocusMember::Closure),
-            TokenKind::Fn => self.parse_fn_decl().map(LocusMember::Fn),
+            TokenKind::Fn => self.parse_fn_decl(false).map(LocusMember::Fn),
             // The fn-level contract decorators on a locus member:
             // `@unbounded` (GH #18 item 1 — on a method or on a
             // lifecycle hook, `@unbounded run { … }`), `@budget(...)`,
@@ -3439,7 +3486,7 @@ impl Parser {
                 }
                 match self.peek() {
                     TokenKind::Fn => {
-                        let mut fn_decl = self.parse_fn_decl()?;
+                        let mut fn_decl = self.parse_fn_decl(false)?;
                         decos.apply_to_fn(&mut fn_decl);
                         Ok(LocusMember::Fn(fn_decl))
                     }
@@ -5570,8 +5617,12 @@ impl Parser {
         })
     }
 
-    fn parse_fn_decl(&mut self) -> Result<FnDecl, Diag> {
-        self.parse_fn_decl_with_ffi(None, false)
+    /// `free` is true for a TOP-LEVEL fn (including one inside a
+    /// `module { }`, whose items resolve into the same global fn
+    /// namespace) and false for a locus member — see GH #863 and
+    /// [`Parser::reject_builtin_call_form_as_fn`].
+    fn parse_fn_decl(&mut self, free: bool) -> Result<FnDecl, Diag> {
+        self.parse_fn_decl_with_ffi(None, false, free)
     }
 
     /// Phase 2a: a perspective CONTRACT method — a bodyless `fn`
@@ -5580,7 +5631,9 @@ impl Parser {
     /// bodied `fn { ... }` in a perspective is still accepted
     /// (a default / helper) via the same path.
     fn parse_contract_fn(&mut self) -> Result<FnDecl, Diag> {
-        self.parse_fn_decl_with_ffi(None, true)
+        // Reached through a `serves`-ing locus, never as a bare
+        // call — not a free fn for GH #863 purposes.
+        self.parse_fn_decl_with_ffi(None, true, false)
     }
 
     /// Stage-1 FFI: when `ffi` is `Some(_)`, the fn declaration
@@ -5595,9 +5648,16 @@ impl Parser {
         &mut self,
         ffi: Option<FfiAnnotation>,
         allow_bodyless: bool,
+        free: bool,
     ) -> Result<FnDecl, Diag> {
         let kw = self.expect(TokenKind::Fn, "fn")?;
         let name = self.expect_decl_name("function name")?;
+        // GH #863: before the body parses, so a recursive call in it
+        // — and every later call site — recovers as an ordinary call
+        // instead of being claimed by the builtin a second time.
+        if free {
+            self.reject_builtin_call_form_as_fn(&name);
+        }
         let generics = self.parse_generic_params_opt()?;
         self.expect(TokenKind::LParen, "(")?;
         let mut params = Vec::new();
@@ -7103,19 +7163,47 @@ impl Parser {
             // Identifier — might be ident, path, struct expression, or call.
             TokenKind::Ident(name) => {
                 // Look-ahead for "sum(" or "prod(" to recognize as builtins.
-                if name == "sum" && matches!(self.peek_at(1), TokenKind::LParen) {
+                //
+                // GH #863: unless THIS parse already reported a free
+                // `fn sum` / `fn prod`. The declaration is the one
+                // mistake; claiming its call sites afterwards would
+                // add `expected ), got Comma` on top of the sentence
+                // that already says what to rename. Fall through to
+                // the ordinary call path instead (the program does
+                // not compile either way — `parse` fails whenever
+                // `diags` is non-empty).
+                let claimed = (name == "sum" || name == "prod")
+                    && !self.builtin_named_as_fn.contains(&name.as_str());
+                if claimed && matches!(self.peek_at(1), TokenKind::LParen) {
+                    let is_sum = name == "sum";
+                    let word = if is_sum { "sum" } else { "prod" };
                     self.bump();
                     self.expect(TokenKind::LParen, "(")?;
                     let inner = self.parse_expr()?;
+                    // GH #863: a comma here means the author wrote a
+                    // CALL — `sum(a, b)` — to a fn they believe they
+                    // declared. `expected ), got Comma` named the
+                    // token and nothing else; say which form claimed
+                    // the name and that it takes one argument.
+                    if self.at(&TokenKind::Comma) {
+                        return Err(Diag::parse(
+                            self.peek_token().span,
+                            format!(
+                                "`{}(...)` is a built-in aggregate over \
+                                 ONE argument, not a call with several; \
+                                 `{}` also cannot name a fn (see \
+                                 spec/tokens.md § Built-in identifiers)",
+                                word, word
+                            ),
+                        ));
+                    }
                     let close = self.expect(TokenKind::RParen, ")")?;
-                    return Ok(Expr::Sum(Box::new(inner), span.merge(close.span)));
-                }
-                if name == "prod" && matches!(self.peek_at(1), TokenKind::LParen) {
-                    self.bump();
-                    self.expect(TokenKind::LParen, "(")?;
-                    let inner = self.parse_expr()?;
-                    let close = self.expect(TokenKind::RParen, ")")?;
-                    return Ok(Expr::Prod(Box::new(inner), span.merge(close.span)));
+                    let sp = span.merge(close.span);
+                    return Ok(if is_sum {
+                        Expr::Sum(Box::new(inner), sp)
+                    } else {
+                        Expr::Prod(Box::new(inner), sp)
+                    });
                 }
                 let qn = self.parse_qualified_name()?;
                 // Struct literal: NAME { fields }
@@ -7338,9 +7426,17 @@ impl Parser {
                     // an interpolation) and carry both back out.
                     sub.reserved_as_name =
                         std::mem::take(&mut self.reserved_as_name);
+                    // GH #863: the same handoff for the built-in
+                    // call forms already reported as a fn name, so
+                    // `f"{sum(a, b)}"` after a reported `fn sum`
+                    // parses as the ordinary call it was written as.
+                    sub.builtin_named_as_fn =
+                        std::mem::take(&mut self.builtin_named_as_fn);
                     let parsed = sub.parse_expr();
                     self.reserved_as_name =
                         std::mem::take(&mut sub.reserved_as_name);
+                    self.builtin_named_as_fn =
+                        std::mem::take(&mut sub.builtin_named_as_fn);
                     self.diags.append(&mut sub.diags);
                     let expr = parsed.map_err(|d| {
                         Diag::parse(
@@ -7578,6 +7674,28 @@ fn reserved_name_message(kw: &str, what: &str) -> String {
          reserved word)",
         kw, kind, article, thing
     )
+}
+
+/// GH #863: the built-in call forms a free `fn` may not be named
+/// after — the chains / aggregate vocabulary the compiler claims at
+/// a BARE call site, where a user declaration is unreachable.
+///
+/// - `sum` / `prod` are claimed by this parser: `sum(` at expression
+///   head produces [`Expr::Sum`] / [`Expr::Prod`], never a call.
+/// - `min` / `max` are claimed by codegen's math-builtin arm, which
+///   matches on the callee name ahead of `user_fns`.
+///
+/// The rest of the chains vocabulary (`map`, `filter`, `any`, `all`,
+/// `first`, `find`, `each`, `take`, `skip`, `enumerate`, `count`,
+/// `into`, `sort_into`, `reverse_into`, `group_count_into`) is
+/// recognized only AFTER a `.`, so those names are free at top level
+/// and are deliberately not listed here — `fn first(...)` is a real
+/// corpus declaration that works.
+const BUILTIN_CALL_FORMS: [&str; 4] = ["sum", "prod", "min", "max"];
+
+/// The [`BUILTIN_CALL_FORMS`] entry `name` spells, if any.
+fn builtin_call_form(name: &str) -> Option<&'static str> {
+    BUILTIN_CALL_FORMS.iter().copied().find(|w| *w == name)
 }
 
 /// If the given keyword token is one we permit as an identifier
