@@ -103,13 +103,17 @@ where `Cents` is expected. If you want the compiler to keep two
 integers apart, give each a record of its own (`type Cents { v:
 Int; }`).
 
-Two small rules:
+Three small rules:
 
 * A struct literal names the declaring type. With `type Row2 =
   Row;` you still write `Row { id: 1 }` — `Row2 { id: 1 }` is
   refused.
 * An alias chain has to end somewhere. `type A = B; type B = A;`
   is a type error.
+* An alias takes no type parameters of its own. `type Twin<T> =
+  Pair<T>;` is refused at the `<` with *generic type aliases are
+  not supported*; name a concrete instantiation instead (`type
+  IntPair = Pair<Int>;`), which is allowed and stays transparent.
 
 ## Enums — one of several shapes
 

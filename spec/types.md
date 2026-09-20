@@ -113,7 +113,13 @@ The consequences are all one rule:
 * **The alias form takes no generic parameters.** `type Twin<T> =
   Pair<T>;` is not supported — the alias target must be a
   concrete type expression (which may itself be a generic
-  *instantiation*, as `type Names = Vec<String>;` is).
+  *instantiation*, as `type Names = Vec<String>;` is). The parser
+  refuses the parameter list, at the `<`:
+
+  ```text
+  main.hl:1:10: parse error: generic type aliases are not
+  supported; write the concrete alias `type Name = Pair<Int>;`
+  ```
 
 ## Projection-class types
 

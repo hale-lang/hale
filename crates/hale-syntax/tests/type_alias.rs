@@ -159,3 +159,69 @@ fn alias_without_a_semicolon_is_a_parse_error() {
         diags
     );
 }
+
+/// GH #834 — the alias form takes no generic parameters. Codegen
+/// monomorphizes struct and enum templates only, and an alias
+/// declares no type of its own to monomorphize; before this the
+/// declaration parsed, stayed nominal through the resolver (which
+/// has no single target to expand), and the author's first report
+/// was a mismatch between two monomorph names that named neither
+/// the rule nor the fix.
+#[test]
+fn a_generic_alias_is_refused_with_a_message_that_says_so() {
+    let src = "type Pair<T> { a: T; b: T; }\ntype Twin<T> = Pair<T>;\n";
+    let diags = parse_source(src).expect_err("must not parse");
+    let d = diags
+        .iter()
+        .find(|d| {
+            d.message
+                .contains("generic type aliases are not supported")
+        })
+        .unwrap_or_else(|| {
+            panic!("expected the not-supported diagnostic, got {:?}", diags)
+        });
+    assert!(
+        d.message.contains("type Name = Pair<Int>;"),
+        "the message must show the supported form, got {:?}",
+        d.message
+    );
+    // Located at the `<` that opens the parameter list — not at the
+    // `=`, the target, or the `;`.
+    assert_eq!(d.span.slice(src), "<");
+    assert_eq!(d.span.line_col(src), (2, 10));
+}
+
+/// The refusal is the ALIAS form's alone. The two template forms
+/// keep their parameters — and `type Opt<T> = enum { ... };` shares
+/// the `=` with the alias, so it is the one that could be caught by
+/// a refusal written a token too early.
+#[test]
+fn the_template_forms_still_take_generic_parameters() {
+    let decls = type_decls(
+        "type Pair<T> { a: T; b: T; }\n\
+         type Opt<T> = enum { Some(T), None };\n",
+    );
+    assert_eq!(decls.len(), 2);
+    assert_eq!(decls[0].generics.len(), 1);
+    assert!(matches!(decls[0].body, TypeDeclBody::Struct(_)));
+    assert_eq!(decls[1].generics.len(), 1);
+    assert!(matches!(decls[1].body, TypeDeclBody::Enum(_)));
+}
+
+/// And the parameter list is what is refused, not angle brackets:
+/// an alias of a generic INSTANTIATION names a concrete type and
+/// still parses.
+#[test]
+fn alias_of_a_generic_instantiation_still_parses() {
+    let decls =
+        type_decls("type Pair<T> { a: T; b: T; }\ntype IntPair = Pair<Int>;\n");
+    assert_eq!(decls.len(), 2);
+    assert!(decls[1].generics.is_empty());
+    match &decls[1].body {
+        TypeDeclBody::Alias(TypeExpr::Named { path, generic_args, .. }) => {
+            assert_eq!(path.segments[0].name, "Pair");
+            assert_eq!(generic_args.len(), 1);
+        }
+        other => panic!("expected an alias of Pair<Int>, got {:?}", other),
+    }
+}
