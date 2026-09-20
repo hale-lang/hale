@@ -9,13 +9,16 @@
 
 #[path = "support/reap.rs"]
 mod reap;
+#[path = "support/trace.rs"]
+mod trace;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn hale(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> (bool, String) {
+    let _s = trace::Span::new("hale", args.join(" "));
     let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
     c.args(args).current_dir(cwd).env("HALE_BIN", env!("CARGO_BIN_EXE_hale")).env("HALE_DNA_DISCOVER", "off").env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"));
     for (k, v) in env {
@@ -39,6 +42,7 @@ fn body(resp: &str) -> String {
 }
 
 fn record(app: &Path) -> Vec<serde_json::Value> {
+    let _s = trace::Span::new("git", "show refs/dna/journal:journal.jsonl");
     let out = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
     String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.trim().is_empty()).filter_map(|l| serde_json::from_str(l).ok()).collect()
 }
@@ -49,6 +53,7 @@ fn free_port() -> u16 {
 
 #[test]
 fn an_organism_adopts_the_ledger_and_its_operations_leave_the_record() {
+    let _t = trace::test("dna_ledger::adopts");
     let d = std::env::temp_dir().join(format!("hale_dna_ledger_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
@@ -97,12 +102,9 @@ fn an_organism_adopts_the_ledger_and_its_operations_leave_the_record() {
         .stderr(std::fs::File::create(d.join("service.stderr")).unwrap())
         .spawn()
         .expect("hale dna knowledge");
-    let dl = Instant::now() + Duration::from_secs(120);
-    let mut up = false;
-    while Instant::now() < dl && !up {
-        up = body(&http(kport, "GET /ledger/head HTTP/1.0\r\nHost: x\r\n\r\n")).contains("\"revision\": 0");
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    let up = trace::wait_until("dna knowledge: the service answered", Duration::from_secs(120), Duration::from_millis(200), || {
+        body(&http(kport, "GET /ledger/head HTTP/1.0\r\nHost: x\r\n\r\n")).contains("\"revision\": 0")
+    });
     let stop = |service: &mut std::process::Child| {
         let _ = service.kill();
         let _ = service.wait();
@@ -178,18 +180,17 @@ fn an_organism_adopts_the_ledger_and_its_operations_leave_the_record() {
         .stderr(std::fs::File::create(d.join("run.stderr")).unwrap())
         .spawn()
         .expect("hale dna run");
-    let dl = Instant::now() + Duration::from_secs(120);
     let mut lease = String::new();
-    while Instant::now() < dl {
+    trace::wait_until("the body took its lease in the store", Duration::from_secs(120), Duration::from_millis(300), || {
         lease = body(&http(kport, "GET /ledger/lease?key=body HTTP/1.0\r\nHost: x\r\n\r\n"));
         if lease.contains("\"present\": true") {
-            break;
+            return true;
         }
         if let Ok(Some(st)) = host.try_wait() {
             panic!("hale dna run exited early: {st}\n{}", std::fs::read_to_string(d.join("run.stderr")).unwrap_or_default());
         }
-        std::thread::sleep(Duration::from_millis(300));
-    }
+        false
+    });
     assert!(lease.contains("\"present\": true") && lease.contains("\"token\": 1"), "the body took its lease in the store:\n{lease}\n{}", std::fs::read_to_string(d.join("run.stderr")).unwrap_or_default());
     let (ok, live) = hale(&["dna", "body"], &app, service_env);
     assert!(ok && live.contains("live on "), "a head reads the lease from the store: {live}");
@@ -316,12 +317,9 @@ fn a_pre_split_organism_carries_its_history_and_unfinished_work_through_adoption
         .stderr(std::fs::File::create(d.join("service.stderr")).unwrap())
         .spawn()
         .expect("hale dna knowledge");
-    let dl = Instant::now() + Duration::from_secs(120);
-    let mut up = false;
-    while Instant::now() < dl && !up {
-        up = body(&http(kport, "GET /ledger/head HTTP/1.0\r\nHost: x\r\n\r\n")).contains("\"revision\"");
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    let up = trace::wait_until("dna knowledge: the service answered", Duration::from_secs(120), Duration::from_millis(200), || {
+        body(&http(kport, "GET /ledger/head HTTP/1.0\r\nHost: x\r\n\r\n")).contains("\"revision\"")
+    });
     assert!(up, "the service did not come up:\n{}", std::fs::read_to_string(d.join("service.stderr")).unwrap_or_default());
     let url = format!("http://127.0.0.1:{kport}");
     let env: &[(&str, &str)] = &[("HALE_DNA_KNOWLEDGE_URL", &url), ("HALE_DNA_ADOPT_UNGATED", "1")];
@@ -406,6 +404,7 @@ fn a_pre_split_organism_carries_its_history_and_unfinished_work_through_adoption
 /// is refused — and nothing on the head is ever authoritative.
 #[test]
 fn a_head_queues_while_the_service_is_unreachable_and_the_service_revalidates_on_submission() {
+    let _t = trace::test("dna_ledger::queues");
     let d = std::env::temp_dir().join(format!("hale_dna_queue_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
@@ -434,14 +433,9 @@ fn a_head_queues_while_the_service_is_unreachable_and_the_service_revalidates_on
             .expect("hale dna knowledge")
     };
     let wait_up = || {
-        let dl = Instant::now() + Duration::from_secs(120);
-        while Instant::now() < dl {
-            if body(&http(kport, "GET /ledger/head HTTP/1.0\r\nHost: x\r\n\r\n")).contains("\"revision\"") {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(200));
-        }
-        false
+        trace::wait_until("dna knowledge: the service answered", Duration::from_secs(120), Duration::from_millis(200), || {
+            body(&http(kport, "GET /ledger/head HTTP/1.0\r\nHost: x\r\n\r\n")).contains("\"revision\"")
+        })
     };
     let mut service = start(&d, &app);
     assert!(wait_up(), "the service did not come up");
