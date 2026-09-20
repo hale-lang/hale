@@ -55,6 +55,37 @@ fn a_single_file_keeps_the_permissive_reading() {
     assert!(!ok && out.contains("call to `sibling_helper`: "), "the seed is: {out}");
 }
 
+/// GH #779: the rule exempts the bare names codegen answers itself,
+/// and the exemption table had drifted from the dispatch. Each of
+/// these programs was refused by `hale check <dir>` and executed
+/// happily by `hale run` — the admission gate rejecting correct code.
+#[test]
+fn every_builtin_codegen_answers_checks_clean_as_a_seed() {
+    // The issue's program: the two string predicates, which codegen
+    // answers in `lower_str_predicate_builtin`.
+    let predicates = "fn main() {\n    let s = \"abc\";\n    let b = starts_with(s, \"a\");\n    let c = contains(s, \"b\");\n    println(b, c);\n}\n";
+    let (ok, out) = check(predicates, "779_predicates");
+    assert!(ok, "starts_with / contains: {out}");
+
+    // `eprint` — the one printer of the four `lower_print_call`
+    // accepts that the table had missed.
+    let eprint = "fn main() {\n    eprint(\"x\");\n    eprintln(\"y\");\n    print(\"z\");\n    println(\"w\");\n}\n";
+    let (ok, out) = check(eprint, "779_eprint");
+    assert!(ok, "eprint: {out}");
+
+    // `check_closures()` — the explicit-epoch closure surface, a
+    // statement-position builtin.
+    let closures = "locus Ledger {\n    params { debits: Int = 0; credits: Int = 0; }\n    closure balanced { self.debits ~~ self.credits within 0; epoch explicit; }\n    fn post() { self.debits = self.debits + 1; self.credits = self.credits + 1; check_closures(); }\n}\nmain locus M { params { l: Ledger = Ledger { }; } run() { self.l.post(); } }\nfn main() { M { }; }\n";
+    let (ok, out) = check(closures, "779_check_closures");
+    assert!(ok, "check_closures: {out}");
+
+    // `mean(x)` — accumulator vocabulary inside a closure assertion,
+    // beside `count()` and `sum(x)`, which the table already had.
+    let accumulators = "main locus T {\n    params { delta: Float = 0.0; }\n    closure mean_in_band { mean(self.delta) ~~ 0.0 within 100.0; epoch tick; }\n    closure counted { count() ~~ 1 within 0; epoch tick; }\n    run() { self.delta = 1.0; }\n}\nfn main() { T { }; }\n";
+    let (ok, out) = check(accumulators, "779_accumulators");
+    assert!(ok, "mean / count: {out}");
+}
+
 #[test]
 fn bound_names_still_check() {
     // a free fn, a fn-pointer local, a builtin, a generic fn, a stdlib path

@@ -664,17 +664,30 @@ syntax and don't take `self` (it's implicit).
 
 A call whose callee is a bare identifier must name something: a
 local binding (a fn pointer), a free `fn`, a generic `fn`, or one of
-the builtins the compiler answers itself (`len`, `to_string`, `hex`,
-the printers, `abs` / `min` / `max`, the `bounded` intrinsics, the
-casts). When a **whole seed** is checked (`hale check <directory>`,
-which is what a build compiles and what the organization's gate
-runs), any other bare callee is a type error — `call to X: no free
-fn, generic fn or fn-pointer binding with that name is in scope`,
-with a did-you-mean over the program's fns — rather than an
-`Unknown` that `hale build` refuses later. One file checked alone,
-or a partial program a harness assembles, keeps the permissive
-reading: it may call what a sibling file defines (dna/FRICTION.md
-F.18).
+the builtins the compiler answers itself. Those are `len`,
+`to_string`, `Int`, the printers (`print`, `println`, `eprint`,
+`eprintln`), the numeric trio `abs` / `min` / `max`, the string
+predicates `starts_with` / `contains`, the `bounded` intrinsics
+(`push`, `at`, `set`, `count`, `clear`, `truncate`), the accumulator
+vocabulary a closure assertion may use (`sum`, `count`, `mean`), and
+`check_closures`. When a **whole seed** is checked (`hale check
+<directory>`, which is what a build compiles and what the
+organization's gate runs), any other bare callee is a type error —
+`call to X: no free fn, generic fn or fn-pointer binding with that
+name is in scope`, with a did-you-mean over the program's fns —
+rather than an `Unknown` that `hale build` refuses later. One file
+checked alone, or a partial program a harness assembles, keeps the
+permissive reading: it may call what a sibling file defines
+(dna/FRICTION.md F.18).
+
+The builtin list above is a contract in both directions, and the
+second direction is the one that bites: **a name the compiler
+answers must be exempt from the rule.** A builtin the rule does not
+know about turns the admission gate into a refusal of correct code —
+`hale check` red, `hale run` fine — which is strictly worse than the
+late diagnostic the rule exists to replace. The compiler tests the
+agreement over its whole program corpus rather than trusting the
+list (GH #779).
 
 ### Bare identifiers
 

@@ -123,4 +123,31 @@ of them starts to feel like a coherent vocabulary, the
 how to gather them onto a locus. For now: a free function per
 piece of work.
 
+## Calling a name nothing declares
+
+`hale check <directory>` holds a call to the same standard as a
+read: the callee has to name something. A misspelled call is an
+error at the call, not a mystery from the backend later:
+
+```text
+main.hl:12:14: type error: call to `celcius_to_f`: no free fn,
+generic fn or fn-pointer binding with that name is in scope —
+did you mean `celsius_to_f`?
+```
+
+"Something" means a free function, a generic function, a
+fn-pointer binding — or one of the handful of *builtins* the
+compiler answers itself, which you can call without declaring
+anything: `len`, `to_string`, `Int`, the printers (`print`,
+`println`, `eprint`, `eprintln`), `abs` / `min` / `max`,
+`starts_with` / `contains`, and the `bounded` collection
+intrinsics. Those are not magic names to memorise — you'll meet
+each one where it's useful — but they are why `len(s)` needs no
+import.
+
+Like the unknown-identifier rule, this one wants the whole
+program, so it's on for `hale check <directory>`. One file of a
+multi-file project checked on its own stays permissive: it may
+well be calling something its sibling declares.
+
 Next: [Control flow](./control-flow.md).

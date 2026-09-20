@@ -413,10 +413,12 @@ pub fn check_bundle(
 ///
 /// `strict_idents` (GH #721): the same rule for a bare identifier in
 /// VALUE position. Separate from the callee flag because the two have
-/// different safe surfaces — the build path can hold the identifier
-/// rule (what it bundles is exactly what it compiles) without holding
-/// the callee rule, which still over-fires on bare names codegen
-/// answers itself but `BARE_BUILTIN_CALLEES` does not list.
+/// different safe surfaces — the build path holds the identifier rule
+/// (what it bundles is exactly what it compiles) without holding the
+/// callee rule, which codegen already enforces for itself. (Until
+/// GH #779 the callee rule also over-fired on bare names codegen
+/// answers itself but `BARE_BUILTIN_CALLEES` did not list; that gap
+/// is closed and tested.)
 pub fn check_bundle_scoped(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -14612,14 +14614,44 @@ fn locus_has_unsynchronized_state(
 }
 
 /// The bare names codegen answers itself when they resolve to no user
-/// fn (see `lower` in hale-codegen: `len`, `to_string`, the printers,
-/// the numeric trio, the bounded intrinsics, the casts, `__fmt`). A
-/// call to any other unbound bare name is refused by `hale build`, so
-/// the checker refuses it first (dna/FRICTION.md F.18).
+/// fn. A call to any other unbound bare name is refused by `hale
+/// build`, so the checker refuses it first (dna/FRICTION.md F.18).
+///
+/// **This list must cover every bare name codegen dispatches.** A name
+/// codegen answers but this table lacks makes the admission gate
+/// refuse a program `hale run` executes — GH #779, where
+/// `starts_with` / `contains` / `eprint` / `check_closures` / `mean`
+/// were all missing and four corpus fixtures were red under `hale
+/// check <dir>` while building and running fine. The enforcement is
+/// `corpus_check_build_agreement`'s
+/// `strict_check_refuses_nothing_the_build_accepts`: it runs the
+/// strict-callee rule over the whole corpus and builds anything the
+/// rule refuses, so a new codegen builtin without an entry here is a
+/// failing test rather than a downstream mystery.
+///
+/// Grouped by the codegen dispatch site that answers each name.
+/// Entries marked "no arm today" are over-broad in the safe
+/// direction: `check` lets them through and `hale build` still
+/// refuses them, which is the pre-F.18 behavior, not a regression.
 pub(crate) const BARE_BUILTIN_CALLEES: &[&str] = &[
-    "len", "to_string", "hex", "println", "print", "eprintln", "abs", "min", "max",
-    "sum", "prod", "panic", "exit", "push", "at", "set", "count", "clear", "truncate",
-    "Int", "Float", "String", "Bool", "Bytes", "Decimal", "Duration",
+    // lower_expr's `Expr::Call` arms (hale-codegen `codegen.rs`).
+    "len", "to_string", "Int", "abs", "min", "max",
+    // lower_str_predicate_builtin.
+    "starts_with", "contains",
+    // Statement position: lower_print_call's four printers, and the
+    // explicit-epoch closure surface.
+    "println", "print", "eprintln", "eprint", "check_closures",
+    // Accumulator vocabulary inside a closure assertion
+    // (`collect_sum_calls`). `count()` and `mean(x)` arrive here as
+    // calls; `sum(x)` / `prod(x)` get dedicated AST nodes from the
+    // parser and never reach this rule — listed for the reader.
+    "count", "mean", "sum", "prod",
+    // bounded[T; N] intrinsics — `clear`/`truncate` direct,
+    // `push`/`at`/`set` through the fallible (`or`) path.
+    "clear", "truncate", "push", "at", "set",
+    // No arm today; kept so `check` stays no stricter than it was.
+    "hex", "panic", "exit",
+    "Float", "String", "Bool", "Bytes", "Decimal", "Duration",
     hale_syntax::parser::FMT_BUILTIN,
 ];
 
