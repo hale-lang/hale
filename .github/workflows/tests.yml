@@ -63,6 +63,16 @@ permissions:
 
 env:
   LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
+  # sccache in front of rustc, backed by the Actions cache. rust-cache
+  # (below) keeps dependency artifacts, but the workspace crates and
+  # all ~565 test crates recompile on every commit — 2.6-4.2min of
+  # each partition on 2026-09-20 — even when the commit touched no
+  # Rust at all. sccache keys each rustc invocation on its inputs, so
+  # a .hl-only or docs-only change compiles almost nothing, and a
+  # compiler change recompiles only the crates downstream of it.
+  # Linking is not cached; that is what the dynamic libLLVM is for.
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
 
 jobs:
   # Which jobs this diff can possibly affect.
@@ -184,6 +194,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       # Shared cache across the partitions (and reused run-to-run).
       # rust-cache keeps only the dependency artifacts — the workspace
       # crates and their test binaries change on every commit and
@@ -252,6 +265,10 @@ jobs:
             --release --workspace --features hale-codegen/dynamic-llvm \
             --partition hash:${{ matrix.partition }}/6
 
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
   # 2026-05-26 — TSAN regression coverage for the lockfree
   # substrate paths. F.32-1γ-v2 + the substrate-race-fixes work
   # closed five originally-flagged TSAN races
@@ -278,6 +295,9 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       # Dependency artifacts only (see the test job); the sanitizer
       # env vars reach clang at test time, not the Rust build, so
@@ -348,6 +368,9 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       # Dependency artifacts only (see the test job); the sanitizer
       # env vars reach clang at test time, not the Rust build, so
