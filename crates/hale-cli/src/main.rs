@@ -2318,6 +2318,14 @@ fn resolve_imports(
         // declares a free fn of the alias's name.
         let seed_heads =
             hale_codegen::mangle::seed_path_heads(&stem_prog_refs);
+        // GH #774: the seed as a whole, for binding a claim group
+        // reference no declaration in it answers.
+        let seed_binding = hale_codegen::mangle::SeedBinding {
+            seed_id: &lib_id,
+            declares_main: hale_codegen::mangle::seed_declares_main(
+                &stem_prog_refs,
+            ),
+        };
         seed_cache.insert(lib_key.clone(), seed_renames.clone());
         // GH #746: the lib's own files, for the alias-scoping pass.
         alias_scopes.record_files(
@@ -2336,6 +2344,10 @@ fn resolve_imports(
                 &mut pf.program,
                 &seed_renames,
                 &seed_heads,
+                // GH #774: the seed identity a claim group reference
+                // this seed never declares is bound to, so an
+                // importer's same-named group cannot capture it.
+                seed_binding,
             );
             if trace {
                 eprintln!("[import]     mangle done : {}", pf.path.display());
@@ -2538,6 +2550,30 @@ fn parse_with_imports(
         items: merged_items,
         span: entry_program.span,
     };
+    // GH #762: refuse a reference to an alias the seed it is written
+    // in never declared, before the table can answer it out of
+    // another seed's import row.
+    let unscoped = unscoped_alias_uses(
+        &merged,
+        &file_bases,
+        &sources,
+        &alias_scopes,
+        &seed_cache,
+    );
+    if !unscoped.is_empty() {
+        for u in unscoped {
+            // This path renders each error against its own file's
+            // source, so the span comes back out of the merged
+            // coordinate space it was raised in.
+            let src = sources.get(&u.file).cloned().unwrap_or_default();
+            errors.push((
+                u.file,
+                u.diag.shifted(u.base.wrapping_neg()),
+                src,
+            ));
+        }
+        return Err(errors);
+    }
     // GH #746: before anything resolves through the table, scope any
     // alias two seeds bound to different libs.
     scope_import_aliases(
@@ -2693,6 +2729,339 @@ fn scope_import_aliases(
     }
 }
 
+/// GH #762: one qualified path written in a seed that does not
+/// declare its head.
+///
+/// `base` is the virtual base the file was parsed at, so a caller
+/// that renders against the file's own source (rather than through
+/// `render_located`) can shift the span back into it.
+struct UnscopedAliasUse {
+    file: PathBuf,
+    base: u32,
+    diag: hale_syntax::Diag,
+}
+
+/// One qualified path as the lexer sees it: `head::next`, and the
+/// span covering both segments.
+struct QualifiedUse {
+    head: String,
+    text: String,
+    span: hale_syntax::Span,
+}
+
+/// GH #762: every qualified path in `src`.
+///
+/// `offset` shifts the spans into the enclosing text and `limit`
+/// clamps them: an f-string interpolation body is re-lexed from its
+/// own text, whose byte offsets only approximate the file's when the
+/// body carries escapes — the same clamp `FStringPart::Interp`
+/// documents.
+fn collect_qualified_uses(
+    src: &str,
+    offset: u32,
+    limit: u32,
+    out: &mut Vec<QualifiedUse>,
+) {
+    let Ok(tokens) = hale_syntax::lex(src) else { return };
+    let place = |s: hale_syntax::Span| hale_syntax::Span {
+        start: hale_syntax::Pos(s.start.0.saturating_add(offset).min(limit)),
+        end: hale_syntax::Pos(s.end.0.saturating_add(offset).min(limit)),
+    };
+    for (i, t) in tokens.iter().enumerate() {
+        // A path inside `f"{...}"` lives in the interpolation body,
+        // which the lexer hands over as raw text; recurse so an
+        // f-string is not a hole in the rule.
+        if let hale_syntax::TokenKind::FStringLit(parts) = &t.kind {
+            for p in parts {
+                if let hale_syntax::lexer::FStringPart::Interp {
+                    body,
+                    start,
+                    end,
+                } = p
+                {
+                    collect_qualified_uses(
+                        body,
+                        offset.saturating_add(*start as u32),
+                        limit.min(offset.saturating_add(*end as u32)),
+                        out,
+                    );
+                }
+            }
+            continue;
+        }
+        let hale_syntax::TokenKind::Ident(head) = &t.kind else {
+            continue;
+        };
+        if !matches!(
+            tokens.get(i + 1).map(|n| &n.kind),
+            Some(hale_syntax::TokenKind::ColonColon)
+        ) {
+            continue;
+        }
+        // Only the HEAD of a path: the middle of `a::b::c` and the
+        // member of `x.y::z` are not alias positions.
+        if i > 0
+            && matches!(
+                &tokens[i - 1].kind,
+                hale_syntax::TokenKind::ColonColon
+                    | hale_syntax::TokenKind::Dot
+            )
+        {
+            continue;
+        }
+        let Some(seg) = tokens.get(i + 2) else { continue };
+        let next = match &seg.kind {
+            hale_syntax::TokenKind::Ident(s) => s.clone(),
+            // `group g = { alias::* };` — a trailing glob member.
+            hale_syntax::TokenKind::Star => "*".to_string(),
+            // A member name may be a keyword (`expect_member_name`).
+            other => other.keyword_lexeme().unwrap_or("_").to_string(),
+        };
+        out.push(QualifiedUse {
+            head: head.clone(),
+            text: format!("{}::{}", head, next),
+            span: place(t.span.merge(seg.span)),
+        });
+    }
+}
+
+/// The name a top-level decl introduces. Mirrors the mangler's
+/// private `top_decl_name`; used only for the "a path head may name
+/// this seed's own declaration" exemption below, where a miss costs
+/// an exemption and never a false finding.
+fn top_decl_ident(d: &hale_syntax::ast::TopDecl) -> Option<&str> {
+    use hale_syntax::ast::TopDecl as T;
+    match d {
+        T::Locus(l) => Some(&l.name.name),
+        T::Perspective(p) => Some(&p.name.name),
+        T::Type(t) => Some(&t.name.name),
+        T::Const(c) => Some(&c.name.name),
+        T::Fn(f) => Some(&f.name.name),
+        T::Interface(i) => Some(&i.name.name),
+        T::Topic(t) => Some(&t.name.name),
+        T::RingLayout(r) => Some(&r.name.name),
+        T::Target(t) => Some(&t.name.name),
+        T::Group(g) => Some(&g.name.name),
+        T::Module(_) | T::Claims(_) | T::Constitution(_) => None,
+    }
+}
+
+/// Render `to` for someone reading a diagnostic about a file in
+/// `from_dir`: relative when the two share a root, else as it is.
+fn display_relative(from_dir: &Path, to: &Path) -> String {
+    let from = from_dir
+        .canonicalize()
+        .unwrap_or_else(|_| from_dir.to_path_buf());
+    let to = to.canonicalize().unwrap_or_else(|_| to.to_path_buf());
+    let fc: Vec<_> = from.components().collect();
+    let tc: Vec<_> = to.components().collect();
+    let common = fc
+        .iter()
+        .zip(tc.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    if common == 0 {
+        return to.display().to_string();
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for _ in common..fc.len() {
+        parts.push("..".to_string());
+    }
+    for c in &tc[common..] {
+        parts.push(c.as_os_str().to_string_lossy().into_owned());
+    }
+    if parts.is_empty() {
+        return ".".to_string();
+    }
+    parts.join("/")
+}
+
+/// GH #762: refuse a qualified path whose head is an import alias the
+/// seed it is written in never declared.
+///
+/// An alias binds in its declaring seed ONLY (spec `projects.md`,
+/// "Scoped imports (A4)": there are no re-exports). The per-build
+/// path-rename table is one table keyed by the alias as written, so a
+/// seed that writes `u::f()` while importing nothing resolved through
+/// ANOTHER seed's import row: a library silently called whatever lib
+/// its app happened to spell `u`. Since GH #746 that fails loudly
+/// when two seeds contest the alias, and stayed silent — the shape
+/// this rule ends — whenever it was uncontested.
+///
+/// The scan is lexical on purpose. A qualified path is `IDENT :: ...`
+/// in the token stream wherever it stands — a call, a const, a type,
+/// a struct literal, a `bindings { }` topic, a group member, a claim
+/// operand, an f-string interpolation — so the tokens see every
+/// position at once, including the ones an AST walker would have to
+/// be taught one at a time, and the span comes from the very token
+/// the author typed. It runs before any rename, so heads are still
+/// spelled the way the source spells them.
+///
+/// Exempt: `std::`, the bundled namespace no seed imports; the seed's
+/// own aliases; and a head naming one of the seed's own declarations
+/// (`Type::member` is not an alias at all). A head NO seed in the
+/// build declares is left alone: nothing resolves through it, so it
+/// is already refused downstream, and this rule is about the
+/// reference that silently borrows another seed's import.
+fn unscoped_alias_uses(
+    program: &Program,
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &BTreeMap<PathBuf, String>,
+    scopes: &AliasScopes,
+    seed_cache: &BTreeMap<PathBuf, std::collections::HashMap<String, String>>,
+) -> Vec<UnscopedAliasUse> {
+    let mut out: Vec<UnscopedAliasUse> = Vec::new();
+    // One seed can only reach its own aliases: there is no other
+    // seed's import row to borrow.
+    if scopes.bindings.is_empty() || scopes.files.len() < 2 {
+        return out;
+    }
+    // alias -> the seeds that declare it (with the lib each names),
+    // and each seed -> the aliases it declares.
+    let mut declarers: BTreeMap<&str, Vec<(&Path, &Path)>> = BTreeMap::new();
+    let mut aliases_of: BTreeMap<&Path, std::collections::BTreeSet<&str>> =
+        BTreeMap::new();
+    for (seed, alias, lib) in &scopes.bindings {
+        declarers
+            .entry(alias.as_str())
+            .or_default()
+            .push((seed.as_path(), lib.as_path()));
+        aliases_of
+            .entry(seed.as_path())
+            .or_default()
+            .insert(alias.as_str());
+    }
+    for v in declarers.values_mut() {
+        v.sort();
+        v.dedup();
+    }
+    // file -> the seed that owns it. `file_bases` carries the path as
+    // the caller spelled it and `scopes.files` canonicalizes, so the
+    // lookup tries both spellings (`scope_import_aliases`'s rule).
+    let mut seed_of_file: BTreeMap<&Path, &Path> = BTreeMap::new();
+    for (seed, files) in &scopes.files {
+        for f in files {
+            seed_of_file.insert(f.as_path(), seed.as_path());
+        }
+    }
+    let seed_for = |p: &Path| -> Option<&Path> {
+        if let Some(s) = seed_of_file.get(p) {
+            return Some(s);
+        }
+        let canon = p.canonicalize().ok()?;
+        seed_of_file.get(canon.as_path()).copied()
+    };
+    // What each seed DECLARES, as its own source spells it: an
+    // imported seed's names are `seed_cache`'s keys (the rename
+    // table's left-hand side), and the entry seed's are the items of
+    // the merged program that no mangling touched.
+    let mut own_names: BTreeMap<&Path, std::collections::BTreeSet<&str>> =
+        BTreeMap::new();
+    for (seed, names) in seed_cache {
+        let e = own_names.entry(seed.as_path()).or_default();
+        for n in names.keys() {
+            e.insert(n.as_str());
+        }
+    }
+    let ranges: Vec<(u32, u32, &Path)> = file_bases
+        .iter()
+        .filter_map(|(base, path, len)| {
+            seed_for(path).map(|s| (*base, base.saturating_add(*len), s))
+        })
+        .collect();
+    for item in &program.items {
+        let off = item.span().start.as_usize() as u32;
+        let Some((_, _, seed)) =
+            ranges.iter().find(|(lo, hi, _)| off >= *lo && off < *hi)
+        else {
+            continue;
+        };
+        if let Some(name) = top_decl_ident(item) {
+            own_names.entry(seed).or_default().insert(name);
+        }
+    }
+    // What each seed could possibly borrow: an alias ANOTHER seed
+    // declares and it does not, as it would have to be spelled
+    // (`u::`). A file whose text holds none of them cannot hold a
+    // borrowed reference, so it is never lexed — which is what keeps
+    // this off the `check` latency budget for the ordinary build,
+    // where nobody borrows anything.
+    let mut borrowable: BTreeMap<&Path, Vec<String>> = BTreeMap::new();
+    for seed in scopes.files.keys() {
+        let seed = seed.as_path();
+        let mine = aliases_of.get(seed);
+        borrowable.insert(
+            seed,
+            declarers
+                .iter()
+                .filter(|(alias, binders)| {
+                    !mine.is_some_and(|m| m.contains(**alias))
+                        && binders.iter().any(|(s, _)| *s != seed)
+                })
+                .map(|(alias, _)| format!("{}::", alias))
+                .collect(),
+        );
+    }
+    for (base, path, _) in file_bases {
+        let Some(seed) = seed_for(path) else { continue };
+        let Some(src) = sources.get(path) else { continue };
+        let Some(needles) = borrowable.get(seed) else { continue };
+        if !needles.iter().any(|n| src.contains(n.as_str())) {
+            continue;
+        }
+        let mine = aliases_of.get(seed);
+        let declared = own_names.get(seed);
+        let mut uses: Vec<QualifiedUse> = Vec::new();
+        collect_qualified_uses(src, 0, u32::MAX, &mut uses);
+        for u in uses {
+            if u.head == "std" {
+                continue;
+            }
+            if mine.is_some_and(|a| a.contains(u.head.as_str())) {
+                continue;
+            }
+            if declared.is_some_and(|d| d.contains(u.head.as_str())) {
+                continue;
+            }
+            let Some(binders) = declarers.get(u.head.as_str()) else {
+                continue;
+            };
+            let Some((declaring, lib)) =
+                binders.iter().find(|(s, _)| *s != seed)
+            else {
+                continue;
+            };
+            let here = path.parent().unwrap_or(Path::new("."));
+            // A single-file lib is imported without its extension.
+            let lib_path = if lib.extension().and_then(|s| s.to_str())
+                == Some("hl")
+            {
+                lib.with_extension("")
+            } else {
+                lib.to_path_buf()
+            };
+            let msg = format!(
+                "`{}`: `{}` is not an import of this seed; `{}` \
+                 declares it. An import alias binds in the seed that \
+                 declares it and is not re-exported (spec \
+                 `projects.md`, \"Scoped imports (A4)\") — add \
+                 `import \"{}\" as {};` to this seed to reach that \
+                 library",
+                u.text,
+                u.head,
+                display_relative(here, declaring),
+                display_relative(here, &lib_path),
+                u.head,
+            );
+            out.push(UnscopedAliasUse {
+                file: path.clone(),
+                base: *base,
+                diag: hale_syntax::Diag::ty(u.span.shifted(*base), msg),
+            });
+        }
+    }
+    out
+}
 
 /// Render a post-merge diagnostic, demultiplexing its (globally-unique,
 /// `parse_source_at`-shifted) span back to the file it came from via
@@ -2709,7 +3078,7 @@ fn locate_span(
 ) -> Option<(String, usize, usize)> {
     let off = span.start.as_usize() as u32;
     for (base, path, len) in file_bases {
-        if off >= *base && off < base.saturating_add(*len) {
+        if file_owns_offset(*base, *len, off) {
             let src = sources.get(path)?;
             let (l, c) = span.shifted(base.wrapping_neg()).line_col(src);
             return Some((path.display().to_string(), l, c));
@@ -2725,7 +3094,7 @@ fn render_located(
 ) -> String {
     let off = d.span.start.as_usize() as u32;
     for (base, path, len) in file_bases {
-        if off >= *base && off < base.saturating_add(*len) {
+        if file_owns_offset(*base, *len, off) {
             if let Some(src) = sources.get(path) {
                 let mut out =
                     d.render_located(&path.display().to_string(), src, *base);
@@ -2750,6 +3119,62 @@ fn render_located(
     d.render(any)
 }
 
+/// Does the file parsed at `base`, `len` bytes long, own merged
+/// offset `off`? The window both renderers above and
+/// `render_diag_json` below test a span against.
+///
+/// It is INCLUSIVE of `base + len`, the one-past-the-last-byte
+/// position the `Eof` token carries (`Span::new(pos, pos)` at the end
+/// of the source). A parse error that cites EOF — `expected }, got
+/// Eof`, the missing closing brace, the commonest syntactic mistake
+/// there is — sits exactly there, and a half-open window put it in no
+/// file at all: it rendered with no filename and, once parse errors
+/// reached `render_diag_json`, as `"file":"","line":0,"col":0`
+/// (GH #777). Files are parsed at bases spaced `len + 1` apart
+/// (`parse_files`, `resolve_imports`), so that byte belongs to no
+/// other file; `file_of_span` has always read the window this way.
+fn file_owns_offset(base: u32, len: u32, off: u32) -> bool {
+    off >= base && off <= base.saturating_add(len)
+}
+
+/// GH #777: a file the target itself OWNS did not parse.
+///
+/// `parse_files` predates the JSON reporting path: it rendered each
+/// parse diagnostic straight to stderr as text and handed its caller a
+/// bare exit code, so `hale check --json` answered a syntactically
+/// broken seed with a non-zero exit and an EMPTY NDJSON stream — a CI
+/// gate, an admission step or an LSP client saw a real failure with
+/// nothing explaining it, for a whole error class. That is the same
+/// defect [`CheckableFailure`] closed for IMPORTED files (GH #765) and
+/// the one `diag_reporting.rs` records for the old sync-inference
+/// pre-pass. The diagnostics now travel to the caller, which renders
+/// them through the two helpers every other finding goes through. The
+/// file map travels with them because the spans are bundle-global
+/// offsets, and the source map carries the files that did NOT parse
+/// too — they have no program, but their text is what a span resolves
+/// against.
+struct ParseFailure {
+    diags: Vec<hale_syntax::Diag>,
+    file_bases: Vec<(u32, PathBuf, u32)>,
+    sources: BTreeMap<PathBuf, String>,
+}
+
+impl ParseFailure {
+    /// Render as located text on stderr — what `build` and `run` have
+    /// always printed, neither of which has a machine-readable channel
+    /// — and hand back the exit status. `check` and `verify` take the
+    /// other road, through [`CheckableFailure::report`].
+    fn report_text(&self) -> ExitCode {
+        for d in &self.diags {
+            eprintln!(
+                "{}",
+                render_located(d, &self.file_bases, &self.sources)
+            );
+        }
+        ExitCode::from(1)
+    }
+}
+
 fn parse_files(
     files: &[PathBuf],
 ) -> Result<
@@ -2758,7 +3183,7 @@ fn parse_files(
         BTreeMap<PathBuf, String>,
         Vec<(u32, PathBuf, u32)>,
     ),
-    ExitCode,
+    ParseFailure,
 > {
     let mut programs: BTreeMap<PathBuf, Program> = BTreeMap::new();
     let mut sources: BTreeMap<PathBuf, String> = BTreeMap::new();
@@ -2766,6 +3191,9 @@ fn parse_files(
     // merged spans demultiplex back to their file (see parse_source_at).
     let mut file_bases: Vec<(u32, PathBuf, u32)> = Vec::new();
     let mut had_error = false;
+    // GH #777: carried to the caller instead of printed here, so the
+    // reporting path that honours `--json` sees them.
+    let mut parse_diags: Vec<hale_syntax::Diag> = Vec::new();
     for f in files {
         let source = match fs::read_to_string(f) {
             Ok(s) => s,
@@ -2777,21 +3205,27 @@ fn parse_files(
         };
         let base = file_bases.last().map(|(b, _, l)| b + l + 1).unwrap_or(0);
         file_bases.push((base, f.clone(), source.len() as u32));
-        match hale_syntax::parse_source_at(&source, base) {
+        let parsed = hale_syntax::parse_source_at(&source, base);
+        // A file that did not parse still contributes its text: the
+        // renderers resolve a span against the source of the file whose
+        // base window holds it, and that file is this one.
+        sources.insert(f.clone(), source);
+        match parsed {
             Ok(p) => {
                 programs.insert(f.clone(), p);
-                sources.insert(f.clone(), source);
             }
             Err(diags) => {
-                for d in &diags {
-                    eprintln!("{}", d.render_located(&f.display().to_string(), &source, base));
-                }
+                parse_diags.extend(diags);
                 had_error = true;
             }
         }
     }
     if had_error {
-        return Err(ExitCode::from(1));
+        return Err(ParseFailure {
+            diags: parse_diags,
+            file_bases,
+            sources,
+        });
     }
     Ok((programs, sources, file_bases))
 }
@@ -2799,15 +3233,16 @@ fn parse_files(
 /// GH #765: how [`collect_checkable`] failed.
 ///
 /// A bare `code` means the reason was already printed — a bad target,
-/// or a file the target itself OWNS that did not parse (`parse_files`
-/// reports those). `diags` carries findings the CALLER must render:
-/// something in the IMPORT GRAPH that did not parse, or an import that
-/// could not be resolved at all. Those have to reach the same
-/// reporting path every other check diagnostic takes, or `--json`
-/// emits nothing and the position comes out against the wrong file —
-/// the trap the pre-pass resolver comment in `run_check_impl_labelled`
-/// records. The file map travels with them because the spans are
-/// bundle-global offsets into files the caller never saw.
+/// or a file that could not be read at all. `diags` carries findings
+/// the CALLER must render: something in the IMPORT GRAPH that did not
+/// parse, an import that could not be resolved at all, or (GH #777) a
+/// file the target itself owns that did not parse. Those have to reach
+/// the same reporting path every other check diagnostic takes, or
+/// `--json` emits nothing and the position comes out against the wrong
+/// file — the trap the pre-pass resolver comment in
+/// `run_check_impl_labelled` records. The file map travels with them
+/// because the spans are bundle-global offsets into files the caller
+/// never saw.
 struct CheckableFailure {
     code: u8,
     diags: Vec<hale_syntax::Diag>,
@@ -2823,6 +3258,19 @@ impl CheckableFailure {
             diags: Vec::new(),
             file_bases: Vec::new(),
             sources: BTreeMap::new(),
+        }
+    }
+
+    /// GH #777: a parse failure in the target's OWN files, carried
+    /// here rather than printed by `parse_files`, so `check --json`
+    /// and `verify --json` report a syntactic failure as records like
+    /// every other finding instead of as an empty stream.
+    fn from_parse(f: ParseFailure) -> Self {
+        Self {
+            code: 1,
+            diags: f.diags,
+            file_bases: f.file_bases,
+            sources: f.sources,
         }
     }
 
@@ -2877,10 +3325,11 @@ fn collect_checkable(
             return Err(CheckableFailure::code(1));
         }
     };
-    // `parse_files` still reports an `ExitCode` (its other two
-    // callers hand one straight back); it only ever fails with 1.
+    // GH #777: a parse failure in the target's own files travels the
+    // same road an imported file's does — the diagnostics reach the
+    // one reporting site, which honours `--json`.
     let (programs, sources, file_bases) =
-        parse_files(&files).map_err(|_| CheckableFailure::code(1))?;
+        parse_files(&files).map_err(CheckableFailure::from_parse)?;
 
     // The files the target itself owns — everything else reached
     // from here arrived through an `import`.
@@ -2990,6 +3439,25 @@ fn collect_checkable(
         items: merged_items,
         span: merged.span,
     };
+    // GH #762: a qualified path must name an alias its OWN seed
+    // declares — `check` is where that has to be said, since the
+    // reference otherwise resolves through another seed's row and
+    // nothing downstream ever sees a problem.
+    let unscoped = unscoped_alias_uses(
+        &program,
+        &file_bases,
+        &path_sources,
+        &alias_scopes,
+        &seed_cache,
+    );
+    if !unscoped.is_empty() {
+        return Err(CheckableFailure {
+            code: 1,
+            diags: unscoped.into_iter().map(|u| u.diag).collect(),
+            file_bases,
+            sources: path_sources,
+        });
+    }
     // GH #746: scope a contested alias to its declaring seed before
     // anything resolves through the table.
     scope_import_aliases(
@@ -5008,7 +5476,7 @@ fn render_diag_json(
     let mut line = 0usize;
     let mut col = 0usize;
     for (base, path, len) in file_bases {
-        if off >= *base && off < base.saturating_add(*len) {
+        if file_owns_offset(*base, *len, off) {
             if let Some(src) = sources.get(path) {
                 let (l, c) = d
                     .span
@@ -6224,7 +6692,9 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     };
     let (programs, sources, mut file_bases) = match parse_files(&files) {
         Ok(x) => x,
-        Err(code) => return code,
+        // `run` has no machine-readable channel: the same located
+        // text it always printed (GH #777 moved the printing here).
+        Err(f) => return f.report_text(),
     };
 
     // WS3.3 (2026-06-11): a directory `hale run` now resolves
@@ -6311,6 +6781,21 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         items: merged_items,
         span: merged.span,
     };
+    // GH #762: refuse a reference to an alias this seed never
+    // declared, the same as `check` does.
+    let unscoped = unscoped_alias_uses(
+        &program,
+        &file_bases,
+        &path_sources,
+        &alias_scopes,
+        &seed_cache,
+    );
+    if !unscoped.is_empty() {
+        for u in &unscoped {
+            eprintln!("{}", render_located(&u.diag, &file_bases, &path_sources));
+        }
+        return ExitCode::from(1);
+    }
     // Rewrite qualified-path TypeExprs + synthesize JSON parsers +
     // apply sync inference before typecheck — the same pre-passes
     // `hale build <dir>` runs, so a directory `run` and `build`
@@ -6405,7 +6890,8 @@ fn run_build(target: &Path) -> ExitCode {
         };
         let (programs, sources, mut dir_file_bases) = match parse_files(&files) {
             Ok(x) => x,
-            Err(code) => return code,
+            // As for `run`: located text, unchanged (GH #777).
+            Err(f) => return f.report_text(),
         };
         // Collect the union of all imports across the bundle's
         // files. Multiple files in one seed may share an import
@@ -6495,6 +6981,24 @@ fn run_build(target: &Path) -> ExitCode {
             items: merged_items,
             span: merged.span,
         };
+        // GH #762: refuse a reference to an alias this seed never
+        // declared, the same as `check` does.
+        let unscoped = unscoped_alias_uses(
+            &with_imports,
+            &dir_file_bases,
+            &path_sources,
+            &alias_scopes,
+            &seed_cache,
+        );
+        if !unscoped.is_empty() {
+            for u in &unscoped {
+                eprintln!(
+                    "{}",
+                    render_located(&u.diag, &dir_file_bases, &path_sources)
+                );
+            }
+            return ExitCode::from(1);
+        }
         // GH #746: scope a contested alias to its declaring seed.
         scope_import_aliases(
             &mut with_imports,

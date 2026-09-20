@@ -355,6 +355,25 @@ binding registered won, both seeds resolved to one library, and
 nothing reported it (`hale check` passed and the binary computed
 the wrong value).
 
+**A reference must name an alias its own seed declares.** The
+guarantee above holds in both directions, so a qualified path whose
+head is an import alias that some *other* seed of the build declares
+— and this one does not — is a check error located at the path,
+naming the seed that does declare it. This closes the other half of
+the flat-table hole: a seed that imported nothing at all could write
+`u::f()` and have the one table answer it out of an importer's row,
+so a library silently called whatever library its app happened to
+spell `u` (and the same library, compiled from a different app,
+called something else). Until GH #762 that was accepted in silence
+whenever the alias was uncontested, and reported only when two seeds
+contested it.
+
+Exempt from the rule: `std::`, the bundled namespace no seed
+imports, and a head naming one of the seed's own declarations
+(`Color::Red` is an enum variant, not an alias). A head NO seed in
+the build declares is refused where it always was, at build —
+nothing resolves through it either way.
+
 One seed whose own files disagree — the same alias bound to two
 libraries inside a single namespace — resolves to one of them, as
 it always has; the compiler does not (yet) reject that shape.
@@ -513,7 +532,7 @@ End-to-end coverage lives in
 | Surface | Effect |
 |---|---|
 | `hale build --dev` / `HALE_DEV=1` | Latency mode: LLVM O1 pipeline + Less machine codegen instead of the O3/`target-cpu=native` release default. For edit-build-run loops. |
-| `hale check --json` | NDJSON diagnostics on stdout, one object per line (`file`/`line`/`col`/`severity`/`kind`/`message`, plus `related`: an array of `{file, line, col, note}` secondary locations, present only when a diagnostic has them — e.g. a duplicate name's previous declaration; 2026-08-11) — editor/LSP consumption. `hale check` runs in ~10 ms on the largest apps. |
+| `hale check --json` | NDJSON diagnostics on stdout, one object per line (`file`/`line`/`col`/`severity`/`kind`/`message`, plus `related`: an array of `{file, line, col, note}` secondary locations, present only when a diagnostic has them — e.g. a duplicate name's previous declaration; 2026-08-11) — editor/LSP consumption. EVERY finding that fails the command is a record, including a lexical or syntactic one: a file that does not parse — the target's own or any file reached through an `import` — emits one record per diagnostic, `"kind":"parse error"` (or `"lex error"`), at that file's own line and column (2026-09-19, GH #777; before it the parse path printed text to stderr and left `--json` empty, so a gate saw a non-zero exit with nothing explaining it). An empty stream therefore means a clean seed, and nothing else does. `hale verify --json` is the same stream under the stricter gate. `hale check` runs in ~10 ms on the largest apps. |
 | `HALE_TIME=1` | Per-phase build wall times on stderr (front-end+codegen, llvm-passes, obj-emit, emit+link). |
 | `--no-warn-unbounded-alloc` | Opts a run out of the default-on memory-bound survey (see verification.md). |
 | `hale check --sealable` | Reports which loci could take `@sealed` and what it would cost: per locus, the sites outside it that read or write its `params`. Empty means sealing is a no-op. The survey reruns the real check against an all-sealed clone rather than approximating the rule, so it cannot disagree with the checker. |

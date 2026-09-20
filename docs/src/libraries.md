@@ -65,7 +65,10 @@ way of type names.
 An alias also belongs to the seed that declares it: a library you
 vendor may call something `u` while your own program calls a
 different library `u`, and each `u::f()` means the one its own seed
-imported.
+imported. It follows that a seed can only use the aliases it
+declares itself — `u::f()` written in a seed with no `import … as
+u;` is a check error that names the seed which does declare `u`,
+rather than quietly borrowing that seed's import.
 
 ## The catalog
 

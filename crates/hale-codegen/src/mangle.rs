@@ -152,20 +152,66 @@ fn collect_path_heads(prog: &Program, out: &mut HashSet<String>) {
 /// Path heads default to this file's own type declarations; a
 /// multi-file seed should call `mangle_with_renames_in_seed` with
 /// `seed_path_heads` over the whole bundle.
+///
+/// The seed has no identity here, so a claim group reference this
+/// seed never declares is left as written (GH #774): binding it to
+/// its seed needs a seed id, which only the import resolver has.
 pub fn mangle_with_renames(prog: &mut Program, renames: &HashMap<String, String>) {
     let mut heads: HashSet<String> = HashSet::new();
     collect_path_heads(prog, &mut heads);
-    mangle_with_renames_in_seed(prog, renames, &heads);
+    mangle_with_renames_in_seed(
+        prog,
+        renames,
+        &heads,
+        SeedBinding::default(),
+    );
+}
+
+/// GH #774: does any file of this seed declare a `main locus`? See
+/// [`SeedBinding::declares_main`]. Seed-wide for the same reason
+/// `seed_path_heads` is: a seed's files share one namespace and one
+/// world.
+pub fn seed_declares_main(programs: &[(String, &Program)]) -> bool {
+    programs.iter().any(|(_, prog)| {
+        prog.items.iter().any(
+            |item| matches!(item, TopDecl::Locus(l) if l.is_main),
+        )
+    })
+}
+
+/// GH #774: what the mangler needs to know about the seed as a
+/// WHOLE to bind a claim group reference no declaration in it
+/// answers. Seed-wide, like `seed_path_heads`, because the file
+/// carrying a claim need not be the file carrying the main.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SeedBinding<'a> {
+    /// The stable identity of the seed being mangled — the same
+    /// `lib_id` the mangled prefixes are built from. Empty means "no
+    /// seed identity", which leaves an unbound reference as written.
+    pub seed_id: &'a str,
+    /// Does this seed declare a `main locus`? Then it closes a world
+    /// and its `constitution`s can only be adopted by that main, so
+    /// their vocabulary is this seed's. A seed with no main is a
+    /// POLICY seed: spec `verification.md` "Groups are not implied"
+    /// makes its constitution's group vocabulary the adopting
+    /// entrypoint's to declare, and binding it would break that.
+    pub declares_main: bool,
 }
 
 /// `mangle_with_renames` with the seed's path heads supplied by the
 /// caller (`seed_path_heads` over every file in the bundle) so the
 /// module-alias exemption is decided against the whole seed's type
 /// names, not just this file's.
+///
+/// GH #774: `seed` binds a claim group reference NO declaration in
+/// this seed answers to the seed that wrote it
+/// (`unbound_group_sentinel`) instead of letting it travel as
+/// written, so an importer's same-named group cannot capture it.
 pub fn mangle_with_renames_in_seed(
     prog: &mut Program,
     renames: &HashMap<String, String>,
     path_heads: &HashSet<String>,
+    seed: SeedBinding<'_>,
 ) {
     if renames.is_empty() {
         return;
@@ -186,6 +232,7 @@ pub fn mangle_with_renames_in_seed(
         module_aliases,
         alias_heads: HashMap::new(),
         mangling: true,
+        seed,
     };
     for item in &mut prog.items {
         walker.walk_top_decl(item);
@@ -226,6 +273,9 @@ pub fn rewrite_import_alias_heads(
         module_aliases: HashSet::new(),
         alias_heads: alias_heads.clone(),
         mangling: false,
+        // Heads only: this pass carries no decl renames, so it is in
+        // no position to decide that a group reference is unbound.
+        seed: SeedBinding::default(),
     };
     walker.walk_top_decl(d);
 }
@@ -830,6 +880,11 @@ struct Mangler<'a> {
     /// library-tier, which is true of an imported seed's block and
     /// false of the closing seed's.
     mangling: bool,
+    /// GH #774: what the seed being mangled is, for binding a claim
+    /// group reference no declaration in it answers to the seed that
+    /// wrote it. Default (no identity) on every pass that has none,
+    /// which leaves such a reference as written.
+    seed: SeedBinding<'a>,
 }
 
 impl<'a> Mangler<'a> {
@@ -855,6 +910,37 @@ impl<'a> Mangler<'a> {
             *n = new_name.clone();
         }
     }
+    /// GH #774: a GROUP reference in claim position.
+    ///
+    /// Same rename as any other intra-seed reference, plus the case
+    /// the rename table cannot cover: a name NO declaration in this
+    /// seed answers. Left as written it is a bare name in the merged
+    /// program, so an importer that declares a group of that name
+    /// captures it — the defining seed's "unknown group" error turns
+    /// into a law evaluated against a stranger's group. Binding it to
+    /// this seed keeps it unresolved in every build. The sentinel is
+    /// unspeakable in user source and carries the author's spelling,
+    /// so the diagnostic still names the group the author wrote.
+    ///
+    /// `bind` is false on the one claim surface whose vocabulary is
+    /// deliberately somebody else's: a POLICY seed's `constitution`
+    /// (see `SeedBinding::declares_main`).
+    fn rewrite_group_ident(&self, n: &mut String, bind: bool) {
+        if self.is_shadowed(n) {
+            return;
+        }
+        if let Some(new_name) = self.renames.get(n) {
+            *n = new_name.clone();
+            return;
+        }
+        if bind && !self.seed.seed_id.is_empty() {
+            *n = hale_syntax::ast::unbound_group_sentinel(
+                self.seed.seed_id,
+                n,
+            );
+        }
+    }
+
     fn rewrite_single_segment_path(&self, q: &mut QualifiedName) {
         if q.segments.len() == 1 {
             self.rewrite_ident(&mut q.segments[0].name);
@@ -1028,13 +1114,29 @@ impl<'a> Mangler<'a> {
                 if self.mangling {
                     cb.lib_tier = true;
                 }
-                self.rewrite_claim_entry_idents(&mut cb.entries);
+                // GH #774: a library-tier block swears about ITSELF
+                // and its own boundary, so a group it does not
+                // declare is its own error and nobody else's to
+                // answer.
+                self.rewrite_claim_entry_idents(&mut cb.entries, true);
             }
             // GH #409: a constitution can live in an imported seed
             // — that is the point of it — so its references resolve
             // through the same table.
             TopDecl::Constitution(cd) => {
-                self.rewrite_claim_entry_idents(&mut cd.entries);
+                // GH #774: and only a seed that closes a world binds
+                // what the table cannot answer. A constitution in a
+                // seed with a `main locus` can be adopted by nothing
+                // but that main, so its vocabulary is this seed's; a
+                // POLICY seed's constitution is adopted elsewhere,
+                // and spec `verification.md` ("Groups are not
+                // implied") makes those groups the adopting
+                // entrypoint's to declare — an environment matrix
+                // binds one policy seed to entrypoints that each
+                // declare their own, some of them
+                // `{ } may_be_empty`.
+                let bind = self.seed.declares_main;
+                self.rewrite_claim_entry_idents(&mut cd.entries, bind);
             }
         }
         self.pop_scope();
@@ -1064,7 +1166,15 @@ impl<'a> Mangler<'a> {
     /// `claims { }` block — every claimset that can arrive through an
     /// import, so all of them resolve their references through the
     /// same rename table.
-    fn rewrite_claim_entry_idents(&mut self, entries: &mut [ClaimDecl]) {
+    ///
+    /// GH #774: every GROUP operand goes through
+    /// `rewrite_group_ident`, which also covers the case the rename
+    /// table cannot — a group this seed never declared.
+    fn rewrite_claim_entry_idents(
+        &mut self,
+        entries: &mut [ClaimDecl],
+        bind: bool,
+    ) {
         for e in entries {
                 match &mut e.form {
                     ClaimForm::ForbidReaches {
@@ -1075,11 +1185,11 @@ impl<'a> Mangler<'a> {
                     } => {
                         for set in [src, dst] {
                             if let ClaimSet::Group(g) = set {
-                                self.rewrite_ident(&mut g.name);
+                                self.rewrite_group_ident(&mut g.name, bind);
                             }
                         }
                         if let Some(g) = avoiding {
-                            self.rewrite_ident(&mut g.name);
+                            self.rewrite_group_ident(&mut g.name, bind);
                         }
                     }
                     ClaimForm::OnlyEdges {
@@ -1087,8 +1197,8 @@ impl<'a> Mangler<'a> {
                         dst,
                         grants,
                     } => {
-                        self.rewrite_ident(&mut src.name);
-                        self.rewrite_ident(&mut dst.name);
+                        self.rewrite_group_ident(&mut src.name, bind);
+                        self.rewrite_group_ident(&mut dst.name, bind);
                         for g in grants {
                             if g.topic.segments.len() == 1 {
                                 self.rewrite_ident(
@@ -1103,10 +1213,10 @@ impl<'a> Mangler<'a> {
                         }
                     }
                     ClaimForm::Bound { from, .. } => {
-                        self.rewrite_ident(&mut from.name);
+                        self.rewrite_group_ident(&mut from.name, bind);
                     }
                     ClaimForm::Require { group, topic, .. } => {
-                        self.rewrite_ident(&mut group.name);
+                        self.rewrite_group_ident(&mut group.name, bind);
                         if topic.segments.len() == 1 {
                             self.rewrite_ident(
                                 &mut topic.segments[0].name,
@@ -1118,7 +1228,7 @@ impl<'a> Mangler<'a> {
                     }
                     ClaimForm::RequireSealed { group }
                     | ClaimForm::Cover { group, .. } => {
-                        self.rewrite_ident(&mut group.name);
+                        self.rewrite_group_ident(&mut group.name, bind);
                     }
                     // Names an effect CLASS, not a group or topic;
                     // nothing to rewrite.
@@ -1284,7 +1394,10 @@ impl<'a> Mangler<'a> {
                 // keeps its defining seed's vocabulary and an
                 // importer's same-named group cannot be substituted
                 // for it.
-                self.rewrite_claim_entry_idents(&mut cb.entries);
+                //
+                // GH #774: including a group this seed never
+                // declared — main's law is about main's own world.
+                self.rewrite_claim_entry_idents(&mut cb.entries, true);
             }
         }
     }

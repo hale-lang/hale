@@ -1,0 +1,21 @@
+// GH #774, constitution tier: the importer declares a `guests` of its
+// own over an innocent locus. The adopted clause still names nothing,
+// so the closing build reports the unknown group.
+import "../seed-const-missing" as chat;
+
+locus Bystander {
+    params {
+        idle: Int = 0;
+    }
+    fn tick() {
+        self.idle = self.idle + 1;
+    }
+}
+
+group guests = { Bystander };
+
+fn main() {
+    let b = Bystander { };
+    b.tick();
+    println("idle ", b.idle);
+}

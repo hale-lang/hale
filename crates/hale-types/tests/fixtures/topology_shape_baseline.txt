@@ -37,9 +37,13 @@ crates/hale-cli/tests/fixtures/hot-factory-lib/matrix.hl f58a9d028a76a94b
 crates/hale-cli/tests/fixtures/imported-main-claims/app-adopt/main.hl f2c1228edb650960
 crates/hale-cli/tests/fixtures/imported-main-claims/app-bad-collision/main.hl c4d04e0410a37ec1
 crates/hale-cli/tests/fixtures/imported-main-claims/app-bad/main.hl f2c1228edb650960
+crates/hale-cli/tests/fixtures/imported-main-claims/app-const-missing/main.hl b644c94d0d98e0d7
+crates/hale-cli/tests/fixtures/imported-main-claims/app-lib-missing/main.hl b644c94d0d98e0d7
+crates/hale-cli/tests/fixtures/imported-main-claims/app-missing-collision/main.hl b644c94d0d98e0d7
 crates/hale-cli/tests/fixtures/imported-main-claims/app-missing/main.hl f2c1228edb650960
 crates/hale-cli/tests/fixtures/imported-main-claims/app/main.hl f2c1228edb650960
 crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl 653102d16139102d
+crates/hale-cli/tests/fixtures/imported-main-claims/seed-policy/policy.hl af67c9605fa68550
 crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl 653102d16139102d
 crates/hale-cli/tests/fixtures/p3-namespace-method-app/main.hl b6eaa051f60dcfff
 crates/hale-cli/tests/fixtures/p3-namespace-method-lib/grid.hl 83dd3572f7c59f69

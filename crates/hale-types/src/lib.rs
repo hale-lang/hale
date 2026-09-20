@@ -156,10 +156,13 @@ pub fn check_bundle_opts(
 /// with a span instead of arriving as codegen's spanless `unknown
 /// identifier`.
 ///
-/// The F.18 callee rule stays OFF here: it still refuses bare names
-/// codegen answers itself but `BARE_BUILTIN_CALLEES` does not list
-/// (`29-helpers` in the fixture corpus builds and would be refused),
-/// and a build that succeeds today must keep succeeding.
+/// The F.18 callee rule stays OFF here. GH #779 closed the gap that
+/// made it unsafe — `BARE_BUILTIN_CALLEES` now covers every bare name
+/// codegen answers, enforced by
+/// `corpus_check_build_agreement::strict_check_refuses_nothing_the_build_accepts`
+/// — but the build path already refuses these calls in codegen, so
+/// turning the flag on here would only change which layer says so.
+/// That is a diagnostic change, separate from #779's gate fix.
 pub fn check_bundle_opts_whole_program(
     bundle: &Bundle<'_>,
     allow_unowned_subscriber: bool,

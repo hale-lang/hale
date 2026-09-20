@@ -62,6 +62,14 @@ pub fn lower_claims(
         .map(|(segs, mangled)| (mangled.as_str(), segs.join("::")))
         .collect();
     let display_of = |raw: &str| -> String {
+        // GH #774: a claim group reference bound to the seed that
+        // wrote it because no declaration in that seed answered it.
+        // The sentinel is synthesized at the merge, so it has no
+        // rename-table row — and carries the author's spelling for
+        // exactly that reason.
+        if let Some(n) = hale_syntax::ast::unbound_group_name(raw) {
+            return n.to_string();
+        }
         demangle.get(raw).cloned().unwrap_or_else(|| n_to_owned(raw))
     };
     fn n_to_owned(s: &str) -> String {

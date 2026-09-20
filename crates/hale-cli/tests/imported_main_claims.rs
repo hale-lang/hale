@@ -20,6 +20,20 @@
 //!     one the claim was written against;
 //!   - the adopted-constitution form, which already worked through
 //!     an import, still does.
+//!
+//! GH #774 extends the third of those to the case the rename table
+//! could not reach. A reference NO declaration in the defining seed
+//! answers has nothing to be rewritten to, so it used to travel as
+//! written — and an importer that happened to declare a group of
+//! that name captured it, which made the defining seed's
+//! unknown-group error disappear and evaluated the law against a
+//! stranger's group. It is now bound to the seed that wrote it, in
+//! all three tiers a claim can travel in: an inline main-locus
+//! claim, a library-tier `claims { }` block, and a `constitution`
+//! declared by a seed that closes a world. The last of those has a
+//! carve-out with a test of its own — a POLICY seed's constitution
+//! is adopted elsewhere, and its vocabulary belongs to whoever
+//! adopts it.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -103,6 +117,97 @@ fn a_genuinely_missing_group_still_errors_both_ways() {
                  which is never declared"
             ),
             "`{}`: the unknown-group diagnostic must stand:\n{}",
+            seed,
+            out
+        );
+    }
+}
+
+/// GH #774 — the capture, in every tier a claim travels in.
+///
+/// `direct` is the defining seed on its own; `importer` declares a
+/// group of the missing name over an innocent locus of its own. The
+/// error is the SAME error in both builds, and it names the group the
+/// author wrote — a seed-bound reference is unspeakable in source, so
+/// letting its synthesized spelling reach the message would point at
+/// something that appears nowhere.
+fn an_undeclared_group_stays_undeclared(
+    direct: &str,
+    importer: &str,
+    claim: &str,
+) {
+    for seed in [direct, importer] {
+        let out = check(seed);
+        assert!(
+            out.contains(&format!(
+                "claim `{}` names group `guests`, which is never \
+                 declared",
+                claim
+            )),
+            "`{}`: an undeclared group is an error in the defining \
+             seed regardless of what an importer declares:\n{}",
+            seed,
+            out
+        );
+        assert!(
+            !out.contains("__lib_") && !out.contains("__unbound"),
+            "`{}`: no synthesized spelling may reach the \
+             diagnostic:\n{}",
+            seed,
+            out
+        );
+    }
+}
+
+/// An inline main-locus claim (the GH #733 surface).
+#[test]
+fn an_inline_claims_undeclared_group_is_not_captured() {
+    an_undeclared_group_stays_undeclared(
+        "seed-missing",
+        "app-missing-collision",
+        "guests_sign_nothing",
+    );
+}
+
+/// A library-tier `claims { }` block, which travels by design.
+#[test]
+fn a_library_tier_undeclared_group_is_not_captured() {
+    an_undeclared_group_stays_undeclared(
+        "seed-lib-missing",
+        "app-lib-missing",
+        "guests_never_stamp",
+    );
+}
+
+/// An adopted `constitution` — the form GH #733's workaround moved
+/// law INTO, so it is the one most likely to be travelling.
+#[test]
+fn a_constitutions_undeclared_group_is_not_captured() {
+    an_undeclared_group_stays_undeclared(
+        "seed-const-missing",
+        "app-const-missing",
+        "guests_sign_nothing",
+    );
+}
+
+/// The carve-out, and the reason the constitution rule above is
+/// about the seed and not about the keyword: a POLICY seed closes no
+/// world, so its constitution is adopted elsewhere and its group
+/// vocabulary is the ADOPTING entrypoint's to declare (spec
+/// `verification.md`, "Groups are not implied" — an environment
+/// matrix binds one policy seed to entrypoints that each declare
+/// their own, some of them `{ } may_be_empty`). Binding that
+/// reference to the policy seed would make the documented shape
+/// uncheckable, so `seed-policy` deliberately leaves `guests` open
+/// and `app-policy` answers it.
+#[test]
+fn a_policy_seeds_constitution_still_takes_the_adopters_vocabulary() {
+    for seed in ["seed-policy", "app-policy"] {
+        let out = check(seed);
+        assert!(
+            !out.contains("type error"),
+            "`{}`: an adopting entrypoint declares the \
+             constitution's groups:\n{}",
             seed,
             out
         );

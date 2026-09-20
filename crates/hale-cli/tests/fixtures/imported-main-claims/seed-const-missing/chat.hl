@@ -1,0 +1,42 @@
+// GH #774, constitution tier: an adopted constitution whose clause
+// names a group this seed never declares. The workaround shape for
+// GH #733 is the one most likely to travel, so it gets the same
+// guarantee: the clause's vocabulary is the constitution's own seed.
+@sealed
+locus SessionSigner {
+    params {
+        key: Int = 40961;
+    }
+    @effects(is: { secret_use })
+    fn stamp(room: Int) -> Int {
+        return room * 31 + self.key % 997;
+    }
+}
+
+locus Participant {
+    params {
+        name: String = "guest";
+        own: SessionSigner = SessionSigner { };
+    }
+    run() {
+        println("signed ", self.own.stamp(1));
+    }
+}
+
+group participants = { Participant };
+
+constitution House {
+    guests_sign_nothing: forbid reaches(guests, effects(secret_use));
+}
+
+main locus ChatServer {
+    params {
+        ada: Participant = Participant { name: "ada" };
+    }
+    claims {
+        adopt House;
+    }
+    run() {
+        std::time::sleep(10ms);
+    }
+}

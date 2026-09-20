@@ -2978,3 +2978,35 @@ pub fn unscoped_alias(head: &str) -> &str {
         None => head,
     }
 }
+
+/// GH #774: the spelling an imported seed's claim group reference is
+/// bound to when NO declaration in that seed answers it.
+///
+/// A claim's vocabulary is its own seed's (spec `verification.md`).
+/// The import rename table only holds the names a seed DECLARES, so
+/// a reference nothing in the seed declares used to travel through
+/// the merge exactly as written — and an importer that happened to
+/// declare a group of that name captured it, so the defining seed's
+/// "unknown group" error disappeared and the law was evaluated
+/// against a stranger's group. Binding the reference to its seed at
+/// the merge keeps it unresolved in EVERY build: an undeclared group
+/// is an error wherever the seed is compiled from.
+///
+/// The marker is a name, not a side table, for the same reason the
+/// scoped alias above is: it survives the merge without anyone
+/// remembering to carry it. `$` cannot occur in an identifier, so the
+/// sentinel is unspeakable in user source AND the author's spelling
+/// is recoverable from the spelling itself — which is what keeps a
+/// synthesized `__lib_…` out of the diagnostic (the demangle map is
+/// keyed off real renames and would have nothing to say about one).
+pub fn unbound_group_sentinel(seed_id: &str, name: &str) -> String {
+    format!("__unbound${}${}", name, seed_id)
+}
+
+/// The author's spelling inside an [`unbound_group_sentinel`], or
+/// `None` for any other name.
+pub fn unbound_group_name(raw: &str) -> Option<&str> {
+    raw.strip_prefix("__unbound$")
+        .and_then(|rest| rest.split_once('$'))
+        .map(|(name, _)| name)
+}
