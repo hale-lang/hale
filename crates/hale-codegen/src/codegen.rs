@@ -6911,12 +6911,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// assertion-failure exit block tears down.
     ///
     /// Main's frame passes through `flush_dissolve_frame_kind` (or the
-    /// bare pop) once per exit path, and a `return` in the middle of
-    /// `main` flushes a PREFIX of the entries and re-pushes an empty
-    /// frame — so neither "first" nor "last" is the complete set. The
-    /// frames grow in declaration order, so a union keyed on the
-    /// dominating self slot, appended in first-seen order, is the
-    /// complete set in declaration order. Re-listing an entry is
+    /// bare pop) once, at main's fall-through exit — a `return` in the
+    /// middle of `main` emits its teardown from a CLONE and leaves the
+    /// frame in place (GH #789), so that single pass carries every
+    /// entry. The union is kept anyway: it is keyed on the dominating
+    /// self slot and appended in first-seen order, so it stays the
+    /// complete set in declaration order however many times main's
+    /// frame passes through here. Re-listing an entry is
     /// harmless anyway (each exit path is separate control flow, and
     /// the idempotent-teardown latch NULLs an entry's arena), but the
     /// dedup keeps the emitted block one teardown per locus.
@@ -21716,12 +21717,42 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.emit_bus_ingress_quiesce()?;
                 self.emit_coop_pool_shutdown_all()?;
             }
-            self.flush_dissolve_frame()?;
+            // GH #789: emit the teardown for everything main owns at
+            // this point, but LEAVE the frame on the stack. `return`
+            // terminates its own block, so the frame is still the
+            // truth for main's other exit paths: the fall-through exit
+            // in `lower_program` (and any later `return`) has to
+            // dissolve these same entries plus whatever is bound after
+            // this point. The old code called `flush_dissolve_frame`,
+            // which POPS, and pushed an empty frame back "so the
+            // post-flush bookkeeping stays balanced" — so every locus
+            // bound BEFORE the `return` was missing from the frame the
+            // fall-through exit flushed, and a `main` with an
+            // early-return guard leaked whatever it had bound whenever
+            // the guard was not taken.
+            //
+            // Emitting the same entry on two exit paths is not a
+            // double teardown: the paths are disjoint control flow and
+            // only one of them runs. An entry whose instantiation a
+            // path never reached holds a NULL self slot and is skipped
+            // by `emit_deferred_entry_teardown`'s existing guard —
+            // which is exactly what makes a locus bound inside the
+            // `if` that returns safe to list on the fall-through exit.
+            //
+            // The clone is taken HERE, after the return expression has
+            // been lowered, so the Crumb batch-3 ordering above still
+            // holds: a locus the return expr itself instantiated is
+            // already in the frame and is torn down on this path.
+            //
+            // `fn main`'s body owns exactly one dissolve frame: `if`,
+            // `while` and plain blocks do not push one — only fn,
+            // method and channel BODIES do, and those are lowered with
+            // `in_main` clear.
+            let frame =
+                self.deferred_dissolves.last().cloned().unwrap_or_default();
+            self.emit_frame_teardown(frame, true)?;
             self.emit_arena_destroy()?;
             self.emit_bus_queue_destroy()?;
-            // Re-open an empty frame so the post-flush bookkeeping
-            // (popped in lower_program) stays balanced.
-            self.push_dissolve_frame();
             self.builder
                 .build_return(Some(&code))
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
