@@ -24,13 +24,25 @@
 //! an ACCESSOR: `pick(x, y, n)` returns a locus its own `let` still
 //! owns, and setting the bit for that would dissolve it twice.
 //!
-//! Two shapes are therefore left exactly as they were, and both are
-//! pinned below because they are what this fix must NOT change: that
-//! accessor, and `or <substitute>`, where the field holds whichever
-//! branch ran and the substitute carries an owner of its own. A
-//! missing bit is the old leak; an extra one is a double free, so
+//! One shape is therefore left exactly as it was, and is pinned
+//! below because it is what this fix must NOT change: that accessor.
+//! A missing bit is the old leak; an extra one is a double free, so
 //! the rule only claims a field whose value is statically the
 //! factory's.
+//!
+//! GH #853 — `or <substitute>` in the same position, the disposition
+//! #836 deliberately excluded. The field then holds one of two values
+//! decided at run time, and the bit is a static store, so it is right
+//! exactly when BOTH branches transfer into the field. Left to the
+//! older rules the field got neither: the F.17 gate kept the frame
+//! off the ok value and no bit claimed it (a leak), while a CALL
+//! substitute took the GH #402 frame temporary and was flushed at the
+//! enclosing fn's exit with the field still pointing at it — a
+//! use-after-free the moment the owner outlives that frame, which a
+//! returned owner does. A literal substitute was already right (it
+//! consumes the parent-field flag and sets the same bit the ordinary
+//! way) and still is, which is why both spellings are measured
+//! together below.
 //!
 //! A printing `dissolve()` is what makes all of it visible: a missing
 //! teardown is silence and a double teardown is the tag twice. The
@@ -199,16 +211,23 @@ fn the_cascade_reaches_a_factory_built_grandchild() {
     );
 }
 
-/// `or <substitute>` in the same position, on both branches. The
-/// rule this fix adds deliberately stays out of it: with a substitute
-/// the field holds one of two values decided at run time, so claiming
-/// it for the owner unconditionally would put a SECOND owner on a
-/// value that already has one. It does not need claiming — a locus
-/// literal written there consumes the parent-field flag and sets the
-/// same bit the ordinary way, which covers the err branch, while the
-/// ok branch's factory result is left to the frame by the F.17 gate
-/// and reclaimed by that same bit. One teardown per value, whichever
-/// branch ran.
+/// GH #853 — `or <substitute>` in the same position, on both
+/// branches and in both spellings. The field holds one of two values
+/// decided at run time and the mask bit is a static store, so the
+/// claim is right exactly when BOTH branches transfer into the field:
+/// then the owner's cascade tears down the value that was actually
+/// built, once, whichever branch ran.
+///
+/// Four routers, one line of output per value. The two literal
+/// substitutes (`20`, `30`) are the shape that was always right — a
+/// locus literal consumes the parent-field flag and sets the bit the
+/// ordinary way, which is what covers `20`'s ok value too — and they
+/// are here to pin that this fix does not disturb it. The two CALL
+/// substitutes are what moved: `40`'s child used to leak outright
+/// (the F.17 gate kept the frame off it and no bit claimed it), and
+/// `50`'s substitute used to be a frame temporary of `main` rather
+/// than the router's child, which only looks like the same thing
+/// because `main` is the frame that outlives everything.
 #[test]
 fn an_or_substitute_in_a_param_field_tears_down_one_value_per_branch() {
     let src = format!(
@@ -218,19 +237,65 @@ fn an_or_substitute_in_a_param_field_tears_down_one_value_per_branch() {
             println(\"ok=\", ok.quick.n);
             let bad = Router {{ quick: make_f(0 - 1) or Quick {{ n: 98 }}, tag: 30 }};
             println(\"bad=\", bad.quick.n);
+            let okc = Router {{ quick: make_f(3) or make(97), tag: 40 }};
+            println(\"okc=\", okc.quick.n);
+            let badc = Router {{ quick: make_f(0 - 1) or make(96), tag: 50 }};
+            println(\"badc=\", badc.quick.n);
             println(\"end\");
         }}"
     );
     let (out, verdict) = build_and_run("or_substitute", &src);
     assert!(verdict.is_empty(), "{}\n{}", verdict, out);
-    // `99` is never constructed — the substitute is lazy — so the
-    // only values to reclaim are the factory's `2` and the
-    // substitute's `98`, once each.
+    // `99` and `97` are never constructed — the substitute is lazy —
+    // so the only values to reclaim are the two the factory built
+    // (`2`, `3`) and the two the substitutes built (`98`, `96`),
+    // once each and from the owner that holds them.
     assert_eq!(
-        out, "ok=2\nbad=98\nend\nrouter 30\nquick 98\nrouter 20\nquick 2\n",
+        out,
+        "ok=2\nbad=98\nokc=3\nbadc=96\nend\n\
+         router 50\nquick 96\nrouter 40\nquick 3\n\
+         router 30\nquick 98\nrouter 20\nquick 2\n",
         "the owner must reclaim exactly the value its field ended up \
-         holding, on either branch, and the unused substitute must \
-         not be built at all"
+         holding, on either branch and for either spelling of the \
+         substitute, and the unused substitute must not be built at \
+         all"
+    );
+}
+
+/// GH #853, the shape that makes the call-substitute case a
+/// use-after-free rather than an ordering curiosity: the owner is
+/// built in a fn that RETURNS it, so it outlives the frame the
+/// substitute's temporary belonged to.
+///
+/// Before the fix `build`'s exit ran `quick 98` — the whole teardown
+/// spine, arena destroy included — while the router it had just
+/// handed back still pointed at that child, and `main` then read
+/// `bad.quick.n` out of freed memory. The output says so directly:
+/// the child's dissolve printed BEFORE the caller's read.
+#[test]
+fn an_or_substitute_in_a_returned_owners_field_outlives_the_frame() {
+    let src = format!(
+        "{LIB}
+        fn build(n: Int, tag: Int) -> Router {{
+            return Router {{ quick: make_f(n) or make(98), tag: tag }};
+        }}
+
+        fn main() {{
+            let bad = build(0 - 1, 30);
+            println(\"bad=\", bad.quick.n);
+            let ok = build(2, 31);
+            println(\"ok=\", ok.quick.n);
+            println(\"end\");
+        }}"
+    );
+    let (out, verdict) = build_and_run("or_substitute_returned", &src);
+    assert!(verdict.is_empty(), "{}\n{}", verdict, out);
+    assert_eq!(
+        out,
+        "bad=98\nok=2\nend\nrouter 31\nquick 2\nrouter 30\nquick 98\n",
+        "a field initialised through `or <substitute>` must still be \
+         alive after the fn that built its owner returns, and must be \
+         torn down once, with that owner"
     );
 }
 
@@ -358,6 +423,16 @@ fn an_owner_in_a_loop_reclaims_its_factory_child_every_iteration() {
 /// main's arena is destroyed at exit (GH #793's note) — which is why
 /// the leak needed a method frame to be seen at all.
 ///
+/// GH #853 adds the `or <substitute>` spelling to the same frame —
+/// `Holder { buf: zeros_f(n) or zeros(n) }`, whose ok value used to
+/// be claimed by nobody: 1376 bytes in 8 allocations over four calls
+/// (four locus arenas and four `@form(vec)` buffers), named by
+/// LeakSanitizer at `zeros_f`. Its err branch is measured through
+/// `held`, a fn that RETURNS the owner, because that is where the
+/// substitute's frame temporary becomes a use-after-free rather than
+/// a tidy ordering: the Buf was dissolved at `held`'s exit and `main`
+/// then read it.
+///
 /// The instrumented build is requested through
 /// `BuildOptions::asan`, so it is scoped to this build alone
 /// (GH #843).
@@ -397,11 +472,17 @@ fn a_factory_field_in_a_method_frame_is_leak_clean_under_asan() {
             fn step(n: Int) -> Float {
                 let h = Holder { buf: zeros(n), tag: n };
                 let g = Holder { buf: zeros_f(n) or raise, tag: n };
+                let s = Holder { buf: zeros_f(n) or zeros(n), tag: n };
                 let v = h.buf.get(0) or 0.0 - 1.0;
                 let w = g.buf.get(0) or 0.0 - 1.0;
+                let x = s.buf.get(0) or 0.0 - 1.0;
                 self.runs = self.runs + 1;
-                return v + w;
+                return v + w + x;
             }
+        }
+
+        fn held(n: Int) -> Holder {
+            return Holder { buf: zeros_f(0 - 1) or zeros(n), tag: n };
         }
 
         fn main() {
@@ -409,7 +490,10 @@ fn a_factory_field_in_a_method_frame_is_leak_clean_under_asan() {
             let mut t = 0.0;
             let mut r = 0;
             while r < 4 { t = t + e.step(16); r = r + 1; }
+            let g = held(16);
+            let y = g.buf.get(0) or 0.0 - 1.0;
             println("t=", t);
+            println("y=", y);
             println("runs=", e.runs);
         }
     "#;
@@ -423,6 +507,11 @@ fn a_factory_field_in_a_method_frame_is_leak_clean_under_asan() {
     harness::build_asan(&program, &bin);
     let out = Command::new(&bin)
         .env("ASAN_OPTIONS", "detect_leaks=1")
+        // GH #816: compiled in by the ASan cflags already
+        // (`-DLOTUS_NO_CHUNK_POOL_DEFAULT=1`); stated here too so
+        // this test does not depend on that default to see an arena
+        // use-after-free rather than a recycled chunk's intact bytes.
+        .env("LOTUS_NO_CHUNK_POOL", "1")
         .output()
         .expect("run asan binary");
     let _ = std::fs::remove_file(&bin);
@@ -439,9 +528,15 @@ fn a_factory_field_in_a_method_frame_is_leak_clean_under_asan() {
     );
     // The values still have to be right. A reclaim that fires too
     // early is leak-clean and numerically wrong, which is the state
-    // that looks like success under a sanitizer.
+    // that looks like success under a sanitizer — and `y` is exactly
+    // that state before GH #853's fix: `held`'s frame flushed the
+    // substitute's Buf on the way out, so the caller's `get(0)` on
+    // the returned Holder failed and took its own `or` fallback,
+    // printing `y=-1` with no sanitizer complaint at all.
     assert!(
-        report.contains("t=16") && report.contains("runs=4"),
+        report.contains("t=26")
+            && report.contains("y=1.5")
+            && report.contains("runs=4"),
         "the reclaim disturbed the values it was supposed to \
          outlive:\n{}",
         report

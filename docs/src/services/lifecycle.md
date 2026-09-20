@@ -216,7 +216,11 @@ is the one *it* holds, all the way down. That holds however you
 wrote it: a nested literal (`Mid { leaf: Leaf { } }`), a factory
 call (`Mid { leaf: make_leaf() }`, including `make_leaf() or
 raise`), and a param whose **default** is one, are the same
-program. When the
+program. An `or` with a **substitute** is too, on both branches:
+`Mid { leaf: make_leaf_f() or backup_leaf() }` reclaims whichever
+leaf was actually built, once, with the owner — the substitute is
+the field's, not a leftover of the function that built the owner,
+which is what let a `Mid` you `return` outlive its own leaf. When the
 owner goes, every level's `drain()` has run (deepest first), every
 level's `dissolve()` body has run (outermost first) and every
 level's arena is gone. The exception is a handle you pass *in* —
