@@ -166,6 +166,16 @@ locus WsConn {
 }
 ```
 
+The buffer argument is a `std::bytes::BytesBuilder` and nothing
+else — `recv_into` fills the builder's tail in place, so a `Bytes`
+value or a plain `Int` is not a smaller version of the same thing.
+Pass one and `hale check` says so, at the argument:
+
+```text
+`std::io::tcp::recv_into` argument 2: expected
+`std::bytes::BytesBuilder`, got `Int`
+```
+
 A builder created *inside* the handler is a fresh heap buffer per
 message that reclaims only at method return (the compiler warns).
 Read with `.view()` / `.text_view()` and clear the buffer at the

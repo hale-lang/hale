@@ -569,7 +569,17 @@ fn main() {{ App {{ }}; }}
     )
 }
 
-const BLOCKING_RUN: &str = "let n = std::io::tls::recv_into(0, 0, 64);";
+/// A blocking `run()` body.
+///
+/// GH #829: `recv_into`'s `buf` is a `std::bytes::BytesBuilder`, and
+/// the checker now says so. These fixtures used to pass `0` there —
+/// a program `hale check` accepted and `hale build` refused, which
+/// is what the whole `check_build_divergences` ratchet is against.
+/// The blocking call is the point of the fixture; the buffer just
+/// has to be real.
+const BLOCKING_RUN: &str =
+    "let b = std::bytes::BytesBuilder { initial_cap: 64 };\n\
+     let n = std::io::tls::recv_into(0, b, 64);";
 
 #[test]
 fn cooperative_nonmain_subscriber_blocking_rejected() {
@@ -712,7 +722,7 @@ fn main() {{ App {{ }}; }}
 fn cooperative_blocking_run_warns() {
     let msgs = check(&blocking_src(
         "cooperative(pool = ws)",
-        "let n = std::io::tls::recv_into(0, 0, 64);",
+        BLOCKING_RUN,
     ));
     assert!(
         msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
@@ -725,7 +735,7 @@ fn cooperative_blocking_run_warns() {
 fn pinned_blocking_run_not_warned() {
     let msgs = check(&blocking_src(
         "pinned",
-        "let n = std::io::tls::recv_into(0, 0, 64);",
+        BLOCKING_RUN,
     ));
     assert!(
         !msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
@@ -738,7 +748,7 @@ fn pinned_blocking_run_not_warned() {
 fn async_io_blocking_run_not_warned() {
     let msgs = check(&blocking_src(
         "cooperative(pool = ws) where async_io",
-        "let n = std::io::tls::recv_into(0, 0, 64);",
+        BLOCKING_RUN,
     ));
     assert!(
         !msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
@@ -763,7 +773,8 @@ fn blocking_inside_while_loop_warns() {
     // the full-recursion walk into loop bodies.
     let msgs = check(&blocking_src(
         "cooperative(pool = ws)",
-        "while true { let n = std::io::tls::recv_into(0, 0, 64); }",
+        "let b = std::bytes::BytesBuilder { initial_cap: 64 };\n\
+         while true { let n = std::io::tls::recv_into(0, b, 64); }",
     ));
     assert!(
         msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
@@ -784,12 +795,13 @@ fn blocking_via_free_fn_helper_warns() {
     // run() itself has no stdlib blocking op — it calls a free fn
     // that does. The interprocedural walk must still warn.
     let src = r#"
-fn pump(fd: Int) -> Int {
-    return std::io::tcp::recv_into(fd, 0, 64);
+fn pump(fd: Int, buf: std::bytes::BytesBuilder) -> Int {
+    return std::io::tcp::recv_into(fd, buf, 64);
 }
 
 locus Gateway {
-    run() { let n = pump(0); }
+    params { buf: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 64 }; }
+    run() { let n = pump(0, self.buf); }
 }
 
 main locus App {
@@ -814,7 +826,8 @@ fn blocking_via_self_method_warns() {
     // method call graph must propagate the block to run().
     let src = r#"
 locus Gateway {
-    fn pull() { let n = std::io::tcp::recv_into(0, 0, 64); }
+    params { buf: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 64 }; }
+    fn pull() { let n = std::io::tcp::recv_into(0, self.buf, 64); }
     run() { self.pull(); }
 }
 
@@ -839,11 +852,12 @@ fn blocking_via_transitive_free_fn_warns() {
     // run() -> outer() -> inner() (blocks). Two hops; the fixpoint
     // must taint `outer` from `inner`, then flag run()'s `outer()`.
     let src = r#"
-fn inner(fd: Int) -> Int { return std::io::tcp::recv_into(fd, 0, 64); }
-fn outer(fd: Int) -> Int { return inner(fd); }
+fn inner(fd: Int, buf: std::bytes::BytesBuilder) -> Int { return std::io::tcp::recv_into(fd, buf, 64); }
+fn outer(fd: Int, buf: std::bytes::BytesBuilder) -> Int { return inner(fd, buf); }
 
 locus Gateway {
-    run() { let n = outer(0); }
+    params { buf: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 64 }; }
+    run() { let n = outer(0, self.buf); }
 }
 
 main locus App {
@@ -895,12 +909,13 @@ fn dead_receiver_stays_direct_only_helper_blocking_warns_not_errors() {
     let src = r#"
 type Tick { n: Int; }
 
-fn pump(fd: Int) -> Int { return std::io::tcp::recv_into(fd, 0, 64); }
+fn pump(fd: Int, buf: std::bytes::BytesBuilder) -> Int { return std::io::tcp::recv_into(fd, buf, 64); }
 
 locus Gateway {
+    params { buf: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 64 }; }
     bus { subscribe "tick" as on_tick of type Tick; }
     fn on_tick(t: Tick) { }
-    run() { let n = pump(0); }
+    run() { let n = pump(0, self.buf); }
 }
 
 locus Feed {
@@ -1632,9 +1647,10 @@ fn dead_receiver_error_suppresses_starvation_warning() {
 type Tick { n: Int; }
 
 locus Gateway {
+    params { buf: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 64 }; }
     bus { subscribe "tick" as on_tick of type Tick; }
     fn on_tick(t: Tick) { }
-    run() { while true { let n = std::io::tls::recv_into(0, 0, 64); } }
+    run() { while true { let n = std::io::tls::recv_into(0, self.buf, 64); } }
 }
 
 locus Feed {
