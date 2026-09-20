@@ -19037,6 +19037,49 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// GH #800: lower `Float(x)` — the widening half of the pair
+    /// `spec/types.md` § "Explicit numeric conversions" has always
+    /// specified (`Int(x)` / `Float(x)`). Only the narrowing half
+    /// had an arm, so `Float(n)` — which the spec's own prose
+    /// spells — typechecked and then died at lowering as
+    /// ``builtin `Float` ``. `Int` arg lowers via `sitofp`, Float
+    /// arg is the identity; the same shape `lower_int_cast_builtin`
+    /// has in the other direction, and the same conversion
+    /// `std::math::int_to_float` emits.
+    fn lower_float_cast_builtin(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "`Float` cast expects exactly 1 argument, got {}",
+                args.len()
+            )));
+        }
+        let (v, ty) = self.lower_expr(&args[0], scope)?;
+        match ty {
+            CodegenTy::Float => Ok((v, CodegenTy::Float)),
+            CodegenTy::Int => {
+                let res = self
+                    .builder
+                    .build_signed_int_to_float(
+                        v.into_int_value(),
+                        self.context.f64_type(),
+                        "Float.cast",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((res.into(), CodegenTy::Float))
+            }
+            other => Err(CodegenError::Unsupported(format!(
+                "`Float(...)` cast not supported for argument type \
+                 {:?} (only Int → Float widening and Float identity \
+                 are supported in v1)",
+                other
+            ))),
+        }
+    }
+
     /// m38: lower min(a, b) / max(a, b) / abs(x). All work
     /// across the four numeric types (Int / Duration via
     /// signed integer ops, Float / Decimal via float ops).
@@ -23833,6 +23876,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Expr::Ident(i) if i.name == "Int" => {
                     // v1.x-11: explicit Float → Int narrowing.
                     self.lower_int_cast_builtin(args, scope)
+                }
+                Expr::Ident(i) if i.name == "Float" => {
+                    // GH #800: the widening half of the same pair.
+                    self.lower_float_cast_builtin(args, scope)
                 }
                 Expr::Ident(i)
                     if matches!(

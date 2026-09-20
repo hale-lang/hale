@@ -461,6 +461,12 @@ for the narrowing direction (LLVM `fptosi` / `sitofp`):
 - **The `Int(x)` / `Float(x)` casts** — the idiomatic in-language
   form. `Int(f)` narrows a `Float` to an `Int` (truncates toward
   zero); the cast is opt-in, so there is no silent `Float → Int`.
+  `Float(i)` widens an `Int` to a `Float` (`sitofp`). Each is the
+  identity on its own type, and rejects any other argument type.
+  They are the only two casts: there is no `String(x)`, `Bool(x)`,
+  `Bytes(x)`, `Decimal(x)` or `Duration(x)` — those names are types.
+  Rendering is `to_string(x)`, and reading a value back out of text
+  is `std::str::parse_*`.
 - **`std::math::int_to_float(i: Int) -> Float` and
   `std::math::float_to_int(f: Float) -> Int`** (WS3.1)
   — the named-function spelling, callable in any expression
@@ -724,30 +730,51 @@ syntax and don't take `self` (it's implicit).
 
 A call whose callee is a bare identifier must name something: a
 local binding (a fn pointer), a free `fn`, a generic `fn`, or one of
-the builtins the compiler answers itself. Those are `len`,
-`to_string`, `Int`, the printers (`print`, `println`, `eprint`,
-`eprintln`), the numeric trio `abs` / `min` / `max`, the string
-predicates `starts_with` / `contains`, the `bounded` intrinsics
-(`push`, `at`, `set`, `count`, `clear`, `truncate`), the accumulator
-vocabulary a closure assertion may use (`sum`, `count`, `mean`), and
-`check_closures`. When a **whole seed** is checked (`hale check
-<directory>`, which is what a build compiles and what the
-organization's gate runs), any other bare callee is a type error —
-`call to X: no free fn, generic fn or fn-pointer binding with that
-name is in scope`, with a did-you-mean over the program's fns —
-rather than an `Unknown` that `hale build` refuses later. One file
-checked alone, or a partial program a harness assembles, keeps the
-permissive reading: it may call what a sibling file defines
-(dna/FRICTION.md F.18).
+the builtins the compiler answers itself. That set is exactly:
 
-The builtin list above is a contract in both directions, and the
-second direction is the one that bites: **a name the compiler
-answers must be exempt from the rule.** A builtin the rule does not
-know about turns the admission gate into a refusal of correct code —
-`hale check` red, `hale run` fine — which is strictly worse than the
-late diagnostic the rule exists to replace. The compiler tests the
-agreement over its whole program corpus rather than trusting the
-list (GH #779).
+| group | names |
+| --- | --- |
+| length and rendering | `len`, `to_string` |
+| the numeric casts | `Int`, `Float` |
+| the printers | `print`, `println`, `eprint`, `eprintln` |
+| the numeric trio | `abs`, `min`, `max` |
+| the string predicates | `starts_with`, `contains` |
+| the `bounded` intrinsics | `push`, `at`, `set`, `count`, `clear`, `truncate` |
+| accumulators, inside a closure assertion | `count`, `mean` |
+| the explicit-epoch closure surface | `check_closures` |
+
+(`sum(x)` and `prod(x)` are accumulator vocabulary too, but the
+parser gives them their own syntax rather than a call, so they are
+never a bare callee. `__fmt`, the desugaring of `f"{x:spec}"`, is
+the compiler's own and is not written by hand.)
+
+When a **whole seed** is checked (`hale check <directory>`, which is
+what a build compiles and what the organization's gate runs), any
+other bare callee is a type error — `call to X: no free fn, generic
+fn or fn-pointer binding with that name is in scope`, with a
+did-you-mean over the program's fns — rather than an `Unknown` that
+`hale build` refuses later. One file checked alone, or a partial
+program a harness assembles, keeps the permissive reading: it may
+call what a sibling file defines (dna/FRICTION.md F.18).
+
+The list is a contract in **both** directions, and neither is
+optional.
+
+**A name the compiler answers must be exempt from the rule.** A
+builtin the rule does not know about turns the admission gate into a
+refusal of correct code — `hale check` red, `hale run` fine — which
+is strictly worse than the late diagnostic the rule exists to
+replace (GH #779).
+
+**A name the rule exempts must be one the compiler answers.** An
+exemption for a name nothing lowers is the divergence the rule was
+written to remove, moved inside the rule: `hale check` accepts the
+call, and `hale build` refuses it at lowering, without a source
+location. The list is therefore exactly the set above and carries no
+aspirational entries — a name is on it when codegen dispatches it,
+not when it looks like it should (GH #800). The compiler tests both
+directions over its whole program corpus rather than trusting the
+list.
 
 ### Bare identifiers
 
