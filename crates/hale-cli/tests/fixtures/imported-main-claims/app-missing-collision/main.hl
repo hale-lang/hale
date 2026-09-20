@@ -1,0 +1,24 @@
+// GH #774 — the capture: this importer declares a group of its OWN
+// named `guests`, the name the imported seed's inline claim reaches
+// for and never declares. The reference belongs to the seed that
+// wrote it, so the unknown-group error must stand here exactly as it
+// does on a direct check — an importer's declaration cannot answer
+// another seed's claim.
+import "../seed-missing" as chat;
+
+locus Bystander {
+    params {
+        idle: Int = 0;
+    }
+    fn tick() {
+        self.idle = self.idle + 1;
+    }
+}
+
+group guests = { Bystander };
+
+fn main() {
+    let b = Bystander { };
+    b.tick();
+    println("idle ", b.idle);
+}

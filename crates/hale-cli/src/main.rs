@@ -2318,6 +2318,14 @@ fn resolve_imports(
         // declares a free fn of the alias's name.
         let seed_heads =
             hale_codegen::mangle::seed_path_heads(&stem_prog_refs);
+        // GH #774: the seed as a whole, for binding a claim group
+        // reference no declaration in it answers.
+        let seed_binding = hale_codegen::mangle::SeedBinding {
+            seed_id: &lib_id,
+            declares_main: hale_codegen::mangle::seed_declares_main(
+                &stem_prog_refs,
+            ),
+        };
         seed_cache.insert(lib_key.clone(), seed_renames.clone());
         // GH #746: the lib's own files, for the alias-scoping pass.
         alias_scopes.record_files(
@@ -2336,6 +2344,10 @@ fn resolve_imports(
                 &mut pf.program,
                 &seed_renames,
                 &seed_heads,
+                // GH #774: the seed identity a claim group reference
+                // this seed never declares is bound to, so an
+                // importer's same-named group cannot capture it.
+                seed_binding,
             );
             if trace {
                 eprintln!("[import]     mangle done : {}", pf.path.display());

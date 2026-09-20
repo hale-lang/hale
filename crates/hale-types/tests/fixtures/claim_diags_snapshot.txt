@@ -1,7 +1,13 @@
+--- crates/hale-cli/tests/fixtures/imported-main-claims/app-policy/main.hl ---
+Claim [731..736] unknown constitution `House` — nothing declares it
 --- crates/hale-cli/tests/fixtures/imported-main-claims/seed-bad/chat.hl ---
 Claim [1647..1673] claim `guests_sign_only_via_rooms` violated: `participants` reaches `effects(secret_use)` — witness: `Participant::run` -> `SessionSigner::stamp`
 Claim [1259..1284] claim `guests_sign_only_via_rooms`: the boundary into `effects(secret_use)` is crossed by this call
 Claim [464..477] claim `guests_sign_only_via_rooms`: the forbidden destination `SessionSigner` is declared here
+--- crates/hale-cli/tests/fixtures/imported-main-claims/seed-const-missing/chat.hl ---
+Claim [751..757] claim `guests_sign_nothing` names group `guests`, which is never declared. Add `group guests = { … };` at the top level.
+--- crates/hale-cli/tests/fixtures/imported-main-claims/seed-lib-missing/vault.hl ---
+Claim [619..625] claim `guests_never_stamp` names group `guests`, which is never declared. Add `group guests = { … };` at the top level.
 --- crates/hale-cli/tests/fixtures/imported-main-claims/seed-missing/chat.hl ---
 Claim [832..838] claim `guests_sign_nothing` names group `guests`, which is never declared. Add `group guests = { … };` at the top level.
 --- crates/hale-cli/tests/fixtures/xseed-claims/app/main.hl ---
