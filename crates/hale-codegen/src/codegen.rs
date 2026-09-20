@@ -11316,6 +11316,50 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let result = self.lower_expr(&locus_lit, &mut scope);
         self.current_user_fn_ret = saved_ret;
         let (self_val, _self_ty) = result?;
+        let self_ptr = self_val.into_pointer_value();
+        // GH #893: the routing above answers "where does this
+        // struct live" — it must not also answer "who owns it".
+        // `returns_this_locus` decides both, and its second answer
+        // is "nobody": `lower_locus_instantiation` suppresses the
+        // eager dissolve AND declines to push a deferred-dissolve
+        // entry, so a transport left on that path never ran its
+        // own `dissolve()` (`std::bus::__transport_reclaim` —
+        // interrupt the serve thread, join it, destroy the remote
+        // entry) and its arena lived to process exit.
+        //
+        // Register it on the enclosing frame — `fn main`'s, pushed
+        // before this prelude runs — so it has a real owner. The
+        // prelude precedes every user statement, so this is the
+        // frame's FIRST entry, and the reverse-order flush tears
+        // it down LAST: after every user locus has dissolved (a
+        // dissolve-time publish still reaches the wire), after the
+        // main-exit ingress quiesce and cooperative-pool join that
+        // `lower_program`'s exit path sequences ahead of the
+        // flush, and before the global arena destroy and
+        // `lotus_bus_queue_destroy`. The bus-table teardown then
+        // finds the entry already reclaimed — `transport` NULL,
+        // reader thread joined — and frees only the husk, which is
+        // the shape `lotus_bus_remote_destroy_all` documents.
+        //
+        // Storage is untouched: the struct stays in the payload
+        // arena and the frame entry only needs a slot holding the
+        // pointer plus the locus name. `__owner_self` is NULL on a
+        // prelude transport, so the post-destroy struct recycling
+        // in `emit_locus_arena_destroy` is a no-op for it.
+        let slot = self.defer_dissolve_slot(self_ptr, locus_name)?;
+        match self.deferred_dissolves.last_mut() {
+            Some(frame) => {
+                frame.push((slot, locus_name.to_string(), None))
+            }
+            None => {
+                return Err(CodegenError::Unsupported(format!(
+                    "binding for topic `{}`: transport locus `{}` \
+                     instantiated outside any dissolve frame (the \
+                     bindings prelude runs inside `fn main`)",
+                    topic_name, locus_name
+                )));
+            }
+        }
         // GH #233 steps 3-4: bind the connect locus's self onto
         // its remote entry so the loss-dispatch fn can hand it to
         // main's on_failure. Birth already ran (cooperative,
@@ -11331,7 +11375,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get("handle")
                 .expect("transport locus has handle field");
             let i64_t = self.context.i64_type();
-            let self_ptr = self_val.into_pointer_value();
             let h_slot = self
                 .builder
                 .build_struct_gep(
