@@ -415,12 +415,32 @@ the owner's timing fires. A field the owner did NOT construct
 excluded at whatever depth it appears, and is torn down once
 by its real owner, at its owner's timing.
 
-The deferred-dissolve mechanism is fn-level, not block-level,
-in v0. Loops that bind a locus per iteration — or that use a
-fresh literal as a value per iteration — accumulate dissolves
-until fn exit. Per-iteration cleanup uses a helper free fn whose
-return is the per-iteration boundary (see `handle_one_connection`
-in `stdlib/io_tcp.hl`).
+A deferred dissolve is scoped to the enclosing **fn**, not to
+the enclosing block — a `let` is readable for the rest of the
+fn, including after the loop that bound it — but a locus
+created in a **loop** is reclaimed when its slot is reused, and
+only the last one at scope exit. Control arriving at the same
+instantiation a second time is the end of the previous
+instance's life: it is torn down there, with the same
+`drain → dissolve → arena reclaim` the scope-exit flush runs,
+before the new one takes its place. This holds for both
+spellings — `let h = L { };` and a fresh literal used as a
+value — and for a `let` bound to a locus-returning factory, so
+a loop's residency is one instance, not one per iteration. A
+locus that ESCAPES the iteration is unaffected, because it
+never had a slot here to begin with: a literal written directly
+as another locus's param field is parent-owned, and so are an
+`accept`'d child and a locus the fn returns. A handle the loop
+passes *in* to an owner (`Keeper { held: h }`) keeps its own
+slot and is reclaimed here — the owner's cascade steps over a
+field it did not construct, as it always did (F.29).
+
+Each instantiation reclaims its own previous instance, where
+it stands, so within one iteration the reclaims run in
+instantiation order — the reverse of the LIFO order the
+scope-exit flush uses. Two loci bound in the same iteration are
+independent; a `dissolve()` body that reads a sibling handle it
+does not own sees the sibling's next instance.
 
 **Every exit path flushes independently, and a `return` takes
 nothing away from the others.** A fn — `fn main` included — may

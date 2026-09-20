@@ -409,6 +409,11 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         } else {
             (None, None)
         };
+        // GH #815: did this locus's struct come from the entry-block
+        // hoist below (one stack slot per instantiation SITE, rewritten
+        // by every pass through it) rather than from an arena? Only
+        // that shape can hold a previous iteration's instance.
+        let mut self_is_entry_hoisted = false;
         let self_ptr = if go_to_payload_arena {
             let alloc_fn = self
                 .module
@@ -625,6 +630,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             // required for the deferred-dissolve case (where the
             // flush at fn-exit reads the field to decide whether to
             // tear the locus down). One helper covers both shapes.
+            self_is_entry_hoisted = true;
             self.alloca_in_entry_with_nulled_arena(
                 info.struct_ty,
                 info.arena_field_idx,
@@ -636,6 +642,46 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             self.builder
                 .build_alloca(info.struct_ty, &format!("{}.self", locus_name))
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+
+        // GH #815: a locus created in a LOOP is reclaimed when its
+        // slot is reused, not only at scope exit.
+        //
+        // The deferred-dissolve slot this instantiation will push
+        // (see the `!self.deferred_dissolves.is_empty()` arm of the
+        // teardown chain at the end of this fn) is one alloca per
+        // SITE, and so is the locus struct hoisted just above. A site
+        // inside a loop rewrites both every iteration, so the
+        // scope-exit flush only ever saw the LAST instance: every
+        // earlier one leaked its arena, its `@form` buffers and its
+        // whole child tree, and its `dissolve()` never ran. Control
+        // arriving here for a second time is the proof that the
+        // previous occupant is dead, so tear it down now — BEFORE the
+        // arena store below overwrites the only record of it.
+        //
+        // The predicate mirrors that arm exactly: this has to be a
+        // locus that WILL take a deferred slot. A literal that
+        // escapes — returned from the fn, accept'd by a parent, owned
+        // as a parent's param field, bubbled to a same-tower owner —
+        // never gets one (its owner reclaims it, and its struct does
+        // not live in this frame's entry block), and a pinned locus
+        // returns through its own branch above. `defer_for_let` and
+        // subscription-bearing loci are what remain.
+        let reused_deferred_slot = if self_is_entry_hoisted
+            && !self.loops.is_empty()
+            && !self.deferred_dissolves.is_empty()
+            && !matches!(info.schedule_class, ScheduleClass::Pinned(_))
+            && (defer_for_let || !info.subscriptions.is_empty())
+            && !returns_this_locus
+            && !parent_accepts_us
+            && !parent_owns_via_field
+            && !bubbled
+        {
+            let slot = self.deferred_dissolve_slot_alloca(locus_name)?;
+            self.emit_deferred_slot_reuse_teardown(slot, locus_name)?;
+            Some(slot)
+        } else {
+            None
         };
 
         // First — initialize the synthetic `__arena` field
@@ -4258,7 +4304,20 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             // wires the cascade through the parent's arena_destroy
             // ordering.
         } else if !self.deferred_dissolves.is_empty() {
-            let slot = self.defer_dissolve_slot(self_ptr, locus_name)?;
+            // GH #815: a site inside a loop already minted its slot
+            // before the constructor ran, so the previous occupant
+            // could be reclaimed against it. Store into that same
+            // slot — a second one would leave the per-iteration
+            // teardown reading a slot nothing ever writes.
+            let slot = match reused_deferred_slot {
+                Some(slot) => {
+                    self.builder
+                        .build_store(slot, self_ptr)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    slot
+                }
+                None => self.defer_dissolve_slot(self_ptr, locus_name)?,
+            };
             // GH #253 completion (Crumb batch-4 item 1): a DEFERRED
             // parent's own pinned children (pushed during its param
             // init above, i.e. since `deferred_frame_mark`) sat

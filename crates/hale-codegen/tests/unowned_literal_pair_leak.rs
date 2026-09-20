@@ -231,12 +231,13 @@ fn let_bound_form_leaks_too() {
 }
 
 /// A hot loop building a temporary per iteration: the unbounded
-/// version of the leak. The bare-statement literal is the one
-/// spelling still torn down eagerly, where it stands (GH #711 made
-/// every EXPRESSION-position literal fn-scope-owned like `let`, and
-/// GH #815 tracks per-iteration reclaim for that spelling), so its
-/// whole tree is reclaimed each iteration: the count is exactly the
-/// iteration count and (under ASan) nothing accumulates.
+/// version of the leak. GH #711 made every EXPRESSION-position
+/// literal fn-scope-owned like `let`, and GH #815 gave that owner a
+/// per-iteration boundary — a deferred slot reclaims its previous
+/// occupant before the next iteration overwrites it — so this
+/// spelling is back to reclaiming its whole tree each time round:
+/// the count is exactly the iteration count and (under ASan) nothing
+/// accumulates.
 #[test]
 fn per_iteration_temporary_reclaims_its_whole_tree() {
     let out = run(
@@ -246,8 +247,7 @@ fn per_iteration_temporary_reclaims_its_whole_tree() {
             fn spin() {
                 let mut i = 0;
                 while i < 32 {
-                    Holder { tag: "loop" };
-                    println("t=loop");
+                    println("t=", Holder { tag: "loop" }.tag);
                     i = i + 1;
                 }
             }
