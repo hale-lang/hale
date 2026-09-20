@@ -61,6 +61,19 @@ writing one in a locus body is an error at the `const` keyword.
 A constant that each instance should carry is a `params` field
 with a default.
 
+Another habit that doesn't carry over: a default cannot build the
+locus it belongs to. `params { next: Node = Node { }; }` looks like
+a linked list, but it is a locus that cannot exist — the `Node` the
+default builds leaves ITS `next` to the same default, forever, and
+no call site can end the chain either, because `Node { next: ... }`
+needs a `Node` to hand over. Hale reports that at the param. It
+reports the same thing when the default calls a function that
+builds one (`next: Node = make_node();`) and when the loop goes
+around through another locus (`Alpha` builds a `Beta` that builds
+an `Alpha`). Holding a *different* locus is the ordinary shape and
+is fine; to hold one of its own kind, take it from the caller —
+`next: Node;`, with no default.
+
 ## `type` vs `locus`
 
 You met `type` for plain records earlier. The line between them:
