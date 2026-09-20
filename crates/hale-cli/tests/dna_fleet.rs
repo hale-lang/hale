@@ -6,17 +6,21 @@
 //! organization retains or rolls back. Killing one instance inside the
 //! window rolls the whole fleet back, with the instance named.
 
+#[path = "support/trace.rs"]
+mod trace;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn git(args: &[&str], cwd: &Path) -> String {
+    let _s = trace::Span::new("git", args[0].to_string());
     let out = Command::new("git").args(["-c", "user.name=riley", "-c", "user.email=r@l"]).args(args).current_dir(cwd).output().expect("git");
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 fn journal(app: &Path) -> Vec<(u64, String, String, String)> {
+    let _s = trace::Span::new("git", "show refs/dna/journal:journal.jsonl");
     let out = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
     String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -29,15 +33,8 @@ fn journal(app: &Path) -> Vec<(u64, String, String, String)> {
         .collect()
 }
 
-fn wait_row(app: &Path, secs: u64, pred: impl Fn(&(u64, String, String, String)) -> bool) -> bool {
-    let dl = Instant::now() + Duration::from_secs(secs);
-    while Instant::now() < dl {
-        if journal(app).iter().any(&pred) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(300));
-    }
-    false
+fn wait_row(app: &Path, what: &str, secs: u64, pred: impl Fn(&(u64, String, String, String)) -> bool) -> bool {
+    trace::wait_until(what.to_string(), Duration::from_secs(secs), Duration::from_millis(300), || journal(app).iter().any(&pred))
 }
 
 fn dump(app: &Path) -> String {
@@ -83,6 +80,7 @@ struct Fleet {
 
 impl Fleet {
     fn hale(&self, args: &[&str], cwd: &Path) -> (bool, String) {
+        let _s = trace::Span::new("hale", args.join(" "));
         let out = Command::new(env!("CARGO_BIN_EXE_hale"))
             .args(args)
             .current_dir(cwd)
@@ -94,6 +92,7 @@ impl Fleet {
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
     }
     fn spawn(&mut self, args: &[&str], cwd: &Path) {
+        let _s = trace::Span::new("spawn", args.join(" "));
         // stderr to a file per process, shown when the test fails
         let log = std::fs::File::create(self.d.join(format!("{}.stderr", args.iter().take(2).map(|a| a.replace('/', "_")).collect::<Vec<_>>().join("-")))).unwrap();
         let c = Command::new(env!("CARGO_BIN_EXE_hale"))
@@ -126,7 +125,7 @@ impl Fleet {
         }
         // the pid that ran `hale dna run` / `hale node` was the host itself
         // (it execs in place), so nothing of ours keeps ticking after the kill
-        std::thread::sleep(Duration::from_millis(300));
+        trace::sleep("after kill, before the pgrep check", Duration::from_millis(300));
         let left = Command::new("pgrep").args(["-f", &format!("host (run|node) {}", self.d.display())]).output().map(|o| String::from_utf8_lossy(&o.stdout).lines().count()).unwrap_or(0);
         assert_eq!(left, 0, "host processes survived their shim's death");
         for f in ["org.pid", "app.pid"] {
@@ -194,10 +193,7 @@ fn bring_up(tag: &str) -> Fleet {
     for (i, e) in edges.iter().enumerate() {
         f.spawn(&["node", &format!("edge-{}", i + 1), "--repo", &e.to_string_lossy(), "--tick", "300"], &d);
     }
-    let dl = Instant::now() + Duration::from_secs(60);
-    while !app.join(".hale/dna/org.pid").exists() && Instant::now() < dl {
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    trace::wait_until("org.pid written", Duration::from_secs(60), Duration::from_millis(200), || app.join(".hale/dna/org.pid").exists());
     let (ok, out) = f.hale(&["dna", "deploy", "HEAD"], &app);
     if !ok {
         f.stop();
@@ -205,7 +201,8 @@ fn bring_up(tag: &str) -> Fleet {
     }
     assert!(out.contains("touching api-0 api-1"), "{out}");
     let base = f.base.clone();
-    let up = wait_row(&app, 180, |(_, k, e, b)| k == "instance.up" && e == "api-0" && b.contains(&base)) && wait_row(&app, 180, |(_, k, e, b)| k == "instance.up" && e == "api-1" && b.contains(&base));
+    let up = wait_row(&app, "instance.up api-0 at the base", 180, |(_, k, e, b)| k == "instance.up" && e == "api-0" && b.contains(&base))
+        && wait_row(&app, "instance.up api-1 at the base", 180, |(_, k, e, b)| k == "instance.up" && e == "api-1" && b.contains(&base));
     if !up {
         let dump = dump(&app);
         let logs = f.logs();
@@ -217,6 +214,7 @@ fn bring_up(tag: &str) -> Fleet {
 
 #[test]
 fn an_approval_redeploys_both_instances_and_the_window_retains() {
+    let _t = trace::test("dna_fleet::retains");
     let mut f = bring_up("ok");
     let app = f.app.clone();
     let cand = f.cand.clone();
@@ -225,7 +223,7 @@ fn an_approval_redeploys_both_instances_and_the_window_retains() {
         f.stop();
         panic!("approve: {out}");
     }
-    let retained = wait_row(&app, 150, |(_, k, e, _)| k == "mutation.retained" && e == "m1");
+    let retained = wait_row(&app, "mutation.retained m1", 150, |(_, k, e, _)| k == "mutation.retained" && e == "m1");
     let rows = journal(&app);
     let fleet_out = f.hale(&["dna", "fleet"], &app).1;
     let dump = dump(&app);
@@ -250,6 +248,7 @@ fn an_approval_redeploys_both_instances_and_the_window_retains() {
 
 #[test]
 fn an_instance_killed_inside_the_window_rolls_the_fleet_back_by_name() {
+    let _t = trace::test("dna_fleet::rolls_back");
     let mut f = bring_up("kill");
     let app = f.app.clone();
     let cand = f.cand.clone();
@@ -261,22 +260,22 @@ fn an_instance_killed_inside_the_window_rolls_the_fleet_back_by_name() {
     }
     // api-1 comes up at the candidate on edge-2; kill it inside the window
     let c = cand.clone();
-    if !wait_row(&app, 120, |(_, k, e, b)| k == "instance.up" && e == "api-1" && b.contains(&c)) {
+    if !wait_row(&app, "instance.up api-1 at the candidate", 120, |(_, k, e, b)| k == "instance.up" && e == "api-1" && b.contains(&c)) {
         let dump = dump(&app);
         f.stop();
         panic!("api-1 never came up at the candidate:\n{dump}");
     }
     let pid = std::fs::read_to_string(f.edges[1].join(".hale/node/edge-2/api-1.pid")).expect("api-1's pid");
     let _ = Command::new("kill").args(["-9", pid.trim()]).status();
-    let rolled = wait_row(&app, 120, |(_, k, e, _)| k == "mutation.rolled_back" && e == "m1");
+    let rolled = wait_row(&app, "mutation.rolled_back m1", 120, |(_, k, e, _)| k == "mutation.rolled_back" && e == "m1");
     // the rollback deploy brings both back to the base, after the row
     let is_rollback = |b: &str| serde_json::from_str::<serde_json::Value>(b).ok().map(|v| v["reason"] == "rollback").unwrap_or(false);
-    let rolled = rolled && wait_row(&app, 60, |(_, k, e, b)| k == "fleet.deploy" && e == "m1" && is_rollback(b));
+    let rolled = rolled && wait_row(&app, "fleet.deploy m1 rollback", 60, |(_, k, e, b)| k == "fleet.deploy" && e == "m1" && is_rollback(b));
     let rb_seq = journal(&app).iter().find(|(_, k, e, b)| k == "fleet.deploy" && e == "m1" && is_rollback(b)).map(|r| r.0).unwrap_or(u64::MAX);
     let b = base.clone();
     let back = rolled
-        && wait_row(&app, 120, |(q, k, e, body)| *q > rb_seq && k == "instance.up" && e == "api-0" && body.contains(&b))
-        && wait_row(&app, 120, |(q, k, e, body)| *q > rb_seq && k == "instance.up" && e == "api-1" && body.contains(&b));
+        && wait_row(&app, "instance.up api-0 back at the base", 120, |(q, k, e, body)| *q > rb_seq && k == "instance.up" && e == "api-0" && body.contains(&b))
+        && wait_row(&app, "instance.up api-1 back at the base", 120, |(q, k, e, body)| *q > rb_seq && k == "instance.up" && e == "api-1" && body.contains(&b));
     let rows = journal(&app);
     let dump = dump(&app);
     f.stop();

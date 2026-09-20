@@ -11,11 +11,14 @@
 
 #[path = "support/reap.rs"]
 mod reap;
+#[path = "support/trace.rs"]
+mod trace;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
+    let _s = trace::Span::new("hale", args.join(" "));
     let out = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(args)
         .current_dir(cwd)
@@ -72,6 +75,7 @@ fn main() {
 /// JSON differently (the host's serde, the organism's Builder), so
 /// the file is parsed, never string-matched.
 fn journal(app: &Path) -> Vec<(String, String, String)> {
+    let _s = trace::Span::new("git", "show refs/dna/journal:journal.jsonl");
     let text = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
     text.lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
@@ -88,6 +92,7 @@ fn has(rows: &[(String, String, String)], kind: &str, entity: &str) -> bool {
 
 #[test]
 fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
+    let _t = trace::test("dna_apply");
     let d = std::env::temp_dir().join(format!("hale_dna_apply_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
@@ -117,10 +122,7 @@ fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
         .spawn()
         .expect("hale dna run");
     let up = |app: &Path| app.join(".hale/dna/hale-dna.review.verdict.sock").exists() && app.join(".hale/dna/hale-dna.intent.offered.sock").exists();
-    let dl = Instant::now() + Duration::from_secs(90);
-    while Instant::now() < dl && !up(&app) {
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    trace::wait_until("dna dev: the membrane bound", Duration::from_secs(90), Duration::from_millis(200), || up(&app));
     // the host, then the processes it started (their pids are in .hale/dna)
     let finish = |host: &mut std::process::Child| {
         let _ = host.kill();
@@ -135,19 +137,21 @@ fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
         finish(&mut host);
         panic!("the membrane did not come up");
     }
-    std::thread::sleep(Duration::from_millis(500));
+    // the organism writes org.pid once it is up
+    trace::wait_until("org.pid written", Duration::from_secs(30), Duration::from_millis(200), || {
+        !std::fs::read_to_string(app.join(".hale/dna/org.pid")).unwrap_or_default().trim().is_empty()
+    });
     let (ok, verdict) = hale(&["dna", "review", "m1", "approve", "--as", "riley"], &app);
     if !(ok && verdict.contains("settled: approve by riley")) {
         finish(&mut host);
         panic!("verdict:\n{verdict}");
     }
     // the organism applies, the host restarts, the window passes, the report lands
-    let dl = Instant::now() + Duration::from_secs(120);
     // retained, and the worktree dissolved right after it — two rows,
     // a tick apart under load
-    while Instant::now() < dl && !journal(&app).iter().any(|(k, e, b)| k == "mutation.worktree" && e == "m1" && b == "removed") {
-        std::thread::sleep(Duration::from_millis(300));
-    }
+    trace::wait_until("mutation.worktree m1 removed", Duration::from_secs(120), Duration::from_millis(300), || {
+        journal(&app).iter().any(|(k, e, b)| k == "mutation.worktree" && e == "m1" && b == "removed")
+    });
     let rows = journal(&app);
     let retained = has(&rows, "mutation.retained", "m1");
     let (ok3, status) = hale(&["dna", "status"], &app);

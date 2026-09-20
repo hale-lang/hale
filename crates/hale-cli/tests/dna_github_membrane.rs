@@ -8,17 +8,21 @@
 
 #[path = "support/reap.rs"]
 mod reap;
+#[path = "support/trace.rs"]
+mod trace;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn git(args: &[&str], cwd: &Path) -> String {
+    let _s = trace::Span::new("git", args[0].to_string());
     let out = Command::new("git").args(["-c", "user.name=riley", "-c", "user.email=r@l"]).args(args).current_dir(cwd).output().expect("git");
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 fn journal(app: &Path) -> Vec<(String, String, String)> {
+    let _s = trace::Span::new("git", "show refs/dna/journal:journal.jsonl");
     let out = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
     String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -32,14 +36,7 @@ fn journal(app: &Path) -> Vec<(String, String, String)> {
 }
 
 fn wait_for(app: &Path, secs: u64, kind: &str, entity: &str) -> bool {
-    let dl = Instant::now() + Duration::from_secs(secs);
-    while Instant::now() < dl {
-        if journal(app).iter().any(|(k, e, _)| k == kind && e == entity) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(300));
-    }
-    false
+    trace::wait_until(format!("{kind} {entity}"), Duration::from_secs(secs), Duration::from_millis(300), || journal(app).iter().any(|(k, e, _)| k == kind && e == entity))
 }
 
 const DRIVER: &str = r#"import "vendor/dna" as dna;
@@ -84,6 +81,7 @@ esac
 
 #[test]
 fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() {
+    let _t = trace::test("dna_github_membrane::gh");
     let d = std::env::temp_dir().join(format!("hale_dna_gh_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
@@ -95,6 +93,7 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
     let _ = Command::new("chmod").args(["+x", &bin.join("gh").to_string_lossy()]).status();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
     let hale = |args: &[&str], cwd: &Path| -> (bool, String) {
+        let _s = trace::Span::new("hale", args.join(" "));
         let out = Command::new(env!("CARGO_BIN_EXE_hale"))
             .args(args)
             .current_dir(cwd)
@@ -161,7 +160,7 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
     .unwrap();
     let settled = wait_for(&app, 90, "review.settled", "m1");
     let told = wait_for(&app, 60, "github.commented", "m1");
-    std::thread::sleep(Duration::from_secs(1));
+    trace::sleep("after the comment landed", Duration::from_secs(1));
     let rows = journal(&app);
     let log = std::fs::read_to_string(bin.join("gh.log")).unwrap_or_default();
     let origin_main = git(&["rev-parse", "main"], &bare);
@@ -191,11 +190,13 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
 /// host's profile says which forge it found.
 #[test]
 fn the_same_rows_come_from_the_file_forge_and_the_profile_names_it() {
+    let _t = trace::test("dna_github_membrane::file_forge");
     let d = std::env::temp_dir().join(format!("hale_dna_forge_{}", std::process::id()));
     let _reap = reap::ReapOnDrop(d.clone());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let hale = |args: &[&str], cwd: &Path| -> (bool, String) {
+        let _s = trace::Span::new("hale", args.join(" "));
         let out = Command::new(env!("CARGO_BIN_EXE_hale"))
             .args(args)
             .current_dir(cwd)
@@ -258,7 +259,7 @@ fn the_same_rows_come_from_the_file_forge_and_the_profile_names_it() {
     std::fs::write(app.join(".hale/dna/forge/1.verdicts"), format!("octocat approve {cand}\n")).unwrap();
     let settled = wait_for(&app, 90, "review.settled", "m1");
     let told = wait_for(&app, 60, "github.commented", "m1");
-    std::thread::sleep(Duration::from_secs(1));
+    trace::sleep("after the comment landed", Duration::from_secs(1));
     let rows = journal(&app);
     stop(&mut host);
     let dump: Vec<String> = rows.iter().map(|(k, e, b)| format!("{k} {e} {}", b.chars().take(90).collect::<String>())).collect();
