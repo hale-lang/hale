@@ -327,7 +327,8 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
     /// the 64-byte raw r‖s signature (JWS/COSE form). `key` is a PEM
     /// EC private key (SEC1 or PKCS#8). Returns an EMPTY Bytes blob
     /// on failure (bad key / non-P-256), the base64::decode
-    /// convention — caller checks `std::bytes::len(sig) == 0`.
+    /// convention — caller checks `len(sig) == 0` (the length of a
+    /// `Bytes` is the bare builtin; there is no `std::bytes::len`).
     /// Backed by OpenSSL in lotus_tls.c; anchored in the payload arena.
     fn lower_std_crypto_ecdsa_p256_sign(
         &mut self,
