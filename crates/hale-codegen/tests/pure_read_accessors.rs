@@ -15,7 +15,6 @@
 //! accessor would be a miscompilation, not a slow path: hoisting a
 //! poll loop's `len` read out of the loop turns a spin into a hang.
 
-use hale_codegen::build_executable;
 use hale_syntax::parse_source;
 
 #[path = "support/harness.rs"]
@@ -27,13 +26,8 @@ mod harness;
 fn builtin_ir(name: &str) -> String {
     let program = parse_source("fn main() { println(\"hi\"); }").expect("parse");
     let bin = harness::unique_bin(name);
-    std::env::set_var("LOTUS_DUMP_IR", "1");
-    build_executable(&program, &bin).expect("build");
-    std::env::remove_var("LOTUS_DUMP_IR");
-    let ll = bin.with_extension("ll");
-    let ir = std::fs::read_to_string(&ll).expect("IR dumped");
+    let ir = harness::build_ir_text(&program, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
-    let _ = std::fs::remove_file(&ll);
     ir
 }
 

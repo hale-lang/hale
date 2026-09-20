@@ -5,7 +5,7 @@
 //! under a sanitizer or the wasm target, where the LTO link either
 //! conflicts with the sanitizer runtime or is meaningless.
 
-use hale_codegen::build_executable;
+use hale_codegen::{build_executable_with_options, BuildOptions, LtoMode};
 use hale_syntax::parse_source;
 
 #[path = "support/harness.rs"]
@@ -18,15 +18,24 @@ const SRC: &str = r#"
     }
 "#;
 
+/// Build under the spelling `var` (`None` = the variable unset,
+/// which `LtoMode::parse` sees as the empty string).
+///
+/// GH #843: the spelling used to be written into the *process*
+/// environment for the duration of the build. It is parsed here and
+/// handed to that one build as `BuildOptions::lto`, which keeps both
+/// halves of what this file tests — that each accepted spelling maps
+/// to the flavor it names, and that each flavor produces a working
+/// binary — without a global write.
 fn builds_under(var: Option<&str>, name: &str) -> bool {
     let program = parse_source(SRC).expect("parse");
     let bin = harness::unique_bin(name);
-    match var {
-        Some(v) => std::env::set_var("LOTUS_LTO", v),
-        None => std::env::remove_var("LOTUS_LTO"),
-    }
-    let ok = build_executable(&program, &bin).is_ok();
-    std::env::remove_var("LOTUS_LTO");
+    let options = BuildOptions {
+        lto: Some(LtoMode::parse(var.unwrap_or(""))),
+        ..Default::default()
+    };
+    let ok =
+        build_executable_with_options(&program, &bin, &[], &options).is_ok();
     let _ = std::fs::remove_file(&bin);
     ok
 }
@@ -37,7 +46,19 @@ fn builds_under(var: Option<&str>, name: &str) -> bool {
 /// link cost.
 #[test]
 fn every_lto_spelling_builds() {
-    for v in [None, Some("thin"), Some("1"), Some("full")] {
+    for (v, want) in [
+        (None, LtoMode::Off),
+        (Some("thin"), LtoMode::Thin),
+        (Some("1"), LtoMode::Full),
+        (Some("full"), LtoMode::Full),
+    ] {
+        assert_eq!(
+            LtoMode::parse(v.unwrap_or("")),
+            want,
+            "LOTUS_LTO={:?} must select {:?}",
+            v,
+            want
+        );
         assert!(
             builds_under(v, "lto_modes"),
             "LOTUS_LTO={:?} must produce a working build",
@@ -50,6 +71,11 @@ fn every_lto_spelling_builds() {
 /// upgrade to some LTO flavor.
 #[test]
 fn unknown_lto_value_is_off_not_an_error() {
+    assert_eq!(
+        LtoMode::parse("yes-please"),
+        LtoMode::Off,
+        "an unrecognized LOTUS_LTO must not select an LTO flavor"
+    );
     assert!(
         builds_under(Some("yes-please"), "lto_modes_unknown"),
         "an unrecognized LOTUS_LTO must fall back to a normal build"

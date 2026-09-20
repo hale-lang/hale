@@ -304,10 +304,9 @@ fn an_argument_position_or_wrapped_factory_result_is_reclaimed() {
 /// arena is destroyed at exit, which is why the leak needed a method
 /// frame to be seen at all).
 ///
-/// One `#[test]` on purpose: `LOTUS_ASAN` is read by
-/// `build_executable` at codegen time and the variable is
-/// process-global, so a second test building concurrently in this
-/// process would see it.
+/// The instrumented build is requested through
+/// `BuildOptions::asan`, so it is scoped to this build alone
+/// (GH #843).
 #[test]
 fn a_factory_result_in_a_method_frame_is_leak_clean_under_asan() {
     let src = r#"
@@ -346,10 +345,12 @@ fn a_factory_result_in_a_method_frame_is_leak_clean_under_asan() {
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin("factory_or_asan");
-    std::env::set_var("LOTUS_ASAN", "1");
-    let built = build_executable(&program, &bin);
-    std::env::remove_var("LOTUS_ASAN");
-    built.expect("build");
+    // GH #843: an ASan build is a per-build option, not a
+    // process-wide `LOTUS_ASAN` that every concurrent build in this
+    // binary would also have picked up. The helper checks the
+    // artifact is really instrumented — the assertions below are all
+    // negative, so an uninstrumented build passes them vacuously.
+    harness::build_asan(&program, &bin);
     let out = Command::new(&bin)
         .env("ASAN_OPTIONS", "detect_leaks=1")
         .output()

@@ -31,14 +31,8 @@ mod harness;
 fn dump_ir(name: &str, src: &str) -> String {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_ms_ir_{}_{}", name, std::process::id()));
-    let ir = bin.with_extension("ll");
-    std::env::set_var("LOTUS_DUMP_IR", "1");
-    let result = build_executable(&program, &bin);
-    std::env::remove_var("LOTUS_DUMP_IR");
-    result.expect("build");
-    let text = std::fs::read_to_string(&ir).expect("read IR");
+    let text = harness::build_ir_text(&program, &bin).expect("build");
     let _ = std::fs::remove_file(&bin);
-    let _ = std::fs::remove_file(&ir);
     text
 }
 

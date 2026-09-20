@@ -17,14 +17,14 @@
 //!   * inertness of the non-singleton-ancestor case — a plain (non-main)
 //!     `Fleet` accepting Ship via an intermediary stays transient (that's
 //!     artifacts #2b/#3, not this one);
-//!   * the disable flag — `LOTUS_NO_OWNERSHIP_BUBBLE=1` empties the plan,
-//!     so the bubble program falls back to transient (the differential
-//!     control arm).
+//!   * the disable flag — `BuildOptions::no_ownership_bubble` empties
+//!     the plan, so the bubble program falls back to transient (the
+//!     differential control arm).
 //!
-//! Run under `LOTUS_ASAN=1` to prove the bubbled child is reclaimed
-//! exactly once (no leak, no use-after-free): `build_executable` reads
-//! the flag at codegen time, so the emitted binary is ASan-instrumented
-//! and any leak/UAF fails `run`'s success assertion.
+//! Run the whole file under `LOTUS_ASAN=1` to prove the bubbled child
+//! is reclaimed exactly once (no leak, no use-after-free): the
+//! emitted binaries are ASan-instrumented and any leak/UAF fails
+//! `run`'s success assertion.
 
 use std::process::Command;
 
@@ -37,6 +37,22 @@ fn build_named(name: &str, src: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_ownership_bubble_{}", name));
     build_executable(&program, &bin).expect("build");
+    bin
+}
+
+/// The control arm: the same program with gate #2 off. GH #843 — the
+/// gate used to be `LOTUS_NO_OWNERSHIP_BUBBLE=1` in the *process*
+/// environment, which every concurrent build in this binary would
+/// also have read; it is a per-build option now.
+fn build_named_no_bubble(name: &str, src: &str) -> std::path::PathBuf {
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bin = harness::unique_bin(&format!("hale_test_ownership_bubble_{}", name));
+    let options = hale_codegen::BuildOptions {
+        no_ownership_bubble: true,
+        ..Default::default()
+    };
+    hale_codegen::build_executable_with_options(&program, &bin, &[], &options)
+        .expect("build");
     bin
 }
 
@@ -203,12 +219,9 @@ fn disable_flag_reverts_to_transient() {
     // Same program, but the bubble is gated off. The Ships stay
     // transient (dissolved at Yard.run()'s scope exit), so World
     // collects nothing — proving the flag empties the ownership plan and
-    // the emit is inert without it. Env is process-global; the crate's
-    // tests run serial (`--test-threads=1`), and we scope the var to the
-    // OFF build only.
-    std::env::set_var("LOTUS_NO_OWNERSHIP_BUBBLE", "1");
-    let bin = build_named("disabled", BUBBLE_SRC);
-    std::env::remove_var("LOTUS_NO_OWNERSHIP_BUBBLE");
+    // the emit is inert without it. The gate is scoped to this one
+    // build, not to the process.
+    let bin = build_named_no_bubble("disabled", BUBBLE_SRC);
     let stdout = run(&bin);
     assert!(
         stdout.contains("count=0"),

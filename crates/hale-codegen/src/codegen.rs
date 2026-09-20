@@ -612,6 +612,40 @@ pub struct BuildOptions {
     /// strings. Meaningful only together with `model_hash`; harness
     /// callers leave it empty and every row reads 0 as before.
     pub obs_entity_ids: Vec<hale_model::obs_ids::ObsEntityId>,
+
+    // === GH #843: build knobs that used to be TEST-ONLY env vars ===
+    //
+    // Each of the five below is read from `LOTUS_*` when the option
+    // is left at its default, so the CLI and the shell keep the
+    // exact behavior they had. What changed is that a *test* asking
+    // for one no longer has to mutate the process environment:
+    // `std::env::set_var` is global to the process and is UB when
+    // another thread reads the environment concurrently, which under
+    // `cargo test` (libtest runs tests as threads in ONE process) is
+    // every other codegen test building at the same time.
+    /// Write the PRE-optimization LLVM IR to this path.
+    ///
+    /// Default `None` falls back to `LOTUS_DUMP_IR` being set in the
+    /// environment, which dumps to `output_path.with_extension("ll")`
+    /// — the CLI/shell spelling. The IR-shape tests pass the path.
+    pub dump_ir: Option<std::path::PathBuf>,
+    /// Force the all-dynamic bus lowering: the devirtualization plans
+    /// come out empty. The differential harness's control arm.
+    /// OR-ed with `LOTUS_NO_BUS_DEVIRT`.
+    pub no_bus_devirt: bool,
+    /// Force the pre-#2 ownership lowering: both bubble plans and the
+    /// forwarding sets come out empty, so the build declares no
+    /// threading fields and stitches nothing. OR-ed with
+    /// `LOTUS_NO_OWNERSHIP_BUBBLE`.
+    pub no_ownership_bubble: bool,
+    /// Build with AddressSanitizer and skip the O3 module pipeline,
+    /// so a leak/UAF report carries accurate frames. OR-ed with
+    /// `LOTUS_ASAN`.
+    pub asan: bool,
+    /// LTO flavor. `None` reads `LOTUS_LTO`; see [`LtoMode::parse`]
+    /// for the spellings. Ignored under any sanitizer and on wasm32,
+    /// exactly as the env spelling is.
+    pub lto: Option<LtoMode>,
 }
 
 /// The per-build source table for DWARF emission: each entry is one
@@ -698,19 +732,30 @@ fn env_flag(name: &str) -> bool {
 /// `thin` -> ThinLTO: per-module summaries drive cross-module import,
 /// then each module is optimized in PARALLEL. Most of full LTO's
 /// inlining wins at a fraction of the link cost.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LtoMode {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LtoMode {
+    #[default]
     Off,
     Thin,
     Full,
 }
 
-fn lto_mode() -> LtoMode {
-    match std::env::var("LOTUS_LTO").unwrap_or_default().as_str() {
-        "thin" | "THIN" | "Thin" => LtoMode::Thin,
-        "1" | "true" | "TRUE" | "full" | "FULL" => LtoMode::Full,
-        _ => LtoMode::Off,
+impl LtoMode {
+    /// The spellings `LOTUS_LTO` (and `BuildOptions::lto`) accept.
+    /// Anything unrecognized — including the empty string an unset
+    /// variable produces — is [`LtoMode::Off`], never an error and
+    /// never a silent upgrade to some flavor.
+    pub fn parse(s: &str) -> LtoMode {
+        match s {
+            "thin" | "THIN" | "Thin" => LtoMode::Thin,
+            "1" | "true" | "TRUE" | "full" | "FULL" => LtoMode::Full,
+            _ => LtoMode::Off,
+        }
     }
+}
+
+fn lto_mode() -> LtoMode {
+    LtoMode::parse(std::env::var("LOTUS_LTO").unwrap_or_default().as_str())
 }
 
 /// One-shot probe: is `ld.lld` on PATH? The non-LTO link uses it
@@ -1078,7 +1123,7 @@ pub fn build_executable_with_options(
         std::collections::BTreeMap<String, u32>,
         std::collections::BTreeSet<String>,
         std::collections::BTreeMap<String, Vec<(String, String)>>,
-    ) = if env_flag("LOTUS_NO_BUS_DEVIRT") {
+    ) = if options.no_bus_devirt || env_flag("LOTUS_NO_BUS_DEVIRT") {
         (
             std::collections::BTreeMap::new(),
             std::collections::BTreeSet::new(),
@@ -1210,7 +1255,8 @@ pub fn build_executable_with_options(
         std::collections::BTreeMap<(String, String), String>,
         std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
         std::collections::BTreeMap<(String, String), String>,
-    ) = if env_flag("LOTUS_NO_OWNERSHIP_BUBBLE") {
+    ) = if options.no_ownership_bubble || env_flag("LOTUS_NO_OWNERSHIP_BUBBLE")
+    {
         (
             std::collections::BTreeMap::new(),
             std::collections::BTreeMap::new(),
@@ -1674,7 +1720,7 @@ pub fn build_executable_with_options(
     // caught. Separate from LOTUS_ASAN so the corpus-oracle ASan gate is
     // unaffected; used to validate the foreign-ring boundary hardening.
     let lotus_tsan = env_flag("LOTUS_TSAN");
-    let lotus_asan = env_flag("LOTUS_ASAN");
+    let lotus_asan = options.asan || env_flag("LOTUS_ASAN");
     let lotus_ubsan = env_flag("LOTUS_UBSAN");
     // LOTUS_LTO: opt-in LTO build. `thin` selects ThinLTO, `1`/`full`
     // selects monolithic LTO. The Hale module is emitted as
@@ -1709,7 +1755,7 @@ pub fn build_executable_with_options(
     // non-zero count (32) under off/thin/full. The whole example corpus
     // also runs byte-identical under thin (85/86; the one diff,
     // 20-pinned-core, is nondeterministic against itself).
-    let requested_lto = lto_mode();
+    let requested_lto = options.lto.unwrap_or_else(lto_mode);
     let sanitized = lotus_tsan || lotus_ubsan || lotus_asan;
     let lto_kind = if is_wasm || sanitized {
         LtoMode::Off
@@ -1719,8 +1765,17 @@ pub fn build_executable_with_options(
     let lto_active = lto_kind != LtoMode::Off;
 
     let obj_path: PathBuf = output_path.with_extension("o");
-    if std::env::var("LOTUS_DUMP_IR").is_ok() {
-        let ir_path = output_path.with_extension("ll");
+    // GH #843: `BuildOptions::dump_ir` names the file; the
+    // `LOTUS_DUMP_IR` spelling keeps its implied
+    // `output_path.with_extension("ll")`.
+    let ir_dump: Option<PathBuf> = match &options.dump_ir {
+        Some(p) => Some(p.clone()),
+        None if std::env::var("LOTUS_DUMP_IR").is_ok() => {
+            Some(output_path.with_extension("ll"))
+        }
+        None => None,
+    };
+    if let Some(ir_path) = ir_dump {
         let _ = cx.module.print_to_file(&ir_path);
     }
 
@@ -1809,9 +1864,11 @@ pub fn build_executable_with_options(
     }
 
     phase("front-end+codegen", &mut t_last);
-    let asan_diag = std::env::var("LOTUS_ASAN")
-        .map(|v| v == "1" || v == "true" || v == "TRUE")
-        .unwrap_or(false);
+    // Same predicate as `lotus_asan` above — read once there so
+    // `BuildOptions::asan` reaches BOTH halves of the diagnostic
+    // build (instrument, and skip the O3 pipeline that would move
+    // the frames the sanitizer report names).
+    let asan_diag = lotus_asan;
     if !asan_diag {
         let pb_opts = inkwell::passes::PassBuilderOptions::create();
         // Native runs the aggressive O3 module pipeline; wasm stays O2

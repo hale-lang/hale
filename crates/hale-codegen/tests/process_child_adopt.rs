@@ -26,10 +26,10 @@
 //!     That is now reclaimed by the binding that names it, so the
 //!     bounded allowance below should find nothing left to allow.
 //!
-//! `LOTUS_ASAN` is read by `build_executable` at codegen time, so the
-//! ASan arm sets it around its own build. Everything is one `#[test]`
-//! on purpose: the env var is process-global, and a second test
-//! building concurrently in the same process would see it.
+//! The ASan arm asks for the instrumented build through
+//! `BuildOptions::asan`, so the request belongs to that one build
+//! (GH #843; it used to be `LOTUS_ASAN` in the process environment,
+//! which any test building concurrently would also have read).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -67,6 +67,19 @@ fn build(name: &str) -> PathBuf {
     let program = hale_syntax::parse_source(SRC).expect("parse");
     let bin = harness::unique_bin(&format!("hale_test_process_child_adopt_{}", name));
     build_executable(&program, &bin).expect("build");
+    bin
+}
+
+/// The same program instrumented with AddressSanitizer. GH #843 —
+/// this used to set `LOTUS_ASAN` in the *process* environment, so
+/// any build racing it in this binary was silently sanitized too.
+/// The harness checks the artifact really carries the sanitizer;
+/// the assertions on it are all negative, so an uninstrumented
+/// build would pass them vacuously.
+fn build_asan(name: &str) -> PathBuf {
+    let program = hale_syntax::parse_source(SRC).expect("parse");
+    let bin = harness::unique_bin(&format!("hale_test_process_child_adopt_{}", name));
+    harness::build_asan(&program, &bin);
     bin
 }
 
@@ -125,9 +138,7 @@ fn an_adopted_child_is_owned_by_the_field_and_adds_no_leak() {
     );
 
     // === adopt adds no leak of its own ===========================
-    std::env::set_var("LOTUS_ASAN", "1");
-    let asan = build("asan");
-    std::env::remove_var("LOTUS_ASAN");
+    let asan = build_asan("asan");
     let out = Command::new(&asan)
         .env("ASAN_OPTIONS", "detect_leaks=1")
         .output()
