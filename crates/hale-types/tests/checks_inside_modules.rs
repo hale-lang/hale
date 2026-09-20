@@ -227,6 +227,83 @@ fn dead_receiver_inside_a_module_is_flagged() {
     );
 }
 
+// ---- check_nested_long_running_child -------------------------------
+//
+// A non-main locus with work of its own, holding a params field of a
+// locus type whose `run()` never returns: nested cooperative children
+// share the parent's OS thread and the child's `run()` runs to
+// completion first, so the parent never starts. A hard error.
+
+const NESTED_LONG_RUNNING: &str = "\
+locus Daemon {
+    params { n: Int = 0; }
+    run() {
+        while true {
+            std::time::sleep(1s);
+        }
+    }
+}
+
+locus Parent {
+    params { d: Daemon = Daemon { }; }
+    run() { println(\"work\"); }
+}
+
+main locus App {
+    params { p: Parent = Parent { }; }
+    run() { }
+}
+";
+
+#[test]
+fn nested_long_running_child_inside_a_module_is_flagged() {
+    assert_module_matches_top_level(
+        NESTED_LONG_RUNNING,
+        "with a non-trivial `run()` body of its own",
+    );
+}
+
+#[test]
+fn a_top_level_parent_sees_a_module_nested_childs_run() {
+    // The index half of the same defect, and the half a walk-only
+    // fix would miss: the PARENT is at the top level, so the walk
+    // always reached it — but `Daemon` lived in a module, so the
+    // name → `&LocusDecl` index had no entry and the child resolved
+    // as "not long-running".
+    let src = "\
+module inner {
+    locus Daemon {
+        params { n: Int = 0; }
+        run() {
+            while true {
+                std::time::sleep(1s);
+            }
+        }
+    }
+}
+
+locus Parent {
+    params { d: Daemon = Daemon { }; }
+    run() { println(\"work\"); }
+}
+
+main locus App {
+    params { p: Parent = Parent { }; }
+    run() { }
+}
+
+fn main() { App { }; }
+";
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|(is_err, m)| *is_err
+            && m.contains("with a non-trivial `run()` body of its own")),
+        "a top-level parent holding a module-nested long-running child \
+         must be flagged; got: {:?}",
+        ds
+    );
+}
+
 #[test]
 fn a_module_nested_advisory_stays_a_warning() {
     // Severity is part of the contract: reaching inside a module

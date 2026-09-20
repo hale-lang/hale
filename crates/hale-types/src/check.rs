@@ -2967,25 +2967,29 @@ fn check_nested_long_running_child(
 ) {
     // Build a name → LocusDecl index across the bundle so we can
     // resolve params-field locus types to their target body.
+    // GH #825: both passes flatten `module { … }`. The index is half
+    // the rule — a TOP-LEVEL parent holding a module-nested child
+    // resolves the child's type through it, and an index that stops
+    // at the top level answers "not long-running" for every one.
     let mut local_loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 local_loci.insert(l.name.name.as_str(), l);
             }
-        }
+        });
     }
 
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             let TopDecl::Locus(parent) = item else {
-                continue;
+                return;
             };
             if parent.is_main {
-                continue;
+                return;
             }
             if !locus_has_nontrivial_run(parent) {
-                continue;
+                return;
             }
             // Walk params fields. Each ParamDecl whose declared
             // type is a locus reference goes through the locus-
@@ -3062,7 +3066,7 @@ fn check_nested_long_running_child(
                     ));
                 }
             }
-        }
+        });
     }
 }
 
