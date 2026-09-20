@@ -10,8 +10,8 @@
 # B with ENOENT). The libtest --test-threads=1 flag avoids the
 # same race locally; this file is the nextest equivalent.
 #
-# `test-group = { max-threads = 1 }` serializes only the binaries
-# named below; everything else stays fully parallel.
+# `test-group = { max-threads = N }` caps only the binaries named
+# below (N = 1 serializes them); everything else stays fully parallel.
 
 # Hard per-test timeout. nextest has none by default, so a single
 # hung test (a socket/subprocess test that deadlocks on a CI
@@ -37,10 +37,15 @@ test-group = 'shared-fixture-dir'
 # failure.
 filter = 'binary(dna_native_suite)'
 slow-timeout = { period = "60s", terminate-after = 15 }
-# The suite is sliced (2026-09-19) so CI's hash partition spreads it;
-# the slices that land on one partition still run one at a time —
-# fixtures start live hosts on free ports and share one knowledge
-# database — and each slice keeps the 15-minute allowance above.
+# The suite is sliced (2026-09-19) so CI's hash partition spreads it,
+# and the slices that land on one partition run beside each other
+# (2026-09-20): ports are picked free per fixture, and each slice now
+# creates its own knowledge database out of the job's DSN rather than
+# sharing the one database the job names. Two at a time, not all of
+# them — a runner has 4 cores and every fixture builds and boots an
+# organism, so more contention would widen the bounded waits the
+# fixtures already run scaled (GH #795). Each slice keeps the
+# 15-minute allowance above.
 test-group = 'dna-fixtures'
 
 [[profile.default.overrides]]
@@ -52,5 +57,5 @@ test-group = 'serial-udp'
 
 [test-groups]
 shared-fixture-dir = { max-threads = 1 }
-dna-fixtures = { max-threads = 1 }
+dna-fixtures = { max-threads = 2 }
 serial-udp = { max-threads = 1 }
