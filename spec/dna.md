@@ -1362,6 +1362,71 @@ performer kind is durable: the restored incarnation runs the attempt on
 that kind. What an invocation that died did before it died is a later
 card's, as is cross-process delivery.
 
+## Workflow execution: recovering the tree
+
+A restart rebuilds an execution from the record alone. The executions
+owner is asked with nothing but the task's id and which performer kind
+runs each leaf (`ExecutionAsked`); it asks the runtime for the
+admission as the record holds it (`AdmissionAsked`), and the runtime
+answers from the row, read whole, and from its projection's word that
+the row was admitted (`AdmissionAnswered`): the definition and the
+bound revision, the recipe, the limits. The Task is born from that
+answer, so an execution restored after a restart runs what it was
+admitted with — its bound recipe — whatever the catalog offers now; a
+definition changed to a new revision between shutdown and restart
+binds new admissions and touches no old execution. A task the record
+never admitted, one admitted with a recipe that cannot be read, or one
+whose admission the projection refused is not resumed: the owner says
+so (`ExecutionRefused`, with why) and nothing is born or invented for
+it. From there the residents re-propose through the transition code
+live execution uses, and the record decides what replays and what
+runs: a step the record completed is not reborn and the next step
+starts once; a child the record settled announces its settlement and
+leaves, and its parent's step completes on it; a member still waiting
+is recovered where the record left it — its admitted attempt
+redelivered, under card 12c's reconciliation — and completed members
+do not rerun; the grandchild settles, then the child, then the root.
+Only unfinished responsibilities exist in memory after a restart, and
+every id and every required-member set is the record's.
+
+The admission recovered is the one the projection accepted — the body
+it recorded when it applied the row — never the last row in the record
+that names the task: a later row the projection refused (a
+re-admission under another revision, a row whose body names another
+task) is not the execution, and a task the projection holds no
+admission of is refused with the projection's reason for the last row
+it refused, from a dry replay of that row. A child of another Task is
+not recovered by asking for it: the answer says whose child it is,
+under which step and key, and the child comes back through its parent,
+in its bound place. The workflow identity an execution runs under is
+the one its recipe bound, read from the record and never re-derived;
+the projection refuses an admission whose recipe binds the task under
+any workflow but `<task>/wf<revision>` (§4 of the contract), so the
+recipe and the identity never say different things. Every question the
+owner puts to the record carries an identity of its own
+(`AdmissionAsked.ask_id`), held outstanding until answered; an answer
+is taken only to a question this owner holds outstanding, for the task
+it asked about, and only once — an answer nobody asked for, however
+positive, and an answer under a question already answered, are strays
+and birth nothing. A leaf asks the record what it holds about it before
+proposing anything (`WorkStateAsked` / `WorkStateAnswered`): a settled
+Work has answered and leaves; a Work with an admitted attempt resumes
+that attempt under its number, id and performer kind as the record has
+them — the kinds a restart is asked with bind only attempts not yet
+admitted — and a Work never attempted admits its first attempt under
+the asked kind. The state question carries the Work's scope and an
+identity of its own (`WorkStateAsked.ask_id`), held outstanding until
+answered; the answer carries both back, and the Work takes only the
+answer to its one outstanding question — its scope, its identity —
+once: a same-named Work in another scope's record (ids are minted
+within a record) is not this Work, and a stale or unsolicited answer is
+no state. A fence heard while the state question is outstanding is
+remembered and decided on after the answer: an admitted attempt is
+re-proposed and, admitted under the fence, settles cancelled; a Work
+never attempted proposes its first admission, which the state refuses
+under the cancelled Task, and retires. No settlement ever names no
+attempt.
+
 ## Workflow execution: uncertain external effects
 
 An attempt's performer may have acted before the outcome was saved:

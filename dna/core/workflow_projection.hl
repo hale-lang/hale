@@ -164,6 +164,21 @@ fn set_add(set: String, key: String) -> String {
     return set + " " + key;
 }
 
+// The set without `key`: the whole key, never a prefix of one.
+@unbounded
+fn set_remove(set: String, key: String) -> String {
+    let mut out = "";
+    let mut rest = set;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest + " ", " ");
+        let one = rest[0..sp];
+        rest = if sp + 1 >= len(rest) { "" } else { rest[(sp + 1)..len(rest)] };
+        if len(one) == 0 || one == key { continue; }
+        out = if len(out) == 0 { one } else { out + " " + one };
+    }
+    return out;
+}
+
 // How many keys a space-separated set names.
 @unbounded
 fn set_count(set: String) -> Int {
@@ -553,6 +568,13 @@ locus WorkflowProjection {
         if root.kind != "task" { return refused("the recipe an admission of " + a.task_id + " carries does not bind that task"); }
         if root.definition != a.definition || root.revision != a.revision {
             return refused("task " + a.task_id + " is bound to " + definition_name(root.definition, root.revision) + ", not " + definition_name(a.definition, a.revision));
+        }
+        // the workflow the recipe binds the task under is §4's, and is
+        // read from the recipe from here on — never re-derived — so the
+        // two never say different things
+        let wf = a.task_id + "/wf" + to_string(a.revision);
+        if root.workflow_id != wf {
+            return refused("the recipe an admission of " + a.task_id + " carries binds it under `" + root.workflow_id + "`, not `" + wf + "`, the workflow of " + a.task_id + " at revision " + to_string(a.revision));
         }
         if root.parent != a.parent_task || root.spawning_step != a.spawning_step || root.member_key != a.member_key {
             return refused("task " + a.task_id + " is bound under <" + root.parent + " " + root.spawning_step + " " + root.member_key + ">, not <" + a.parent_task + " " + a.spawning_step + " " + a.member_key + ">");
