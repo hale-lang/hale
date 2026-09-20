@@ -305,15 +305,26 @@ placement and the locus's shape are known at compile time:
   fine; it's the blocking call that kills delivery.)
 - **A blocking call on a cooperative pool is a warning.** Even when
   the locus *isn't* a subscriber, a blocking `run()` (a blocking
-  `recv`/`accept`, a subprocess `run`) on a pool that isn't `where
-  async_io` holds the pool's thread and stalls everything else
-  scheduled there. The compiler warns and suggests `pinned` (own
-  thread) or `where async_io` (parks). For blocking I/O gateways,
-  `pinned` is the prescribed shape. This warning follows the call
+  `recv`/`accept`, a line read from stdin or a file, an `http`
+  request, a subprocess `run`) on a pool that isn't `where async_io`
+  holds the pool's thread and stalls everything else scheduled there.
+  The compiler warns and suggests `pinned` (own thread) or `where
+  async_io` (parks). For blocking I/O gateways, `pinned` is the
+  prescribed shape. This warning follows the call
   graph: a `run()` that blocks indirectly — through a helper fn or a
   `self.method` it calls — is flagged too, naming the offending call.
   (The dead-receiver *error* above stays direct-call-only, so it
   never widens onto an indirect path.)
+
+  "Blocking" here means exactly what the effect system means by it:
+  the stdlib calls classified `block`, the same set `@no_block` and
+  the `.hale.effects` manifest (`hale check --dump-effects-manifest`)
+  read. There is one
+  deliberate exception — `std::time::sleep`, which the compiler
+  chunks into ≤100 ms slices and drains the pool's bus queue between
+  them. A sleeping locus keeps its pool serviced, which is why
+  "handlers plus a `sleep` loop" is the event-driven shape both of
+  these diagnostics point you at.
 - **An orphan bus topic is a warning.** In a complete program (one
   with a `main` locus), a topic or subject wired to only one end —
   published with nobody subscribed, or subscribed with nobody
@@ -332,11 +343,14 @@ placement and the locus's shape are known at compile time:
   self-republish errors; one guarded by an `if` is a terminating
   state machine and is left alone.)
 - **An unthrottled publish loop is a warning.** A `while true` loop
-  that publishes with no `yield`, `time::sleep`/`tick`, input-pacing
-  `recv`, or `break`/`return` floods the bus — the producer has no
-  backpressure, so cells pile up without bound. Pace the loop, drive
-  it from an input, or `yield` to let the subscriber drain. (Bounded
-  loops are never flagged; any flow-control point clears it.)
+  that publishes with no `yield`, `time::sleep`/`tick`, an
+  input-pacing blocking call, or `break`/`return` floods the bus —
+  the producer has no backpressure, so cells pile up without bound.
+  Pace the loop, drive it from an input, or `yield` to let the
+  subscriber drain. (Bounded loops are never flagged; any
+  flow-control point clears it.) "Input-pacing" is the same blocking
+  set as the warning above, so a loop driven by a line off stdin is
+  paced exactly as one driven by a blocking `recv`.
 - **A subject payload type-mismatch is an error.** If two sites
   publish/subscribe the same literal subject string with different
   `of type` payloads, a subscriber would decode the wrong type at

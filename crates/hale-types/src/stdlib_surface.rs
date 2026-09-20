@@ -1526,3 +1526,42 @@ pub const ASYNC_IO_PARKING: &[&[&str]] = &[
 pub fn parks_on_async_io(segs: &[&str]) -> bool {
     ASYNC_IO_PARKING.iter().any(|p| *p == segs)
 }
+
+/// GH #830: the `block`-classified leaves that, on a CLASSIC (non-
+/// `async_io`) cooperative pool, do **not** hold the pool's worker
+/// for the whole wait — so blocking there stalls nobody and is not
+/// a finding for `check_cooperative_pool_blocking`.
+///
+/// This is a different subtraction from [`ASYNC_IO_PARKING`], and
+/// deliberately so. The park list is the *async_io-pool* rule: those
+/// leaves swap the coro out, which only happens when the pool has an
+/// event loop. `check_cooperative_pool_blocking` never looks at an
+/// async_io pool — the placement walk `continue`s on the `where
+/// async_io` constraint before it reads a single call — so on every
+/// placement it *does* look at, a parking leaf takes its blocking
+/// path and really does hold the thread. Subtracting the park list
+/// there would delete `tcp::recv_into`, `tls::recv_into`,
+/// `udp::recv` and five more from the lint, which is the whole
+/// shape the lint exists to catch.
+///
+/// One entry, read off the lowering rather than guessed:
+///
+/// | path | why it yields |
+/// |---|---|
+/// | `std::time::sleep` | `lower_time_sleep` chunks the sleep into ≤100ms slices and drains the pool's bus queue between them, so a sleeping locus keeps the queue serviced ~10×/s |
+///
+/// That slicing is what makes "handlers plus a `time::sleep` loop"
+/// the *prescribed* event-driven shape — the shape both blocking
+/// diagnostics name as the fix — so counting `sleep` as a stall
+/// would have the lint flag its own advice.
+pub const COOPERATIVE_YIELDING_BLOCK_LEAVES: &[&[&str]] =
+    &[&["std", "time", "sleep"]];
+
+/// Does this stdlib path hold a classic cooperative pool's OS thread
+/// for the duration of its wait? The registry's `block` rows minus
+/// [`COOPERATIVE_YIELDING_BLOCK_LEAVES`] — one classification, not a
+/// second hand list (GH #830).
+pub fn holds_cooperative_worker(segs: &[&str]) -> bool {
+    effects_for(segs).is_some_and(|e| e.contains(EffectSet::BLOCK))
+        && !COOPERATIVE_YIELDING_BLOCK_LEAVES.iter().any(|p| *p == segs)
+}
