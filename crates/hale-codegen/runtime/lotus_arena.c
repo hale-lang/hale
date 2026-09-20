@@ -17940,6 +17940,20 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
     lotus_bus_static_bucket_t *b =
         (id < g_bus_static_bucket_count) ? &g_bus_static_buckets[id] : NULL;
     size_t delivered = 0;
+    /* GH #782: the recording's payload blob, under the SAME gate
+     * and in the same order as every other flavor (before the
+     * publish probe — the recorder peeks the ingress redispatch
+     * mark that lotus_obs_bus_publish consumes). Without it a fully
+     * direct-dispatched workload recorded zero payloads and
+     * `hale replay --diff` compared none. raw_struct = 1 mirrors
+     * the sibling flat path in lotus_bus_dispatch_static: one
+     * writer, one framing. The returned pub_id is unused — it
+     * identifies a queue cell for the enqueue record, and the
+     * direct call IS the delivery. */
+    if (lotus_obs_record_publish_payload && lotus_obs_live &&
+        (lotus_obs_recording || lotus_replay_active)) {
+        (void)lotus_obs_record_publish_payload(subject, payload, size, 1);
+    }
     /* iris handoff-5 P17: the direct flavors were probe-less — a
      * subject on this path was invisible to observation (no topic
      * registration, no counters, no BUS records). Publish once,

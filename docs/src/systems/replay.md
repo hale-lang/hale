@@ -65,11 +65,14 @@ probe. It captures four things:
    comparator can align them across runs. Synchronous
    direct-dispatch traffic — the devirtualized flavor most
    intra-app traffic compiles to — is visible here.
-3. **Payloads.** Wire-encoded payloads verbatim — including every
-   message a listen binding receives, captured in its wire form as
-   an **injectable ingress tape** — and raw in-process structs as
-   *metadata only* (an ABI snapshot would carry heap pointers and
-   padding while being useless for comparison).
+3. **Payloads.** One blob per publish, whichever way the publish
+   was dispatched — including the synchronous direct call, which
+   has the payload in hand at the publish site. Wire-encoded
+   payloads go in verbatim — including every message a listen
+   binding receives, captured in its wire form as an **injectable
+   ingress tape** — and raw in-process structs as *metadata only*
+   (an ABI snapshot would carry heap pointers and padding while
+   being useless for comparison).
 4. **The input journal.** Every user-facing nondeterministic read —
    `std::time::now`, `std::time::monotonic[_ns]`,
    `std::rand::next_int`, `std::os::getrandom`, the `std::env`
@@ -141,7 +144,7 @@ reports coverage per category rather than one number:
 ```text
 replay matches the recording (26 ring records). Compared, by category:
   public bus events:     20 across 1 consumer (publish + deliver, subject-aligned)
-  payloads:              not exercised: no payload blobs were recorded, so no payload bytes or declared sizes were compared
+  payloads:              10 (canonical bytes identical; raw ABI payloads matched by declared size)
   queued consumes:       not exercised: no queued consumer deliveries were recorded; dispatch was direct (valid — a synchronous delivery has no queue order to enforce), so no queued delivery order was verified
   async schedule steps:  not exercised: no async pool scheduling steps were recorded
   journal reads:         not exercised: no time, randomness or env reads were journaled
@@ -151,18 +154,19 @@ A category reported as not exercised was NOT verified by this match.
 That is a real match, over a real program — a publisher and its
 subscriber in one tree on one thread. Every delivery was **direct
 dispatch**: synchronous, valid, and compared above as public bus
-events. What it does *not* establish is a queued delivery schedule,
-because there was never one to replay. Reading it the other way is
-the trap this report exists to close: a successful `--diff`
-establishes exactly the categories it lists as compared, and
-nothing about the ones it marks not exercised.
+events, with the ten payloads behind them. What it does *not*
+establish is a queued delivery schedule, because there was never
+one to replay. Reading it the other way is the trap this report
+exists to close: a successful `--diff` establishes exactly the
+categories it lists as compared, and nothing about the ones it
+marks not exercised.
 
 Pin the publisher to its own core and the same ten publishes fill
-the queued category in — `queued consumes: 10 across 1 consumer`,
-and `payloads: 10` with them — while an `async_io` pool adds its
-recorded scheduling steps. A recording from before async schedules
-were recorded at all says so in the same place, instead of looking
-like an empty schedule that matched.
+the queued category in — `queued consumes: 10 across 1 consumer` —
+while an `async_io` pool adds its recorded scheduling steps. A
+recording from before async schedules were recorded at all says so
+in the same place, instead of looking like an empty schedule that
+matched.
 
 For tooling, `--diff --json` prints the same verdict as one JSON
 object: `result` (`match` or `diverged`), `ring_records`,

@@ -1567,6 +1567,11 @@ fn pre_phase6_artifact_diff_skips_schedule_comparison() {
 /// Publisher and subscriber in one tree on one thread: every delivery
 /// is synchronous direct dispatch, so the recording carries public
 /// bus events with NO queued consume stream behind them.
+///
+/// GH #782: it DOES carry the payload blobs. The direct flavors used
+/// to be the one publish path that recorded none, so a fully
+/// direct-dispatched workload replayed with `payloads: not exercised`
+/// — the report was honest, the recording was short.
 const DIRECT_DISPATCH: &str = r#"
 type Ping { n: Int = 0; }
 
@@ -1702,6 +1707,17 @@ fn direct_dispatch_match_names_the_unexercised_queued_schedule() {
          events:\n{}",
         stdout
     );
+    // GH #782: and the ten payloads behind those ten publishes. A
+    // direct call has the payload in hand at the publish site, so
+    // there is nothing to excuse here — `not exercised` for this
+    // category was a missing record, not an absent observation.
+    assert_eq!(
+        coverage_count(&stdout, "payloads"),
+        10,
+        "every direct-dispatch publish must record its payload \
+         blob:\n{}",
+        stdout
+    );
     // The schedule that was NOT is named as not exercised, and says
     // direct dispatch is why — not a bare "0 consumes".
     let queued = coverage_line(&stdout, "queued consumes");
@@ -1800,6 +1816,52 @@ fn async_schedule_steps_are_reported_as_compared() {
         stdout
     );
     assert_no_empty_category_claims(&stdout);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// GH #782: the direct-dispatch payload records are not decoration —
+/// `--diff` compares them, and a corrupted one fails. Same mutation
+/// the queued fixture uses, against the recording of a workload with
+/// no queue in it at all. Before the fix this test could not even be
+/// written: `mutate_first_payload` returns false on a recording with
+/// no payload blob, which is exactly what this program produced.
+#[test]
+fn a_mutated_direct_dispatch_payload_is_detected() {
+    let dir = workdir("cov_direct_mutated");
+    let prog = dir.join("dd.hl");
+    std::fs::write(&prog, DIRECT_DISPATCH).unwrap();
+    let rec = record(&dir, &prog);
+    let mut buf = std::fs::read(&rec).unwrap();
+    assert!(
+        mutate_first_payload(&mut buf),
+        "a direct-dispatch recording must carry a payload blob to \
+         mutate — with none, `--diff` compares no payload bytes for \
+         this workload at all (GH #782)"
+    );
+    let bad = dir.join("mutated.halerec");
+    std::fs::write(&bad, &buf).unwrap();
+
+    let out = hale()
+        .arg("replay")
+        .arg(&bad)
+        .arg(&prog)
+        .arg("--diff")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay --diff");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && stderr.contains("replay DIVERGED"),
+        "a mutated direct-dispatch payload must fail \
+         --diff:\nstdout:{}\nstderr:{}",
+        String::from_utf8_lossy(&out.stdout),
+        stderr
+    );
+    assert!(
+        stderr.contains("payload"),
+        "the divergence must name the payload that differs:\n{}",
+        stderr
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1954,6 +2016,21 @@ fn json_coverage_carries_the_same_counts_and_flags() {
             )),
         "the machine-readable count must match the human one: `{}`\n{}",
         public,
+        human_out
+    );
+    // GH #782: the payload category is compared on the direct path
+    // too, and the machine-readable side has to say so — a consumer
+    // gating on `compared` would otherwise skip a real comparison.
+    let payloads = json_category(json, "payloads");
+    assert!(
+        payloads.contains("\"compared\":true")
+            && payloads.contains(&format!(
+                "\"count\":{}",
+                coverage_count(&human_out, "payloads")
+            )),
+        "direct-dispatch payloads are compared, and --json must \
+         carry the same count: `{}`\n{}",
+        payloads,
         human_out
     );
     let queued = json_category(json, "queued_consumes");

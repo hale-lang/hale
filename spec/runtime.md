@@ -1797,16 +1797,24 @@ ids: main = 1, cooperative pool workers = 16 + registration
 index, pinned locus threads = 64 + obs instance id; threads with
 no stable identity (ingress readers) get run-unique anonymous
 ids, never a shared fallback. Payload bytes are captured once per
-queued publish under a **stable subject hash** (manifest topic
-ids are registration-order and racing publishers register in
-either order). Flags: bit 0 = external wire ingress; bit 1 = raw
+publish — **every dispatch flavor, queued or synchronous direct**
+— under a **stable subject hash** (manifest topic ids are
+registration-order and racing publishers register in either
+order). Flags: bit 0 = external wire ingress; bit 1 = raw
 in-process struct bytes — an ABI snapshot (String/Bytes fields
 are pointers, padding is uninitialized) that consumers must
 compare by size only; canonical per-topic recording codecs are
 the staged fix. Wire captures are canonical bytes, unflagged.
-The synchronous direct-dispatch flavors deliberately capture
-nothing: a closed-world same-thread call cannot carry external
-input, and re-execution re-derives its payloads.
+The direct-dispatch flavors — the devirtualized same-thread call
+that replaces the enqueue, in both its baked-inline and helper
+forms — record through the same writer, at the same publish site,
+in the same framing. They used to capture nothing, on the
+reasoning that a closed-world same-thread call carries no
+external input and re-execution re-derives its payloads: it does
+re-derive them, which is precisely why `--diff` can compare them,
+and a fully direct-dispatched workload recorded none to compare.
+The capture sits behind the same recording gate as the publish
+probe, so an unrecorded run writes nothing and pays nothing.
 
 **Input journal (Phase 3).** Under recording, every user-facing
 nondeterministic read is journaled per consumer as ONE unified
@@ -2045,7 +2053,10 @@ direct-dispatched every delivery and no queued schedule existed
 to verify (and the same template asserted payload identity for a
 recording with no payload blobs). Direct dispatch stays valid and
 is named as such: its deliveries are compared, as public bus
-events. Coverage is derived from the recording the comparator
+events, and its payloads are compared with them — a
+direct-dispatched publish records its payload blob like any other
+(above), so `payloads` is a compared category for such a
+workload, not an unexercised one. Coverage is derived from the recording the comparator
 walks and gated on the same async-capability bit, so the report
 cannot claim a category `diff` skipped. `--json` (strict replay
 with `--diff`) prints the same verdict machine-readably —

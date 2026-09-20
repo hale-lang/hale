@@ -1524,6 +1524,59 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                             )
                             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                         self.builder.position_at_end(pub_bb);
+                        // GH #782: the recording's payload blob for
+                        // this publish. Every C dispatch flavor
+                        // records one at its publish site; the baked
+                        // direct loop is the one flavor with no C
+                        // dispatch fn to host the call, so a fully
+                        // direct-dispatched workload recorded ZERO
+                        // payloads and `--diff` compared none of
+                        // them. Same writer, same framing, same
+                        // `raw_struct = 1` flag as the sibling flat
+                        // path in lotus_bus_dispatch_static — the
+                        // replay reader learns no second format.
+                        //
+                        // Ordering is load-bearing: the callee PEEKS
+                        // the ingress redispatch mark that
+                        // lotus_obs_bus_publish then CONSUMES, so it
+                        // must run first (same order as every C
+                        // site). The returned pub_id is unused here:
+                        // it identifies a queue cell for the enqueue
+                        // record, and the direct call IS the
+                        // delivery — there is no cell.
+                        //
+                        // Cost: none. The call sits inside the
+                        // pre-existing `lotus_obs_live` branch, so an
+                        // unobserved publish executes not one extra
+                        // instruction, and the callee's first line is
+                        // the same recording gate the C sites test
+                        // (`!lotus_obs_recording && !lotus_replay_active`
+                        // → return 0) — both imply obs_live, so the
+                        // gate is not widened.
+                        let rec_pay_fn = self
+                            .module
+                            .get_function(
+                                "lotus_obs_record_publish_payload",
+                            )
+                            .expect(
+                                "lotus_obs_record_publish_payload \
+                                 declared in declare_builtins",
+                            );
+                        self.builder
+                            .build_call(
+                                rec_pay_fn,
+                                &[
+                                    subj_val.into(),
+                                    payload_val.into(),
+                                    payload_size_iv.into(),
+                                    self.context
+                                        .i32_type()
+                                        .const_int(1, false)
+                                        .into(),
+                                ],
+                                "bus.direct.obs.rec.call",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                         let obs_pub_fn = self
                             .module
                             .get_function("lotus_obs_bus_publish")
