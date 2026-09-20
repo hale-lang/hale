@@ -3769,6 +3769,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_str_substring", str_substring_ty, None);
+        // GH #720 — the strlen-free substring: the caller passes the
+        // length it already holds, so extracting k tokens from an
+        // n-byte input is O(n) instead of O(k*n).
+        // declare ptr @lotus_str_range_copy(ptr s, i64 n, i64 start,
+        //                                   i64 end_exclusive)
+        let str_range_copy_ty = ptr_t.fn_type(
+            &[ptr_t.into(), i64_t.into(), i64_t.into(), i64_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_str_range_copy", str_range_copy_ty, None);
 
         // declare ptr @lotus_str_trim(ptr s)
         self.module

@@ -124,6 +124,61 @@ let s = "hello";
 let h = s[0..1];          // "h"
 ```
 
+## Walking a big string a byte at a time
+
+Slicing one byte at a time is fine for a short line and a trap
+for a large one. A `String` doesn't store its length, so `len(s)`
+counts bytes until the terminator, and a slice like
+`s[i..(i + 1)]` counts them *again* to clamp its range before
+copying one byte out. Written as a loop, that is work proportional
+to the input on every single iteration:
+
+```hale,fragment
+// DON'T: quadratic. 1 MiB of input takes about 13 seconds.
+let mut i = 0;
+while i < len(s) {
+    let c = s[i..(i + 1)];
+    i = i + 1;
+}
+```
+
+For scanning — parsing a format, finding delimiters, validating a
+payload — use a **byte view**. It measures the string once, keeps
+the length in a field, and checks every read against it:
+
+```hale,fragment
+let v = std::str::bytes_view(line);
+let mut fields = 1;
+let mut i = 0;
+while i < v.n {
+    let c = std::str::byte_at(v, i);   // the byte, 0..255
+    if c == 44 { fields = fields + 1; }  // 44 is ','
+    i = i + 1;
+}
+```
+
+Same 1 MiB input, same loop: about 29 microseconds instead of 13
+seconds. Three things to know:
+
+- **`byte_at` refuses rather than misbehaving.** Any index outside
+  `0..v.n` — including one past the end, which is how a scan
+  discovers it has finished — answers `-1`. A truncated message
+  cannot make it read something that isn't there.
+- **`std::str::slice(v, lo, hi)` cuts tokens out cheaply**, and
+  clamps: `slice(v, 3, 999999)` gives you what is actually there,
+  which matters when the `999999` came from the input. It costs
+  what the token is long, not what the input is long.
+- **Build the view once, outside the loop.** Constructing it walks
+  the string (that is the point — once instead of per byte), so a
+  view built per iteration buys nothing.
+
+These are *bytes*, not characters: `v.n` is a byte count, and a
+multi-byte character like `é` is two reads. For delimiters,
+digits and punctuation that is exactly right — in UTF-8 no
+multi-byte character can contain a byte that looks like an ASCII
+one. When you care about characters, see [Text that isn't
+ASCII](#text-that-isnt-ascii) below.
+
 ## Parsing numbers
 
 Turning text into a number can fail — the text might not be a
