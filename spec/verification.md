@@ -18,6 +18,17 @@ Most checks run in the bundle-level passes of
 ones run in `crates/hale-types/src/resolve.rs`; cell slot-of-origin is
 a codegen-time check. Each entry names the enforcing pass.
 
+**Every bundle-level check applies inside `module { … }`, at any
+nesting depth** (GH #825, 2026-09-20). A module is a NAMESPACE, not an
+analysis boundary — the resolver registers a module's declarations
+under their bare names, so a fn, locus, topic or `bindings` entry one
+brace deeper is an ordinary member of the bundle. Findings carry the
+same message, the same span and the same severity as the identical
+declaration written at the top level, and whole-bundle facts (the
+at-most-one-`main` count, the pool map seeded from the `main` locus's
+placement block, the transport-bound topic set, the `@form`
+sync-discipline index) count module-nested declarations too.
+
 ## Concurrency & placement safety
 
 The bus + cooperative-pool model is the substrate; these checks keep a

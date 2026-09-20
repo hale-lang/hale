@@ -476,10 +476,17 @@ pub fn check_bundle_scoped(
     });
     // GH #255: bundle-wide set of transport-bound topic names,
     // for the `or wait` legality check at publish sites.
+    //
+    // GH #825: this one fails the other way. Every other walk in the
+    // issue loses a finding when it stops at the top level; this one
+    // INVENTS one — a binding it cannot see reads as "this topic has
+    // no transport", so a legal `or wait` is REFUSED. A correct
+    // program with its `bindings { }` block one brace deeper did not
+    // compile.
     let mut bound_topics: std::collections::BTreeSet<String> =
         std::collections::BTreeSet::new();
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 for member in &l.members {
                     if let LocusMember::Bindings(bb) = member {
@@ -489,7 +496,7 @@ pub fn check_bundle_scoped(
                     }
                 }
             }
-        }
+        });
     }
     // GH #724: aliases of imports this bundle never resolved. Empty on
     // every CLI path (the merge strips `imports`); populated only for a
@@ -859,19 +866,21 @@ fn check_unowned_subscriber_locus(
     if allow {
         return;
     }
+    // GH #825: a module is a namespace, not an analysis boundary —
+    // both the index and the walk flatten it.
     let mut local_loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 local_loci.insert(l.name.name.as_str(), l);
             }
-        }
+        });
     }
 
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             let TopDecl::Locus(p) = item else {
-                continue;
+                return;
             };
             // Collect this locus's bus-handler fn names. The
             // antipattern is narrow on purpose: a subscriber
@@ -895,7 +904,7 @@ fn check_unowned_subscriber_locus(
                 }
             }
             if handler_names.is_empty() {
-                continue;
+                return;
             }
             for member in &p.members {
                 let LocusMember::Fn(fd) = member else {
@@ -944,7 +953,7 @@ fn check_unowned_subscriber_locus(
                     ));
                 }
             }
-        }
+        });
     }
 }
 
@@ -2190,7 +2199,14 @@ fn hot_walk_expr(e: &Expr, cx: &mut HotPathCx) {
 /// ordinary member of the bundle everywhere except in a check that
 /// walks `program.items` and stops. A declaration-shaped check that
 /// does that silently sees half the program.
-fn walk_decls(items: &[TopDecl], f: &mut impl FnMut(&TopDecl)) {
+///
+/// The `'a` on the yielded reference is load-bearing (GH #825): most
+/// of the bundle-level checks build a name → `&LocusDecl` index in
+/// one pass and consult it in the next, so the borrow handed to the
+/// visitor has to outlive the walk. Without the named lifetime the
+/// closure is higher-ranked over it and nothing it sees can be
+/// stored.
+fn walk_decls<'a>(items: &'a [TopDecl], f: &mut impl FnMut(&'a TopDecl)) {
     for item in items {
         f(item);
         if let TopDecl::Module(m) = item {
@@ -2436,9 +2452,11 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
             _ => false,
         })
     }
+    // GH #825: a daemon-shaped locus inside a `module { … }` leaks
+    // accepted children exactly as one at the top level does.
     for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(l) = item else { continue };
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
             let mut accepts: Vec<(&LifecycleDecl, String)> = Vec::new();
             let mut releases: BTreeSet<String> = BTreeSet::new();
             let mut run_daemon = false;
@@ -2473,7 +2491,7 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                 }
             }
             if !run_daemon {
-                continue;
+                return;
             }
             for (ld, child_ty) in accepts {
                 if releases.contains(&child_ty) {
@@ -2497,7 +2515,7 @@ fn check_accept_release(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                     ),
                 ));
             }
-        }
+        });
     }
 }
 
@@ -2513,30 +2531,32 @@ fn check_cooperative_pool_blocking(
     bundle: &Bundle<'_>,
     diags: &mut Vec<Diag>,
 ) {
+    // GH #825: all three passes flatten `module { … }`. The index of
+    // free fns is what the interprocedural blocking call graph is
+    // built from, so a module-nested helper that blocks has to be in
+    // it or a top-level `run()` calling it looks clean.
     let mut local_loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
     let mut free_fns: BTreeMap<String, &Block> = BTreeMap::new();
     for program in bundle.programs.values() {
-        for item in &program.items {
-            match item {
-                TopDecl::Locus(l) => {
-                    local_loci.insert(l.name.name.as_str(), l);
-                }
-                TopDecl::Fn(f) => {
-                    free_fns.insert(f.name.name.clone(), &f.body);
-                }
-                _ => {}
+        walk_decls(&program.items, &mut |item| match item {
+            TopDecl::Locus(l) => {
+                local_loci.insert(l.name.name.as_str(), l);
             }
-        }
+            TopDecl::Fn(f) => {
+                free_fns.insert(f.name.name.clone(), &f.body);
+            }
+            _ => {}
+        });
     }
     // Interprocedural call graph for the warning path: free fns that
     // block (directly or via another blocking free fn).
     let blocking_free = blocking_free_fns(&free_fns);
 
     for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(main) = item else { continue };
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(main) = item else { return };
             if !main.is_main {
-                continue;
+                return;
             }
             // The placement block is optional: phase 1 (blocking-call
             // diagnostics) needs entries, but phase 2 (run() starvation)
@@ -2994,7 +3014,7 @@ fn check_cooperative_pool_blocking(
                     }
                 }
             }
-        }
+        });
     }
 }
 
@@ -3004,25 +3024,29 @@ fn check_nested_long_running_child(
 ) {
     // Build a name → LocusDecl index across the bundle so we can
     // resolve params-field locus types to their target body.
+    // GH #825: both passes flatten `module { … }`. The index is half
+    // the rule — a TOP-LEVEL parent holding a module-nested child
+    // resolves the child's type through it, and an index that stops
+    // at the top level answers "not long-running" for every one.
     let mut local_loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 local_loci.insert(l.name.name.as_str(), l);
             }
-        }
+        });
     }
 
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             let TopDecl::Locus(parent) = item else {
-                continue;
+                return;
             };
             if parent.is_main {
-                continue;
+                return;
             }
             if !locus_has_nontrivial_run(parent) {
-                continue;
+                return;
             }
             // Walk params fields. Each ParamDecl whose declared
             // type is a locus reference goes through the locus-
@@ -3099,7 +3123,7 @@ fn check_nested_long_running_child(
                     ));
                 }
             }
-        }
+        });
     }
 }
 
@@ -3419,15 +3443,21 @@ pub fn compute_pool_of_locus_type(
     bundle: &Bundle<'_>,
     top: &TopScope,
 ) -> BTreeMap<String, PoolId> {
+    // GH #825: `main locus` inside a `module { … }` is still the
+    // program's main locus — the resolver keys `TopScope` by the bare
+    // name and codegen finds it the same way. A lookup that stops at
+    // the top level returns an EMPTY map for such a program, and
+    // every caller reads an empty map as "no placement to reason
+    // about" and returns early: the whole F.31 layer switched off.
     let mut main_locus: Option<&LocusDecl> = None;
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 if l.is_main {
                     main_locus = Some(l);
                 }
             }
-        }
+        });
     }
     let Some(main) = main_locus else {
         return BTreeMap::new();
@@ -3496,11 +3526,14 @@ pub fn compute_pool_of_locus_type(
 ///   contradiction: the pool has one worker thread. An entry that
 ///   names the pool without an affinity is compatible with any.
 fn check_pool_affinity(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    // GH #825: `main locus` inside a `module { … }` declares the same
+    // placement block, and an affinity with no named pool is just as
+    // meaningless there.
     for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(l) = item else { continue };
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
             if !l.is_main {
-                continue;
+                return;
             }
             let mut declared: BTreeMap<String, (PinAffinity, Span)> =
                 BTreeMap::new();
@@ -3558,7 +3591,7 @@ fn check_pool_affinity(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                     }
                 }
             }
-        }
+        });
     }
 }
 
@@ -3575,13 +3608,13 @@ fn check_placement_single_thread(
     // walk's `enclosing_locus`; re-locate it (cheap).
     let mut main_locus: Option<&LocusDecl> = None;
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 if l.is_main {
                     main_locus = Some(l);
                 }
             }
-        }
+        });
     }
     let _main = main_locus;
 
@@ -3614,7 +3647,7 @@ fn check_placement_single_thread(
     let mut cross_pool_safe_loci: BTreeSet<String> = BTreeSet::new();
     let mut form_bearing_loci: BTreeSet<String> = BTreeSet::new();
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 if let Some(form) = &l.form {
                     form_bearing_loci.insert(l.name.name.clone());
@@ -3623,7 +3656,7 @@ fn check_placement_single_thread(
                     }
                 }
             }
-        }
+        });
     }
 
     // F.32-1∞ (2026-05-25): pre-compute sync inference for
@@ -3638,7 +3671,7 @@ fn check_placement_single_thread(
     );
 
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 let caller_pool = pool_of_locus_type.get(&l.name.name);
                 for member in &l.members {
@@ -3656,7 +3689,7 @@ fn check_placement_single_thread(
                     }
                 }
             }
-        }
+        });
     }
 }
 
@@ -4959,8 +4992,11 @@ fn transport_satisfies(
 ///   backpressure (GH #125), so shed bounds there would
 ///   misdescribe the actual contract.
 fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    // GH #825: a `topic` and a subscriber inside a `module { … }` are
+    // ordinary bundle members — `collect_subscriber_placements`
+    // already reads them, so only these two walks were short.
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Topic(t) = item {
                 match (t.bounded, t.on_full_fail) {
                     (Some((_, bspan)), None) => diags.push(Diag::ty(
@@ -4980,12 +5016,12 @@ fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                     _ => {}
                 }
             }
-        }
+        });
     }
     let placements = crate::bus_graph::collect_subscriber_placements(bundle);
     for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(l) = item else { continue };
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
             for member in &l.members {
                 let LocusMember::Bus(bb) = member else { continue };
                 for bm in &bb.members {
@@ -5015,7 +5051,7 @@ fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
                     }
                 }
             }
-        }
+        });
     }
 }
 
@@ -5046,12 +5082,22 @@ fn check_phase3_fallback_subscribers(
             return false;
         }
         let tname = &path.segments[0].name;
+        // GH #825: the payload struct can be declared in a module
+        // too, and a payload this lookup cannot find reads as "not a
+        // String key", which decides the `where key == replica` rule.
+        // First declaration wins, exactly as the nested `for` it
+        // replaces did — a second one of the same name is a
+        // duplicate the resolver reports.
+        let mut answer: Option<bool> = None;
         for program in bundle.programs.values() {
-            for item in &program.items {
+            walk_decls(&program.items, &mut |item| {
+                if answer.is_some() {
+                    return;
+                }
                 if let TopDecl::Type(td) = item {
                     if &td.name.name == tname {
                         if let TypeDeclBody::Struct(fields) = &td.body {
-                            return fields.iter().any(|f| {
+                            answer = Some(fields.iter().any(|f| {
                                 f.name.name == field
                                     && matches!(
                                         &f.ty,
@@ -5060,16 +5106,16 @@ fn check_phase3_fallback_subscribers(
                                             _,
                                         )
                                     )
-                            });
+                            }));
                         }
                     }
                 }
-            }
+            });
         }
-        false
+        answer.unwrap_or(false)
     };
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Topic(t) = item {
                 by_name.insert(
                     t.name.name.clone(),
@@ -5090,7 +5136,7 @@ fn check_phase3_fallback_subscribers(
                 key_shape_by_wire.insert(wire.clone(), key_shape);
                 by_wire.insert(wire, (t.on_unmatched, t.span));
             }
-        }
+        });
     }
 
     // Walk every subscriber. For each `where key == _` filter,
@@ -5103,8 +5149,8 @@ fn check_phase3_fallback_subscribers(
         }
     }
     for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(l) = item else { continue };
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
             for m in &l.members {
                 let LocusMember::Bus(bb) = m else { continue };
                 for bm in &bb.members {
@@ -5210,7 +5256,7 @@ fn check_phase3_fallback_subscribers(
                     }
                 }
             }
-        }
+        });
     }
     for (name, has) in &fallback_has_catchall {
         if *has {
@@ -5251,8 +5297,14 @@ fn check_main_and_bindings(
     let programs_vec: Vec<&Program> = bundle.programs.values().copied().collect();
     let purity_map = crate::purity::infer_purity_for_bundle(&programs_vec, top);
 
+    // GH #825: a `main locus` and a `bindings { }` block inside a
+    // `module { … }` are ordinary bundle members. The at-most-one-main
+    // rule in particular is a whole-bundle count, and a count that
+    // skips half the declarations is not a count.
+    // (`collect_topic_pub_sub`, which feeds role inference, already
+    // recursed — it grew its own `TopDecl::Module` arm.)
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 if l.is_main {
                     mains.push((l.name.name.clone(), l.span));
@@ -5527,7 +5579,7 @@ fn check_main_and_bindings(
                     }
                 }
             }
-        }
+        });
     }
     if mains.len() > 1 {
         for (name, span) in &mains {
@@ -15006,15 +15058,18 @@ fn check_instance_aliasing(
     bundle: &Bundle,
     diags: &mut Vec<Diag>,
 ) {
+    // GH #825: the main locus, and the aliased locus type whose
+    // state this rule asks about, are both found by name — a module
+    // changes neither.
     let mut main: Option<&LocusDecl> = None;
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 if l.is_main {
                     main = Some(l);
                 }
             }
-        }
+        });
     }
     let Some(main) = main else { return };
 
@@ -15212,11 +15267,16 @@ fn locus_has_unsynchronized_state(
     bundle: &Bundle,
     locus_ty: &str,
 ) -> Option<String> {
+    // GH #825: `forms` decides whether each field of the aliased
+    // locus is behind a `sync` discipline. A `@form` locus this walk
+    // cannot see is simply absent from the map, and an absent entry
+    // reads as "not an unsynchronized form" — so a module-nested
+    // form silenced the finding for a top-level alias too.
     let mut decl: Option<&LocusDecl> = None;
     let mut forms: BTreeMap<String, bool> = BTreeMap::new();
     for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(l) = item else { continue };
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
             if l.name.name == locus_ty {
                 decl = Some(l);
             }
@@ -15225,7 +15285,7 @@ fn locus_has_unsynchronized_state(
                     f.args.iter().any(|a| a.name.name == "sync");
                 forms.insert(l.name.name.clone(), synced);
             }
-        }
+        });
     }
     let l = decl?;
 

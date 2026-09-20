@@ -152,6 +152,15 @@ threads, cooperative pools, and bus subjects, with a
 `--check-resource-budget budget.toml` ceiling gate for CI and fd-leak
 detection.
 
+**A `module { … }` hides none of it.** A module is a namespace, not an
+analysis boundary: a locus, fn, topic or `bindings` entry declared
+inside one — however deeply nested — is checked exactly as if it sat at
+the top level, with the same findings at the same severity. That holds
+for the whole-program questions too: a `main locus` in a module is
+still *the* main locus (so a second one is still "more than one"), its
+`placement { }` block still decides where everything runs, and a
+`bindings` block still binds its topic for `or wait`.
+
 ## Effects you forbid, proven absent
 
 The checks above run whether you ask for them or not. **Effect
