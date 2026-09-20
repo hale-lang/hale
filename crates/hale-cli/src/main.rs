@@ -2159,8 +2159,8 @@ impl ImportDiag {
     ///
     /// It reaches `Diag::render_located` directly rather than
     /// searching `file_bases`: the entry already knows its own file
-    /// and base, so there is no window to test and no fourth copy of
-    /// [`file_owns_offset`].
+    /// and base, so there is no window to test and no call to
+    /// [`hale_syntax::file_owns_offset`].
     fn render(&self) -> String {
         self.diag.render_located(
             &self.file.display().to_string(),
@@ -3192,7 +3192,7 @@ fn locate_span(
 ) -> Option<(String, usize, usize)> {
     let off = span.start.as_usize() as u32;
     for (base, path, len) in file_bases {
-        if file_owns_offset(*base, *len, off) {
+        if hale_syntax::file_owns_offset(*base, *len, off) {
             let src = sources.get(path)?;
             let (l, c) = span.shifted(base.wrapping_neg()).line_col(src);
             return Some((path.display().to_string(), l, c));
@@ -3208,7 +3208,7 @@ fn render_located(
 ) -> String {
     let off = d.span.start.as_usize() as u32;
     for (base, path, len) in file_bases {
-        if file_owns_offset(*base, *len, off) {
+        if hale_syntax::file_owns_offset(*base, *len, off) {
             if let Some(src) = sources.get(path) {
                 let mut out =
                     d.render_located(&path.display().to_string(), src, *base);
@@ -3231,24 +3231,6 @@ fn render_located(
     }
     let any = sources.values().next().map(|s| s.as_str()).unwrap_or("");
     d.render(any)
-}
-
-/// Does the file parsed at `base`, `len` bytes long, own merged
-/// offset `off`? The window both renderers above and
-/// `render_diag_json` below test a span against.
-///
-/// It is INCLUSIVE of `base + len`, the one-past-the-last-byte
-/// position the `Eof` token carries (`Span::new(pos, pos)` at the end
-/// of the source). A parse error that cites EOF — `expected }, got
-/// Eof`, the missing closing brace, the commonest syntactic mistake
-/// there is — sits exactly there, and a half-open window put it in no
-/// file at all: it rendered with no filename and, once parse errors
-/// reached `render_diag_json`, as `"file":"","line":0,"col":0`
-/// (GH #777). Files are parsed at bases spaced `len + 1` apart
-/// (`parse_files`, `resolve_imports`), so that byte belongs to no
-/// other file; `file_of_span` has always read the window this way.
-fn file_owns_offset(base: u32, len: u32, off: u32) -> bool {
-    off >= base && off <= base.saturating_add(len)
 }
 
 /// GH #777: a file the target itself OWNS did not parse.
@@ -5590,7 +5572,7 @@ fn render_diag_json(
     let mut line = 0usize;
     let mut col = 0usize;
     for (base, path, len) in file_bases {
-        if file_owns_offset(*base, *len, off) {
+        if hale_syntax::file_owns_offset(*base, *len, off) {
             if let Some(src) = sources.get(path) {
                 let (l, c) = d
                     .span

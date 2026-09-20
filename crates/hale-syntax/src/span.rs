@@ -74,3 +74,87 @@ impl Span {
         (line, col)
     }
 }
+
+/// Does the file parsed at `base`, `len` bytes long, own merged
+/// offset `off`? The one window test every multi-file span
+/// demultiplexer uses — `hale check`'s text and JSON renderers,
+/// and the language server's diagnostic, related-location and
+/// definition mappings.
+///
+/// It is INCLUSIVE of `base + len`, the one-past-the-last-byte
+/// position an end-of-file span carries (`Span::new(pos, pos)` at
+/// the end of the source, which is what the `Eof` token holds).
+/// A diagnostic that cites EOF — `expected }, got Eof`, the
+/// missing closing brace, the commonest syntactic mistake there is
+/// — sits exactly there, and a half-open window put it in NO file
+/// at all: `hale check` rendered it with no filename and, under
+/// `--json`, as `"file":"","line":0,"col":0` (GH #777); the
+/// language server dropped it, so the editor showed nothing for a
+/// program the CLI rejects (GH #805).
+///
+/// Files are parsed at bases spaced `len + 1` apart
+/// (`parse_source_at` callers: the CLI's `parse_files` /
+/// `resolve_imports`, the server's seed analysis), so that byte
+/// belongs to no other file and the windows stay disjoint: file
+/// `i` owns `[base, base + len]` and file `i + 1` starts at
+/// `base + len + 1`.
+pub fn file_owns_offset(base: u32, len: u32, off: u32) -> bool {
+    off >= base && off <= base.saturating_add(len)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_owns_offset;
+
+    /// The one-past-the-last-byte position belongs to the file it
+    /// is one past the end OF — the whole point of the rule.
+    #[test]
+    fn a_file_owns_its_end_of_file_position() {
+        assert!(file_owns_offset(0, 10, 10));
+        assert!(file_owns_offset(11, 20, 31));
+    }
+
+    /// …and not one byte more: the next file's base is `base + len
+    /// + 1`, so the inclusive end must stop short of it.
+    #[test]
+    fn a_file_owns_nothing_past_its_end() {
+        assert!(!file_owns_offset(0, 10, 11));
+        assert!(!file_owns_offset(11, 20, 32));
+        assert!(!file_owns_offset(11, 20, 10));
+    }
+
+    /// Over a table of files laid out the way the parsers lay them
+    /// out, every offset in the merged space belongs to EXACTLY
+    /// one file. Half-open windows left one hole per file; a
+    /// window inclusive at both ends would overlap instead.
+    #[test]
+    fn every_merged_offset_belongs_to_exactly_one_file() {
+        let lens = [7u32, 0, 13, 1];
+        let mut bases = Vec::new();
+        let mut base = 0u32;
+        for len in lens {
+            bases.push((base, len));
+            base += len + 1;
+        }
+        let last = bases.last().map(|(b, l)| b + l).expect("nonempty");
+        for off in 0..=last {
+            let owners = bases
+                .iter()
+                .filter(|(b, l)| file_owns_offset(*b, *l, off))
+                .count();
+            assert_eq!(
+                owners, 1,
+                "offset {off} is owned by {owners} files, not 1: {bases:?}"
+            );
+        }
+    }
+
+    /// A zero-length file is a real case (an editor's freshly
+    /// created `.hl`), and it owns its own single position rather
+    /// than none.
+    #[test]
+    fn an_empty_file_owns_its_only_position() {
+        assert!(file_owns_offset(0, 0, 0));
+        assert!(!file_owns_offset(0, 0, 1));
+    }
+}

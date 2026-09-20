@@ -407,7 +407,20 @@ position by GH #711 / #812):
   or interface-typed **field of a locus literal**, which the
   literal owns (F.17), and a binding the enclosing fn **returns**,
   which the caller owns — dissolving either would free a value
-  another owner still holds.
+  another owner still holds. The first of those two is an
+  ownership *transfer*, not an exemption: `Router { quick:
+  make(5) }` is the same program as `Router { quick: Quick { } }`
+  — the field's value is reclaimed by the owner's teardown
+  cascade, at the owner's timing, whether the field is written at
+  the call site or as the param's **default**, and whether the
+  call is bare or reached through a *diverging* `or` (`or raise`,
+  `or fail`), where the factory's result is the only value the
+  field can hold (GH #836). Two calls in that position transfer
+  nothing and are excluded exactly as an external handle is: one
+  that returns a locus it did *not* build (one of its arguments, a
+  handle it was given), and one under `or <substitute>`, where the
+  field holds whichever branch ran and the substitute carries its
+  own owner.
 - **Long-lived** (locus has `bus subscribe`): always deferred,
   irrespective of binding shape — the locus must stay alive to
   receive published events between birth and the enclosing
@@ -427,10 +440,15 @@ the owner's teardown cascades into it (F.29). That cascade
 runs to the leaves: a grandchild's `drain()`, its `dissolve()`
 body, its capacity slots and its arena are the owner's
 responsibility just as a child's are, at exactly the moment
-the owner's timing fires. A field the owner did NOT construct
-(`Mid { leaf: shared }`, an external handle passed in) is
-excluded at whatever depth it appears, and is torn down once
-by its real owner, at its owner's timing.
+the owner's timing fires. "Constructed by the owner" covers
+both spellings of construction: a nested literal (`Mid { leaf:
+Leaf { } }`) and a factory call whose result the field takes
+(`Mid { leaf: make_leaf() }`, in the diverging-`or` spelling
+too, and as a param default). A field the owner did NOT
+construct (`Mid { leaf: shared }`, an external handle passed in;
+or a call that hands back a locus somebody else built) is
+excluded at whatever depth it appears, and is torn down once by
+its real owner, at its owner's timing.
 
 A deferred dissolve is scoped to the enclosing **fn**, not to
 the enclosing block — a `let` is readable for the rest of the

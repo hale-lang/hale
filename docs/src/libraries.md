@@ -31,6 +31,22 @@ Everything the library declares is then reachable as
 misspell a field and `hale check` says so, the same as for a
 type you declared yourself.
 
+So is a qualified type written as an *annotation*. `let c:
+router::Config = "dev";` is a type error naming `router::Config`,
+and so is the same type in a parameter, a return, a struct field,
+a `params` field or a `capacity` slot — the library's declaration
+is the type, and `c.timeuot` is a misspelled field rather than
+something the checker shrugs at. Import the same library under two
+aliases and you still have one type: what `a::Config` builds fits
+where `b::Config` is wanted.
+
+The one thing to know is *when*: this needs the whole program, so
+run `hale check` on the seed (`hale check .`) rather than on a
+single file. Checking one file of a multi-file seed leaves an
+imported type opaque, because the `import` line it needs may be in
+a file you did not hand it. `build`, `run` and `test` always see
+the whole thing.
+
 `hale fetch` clones each dependency into `vendor/<name>/` and
 pins the resolved commit in `hale.lock`. Pond's "no transitive
 dependencies in v1" rule means every package your program pulls
