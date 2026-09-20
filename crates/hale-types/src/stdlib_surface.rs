@@ -1365,8 +1365,21 @@ pub const SIGS: &[FnSig] = &[
     sig!(NS_TCP, "connect", [Str, Int], Int, "IoError"),
     sig!(NS_TCP, "accept_one", [Int], Int, "IoError"),
     sig!(NS_TCP, "close_fd", [Int], Int),
-    sig!(NS_TCP, "recv_into", [Int, Any, Int], Int),
-    sig!(NS_TCP, "recv_stamped_into", [Int, Any, Int], Int),
+    // GH #829: the `buf` slot is not polymorphic — the lowering
+    // (`lower_recv_into_common`) accepts exactly one codegen type,
+    // `LocusRef("__StdBytesBytesBuilder")`, and refuses everything
+    // else with a spanless "buf must be std::bytes::BytesBuilder".
+    // `Any` here made `recv_into(0, 0, 64)` a check-clean program
+    // that does not build. Named by the mangled spelling, which is
+    // what both `resolve_type_expr` (through `PATH_RENAMES`) and the
+    // stdlib's own `locus __StdBytesBytesBuilder` produce.
+    sig!(NS_TCP, "recv_into", [Int, Named("__StdBytesBytesBuilder"), Int], Int),
+    sig!(
+        NS_TCP,
+        "recv_stamped_into",
+        [Int, Named("__StdBytesBytesBuilder"), Int],
+        Int
+    ),
     sig!(NS_TCP, "last_recv_kernel_ns", [], Int),
     sig!(NS_TCP, "last_recv_user_ns", [], Int),
     sig!(NS_TCP, "set_nodelay", [Int, Bool], Unit, "IoError"),
@@ -1375,12 +1388,23 @@ pub const SIGS: &[FnSig] = &[
     sig!(NS_TLS, "upgrade", [Int, Str, Bool], Int, "IoError"),
     sig!(NS_TLS, "send_bytes", [Int, Bytes], Int),
     sig!(NS_TLS, "recv_bytes", [Int, Int], Bytes),
-    sig!(NS_TLS, "recv_into", [Int, Any, Int], Int),
+    sig!(NS_TLS, "recv_into", [Int, Named("__StdBytesBytesBuilder"), Int], Int),
+    // GH #829: `tls::recv_stamped_into` is dispatched by codegen
+    // through the same `lower_recv_into_common` and is named by the
+    // surface table, but had no signature row at all — so neither
+    // its arity nor its buffer was checked. The family is only
+    // closed if every member of it is.
+    sig!(
+        NS_TLS,
+        "recv_stamped_into",
+        [Int, Named("__StdBytesBytesBuilder"), Int],
+        Int
+    ),
     sig!(NS_TLS, "close", [Int], Int),
     sig!(NS_UDP, "bind", [Str, Int], Int, "IoError"),
     sig!(NS_UDP, "send", [Int, Str, Int, Any], Unit, "IoError"),
     sig!(NS_UDP, "recv", [Int, Int], Bytes, "IoError"),
-    sig!(NS_UDP, "recv_into", [Int, Any, Int], Int),
+    sig!(NS_UDP, "recv_into", [Int, Named("__StdBytesBytesBuilder"), Int], Int),
     sig!(NS_UDP, "close", [Int], Int),
     sig!(NS_UDP, "recv_with_source", [Int, Int], Bytes, "IoError"),
     sig!(NS_UDP, "join_group", [Int, Str, Str], Unit, "IoError"),

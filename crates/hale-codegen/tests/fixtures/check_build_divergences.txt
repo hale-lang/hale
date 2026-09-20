@@ -1,5 +1,8 @@
+crates/hale-cli/tests/fixtures/hale-test-mixed/notes.hl
 crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl
 crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl
+crates/hale-cli/tests/fixtures/xseed-claims/lib/delta/d.hl
+crates/hale-cli/tests/fixtures/xseed-claims/lib/gamma/g.hl
 crates/hale-cli/tests/replay_cli.rs#5
 crates/hale-cli/tests/replay_cli.rs#6
 crates/hale-cli/tests/replay_cli.rs#7
@@ -15,6 +18,7 @@ crates/hale-codegen/tests/ffi_basic.rs#0
 crates/hale-codegen/tests/ffi_basic.rs#4
 crates/hale-codegen/tests/ffi_basic.rs#6
 crates/hale-codegen/tests/ffi_string_return.rs#0
+crates/hale-codegen/tests/fixtures/examples/25-imports/notional.hl
 crates/hale-codegen/tests/fixtures/examples/multi-file-seed/main.hl
 crates/hale-codegen/tests/generics.rs#8
 crates/hale-codegen/tests/io_error_fallible.rs#11
@@ -38,7 +42,3 @@ crates/hale-types/tests/model_builder.rs#22
 crates/hale-types/tests/model_builder.rs#24
 crates/hale-types/tests/model_costs.rs#3
 crates/hale-types/tests/ownership_graph.rs#7
-crates/hale-types/tests/placement.rs#18
-crates/hale-types/tests/placement.rs#19
-crates/hale-types/tests/placement.rs#20
-crates/hale-types/tests/placement.rs#22
