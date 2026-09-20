@@ -14464,15 +14464,18 @@ fn check_instance_aliasing(
     bundle: &Bundle,
     diags: &mut Vec<Diag>,
 ) {
+    // GH #825: the main locus, and the aliased locus type whose
+    // state this rule asks about, are both found by name — a module
+    // changes neither.
     let mut main: Option<&LocusDecl> = None;
     for program in bundle.programs.values() {
-        for item in &program.items {
+        walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
                 if l.is_main {
                     main = Some(l);
                 }
             }
-        }
+        });
     }
     let Some(main) = main else { return };
 
@@ -14670,11 +14673,16 @@ fn locus_has_unsynchronized_state(
     bundle: &Bundle,
     locus_ty: &str,
 ) -> Option<String> {
+    // GH #825: `forms` decides whether each field of the aliased
+    // locus is behind a `sync` discipline. A `@form` locus this walk
+    // cannot see is simply absent from the map, and an absent entry
+    // reads as "not an unsynchronized form" — so a module-nested
+    // form silenced the finding for a top-level alias too.
     let mut decl: Option<&LocusDecl> = None;
     let mut forms: BTreeMap<String, bool> = BTreeMap::new();
     for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(l) = item else { continue };
+        walk_decls(&program.items, &mut |item| {
+            let TopDecl::Locus(l) = item else { return };
             if l.name.name == locus_ty {
                 decl = Some(l);
             }
@@ -14683,7 +14691,7 @@ fn locus_has_unsynchronized_state(
                     f.args.iter().any(|a| a.name.name == "sync");
                 forms.insert(l.name.name.clone(), synced);
             }
-        }
+        });
     }
     let l = decl?;
 

@@ -577,6 +577,71 @@ fn binding_on_an_unknown_topic_inside_a_module_is_flagged() {
     );
 }
 
+// ---- check_instance_aliasing / locus_has_unsynchronized_state ------
+//
+// One locus instance reached by two main-locus fields placed on
+// different pools, holding unsynchronized mutable state: two threads
+// reach that state with nothing ordering them. Measured at ~30% lost
+// writes with `hale check` reporting `ok`, which is what this
+// warning exists to say.
+
+const ALIASED_ACROSS_POOLS: &str = "\
+locus Shared { params { n: Int = 0; } fn bump() { self.n = self.n + 1; } }
+locus A { params { s: Shared = Shared { }; } run() { self.s.bump(); } }
+locus B { params { s: Shared = Shared { }; } run() { self.s.bump(); } }
+
+main locus App {
+    params { sh: Shared = Shared { };
+             a: A = A { s: self.sh };
+             b: B = B { s: self.sh }; }
+    placement { a: pinned(core = 0); b: pinned(core = 1); }
+}
+";
+
+#[test]
+fn cross_pool_aliasing_inside_a_module_is_flagged() {
+    assert_module_matches_top_level(ALIASED_ACROSS_POOLS, "is shared by");
+}
+
+#[test]
+fn a_module_nested_form_still_answers_the_synchronized_question() {
+    // `locus_has_unsynchronized_state` builds a `@form` -> has-sync
+    // map to decide whether the alias actually races. A form the
+    // walk cannot see is ABSENT from that map, and absent reads as
+    // "not an unsynchronized form" — so a module-nested
+    // `@form(hashmap)` with no `sync` discipline silenced the
+    // warning for an alias whose loci are all at the top level.
+    let src = "\
+type Entry { k: Int = 0; v: Int = 0; }
+
+module inner {
+    @form(hashmap, key = k, value = v)
+    locus Reg { params { k: Int = 0; v: Int = 0; } }
+}
+
+locus Shared { params { r: Reg = Reg { }; } }
+locus A { params { s: Shared = Shared { }; } run() { } }
+locus B { params { s: Shared = Shared { }; } run() { } }
+
+main locus App {
+    params { sh: Shared = Shared { };
+             a: A = A { s: self.sh };
+             b: B = B { s: self.sh }; }
+    placement { a: pinned(core = 0); b: pinned(core = 1); }
+}
+
+fn main() { App { }; }
+";
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|(_, m)| m.contains("is shared by")
+            && m.contains("with no `sync` discipline")),
+        "a module-nested unsynchronized form must still make the alias \
+         a race; got: {:?}",
+        ds
+    );
+}
+
 #[test]
 fn a_module_nested_advisory_stays_a_warning() {
     // Severity is part of the contract: reaching inside a module
