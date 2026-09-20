@@ -201,6 +201,7 @@ fn dna_fixture_set_is_complete() {
             "verification_test.hl",
             "workflow_admission_contention_test.hl",
             "workflow_admission_test.hl",
+            "workflow_attempt_test.hl",
             "workflow_definition_test.hl",
             "workflow_events_test.hl",
             "workflow_lifetime_dna_test.hl",

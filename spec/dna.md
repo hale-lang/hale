@@ -1075,8 +1075,51 @@ Task is never resumed as legacy edit work, with or without its summary
 row: the admission is the one positive discriminator, and its recovery
 belongs to the engine's own cards.
 
-Nothing yet executes a workflow; these are the durable shapes it is
-written in, the state they add up to, and the door it is admitted by.
+## Workflow execution: one attempt
+
+The durable Work owner admits an attempt (`attempt.admitted`) and then
+asks for it to run through `AttemptExecutor` (`dna/core/
+workflow_execution.hl`), which runs one admitted attempt once. Nothing
+runs before the admission is in the record as admitted: the attempt's
+identity, its performer kind and every field of its request are checked
+against the recorded admission. An attempt whose outcome is recorded is
+not run again; the recorded outcome is the answer, claim or no claim.
+The decision to run is one reading of the record: refreshed, read at a
+captured revision — the admission, whether the attempt is settled,
+whether its execution is claimed — and the claim appended exactly at that
+revision, with the effect claim of the existing effect records, keyed by
+the attempt. When the record has moved the decision is taken again: an
+outcome recorded meanwhile is the answer and the performer is not
+called; a claim taken meanwhile is attached to; only a claim that lands
+is followed by a performer call. A request that arrives while the
+attempt is running attaches to its pending outcome instead of starting a
+second performer, and a claim the record refuses runs nothing. The performer the admission names runs
+once. Every reply, the one that comes back from the call and the one
+that comes later, is judged first for whose it is: it must be about this
+attempt (a reply that echoes an `attempt_id` must echo this one) and
+from that performer (the identity the kind selects), and a reply that
+is neither is not this attempt's pending answer either — it is refused
+before anything is made of it, and the attempt stays outstanding under
+its claim. A reply that is this attempt's and not terminal leaves it
+outstanding and records nothing; a terminal one must say something the
+outcome contract carries — `done`, `failed`, `declined` or `timeout` —
+or it is refused without a row and without closing the claim. The
+later reply is settled through the same path, under the same rules. An accepted outcome is persisted as `attempt.outcome` with an
+exact append before anything is answered, and a reply for an attempt
+whose outcome is already recorded changes nothing; an outcome the
+record will not take is reported unrecorded, never as done, and nothing
+advances on it.
+
+The executor retries nothing (one retry owner: the Work's lifecycle) and
+advances nothing (the Work settles on the outcome in a later card). It
+makes no claim that external effects happen once: a performer that
+acted and died before its outcome was saved is a later card's. The
+legacy `WorkSystem` request loop, which retries internally, stays for
+legacy callers.
+
+Nothing yet runs a workflow end to end; these are the durable shapes it
+is written in, the state they add up to, the door it is admitted by, and
+the one step it takes at a time.
 
 ## Storage interfaces
 

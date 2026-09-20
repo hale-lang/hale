@@ -182,6 +182,14 @@ locus WorkSystem {
     // redeploy authority); the swap is one store, state preserved.
     fn route_human_first() { reperspective self.selection as HumanFirstSelection; }
     fn route_capability_first() { reperspective self.selection as CapabilityFirstSelection; }
+    // The identity of the performer a kind selects: what its reply must
+    // say it is (card 08).
+    fn identity_of(kind: String) -> String {
+        if kind == "human" { return self.human.identity(); }
+        if kind == "agent" { return self.agent.identity(); }
+        if kind == "service" { return self.service.identity(); }
+        return self.software.identity();
+    }
     fn perform_as(kind: String, req: WorkRequest) -> WorkResult {
         if kind == "human" { return self.human.perform(req); }
         if kind == "agent" { return self.agent.perform(req); }
