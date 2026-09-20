@@ -29,6 +29,15 @@ name: tests
 # of wall-clock — at the cost of compiling ~Nx instead of once (the
 # cargo cache keeps each warm build to ~3min). Wall-clock over CI
 # minutes, for branch-iteration velocity.
+#
+# Revisited 2026-09-20 with libLLVM linked dynamically: a warm
+# partition now spends ~4min building (workspace + its 560 test
+# binaries) and the nextest archive of the suite is 1.1GB. A build
+# job on a standard 4-core runner would take about as long as each
+# partition's own build, so the split still buys nothing unless
+# that one job moves to a larger (paid) runner. Six partitions
+# instead of four: CI minutes are free on a public repository, and
+# each partition's test phase is what shrinks.
 
 # One run per commit. A push to a PR branch used to trigger this
 # twice — once as `push` (every branch) and once as `pull_request`
@@ -125,14 +134,14 @@ jobs:
           fi
 
   test:
-    name: test ${{ matrix.partition }}/4
+    name: test ${{ matrix.partition }}/6
     runs-on: ubuntu-latest
     strategy:
       # Don't short-circuit other partitions on first failure —
       # we want to see the full failure picture across the suite.
       fail-fast: false
       matrix:
-        partition: [1, 2, 3, 4]
+        partition: [1, 2, 3, 4, 5, 6]
     # GH #583 K1: the knowledge store's Postgres half runs against a
     # service container; `dna/tests/knowledge_store_test.hl` reads the
     # DSN and skips the half when it is unset (a laptop without one).
@@ -222,7 +231,7 @@ jobs:
       - name: hale fmt --check (canonical-form gate)
         # The styleguide's §5 fmt tier: the repo's own .hl surface
         # must be canonical. Partition 1 only — the check is
-        # whole-repo and takes <1s; running it 4× adds nothing.
+        # whole-repo and takes <1s; running it 6× adds nothing.
         if: matrix.partition == 1
         run: |
           # Whole repo, not an enumerated list. The list form silently
@@ -231,7 +240,7 @@ jobs:
           # scope that goes stale every time a directory is added.
           ./target/release/hale fmt --check .
 
-      - name: cargo nextest run (partition ${{ matrix.partition }}/4)
+      - name: cargo nextest run (partition ${{ matrix.partition }}/6)
         # Build-and-run in one job (no separate archive job + upload/
         # download round-trip): nextest compiles the test binaries
         # reusing the build above + the cache, then runs this
@@ -241,7 +250,7 @@ jobs:
         run: |
           cargo nextest run \
             --release --workspace --features hale-codegen/dynamic-llvm \
-            --partition hash:${{ matrix.partition }}/4
+            --partition hash:${{ matrix.partition }}/6
 
   # 2026-05-26 — TSAN regression coverage for the lockfree
   # substrate paths. F.32-1γ-v2 + the substrate-race-fixes work
@@ -267,22 +276,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Free disk space
-        uses: ./.github/actions/free-disk-space
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo registry + target
-        uses: actions/cache@v4
+      # Dependency artifacts only (see the test job); the sanitizer
+      # env vars reach clang at test time, not the Rust build, so
+      # this cache is the same shape as the test job's.
+      - name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-tsan-x86_64-linux-llvm18-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-tsan-x86_64-linux-llvm18-
+          shared-key: tsan-x86_64-linux-llvm18
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install LLVM 18 + clang
         run: |
@@ -300,7 +304,7 @@ jobs:
         # the ts-shim by path-probe (no cargo dep edge forces
         # it, so `-p hale-codegen` alone misses the staticlib
         # and clang errors with `undefined reference to lotus_ts_*`).
-        run: cargo build --release --workspace
+        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
       - name: LOTUS_TSAN=1 cargo test (form_hashmap_lockfree_tsan)
         # The TSAN tests are #[ignore]'d so the normal suite
@@ -314,7 +318,7 @@ jobs:
         env:
           LOTUS_TSAN: "1"
         run: |
-          cargo test --release -p hale-codegen \
+          cargo test --release -p hale-codegen --features dynamic-llvm \
             --test form_hashmap_lockfree_tsan \
             -- --ignored --test-threads=1 --nocapture
 
@@ -342,22 +346,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Free disk space
-        uses: ./.github/actions/free-disk-space
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo registry + target
-        uses: actions/cache@v4
+      # Dependency artifacts only (see the test job); the sanitizer
+      # env vars reach clang at test time, not the Rust build, so
+      # this cache is the same shape as the test job's.
+      - name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-asan-x86_64-linux-llvm18-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-asan-x86_64-linux-llvm18-
+          shared-key: asan-x86_64-linux-llvm18
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install LLVM 18 + clang
         run: |
@@ -368,7 +367,7 @@ jobs:
             clang-18 libclang-18-dev zlib1g-dev
 
       - name: cargo build --release --workspace
-        run: cargo build --release --workspace
+        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
       - name: check/build agreement over the embedded corpus
         # `hale check` accepting what `hale build` refuses is the
@@ -386,7 +385,7 @@ jobs:
         # programs (~80s); --ignored opts in. Folded into this job to
         # reuse the release build above.
         run: |
-          cargo test --release -p hale-codegen \
+          cargo test --release -p hale-codegen --features dynamic-llvm \
             --test corpus_check_build_agreement \
             -- --ignored --nocapture
 
@@ -399,7 +398,7 @@ jobs:
         env:
           LOTUS_ASAN: "1"
         run: |
-          cargo test --release -p hale-codegen \
+          cargo test --release -p hale-codegen --features dynamic-llvm \
             --test corpus_oracle \
             -- --ignored --test-threads=1 --nocapture
 
@@ -426,7 +425,7 @@ jobs:
           UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
           ASAN_OPTIONS: "detect_leaks=0"
         run: |
-          cargo test --release -p hale-codegen \
+          cargo test --release -p hale-codegen --features dynamic-llvm \
             --test bytes_pack_read \
             --test shm_ring_layout \
             --test shm_ring_layout_producer \
@@ -445,9 +444,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Free disk space
-        uses: ./.github/actions/free-disk-space
 
       - name: Install LLVM 18 + clang + cmake
         run: |
