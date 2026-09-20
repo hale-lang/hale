@@ -1754,7 +1754,18 @@ fn run_bench(args: &[String]) -> ExitCode {
                 }
             }
             Err(e) => {
-                eprintln!("hale bench: {}: {}", f.display(), e);
+                // GH #848: a located codegen error opens with this
+                // file's canonical path, line and column already —
+                // prefixing it names the file twice and pushes the
+                // `path:line:col` off the start of the line, which
+                // is where anything reading compiler output looks
+                // for it. Every other complaint (`does not parse`,
+                // `read: …`) still needs the file said once.
+                if e.starts_with(&diag_file_name(f)) {
+                    eprintln!("{}", e);
+                } else {
+                    eprintln!("hale bench: {}: {}", f.display(), e);
+                }
                 failed = true;
             }
         }
@@ -1888,7 +1899,7 @@ fn run_bench_file(
         .map_err(|e| format!("write driver: {}", e))?;
 
     let compile = (|| -> Result<PathBuf, String> {
-        let (prog, renames, _sources, _bases, ctx) =
+        let (prog, renames, sources, file_bases, ctx) =
             match parse_with_imports(&tmp_src) {
                 Ok(x) => x,
                 Err(errors) => {
@@ -1900,6 +1911,30 @@ fn run_bench_file(
                     return Err(msg);
                 }
             };
+        // GH #848: the compile runs against a temp COPY of the bench
+        // file with the synthesized driver appended, and that copy is
+        // deleted a moment later — so a located codegen error would
+        // name a path the reader cannot open. The user's text is a
+        // prefix of the copy, so re-labelling the copy as the bench
+        // file itself leaves every position of theirs exactly right.
+        let tmp_canon = tmp_src
+            .canonicalize()
+            .unwrap_or_else(|_| tmp_src.clone());
+        let relabel = |p: PathBuf| -> PathBuf {
+            if p == tmp_canon {
+                entry.to_path_buf()
+            } else {
+                p
+            }
+        };
+        let sources: BTreeMap<PathBuf, String> = sources
+            .into_iter()
+            .map(|(p, t)| (relabel(p), t))
+            .collect();
+        let file_bases: Vec<(u32, PathBuf, u32)> = file_bases
+            .into_iter()
+            .map(|(base, p, len)| (base, relabel(p), len))
+            .collect();
         let mut bin = std::env::temp_dir();
         let mut h = DefaultHasher::new();
         h.write(entry.display().to_string().as_bytes());
@@ -1915,7 +1950,7 @@ fn run_bench_file(
         hale_codegen::build_executable_with_options(
             &prog, &bin, &renames, &options,
         )
-        .map_err(|e| format!("codegen error: {:?}", e))?;
+        .map_err(|e| render_codegen_error(&e, &file_bases, &sources))?;
         Ok(bin)
     })();
     let _ = fs::remove_file(&tmp_src);
@@ -3854,6 +3889,52 @@ fn render_located(
     }
     let any = sources.values().next().map(|s| s.as_str()).unwrap_or("");
     d.render(any)
+}
+
+/// GH #848: one spelling of a failed compile, for every command that
+/// compiles.
+///
+/// A `CodegenError` that carries a span renders like any other
+/// finding — `path:line:col: codegen error: message` with the
+/// offending source line and a caret — through the same
+/// `render_located` the checker's diagnostics take, so the position
+/// is un-shifted by the file's virtual base and the path is the
+/// canonical one (GH #775, GH #822). One that carries no span renders
+/// as the bare `codegen error: <message>` line.
+///
+/// Only `build` did this (GH #241, extended to the missing-shim
+/// refusal by GH #808). `run`, `test`, `bench` and `replay` printed
+/// the error with `{:?}`, so the span reached the user as
+/// `Span { start: Pos(55), end: Pos(60) }` and the message arrived
+/// wrapped in a Rust variant name. Text only: these commands have no
+/// machine-readable channel — `check --json` is its own reporting
+/// path and is unaffected.
+fn render_codegen_error(
+    e: &hale_codegen::CodegenError,
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &BTreeMap<PathBuf, String>,
+) -> String {
+    // GH #808: the missing-tree-sitter-shim refusal carries a span
+    // only when the program reached `std::ts::*` through a path call
+    // we could point at; otherwise it renders as a bare line like the
+    // rest.
+    let located = match e {
+        hale_codegen::CodegenError::UnsupportedAt(msg, span) => {
+            Some((msg.clone(), *span))
+        }
+        hale_codegen::CodegenError::MissingTsShim(msg, Some(span)) => {
+            Some((msg.clone(), *span))
+        }
+        _ => None,
+    };
+    match located {
+        Some((msg, span)) => render_located(
+            &hale_syntax::Diag::codegen(span, msg),
+            file_bases,
+            sources,
+        ),
+        None => format!("codegen error: {}", e),
+    }
 }
 
 /// GH #777: a file the target itself OWNS did not parse.
@@ -6337,6 +6418,11 @@ fn compile_and_exec(
     model_hash: u64,
     exec_digest: [u64; 4],
     obs_entity_ids: Vec<hale_model::obs_ids::ObsEntityId>,
+    // GH #848: the file table and texts the bundle was parsed with,
+    // so a span-carrying codegen error is reported at its source
+    // location exactly as `hale build` reports it.
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &BTreeMap<PathBuf, String>,
 ) -> ExitCode {
     let mut bin = std::env::temp_dir();
     let mut h = DefaultHasher::new();
@@ -6352,7 +6438,7 @@ fn compile_and_exec(
     if let Err(e) = hale_codegen::build_executable_with_options(
         program, &bin, renames, &options,
     ) {
-        eprintln!("build error: {:?}", e);
+        eprintln!("{}", render_codegen_error(&e, file_bases, sources));
         return ExitCode::from(1);
     }
     let status = std::process::Command::new(&bin).args(user_args).status();
@@ -6626,7 +6712,11 @@ fn compile_test_binary(entry: &Path) -> Result<PathBuf, String> {
     if let Err(e) = hale_codegen::build_executable_with_options(
         &program, &bin, &renames, &options,
     ) {
-        return Err(format!("codegen error: {:?}", e));
+        // GH #848: the per-fixture failure message is the located
+        // rendering `build` prints, so a test that will not compile
+        // names the line to open — it used to be the `{:?}` of the
+        // error, span struct and all.
+        return Err(render_codegen_error(&e, &file_bases, &sources));
     }
     Ok(bin)
 }
@@ -7211,7 +7301,7 @@ fn run_replay(args: &[String]) -> ExitCode {
     if let Err(e) = hale_codegen::build_executable_with_options(
         &program, &bin, &renames, &options,
     ) {
-        eprintln!("build error: {:?}", e);
+        eprintln!("{}", render_codegen_error(&e, &file_bases, &sources));
         return ExitCode::from(1);
     }
 
@@ -7466,7 +7556,14 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         let digest =
             exec_digest(&sources, target, &options_fp, plan_digest);
         return compile_and_exec(
-            &program, &renames, user_args, model_hash, digest, obs_ids,
+            &program,
+            &renames,
+            user_args,
+            model_hash,
+            digest,
+            obs_ids,
+            &file_bases,
+            &sources,
         );
     }
 
@@ -7627,7 +7724,14 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     let digest =
         exec_digest(&path_sources, target, &options_fp, plan_digest);
     compile_and_exec(
-        &program, &renames, user_args, model_hash, digest, obs_ids,
+        &program,
+        &renames,
+        user_args,
+        model_hash,
+        digest,
+        obs_ids,
+        &file_bases,
+        &path_sources,
     )
 }
 
@@ -8072,29 +8176,15 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            // GH #241: span-carrying codegen errors render like
-            // check diagnostics (file:line:col + source caret);
-            // everything else keeps the bare line.
-            // GH #808: the missing-tree-sitter-shim refusal carries a
-            // span only when the program reached `std::ts::*` through
-            // a path call we could point at; otherwise it renders as
-            // a bare line like the rest.
-            let located = match &e {
-                hale_codegen::CodegenError::UnsupportedAt(msg, span) => {
-                    Some((msg.clone(), *span))
-                }
-                hale_codegen::CodegenError::MissingTsShim(
-                    msg,
-                    Some(span),
-                ) => Some((msg.clone(), *span)),
-                _ => None,
-            };
-            if let Some((msg, span)) = located {
-                let d = hale_syntax::Diag::codegen(span, msg);
-                eprintln!("{}", render_located(&d, &file_bases, &sources));
-            } else {
-                eprintln!("codegen error: {}", e);
-            }
+            // GH #241 / GH #808 / GH #848: a span-carrying codegen
+            // error renders like a check diagnostic (file:line:col +
+            // source caret) and everything else keeps the bare line
+            // — through the one helper every command that compiles
+            // now reports through.
+            eprintln!(
+                "{}",
+                render_codegen_error(&e, &file_bases, &sources)
+            );
             ExitCode::from(1)
         }
     }
