@@ -865,6 +865,8 @@ crates/hale-codegen/tests/method_scratch_reclaim.rs#2 c2cff0c1243acf8b
 crates/hale-codegen/tests/method_scratch_reclaim.rs#3 33327c917c4bec08
 crates/hale-codegen/tests/mirror_ring.rs#0 f21a527aa7a90794
 crates/hale-codegen/tests/mirror_ring.rs#1 f2c1228edb650960
+crates/hale-codegen/tests/missing_ts_shim.rs#0 865d341109268295
+crates/hale-codegen/tests/missing_ts_shim.rs#1 f2c1228edb650960
 crates/hale-codegen/tests/multi_file_build.rs#1 59b52d815a9785d5
 crates/hale-codegen/tests/multi_file_build.rs#3 0a8aacc95650aae4
 crates/hale-codegen/tests/nested_long_lived_child.rs#0 477865f8b91baeea

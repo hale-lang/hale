@@ -32,9 +32,15 @@ this used to need is no longer necessary. To spot-check a change against a
 real program without installing:
 
 ```sh
-cargo run -p hale-cli --bin hale -- run   path/to/prog.hl
-cargo run -p hale-cli --bin hale -- build path/to/prog.hl
+./target/release/hale run   path/to/prog.hl
+./target/release/hale build path/to/prog.hl
 ```
+
+Use a whole-workspace `cargo build --release` for that binary, not
+`cargo build -p hale-cli`: `std::ts` links `libhale_ts_shim.a`, and
+because `hale-ts-shim` is `crate-type = ["staticlib"]` nothing can
+declare a Cargo dependency on it, so `-p hale-cli` leaves it unbuilt
+and the resulting `hale` refuses every `std::ts` program (GH #808).
 
 The in-tree `.hl` corpus lives at
 `crates/hale-codegen/tests/fixtures/examples/` — the broadest

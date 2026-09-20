@@ -60,9 +60,16 @@ To spot-check a compiler change against a real `.hl` program
 without installing:
 
 ```sh
-cargo run -p hale-cli --bin hale -- run path/to/prog.hl
-cargo run -p hale-cli --bin hale -- build path/to/prog.hl
+cargo build --release          # the WHOLE workspace
+./target/release/hale run path/to/prog.hl
+./target/release/hale build path/to/prog.hl
 ```
+
+**Build the workspace, not `-p hale-cli`.** `std::ts` links against
+`libhale_ts_shim.a`, produced by the `hale-ts-shim` crate — and
+`crate-type = ["staticlib"]` means no crate can declare a Cargo
+dependency on it, so `cargo build -p hale-cli` never builds it and
+the resulting `hale` refuses every `std::ts` program (GH #808).
 
 The in-tree `.hl` corpus lives at
 `crates/hale-codegen/tests/fixtures/examples/` (the broadest

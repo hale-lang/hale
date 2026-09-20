@@ -144,10 +144,11 @@ runs, and what changes about a program compiled there.
 hale --help
 ```
 
-Or through Cargo from a source checkout:
+Or from a source checkout:
 
 ```sh
-cargo run -p hale-cli --bin hale -- --help
+cargo build --release          # the whole workspace
+./target/release/hale --help
 ```
 
 To run the compiler's own test suite (single-threaded avoids "text
@@ -176,7 +177,11 @@ hale build prog.hl   # compile to ./prog
 
 Throughout this guide we write `hale run` / `hale build` as if
 `hale` is on your path. From a source checkout without it
-installed, prefix with `cargo run -p hale-cli --bin hale --`.
+installed, build the workspace once with `cargo build --release`
+and use `./target/release/hale`. Build the *whole* workspace:
+`cargo build -p hale-cli` skips the tree-sitter staticlib that
+`std::ts` links against, and a `hale` built that way refuses
+`std::ts` programs with a build error saying so.
 
 Starting a project rather than a scratch file? `hale init my-app`
 scaffolds the canonical minimal shape — `hale.toml`, a hello-world
