@@ -35,7 +35,83 @@ pub(crate) trait LocusInstantiate<'ctx> {
 }
 
 impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
+    /// GH #813: the re-entry guard, and then the lowering.
+    ///
+    /// A locus reachable from its own param defaults — `locus Node {
+    /// params { next: Node = Node { n: 1 }; } }`, or the same cycle
+    /// through two types — sent this function through the default,
+    /// into the `Node` it builds, into ITS default, until the
+    /// compiler's stack ran out. `hale check` now refuses the
+    /// program with a located error at the param, but
+    /// `build_executable` never runs the checker, so the lowering
+    /// carries its own floor: a stack trace is not a diagnostic.
+    ///
+    /// The path holds the instantiations the lowering is currently
+    /// inside, keyed on (locus, the field names the literal
+    /// supplies) — the pair, because the defaults a literal expands
+    /// are exactly the ones it does NOT supply, so `A { n: 1, m: 2 }`
+    /// written inside `A`'s own default expands nothing and
+    /// terminates.
+    ///
+    /// Re-entry is only refused from inside a param DEFAULT
+    /// (`in_params_default`). Nesting written out in source is
+    /// bounded by the AST that spells it — `Box { inner: Box { inner:
+    /// Dot { } } }` is an ordinary program and stays one — so it is
+    /// the re-entered default text, and only that, which has no
+    /// floor. An unbounded chain must expand a default infinitely
+    /// often, the states are finite, and so it repeats one here.
+    ///
+    /// The teardown side took the same measure in GH #750 / #811
+    /// (`locus_cascade_path`), defensively, because instantiation
+    /// never got that far.
     fn lower_locus_instantiation(
+        &mut self,
+        locus_name: &str,
+        inits: &[StructInit],
+        scope: &Scope<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let mut supplied: Vec<String> =
+            inits.iter().map(|i| i.name.name.clone()).collect();
+        supplied.sort();
+        supplied.dedup();
+        let state = (locus_name.to_string(), supplied);
+        let reentered = self
+            .locus_instantiation_path
+            .iter()
+            .position(|s| *s == state)
+            .filter(|_| self.in_params_default);
+        if let Some(at) = reentered {
+            let ring: Vec<&str> = self.locus_instantiation_path[at..]
+                .iter()
+                .map(|s| s.0.as_str())
+                .collect();
+            let chain = if ring.len() > 1 {
+                format!(" (`{}` → `{}`)", ring.join("` → `"), ring[0])
+            } else {
+                String::new()
+            };
+            return Err(CodegenError::Unsupported(format!(
+                "locus `{}` is built by its own param default{} — a \
+                 locus cannot contain itself by value. Every `{}` the \
+                 default builds needs another one, so no instance can \
+                 ever be finished. Drop the default and take the \
+                 child from the caller, or hold a value rather than a \
+                 locus.",
+                locus_name, chain, locus_name
+            )));
+        }
+        self.locus_instantiation_path.push(state);
+        let out = self.lower_locus_instantiation_inner(locus_name, inits, scope);
+        self.locus_instantiation_path.pop();
+        out
+    }
+}
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// The instantiation lowering proper. Reached only through
+    /// `lower_locus_instantiation`, which holds the GH #813 re-entry
+    /// guard above it.
+    fn lower_locus_instantiation_inner(
         &mut self,
         locus_name: &str,
         inits: &[StructInit],

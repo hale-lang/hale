@@ -531,6 +531,12 @@ pub fn check_bundle_scoped(
     // sibling-in-main + placement fix. See `spec/runtime.md §
     // Long-running cooperative children`.
     check_nested_long_running_child(bundle, &mut diags);
+    // GH #813: a locus reachable from its own param defaults. The
+    // by-value containment graph must be acyclic — a locus that
+    // contains itself can never be built, and the compiler used to
+    // discover that by overflowing its own stack in
+    // `lower_locus_instantiation`. See `check_self_containing_locus`.
+    check_self_containing_locus(bundle, &mut diags);
     check_cooperative_pool_blocking(bundle, &mut diags);
     // Perf lint (2026-07-16): hot-path allocation anti-patterns — a
     // locus instantiated per loop iteration, an allocating recv in a
@@ -3056,6 +3062,267 @@ fn check_nested_long_running_child(
                 }
             }
         }
+    }
+}
+
+/// One node of the param-default containment graph (GH #813): a
+/// locus name plus the field names a literal SUPPLIES. The defaults a
+/// literal expands are exactly the ones it does not supply, so the
+/// pair — not the locus alone — is what the construction re-enters.
+type ContainmentState = (String, Vec<String>);
+
+/// GH #813: a locus whose construction requires constructing one of
+/// its own kind.
+///
+/// `locus Node { params { next: Node = Node { n: 1 }; } }` is not a
+/// linked list — it is a locus that cannot exist. The `Node` the
+/// default builds leaves ITS `next` to the same default, which builds
+/// another, and the nesting has no floor. It cannot be broken from a
+/// call site either: writing `Node { next: … }` needs a `Node` to
+/// hand over, and building one asks the same question again. So the
+/// declaration is the error, independently of whether anything
+/// instantiates it.
+///
+/// Before this the program passed `hale check` and
+/// `lower_locus_instantiation` recursed through the default until the
+/// compiler's own stack ran out ("thread 'main' has overflowed its
+/// stack"). Codegen now keeps the same guard for itself — it must,
+/// since `build_executable` never runs this checker — but a stack
+/// trace is not a diagnostic, and the author's mistake is at a param.
+///
+/// The graph is over BY-VALUE containment: an edge `L → M` where a
+/// param default of `L` *constructs* an `M`, i.e. an `M { … }` locus
+/// literal appears anywhere in the default's expression. A **call**
+/// in a default — `next: Node = make()` — is deliberately not an
+/// edge. Two reasons, and they agree: lowering a call emits a call
+/// rather than inlining the callee, so the compiler terminates on it
+/// and there is no crash to prevent; and the checker cannot tell a
+/// factory that builds a fresh locus from an accessor that hands back
+/// one somebody else already owns (codegen's `fresh_locus_factories`
+/// fixpoint is the whole-program analysis that can, and it is a
+/// codegen-side answer to a different question). A factory that does
+/// build a fresh one recurses at RUN time, like any other unbounded
+/// recursion, and `@no_recursion` is the contract for that.
+///
+/// A node is (locus, supplied field names) rather than the locus
+/// alone: `A { n: 1, m: 2 }` written inside `A`'s own default for `m`
+/// expands no default and terminates, and keying on the type would
+/// report it as a cycle.
+///
+/// Nothing is reported for a locus this bundle cannot see. A single
+/// file of a multi-file seed holds no `TopDecl::Locus` for its
+/// sibling's types, so a cycle that crosses files simply has no edge
+/// here and stays permissive until the whole seed is checked
+/// together — the gating every other cross-file rule uses, arrived at
+/// by having nothing to say rather than by a flag. The literal walk
+/// is likewise deliberately partial (it does not descend into a
+/// block, `if` or `match` body): an unvisited form costs a report,
+/// never a false one, and codegen's guard is underneath it.
+fn check_self_containing_locus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    fn collect<'a>(
+        items: &'a [TopDecl],
+        out: &mut BTreeMap<&'a str, &'a LocusDecl>,
+    ) {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => {
+                    out.entry(l.name.name.as_str()).or_insert(l);
+                }
+                TopDecl::Module(m) => collect(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    let mut loci: BTreeMap<&str, &LocusDecl> = BTreeMap::new();
+    for program in bundle.programs.values() {
+        collect(&program.items, &mut loci);
+    }
+    if loci.is_empty() {
+        return;
+    }
+    // Classic gray/black DFS. `finished` is the black set: every
+    // cycle reachable from a state was found while that state was
+    // being explored, so re-entering it later has nothing to add —
+    // which is also what keeps one cycle from being reported once per
+    // locus on it.
+    let mut finished: BTreeSet<ContainmentState> = BTreeSet::new();
+    let mut reported: BTreeSet<(u32, String)> = BTreeSet::new();
+    for name in loci.keys().copied() {
+        let mut path: Vec<ContainmentState> = Vec::new();
+        walk_param_default_containment(
+            name,
+            &[],
+            &loci,
+            &mut path,
+            &mut finished,
+            &mut reported,
+            diags,
+        );
+    }
+}
+
+/// One DFS step of the GH #813 containment walk. `supplied` is the
+/// set of field names the literal that got us here wrote out; every
+/// OTHER param of `locus` expands its default, and each locus literal
+/// inside that default is an edge.
+fn walk_param_default_containment(
+    locus: &str,
+    supplied: &[String],
+    loci: &BTreeMap<&str, &LocusDecl>,
+    path: &mut Vec<ContainmentState>,
+    finished: &mut BTreeSet<ContainmentState>,
+    reported: &mut BTreeSet<(u32, String)>,
+    diags: &mut Vec<Diag>,
+) {
+    let state: ContainmentState = (locus.to_string(), supplied.to_vec());
+    if finished.contains(&state) {
+        return;
+    }
+    let Some(decl) = loci.get(locus) else {
+        // A sibling file's locus, or a stdlib one reached by a
+        // multi-segment path: no body here, no edge, no report.
+        return;
+    };
+    path.push(state.clone());
+    for member in &decl.members {
+        let LocusMember::Params(pb) = member else {
+            continue;
+        };
+        for pd in &pb.params {
+            if supplied.iter().any(|s| s == &pd.name.name) {
+                continue;
+            }
+            let ParamInit::Value(e) = &pd.init else {
+                continue;
+            };
+            let mut built: Vec<ContainmentState> = Vec::new();
+            collect_constructed_loci(e, loci, &mut built);
+            for child in built {
+                let Some(at) = path.iter().position(|s| *s == child) else {
+                    walk_param_default_containment(
+                        &child.0, &child.1, loci, path, finished,
+                        reported, diags,
+                    );
+                    continue;
+                };
+                // The cycle, as a ring of type names, rotated so the
+                // locus the author is reading about comes first.
+                let mut ring: Vec<&str> =
+                    path[at..].iter().map(|s| s.0.as_str()).collect();
+                if let Some(k) = ring.iter().position(|n| *n == locus) {
+                    ring.rotate_left(k);
+                }
+                let chain = if ring.len() > 1 {
+                    format!(" (`{}` → `{}`)", ring.join("` → `"), ring[0])
+                } else {
+                    String::new()
+                };
+                let message = format!(
+                    "param `{}` of `{}` defaults to a `{}`; a locus \
+                     cannot contain itself by value{} — every one the \
+                     default builds needs another, and no locus \
+                     literal can end the chain. Drop the default and \
+                     take the child from the caller (`{}: {};`), or \
+                     hold a value rather than a locus.",
+                    pd.name.name,
+                    locus,
+                    child.0,
+                    chain,
+                    pd.name.name,
+                    child.0,
+                );
+                if reported.insert((pd.span.start.0, message.clone())) {
+                    diags.push(Diag::ty(pd.span, message));
+                }
+            }
+        }
+    }
+    path.pop();
+    finished.insert(state);
+}
+
+/// Every locus literal `M { … }` inside `e`, as (locus name, the
+/// field names it supplies). Nested literals count too — a literal
+/// inside a literal's field is constructed just as surely as the
+/// outer one. Only single-segment paths that name a locus in this
+/// bundle are edges; a `type` literal, a stdlib path and a sibling
+/// file's name are all skipped.
+fn collect_constructed_loci(
+    e: &Expr,
+    loci: &BTreeMap<&str, &LocusDecl>,
+    out: &mut Vec<ContainmentState>,
+) {
+    match e {
+        Expr::Struct { path, inits, .. } => {
+            if path.segments.len() == 1 {
+                let name = path.segments[0].name.as_str();
+                if loci.contains_key(name) {
+                    let mut supplied: Vec<String> = inits
+                        .iter()
+                        .map(|i| i.name.name.clone())
+                        .collect();
+                    supplied.sort();
+                    supplied.dedup();
+                    out.push((name.to_string(), supplied));
+                }
+            }
+            for i in inits {
+                collect_constructed_loci(&i.value, loci, out);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_constructed_loci(left, loci, out);
+            collect_constructed_loci(right, loci, out);
+        }
+        Expr::Unary { operand, .. } => {
+            collect_constructed_loci(operand, loci, out)
+        }
+        Expr::Call { callee, args, .. } => {
+            collect_constructed_loci(callee, loci, out);
+            for a in args {
+                collect_constructed_loci(a, loci, out);
+            }
+        }
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => {
+            collect_constructed_loci(receiver, loci, out)
+        }
+        Expr::Index { receiver, index, .. } => {
+            collect_constructed_loci(receiver, loci, out);
+            collect_constructed_loci(index, loci, out);
+        }
+        Expr::Tuple(parts, _) | Expr::Array(parts, _) => {
+            for p in parts {
+                collect_constructed_loci(p, loci, out);
+            }
+        }
+        Expr::Sum(inner, _) | Expr::Prod(inner, _) => {
+            collect_constructed_loci(inner, loci, out)
+        }
+        Expr::ArrayRepeat { val, .. } => {
+            collect_constructed_loci(val, loci, out)
+        }
+        Expr::Range { lo, hi, .. } => {
+            collect_constructed_loci(lo, loci, out);
+            collect_constructed_loci(hi, loci, out);
+        }
+        Expr::Approx { left, right, tolerance, .. } => {
+            collect_constructed_loci(left, loci, out);
+            collect_constructed_loci(right, loci, out);
+            collect_constructed_loci(tolerance, loci, out);
+        }
+        Expr::Or { inner, disposition, .. } => {
+            collect_constructed_loci(inner, loci, out);
+            match disposition {
+                OrDisposition::Substitute(s) => {
+                    collect_constructed_loci(s, loci, out)
+                }
+                OrDisposition::Fail(p, _) => {
+                    collect_constructed_loci(p, loci, out)
+                }
+                _ => {}
+            }
+        }
+        _ => {}
     }
 }
 
