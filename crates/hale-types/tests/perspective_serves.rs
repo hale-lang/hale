@@ -443,3 +443,65 @@ fn main() {
         msgs
     );
 }
+
+/// GH #724: a `serves` / `perspective(P)` / `reperspective` path
+/// qualified by an import alias whose SEED the bundle does not hold.
+///
+/// Every CLI path merges the imported seed first and collapses the
+/// path to the imported declaration's mangled name, so the checker
+/// never sees `lib::Routing` there. A tool that holds one seed's own
+/// files does — `hale lsp` bundles a directory, with the `import`
+/// lines intact and no rename table — and it already tolerates every
+/// other qualified reference (`lib::Grid`, `lib::f()`,
+/// `lib::Color::Red`) as opaque. The perspective positions must be
+/// tolerated the same way, or the editor squiggles four errors onto a
+/// program `hale check` accepts.
+#[test]
+fn qualified_path_behind_an_unresolved_import_is_opaque() {
+    let src = r#"
+import "lib" as lib;
+locus Triple : serves lib::Routing {
+    fn route(x: Int) -> Int { return x * 3; }
+}
+main locus App {
+    params { r: perspective(lib::Routing) = Triple { }; }
+    run() {
+        println("route=", self.r.route(7));
+        reperspective self.r as lib::Double;
+    }
+}
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.is_empty(),
+        "an unresolved alias path must be opaque, not an error: {:?}",
+        msgs
+    );
+}
+
+/// The tolerance is keyed on the ALIAS, not on the `::`: a head no
+/// `import` in the bundle introduces is still an unknown contract.
+/// Otherwise the resolution error the CLI reports — `lib::Nope` in a
+/// seed whose `lib` WAS resolved — would be reachable by writing any
+/// path at all.
+#[test]
+fn a_qualified_path_with_no_matching_import_is_still_unknown() {
+    let src = r#"
+locus Triple : serves nosuch::Routing {
+    fn route(x: Int) -> Int { return x * 3; }
+}
+main locus App {
+    params { n: Int = 0; }
+    run() { }
+}
+fn main() { App { }; }
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter()
+            .any(|m| m.contains("serves unknown perspective `nosuch::Routing`")),
+        "expected the unknown-perspective error, got: {:?}",
+        msgs
+    );
+}
