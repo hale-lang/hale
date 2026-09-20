@@ -132,18 +132,24 @@ This is the one piece of bookkeeping worth internalizing,
 because it's how Hale frees resources without a `defer` or a
 `finally`:
 
-- **Statement position** (`Ticker { };` — no binding, nothing
-  called on it): the locus runs its whole lifecycle right there
-  and tears down at the end of the statement. Fire-and-forget.
+- **Statement position** (`Ticker { };` — no binding, and the
+  value is discarded): the locus runs its whole lifecycle right
+  there and tears down at the end of the statement.
+  Fire-and-forget.
 - **`let`-bound** (`let t = Ticker { };`): it's born and runs,
   but **dissolve is deferred to the end of the enclosing
   function's scope**. The binding stays usable for method calls
   until then.
-- **A literal you call a method on** (`Ticker { }.tick()`): the
-  call is the handle, so it behaves exactly like the `let` form —
-  born before the call, dissolved at the end of the enclosing
-  function. `Queries { j: Journal { } }.count()` and the two-line
-  version that names it are the same program.
+- **A literal you *use*** — as a method receiver
+  (`Ticker { }.tick()`), as an argument (`serve(Ticker { })`),
+  for a field read (`Ticker { }.every_ms`): the expression that
+  consumes it is the handle, so it behaves exactly like the
+  `let` form — born before the expression runs, dissolved at the
+  end of the enclosing function. Writing it inline and naming it
+  with `let` first are the same program, whichever position it
+  is in. That is what lets you hand a fresh locus to a service
+  that keeps it: `serve(Provider { })` is as safe as
+  `let p = Provider { }; serve(p);`.
 - **Long-lived** (the locus subscribes to the bus, or its `run()`
   hasn't returned): it stays alive until its scope exits,
   regardless of binding — it has to, to keep receiving messages.
@@ -152,6 +158,17 @@ So `let` keeps a locus alive for the scope; statement position is
 fire-and-forget. When several `let`-bound loci share a scope,
 they dissolve in reverse order of creation (the later one, which
 may depend on the earlier, goes first).
+
+Whichever line you're on, the timing is the timing of the **whole
+tree** the locus owns. A locus you write as another locus's param
+field has no teardown moment of its own — it's the owner's, and so
+is the one *it* holds, all the way down. When the owner goes, every
+level's `drain()` has run (deepest first), every level's
+`dissolve()` body has run (outermost first) and every level's arena
+is gone. The exception is a handle you pass *in* — `Mid { leaf:
+shared }` borrows `shared`, so the cascade steps over it at
+whatever depth it sits, and `shared` is released once, by the scope
+that made it.
 
 **The scope is the enclosing function, not the enclosing block.** A
 `let` inside a loop body therefore doesn't dissolve per iteration — the
@@ -171,10 +188,36 @@ each of them. The fixes are to hoist one instance out of the loop and
 refill it, or to move the iteration's work into a helper function,
 whose return is the per-iteration boundary.
 
-Dropping the binding only helps when nothing is called on the result:
+Dropping the binding only helps when the value is discarded outright:
 a bare `Matrix { };` statement is reclaimed where it stands, but
-`Matrix { }.trace()` is a method call, so its receiver lives to the end
-of the function exactly as the binding did.
+`Matrix { }.trace()` and `sum(Matrix { })` both *use* the literal, so
+it lives to the end of the function exactly as the binding did.
+
+### Early `return` is an exit, not a shortcut
+
+"The end of the enclosing function" means *whichever* way the
+function ends. A guard that returns early tears down everything
+alive at that point, and it takes nothing away from the ordinary
+exit:
+
+```hale,fragment
+let store = Store { path: dir };
+if std::env::args_count() < 2 {
+    println("usage: report <name>");
+    return 2;                     // dissolves `store`, exits 2
+}
+let report = Report { store: store };
+                                  // ordinary exit: `report`, then `store`
+```
+
+Both endings are complete. The guarded one dissolves `store`; the
+one taken when the guard does *not* fire dissolves `report` and
+then `store`, newest first as always. A locus bound only inside
+the branch that returns dissolves on that branch alone — the other
+endings never built it, so there is nothing for them to release.
+
+This holds in `fn main` too, which matters because `main` is where
+usage checks and flag guards live.
 
 ### Replacing a locus held in a field
 
