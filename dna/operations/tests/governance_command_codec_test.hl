@@ -1,0 +1,164 @@
+// Pure codec tests. No command admission, durable recovery, or domain outcome.
+import ".." as ops;
+import "../../core" as dna;
+
+fn context() -> ops::GovernanceContext {
+    return ops::GovernanceContext { application_id: "application/native/one", principal_mode: "local", principal_name: "équipe/alice" };
+}
+fn practice() -> ops::GovernanceCommand {
+    return ops::GovernanceCommand {
+        request_id: "request/one", operation: "dna.practice.propose", application_id: "application/native/one",
+        target_kind: "dna.practice", target_id: "practice/native/版本:1", subject_digest: "practice/native/版本:1",
+        text: "  Exact é 🧭\r\n第二行\t\"quoted\" \\ tail  ", rationale: "Because\r\nthis is needed."
+    };
+}
+fn review() -> ops::GovernanceCommand {
+    return ops::GovernanceCommand {
+        request_id: "request/one", operation: "dna.review.verdict", application_id: "application/native/one",
+        target_kind: "dna.review", target_id: "review/native/équipe:7", subject_digest: "candidate/native/版本:2",
+        expected_review_state: "pending", verdict: "approve", comment: "  Reviewed 🧭\r\nExactly.  "
+    };
+}
+fn repeated(count: Int) -> String {
+    let b = std::bytes::BytesBuilder { }; let mut i = 0;
+    while i < count { b.append_u8(120); i = i + 1; }
+    return std::str::from_bytes(b.snapshot());
+}
+fn rejected(command: ops::GovernanceCommand, label: String) {
+    let codec = ops::GovernanceCommandCodec { }; let who = context();
+    std::test::assert(!codec.valid(who, command), label);
+    std::test::assert_eq_str(codec.canonical(who, command), "", label + " has no canonical content");
+    std::test::assert_eq_str(codec.fingerprint(who, command), "", label + " has no fingerprint");
+}
+fn malformed(document: String, label: String) {
+    let codec = ops::GovernanceCommandCodec { }; let who = context();
+    let command = codec.decode(who, document);
+    std::test::assert(!codec.valid(who, command), label);
+    std::test::assert_eq_str(command.request_id, "", label + " returns no partial request");
+}
+fn test_identity_scope() {
+    let codec = ops::GovernanceCommandCodec { }; let who = context(); let p = practice(); let r = review();
+    std::test::assert(codec.known(p.operation, "1") && codec.known(r.operation, "1"), "exact two operations supported");
+    std::test::assert(!codec.known(p.operation, "2") && !codec.known("practice.propose", "1"), "version and operation are exact");
+    let id = codec.identity(who, p.request_id);
+    std::test::assert_eq_int(len(id), 72, "command prefix and 64 hex digest");
+    std::test::assert_eq_str(id, "command-" + dna::hex_digest("{\"format\":\"dna.governance-command-key/1\",\"application_id\":\"application/native/one\",\"principal_mode\":\"local\",\"principal_name\":\"équipe/alice\",\"request_id\":\"request/one\"}"), "fixed identity framing");
+    std::test::assert_eq_str(id, codec.identity(who, r.request_id), "same caller key is one cross-operation namespace");
+    std::test::assert(codec.valid(who, p) && codec.valid(who, r), "opaque slash-bearing native IDs remain admissible codec values");
+    std::test::assert(codec.fingerprint(who, p) != codec.fingerprint(who, r), "cross-operation content conflicts share identity but not fingerprint");
+    let mut changed = context(); changed.application_id = "application/native/two";
+    std::test::assert(id != codec.identity(changed, p.request_id), "application scopes request identity");
+    changed = context(); changed.principal_mode = "oidc";
+    std::test::assert(id != codec.identity(changed, p.request_id), "authentication mode scopes request identity");
+    changed = context(); changed.principal_name = "équipe/bob";
+    std::test::assert(id != codec.identity(changed, p.request_id), "authenticated name scopes request identity");
+    std::test::assert(id != codec.identity(who, "request/two"), "caller key participates in identity");
+    std::test::assert_eq_str(codec.identity(who, ""), "", "empty lookup key rejected without an operation");
+    changed = context(); changed.principal_mode = "payload_actor";
+    std::test::assert_eq_str(codec.identity(changed, p.request_id), "", "unknown principal mode cannot derive identity");
+}
+fn test_exact_roundtrip() {
+    let codec = ops::GovernanceCommandCodec { }; let who = context(); let p = practice(); let r = review();
+    let canonical = codec.canonical(who, p); let restored = codec.decode(who, canonical);
+    std::test::assert(codec.valid(who, restored), "canonical practice decodes");
+    std::test::assert_eq_str(restored.text, p.text, "Unicode, CRLF, tabs, quotes, slashes, spaces preserved exactly");
+    std::test::assert_eq_str(restored.rationale, p.rationale, "rationale preserves CRLF");
+    std::test::assert_eq_str(codec.canonical(who, restored), canonical, "canonical practice roundtrip byte equality");
+    std::test::assert_eq_str(codec.fingerprint(who, p), dna::digest_of(canonical), "fingerprint is canonical content digest");
+    let review_json = codec.canonical(who, r); let review_copy = codec.decode(who, review_json);
+    std::test::assert(codec.valid(who, review_copy), "canonical review decodes");
+    std::test::assert_eq_str(review_copy.comment, r.comment, "review comment preserves exact Unicode and whitespace");
+    std::test::assert_eq_str(codec.canonical(who, review_copy), review_json, "canonical review roundtrip byte equality");
+    let escaped = std::str::replace(std::str::replace(canonical, "é", "\\u00e9"), "🧭", "\\ud83e\\udded");
+    let escaped_copy = codec.decode(who, escaped);
+    std::test::assert_eq_str(codec.canonical(who, escaped_copy), canonical, "JSON escape spelling is not command content");
+    let mut control = practice(); control.text = "before\x01after\r\n";
+    let control_copy = codec.decode(who, codec.canonical(who, control));
+    std::test::assert_eq_str(control_copy.text, control.text, "representable escaped control bytes are not replaced");
+    let mut changed = practice(); changed.text = std::str::replace(p.text, "\r\n", "\n");
+    std::test::assert(codec.fingerprint(who, changed) != codec.fingerprint(who, p), "CRLF normalization changes the fingerprint");
+    changed = practice(); changed.rationale = p.rationale + " ";
+    std::test::assert(codec.fingerprint(who, changed) != codec.fingerprint(who, p), "rationale whitespace participates");
+    changed = practice(); changed.target_id = "practice/native/next"; changed.subject_digest = changed.target_id;
+    std::test::assert(codec.fingerprint(who, changed) != codec.fingerprint(who, p), "exact target and subject participate");
+    let mut verdict = review(); verdict.verdict = "reject";
+    std::test::assert(codec.fingerprint(who, verdict) != codec.fingerprint(who, r), "verdict participates");
+    verdict = review(); verdict.comment = r.comment + " ";
+    std::test::assert(codec.fingerprint(who, verdict) != codec.fingerprint(who, r), "comment participates");
+    let mut other = context(); other.principal_name = "another-principal";
+    std::test::assert(codec.fingerprint(other, p) != codec.fingerprint(who, p), "trusted principal participates in content digest");
+    std::test::assert(!codec.valid(other, codec.decode(other, canonical)), "canonical content cannot replace trusted principal");
+}
+fn test_variant_rejection() {
+    let codec = ops::GovernanceCommandCodec { }; let who = context(); let p = practice(); let r = review();
+    rejected(ops::GovernanceCommand { }, "default command invalid");
+    let mut c = practice(); c.operation_version = "01"; rejected(c, "version spelling exact");
+    c = practice(); c.application_id = "different"; rejected(c, "payload application cannot replace context");
+    c = practice(); c.position_id = "org/child"; rejected(c, "only org acting context supported");
+    c = practice(); c.target_kind = "dna.review"; rejected(c, "practice has its own target kind");
+    c = practice(); c.target_id = "other"; rejected(c, "practice target must equal expected subject");
+    c = practice(); c.expected_review_state = "pending"; rejected(c, "practice rejects review precondition");
+    c = practice(); c.verdict = "approve"; rejected(c, "practice rejects review verdict");
+    c = practice(); c.comment = "review payload"; rejected(c, "practice rejects review comment");
+    c = practice(); c.text = ""; rejected(c, "practice text required");
+    c = practice(); c.rationale = ""; rejected(c, "practice rationale required");
+    c = review(); c.target_kind = "dna.practice"; rejected(c, "review has its own target kind");
+    c = review(); c.expected_review_state = "settled"; rejected(c, "review must expect pending");
+    c = review(); c.verdict = "abstain"; rejected(c, "abstain outside this profile");
+    c = review(); c.text = "practice payload"; rejected(c, "review rejects practice text");
+    c = review(); c.rationale = "practice rationale"; rejected(c, "review rejects practice rationale");
+    c = review(); c.comment = ""; std::test::assert(codec.valid(who, c), "empty review comment supported");
+    c.verdict = "reject"; std::test::assert(codec.valid(who, c), "reject supported");
+    c.verdict = "revise"; std::test::assert(codec.valid(who, c), "revise supported");
+    c = practice(); c.request_id = "bad\nkey"; rejected(c, "request key controls rejected");
+    c = practice(); c.target_id = "bad\x7fidentity"; c.subject_digest = c.target_id; rejected(c, "identifier DEL rejected");
+}
+fn test_byte_limits() {
+    let codec = ops::GovernanceCommandCodec { }; let who = context(); let p = practice(); let r = review();
+    let mut c = practice(); c.text = repeated(8190) + "é"; c.rationale = repeated(2046) + "é";
+    std::test::assert(codec.valid(who, c), "8192 text and 2048 rationale UTF8 bytes accepted");
+    let restored = codec.decode(who, codec.canonical(who, c));
+    std::test::assert_eq_str(restored.text, c.text, "maximum text roundtrip exact");
+    std::test::assert_eq_str(restored.rationale, c.rationale, "maximum rationale roundtrip exact");
+    c.text = c.text + "x"; rejected(c, "8193 text bytes rejected");
+    c = practice(); c.rationale = repeated(2047) + "é"; rejected(c, "2049 rationale bytes rejected");
+    c = review(); c.comment = repeated(2046) + "é";
+    std::test::assert(codec.valid(who, c), "2048 comment bytes accepted");
+    c.comment = c.comment + "x"; rejected(c, "2049 comment bytes rejected");
+    c = practice(); c.request_id = repeated(128); std::test::assert(codec.valid(who, c), "128 request bytes accepted");
+    c.request_id = c.request_id + "x"; rejected(c, "129 request bytes rejected");
+    c = practice(); c.target_id = repeated(256); c.subject_digest = c.target_id;
+    std::test::assert(codec.valid(who, c), "256 opaque subject bytes accepted");
+    c.target_id = c.target_id + "x"; c.subject_digest = c.target_id; rejected(c, "257 subject bytes rejected");
+    let mut owner = context(); owner.principal_name = repeated(256);
+    std::test::assert(codec.context_valid(owner), "256 principal bytes accepted");
+    owner.principal_name = owner.principal_name + "x";
+    std::test::assert(!codec.context_valid(owner), "257 principal bytes rejected");
+    owner = context(); owner.application_id = repeated(257);
+    std::test::assert(!codec.context_valid(owner), "application identifier bound checked");
+    owner = context(); owner.principal_name = "bad\rprincipal";
+    std::test::assert(!codec.context_valid(owner), "principal controls rejected");
+    let invalid = std::bytes::BytesBuilder { }; invalid.append_u8(192); invalid.append_u8(175);
+    c = practice(); c.text = std::str::from_bytes(invalid.snapshot()); rejected(c, "invalid UTF8 payload rejected");
+}
+fn test_strict_decode() {
+    let codec = ops::GovernanceCommandCodec { }; let who = context(); let document = codec.canonical(who, practice());
+    malformed("{}", "missing fields");
+    malformed("null", "wrong root type");
+    malformed(document + " {}", "trailing document");
+    malformed(std::str::replace(document, "\"operation_version\":\"1\"", "\"operation_version\":1"), "exact string type required");
+    malformed(std::str::replace(document, "\"comment\":\"\"", "\"comment\":null"), "inactive fields still have exact types");
+    malformed(std::str::replace(document, "\"comment\":\"\"", "\"comment\":\"\",\"unknown\":\"\""), "unknown field rejected");
+    malformed(std::str::replace(document, "\"request_id\":\"request/one\"", "\"request_id\":\"request/one\",\"request_id\":\"request/two\""), "duplicate key rejected");
+    malformed(std::str::replace(document, "\"comment\"", "\"comm\\u0065nt\""), "escaped key rejected");
+    malformed(std::str::replace(document, "dna.governance-command/1", "dna.governance-command/2"), "unknown codec version");
+    malformed(std::str::replace(document, "\"comment\":\"\"", "\"comment\":\"\\u0000\""), "decoded NUL rejected before native strings");
+    malformed(std::str::replace(document, "\"comment\":\"\"", "\"comment\":\"\\ud800\""), "unpaired surrogate rejected");
+    malformed(std::str::replace(document, "\"verdict\":\"\"", "\"verdict\":\"approve\""), "mixed variant rejected during decoding");
+    malformed(std::str::replace(document, "\"principal_mode\":\"local\"", "\"principal_mode\":\"oidc\""), "stored mode cannot replace trusted mode");
+    malformed(std::str::replace(document, "application/native/one", "application/native/two"), "stored application cannot replace trusted application");
+    malformed(repeated(98305), "raw decoder budget checked before JSON parsing");
+}
+fn main() {
+    test_identity_scope(); test_exact_roundtrip(); test_variant_rejection(); test_byte_limits(); test_strict_decode();
+}

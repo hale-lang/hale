@@ -1,0 +1,20 @@
+// The production host relay in isolation. Run with cwd set to the disposable
+// project root and HALE_DNA_MEMBRANE naming the real membrane client binary.
+// No request or outcome is synthesized here; signature checks and exact answer
+// matching use the same helper as Host.relay_record_membrane.
+import "../../../../host" as host;
+
+main locus Relay {
+    params { state: host::RelayState = host::RelayState { }; last_error: String = ""; }
+    fn tick() {
+        self.state = host::relay_record_membrane(".", ".", "", "run", self.state.relayed);
+        if len(self.state.error) > 0 && self.state.error != self.last_error { eprintln("native command relay: ", self.state.error); }
+        self.last_error = std::str::clone(self.state.error);
+    }
+    run() {
+        println("native command relay ready");
+        while true { self.tick(); std::time::sleep(100ms); }
+    }
+}
+
+fn main() { Relay { }; }

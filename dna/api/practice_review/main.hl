@@ -1,0 +1,118 @@
+// Build: hale build dna/api/practice_review
+// Run: HALE_DNA_COMMAND_POLICY=authority.json practice_review <root> <port> [webroot]
+// One loopback Record/body/host deployment. The ordinary dna/api head remains
+// read-only. This head composes the shared native Governance service explicitly.
+import ".." as api;
+import "../../core" as dna;
+import "../../operations" as ops;
+import "../../organization_runtime" as runtime;
+
+locus PracticeReviewHead {
+    params { root: String = "."; port: Int = 8792; policy_path: String = ""; webroot: String = ""; }
+    run { serve(self.root, self.port, self.policy_path, self.webroot); }
+}
+
+fn serve(root: String, port: Int, policy_path: String, webroot: String) {
+    let reader = api::SourceReader { root: root };
+    let source = reader.read();
+    if !source.ok {
+        eprintln("hale dna practice-review api: ", source.error, "; refusing to start");
+        std::process::exit(2);
+    }
+    let record = dna::GitRecord { repo: root };
+    let configured = record.git("config\n--get\ndna.trust");
+    if configured.code != 0 && configured.code != 1 {
+        eprintln("hale dna practice-review api: cannot read Record trust policy; refusing to start");
+        std::process::exit(2);
+    }
+    let declared = dna::trim_nl(configured.stdout);
+    let trust = if len(declared) == 0 { "local" } else { declared };
+    let size = std::io::fs::file_size(policy_path) or - 1;
+    if size < 1 || size > 65536 {
+        eprintln("hale dna practice-review api: expected a readable authority policy of 1..65536 bytes; refusing to start");
+        std::process::exit(2);
+    }
+    let document = std::io::fs::read_file(policy_path) or "";
+    let codec = ops::AuthorityPolicyCodec { };
+    let policy = codec.decode(document, source.identity, trust);
+    if !policy.valid {
+        eprintln("hale dna practice-review api: invalid authority policy, application binding, or Record trust mode; refusing to start");
+        std::process::exit(2);
+    }
+    // Optional, independent source policy. Merely configuring evidence reads
+    // does not enable source proposal or source Review writes.
+    let source_policy_path = std::env::var("HALE_DNA_ORGANIZATION_POLICY");
+    let mut source_policy = ops::OrganizationAuthorityPolicy { };
+    if source_policy_path != "" {
+        let source_size = std::io::fs::file_size(source_policy_path) or - 1;
+        if source_size < 1 || source_size > 65536 {
+            eprintln("hale dna practice-review api: source authority policy must be 1..65536 readable bytes; refusing to start");
+            std::process::exit(2);
+        }
+        let source_document = std::io::fs::read_file(source_policy_path) or "";
+        let source_codec = ops::OrganizationAuthorityPolicyCodec { };
+        source_policy = source_codec.decode(source_document, source.identity, trust);
+        if !source_policy.valid {
+            eprintln("hale dna practice-review api: invalid source authority policy, application binding or trust; refusing to start");
+            std::process::exit(2);
+        }
+    }
+    let task_policy_path = std::env::var("HALE_DNA_TASK_POLICY");
+    let mut task_policy = ops::TaskAuthorityPolicy { };
+    if task_policy_path != "" {
+        let task_size = std::io::fs::file_size(task_policy_path) or - 1;
+        if task_size < 1 || task_size > 32768 {
+            eprintln("hale dna practice-review api: Task authority policy must be 1..32768 readable bytes; refusing to start");
+            std::process::exit(2);
+        }
+        let task_document = std::io::fs::read_file(task_policy_path) or "";
+        let task_codec = ops::TaskAuthorityPolicyCodec { };
+        task_policy = task_codec.decode(task_document, source.identity, trust);
+        if !task_policy.valid {
+            eprintln("hale dna practice-review api: invalid Task authority policy, application binding or trust; refusing to start");
+            std::process::exit(2);
+        }
+    }
+    let web = api::WebAssets { };
+    if len(webroot) > 0 && !web.load(webroot) {
+        eprintln("hale dna practice-review api: ", web.error, "; refusing to start");
+        std::process::exit(2);
+    }
+    // Each composed dependency stays bound for the HTTP server's full lifetime.
+    let authority = ops::FixedAuthority { policy: policy };
+    let source_authority = ops::FixedOrganizationAuthority { policy: source_policy };
+    let task_authority = ops::FixedTaskAuthority { policy: task_policy };
+    let native = ops::GovernanceCommands { record: record, authority: authority, sign: policy.sign,
+        organization_authority: source_authority, organization_enabled: false, organization_reviews_enabled: false,
+        tasks_enabled: task_policy.valid, task_authority: task_authority, retirement_enabled: task_policy.valid && task_policy.retirement_enabled, retirement_record: record };
+    let commands = PracticeReviewCommands { root: root, application_id: source.identity, service: native, source_capabilities: native, people: native, organization_configured: source_policy.valid };
+    println("hale dna practice-review api: authority basis ", policy.basis);
+    let definitions = ops::NoWorkflowCatalog { };
+    // This optional reader is meaningful only in the same local deployment
+    // root and PID namespace as Host. The status route checks the separate
+    // recovery/read grant before invoking it; native identity proofs may still
+    // return unavailable. No configured source policy keeps the old default.
+    if source_policy.valid {
+        let current = runtime::OrganizationRuntime { root: root };
+        api::serve_with_people(root, port, web, definitions, commands, source_authority, commands, current, commands);
+    } else {
+        let absent = api::NoOrganizationRuntime { };
+        api::serve_with_people(root, port, web, definitions, commands, source_authority, commands, absent, commands);
+    }
+}
+
+fn main() {
+    let root = std::env::arg_or(1, ".");
+    let http = api::Http { };
+    let port = http.integer(std::env::arg_or(2, ""), 65535);
+    if std::env::args_count() < 3 || std::env::args_count() > 4 || port < 1 || std::str::contains(root, "\n") || std::str::contains(root, "\r") {
+        eprintln("hale dna practice-review api: expected <project-root> <port 1..65535> [iris-webroot]");
+        std::process::exit(2);
+    }
+    let policy_path = std::env::var("HALE_DNA_COMMAND_POLICY");
+    if len(policy_path) == 0 {
+        eprintln("hale dna practice-review api: HALE_DNA_COMMAND_POLICY must name an explicit authority policy file; refusing to start");
+        std::process::exit(2);
+    }
+    PracticeReviewHead { root: root, port: port, policy_path: policy_path, webroot: std::env::arg_or(3, "") };
+}

@@ -112,13 +112,17 @@ locus ContractSchema {
                     if duplicates > 1 { return at + ": duplicate enumeration value"; }
                     values = std::json::array_next(values);
                 }
-            } else if key == "minLength" {
+            } else if key == "minLength" || key == "maxLength" {
                 if self.kind(raw) != "integer" || self.compare_integer(raw, "0") < 0 || self.compare_integer(raw, "1000000") > 0 { return at + ": supported length range is 0..1000000"; }
+            } else if key == "maxItems" || key == "minItems" {
+                if std::json::find_string_field(spec, "type") != "array" || self.kind(raw) != "integer" || self.compare_integer(raw, "0") < 0 || self.compare_integer(raw, "1000000") > 0 { return at + ": array bound must be 0..1000000"; }
             } else if key == "minimum" || key == "maximum" {
                 if self.kind(raw) != "integer" { return at + ": only integer bounds are supported"; }
                 if std::json::find_string_field(spec, "type") != "integer" { return at + ": numeric bounds require type integer in this profile"; }
+            } else if key == "format" {
+                if raw != "\"int64-decimal\"" || std::json::find_string_field(spec, "type") != "string" { return at + ": only int64-decimal string format is supported"; }
             } else if key == "pattern" {
-                if raw != "\"^(0|[1-9][0-9]*)$\"" { return at + ": unsupported pattern"; }
+                if raw != "\"^(0|[1-9][0-9]*)$\"" && raw != "\"^(0|-?[1-9][0-9]*)$\"" { return at + ": unsupported pattern"; }
             } else if key == "items" || key == "if" || key == "then" {
                 let error = self.profile(raw, at, depth + 1);
                 if len(error) > 0 { return error; }
@@ -149,6 +153,13 @@ locus ContractSchema {
             i = i + 1;
         }
         return true;
+    }
+    fn signed_decimal(text: String) -> Bool {
+        if std::str::starts_with(text, "-") {
+            let magnitude = text[1..len(text)];
+            return magnitude != "0" && self.decimal(magnitude);
+        }
+        return self.decimal(text);
     }
     fn check(spec: String, value: String, path: String, depth: Int) -> String {
         if depth > 64 { return "unsupported evaluation: depth exceeds 64 at " + path; }
@@ -204,6 +215,17 @@ locus ContractSchema {
             }
         }
         if kind == "array" {
+            let maximum = std::json::find_field_raw(spec, "maxItems");
+            if len(maximum) > 0 {
+                let mut cursor = std::json::array_first(raw); let mut count = 0;
+                while !cursor.done { count = count + 1; if count > (std::str::parse_int(maximum) or 0) { return path + ": array exceeds maxItems"; } cursor = std::json::array_next(cursor); }
+            }
+            let minimum = std::json::find_field_raw(spec, "minItems");
+            if len(minimum) > 0 {
+                let mut cursor = std::json::array_first(raw); let mut count = 0;
+                while !cursor.done { count = count + 1; cursor = std::json::array_next(cursor); }
+                if count < (std::str::parse_int(minimum) or 0) { return path + ": array below minItems"; }
+            }
             let item_schema = std::json::find_field_raw(spec, "items");
             if len(item_schema) > 0 {
                 let mut items = std::json::array_first(raw);
@@ -220,7 +242,15 @@ locus ContractSchema {
             let minimum = std::json::find_field_raw(spec, "minLength");
             let syntax = JsonSyntax { };
             if len(minimum) > 0 && syntax.codepoints(raw) < (std::str::parse_int(minimum) or 0) { return path + ": string too short"; }
-            if len(std::json::find_field_raw(spec, "pattern")) > 0 && !self.decimal(self.string(raw)) { return path + ": expected canonical unsigned decimal string"; }
+            let maximum = std::json::find_field_raw(spec, "maxLength");
+            if len(maximum) > 0 && syntax.codepoints(raw) > (std::str::parse_int(maximum) or 0) { return path + ": string too long"; }
+            if std::json::find_string_field(spec, "format") == "int64-decimal" {
+                let value = self.string(raw);
+                if !self.signed_decimal(value) || self.compare_integer(value, "-9223372036854775808") < 0 || self.compare_integer(value, "9223372036854775807") > 0 { return path + ": expected canonical Int64 decimal string"; }
+            }
+            let pattern = std::json::find_string_field(spec, "pattern");
+            if pattern == "^(0|[1-9][0-9]*)$" && !self.decimal(self.string(raw)) { return path + ": expected canonical unsigned decimal string"; }
+            if pattern == "^(0|-?[1-9][0-9]*)$" && !self.signed_decimal(self.string(raw)) { return path + ": expected canonical signed decimal string"; }
         }
         if kind == "integer" {
             let minimum = std::json::find_field_raw(spec, "minimum");

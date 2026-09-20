@@ -1,0 +1,43 @@
+import "../core" as dna;
+
+// Read-only adapter for a pinned command subject. It cannot write or erase the
+// candidate through the public admission path.
+locus KnowledgeBindingReceipts {
+    params { record: GovernanceRecord = dna::MemRecord { }; }
+    fn kind() -> String { return "knowledge-command-read"; }
+    fn store(text: String) -> String { return ""; }
+    fn erase(digest: String) -> Bool { return false; }
+    fn read(digest: String) -> String {
+        let kept = self.record.body(raw_digest(digest));
+        if !kept.present || len(kept.text) > 98304 || dna::digest_of(kept.text) != "sha256:" + raw_digest(digest) { return ""; }
+        return kept.text;
+    }
+}
+type KnowledgeBindingPreparation { ok: Bool = false; code: String = "stale_subject"; request: dna::KnowledgeBindingRequest = dna::KnowledgeBindingRequest { }; }
+
+locus KnowledgeBindingAdmission {
+    params { }
+    fn prepare(context: GovernanceContext, c: KnowledgeCommand, grant: KnowledgeGrant, record: GovernanceRecord, j: GovernanceJournal) -> KnowledgeBindingPreparation {
+        let codec = KnowledgeBindingCommandCodec { }; let common = KnowledgeCommandCodec { }; let native = dna::KnowledgeBindingCodec { };
+        if !codec.valid(context, c) { return KnowledgeBindingPreparation { code: "invalid_command" }; }
+        let scope = KnowledgeNodeAdmission { };
+        if !scope.scope(grant, c.author, c.target) { return KnowledgeBindingPreparation { code: "forbidden" }; }
+        let commands = KnowledgeCommands { }; commands.record = record;
+        if !commands.endpoint(j, c.idea_id, c.operation == "dna.knowledge.binding.bind") { return KnowledgeBindingPreparation { }; }
+        let receipts = KnowledgeBindingReceipts { }; receipts.record = record;
+        let subject = native.subject(j, receipts, c.idea_id);
+        if !subject.ok || !subject.ratified || (c.operation == "dna.knowledge.binding.bind" && !subject.active) { return KnowledgeBindingPreparation { }; }
+        let mut request = dna::KnowledgeBindingRequest {
+            application_id: context.application_id, request_id: common.identity(context, c.request_id), command_fingerprint: common.fingerprint(context, c),
+            authority: grant.authority, authority_basis: grant.basis, operation: c.operation,
+            idea_id: c.idea_id, binding_id: native.identity(c.idea_id, c.target, c.author), author: c.author, target: c.target,
+            by: context.principal_name, because: c.rationale
+        };
+        let basis = native.basis(j, receipts, request, j.revision());
+        if !basis.ok { return KnowledgeBindingPreparation { code: "command_history_invalid" }; }
+        request.binding_basis = basis.event_id;
+        request.candidate_digest = dna::digest_of(native.document(request));
+        if !native.valid(request) { return KnowledgeBindingPreparation { code: "invalid_command" }; }
+        return KnowledgeBindingPreparation { ok: true, code: "", request: request };
+    }
+}

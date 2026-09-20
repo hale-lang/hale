@@ -1,0 +1,191 @@
+// Forced writer interleavings around real legacy Body handoff handlers.
+// Input Tasks/transfers and competing retirement facts are explicit fixtures;
+// successful handoff rows are authored by Dna, never supplied as expected output.
+import "../core" as dna;
+
+@unbounded
+fn event_count(j: dna::Journal, kind: String) -> Int {
+    let mut n = 0; let mut i = 0;
+    while i < j.revision() { if j.read(i).kind == kind { n = n + 1; } i = i + 1; }
+    return n;
+}
+@unbounded
+fn last_event(j: dna::Journal, kind: String) -> dna::Event {
+    let mut i = j.revision() - 1;
+    while i >= 0 { let e = j.read(i); if e.kind == kind { return e; } i = i - 1; }
+    return dna::Event { };
+}
+
+locus ArrivalJournal {
+    params {
+        inner: dna::GitJournal = dna::GitJournal { };
+        mode: String = "";
+        shots: Int = 0;
+        exact_attempts: Int = 0;
+    }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+    fn target(kind: String) -> Bool {
+        if self.mode == "plan-blocked" || self.mode == "plan-lost" { return kind == "task.planned"; }
+        return kind == "task.handed" || kind == "task.transfer_requested";
+    }
+    fn retirement(who: String, to: String) {
+        // Another actual Record writer wins between the Body's decision
+        // and its exact CAS; this is not a handoff outcome fixture.
+        let other = dna::GitJournal { repo: self.inner.repo };
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("by", "riley"); b.string_field("to", to); b.int_field("transferred", 0); b.end_object();
+        let x = other.append_exact(other.revision(), "person.retired", who, b.result());
+        std::test::assert(x.ok, "competing retirement writer lands");
+    }
+    fn race(kind: String) {
+        if !self.target(kind) { return; }
+        if (self.mode == "retire" || self.mode == "successor" || self.mode == "route") && self.shots == 0 {
+            self.shots = 1; self.retirement("noor", if self.mode == "route" { "bob" } else { "dev" });
+        } else if self.mode == "successor" && self.shots == 1 { self.shots = 2; self.retirement("dev", "mara"); }
+        else if self.mode == "transfer-retire" && self.shots == 0 { self.shots = 1; self.retirement("bob", "carol"); }
+    }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        self.race(kind);
+        if self.target(kind) && (self.mode == "blocked" || self.mode == "plan-blocked") { return dna::AppendResult { error: "io" }; }
+        let result = self.inner.append(expected, kind, entity, body);
+        if self.target(kind) && self.mode == "plan-lost" && result.ok { self.shots = self.shots + 1; return dna::AppendResult { error: "io" }; }
+        return result;
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if self.target(kind) { self.exact_attempts = self.exact_attempts + 1; }
+        self.race(kind);
+        if self.target(kind) && self.mode == "blocked" { return dna::AppendResult { error: "io" }; }
+        if self.target(kind) && self.mode == "stale" { return dna::AppendResult { error: "stale_revision" }; }
+        let result = self.inner.append_exact(expected, kind, entity, body);
+        if self.target(kind) && self.mode == "lost" && result.ok { self.shots = self.shots + 1; return dna::AppendResult { error: "io" }; }
+        return result;
+    }
+}
+
+locus HandoffNotifications {
+    params { j: dna::Journal; count: Int = 0; before_durable: Bool = false; }
+    fn offer(i: dna::Intent) -> String { return "accepted"; }
+    fn notifications() -> Int { return self.count; }
+    fn notify(kind: String, msg: String) {
+        if kind == "task" {
+            self.count = self.count + 1;
+            if event_count(self.j, "task.handed") + event_count(self.j, "task.transfer_requested") == 0 { self.before_durable = true; }
+        }
+    }
+}
+locus HandoffAcks {
+    params { key: String; j: dna::Journal; count: Int = 0; before_durable: Bool = false; }
+    bus { subscribe dna::WorkDone as done where key == self.key; }
+    fn done(s: dna::WorkSettlement) {
+        self.count = self.count + 1;
+        let a = last_event(self.j, "task.handed"); let b = last_event(self.j, "task.transfer_requested");
+        if dna::native_json_string(a.body, "work") != s.work_id && dna::native_json_string(b.body, "work") != s.work_id { self.before_durable = true; }
+    }
+}
+
+main locus App {
+    fn person(mode: String, repo: String) {
+        let j = ArrivalJournal { inner: dna::GitJournal { repo: repo }, mode: mode };
+        let notifications = HandoffNotifications { j: j };
+        let ack = HandoffAcks { key: "t1/work", j: j };
+        let resumed = HandoffAcks { key: "t1/resumed", j: j };
+        let body = dna::Dna { journal: j, membrane: notifications, ownership: dna::Ownership { text: "org = acme\norg/other = north\nacme: noor dev mara\nnorth: bob carol\n", me: "acme", me_env: "" } };
+        let born = j.append(j.revision(), "task.born", "t1", "i1: call the supplier");
+        let pending = j.append(j.revision(), "task.pending", "t1", "routed");
+        body.pending_plans.push(dna::WorkRequest { task_id: "t1", work_id: "t1/work", objective: "call the supplier" });
+        body.on_planned(dna::Plan { task_id: "t1", work_id: "t1/work", kind: "person", assignee: "noor", obligation: "supplier", narrative: "Keep the exact plan — équipe.", parsed: true });
+        std::time::sleep(20ms);
+        if mode == "blocked" || mode == "stale" || mode == "plan-blocked" {
+            std::test::assert_eq_int(ack.count, 0, "no WorkDone without durable handoff");
+            std::test::assert_eq_int(notifications.count, 0, "no notification without durable handoff");
+            std::test::assert_eq_int(event_count(j, "task.handed"), 0, "no invented handoff");
+            std::test::assert_eq_int(event_count(j, "task.done"), 0, "no synthetic Task completion");
+            if mode == "stale" { std::test::assert_eq_int(j.exact_attempts, 8, "bounded exact-CAS contention"); }
+            j.mode = "";
+            if mode == "plan-blocked" {
+                std::test::assert_eq_int(event_count(j, "task.planned"), 0, "failed plan does not execute");
+                body.on_planned(dna::Plan { task_id: "t1", work_id: "t1/work", kind: "person", assignee: "noor", obligation: "supplier", narrative: "Keep the exact plan — équipe.", parsed: true });
+            } else {
+                std::test::assert_eq_int(event_count(j, "task.planned"), 1, "durable person plan survives uncertainty");
+                // A fresh Body rehydrates the original recorded plan; it
+                // has no Leader and cannot regenerate a replacement plan.
+                let fresh = dna::Dna { journal: j, membrane: notifications };
+            }
+            std::time::sleep(20ms);
+        }
+        let kind = if mode == "route" { "task.transfer_requested" } else { "task.handed" };
+        let e = last_event(j, kind);
+        std::test::assert_eq_int(event_count(j, kind), 1, "one durable native handoff or transfer");
+        let expected = if mode == "retire" { "dev" } else if mode == "successor" { "mara" } else if mode == "route" { "bob" } else { "noor" };
+        std::test::assert_eq_str(dna::native_json_string(e.body, "assignee"), expected, "recipient recomputed after exact CAS loss");
+        if mode == "retire" || mode == "successor" || mode == "route" { std::test::assert_eq_str(dna::native_json_string(e.body, "retired_assignee"), "noor", "original planned identity retained"); }
+        if mode == "route" {
+            std::test::assert_eq_int(event_count(j, "task.handed"), 0, "foreign successor requires owner acceptance");
+            std::test::assert_eq_str(dna::native_json_string(e.body, "to"), "north", "ownership routing recomputed");
+        }
+        std::test::assert_eq_str(dna::native_json_string(e.body, "obligation"), "supplier", "native obligation retained");
+        std::test::assert_eq_str(dna::native_json_string(e.body, "acceptance"), "", "explicit no acceptance remains bound");
+        std::test::assert_eq_str(std::str::trim(std::json::find_field_raw(e.body, "evidence_required")), "false", "evidence rule retained");
+        std::test::assert_eq_int(ack.count + resumed.count, 1, "WorkDone follows exactly one durable handoff");
+        std::test::assert(!ack.before_durable && !resumed.before_durable && !notifications.before_durable, "handoff is durable before acknowledgment and notification");
+        std::test::assert_eq_int(notifications.count, 1, "one durable notification");
+        body.resume_work();
+        std::test::assert_eq_int(event_count(j, kind), 1, "replay cannot duplicate an already handed Task");
+        std::test::assert(j.verify_chain(), "real Git Record chain remains valid");
+    }
+    fn transfer(mode: String, repo: String) {
+        let fault = if mode == "transfer-retire" { mode } else if mode == "transfer-lost" { "lost" } else if mode == "transfer-blocked" { "blocked" } else { "" };
+        let j = ArrivalJournal { inner: dna::GitJournal { repo: repo } };
+        let notifications = HandoffNotifications { j: j };
+        let body = dna::Dna { journal: j, membrane: notifications, ownership: dna::Ownership { text: "org = acme\norg/other = north\nacme: alice\nnorth: bob carol\n", me: "north", me_env: "" } };
+        let req = j.append(j.revision(), "task.transfer_requested", "t1", "{\"owner\":\"acme\",\"to\":\"north\",\"assignee\":\"bob\",\"obligation\":\"supplier\",\"acceptance\":\"sha256:original-condition\",\"evidence_required\":true,\"narrative\":\"call them\"}");
+        let acc = j.append(j.revision(), "task.transfer_accepted", "t1", "{\"owner\":\"north\",\"from\":\"acme\",\"by\":\"carol\",\"assignee\":\"bob\",\"note\":\"accepted\"}");
+        if mode == "transfer-replaced" {
+            let replacement = j.append(j.revision(), "task.transfer_requested", "t1", "{\"owner\":\"acme\",\"to\":\"north\",\"assignee\":\"carol\"}");
+        }
+        j.mode = fault;
+        let n = body.admit_transfers();
+        if mode == "transfer-retire" || mode == "transfer-replaced" || mode == "transfer-blocked" {
+            std::test::assert_eq_int(n, 0, "unproven or stale acceptance stays pending");
+            std::test::assert_eq_int(event_count(j, "task.handed"), 0, "no stale transferred handoff");
+            std::test::assert_eq_int(notifications.count, 0, "no success notification for pending transfer");
+            j.mode = "";
+            if mode != "transfer-blocked" { std::test::assert_eq_int(body.admit_transfers(), 0, "retirement/replacement cannot borrow previous acceptance"); return; }
+            std::test::assert_eq_int(body.admit_transfers(), 1, "I/O-failed transfer resumes from same exact acceptance");
+        } else { std::test::assert_eq_int(n, 1, "one admitted transfer"); }
+        let e = last_event(j, "task.handed");
+        std::test::assert_eq_str(dna::native_json_string(e.body, "assignee"), "bob", "accepted recipient preserved");
+        std::test::assert_eq_str(dna::native_json_string(e.body, "acceptance"), "sha256:original-condition", "bound acceptance preserved through transfer");
+        std::test::assert_eq_str(std::str::trim(std::json::find_field_raw(e.body, "evidence_required")), "true", "bound evidence requirement preserved");
+        std::test::assert_eq_str(dna::native_json_string(e.body, "accepted_by"), "carol", "exact accepting member retained");
+        std::test::assert_eq_int(body.admit_transfers(), 0, "durable transferred handoff is idempotent");
+        std::test::assert_eq_int(event_count(j, "task.handed"), 1, "one native transferred handoff");
+        std::test::assert_eq_int(notifications.count, 1, "one transfer notification");
+    }
+    fn identities() {
+        let body = dna::Dna { };
+        let a = body.journal.append(body.journal.revision(), "person.retired", "ann lee", "{\"to\":\"ann\"}");
+        let b = body.journal.append(body.journal.revision(), "person.retired", "ann", "{\"to\":\"sam 🧭\"}");
+        std::test::assert_eq_str(body.admissible("ann lee"), "sam 🧭", "space-bearing exact identities never collide");
+        let c = body.journal.append(body.journal.revision(), "person.retired", "sam 🧭", "{\"to\":\"ann lee\"}");
+        std::test::assert_eq_str(body.admissible("ann lee"), "", "actual exact cycle becomes unassigned");
+        let d = body.journal.append(body.journal.revision(), "person.retired", "nobody", "{\"to\":\"\"}");
+        std::test::assert_eq_str(body.admissible("nobody"), "", "no successor remains unassigned");
+    }
+    run {
+        let mode = std::env::arg(1);
+        if mode == "identities" { self.identities(); }
+        else {
+            let repo = std::env::var("HALE_ARRIVAL_ROOT") + "/" + mode;
+            std::io::fs::mkdir(repo) or discard;
+            let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+            std::test::assert_eq_int(init.code, 0, "owned Git fixture");
+            if std::str::starts_with(mode, "transfer-") { self.transfer(mode, repo); } else { self.person(mode, repo); }
+        }
+        println("PASS ", mode);
+    }
+}
+fn main() { App { }; }

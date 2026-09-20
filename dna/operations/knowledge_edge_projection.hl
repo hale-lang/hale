@@ -1,0 +1,58 @@
+// Direct effects and reviewed requests share a command identity, but have
+// different lifecycle evidence. Only a native consequence establishes an effect.
+import "../core" as dna;
+
+locus KnowledgeEdgeProjection {
+    params { }
+    fn unknown() -> KnowledgeEdgeOutcome { return KnowledgeEdgeOutcome { proposal_state: "unknown" }; }
+    fn project(record: GovernanceRecord, j: GovernanceJournal, found: KnowledgeFound) -> KnowledgeEdgeOutcome {
+        let r = found.fact.edge; let native = dna::KnowledgeEdgeCodec { };
+        let view = GovernanceProjection { }; let wire = GovernanceCommandCodec { };
+        let proposed = view.fact(j, "knowledge.edge.proposed", r.request_id, false);
+        let refused = view.fact(j, "knowledge.edge.refused", r.request_id, false);
+        if proposed.invalid || refused.invalid || (proposed.found && refused.found) { return self.unknown(); }
+        if refused.found {
+            let why = wire.string(refused.body, "why"); let code = wire.string(refused.body, "reason_code");
+            if refused.sequence <= found.event.seq || !wire.bounded(why, 2048, true, true) || !wire.bounded(code, 128, true, false) || refused.body != native.refused(r, code, why) { return self.unknown(); }
+            return KnowledgeEdgeOutcome { proposal_state: "refused", reason: "The native relationship proposal was refused." };
+        }
+        if !proposed.found { return KnowledgeEdgeOutcome { }; }
+        if proposed.sequence <= found.event.seq || proposed.body != native.proposed(r) { return self.unknown(); }
+        let review = view.edge_review(j, r);
+        if !review.ok { return self.unknown(); }
+        let mut out = KnowledgeEdgeOutcome { proposal_state: "created", candidate_digest: r.candidate_digest, review_id: native.review_id(r.candidate_digest),
+            review_state: review.state, review_outcome: review.outcome, effect_state: if review.state == "settled" { "pending" } else { "unknown" } };
+        let receipts = KnowledgeBindingReceipts { }; receipts.record = record;
+        let direct = StrictKnowledgeDirectEdgeFacts { }; let mut terminal = ""; let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.entity == r.request_id && (e.kind == "knowledge.edge.reviewed_linked" || e.kind == "knowledge.edge.reviewed_unlinked" || e.kind == "knowledge.edge.declined" || e.kind == "knowledge.edge.apply_refused") {
+                if terminal != "" && terminal != e.body { return self.unknown(); }
+                let effect = native.effect_of(j, e);
+                if !effect.ok || native.started(effect.request) != native.started(r) || review.state != "settled" || e.seq <= review.sequence || effect.decided_by != review.reviewer { return self.unknown(); }
+                if effect.state == "declined" { if review.outcome != "reject" && review.outcome != "revise" { return self.unknown(); } }
+                else if review.outcome != "approve" { return self.unknown(); }
+                if terminal == "" {
+                    let basis = native.basis(j, receipts, direct, r, e.seq);
+                    if !basis.ok { return self.unknown(); }
+                    let applied = effect.state == "linked" || effect.state == "unlinked";
+                    if applied && basis.event_id != r.edge_basis { return self.unknown(); }
+                    if effect.state == "refused" && effect.reason_code == "edge_changed" && (effect.observed_basis != basis.event_id || basis.event_id == r.edge_basis) { return self.unknown(); }
+                    let endpoints = native.endpoints(j, receipts, r, e.seq);
+                    if !endpoints.ok { return self.unknown(); }
+                    let eligible = endpoints.ratified && (r.operation == "dna.knowledge.edge.unlink" || endpoints.active);
+                    if applied && !eligible { return self.unknown(); }
+                    if effect.state == "refused" && effect.reason_code == "subject_inactive" && (eligible || basis.event_id != r.edge_basis || effect.observed_basis != basis.event_id) { return self.unknown(); }
+                    out.effect_state = effect.state;
+                    out.effect_reason = if effect.state == "declined" { "The Review declined this relationship change." }
+                    else if effect.state == "refused" && effect.reason_code == "edge_changed" { "The exact relationship changed while this Review was pending." }
+                    else if effect.state == "refused" && effect.reason_code == "subject_inactive" { "A Knowledge endpoint is no longer eligible for this relationship." }
+                    else if effect.state == "refused" { "The native relationship effect was refused." } else { "" };
+                    terminal = e.body;
+                }
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+}

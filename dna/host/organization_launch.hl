@@ -1,0 +1,65 @@
+// Prepared-only host writes and rollback acknowledgment joins.
+// Read-only launch and current process proof lives in organization_runtime.
+import "../core" as dna;
+import "../organization_runtime" as org_runtime;
+
+type OrganizationLaunchPreparation {
+    valid: Bool = false;
+    fresh: Bool = false;
+    attempt: dna::OrganizationLaunchAttempt = dna::OrganizationLaunchAttempt { };
+}
+type OrganizationLaunchWrite { ok: Bool = false; fresh: Bool = false; }
+
+// Exact once-only acknowledgment. A lost claim reply does not authorize start.
+fn organization_launch_write(root: String, kind: String, id: String, body: String) -> OrganizationLaunchWrite {
+    let codec = dna::OrganizationSourceRequestCodec { }; let mut tries = 0;
+    while tries < 20 {
+        let j = dna::GitJournal { repo: root }; let existing = codec.fact(j, kind, id);
+        if len(existing.kind) > 0 {
+            let author = dna::native_json_string(dna::line_at(j.text, existing.seq), "author");
+            return OrganizationLaunchWrite { ok: existing.kind == kind && existing.body == body && author == "host"
+                    && (trust_mode(root) != "signed" || row_verified(root, existing.digest)) };
+        }
+        let result = append_as_at(root, j.head(), -1, kind, id, body, "host");
+        if result == "" { return OrganizationLaunchWrite { ok: true, fresh: true }; }
+        if result != "stale_revision" { return OrganizationLaunchWrite { }; }
+        tries = tries + 1;
+    }
+    return OrganizationLaunchWrite { };
+}
+
+// Prepared rollback has separate reset and process claims. A retained source
+// reset is historical; a claim without the same owned process is not a launch.
+locus OrganizationRollbackCodec {
+    params { }
+    fn reset(a: dna::OrganizationLaunchAttempt, failure: String, base: String) -> String {
+        let c = dna::OrganizationLaunchCodec { }; return c.rollback_body(a, failure, base);
+    }
+    fn launch(a: dna::OrganizationLaunchAttempt, rolled_back: String, binary: String, topology: String) -> String {
+        let c = dna::OrganizationLaunchCodec { }; return c.rollback_launch_body(a, rolled_back, binary, topology);
+    }
+    fn launched(a: dna::OrganizationLaunchAttempt, claim: String, pid: Int, key: String, started: String) -> String {
+        let c = dna::OrganizationLaunchCodec { }; return c.rollback_launched_body(a, claim, pid, key, started);
+    }
+    fn claimed(source: org_runtime::OrganizationLaunchSource, basis: org_runtime::OrganizationLaunchBasis, a: dna::OrganizationLaunchAttempt) -> dna::Event {
+        let codec = dna::OrganizationLaunchCodec { }; let failure = source.fact("organization.source.launch_exited", a.attempt_id);
+        let exited = source.exited(a); let e = source.fact("organization.source.rollback_requested", a.attempt_id);
+        let decoded = codec.decode_rollback(e, a);
+        return if exited.valid && decoded.valid && e.seq > failure.seq && decoded.failure_event_id == failure.digest && decoded.base_commit == basis.request.source_head { e } else { dna::Event { } };
+    }
+    fn rolled_back(source: org_runtime::OrganizationLaunchSource, basis: org_runtime::OrganizationLaunchBasis, a: dna::OrganizationLaunchAttempt) -> dna::Event {
+        let claim = self.claimed(source, basis, a); let e = source.fact("mutation.rolled_back", a.mutation_id);
+        return if len(claim.kind) > 0 && e.seq > claim.seq && e.body == basis.request.source_head + " by host after the organization crashed" { e } else { dna::Event { } };
+    }
+    fn launch_claim(source: org_runtime::OrganizationLaunchSource, basis: org_runtime::OrganizationLaunchBasis, a: dna::OrganizationLaunchAttempt) -> dna::OrganizationRollbackLaunch {
+        let rollback = self.rolled_back(source, basis, a); let e = source.fact("organization.source.rollback_launch_requested", a.attempt_id);
+        let c = dna::OrganizationLaunchCodec { }; let decoded = c.decode_rollback_launch(e, a);
+        return if len(rollback.kind) > 0 && e.seq > rollback.seq && decoded.valid && decoded.rollback_event_id == rollback.digest { decoded } else { dna::OrganizationRollbackLaunch { } };
+    }
+    fn answered(source: org_runtime::OrganizationLaunchSource, basis: org_runtime::OrganizationLaunchBasis, a: dna::OrganizationLaunchAttempt) -> Bool {
+        let claim = self.launch_claim(source, basis, a); let e = source.fact("organization.source.rollback_launched", a.attempt_id); let c = dna::OrganizationLaunchCodec { };
+        let decoded = c.decode_rollback_launched(e, a); let requested = source.fact("organization.source.rollback_launch_requested", a.attempt_id);
+        return claim.valid && e.seq > requested.seq && decoded.valid && decoded.launch_event_id == claim.event_id;
+    }
+
+}

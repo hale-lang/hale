@@ -29,11 +29,36 @@ type ReviewRow {
     author: String = "";
     outcome: String = "";
     knowledge_digest: String = "";
+    knowledge_binding_digest: String = "";
+    binding_request_id: String = "";
+    knowledge_edge_digest: String = "";
+    edge_request_id: String = "";
+    organization_source: Bool = false;
+    organization_source_request_id: String = "";
+    organization_source_digest: String = "";
     target: String = "";
     binding_class: String = "";
     approvers: String = "";
     text_status: String = "not_applicable";
     text_available: Bool = false;
+}
+
+type BindingReviewCandidate {
+    ok: Bool = false;
+    status: String = "missing";
+    review_id: String = "";
+    document: String = "";
+    sequence: Int = -1;
+    request: dna::KnowledgeBindingRequest = dna::KnowledgeBindingRequest { };
+}
+
+type EdgeReviewCandidate {
+    ok: Bool = false;
+    status: String = "missing";
+    review_id: String = "";
+    document: String = "";
+    sequence: Int = -1;
+    request: dna::KnowledgeEdgeRequest = dna::KnowledgeEdgeRequest { };
 }
 
 type PracticeRow {
@@ -97,9 +122,12 @@ fn review_row(j: dna::Journal, id: String) -> ReviewRow {
             if e.kind == "review.requested" {
                 let b = e.body;
                 let mid = std::json::find_string_field(b, "mutation_id");
+                // A later malformed duplicate cannot erase the source privacy
+                // classification established by an earlier tagged request.
+                let source_marked = r.organization_source || std::json::find_field_raw(b, "organization_source_request_id") != "" || std::json::find_field_raw(b, "organization_source_digest") != "";
                 r = ReviewRow {
                     id: id, state: "pending",
-                    question: std::json::find_string_field(b, "question"),
+                    question: dna::native_json_string(b, "question"),
                     required_authority: std::json::find_string_field(b, "required_authority"),
                     subject_digest: std::json::find_string_field(b, "subject_digest"),
                     mutation_id: mid, is_mutation: len(mid) > 0,
@@ -116,6 +144,13 @@ fn review_row(j: dna::Journal, id: String) -> ReviewRow {
                     diff_json: std::json::find_string_field(b, "diff_json"),
                     author: std::json::find_string_field(b, "author"),
                     knowledge_digest: std::json::find_string_field(b, "knowledge_digest"),
+                    knowledge_binding_digest: dna::native_json_string(b, "knowledge_binding_digest"),
+                    binding_request_id: dna::native_json_string(b, "binding_request_id"),
+                    knowledge_edge_digest: dna::native_json_string(b, "knowledge_edge_digest"),
+                    edge_request_id: dna::native_json_string(b, "edge_request_id"),
+                    organization_source: source_marked,
+                    organization_source_request_id: dna::native_json_string(b, "organization_source_request_id"),
+                    organization_source_digest: dna::native_json_string(b, "organization_source_digest"),
                     target: std::json::find_string_field(b, "target"),
                     binding_class: std::json::find_string_field(b, "class"),
                     approvers: std::json::find_string_field(b, "approvers")
@@ -144,21 +179,21 @@ fn review_outcome(settled: String) -> String {
 // required fields, types or agreement with the proposal's metadata.
 fn canonical_practice(doc: String, p: PracticeRow) -> Bool {
     let i = dna::Idea {
-        kind: std::json::find_string_field(doc, "kind"),
-        text: std::json::find_string_field(doc, "text"),
-        author: std::json::find_string_field(doc, "author"),
-        provenance: std::json::find_string_field(doc, "provenance"),
-        name: std::json::find_string_field(doc, "name"),
-        supersedes: std::json::find_string_field(doc, "supersedes")
+        kind: dna::native_json_string(doc, "kind"),
+        text: dna::native_json_string(doc, "text"),
+        author: dna::native_json_string(doc, "author"),
+        provenance: dna::native_json_string(doc, "provenance"),
+        name: dna::native_json_string(doc, "name"),
+        supersedes: dna::native_json_string(doc, "supersedes")
     };
-    let target = std::json::find_string_field(doc, "target");
+    let target = dna::native_json_string(doc, "target");
     if i.kind != p.kind || i.name != p.name || i.author != p.author || target != p.target || i.supersedes != p.supersedes { return false; }
     if dna::knowledge_document(i, target) == doc { return true; }
     // Seeded design practices predate knowledge_document and use their own
     // compact canonical codec (host/record_verbs.hl: design_document).
     if i.provenance != "design" || i.author != "org" || i.kind != "practice" || target != "org" { return false; }
     let q = std::json::Builder { };
-    let design = "{\"author\":\"org\",\"kind\":\"practice\",\"name\":" + q.quote(i.name) + ",\"provenance\":\"design\"," + (if len(i.supersedes) > 0 { "\"supersedes\":" + q.quote(i.supersedes) + "," } else { "" }) + "\"target\":\"org\",\"text\":" + q.quote(i.text) + ",\"toolchain\":" + q.quote(std::json::find_string_field(doc, "toolchain")) + "}";
+    let design = "{\"author\":\"org\",\"kind\":\"practice\",\"name\":" + q.quote(i.name) + ",\"provenance\":\"design\"," + (if len(i.supersedes) > 0 { "\"supersedes\":" + q.quote(i.supersedes) + "," } else { "" }) + "\"target\":\"org\",\"text\":" + q.quote(i.text) + ",\"toolchain\":" + q.quote(dna::native_json_string(doc, "toolchain")) + "}";
     return design == doc;
 }
 
@@ -252,13 +287,59 @@ locus Queries {
         if adopted || uncertain { return "source_unavailable"; }
         return "available";
     }
+    // Recorded provenance from an exact admitted generic node request, not a
+    // fresh authorization decision. Legacy Practice request fields take
+    // precedence; ambiguous generic origins expose no guessed request link.
+    fn node_provenance(row: PracticeRow) -> PracticeRow {
+        if row.id == "" || row.request_id != "" || self.j.revision() < 1 || self.receipt_status(row.id) != "available" { return row; }
+        let codec = KnowledgeNodeCommandCodec { }; let native = dna::KnowledgeNodeRequestCodec { }; let text = GovernanceCommandCodec { }; let view = GovernanceProjection { };
+        let mut origin = KnowledgeFact { }; let mut sequence = -1; let mut i = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            if e.kind == "knowledge.node.requested" && text.string(e.body, "candidate_digest") == row.id {
+                if origin.valid { return row; }
+                let parsed = codec.decode_fact(e);
+                if !parsed.valid || parsed.context.application_id != self.j.read(0).digest || parsed.node.candidate_digest != row.id { return row; }
+                origin = parsed; sequence = i;
+            }
+            i = i + 1;
+        }
+        if !origin.valid { return row; }
+        let r = origin.node; let id = r.request_id; let review_id = dna::knowledge_review_id(row.id);
+        if row.review_id != review_id || row.kind != r.kind || row.name != r.name || row.author != r.author || row.target != r.target || row.supersedes != r.supersedes { return row; }
+        let started = view.fact(self.j, "knowledge.node.started", id, false); let proposed = view.fact(self.j, "knowledge.node.proposed", id, false);
+        let refused = view.fact(self.j, "knowledge.node.refused", id, false); let candidate = view.fact(self.j, "knowledge.proposed", row.id, false);
+        let review = view.fact(self.j, "review.requested", review_id, true);
+        if !started.found || started.invalid || started.sequence <= sequence || started.body != native.started(r)
+            || !proposed.found || proposed.invalid || refused.found || refused.invalid || proposed.body != native.proposed(r)
+            || !candidate.found || candidate.invalid || candidate.sequence <= started.sequence || !review.found || review.invalid
+            || review.sequence <= candidate.sequence || proposed.sequence <= review.sequence || !view.review(self.j, review_id, row.id).ok { return row; }
+        // Preserve existing visibility and reject a reused namespace identity,
+        // including conflicting command variants which name another candidate.
+        i = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            let command = e.kind == "knowledge.edge.linked" || e.kind == "knowledge.edge.unlinked" || e.kind == "knowledge.edge.requested" || e.kind == "knowledge.node.requested" || e.kind == "knowledge.binding.requested";
+            if command && e.entity == id && i != sequence { return row; }
+            let support = i == sequence || (e.entity == id && (e.kind == "knowledge.node.started" || e.kind == "knowledge.node.proposed"))
+                || (e.kind == "knowledge.proposed" && e.entity == row.id)
+                || (e.kind == "review.requested" && (e.entity == review_id || e.entity == "review:" + review_id));
+            if support && (self.receipt_status(e.digest) != "available" || self.receipt_status(e.entity) != "available") { return row; }
+            i = i + 1;
+        }
+        let doc = self.receipts.read(raw_digest(row.id));
+        if len(doc) == 0 || len(doc) > 98304 || dna::digest_of(doc) != row.id || doc != native.document(r) { return row; }
+        let mut out = row; out.request_id = id; out.requester = r.by; out.because = r.because; return out;
+    }
     @unbounded
-    fn practice_metadata(digest: String) -> PracticeRow {
+    fn candidate_metadata(digest: String, named_only: Bool) -> PracticeRow {
         let mut r = PracticeRow { };
         let mut i = 0;
         while i < self.j.revision() {
             let e = self.j.read(i);
-            if self.practice_event(e) && e.entity == digest && len(r.id) == 0 {
+            let kind = dna::native_json_string(e.body, "kind");
+            let supported = kind == "idea" || kind == "concept" || kind == "practice" || kind == "task_concept" || kind == "retirement";
+            if (if named_only { self.practice_event(e) } else { e.kind == "knowledge.proposed" && supported }) && e.entity == digest && len(r.id) == 0 {
                 r = PracticeRow {
                     id: digest, digest: digest, proposed_seq: i,
                     name: std::json::find_string_field(e.body, "name"),
@@ -285,7 +366,7 @@ locus Queries {
             if e.kind == "practice.proposed" && std::json::find_string_field(e.body, "digest") == digest {
                 r.request_id = e.entity;
                 r.requester = std::json::find_string_field(e.body, "by");
-                r.because = std::json::find_string_field(e.body, "because");
+                r.because = dna::native_json_string(e.body, "because");
             }
             if e.kind == "knowledge.refused" && e.entity == digest { r.refusal = e.body; }
             i = i + 1;
@@ -295,10 +376,15 @@ locus Queries {
         r.review_state = if len(review.id) > 0 { review.state } else { "" };
         r.review_settled = review.settled;
         r.review_outcome = review.outcome;
-        return r;
+        return self.node_provenance(r);
     }
+    fn practice_metadata(digest: String) -> PracticeRow { return self.candidate_metadata(digest, true); }
+    // Exact candidate lookup supports unnamed Knowledge proposals without
+    // adding them to the named Practice catalog's membership or pagination.
+    fn knowledge_metadata(digest: String) -> PracticeRow { return self.candidate_metadata(digest, false); }
     fn practice_of(digest: String) -> PracticeRow {
         let mut r = self.practice_metadata(digest);
+        if len(r.id) == 0 { r = self.knowledge_metadata(digest); }
         if len(r.id) == 0 { return r; }
         r.text_status = self.receipt_status(digest);
         if r.text_status == "available" {
@@ -307,8 +393,8 @@ locus Queries {
             else if dna::digest_of(doc) != "sha256:" + raw_digest(digest) { r.text_status = "digest_mismatch"; }
             else if !canonical_practice(doc, r) { r.text_status = "invalid_document"; }
             else {
-                r.text = std::json::find_string_field(doc, "text");
-                r.provenance = std::json::find_string_field(doc, "provenance");
+                r.text = dna::native_json_string(doc, "text");
+                r.provenance = dna::native_json_string(doc, "provenance");
                 r.text_available = true;
             }
         }
@@ -348,9 +434,65 @@ locus Queries {
         }
         return ReviewRow { };
     }
+    fn mask_source_review(row: ReviewRow) -> ReviewRow {
+        let mut r = row; r.text_available = false; r.text_status = "source_unavailable";
+        r.question = ""; r.settled = ""; r.reasoned = ""; r.has_reasoned = false; r.refusals = "";
+        r.diff_text = ""; r.diff_json = ""; r.evidence = ""; r.magnitude_raw = "";
+        r.author = ""; r.approvers = ""; r.target = ""; r.binding_class = "";
+        r.base_commit = ""; r.candidate_commit = ""; r.candidate_shape = "";
+        r.change_class = ""; r.seed = ""; r.disposition = "";
+        r.organization_source_request_id = ""; r.organization_source_digest = "";
+        return r;
+    }
+    fn source_review_status(r: ReviewRow) -> String {
+        if !r.is_mutation || r.organization_source_request_id == "" || r.organization_source_digest == "" || r.knowledge_digest != "" || r.knowledge_binding_digest != "" || r.knowledge_edge_digest != "" { return "invalid_document"; }
+        let codec = OrganizationCommandCodec { }; let native = dna::OrganizationSourceRequestCodec { }; let mut found = OrganizationCommandFact { }; let mut i = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            if e.entity == r.organization_source_request_id && e.kind == "organization.source.requested" {
+                let fact = codec.decode_fact(e);
+                if found.valid || !fact.valid || fact.context.application_id != self.j.read(0).digest { return "invalid_document"; }
+                found = fact;
+            }
+            i = i + 1;
+        }
+        if !found.valid || native.mutation_id(found.request) != r.id || found.request.source_digest != r.organization_source_digest
+            || r.base_commit != found.request.source_head || r.candidate_commit != r.subject_digest || r.author != found.request.by { return "invalid_document"; }
+        let ids = found.request.module_digest + " " + found.request.source_digest + " " + found.request.source_head + " " + r.candidate_commit + " " + r.diff_text + " " + r.diff_json;
+        if r.diff_text == "" || r.diff_json == "" { return "invalid_document"; }
+        i = 0; while i < dna::word_count(ids) {
+            let status = self.receipt_status(dna::nth_word(ids, i)); if status != "available" { return status; } i = i + 1;
+        }
+        return "available";
+    }
     fn review_of(id: String) -> ReviewRow {
         let mut r = review_row(self.j, id);
         if len(r.id) == 0 { return r; }
+        if r.organization_source {
+            let status = self.source_review_status(r);
+            if status != "available" { let mut hidden = self.mask_source_review(r); hidden.text_status = status; return hidden; }
+            r.text_available = true; r.text_status = "available"; return r;
+        }
+        if len(r.knowledge_edge_digest) > 0 || len(r.edge_request_id) > 0 {
+            let edge = self.edge_candidate_of(id);
+            r.text_available = edge.ok; r.text_status = if edge.ok { "available" } else { edge.status };
+            if !edge.ok {
+                r.settled = ""; r.question = ""; r.reasoned = ""; r.has_reasoned = false; r.refusals = "";
+                r.diff_text = ""; r.diff_json = ""; r.evidence = "";
+                r.author = ""; r.target = ""; r.binding_class = ""; r.edge_request_id = "";
+            }
+            return r;
+        }
+        if len(r.knowledge_binding_digest) > 0 || len(r.binding_request_id) > 0 {
+            let binding = self.binding_candidate_of(id);
+            r.text_available = binding.ok; r.text_status = if binding.ok { "available" } else { binding.status };
+            if !binding.ok {
+                r.settled = ""; r.question = ""; r.reasoned = ""; r.has_reasoned = false; r.refusals = "";
+                r.diff_text = ""; r.diff_json = ""; r.evidence = "";
+                r.author = ""; r.target = ""; r.binding_class = ""; r.binding_request_id = "";
+            }
+            return r;
+        }
         let digest = if len(r.knowledge_digest) > 0 { r.knowledge_digest } else { r.subject_digest };
         let status = self.receipt_status(digest);
         let knowledge = len(r.knowledge_digest) > 0 || self.has("knowledge.proposed", digest);
@@ -375,6 +517,49 @@ locus Queries {
             r.evidence = "";
         }
         return r;
+    }
+    fn binding_candidate_of(id: String) -> BindingReviewCandidate {
+        let row = review_row(self.j, id); let view = GovernanceProjection { }; let native = dna::KnowledgeBindingCodec { };
+        if row.id == "" || row.knowledge_binding_digest == "" || row.knowledge_digest != "" || row.knowledge_edge_digest != "" || row.edge_request_id != "" || row.subject_digest != row.knowledge_binding_digest || row.is_mutation || row.approvers != "" { return BindingReviewCandidate { }; }
+        let fact = view.binding_fact(self.j, row.subject_digest, id);
+        if !fact.valid || row.binding_request_id != fact.binding.request_id { return BindingReviewCandidate { }; }
+        let r = fact.binding;
+        let candidate_access = self.receipt_status(r.candidate_digest); let idea_access = self.receipt_status(r.idea_id);
+        if candidate_access != "available" || idea_access != "available" { return BindingReviewCandidate { status: if candidate_access != "available" { candidate_access } else { idea_access } }; }
+        let item = native.subject(self.j, self.receipts, r.idea_id);
+        if !item.ok || !item.ratified { return BindingReviewCandidate { status: "invalid_document" }; }
+        let original = view.fact(self.j, "knowledge.binding.requested", r.request_id, false);
+        let proposed = view.fact(self.j, "knowledge.binding.proposed", r.request_id, false);
+        if !original.found || original.invalid || !proposed.found || proposed.invalid || proposed.sequence <= original.sequence || proposed.body != native.proposed(r) { return BindingReviewCandidate { status: "invalid_document" }; }
+        let basis = native.basis(self.j, self.receipts, r, original.sequence);
+        if !basis.ok || basis.event_id != r.binding_basis { return BindingReviewCandidate { status: "invalid_document" }; }
+        let doc = self.receipts.read(raw_digest(r.candidate_digest));
+        if len(doc) > 32768 || dna::digest_of(doc) != r.candidate_digest || doc != native.document(r) { return BindingReviewCandidate { status: "invalid_document" }; }
+        let review = view.binding_review(self.j, r);
+        if !review.ok { return BindingReviewCandidate { status: "invalid_document" }; }
+        return BindingReviewCandidate { ok: true, status: "available", review_id: id, document: doc, sequence: original.sequence, request: r };
+    }
+    fn edge_candidate_of(id: String) -> EdgeReviewCandidate {
+        let row = review_row(self.j, id); let view = GovernanceProjection { }; let native = dna::KnowledgeEdgeCodec { };
+        if row.id == "" || row.knowledge_edge_digest == "" || row.knowledge_digest != "" || row.knowledge_binding_digest != "" || row.binding_request_id != "" || row.subject_digest != row.knowledge_edge_digest || row.is_mutation || row.approvers != "" { return EdgeReviewCandidate { }; }
+        let fact = view.edge_fact(self.j, row.subject_digest, id);
+        if !fact.valid || row.edge_request_id != fact.edge.request_id { return EdgeReviewCandidate { }; }
+        let r = fact.edge;
+        let candidate_access = self.receipt_status(r.candidate_digest); let from_access = self.receipt_status(r.from_id); let to_access = self.receipt_status(r.to_id);
+        if candidate_access != "available" || from_access != "available" || to_access != "available" { return EdgeReviewCandidate { status: if candidate_access != "available" { candidate_access } else if from_access != "available" { from_access } else { to_access } }; }
+        let endpoints = native.endpoints(self.j, self.receipts, r, self.j.revision());
+        if !endpoints.ok || !endpoints.ratified { return EdgeReviewCandidate { status: "invalid_document" }; }
+        let original = view.fact(self.j, "knowledge.edge.requested", r.request_id, false);
+        let proposed = view.fact(self.j, "knowledge.edge.proposed", r.request_id, false);
+        if !original.found || original.invalid || !proposed.found || proposed.invalid || proposed.sequence <= original.sequence || proposed.body != native.proposed(r) { return EdgeReviewCandidate { status: "invalid_document" }; }
+        let direct = StrictKnowledgeDirectEdgeFacts { };
+        let basis = native.basis(self.j, self.receipts, direct, r, original.sequence);
+        if !basis.ok || basis.event_id != r.edge_basis { return EdgeReviewCandidate { status: "invalid_document" }; }
+        let doc = self.receipts.read(raw_digest(r.candidate_digest));
+        if len(doc) > 32768 || dna::digest_of(doc) != r.candidate_digest || doc != native.document(r) { return EdgeReviewCandidate { status: "invalid_document" }; }
+        let review = view.edge_review(self.j, r);
+        if !review.ok { return EdgeReviewCandidate { status: "invalid_document" }; }
+        return EdgeReviewCandidate { ok: true, status: "available", review_id: id, document: doc, sequence: original.sequence, request: r };
     }
     fn request_at_seq(i: Int) -> PracticeRequestRow {
         if i < 0 || i >= self.j.revision() { return PracticeRequestRow { }; }

@@ -105,7 +105,76 @@ locus Cases {
         self.expect("ErrorResponse", "{\"api_version\":\"hale.v1\",\"api_version\":\"hale.v1\"}", false, "duplicate keys");
         self.expect("ErrorResponse", "{\"api_\\u0076ersion\":\"hale.v1\"}", false, "escaped keys fail closed");
     }
+    fn definition_cases() {
+        let catalog = self.example("definitions-declared-catalog");
+        self.expect("DefinitionsResponse", catalog, true, "declared definitions baseline");
+        let data = std::json::find_field_raw(catalog, "data");
+        let basis = std::json::find_field_raw(data, "basis");
+        self.expect("DefinitionBasis", self.field(basis, "provenance_kind", "\"current_git_head\""), false, "provenance is a loaded-source host claim");
+        self.expect("DefinitionBasis", self.field(basis, "catalog_digest", "\"\""), false, "catalog digest is required");
+        let limits = std::json::find_field_raw(basis, "limits");
+        self.expect("DefinitionLimits", self.field(limits, "max_attempts", "8"), false, "admission limits remain exact decimal strings");
+        self.expect("DefinitionLimits", self.field(limits, "max_depth", "\"-1\""), false, "limits cannot be signed");
+        self.expect("DefinitionDecimal", "\"-9223372036854775808\"", true, "signed native Int minimum is preserved");
+        self.expect("DefinitionDecimal", "\"9007199254740993\"", true, "revision beyond JavaScript safe integer remains exact");
+        self.expect("DefinitionDecimal", "\"0\"", true, "native definition reads preserve zero");
+        self.expect("DefinitionDecimal", "\"-0\"", false, "negative zero is not canonical");
+        self.expect("DefinitionDecimal", "\"-01\"", false, "negative leading zero is not canonical");
+        self.expect("DefinitionDecimal", "\"+1\"", false, "positive sign is not canonical");
+        self.expect("DefinitionDecimal", "\"1e3\"", false, "exponent string is not decimal");
+        self.expect("DefinitionDecimal", "\"-\"", false, "minus alone is not decimal");
+        self.expect("DefinitionDecimal", "1", false, "JSON number cannot replace exact string");
+        let capabilities = std::json::find_field_raw(self.example("read-only-capabilities"), "data");
+        let reads = std::json::find_field_raw(capabilities, "reads");
+        self.expect("Capabilities", self.field(capabilities, "reads", self.field(reads, "definitions", "")), false, "definition support is explicit even for the default head");
+    }
+    fn command_cases() {
+        let legacy = self.example("read-only-capabilities");
+        self.expect("CapabilitiesResponse", legacy, true, "provider absence preserves legacy capabilities");
+        let request = self.example("practice-replacement-request");
+        self.expect("PracticeCommandRequest", request, true, "exact versioned replacement envelope");
+        self.expect("PracticeCommandRequest", self.field(request, "operation_version", "1"), false, "operation version remains a string");
+        self.expect("PracticeCommandRequest", self.field(request, "request_id", "\"\""), false, "recovery identity cannot be empty");
+        self.expect("PracticeCommandRequest", self.field(request, "principal", "{}"), false, "caller cannot supply trusted principal");
+        let conditions = std::json::find_field_raw(request, "preconditions");
+        let expected = std::json::find_field_raw(conditions, "principal");
+        self.expect("PracticeCommandRequest", self.field(request, "preconditions", self.field(conditions, "principal", "")), false, "expected authenticated identity is required");
+        self.expect("PracticeCommandRequest", self.field(request, "preconditions", self.field(conditions, "principal", self.field(expected, "mode", ""))), false, "expected identity requires mode");
+        self.expect("PracticeCommandRequest", self.field(request, "preconditions", self.field(conditions, "principal", self.field(expected, "name", ""))), false, "expected identity requires name");
+        self.expect("PracticeCommandRequest", self.field(request, "preconditions", self.field(conditions, "principal", self.field(expected, "name", "123"))), false, "expected name is a string");
+        self.expect("PracticeCommandRequest", self.field(request, "preconditions", self.field(conditions, "principal", "{\"mode\":\"local\",\"mode\":\"oidc\",\"name\":\"riley\"}")), false, "expected identity rejects duplicate nested keys");
+        self.expect("PracticeCommandRequest", self.example("practice-replacement-request-oidc"), true, "OIDC expected identity has the same closed shape");
+        let arguments = std::json::find_field_raw(request, "arguments");
+        self.expect("PracticeCommandRequest", self.field(request, "arguments", self.field(arguments, "text", "\"\"")), false, "replacement text cannot be empty");
+        self.expect("PracticeCommandRequest", self.field(request, "arguments", self.field(arguments, "supersedes", "\"caller-selected\"")), false, "provider obtains predecessor metadata");
+        self.expect("PracticeCommandRequest", "{\"request_id\":\"one\",\"request_id\":\"two\"}", false, "duplicate request fields rejected before interpretation");
+        self.expect("PracticeCommandRequest", "{\"request_\\u0069d\":\"one\"}", false, "escaped request keys fail closed");
+        self.expect("PracticeCommandRequest", self.field(request, "request_id", "\"\\ud800\""), false, "malformed Unicode request identity");
+        let recorded = std::json::find_field_raw(self.example("command-recorded"), "data");
+        self.expect("PracticeCommandReceipt", self.field(recorded, "command_id", "\"\""), false, "receipt has a native command identity");
+        self.expect("PracticeCommandReceipt", self.field(recorded, "fingerprint", "\"\""), false, "receipt has a native equivalence fingerprint");
+        self.expect("PracticeCommandReceipt", self.field(recorded, "state", "\"published\""), false, "publication is not a command receipt state");
+        let principal = std::json::find_field_raw(recorded, "principal");
+        self.expect("PracticeCommandReceipt", self.field(recorded, "principal", self.field(principal, "mode", "\"position\"")), false, "acting position cannot impersonate a principal mode");
+        self.expect("CommandResponse", self.example("command-approved-not-adopted"), true, "settled approval leaves activation pending");
+        self.expect("CommandResponse", self.example("command-approval-activation-refused"), true, "settled approval does not imply adoption");
+    }
+    fn review_command_cases() {
+        self.expect("CommandRequest", self.example("practice-replacement-request"), true, "shared request envelope preserves practice wire");
+        let request = self.example("review-verdict-request-empty-comment");
+        self.expect("CommandRequest", request, true, "shared request envelope accepts a pending exact-candidate verdict");
+        self.expect("CommandRequest", self.example("invalid-review-verdict-request-practice-target"), false, "another operation cannot rescue a malformed verdict envelope");
+        let conditions = std::json::find_field_raw(request, "preconditions");
+        self.expect("ReviewCommandRequest", self.field(request, "preconditions", self.field(conditions, "principal", "{\"mode\":\"local\",\"name\":\"riley\",\"authority\":\"board\"}")), false, "expected identity cannot supply Review authority");
+        let receipt = std::json::find_field_raw(self.example("review-command-accepted-review-pending"), "data");
+        self.expect("PracticeCommandReceipt", receipt, false, "verdict completion is not a practice proposal receipt");
+        self.expect("ReviewCommandReceipt", self.field(receipt, "verdict", ""), false, "Review settlement cannot replace this command's verdict result");
+    }
     fn profile_cases() {
+        self.custom("{\"type\":\"array\",\"maxItems\":1}", "[1]", true, "array at bound");
+        self.custom("{\"type\":\"array\",\"maxItems\":1}", "[1,2]", false, "array exceeds bound");
+        self.custom("{\"type\":\"array\",\"maxItems\":0}", "[]", true, "empty bound");
+        self.custom("{\"type\":\"string\",\"maxItems\":1}", "\"text\"", false, "array bound requires array type");
         let nullable = "{\"anyOf\":[{\"type\":\"integer\",\"minimum\":0},{\"type\":\"null\"}]}";
         self.custom(nullable, "null", true, "absent native capacity stays null");
         self.custom(nullable, "0", true, "zero native capacity is distinct from null");
@@ -155,6 +224,29 @@ locus Cases {
         bytes.append_u8(34); bytes.append_u8(255); bytes.append_u8(34);
         self.custom("{\"type\":\"string\"}", std::str::from_bytes(bytes.snapshot()), false, "invalid UTF-8");
     }
+    fn knowledge_cases() {
+        self.expect("KnowledgeInt64", "\"-9223372036854775808\"", true, "minimum signed native revision");
+        self.expect("KnowledgeInt64", "\"9223372036854775807\"", true, "maximum signed native revision");
+        self.expect("KnowledgeInt64", "\"9007199254740993\"", true, "preserve revision beyond JavaScript precision");
+        self.expect("KnowledgeInt64", "\"9223372036854775808\"", false, "positive Int64 overflow");
+        self.expect("KnowledgeInt64", "\"-9223372036854775809\"", false, "negative Int64 overflow");
+        self.expect("KnowledgeInt64", "\"-0\"", false, "canonical negative zero rejected");
+        self.expect("KnowledgeInt64", "\"01\"", false, "canonical leading zero rejected");
+        self.expect("KnowledgeInt64", "1", false, "native revision remains a JSON string");
+        self.expect("KnowledgeCounter", "\"-1\"", false, "basis counters are unsigned");
+        self.unsupported("{\"$defs\":{\"X\":{\"type\":\"string\",\"format\":\"date-time\"}}}", "unknown format cannot silently become annotation");
+        self.unsupported("{\"$defs\":{\"X\":{\"type\":\"integer\",\"format\":\"int64-decimal\"}}}", "decimal format requires string type");
+        let value = self.example("knowledge-nodes");
+        let data = std::json::find_field_raw(value, "data");
+        let page = std::json::find_field_raw(data, "page");
+        self.expect("KnowledgePage", self.field(page, "next_cursor", "\"unexpected\""), false, "complete page has null cursor");
+        self.expect("KnowledgePage", self.field(page, "has_more", "true"), false, "continuation requires cursor");
+        self.expect("KnowledgePage", self.field(page, "offset", "0"), false, "graph pages have no offset");
+        self.expect("KnowledgePage", self.field(page, "total", "1"), false, "graph pages have no total");
+        let basis = std::json::find_field_raw(data, "basis");
+        self.expect("KnowledgeBasis", self.field(basis, "routing_version", "\"1\""), false, "adopted Ledger requires both captured fields");
+        self.expect("KnowledgeBasis", self.field(basis, "visibility_ledger_head", "\"unpaired\""), false, "Record-only view has no Ledger claim");
+    }
     fn file_cases() {
         let files = wire_contract::ContractFiles { root: self.root };
         let result = files.check();
@@ -172,6 +264,39 @@ locus Cases {
         std::test::assert(!files.openapi(broken, self.schema).ok, "OpenAPI broken response link rejected");
         std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, "/api/hale/v1/applications", "")), self.schema).ok, "missing route rejected");
         std::test::assert(!files.fixtures("[]", self.schema).ok, "empty fixture coverage rejected");
+        let unsupported_schema = self.field(self.schema, "format", "\"unsupported\"");
+        let unsupported_fixtures = files.fixtures(self.fixtures, unsupported_schema);
+        std::test::assert(!unsupported_fixtures.ok && std::str::contains(unsupported_fixtures.error, "format"), "fixture batch rejects unsupported schema before evaluating examples");
+        let command_path = "/api/hale/v1/applications/{application_id}/commands";
+        let command = std::json::find_field_raw(paths, command_path);
+        let post = std::json::find_field_raw(command, "post");
+        let get = std::json::find_field_raw(command, "get");
+        let post_responses = std::json::find_field_raw(post, "responses");
+        let no_accepted = self.field(command, "post", self.field(post, "responses", self.field(post_responses, "202", "")));
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, command_path, no_accepted)), self.schema).ok, "command submission must describe ambiguous and pending receipts");
+        let body = std::json::find_field_raw(post, "requestBody");
+        let wrong_body = self.field(body, "content", "{\"application/json\":{\"schema\":{\"$ref\":\"./schema.json#/$defs/CommandResponse\"}}}");
+        let wrong_post = self.field(command, "post", self.field(post, "requestBody", wrong_body));
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, command_path, wrong_post)), self.schema).ok, "command request reference cannot be a receipt");
+        let optional_body = self.field(command, "post", self.field(post, "requestBody", self.field(body, "required", "false")));
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, command_path, optional_body)), self.schema).ok, "command envelope is required");
+        let no_headers = self.field(command, "post", self.field(post, "parameters", "[]"));
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, command_path, no_headers)), self.schema).ok, "command headers must be advertised");
+        let no_lookup = self.field(command, "get", self.field(get, "parameters", "[]"));
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, command_path, no_lookup)), self.schema).ok, "recovery requires caller request identity");
+        let get_body = self.field(command, "get", self.field(get, "requestBody", body));
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, command_path, get_body)), self.schema).ok, "recovery is a read without a command body");
+        let unexpected_put = self.field(command, "put", post);
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, command_path, unexpected_put)), self.schema).ok, "other command mutation methods remain unsupported");
+        let draft_path = "/api/hale/v1/applications/{application_id}/dna/definitions/draft";
+        let draft = std::json::find_field_raw(paths, draft_path);
+        let draft_post = std::json::find_field_raw(draft, "post");
+        let draft_get = self.field(draft, "get", draft_post);
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, draft_path, draft_get)), self.schema).ok, "draft has no lookup or GET surface");
+        let draft_no_headers = self.field(draft, "post", self.field(draft_post, "parameters", "[]"));
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, draft_path, draft_no_headers)), self.schema).ok, "draft transport framing must be explicit");
+        let draft_wrong_body = self.field(draft, "post", self.field(draft_post, "requestBody", body));
+        std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, draft_path, draft_wrong_body)), self.schema).ok, "draft preparation is not a command envelope");
         let missing = wire_contract::Validator { root: self.root + "/does-not-exist" };
         std::test::assert(!missing.validate("ErrorResponse", "{}").ok, "missing schema is a hard failure");
     }
@@ -182,5 +307,9 @@ fn main() {
     let suite = Cases { root: root, schema: std::io::fs::read_file(root + "/schema.json") or raise, fixtures: std::io::fs::read_file(root + "/fixtures.json") or raise };
     suite.file_cases();
     suite.wire_cases();
+    suite.definition_cases();
     suite.profile_cases();
+    suite.knowledge_cases();
+    suite.command_cases();
+    suite.review_command_cases();
 }

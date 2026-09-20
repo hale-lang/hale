@@ -1,0 +1,79 @@
+// Native typed request shape and deterministic Body acknowledgments. Public
+// admission validates its whole envelope separately; this helper imports no
+// API/operations policy and never reads incoming requests out of the Record.
+locus KnowledgeNodeRequestCodec {
+    params { }
+    fn utf8(text: String, size: Int) -> Bool {
+        let mut i = 0;
+        while i < size {
+            let c = std::str::byte_at_unchecked(text, i);
+            if c < 128 { i = i + 1; continue; }
+            let n = if c >= 194 && c <= 223 { 2 } else if c >= 224 && c <= 239 { 3 } else if c >= 240 && c <= 244 { 4 } else { 0 };
+            if n == 0 || i + n > size { return false; }
+            let second = std::str::byte_at_unchecked(text, i + 1);
+            if (c == 224 && second < 160) || (c == 237 && second > 159) || (c == 240 && second < 144) || (c == 244 && second > 143) { return false; }
+            let mut k = 1;
+            while k < n { let part = std::str::byte_at_unchecked(text, i + k); if part < 128 || part > 191 { return false; } k = k + 1; }
+            i = i + n;
+        }
+        return true;
+    }
+    fn bounded(value: String, maximum: Int, required: Bool, controls: Bool) -> Bool {
+        let size = len(value);
+        if size > maximum || (required && size == 0) || !self.utf8(value, size) { return false; }
+        let mut i = 0;
+        while i < size {
+            let c = std::str::byte_at_unchecked(value, i);
+            if c == 0 || (!controls && (c < 32 || c == 127)) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn valid(r: KnowledgeNodeRequest) -> Bool {
+        let propose = r.operation == "dna.knowledge.node.propose";
+        let revise = r.operation == "dna.knowledge.node.revise";
+        let retire = r.operation == "dna.knowledge.node.retire";
+        if !propose && !revise && !retire { return false; }
+        if !self.bounded(r.request_id, 256, true, false) || !self.bounded(r.kind, 128, true, false)
+            || !self.bounded(r.name, 256, false, false) || !self.bounded(r.text, 8192, true, true)
+            || !self.bounded(r.author, 256, true, false) || !self.bounded(r.target, 256, true, false)
+            || !self.bounded(r.by, 256, true, false) || !self.bounded(r.because, 2048, true, true)
+            || !digest_well_formed(r.candidate_digest) { return false; }
+        if propose && len(r.supersedes) > 0 { return false; }
+        if (revise || retire) && !digest_well_formed(r.supersedes) { return false; }
+        return if retire { r.kind == "retirement" && r.text == r.because } else { r.kind == "idea" || r.kind == "concept" || r.kind == "practice" || r.kind == "task_concept" };
+    }
+    fn decode(body: String) -> KnowledgeNodeRequest {
+        return KnowledgeNodeRequest {
+            request_id: native_json_string(body, "request_id"), operation: native_json_string(body, "operation"),
+            kind: native_json_string(body, "kind"), name: native_json_string(body, "name"), text: native_json_string(body, "text"),
+            author: native_json_string(body, "author"), target: native_json_string(body, "target"), supersedes: native_json_string(body, "supersedes"),
+            by: native_json_string(body, "by"), because: native_json_string(body, "because"), candidate_digest: native_json_string(body, "candidate_digest")
+        };
+    }
+    fn document(r: KnowledgeNodeRequest) -> String {
+        return knowledge_document(Idea { kind: r.kind, name: r.name, text: r.text, author: r.author, supersedes: r.supersedes, provenance: "proposed by " + r.by }, r.target);
+    }
+    fn field(b: std::bytes::BytesBuilder, name: String, value: String) {
+        b.append_str(",\""); b.append_str(name); b.append_str("\":"); b.append_str(record_json_quote(value));
+    }
+    fn fields(b: std::bytes::BytesBuilder, r: KnowledgeNodeRequest) {
+        b.append_str("{\"request_id\":"); b.append_str(record_json_quote(r.request_id));
+        self.field(b, "operation", r.operation); self.field(b, "kind", r.kind); self.field(b, "name", r.name); self.field(b, "text", r.text);
+        self.field(b, "author", r.author); self.field(b, "target", r.target); self.field(b, "supersedes", r.supersedes);
+        self.field(b, "by", r.by); self.field(b, "because", r.because); self.field(b, "candidate_digest", r.candidate_digest);
+    }
+    fn started(r: KnowledgeNodeRequest) -> String {
+        let b = std::bytes::BytesBuilder { }; self.fields(b, r); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn proposed(r: KnowledgeNodeRequest) -> String {
+        let b = std::bytes::BytesBuilder { }; self.fields(b, r);
+        self.field(b, "digest", r.candidate_digest); self.field(b, "review_id", knowledge_review_id(r.candidate_digest));
+        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn refused(r: KnowledgeNodeRequest, why: String) -> String {
+        let b = std::bytes::BytesBuilder { }; self.fields(b, r); self.field(b, "why", why);
+        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn matches(body: String, r: KnowledgeNodeRequest) -> Bool { return self.started(self.decode(body)) == self.started(r); }
+}

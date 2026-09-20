@@ -1,0 +1,112 @@
+// Native Record-CAS command tests. Prior Task rows are explicit projection
+// fixtures; every reassignment outcome under test is written by the provider.
+import ".." as ops;
+import "../../core" as dna;
+
+locus TaskFaultRecord {
+    params { inner: dna::GitRecord; fault: String = ""; appends: Int = 0; }
+    fn identity() -> String { return self.inner.identity(); }
+    fn head(chain: String) -> String { return self.inner.head(chain); }
+    fn count(chain: String) -> Int { return self.inner.count(chain); }
+    fn between(from: String, to: String) -> String { return self.inner.between(from, to); }
+    fn text_at(id: String) -> String { return self.inner.text_at(id); }
+    fn body(digest: String) -> dna::Kept { return self.inner.body(digest); }
+    fn append(chain: String, at: String, row: dna::Row, sign: Bool, note: String) -> dna::Appended {
+        self.appends = self.appends + 1; let fault = self.fault; self.fault = "";
+        if fault == "unknown" { return dna::Appended { error: "unknown" }; }
+        if fault == "stale" {
+            let moved = self.inner.append(chain, at, dna::Row { kind: "task.reassigned", entity: row.entity, body: "{\"from\":\"alice\",\"to\":\"charlie\",\"by\":\"operator\"}", author: "operator" }, false, "");
+            std::test::assert(moved.ok, "concurrent native assignment lands"); return dna::Appended { error: "stale" };
+        }
+        let result = self.inner.append(chain, at, row, sign, note);
+        if fault == "lost" { std::test::assert(result.ok, "lost acknowledgment persisted effect"); return dna::Appended { error: "unknown" }; }
+        return result;
+    }
+}
+locus TaskCases {
+    params { }
+    fn append(j: dna::Journal, kind: String, id: String, body: String) { std::test::assert(j.append_exact(j.revision(), kind, id, body).ok, "append " + kind); }
+    fn context(app: String) -> ops::GovernanceContext { return ops::GovernanceContext { application_id: app, principal_mode: "local", principal_name: "operator" }; }
+    fn policy(app: String) -> ops::TaskAuthorityPolicy {
+        let codec = ops::TaskAuthorityPolicyCodec { }; let wire = ops::GovernanceCommandCodec { };
+        return codec.decode("{\"format\":\"dna.task-authority/1\",\"application_id\":" + wire.quote(app) + ",\"owner\":\"explicit-group\",\"members\":[\"alice\",\"bob\",\"charlie\"],\"grants\":[{\"mode\":\"local\",\"name\":\"operator\",\"reassign\":true,\"recover\":true}]}", app, "local");
+    }
+    fn command(context: ops::GovernanceContext, subject: ops::TaskRow, key: String, to: String) -> ops::GovernanceCommand {
+        return ops::GovernanceCommand { request_id: key, operation: "dna.task.reassign", application_id: context.application_id, target_kind: "dna.task", target_id: subject.id,
+            subject_digest: subject.assignment_digest, expected_assignee: subject.assignee, new_assignee: to };
+    }
+    fn row(j: dna::Journal, id: String) -> ops::TaskRow { let visible = ops::Queries { j: j }; let view = ops::TaskProjection { j: j, visibility: visible }; std::test::assert(view.load(), "complete projection " + view.code); return view.task_of(id); }
+    fn hand(j: dna::Journal) { self.append(j, "task.born", "opaque task / é", "Keep exact\r\né 🧭 evidence"); self.append(j, "task.handed", "opaque task / é", "{\"assignee\":\"alice\",\"obligation\":\"approval\",\"acceptance\":\"opaque acceptance\",\"evidence_required\":true,\"by\":\"leader\"}"); }
+    fn read_case(mode: String) {
+        let j = dna::MemJournal { }; self.append(j, "application.observed", "app", "{}"); self.hand(j); let before = self.row(j, "opaque task / é");
+        if mode == "waiting" { self.append(j, "decision.reported", before.id, "{\"accepted\":false,\"why\":\"Exact\\u0001waiting\\r\\n\"}"); }
+        if mode == "done" { self.append(j, "task.done", before.id, "complete"); }
+        if mode == "repeated" { self.append(j, "task.handed", before.id, "{\"assignee\":\"bob\",\"by\":\"leader\"}"); }
+        if mode == "bad-from" { self.append(j, "task.reassigned", before.id, "{\"from\":\"wrong\",\"to\":\"bob\",\"by\":\"operator\"}"); }
+        if mode == "hidden" { self.append(j, "receipt.withheld", j.read(2).digest, "{}"); }
+        if mode == "reference" { self.append(j, "receipt.withheld", "opaque acceptance", "{}"); }
+        if mode == "unsupported" { self.append(j, "task.future", before.id, "unknown"); }
+        if mode == "transfer" {
+            self.append(j, "task.transfer_requested", before.id, "{\"owner\":\"a\",\"to\":\"b\",\"assignee\":\"bob\"}");
+            self.append(j, "task.transfer_accepted", before.id, "{\"owner\":\"b\",\"from\":\"a\",\"by\":\"receiver\",\"assignee\":\"bob\",\"note\":\"\"}");
+            self.append(j, "task.handed", before.id, "{\"assignee\":\"bob\",\"by\":\"b\",\"transferred_from\":\"a\"}");
+        }
+        let q = ops::Queries { j: j }; let view = ops::TaskProjection { j: j, visibility: q }; let okay = view.load();
+        if mode == "bad-from" || mode == "unsupported" { std::test::assert(!okay, "invalid/unknown history unavailable"); return; }
+        std::test::assert(okay, "read complete " + mode);
+        if mode == "hidden" || mode == "reference" { std::test::assert(view.count() == 0 && view.task_of(before.id).id == "" && view.history_count(before.id) == 0, "hidden supporting evidence suppresses entire row"); return; }
+        let after = view.task_of(before.id); std::test::assert(after.id == before.id, "past handoff remains inspectable");
+        if mode != "baseline" { std::test::assert(after.assignment_digest != before.assignment_digest, "all lifecycle evidence changes exact digest"); }
+        if mode == "done" { std::test::assert(after.state == "done" && !after.reassignment_supported, "terminal retained without reassignment"); }
+        else { std::test::assert(after.state == "handed", "handed retained"); }
+        if mode == "transfer" { std::test::assert(!after.reassignment_supported, "transfer history never claims fixed-group reassignment"); }
+        if mode == "waiting" { std::test::assert(after.waiting != "" && after.reassignment_supported, "rejected report leaves handed responsibility"); }
+        let last = view.history_at(after.id, view.history_count(after.id) - 1); std::test::assert(last.to == after.assignee, "history ends at recorded assignee");
+    }
+    fn native(repo: String, mode: String) {
+        let record = dna::GitRecord { repo: repo }; std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git");
+        let journal = dna::GitJournal { repo: repo }; self.hand(journal);
+        let context = self.context(record.identity()); let subject = self.row(journal, "opaque task / é"); let command = self.command(context, subject, "shared-key", "bob");
+        let policy = self.policy(context.application_id); std::test::assert(policy.valid, "fixed policy decodes");
+        let authority = ops::FixedTaskAuthority { policy: policy }; let fault = TaskFaultRecord { inner: record, fault: mode };
+        let provider = ops::GovernanceCommands { record: fault, tasks_enabled: true, task_authority: authority };
+        let capability = provider.capability(context, "dna.task.reassign", "1"); std::test::assert(capability.available && capability.authorized && capability.recipients == "[\"alice\",\"bob\",\"charlie\"]", "exact configured eligible members");
+        let result = provider.submit(context, command);
+        if mode == "stale" { std::test::assert(!result.ok && result.code == "stale_subject" && fault.appends == 1, "CAS conflict rechecks moved assignee"); return; }
+        if mode == "unknown" { std::test::assert(result.ok && result.receipt.state == "outcome_unknown" && result.receipt.task.event_id == "" && fault.appends == 1, "uncertain append never blindly repeats"); return; }
+        std::test::assert(result.ok && result.receipt.state == "succeeded" && result.receipt.task.state == "applied" && result.receipt.task.event_id != "", "native CAS effect is success: " + result.code);
+        let fresh = ops::GovernanceCommands { record: record, task_authority: authority };
+        let recovered = fresh.lookup(context, "shared-key"); std::test::assert(recovered.ok && recovered.receipt.task.event_id == result.receipt.task.event_id, "restart/write-disabled recovery exact");
+        std::test::assert(fresh.submit(context, command).ok, "identical retry with writes disabled is lookup");
+        let changed = self.command(context, subject, "shared-key", "charlie"); std::test::assert(fresh.submit(context, changed).code == "request_conflict", "changed content conflict");
+        let old = ops::GovernanceCommand { request_id: "shared-key", operation: "dna.practice.propose", application_id: context.application_id, target_kind: "dna.practice", target_id: "subject", subject_digest: "subject", text: "text", rationale: "because" };
+        std::test::assert(fresh.submit(context, old).code == "request_conflict", "shared namespace cross-operation conflict");
+        let current = dna::GitJournal { repo: repo }; let row = self.row(current, subject.id);
+        std::test::assert(row.assignee == "bob" && row.state == "handed" && row.obligation == subject.obligation && row.acceptance_digest == subject.acceptance_digest && row.evidence_required, "assignment preserves exact responsibility and acceptance");
+        let moved = provider.submit(context, self.command(context, row, "move-again", "alice")); std::test::assert(moved.ok, "later real reassignment");
+        std::test::assert(fresh.lookup(context, "shared-key").receipt.task.to == "bob", "old command result survives ABA");
+        std::test::assert(provider.submit(context, self.command(context, subject, "stale-key", "bob")).code == "stale_subject", "ABA digest rejects old exact basis");
+        let after = dna::GitJournal { repo: repo }; self.append(after, "person.retired", "charlie", "{\"by\":\"operator\",\"to\":\"\",\"transferred\":0}");
+        let latest = self.row(after, subject.id); std::test::assert(provider.submit(context, self.command(context, latest, "retired", "charlie")).code == "forbidden", "retired member ineligible");
+        self.append(after, "receipt.withheld", subject.id, "{}"); std::test::assert(fresh.lookup(context, "shared-key").code == "forbidden", "recovery does not reveal withheld Task evidence");
+    }
+    fn codecs() {
+        let context = self.context("app"); let c = self.command(context, ops::TaskRow { id: "task", assignee: "alice", assignment_digest: dna::digest_of("basis") }, "key", "bob");
+        let codec = ops::TaskCommandCodec { }; let common = ops::GovernanceCommandCodec { }; let canonical = codec.canonical(context, c);
+        std::test::assert(codec.valid(context, c) && codec.canonical(context, codec.decode(context, canonical)) == canonical, "closed exact Task variant roundtrip");
+        let old = ops::GovernanceCommand { request_id: "key", operation: "dna.practice.propose", application_id: "app", target_kind: "dna.practice", target_id: "subject", subject_digest: "subject", text: "text", rationale: "because", new_assignee: "bob" };
+        std::test::assert(!common.valid(context, old), "old variant rejects stray Task fields");
+        let policy = self.policy("app"); let pc = ops::TaskAuthorityPolicyCodec { }; std::test::assert(!pc.decode(policy.document, "app", "signed").valid, "new profile has local trust boundary");
+        let q = dna::MemJournal { }; self.append(q, "application.observed", "app", "{}"); self.append(q, "receipt.withheld", "bob", "{}");
+        let authority = ops::FixedTaskAuthority { policy: policy }; std::test::assert(!authority.eligible(context, "bob", q) && authority.recipients(context, q) == "[\"alice\",\"charlie\"]", "protected member hidden from eligibility/list");
+        let nobody = ops::GovernanceContext { application_id: "app", principal_mode: "local", principal_name: "alice" }; std::test::assert(!authority.authorize(nobody, "dna.task.reassign", false, q).allowed, "membership is not authority");
+    }
+}
+fn main() {
+    let cases = TaskCases { }; cases.codecs();
+    cases.read_case("baseline"); cases.read_case("waiting"); cases.read_case("done"); cases.read_case("repeated"); cases.read_case("bad-from"); cases.read_case("hidden"); cases.read_case("reference"); cases.read_case("unsupported"); cases.read_case("transfer");
+    let base = std::env::arg(1); std::test::assert(base != "", "owned fixture root argument");
+    std::io::fs::mkdir(base + "/normal") or discard; std::io::fs::mkdir(base + "/lost") or discard; std::io::fs::mkdir(base + "/stale") or discard; std::io::fs::mkdir(base + "/unknown") or discard;
+    cases.native(base + "/normal", "normal"); cases.native(base + "/lost", "lost"); cases.native(base + "/stale", "stale"); cases.native(base + "/unknown", "unknown");
+    println("task administration native cases passed");
+}

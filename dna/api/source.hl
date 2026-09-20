@@ -147,7 +147,7 @@ locus JsonShape {
         // These are the event families this read surface interprets. Unknown
         // families retain the Record's opaque-body contract.
         if kind == "knowledge.proposed" || kind == "review.requested" || kind == "receipt.classified" || kind == "receipt.withheld" || kind == "receipt.redacted" || kind == "ledger.adopted" || kind == "ledger.abandoned" {
-            let body = std::json::find_string_field(text, "body");
+            let body = dna::native_json_string(text, "body");
             if !std::str::starts_with(std::str::trim(body), "{") || !self.valid(body) { return false; }
         }
         return true;

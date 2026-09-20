@@ -1,0 +1,98 @@
+// Explicit application policy, captured once at service startup. A read key,
+// an organizational viewing context, and a grant for Practice confer no writes.
+import "../core" as dna;
+
+type KnowledgePolicy { valid: Bool = false; application_id: String = ""; document: String = ""; basis: String = ""; sign: Bool = false; }
+locus KnowledgePolicyCodec {
+    params { }
+    fn scopes(raw: String) -> Bool {
+        if !std::str::starts_with(raw, "[") { return false; }
+        let common = GovernanceCommandCodec { }; let fields = DefinitionCodec { };
+        let mut count = 0; let mut it = std::json::array_first(raw);
+        while !it.done {
+            if count >= 32 || !fields.fields(it.element, "author target", "") { return false; }
+            let author = common.string(it.element, "author"); let target = common.string(it.element, "target");
+            if !common.bounded(author, 256, true, false) || !common.bounded(target, 256, true, false) || dna::classify_binding(author, target) == "lateral" { return false; }
+            count = count + 1; it = std::json::array_next(it);
+        }
+        return count > 0;
+    }
+    fn decode(document: String, application_id: String, trust: String) -> KnowledgePolicy {
+        let syntax = OrganizationJson { }; let wire = AuthorityPolicyCodec { }; let common = GovernanceCommandCodec { };
+        if len(document) < 1 || len(document) > 65536 || !syntax.valid(document) || !wire.fields(document, "format application_id grants", 3) { return KnowledgePolicy { }; }
+        if wire.text(document, "format") != "dna.knowledge-authority/1" || wire.text(document, "application_id") != application_id || !common.bounded(application_id, 256, true, false) || (trust != "local" && trust != "signed") { return KnowledgePolicy { }; }
+        let grants = std::json::find_field_raw(document, "grants");
+        if !std::str::starts_with(grants, "[") { return KnowledgePolicy { }; }
+        let mut seen = "\n"; let mut count = 0;
+        let mut it = std::json::array_first(grants);
+        while !it.done {
+            let row = it.element;
+            let removal = len(std::json::find_field_raw(row, "edge_unlink")) > 0;
+            let mut names = if removal { "mode name authority edge_link edge_unlink recover" } else { "mode name authority edge_link recover" };
+            let mut fields = if removal { 6 } else { 5 }; let mut node_grant = false; let mut k = 0;
+            while k < 3 {
+                let key = dna::nth_word("node_propose node_revise node_retire", k); let raw = std::json::find_field_raw(row, key);
+                if len(raw) > 0 {
+                    names = names + " " + key; fields = fields + 1;
+                    let mode = wire.text(row, key);
+                    if mode != "review" && mode != "deny" { return KnowledgePolicy { }; }
+                    if mode == "review" { node_grant = true; }
+                }
+                k = k + 1;
+            }
+            let scopes = std::json::find_field_raw(row, "node_scopes");
+            if len(scopes) > 0 { names = names + " node_scopes"; fields = fields + 1; if !self.scopes(scopes) { return KnowledgePolicy { }; } }
+            if node_grant && len(scopes) == 0 { return KnowledgePolicy { }; }
+            let mut binding_grant = false; k = 0;
+            while k < 2 {
+                let key = dna::nth_word("binding_bind binding_unbind", k); let raw = std::json::find_field_raw(row, key);
+                if len(raw) > 0 {
+                    names = names + " " + key; fields = fields + 1;
+                    let mode = wire.text(row, key);
+                    if mode != "review" && mode != "deny" { return KnowledgePolicy { }; }
+                    if mode == "review" { binding_grant = true; }
+                }
+                k = k + 1;
+            }
+            let binding_scopes = std::json::find_field_raw(row, "binding_scopes");
+            if len(binding_scopes) > 0 { names = names + " binding_scopes"; fields = fields + 1; if !self.scopes(binding_scopes) { return KnowledgePolicy { }; } }
+            if binding_grant && len(binding_scopes) == 0 { return KnowledgePolicy { }; }
+            if count >= 128 || !wire.fields(row, names, fields) || !wire.boolean(row, "recover") { return KnowledgePolicy { }; }
+            let context = GovernanceContext { application_id: application_id, principal_mode: wire.text(row, "mode"), principal_name: wire.text(row, "name") };
+            let mode = wire.text(row, "edge_link");
+            if !common.context_valid(context) || !common.bounded(wire.text(row, "authority"), 256, true, false) || (mode != "direct" && mode != "review" && mode != "deny") { return KnowledgePolicy { }; }
+            let unlink = wire.text(row, "edge_unlink");
+            if removal && unlink != "direct" && unlink != "review" && unlink != "deny" { return KnowledgePolicy { }; }
+            let key = common.identity(context, "knowledge-policy-member");
+            if std::str::contains(seen, "\n" + key + "\n") { return KnowledgePolicy { }; }
+            seen = seen + key + "\n"; count = count + 1; it = std::json::array_next(it);
+        }
+        return KnowledgePolicy { valid: true, application_id: application_id, document: document, basis: "dna.knowledge-authority/1:" + dna::digest_of(document) + ":trust=" + trust, sign: trust == "signed" };
+    }
+}
+@sealed locus FixedKnowledgeAuthority {
+    params { policy: KnowledgePolicy = KnowledgePolicy { }; }
+    fn authorize(context: GovernanceContext, operation: String, recovery: Bool, journal: dna::Journal) -> KnowledgeGrant {
+        let common = GovernanceCommandCodec { };
+        if !self.policy.valid || !common.context_valid(context) || context.application_id != self.policy.application_id { return KnowledgeGrant { }; }
+        let wire = AuthorityPolicyCodec { };
+        let binding = KnowledgeBindingCommandCodec { };
+        let mut it = std::json::array_first(std::json::find_field_raw(self.policy.document, "grants"));
+        while !it.done {
+            let row = it.element;
+            if wire.text(row, "mode") == context.principal_mode && wire.text(row, "name") == context.principal_name {
+                // Existing link-only policy documents never confer removal.
+                let key = if operation == "dna.knowledge.edge.link" { "edge_link" } else if operation == "dna.knowledge.edge.unlink" { "edge_unlink" }
+                else if operation == "dna.knowledge.node.propose" { "node_propose" } else if operation == "dna.knowledge.node.revise" { "node_revise" }
+                else if operation == "dna.knowledge.node.retire" { "node_retire" }
+                else if operation == "dna.knowledge.binding.bind" { "binding_bind" }
+                else if operation == "dna.knowledge.binding.unbind" { "binding_unbind" } else { "" };
+                let mode = if len(key) > 0 { wire.text(row, key) } else { "deny" };
+                let allowed = if recovery { std::json::find_field_raw(row, "recover") == "true" } else { mode == "direct" || mode == "review" };
+                return KnowledgeGrant { allowed: allowed, mode: if recovery { "direct" } else { mode }, authority: wire.text(row, "authority"), basis: self.policy.basis, scopes: std::json::find_field_raw(row, if binding.known(operation) { "binding_scopes" } else { "node_scopes" }) };
+            }
+            it = std::json::array_next(it);
+        }
+        return KnowledgeGrant { };
+    }
+}

@@ -1,0 +1,216 @@
+// Exact native store removal and ordered replay of codec-generated Record facts.
+// PostgreSQL runs only with the existing explicitly supplied test DSN.
+import "../../core" as dna;
+import "../../operations" as ops;
+import ".." as know;
+
+const LEFT: String = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const RIGHT: String = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const LABEL: String = "supports 'équipe' \"🧭\" \\";
+
+@form(vec)
+locus ReturnedEdges { capacity { heap rows of dna::KnowledgeEdge; } }
+locus EdgeCapture {
+    params { rows: ReturnedEdges = ReturnedEdges { }; }
+    fn node(row: know::Stored) -> Bool { return true; }
+    fn binding(row: dna::KnowledgeBinding) -> Bool { return true; }
+    fn edge(row: dna::KnowledgeEdge) -> Bool { self.rows.push(row); return true; }
+    fn has(edge: dna::KnowledgeEdge) -> Bool {
+        let mut i = 0;
+        while i < self.rows.len() {
+            let row = self.rows.get(i) or dna::KnowledgeEdge { };
+            if row.from == edge.from && row.to == edge.to && row.rel == edge.rel { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+}
+locus VisibleEdges { params { } fn visible(id: String) -> Bool { return true; } }
+locus NoEdgeReceipts {
+    params { }
+    fn kind() -> String { return "test"; }
+    fn store(text: String) -> String { return ""; }
+    fn read(digest: String) -> String { return ""; }
+    fn erase(digest: String) -> Bool { return false; }
+}
+
+locus UnlinkCases {
+    params { }
+    fn forward() -> dna::KnowledgeEdge { return dna::KnowledgeEdge { from: LEFT, to: RIGHT, rel: LABEL }; }
+    fn reverse() -> dna::KnowledgeEdge { return dna::KnowledgeEdge { from: RIGHT, to: LEFT, rel: LABEL }; }
+    fn self_edge() -> dna::KnowledgeEdge { return dna::KnowledgeEdge { from: LEFT, to: LEFT, rel: "self 🧭" }; }
+    fn parallel() -> dna::KnowledgeEdge { return dna::KnowledgeEdge { from: LEFT, to: RIGHT, rel: "parallel" }; }
+    fn store_contract(store: know::KnowledgeStore, graph: know::GraphStore, label: String) {
+        std::test::assert(store.open(), label + " store opens");
+        std::test::assert(store.upsert(dna::Idea { id: LEFT, text: "left" }, 0) && store.upsert(dna::Idea { id: RIGHT, text: "right" }, 0), label + " graph subjects exist");
+        std::test::assert(store.link(self.forward()) && store.link(self.reverse()) && store.link(self.self_edge()) && store.link(self.parallel()), label + " exact native edges");
+        let before = graph.graph_generation();
+        std::test::assert(store.unlink(dna::KnowledgeEdge { from: LEFT, to: RIGHT, rel: "missing" }), label + " missing tuple is successful no-op");
+        std::test::assert_eq_int(graph.graph_generation(), before, label + " missing tuple does not advance generation");
+        std::test::assert(store.unlink(self.forward()), label + " exact forward removal");
+        std::test::assert_eq_int(store.count("edges"), 3, label + " only one directed tuple removed");
+        std::test::assert_eq_int(graph.graph_generation(), before + 1, label + " actual removal advances generation once");
+        std::test::assert(store.unlink(self.forward()), label + " repeated unlink is successful");
+        std::test::assert_eq_int(graph.graph_generation(), before + 1, label + " repeated removal does not advance generation");
+        let policy = VisibleEdges { }; let capture = EdgeCapture { };
+        let page = graph.read_graph(know::GraphQuery { kind: "edges", id: LEFT }, policy, capture);
+        std::test::assert(page.ok && page.subject_present && !page.has_more, label + " graph read remains complete after removal");
+        std::test::assert_eq_int(capture.rows.len(), 3, label + " removed slot creates no graph row or scan error");
+        std::test::assert(!capture.has(self.forward()) && capture.has(self.reverse()) && capture.has(self.self_edge()) && capture.has(self.parallel()), label + " reverse, self and other label are untouched");
+        let first = EdgeCapture { }; let next = EdgeCapture { };
+        let one = graph.read_graph(know::GraphQuery { kind: "edges", id: LEFT, limit: 1 }, policy, first);
+        let rest = graph.read_graph(know::GraphQuery { kind: "edges", id: LEFT, limit: 25, after_first: one.last_first, after_second: one.last_second, after_third: one.last_third }, policy, next);
+        std::test::assert(one.ok && one.has_more && rest.ok && !rest.has_more && first.rows.len() + next.rows.len() == 3, label + " tuple pagination survives compacted storage order");
+        std::test::assert(store.unlink(self.self_edge()) && store.link(self.self_edge()) && store.link(self.forward()), label + " exact self and forward relink");
+        std::test::assert_eq_int(store.count("edges"), 4, label + " relink restores only requested tuples");
+        let restored = graph.graph_generation();
+        std::test::assert(store.link(self.forward()), label + " duplicate relink succeeds");
+        std::test::assert_eq_int(graph.graph_generation(), restored, label + " duplicate relink is not a mutation");
+    }
+    fn memory() {
+        let store = know::Mem { }; self.store_contract(store, store, "memory");
+        let before = store.graph_generation(); let mut i = 0;
+        while i < 256 {
+            std::test::assert(store.unlink(self.forward()) && store.link(self.forward()), "memory repeated unlink and relink");
+            std::test::assert_eq_int(store.edges.len(), 4, "memory removal reuses vector capacity without accumulated tombstones");
+            i = i + 1;
+        }
+        std::test::assert_eq_int(store.graph_generation(), before + 512, "each effective cycle has exactly two mutations");
+    }
+    fn postgres() {
+        let dsn = know::parse_dsn(std::env::var("HALE_DNA_KNOWLEDGE_DSN"));
+        std::test::assert(dsn.ok, "existing PostgreSQL test DSN");
+        let identity = "knowledgeunlink" + to_string(std::process::pid());
+        let store = know::Pq { conn: know::pq_conn(dsn), record_id: identity };
+        self.store_contract(store, store, "postgres");
+        std::test::assert(store.unlink(self.forward()), "postgres final exact removal");
+        let generation = store.graph_generation();
+        let reopened = know::Pq { conn: know::pq_conn(dsn), record_id: identity };
+        std::test::assert(reopened.open(), "postgres reopen exact scope");
+        std::test::assert_eq_int(reopened.count("edges"), 3, "postgres exact removal persists across connection restart");
+        std::test::assert_eq_int(reopened.graph_generation(), generation, "postgres reopen does not fabricate a delete mutation");
+        std::test::assert(reopened.unlink(self.forward()), "postgres absent replay succeeds");
+        std::test::assert_eq_int(reopened.graph_generation(), generation, "postgres zero-row DELETE fires no row generation trigger");
+        reopened.close();
+        std::test::assert(store.begin_projection(store.projection_basis(), 1, "head-1"), "first projector acquires scope claim");
+        std::test::assert(reopened.open(), "read-only connection opens while another projector owns scope");
+        let pending = store.projection_basis();
+        std::test::assert(store.begin_projection(pending, 1, "head-1"), "same projector can resume without double-locking");
+        std::test::assert(!reopened.begin_projection(reopened.projection_basis(), 1, "head-1"), "second projector cannot replay an already-pending suffix concurrently");
+        std::test::assert(store.set_watermark(1) && store.checkpoint_projection(pending, 1, "head-1"), "completed checkpoint releases projector claim");
+        std::test::assert(reopened.begin_projection(reopened.projection_basis(), 2, "head-2"), "one unlock releases a reentered claim entirely");
+        let second = reopened.projection_basis();
+        std::test::assert(!reopened.checkpoint_projection(second, 2, "head-2"), "checkpoint before effects refuses");
+        std::test::assert(!store.begin_projection(store.projection_basis(), 2, "head-2"), "failed in-progress checkpoint retains owning claim for retry");
+        std::test::assert(reopened.set_watermark(2) && reopened.checkpoint_projection(second, 2, "head-2"), "owner completes after retry");
+        std::test::assert(store.begin_projection(store.projection_basis(), 3, "head-3"), "new pending target claimed before scope change");
+        store.scope(identity + "unused");
+        std::test::assert(reopened.begin_projection(reopened.projection_basis(), 3, "head-3"), "scope switch disconnects and releases former Record claim");
+        let third = reopened.projection_basis();
+        std::test::assert(reopened.set_watermark(3) && reopened.checkpoint_projection(third, 3, "head-3"), "new owner finishes released suffix");
+        store.scope(identity); std::test::assert(store.open(), "original Record scope reopens");
+        std::test::assert(store.begin_projection(store.projection_basis(), 4, "head-4"), "claim before connection restart");
+        std::test::assert(store.reopen(), "connection restart clears local claim state");
+        std::test::assert(reopened.begin_projection(reopened.projection_basis(), 4, "head-4"), "another connection can resume after owner restart");
+        std::test::assert(!store.begin_projection(store.projection_basis(), 4, "head-4"), "reopened connection cannot reuse stale ownership");
+        let fourth = reopened.projection_basis();
+        std::test::assert(reopened.set_watermark(4) && reopened.checkpoint_projection(fourth, 4, "head-4"), "resumed owner checkpoints");
+        let wrong = know::GraphProjection { ok: true, watermark: 4, head: "wrong-head", live_watermark: 4 };
+        std::test::assert(!store.begin_projection(wrong, 5, "head-5"), "stale initial metadata CAS refuses after claim acquisition");
+        std::test::assert(reopened.begin_projection(reopened.projection_basis(), 5, "head-5"), "failed initial begin never strands a session claim");
+        let fifth = reopened.projection_basis();
+        std::test::assert(reopened.set_watermark(5) && reopened.checkpoint_projection(fifth, 5, "head-5"), "final owner clears pending suffix");
+        store.close();
+        std::test::assert(reopened.conn.exec("DROP SCHEMA " + reopened.schema() + " CASCADE").ok, "remove only owned unlink test schema");
+        reopened.close();
+    }
+    fn append(j: dna::Journal, kind: String, entity: String, body: String) {
+        let result = j.append_exact(j.revision(), kind, entity, body);
+        std::test::assert(result.ok, "native Record fixture append " + kind);
+    }
+    fn command(j: dna::Journal, key: String, edge: dna::KnowledgeEdge, unlink: Bool) -> ops::KnowledgeCommand {
+        let codec = ops::KnowledgeCommandCodec { };
+        return ops::KnowledgeCommand {
+            request_id: key, operation: if unlink { "dna.knowledge.edge.unlink" } else { "dna.knowledge.edge.link" },
+            application_id: j.read(0).digest, target_id: edge.from, record_head: j.head(),
+            edge_id: if unlink { codec.edge_id(edge.from, edge.to, edge.rel) } else { "" },
+            from_id: edge.from, to_id: edge.to, rel: edge.rel, rationale: "Exact native unlink/relink 🧭."
+        };
+    }
+    fn body(j: dna::Journal, command: ops::KnowledgeCommand) -> String {
+        let context = ops::GovernanceContext { application_id: j.read(0).digest, principal_mode: "local", principal_name: "graph-editor" };
+        let codec = ops::KnowledgeCommandCodec { };
+        let body = codec.fact(context, command, ops::KnowledgeGrant { allowed: true, mode: "direct", authority: "graph-editor", basis: "fixed unlink test grant" });
+        std::test::assert(len(body) > 0, "codec constructs a complete native relationship fact"); return body;
+    }
+    fn fact(j: dna::Journal, key: String, edge: dna::KnowledgeEdge, unlink: Bool) {
+        let codec = ops::KnowledgeCommandCodec { }; let command = self.command(j, key, edge, unlink);
+        self.append(j, if unlink { "knowledge.edge.unlinked" } else { "knowledge.edge.linked" }, codec.edge_id(edge.from, edge.to, edge.rel), self.body(j, command));
+        std::test::assert(codec.decode_fact(j.read(j.revision() - 1)).valid, "persisted exact relationship fact decodes");
+    }
+    fn remaining(store: know::Mem) {
+        let capture = EdgeCapture { }; let mut i = 0;
+        while i < store.edges.len() { let took = capture.edge(store.edges.get(i) or dna::KnowledgeEdge { }); i = i + 1; }
+        std::test::assert_eq_int(store.count("edges"), 3, "final Record order leaves exactly three edges");
+        std::test::assert(!capture.has(self.forward()) && capture.has(self.reverse()) && capture.has(self.self_edge()) && capture.has(self.parallel()), "final Record order preserves unrelated exact tuples");
+    }
+    fn durable_replay() {
+        let root = "/tmp/dna-edge-unlink-" + to_string(std::process::pid()); std::io::fs::mkdir(root) or discard;
+        let init = dna::run_tool("git\n-C\n" + root + "\ninit\n-q\n-b\nmain"); std::test::assert_eq_int(init.code, 0, "isolated native unlink Record");
+        let j = dna::GitJournal { repo: root }; let receipts = NoEdgeReceipts { }; let store = know::Mem { };
+        self.append(j, "application.started", "org", "{}");
+        self.fact(j, "initial-forward", self.forward(), false); self.fact(j, "reverse", self.reverse(), false);
+        self.fact(j, "self", self.self_edge(), false); self.fact(j, "parallel", self.parallel(), false);
+        let first = know::apply_record(store, j, receipts); std::test::assert_eq_str(first.error, "", "initial native projection");
+        std::test::assert_eq_int(store.count("edges"), 4, "initial edges projected");
+        let before_unlink = store.watermark();
+        self.fact(j, "unlink-forward", self.forward(), true);
+        // Fault injection: effect ran, then process stopped before its watermark
+        // advanced. Resume from the retained checkpoint, never from old links.
+        std::test::assert(store.unlink(self.forward()), "simulate effect before interrupted watermark");
+        let generation = store.graph_generation(); let reopened = dna::GitJournal { repo: root };
+        let resumed = know::apply_record(store, reopened, receipts);
+        std::test::assert_eq_str(resumed.error, "", "interrupted unlink resumes from durable Record");
+        std::test::assert_eq_int(resumed.rows, 1, "resume never reapplies older linked prefix");
+        std::test::assert_eq_int(resumed.watermark, before_unlink + 1, "resumed unlink advances checkpoint only after effect");
+        std::test::assert_eq_int(store.graph_generation(), generation, "absent unlink replay never resurrects edge or bumps generation");
+        self.remaining(store);
+        self.fact(j, "unlink-again", self.forward(), true);
+        let absent = know::apply_record(store, j, receipts); std::test::assert_eq_str(absent.error, "", "second native unlink is a no-op");
+        std::test::assert_eq_int(store.graph_generation(), generation, "absent command leaves generation alone");
+        self.fact(j, "relink-forward", self.forward(), false);
+        let relinked = know::apply_record(store, j, receipts); std::test::assert_eq_str(relinked.error, "", "later link restores exact tuple");
+        std::test::assert_eq_int(store.count("edges"), 4, "Record link after unlink restores relationship");
+        self.fact(j, "final-unlink", self.forward(), true);
+        let final = know::apply_record(store, j, receipts); std::test::assert_eq_str(final.error, "", "later unlink wins in Record order"); self.remaining(store);
+        let fresh_record = dna::GitJournal { repo: root }; let fresh = know::Mem { };
+        let rebuilt = know::apply_record(fresh, fresh_record, receipts);
+        std::test::assert_eq_str(rebuilt.error, "", "empty memory rebuilds link-unlink-relink-unlink history");
+        std::test::assert_eq_int(rebuilt.watermark, fresh_record.revision(), "rebuilt memory reaches exact final Record head"); self.remaining(fresh);
+        let removed = dna::run_tool("rm\n-rf\n" + root);
+    }
+    fn refuses(mode: String) {
+        let j = dna::MemJournal { }; let store = know::Mem { }; let receipts = NoEdgeReceipts { }; let codec = ops::KnowledgeCommandCodec { };
+        self.append(j, "application.started", "org", "{}"); self.fact(j, "initial", self.forward(), false);
+        let command = self.command(j, "invalid-unlink", self.forward(), true); let body = self.body(j, command);
+        let quote = ops::GovernanceCommandCodec { };
+        let malformed = if mode == "malformed" { "{\"format\":" } else if mode == "wrong-tuple" { std::str::replace(body, "\"from_id\":" + quote.quote(LEFT), "\"from_id\":" + quote.quote(RIGHT)) } else { body };
+        let entity = if mode == "wrong-edge" { codec.edge_id(RIGHT, LEFT, LABEL) } else { codec.edge_id(LEFT, RIGHT, LABEL) };
+        let before = j.revision(); self.append(j, "knowledge.edge.unlinked", entity, malformed); self.fact(j, "later-removal", self.forward(), true);
+        let refused = know::apply_record(store, j, receipts);
+        std::test::assert(len(refused.error) > 0, mode + " malformed removal refuses");
+        std::test::assert_eq_int(store.watermark(), before, mode + " invalid removal never advances watermark");
+        std::test::assert_eq_int(store.count("edges"), 1, mode + " invalid removal and later rows cannot delete the edge");
+        let generation = store.graph_generation(); let retry = know::apply_record(store, j, receipts);
+        std::test::assert(len(retry.error) > 0 && retry.rows == 1 && retry.watermark == before, mode + " retry stops at the same offending row");
+        std::test::assert_eq_int(store.graph_generation(), generation, mode + " invalid retry does not mutate graph");
+    }
+    fn check() {
+        self.memory(); self.durable_replay(); self.refuses("malformed"); self.refuses("wrong-edge"); self.refuses("wrong-tuple");
+        if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") && len(std::env::var("HALE_DNA_KNOWLEDGE_DSN")) > 0 && std::env::var("HALE_DNA_KNOWLEDGE_DSN") != "memory" { self.postgres(); }
+        else { eprintln("edge_unlink_test: PostgreSQL not exercised (no test DSN)"); }
+    }
+}
+
+main locus App { run() { let cases = UnlinkCases { }; cases.check(); } }
+fn main() { App { }; }

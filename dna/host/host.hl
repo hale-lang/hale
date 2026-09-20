@@ -10,6 +10,9 @@
 // nothing; when the organization exits, so does it, with its code.
 
 import "../core" as dna;
+import "../organization_runtime" as org_runtime;
+import "../organization_source" as orgsource;
+import "../../iris/process_identity" as identity;
 
 const ORG_SEED: String = "dna/org";
 
@@ -44,8 +47,10 @@ fn keys_add(list: String, key: String) -> String {
 }
 // GH #689: whether the request at row `i` has ITS OWN answer.
 //
-// An intent, a verdict's review and a practice request each have an entity
-// of their own, so an answer naming that entity is that request's. Several
+// New verdict commands carry command_id and require their own exact
+// review.command_decided; a Review's settlement cannot answer another
+// command. Intents and practice requests each have an entity of their own.
+// Several
 // concerns from one source share an entity, so a concern carries its own
 // id (`request` in its body) and the organization writes that id into the
 // `concern.raised` it answers with, in a field of its own, which is read
@@ -62,6 +67,69 @@ fn keys_add(list: String, key: String) -> String {
 @unbounded
 fn request_answered(p: Projection, i: Int, kinds: String) -> Bool {
     let r = p.row(i);
+    let command_id = dna::native_json_string(r.body, "command_id");
+    if r.kind == "review.verdict" && len(command_id) > 0 {
+        let v = dna::review_command_verdict(command_id, r.body);
+        let mut j = i + 1;
+        while j < p.rows() {
+            let o = p.row(j);
+            if o.kind == "review.command_decided" && o.entity == command_id && dna::review_command_matches(o.body, v) { return true; }
+            j = j + 1;
+        }
+        return false;
+    }
+    if r.kind == "knowledge.node.requested" {
+        let codec = dna::KnowledgeNodeRequestCodec { };
+        let request = codec.decode(r.body);
+        if !codec.valid(request) || request.request_id != r.entity { return false; }
+        let mut j = i + 1;
+        while j < p.rows() {
+            let answer = p.row(j);
+            if answer.entity == request.request_id {
+                if answer.kind == "knowledge.node.proposed" && answer.body == codec.proposed(request) { return true; }
+                if answer.kind == "knowledge.node.refused" {
+                    let why = dna::native_json_string(answer.body, "why");
+                    if len(why) > 0 && answer.body == codec.refused(request, why) { return true; }
+                }
+            }
+            j = j + 1;
+        }
+        return false;
+    }
+    if r.kind == "knowledge.binding.requested" {
+        let codec = dna::KnowledgeBindingCodec { }; let request = codec.decode(r.body);
+        if !codec.valid(request) || request.request_id != r.entity { return false; }
+        let mut j = i + 1;
+        while j < p.rows() {
+            let answer = p.row(j);
+            if answer.entity == request.request_id {
+                if answer.kind == "knowledge.binding.proposed" && answer.body == codec.proposed(request) { return true; }
+                if answer.kind == "knowledge.binding.refused" {
+                    let code = dna::native_json_string(answer.body, "reason_code"); let why = dna::native_json_string(answer.body, "why");
+                    if len(code) > 0 && len(why) > 0 && answer.body == codec.refused(request, code, why) { return true; }
+                }
+            }
+            j = j + 1;
+        }
+        return false;
+    }
+    if r.kind == "knowledge.edge.requested" {
+        let codec = dna::KnowledgeEdgeCodec { }; let request = codec.decode(r.body);
+        if !codec.valid(request) || request.request_id != r.entity { return false; }
+        let mut j = i + 1;
+        while j < p.rows() {
+            let answer = p.row(j);
+            if answer.entity == request.request_id {
+                if answer.kind == "knowledge.edge.proposed" && answer.body == codec.proposed(request) { return true; }
+                if answer.kind == "knowledge.edge.refused" {
+                    let code = dna::native_json_string(answer.body, "reason_code"); let why = dna::native_json_string(answer.body, "why");
+                    if len(code) > 0 && len(why) > 0 && answer.body == codec.refused(request, code, why) { return true; }
+                }
+            }
+            j = j + 1;
+        }
+        return false;
+    }
     let id = std::json::find_string_field(r.body, "request");
     if len(id) > 0 {
         let mut j = i + 1;
@@ -118,6 +186,36 @@ fn relay_mark(list: String, key: String, now: Int) -> String {
 // as already settled).
 const RELAY_AGAIN_AFTER: Int = 30;
 
+// A source marker selects the strict prepared path even when its evidence is
+// unavailable. Never fall back to an arbitrary live-checkout restart for it.
+fn prepared_source_restart(p: Projection, r: dna::Event) -> Bool {
+    if !std::str::starts_with(r.body, "apply ") || seed_named_in(r.body) != ORG_SEED { return false; }
+    let mut i = 0;
+    while i < p.rows() {
+        let e = p.row(i);
+        if e.kind == "review.requested" && e.entity == "review:" + r.entity
+            && len(dna::native_json_string(e.body, "organization_source_request_id")) > 0 { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+fn prepared_source_restart_answered(p: Projection, r: dna::Event) -> Bool {
+    let source = org_runtime::OrganizationLaunchSource { root: p.root }; let basis = source.basis(r.entity);
+    if !basis.ok || basis.handoff.digest != r.digest { return false; }
+    let a = source.attempt(basis); let codec = dna::OrganizationLaunchCodec { }; if !codec.valid(a) { return false; }
+    let launched = source.launched(a); let observed = source.observed(launched); let exited = source.exited(a);
+    let mut i = 0;
+    while i < p.rows() {
+        let e = p.row(i);
+        if observed.valid && observed.outcome == "healthy" && e.kind == "expression.observed" && e.entity == r.entity
+            && e.body == "healthy " + a.binary_digest + " organization launch " + a.attempt_id + " observed healthy" { return true; }
+
+        i = i + 1;
+    }
+    let rollback = OrganizationRollbackCodec { };
+    return rollback.answered(source, basis, a);
+}
+
 // The latest `expression.restart_requested` this host has not handled
 // and the organism has not already answered with `expression.restarted`.
 fn pending_restart(p: Projection, handled: String) -> dna::Event {
@@ -126,11 +224,12 @@ fn pending_restart(p: Projection, handled: String) -> dna::Event {
     while i < p.rows() {
         let r = p.row(i);
         if r.kind == "expression.restart_requested" && !keys_has(handled, fact_key(p, i)) {
-            let mut answered = false;
+            let prepared = prepared_source_restart(p, r);
+            let mut answered = prepared && prepared_source_restart_answered(p, r);
             let mut k = i + 1;
             while k < p.rows() {
                 let x = p.row(k);
-                if x.kind == "expression.restarted" && x.entity == r.entity { answered = true; }
+                if !prepared && x.kind == "expression.restarted" && x.entity == r.entity { answered = true; }
                 k = k + 1;
             }
             if !answered { out = r; }
@@ -165,6 +264,118 @@ type FleetOutcome {
     node: String = "";
     code: Int = 0;
     missing: String = "";
+}
+
+// The exact production relay, also composed by the focused native command
+// acceptance fixture without starting Host's build/deploy lifecycle.
+type RelayState { relayed: String = "\n"; count: Int = 0; error: String = ""; }
+
+fn edge_admits_here(root: String, r: dna::KnowledgeEdgeRequest) -> Bool {
+    let codec = dna::KnowledgeEdgeCodec { };
+    if !codec.valid(r) { return false; }
+    let journal = dna::GitJournal { repo: root }; let receipts = dna::GitReceipts { repo: root };
+    if journal.revision() == 0 || journal.read(0).digest != r.application_id { return false; }
+    let e = codec.endpoints(journal, receipts, r, journal.revision());
+    return e.ok && admits_here(root, e.from_author) && admits_here(root, e.from_target)
+        && admits_here(root, e.to_author) && admits_here(root, e.to_target);
+}
+
+@unbounded
+fn relay_record_membrane(root: String, seed: String, toolchain: String, verb: String, relayed: String) -> RelayState {
+    let mut state = RelayState { relayed: relayed };
+    if len(record_head(root)) == 0 { return state; }
+    let p = open_projection(root, seed, toolchain);
+    let trust = trust_mode(root);
+    let mut i = 0;
+    while i < p.rows() {
+        let r = p.row(i);
+        // Another owner's node request is theirs to verify and admit. Do not
+        // write a refusal using this host's keyring before checking routing.
+        let node_ours = if r.kind == "knowledge.node.requested" {
+            let codec = dna::KnowledgeNodeRequestCodec { };
+            let request = codec.decode(r.body);
+            codec.valid(request) && request.request_id == r.entity && admits_here(root, request.author) && admits_here(root, request.target)
+        } else if r.kind == "knowledge.binding.requested" {
+            let codec = dna::KnowledgeBindingCodec { }; let request = codec.decode(r.body);
+            codec.valid(request) && request.request_id == r.entity && admits_here(root, request.author) && admits_here(root, request.target)
+        } else if r.kind == "knowledge.edge.requested" {
+            let codec = dna::KnowledgeEdgeCodec { }; let request = codec.decode(r.body);
+            request.request_id == r.entity && edge_admits_here(root, request)
+        } else { true };
+        let requested = node_ours && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested" || r.kind == "knowledge.node.requested" || r.kind == "knowledge.binding.requested" || r.kind == "knowledge.edge.requested");
+        let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised concern.refused " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else if r.kind == "knowledge.node.requested" { " knowledge.node.proposed knowledge.node.refused " } else if r.kind == "knowledge.binding.requested" { " knowledge.binding.proposed knowledge.binding.refused " } else if r.kind == "knowledge.edge.requested" { " knowledge.edge.proposed knowledge.edge.refused " } else { " review.settled review.refused " };
+        if requested && trust == "signed" && !row_verified(root, r.digest) {
+            // Verification gates EVERY attempt. Even when writing the refusal
+            // failed, an expired retry marker must never admit an unsigned row.
+            let last = relayed_at(state.relayed, fact_key(p, i));
+            if !request_answered(p, i, answers) && (last < 0 || std::time::now() - last >= RELAY_AGAIN_AFTER) {
+                let why = "unverified writer: commit " + r.digest + " carries no signature git accepts (dna.trust = signed); not relayed";
+                let command_id = dna::native_json_string(r.body, "command_id");
+                if r.kind == "review.verdict" && len(command_id) > 0 {
+                    let v = dna::review_command_verdict(command_id, r.body);
+                    let ok = append_as(root, "review.command_decided", command_id, dna::review_command_body(v, false, why, false, ""), "host");
+                } else if r.kind == "knowledge.node.requested" {
+                    let codec = dna::KnowledgeNodeRequestCodec { };
+                    let request = codec.decode(r.body);
+                    if codec.valid(request) && request.request_id == r.entity {
+                        let ok = append_as(root, "knowledge.node.refused", r.entity, codec.refused(request, why), "host");
+                    }
+                } else if r.kind == "knowledge.binding.requested" {
+                    let codec = dna::KnowledgeBindingCodec { }; let request = codec.decode(r.body);
+                    if codec.valid(request) && request.request_id == r.entity {
+                        let ok = append_as(root, "knowledge.binding.refused", r.entity, codec.refused(request, "unverified_writer", why), "host");
+                    }
+                } else if r.kind == "knowledge.edge.requested" {
+                    let codec = dna::KnowledgeEdgeCodec { }; let request = codec.decode(r.body);
+                    if codec.valid(request) && request.request_id == r.entity {
+                        let ok = append_as(root, "knowledge.edge.refused", r.entity, codec.refused(request, "unverified_writer", why), "host");
+                    }
+                } else {
+                    let refused = if r.kind == "intent.requested" { "intent.refused" } else if r.kind == "concern.requested" { "concern.refused" } else if r.kind == "practice.requested" { "practice.refused" } else { "review.refused" };
+                    let ok = append_as(root, refused, r.entity, why, "host");
+                }
+                state.relayed = relay_mark(state.relayed, fact_key(p, i), std::time::now());
+                eprintln("hale dna ", verb, ": refused an unverified ", r.kind, " (", r.entity, ") from the record");
+            }
+        } else if requested {
+            let answered = request_answered(p, i, answers);
+            // GH #664: an intent for a position another owner holds is
+            // theirs to admit; it stays in the record, unanswered here
+            let ours = r.kind != "intent.requested" || admits_here(root, std::json::find_string_field(r.body, "to"));
+            // GH #682: relayed before and still unanswered — relay again
+            let mut last = relayed_at(state.relayed, fact_key(p, i));
+            // a head beside this organism published it itself: count that
+            // as the first delivery, and relay only if it stays unanswered
+            if last < 0 && std::str::contains(r.body, "\"via\": \"membrane\"") {
+                state.relayed = relay_mark(state.relayed, fact_key(p, i), std::time::now());
+                last = std::time::now();
+            }
+            let due = last < 0 || std::time::now() - last >= RELAY_AGAIN_AFTER;
+            if !answered && ours && due {
+                let mut body = r.body;
+                if r.kind == "intent.requested" {
+                    // the row's entity is the intent id
+                    let inner = dna::trim_nl(body);
+                    let close = last_index_of(inner, "}");
+                    if close > 0 { body = inner[0..close] + ", \"intent_id\": " + quote(r.entity) + "}"; }
+                }
+                if r.kind == "knowledge.node.requested" {
+                    // Admission metadata stays in Record. Transport only the
+                    // exact eleven native fields after trust/owner checks;
+                    // duplicating command_payload can exceed process argv.
+                    let codec = dna::KnowledgeNodeRequestCodec { };
+                    body = codec.started(codec.decode(r.body));
+                }
+                if r.kind == "knowledge.binding.requested" { let codec = dna::KnowledgeBindingCodec { }; body = codec.started(codec.decode(r.body)); }
+                if r.kind == "knowledge.edge.requested" { let codec = dna::KnowledgeEdgeCodec { }; body = codec.started(codec.decode(r.body)); }
+                let e = publish_on_membrane(root, if r.kind == "intent.requested" { "intent" } else if r.kind == "concern.requested" { "concern" } else if r.kind == "practice.requested" { "practice" } else if r.kind == "knowledge.node.requested" { "knowledge-node" } else if r.kind == "knowledge.binding.requested" { "knowledge-binding" } else if r.kind == "knowledge.edge.requested" { "knowledge-edge" } else { "verdict" }, body);
+                if len(e) == 0 { state.relayed = relay_mark(state.relayed, fact_key(p, i), std::time::now()); state.count = state.count + 1; }
+                else { state.error = r.kind + " (" + r.entity + "): " + e; }
+            }
+        }
+        i = i + 1;
+    }
+    return state;
 }
 
 locus Host {
@@ -438,6 +649,7 @@ locus Host {
         std::io::fs::unlink(self.dna_dir + "/" + PRESSURE_SOCK) or discard;
         std::io::fs::unlink(self.dna_dir + "/" + CONCERN_SOCK) or discard;
         std::io::fs::unlink(self.dna_dir + "/" + PRACTICE_SOCK) or discard;
+        std::io::fs::unlink(self.dna_dir + "/" + KNOWLEDGE_NODE_SOCK) or discard;
     }
     fn wait_membrane(secs: Int) -> Bool {
         let deadline = std::time::now() + secs;
@@ -469,53 +681,11 @@ locus Host {
     // `review.verdict` or a `concern.requested` row a CLI or a node
     // appended from any clone is relayed onto the organism's sockets,
     // once.
-    @unbounded
     fn relay_record_membrane() -> Int {
-        if len(record_head(self.root)) == 0 { return 0; }
-        let p = open_projection(self.root, self.seed, self.toolchain);
-        let trust = trust_mode(self.root);
-        let mut n = 0;
-        let mut i = 0;
-        while i < p.rows() {
-            let r = p.row(i);
-            if (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") && relayed_at(self.relayed, fact_key(p, i)) < 0 && trust == "signed" && !row_verified(self.root, r.digest) {
-                // GH #604 rule 6: an unverified writer's row is refused in
-                // the record, in the host's name, and never relayed; the
-                // refusal is the answer a waiting CLI reads
-                let refused = if r.kind == "intent.requested" { "intent.refused" } else if r.kind == "concern.requested" { "concern.refused" } else if r.kind == "practice.requested" { "practice.refused" } else { "review.refused" };
-                let ok = append_as(self.root, refused, r.entity, "unverified writer: commit " + r.digest + " carries no signature git accepts (dna.trust = signed); not relayed", "host");
-                self.relayed = relay_mark(self.relayed, fact_key(p, i), std::time::now());
-                self.say("refused an unverified " + r.kind + " (" + r.entity + ") from the record");
-            } else if (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "practice.requested") {
-                let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised concern.refused " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else { " review.settled review.refused " };
-                let answered = request_answered(p, i, answers);
-                // GH #664: an intent for a position another owner holds is
-                // theirs to admit; it stays in the record, unanswered here
-                let ours = r.kind != "intent.requested" || admits_here(self.root, std::json::find_string_field(r.body, "to"));
-                // GH #682: relayed before and still unanswered — relay again
-                let mut last = relayed_at(self.relayed, fact_key(p, i));
-                // a head beside this organism published it itself: count that
-                // as the first delivery, and relay only if it stays unanswered
-                if last < 0 && std::str::contains(r.body, "\"via\": \"membrane\"") {
-                    self.relayed = relay_mark(self.relayed, fact_key(p, i), std::time::now());
-                    last = std::time::now();
-                }
-                let due = last < 0 || std::time::now() - last >= RELAY_AGAIN_AFTER;
-                if !answered && ours && due {
-                    let mut body = r.body;
-                    if r.kind == "intent.requested" {
-                        // the row's entity is the intent id
-                        let inner = dna::trim_nl(body);
-                        let close = last_index_of(inner, "}");
-                        if close > 0 { body = inner[0..close] + ", \"intent_id\": " + quote(r.entity) + "}"; }
-                    }
-                    let e = publish_on_membrane(self.root, if r.kind == "intent.requested" { "intent" } else if r.kind == "concern.requested" { "concern" } else if r.kind == "practice.requested" { "practice" } else { "verdict" }, body);
-                    if len(e) == 0 { self.relayed = relay_mark(self.relayed, fact_key(p, i), std::time::now()); n = n + 1; }
-                }
-            }
-            i = i + 1;
-        }
-        return n;
+        let state = relay_record_membrane(self.root, self.seed, self.toolchain, self.verb, self.relayed);
+        self.relayed = state.relayed;
+        if len(state.error) > 0 { self.say("membrane relay failed: " + state.error); }
+        return state.count;
     }
     fn observed(mutation_id: String, outcome: String, model_hash: String, detail: String) {
         let b = std::json::Builder { };
@@ -558,6 +728,196 @@ locus Host {
     // Rebuild the organization and restart it for a Mutation of its own
     // seed: sockets down, the new org up with the Mutation in its
     // environment. True when the membrane came up.
+    // Durable identity precedes process replacement. Building/retaining exact
+    // candidate inputs is preparatory; only an acknowledged new claim permits
+    // start. A later call returns the existing attempt without rebuilding it.
+    fn prepare_organization_launch(id: String) -> OrganizationLaunchPreparation {
+        let source = org_runtime::OrganizationLaunchSource { root: self.root }; let basis = source.basis(id);
+        if !basis.ok || !self.body_assert("the prepared organization") { return OrganizationLaunchPreparation { }; }
+        let codec = dna::OrganizationLaunchCodec { }; let attempt_id = codec.attempt_id(basis.handoff.digest);
+        let record = dna::GitJournal { repo: self.root }; let facts = dna::OrganizationSourceRequestCodec { };
+        let previous = facts.fact(record, "organization.source.launch_requested", attempt_id);
+        if len(previous.kind) > 0 {
+            let a = source.attempt(basis); return OrganizationLaunchPreparation { valid: codec.valid(a), attempt: a };
+        }
+        let guard = orgsource::OrganizationPublicationInputs { root: self.root, compiler: self.hale, source_owner: basis.request.source_owner };
+        if !guard.available() || !guard.applied(basis.request, basis.worktree, basis.candidate).ok { return OrganizationLaunchPreparation { }; }
+        let shell = dna::OrganizationLaunchAttempt { attempt_id: attempt_id };
+        let dir = source.directory(shell);
+        let mkdir = dna::run_tool("mkdir\n-p\n" + dir); if mkdir.code != 0 { return OrganizationLaunchPreparation { }; }
+        if std::io::fs::file_exists(dir + "/org.pid") || std::io::fs::file_exists(dir + "/org.exit") { return OrganizationLaunchPreparation { }; }
+        let artifact = dir + "/topology.json"; let seed_dir = basis.worktree + "/" + ORG_SEED;
+        if len(self.cut_artifact(seed_dir, artifact)) > 0 || !guard.applied(basis.request, basis.worktree, basis.candidate).ok { return OrganizationLaunchPreparation { }; }
+        let built = self.build_seed(seed_dir); if len(built) == 0 || !guard.applied(basis.request, basis.worktree, basis.candidate).ok { return OrganizationLaunchPreparation { }; }
+        let copied = dna::run_tool("cp\n" + built + "\n" + dir + "/program"); if copied.code != 0 { return OrganizationLaunchPreparation { }; }
+        let permission = dna::run_tool("chmod\n0555\n" + dir + "/program"); if permission.code != 0 { return OrganizationLaunchPreparation { }; }
+        let binary = source.file_digest(dir + "/program"); let topology = source.file_digest(artifact);
+        if binary != source.file_digest(built) || !guard.applied(basis.request, basis.worktree, basis.candidate).ok || !self.body_assert("the exact prepared organization") { return OrganizationLaunchPreparation { }; }
+        let receipts = dna::GitReceipts { repo: self.root }; let artifact_text = std::io::fs::read_file(artifact) or "";
+        let kept = receipts.store(artifact_text); if "sha256:" + kept != topology { return OrganizationLaunchPreparation { }; }
+        let identity = identity::Identity { };
+        let a = dna::OrganizationLaunchAttempt { attempt_id: attempt_id, application_id: basis.request.application_id,
+            request_id: basis.request.request_id, command_fingerprint: basis.request.command_fingerprint, source_owner: basis.request.source_owner,
+            mutation_id: id, candidate_commit: basis.candidate, source_digest: basis.request.source_digest,
+            applied_event_id: basis.applied.digest, restart_event_id: basis.handoff.digest, body_holder: self.holder, body_token: self.lease.token,
+            host_pid: std::process::pid(), host_started: identity.start_ticks(std::process::pid()), binary_digest: binary,
+            topology_digest: topology, topology_shape: shape_of(artifact), observation_seconds: self.observe_secs };
+        if !codec.valid(a) { return OrganizationLaunchPreparation { }; }
+        let written = organization_launch_write(self.root, "organization.source.launch_requested", a.attempt_id, codec.attempt_body(a));
+        return OrganizationLaunchPreparation { valid: written.ok, fresh: written.fresh, attempt: a };
+    }
+    // Kept separate from acknowledgment so a lost reply recovers this exact
+    // owned process. This method is never called for an existing claim.
+    fn start_organization_launch(prepared: OrganizationLaunchPreparation) -> Bool {
+        let a = prepared.attempt; let codec = dna::OrganizationLaunchCodec { }; let source = org_runtime::OrganizationLaunchSource { root: self.root };
+        if !prepared.valid || !prepared.fresh || !codec.valid(a) || a.host_pid != std::process::pid() || !source.scope(a) { return false; }
+        let requested = source.fact("organization.source.launch_requested", a.attempt_id);
+        let basis = source.basis(a.mutation_id);
+        let guard = orgsource::OrganizationPublicationInputs { root: self.root, compiler: self.hale, source_owner: a.source_owner };
+        if requested.body != codec.attempt_body(a) || !source.matches(a, basis)
+            || !guard.applied(basis.request, basis.worktree, basis.candidate).ok || !self.body_assert("the retained prepared organization") { return false; }
+        let dir = source.directory(a);
+        if std::io::fs::file_exists(dir + "/org.pid") || source.file_digest(dir + "/program") != a.binary_digest
+            || source.file_digest(dir + "/topology.json") != a.topology_digest { return false; }
+        stop_proc(self.org); self.remove_sockets();
+        if !self.body_assert("the retained prepared organization") { return false; }
+        self.org = start(dir, "org", self.root, self.child_envs(a.mutation_id, a.binary_digest) + "\nHALE_DNA_ORGANIZATION_LAUNCH=" + a.attempt_id, dir + "/program");
+        self.org_log = 0;
+        let pid = write_text(self.dna_dir + "/org.pid", to_string(self.org.pid)) or false;
+        let artifact = dna::run_tool("cp\n" + dir + "/topology.json\n" + self.dna_dir + "/org.topology");
+        return self.org.pid > 0 && pid && artifact.code == 0;
+    }
+    fn note_organization_exit(a: dna::OrganizationLaunchAttempt) -> Bool {
+        let source = org_runtime::OrganizationLaunchSource { root: self.root }; let codec = dna::OrganizationLaunchCodec { };
+        if !source.scope(a) || a.host_pid != std::process::pid() { return false; }
+        let read = source.process(a); let proc = Proc { pid: read.pid, dir: read.dir, name: read.name }; let code = exit_code(proc);
+        if proc.pid < 1 || code < 0 { return false; }
+        return organization_launch_write(self.root, "organization.source.launch_exited", a.attempt_id, codec.exit_body(a, proc.pid, code)).ok;
+    }
+    fn recover_organization_launch(id: String) -> dna::OrganizationLaunchReceipt {
+        let source = org_runtime::OrganizationLaunchSource { root: self.root }; let basis = source.basis(id); let a = source.attempt(basis); let codec = dna::OrganizationLaunchCodec { };
+        if !codec.valid(a) || a.host_pid != std::process::pid() || !source.scope(a) || !self.body_assert("the same prepared organization attempt") { return dna::OrganizationLaunchReceipt { }; }
+        let read = source.process(a); let proc = Proc { pid: read.pid, dir: read.dir, name: read.name }; let exited = exit_code(proc);
+        if proc.pid > 0 && exited >= 0 {
+            let saved = organization_launch_write(self.root, "organization.source.launch_exited", a.attempt_id, codec.exit_body(a, proc.pid, exited));
+            return dna::OrganizationLaunchReceipt { };
+        }
+        if proc.pid <= 0 { return dna::OrganizationLaunchReceipt { }; }
+        self.org = proc;
+        if !self.wait_membrane(20) { let noted = self.note_organization_exit(a); return dna::OrganizationLaunchReceipt { }; }
+        let live = source.live(a); if !live.valid { let noted = self.note_organization_exit(a); return dna::OrganizationLaunchReceipt { }; }
+        let existing = source.launched(a);
+        if existing.valid {
+            return if existing.pid == live.pid && existing.process_key == live.process_key && existing.process_started == live.process_started { existing } else { dna::OrganizationLaunchReceipt { } };
+        }
+        let guard = orgsource::OrganizationPublicationInputs { root: self.root, compiler: self.hale, source_owner: a.source_owner };
+        if !guard.applied(basis.request, basis.worktree, basis.candidate).ok { return dna::OrganizationLaunchReceipt { }; }
+        let pid = write_text(self.dna_dir + "/org.pid", to_string(live.pid)) or false; if !pid { return dna::OrganizationLaunchReceipt { }; }
+        let saved = organization_launch_write(self.root, "organization.source.launched", a.attempt_id, codec.launch_body(a, live.pid, live.process_key, live.process_started));
+        return if saved.ok { source.launched(a) } else { dna::OrganizationLaunchReceipt { } };
+    }
+    fn rollback_organization_launch(basis: org_runtime::OrganizationLaunchBasis, code: Int) -> Bool {
+        let source = org_runtime::OrganizationLaunchSource { root: self.root }; let a = source.attempt(basis); let codec = dna::OrganizationLaunchCodec { };
+        let rollback = OrganizationRollbackCodec { }; let guard = orgsource::OrganizationPublicationInputs { root: self.root, compiler: self.hale, source_owner: a.source_owner };
+        let exited = source.exited(a); let failure = source.fact("organization.source.launch_exited", a.attempt_id);
+        if !basis.ok || !codec.valid(a) || !exited.valid || code != exited.code || !source.scope(a) || a.host_pid != std::process::pid()
+            || !self.body_assert("the prepared organization rollback") { return false; }
+        if rollback.answered(source, basis, a) { return true; }
+        let id = a.mutation_id;
+        let old_claim = source.fact("organization.source.rollback_requested", a.attempt_id);
+        if len(old_claim.kind) == 0 {
+            // Only this still-exact failed candidate may authorize a reset.
+            if genome_commit(self.root, "HEAD") != basis.candidate || !guard.applied(basis.request, basis.worktree, basis.candidate).ok { return false; }
+            let saved = organization_launch_write(self.root, "organization.source.rollback_requested", a.attempt_id,
+                rollback.reset(a, failure.digest, basis.request.source_head));
+            if !saved.ok { return false; }
+            // An unacknowledged claim is not permission to repeat the reset.
+            if saved.fresh && !genome_reset(self.root, basis.request.source_head) { return false; }
+        }
+        let reset_claim = rollback.claimed(source, basis, a);
+        // A lost reset reply can be repaired only from the exact original base,
+        // current module bytes and dependencies. No repeated reset on a claim.
+        if len(reset_claim.kind) == 0 || genome_commit(self.root, "HEAD") != basis.request.source_head || !guard.current(basis.request).ok { return false; }
+        let crashed = organization_launch_write(self.root, "expression.crashed", id, "organization exited " + to_string(code) + " in the prepared launch");
+        if !crashed.ok { return false; }
+        let recorded = organization_launch_write(self.root, "mutation.rolled_back", id, basis.request.source_head + " by host after the organization crashed");
+        if !recorded.ok { return false; }
+        let rolled_back = rollback.rolled_back(source, basis, a); if len(rolled_back.kind) == 0 { return false; }
+        let dir = source.directory(a); let mut fresh = false;
+        let old_launch = source.fact("organization.source.rollback_launch_requested", a.attempt_id);
+        if len(old_launch.kind) == 0 {
+            if std::io::fs::file_exists(dir + "/rollback.pid") || std::io::fs::file_exists(dir + "/rollback.exit") { return false; }
+            let artifact = dir + "/rollback.topology"; let base_seed = self.root + "/" + ORG_SEED;
+            if len(self.cut_artifact(base_seed, artifact)) > 0 || !guard.current(basis.request).ok { return false; }
+            let built = self.build_seed(base_seed); if len(built) == 0 || !guard.current(basis.request).ok { return false; }
+            let copied = dna::run_tool("cp\n" + built + "\n" + dir + "/rollback.program");
+            let mode = dna::run_tool("chmod\n0555\n" + dir + "/rollback.program");
+            let binary = source.file_digest(dir + "/rollback.program"); let topology = source.file_digest(artifact);
+            if copied.code != 0 || mode.code != 0 || binary != source.file_digest(built) || !guard.current(basis.request).ok || !self.body_assert("the original organization") { return false; }
+            let saved = organization_launch_write(self.root, "organization.source.rollback_launch_requested", a.attempt_id,
+                rollback.launch(a, rolled_back.digest, binary, topology));
+            if !saved.ok { return false; } fresh = saved.fresh;
+        }
+        let claim = rollback.launch_claim(source, basis, a); if !claim.valid { return false; }
+        if fresh {
+            if !source.scope(a) || !guard.current(basis.request).ok || source.file_digest(dir + "/rollback.program") != claim.binary_digest
+                || source.file_digest(dir + "/rollback.topology") != claim.topology_digest { return false; }
+            stop_proc(self.org); self.remove_sockets(); if !self.body_assert("the original organization") { return false; }
+            self.org = start(dir, "rollback", self.root, self.child_envs(id, "rollback " + claim.binary_digest), dir + "/rollback.program"); self.org_log = 0;
+        } else {
+            let pid = std::str::parse_int(dna::trim_nl(std::io::fs::read_file(dir + "/rollback.pid") or "")) or - 1;
+            self.org = Proc { pid: pid, dir: dir, name: "rollback" };
+        }
+        if self.org.pid <= 0 || exit_code(self.org) != -2 || !self.wait_membrane(20) { return false; }
+        let process = identity::Identity { }; let before = process.capture(self.org.pid);
+        if len(before.key) == 0 || source.file_digest("/proc/" + self.org.pid + "/exe") != claim.binary_digest
+            || source.file_digest(dir + "/rollback.program") != claim.binary_digest || source.file_digest(dir + "/rollback.topology") != claim.topology_digest
+            || !guard.current(basis.request).ok || !source.scope(a) { return false; }
+        let after = process.capture(self.org.pid); if before.key != after.key || before.started != after.started { return false; }
+        let pid = write_text(self.dna_dir + "/org.pid", to_string(self.org.pid)) or false;
+        let artifact = dna::run_tool("cp\n" + dir + "/rollback.topology\n" + self.dna_dir + "/org.topology"); if !pid || artifact.code != 0 { return false; }
+        let saved = organization_launch_write(self.root, "organization.source.rollback_launched", a.attempt_id,
+            rollback.launched(a, claim.event_id, self.org.pid, after.key, after.started));
+        return saved.ok && rollback.answered(source, basis, a);
+    }
+    fn answer_prepared_org(id: String) -> Bool {
+        let source = org_runtime::OrganizationLaunchSource { root: self.root }; let basis = source.basis(id);
+        let prepared = self.prepare_organization_launch(id); let codec = dna::OrganizationLaunchCodec { };
+        if !prepared.valid { return false; }
+        if prepared.fresh { let started = self.start_organization_launch(prepared); }
+        let launched = self.recover_organization_launch(id);
+        if !launched.valid {
+            let exited = source.exited(prepared.attempt);
+            return if exited.valid { self.rollback_organization_launch(basis, exited.code) } else { false };
+        }
+        let previous = source.observed(launched);
+        if previous.valid {
+            if previous.outcome == "healthy" { self.observed(id, "healthy", launched.attempt.binary_digest, "organization launch " + launched.attempt.attempt_id + " observed healthy"); return prepared_source_restart_answered(open_projection(self.root, self.seed, self.toolchain), basis.handoff); }
+            let exited = source.exited(prepared.attempt);
+            return if exited.valid { self.rollback_organization_launch(basis, exited.code) } else { false };
+        }
+        let first = source.live(launched.attempt);
+        if !first.valid || first.process_key != launched.process_key { return false; }
+        let began = std::time::now(); let end = began + launched.attempt.observation_seconds; let mut code = -2;
+        while std::time::now() < end && code == -2 {
+            if !self.body_alive() { return false; }
+            code = exit_code(self.org); self.org_log = drain_log(self.org, self.org_log); std::time::sleep(100ms);
+        }
+        code = exit_code(self.org);
+        if code >= 0 {
+            if !self.note_organization_exit(launched.attempt) { return false; }
+            let saved = organization_launch_write(self.root, "organization.source.launch_observed", launched.attempt.attempt_id,
+                codec.observation_body(launched, "crashed", began, std::time::now()));
+            return if saved.ok { self.rollback_organization_launch(basis, code) } else { false };
+        }
+        let after = source.live(launched.attempt);
+        if !after.valid || after.pid != launched.pid || after.process_key != launched.process_key || after.process_started != launched.process_started { return false; }
+        let saved = organization_launch_write(self.root, "organization.source.launch_observed", launched.attempt.attempt_id,
+            codec.observation_body(launched, "healthy", began, std::time::now()));
+        if !saved.ok { return false; }
+        self.observed(id, "healthy", launched.attempt.binary_digest, "organization launch " + launched.attempt.attempt_id + " observed healthy");
+        return prepared_source_restart_answered(open_projection(self.root, self.seed, self.toolchain), basis.handoff);
+    }
     fn restart_org(id: String, rollback: Bool) -> Bool {
         let org_seed = self.root + "/" + ORG_SEED;
         let art = self.dna_dir + "/org.topology";
@@ -758,6 +1118,10 @@ locus Host {
         let p = open_projection(self.root, self.seed, self.toolchain);
         let req = pending_restart(p, self.handled);
         if req.seq < 0 { return; }
+        if prepared_source_restart(p, req) {
+            if self.answer_prepared_org(req.entity) { self.handled = keys_add(self.handled, fact_key(p, req.seq)); }
+            return;
+        }
         self.handled = keys_add(self.handled, fact_key(p, req.seq));
         let rollback = std::str::starts_with(req.body, "rollback ");
         let seed_named = seed_named_in(req.body);
@@ -795,20 +1159,30 @@ locus Host {
         // 2. dev: the knowledge service first, so the organization's
         //    environment names it (GH #583 K2)
         if self.verb == "dev" { self.start_knowledge(); }
-        // 3. the organization: built, started from the root, observable
-        let org_bin = self.build_seed(org_seed);
-        if len(org_bin) == 0 { self.quit(1); }
-        self.remove_sockets();
-        std::io::fs::unlink(self.dna_dir + "/org.log") or discard;
-        std::io::fs::unlink(self.dna_dir + "/app.log") or discard;
-        if !self.body_assert("the organization") {
-            if self.knowledge.pid > 0 { stop_proc(self.knowledge); }
-            self.quit(3);
+        // A pending prepared handoff uses its claimed attempt even at host
+        // startup. An unknown old attempt never falls through to a second start.
+        let incoming = open_projection(self.root, self.seed, self.toolchain);
+        let prepared_restart = pending_restart(incoming, self.handled);
+        let prepared_startup = prepared_restart.seq >= 0 && prepared_source_restart(incoming, prepared_restart);
+        if prepared_startup {
+            let answered = self.answer_prepared_org(prepared_restart.entity);
+            if self.org.pid <= 0 { self.say("prepared organization launch remains unavailable; no second attempt started"); self.quit(3); }
+        } else {
+            // 3. the organization: built, started from the root, observable
+            let org_bin = self.build_seed(org_seed);
+            if len(org_bin) == 0 { self.quit(1); }
+            self.remove_sockets();
+            std::io::fs::unlink(self.dna_dir + "/org.log") or discard;
+            std::io::fs::unlink(self.dna_dir + "/app.log") or discard;
+            if !self.body_assert("the organization") {
+                if self.knowledge.pid > 0 { stop_proc(self.knowledge); }
+                self.quit(3);
+            }
+            self.org = start(self.dna_dir, "org", self.root, self.child_envs("", ""), org_bin);
+            if self.org.pid <= 0 { self.say("cannot start " + org_bin); self.quit(1); }
+            let pw = write_text(self.dna_dir + "/org.pid", to_string(self.org.pid)) or false;
+            self.say("organization (pid " + to_string(self.org.pid) + ") from " + self.root + " under LOTUS_OBS=1");
         }
-        self.org = start(self.dna_dir, "org", self.root, self.child_envs("", ""), org_bin);
-        if self.org.pid <= 0 { self.say("cannot start " + org_bin); self.quit(1); }
-        let pw = write_text(self.dna_dir + "/org.pid", to_string(self.org.pid)) or false;
-        self.say("organization (pid " + to_string(self.org.pid) + ") from " + self.root + " under LOTUS_OBS=1");
         // 3. the membrane comes up
         let bound = self.wait_membrane(20);
         if bound { self.say("membrane bound at " + self.dna_dir); }
@@ -842,6 +1216,16 @@ locus Host {
             if code == -2 {
                 self.tick();
                 std::time::sleep(1s);
+            } else {
+                // A proven failed prepared child may still need its exact
+                // rollback acknowledgment. Keep this host/lease alive to
+                // reconcile that one handoff; never replace an unknown claim.
+                let waiting = open_projection(self.root, self.seed, self.toolchain);
+                let handoff_fact = pending_restart(waiting, self.handled);
+                if handoff_fact.seq >= 0 && prepared_source_restart(waiting, handoff_fact) {
+                    if !self.body_alive() { self.stop_body(3); }
+                    self.tick(); code = -2; std::time::sleep(1s);
+                }
             }
         }
         // the fence stopped it: the lease is not ours to keep

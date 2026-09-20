@@ -18,6 +18,8 @@ import "../core" as dna;
 import "../knowledge" as know;
 import "./knowledge_projection_fidelity" as fidelity_cases;
 import "./knowledge_visibility" as visibility_cases;
+import "./knowledge_graph_service" as graph_service_cases;
+import "./knowledge_graph_store" as graph_store_cases;
 
 // Postgres builds its JSON server-side and Hale's builder spaces its
 // separators; both are the same document, so compare without them.
@@ -29,7 +31,9 @@ fn doc(kind: String, text: String, author: String, target: String) -> String {
     return dna::knowledge_document(dna::Idea { kind: kind, text: text, author: author }, target);
 }
 
-main locus App {
+// The imported service declares a main locus; this test enters App explicitly
+// through its existing fn main, retaining the lifecycle dispatch below.
+locus App {
     params {
         j: dna::MemJournal = dna::MemJournal { };
         receipts: dna::FileReceipts = dna::FileReceipts { dir: "/tmp/dna-know-receipts" };
@@ -134,8 +138,19 @@ main locus App {
         std::test::assert(store.set_watermark(2) && store.watermark() == self.j.revision(), label + ": a lower watermark does not move it back");
     }
     run() {
+        // Dispatch in the actual lifecycle entry. Only this isolated child
+        // clears private database/Git settings; the parent retains CI's DSN.
+        if std::env::arg_or(1, "") == "--graph-service-cases" {
+            graph_service_cases::run_cases();
+        } else {
+            graph_service_cases::run_isolated();
+            self.registered_cases();
+        }
+    }
+    fn registered_cases() {
         fidelity_cases::run_cases();
         visibility_cases::run_cases();
+        graph_store_cases::run_cases();
         std::io::fs::mkdir("/tmp/dna-know-receipts") or discard;
         self.exercise(self.mem, "mem");
         // a second store over the same record, from zero, reaches the same state

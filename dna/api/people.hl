@@ -1,0 +1,48 @@
+// Exact person retirement plan supplied by the same native command service.
+// Source memberships and viewing positions never confer retirement authority.
+import "../operations" as ops;
+
+interface PeopleProvider {
+    fn person(context: CommandContext, id: String) -> ops::PersonAdministrationRead;
+}
+locus NoPeople {
+    params { }
+    fn person(context: CommandContext, id: String) -> ops::PersonAdministrationRead { return ops::PersonAdministrationRead { code: "commands_unsupported" }; }
+}
+locus PersonWire {
+    params { }
+    fn capability(value: CommandCapability, origin: String) -> String {
+        let wire = CommandWire { }; let valid = wire.recipients_valid(value.recipients);
+        let available = value.available && valid && wire.origin_valid(origin);
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("profile", "dna.person.retire.v1"); b.bool_field("available", available); b.bool_field("authorized", available && value.authorized);
+        b.string_field("position_id", "org"); b.string_field("recovery", "record_lifetime");
+        b.string_field("max_identity_bytes", "256"); b.string_field("max_request_bytes", "32768"); b.string_field("max_transfers", "32");
+        b.field("recipients", if available && value.authorized { value.recipients } else { "[]" });
+        b.string_field("reason", if !wire.origin_valid(origin) { "Command submission has no configured origin." } else if !valid { "Person authority is unavailable." } else if wire.bounded(value.reason, 512, false, true) { value.reason } else { "Person capability is unavailable." });
+        b.end_object(); return b.result();
+    }
+    fn read(context: CommandContext, query: Query, provider: PeopleProvider) -> std::http::Response {
+        let http = Http { }; let commands = CommandWire { };
+        if query.id == "" || query.offset != 0 { return http.error(400, "invalid_query", "person inspection requires an exact id and no offset", false); }
+        let result = provider.person(context, query.id);
+        if !result.ok {
+            if result.code == "snapshot_changed" { return http.error(409, "snapshot_changed", "the Record changed while preparing retirement", true); }
+            if result.code == "forbidden" { return commands.error(result.code); }
+            return http.error(503, "person_source_unavailable", "the complete person responsibility plan is unavailable", false);
+        }
+        if result.application_id != context.source.identity || result.head != context.source.head || result.revision != context.source.revision
+            || (query.snapshot != "" && query.snapshot != result.head) { return http.error(409, "snapshot_changed", "the Record changed while preparing retirement", true); }
+        let plan = result.plan;
+        if !plan.ok || plan.person != query.id || !commands.recipients_valid(result.recipients) { return http.error(503, "person_source_unavailable", "the person plan could not be verified", false); }
+        let common = ops::GovernanceCommandCodec { }; let b = std::json::Builder { }; b.begin_object();
+        b.string_field("profile", "dna.person-administration.v1"); b.field("person", common.quote(plan.person));
+        b.string_field("state", plan.state); b.field("successor", common.quote(plan.successor));
+        b.string_field("event_id", plan.event_id); b.string_field("subject_digest", plan.subject_digest);
+        b.field("tasks", plan.tasks); b.string_field("transferred", to_string(plan.transferred));
+        b.bool_field("authorized", result.authorized); b.field("recipients", result.recipients);
+        b.begin_object_field("basis"); b.string_field("memory", "record"); b.string_field("routing", "0");
+        b.string_field("record_head", result.head); b.string_field("record_revision", to_string(result.revision)); b.end_object(); b.end_object();
+        return http.success(context.source, b.result());
+    }
+}

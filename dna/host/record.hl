@@ -8,6 +8,7 @@
 // tool: the one implementation over git is `dna::GitRecord`.
 
 import "../core" as dna;
+import "../organization_runtime" as org_runtime;
 
 const RECORD_REF: String = "refs/dna/journal";
 const JOURNAL: String = "journal";
@@ -18,6 +19,9 @@ const OBSERVED_SOCK: String = "hale-dna.expression.observed.sock";
 const PRESSURE_SOCK: String = "hale-dna.pressure.raised.sock";
 const CONCERN_SOCK: String = "hale-dna.concern.raised.sock";
 const PRACTICE_SOCK: String = "hale-dna.practice.requested.sock";
+const KNOWLEDGE_NODE_SOCK: String = "hale-dna.knowledge.node.requested.sock";
+const KNOWLEDGE_BINDING_SOCK: String = "hale-dna.knowledge.binding.requested.sock";
+const KNOWLEDGE_EDGE_SOCK: String = "hale-dna.knowledge.edge.requested.sock";
 const IDENTITY_REF: String = "refs/dna/identity";
 const IDENTITY: String = "identity";
 
@@ -32,9 +36,7 @@ fn write_text(path: String, text: String) -> Bool fallible(IoError) {
     return true;
 }
 
-fn record_head(repo: String) -> String {
-    return rec(repo).head(JOURNAL);
-}
+fn record_head(root: String) -> String { let authority = org_runtime::HostAuthority { root: root }; return authority.record_head(); }
 
 // The remote the record syncs with ("" when the repository has none).
 fn record_remote(repo: String) -> String {
@@ -46,25 +48,17 @@ fn record_remote(repo: String) -> String {
 // trusted, the operator's profile) or `signed` (a relayed row is admitted
 // only when its commit carries a signature the record's trust verifies —
 // git's own keyring or allowed-signers file is the list of who may act).
-fn trust_mode(root: String) -> String {
-    let t = rec(root).setting("trust");
-    return if len(t) == 0 { "local" } else { t };
-}
+fn trust_mode(root: String) -> String { let authority = org_runtime::HostAuthority { root: root }; return authority.trust(); }
 
 // GH #664: the owner this clone's body is (`git config dna.owner`), "" when unnamed.
-fn owner_here(root: String) -> String {
-    return rec(root).setting("owner");
-}
+fn owner_here(root: String) -> String { let authority = org_runtime::HostAuthority { root: root }; return authority.owner(); }
 // GH #669: this owner's key to the shared record's service (`git config dna.owner.key`).
 fn owner_key_here(root: String) -> String {
     return rec(root).setting("owner.key");
 }
 const OWNERS_FILE: String = "dna/org/owners";
 // Whether the genome's owners map names any position (the record is shared).
-fn shared_here(root: String) -> Bool {
-    let o = dna::Ownership { path: root + "/" + OWNERS_FILE, me: owner_here(root), me_env: "" };
-    return o.shared();
-}
+fn shared_here(root: String) -> Bool { let authority = org_runtime::HostAuthority { root: root }; return authority.shared(); }
 fn owners_here(root: String) -> String {
     let o = dna::Ownership { path: root + "/" + OWNERS_FILE, me: owner_here(root), me_env: "" };
     return o.owners();
@@ -84,9 +78,7 @@ fn ownership_note(root: String, to: String) -> String {
     return o.why_not(to);
 }
 
-fn row_verified(root: String, sha: String) -> Bool {
-    return rec(root).signer(sha).verified;
-}
+fn row_verified(root: String, sha: String) -> Bool { let authority = org_runtime::HostAuthority { root: root }; return authority.row_verified(sha); }
 
 fn membrane_up(root: String) -> Bool {
     let d = root + "/.hale/dna/";
@@ -129,10 +121,7 @@ fn journal_text_at(repo: String, commit: String) -> String {
 // rows (`ledger.adopted` / `ledger.abandoned`), and the checkpoint.
 // (a locus handed to an interface parameter is bound to a local first:
 // passed inline as a temporary it reaches the callee unborn)
-fn routing_here(root: String) -> Int {
-    let j = dna::GitJournal { repo: root, author: "host" };
-    return dna::routing_of(j);
-}
+fn routing_here(root: String) -> Int { let authority = org_runtime::HostAuthority { root: root }; return authority.routing(); }
 
 fn checkpoint_here(root: String) -> String {
     let j = dna::GitJournal { repo: root, author: "host" };
@@ -644,7 +633,10 @@ fn publish_on_membrane(root: String, kind: String, body: String) -> String {
         + "dna.concern.raised = unix://" + d + CONCERN_SOCK + " : connect\n"
     // an organization scaffolded before practices has no such socket:
     // the route is named only for the fact that needs it
-        + (if kind == "practice" { "dna.practice.requested = unix://" + d + PRACTICE_SOCK + " : connect\n" } else { "" });
+        + (if kind == "practice" { "dna.practice.requested = unix://" + d + PRACTICE_SOCK + " : connect\n" } else { "" })
+        + (if kind == "knowledge-node" { "dna.knowledge.node.requested = unix://" + d + KNOWLEDGE_NODE_SOCK + " : connect\n" } else { "" })
+        + (if kind == "knowledge-binding" { "dna.knowledge.binding.requested = unix://" + d + KNOWLEDGE_BINDING_SOCK + " : connect\n" } else { "" })
+        + (if kind == "knowledge-edge" { "dna.knowledge.edge.requested = unix://" + d + KNOWLEDGE_EDGE_SOCK + " : connect\n" } else { "" });
     let wrote = write_text(conf, text) or false;
     if !wrote { return "cannot write " + conf; }
     let r = dna::run_tool("sh\n-c\ncd \"$1\" && LOTUS_BUS_CONFIG=\"$2\" exec \"$3\" \"$4\" \"$5\"\nsh\n" + root + "\n" + conf + "\n" + bin + "\n" + kind + "\n" + body);
@@ -666,13 +658,13 @@ fn publish_on_membrane(root: String, kind: String, body: String) -> String {
 // asserts the lease before every consequential act; a body whose lease
 // is no longer its own stops (a partitioned server executes nothing
 // past its TTL).
-const BODY_LEASE: String = "lease/body";
-const BODY_LEASE_TRACK: String = "remote/lease/body";
+const BODY_LEASE: String = org_runtime::BODY_LEASE;
+const BODY_LEASE_TRACK: String = org_runtime::BODY_LEASE_TRACK;
 const BODY_TTL: Int = 30;
 // The body fence stops the organism this many seconds before the lease
 // it could last prove expires; another body can take the lease only once
 // it has expired.
-const FENCE_MARGIN: Int = 5;
+const FENCE_MARGIN: Int = org_runtime::FENCE_MARGIN;
 
 type BodyLease {
     ok: Bool = true; // false: the remote could not be read (a partition)
@@ -692,22 +684,7 @@ fn body_holder(root: String) -> String {
     return (if len(user) > 0 { user } else { "body" }) + "@" + host + ":" + place;
 }
 
-fn parse_body_lease(sha: String, text: String) -> BodyLease {
-    if len(text) == 0 { return BodyLease { }; }
-    let a = std::str::index_of(text, "\n");
-    if a < 0 { return BodyLease { }; }
-    let holder = text[0..a];
-    let rest = text[(a + 1)..len(text)];
-    let b = std::str::index_of(rest, "\n");
-    if b < 0 { return BodyLease { }; }
-    let token = std::str::parse_int(rest[0..b]) or 0;
-    let rest2 = rest[(b + 1)..len(rest)];
-    let c = std::str::index_of(rest2, "\n");
-    if c < 0 { return BodyLease { }; }
-    let expires = std::str::parse_int(rest2[0..c]) or 0;
-    let present = dna::trim_nl(rest2[(c + 1)..len(rest2)]) == "1";
-    return BodyLease { present: present, holder: holder, token: token, expires: expires, sha: sha };
-}
+fn parse_body_lease(sha: String, text: String) -> BodyLease { let authority = org_runtime::HostAuthority { }; let l = authority.parse_lease(sha, text); return BodyLease { ok: l.ok, present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: l.sha }; }
 
 fn lease_text(l: BodyLease) -> String {
     return l.holder + "\n" + to_string(l.token) + "\n" + to_string(l.expires) + "\n" + (if l.present { "1" } else { "0" });
@@ -724,41 +701,15 @@ fn store_leases(repo: String) -> dna::ServiceLeases {
 // GH #665: the store's key for this body's lease — one per owner over a
 // shared record (`owner/<owner>`), `body` when the organization is the
 // one owner. Its token is the epoch every write the body makes carries.
-fn store_lease_key(repo: String) -> String {
-    if shared_here(repo) { return "owner/" + owner_here(repo); }
-    return "body";
-}
+fn store_lease_key(root: String) -> String { let authority = org_runtime::HostAuthority { root: root }; return authority.lease_key(); }
 
-fn body_lease_from_store(repo: String) -> BodyLease {
-    let sl = store_leases(repo);
-    let l = sl.current(store_lease_key(repo));
-    if !sl.reachable { return BodyLease { ok: false }; }
-    if len(l.holder) == 0 && l.token == 0 { return BodyLease { }; }
-    return BodyLease { present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: to_string(l.token) };
-}
+fn body_lease_from_store(repo: String) -> BodyLease { let authority = org_runtime::HostAuthority { root: repo }; let l = authority.store_lease(); return BodyLease { ok: l.ok, present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: l.sha }; }
 
 // The lease as the record's authority has it: the store's row on
 // routing 1; the remote's cell when there is a remote (received now),
 // the clone's otherwise. `ok` false when the authority could not be
 // reached.
-fn body_lease_read(repo: String) -> BodyLease {
-    if body_in_store(repo) { return body_lease_from_store(repo); }
-    let r = rec(repo);
-    let remote = record_remote(repo);
-    let mut key = BODY_LEASE;
-    if len(remote) > 0 {
-        let f = r.receive(remote, BODY_LEASE);
-        if !f.ok {
-            if !f.absent { return BodyLease { ok: false }; }
-            let gone = r.drop_cell(BODY_LEASE_TRACK);
-            return BodyLease { };
-        }
-        key = BODY_LEASE_TRACK;
-    }
-    let c = r.cell(key);
-    if !c.present { return BodyLease { }; }
-    return parse_body_lease(c.version, c.text);
-}
+fn body_lease_read(repo: String) -> BodyLease { let authority = org_runtime::HostAuthority { root: repo }; let l = authority.body_lease(); return BodyLease { ok: l.ok, present: l.present, holder: l.holder, token: l.token, expires: l.expires, sha: l.sha }; }
 
 // Write a lease where `expected` is the version the cell has now
 // ("" = no lease): compare-and-swap at the remote (the cell shared with

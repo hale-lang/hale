@@ -118,6 +118,7 @@ pub const OPERATION_FILES: &[EmbeddedFile] = at![
     "dna/operations/queries.hl",
     "dna/operations/organization.hl",
     "dna/operations/organization_json.hl",
+    "dna/operations/definitions.hl",
 ];
 
 /// The knowledge graph as a service (GH #583 K1): the store library

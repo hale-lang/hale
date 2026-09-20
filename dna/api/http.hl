@@ -8,6 +8,7 @@ type Query {
     error: String = "";
     id: String = "";
     snapshot: String = "";
+    assignee: String = "";
     limit: Int = 25;
     offset: Int = 0;
 }
@@ -105,7 +106,9 @@ locus Http {
         }
         return n;
     }
-    fn query(raw: String) -> Query {
+    fn query(raw: String) -> Query { return self.query_fields(raw, false); }
+    fn task_query(raw: String) -> Query { return self.query_fields(raw, true); }
+    fn query_fields(raw: String, allow_assignee: Bool) -> Query {
         let mut q = Query { };
         let mut seen = "|";
         let mut rest = raw;
@@ -118,12 +121,16 @@ locus Http {
             let key = self.decode(pair[0..eq]);
             let value = self.decode(pair[(eq + 1)..len(pair)]);
             if !key.ok || !value.ok { return Query { ok: false, error: "invalid query encoding" }; }
-            if key.text != "id" && key.text != "limit" && key.text != "offset" && key.text != "snapshot" { return Query { ok: false, error: "unsupported query field" }; }
+            if key.text != "id" && key.text != "limit" && key.text != "offset" && key.text != "snapshot" && !(allow_assignee && key.text == "assignee") { return Query { ok: false, error: "unsupported query field" }; }
             if std::str::contains(seen, "|" + key.text + "|") { return Query { ok: false, error: "duplicate query field" }; }
             seen = seen + key.text + "|";
             if key.text == "id" {
                 if len(value.text) == 0 { return Query { ok: false, error: "id must not be empty" }; }
                 q.id = value.text;
+            }
+            if key.text == "assignee" {
+                if len(value.text) == 0 || len(value.text) > 256 { return Query { ok: false, error: "assignee must be 1 through 256 UTF-8 bytes" }; }
+                q.assignee = value.text;
             }
             if key.text == "snapshot" {
                 if len(value.text) == 0 { return Query { ok: false, error: "snapshot must not be empty" }; }

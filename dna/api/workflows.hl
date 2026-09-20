@@ -1,0 +1,182 @@
+// Iris read adapter over the native wf1 recipe and pure projection. It never
+// dispatches work or decides a transition. Initial source: trusted-local Record
+// routing 0; a split Ledger or hosted identity needs an owning-service reader.
+import "../core" as dna;
+import "../operations" as ops;
+
+fn workflow_fact(kind: String) -> Bool {
+    return kind == "workflow.admitted" || kind == "workflow.refused" || kind == "workflow.settled" || kind == "step.registered" || kind == "step.activated" || kind == "step.completed" || kind == "step.failed" || kind == "attempt.admitted" || kind == "attempt.outcome" || kind == "work.settled";
+}
+
+type ExecutionIdentity { id: String = ""; }
+@form(vec)
+locus ExecutionIdentities { capacity { heap rows of ExecutionIdentity; } }
+
+locus WorkflowRead {
+    params {
+        j: dna::Journal;
+        p: dna::WorkflowProjection = dna::WorkflowProjection { };
+        visibility: ops::Queries;
+        roots: ExecutionIdentities = ExecutionIdentities { };
+        problem: String = "";
+        code: String = "workflow_source_invalid";
+    }
+    fn string(text: String, key: String) -> String {
+        let syntax = ops::OrganizationJson { };
+        return syntax.decode(std::json::find_field_raw(text, key));
+    }
+    fn fail(code: String, why: String) -> Bool { self.code = code; self.problem = why; return false; }
+    fn load() -> Bool {
+        if self.j.revision() > 2048 { return self.fail("workflow_read_limit", "the execution reader's event budget was exceeded"); }
+        let mut i = 0;
+        let mut bytes = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            // Abandoning a Ledger cannot restore a complete operational history.
+            if e.kind == "ledger.adopted" { return self.fail("workflow_source_unavailable", "this application has adopted a Ledger; its owning-service execution reader is not connected"); }
+            if workflow_fact(e.kind) {
+                bytes = bytes + len(e.body);
+                if len(e.body) > 65536 || bytes > 524288 || self.p.fact_count() >= 512 { return self.fail("workflow_read_limit", "the execution reader's fact budget was exceeded"); }
+                let applied = dna::replay(self.p, e.kind, e.entity, e.body);
+                if !applied.ok { return self.fail("workflow_source_invalid", "a recorded execution fact was refused by the native projection: " + applied.why); }
+                if self.p.node_count() > 256 { return self.fail("workflow_read_limit", "the execution reader's bound-node budget was exceeded"); }
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while i < self.p.task_count() {
+            let t = self.p.tasks.get(i) or dna::TaskView { };
+            if len(t.parent_task) == 0 && self.visible(t.task_id) { self.roots.push(ExecutionIdentity { id: t.task_id }); }
+            i = i + 1;
+        }
+        // A task birth without a wf1 fact does not establish its execution engine.
+        i = 0;
+        while i < self.j.revision() {
+            let e = self.j.read(i);
+            if e.kind == "task.born" && self.visibility.receipt_status(e.entity) == "available" && len(self.p.task(e.entity).task_id) == 0 && !self.has(e.entity) {
+                self.roots.push(ExecutionIdentity { id: e.entity });
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn root(id: String) -> String {
+        let mut at = id;
+        let mut hops = 0;
+        while len(at) > 0 && hops <= self.p.node_count() + self.p.task_count() {
+            let n = self.p.node(at);
+            let t = self.p.task(at);
+            let parent = if len(n.id) > 0 { n.parent } else { t.parent_task };
+            if len(parent) == 0 { return if len(n.id) > 0 || len(t.task_id) > 0 { at } else { "" }; }
+            at = parent; hops = hops + 1;
+        }
+        return "";
+    }
+    fn fact_node(f: dna::Fact) -> String {
+        if f.kind == "attempt.admitted" || f.kind == "attempt.outcome" { return self.string(f.body, "work_id"); }
+        return f.id;
+    }
+    fn visible(id: String) -> Bool {
+        let mut i = 0;
+        while i < self.p.node_count() {
+            let n = self.p.tree.get(i) or dna::BoundNode { };
+            if self.root(n.id) == id && n.kind == "work" {
+                if n.data_class != "internal" && n.data_class != "public" { return false; }
+                if len(n.context_digest) > 0 && self.visibility.receipt_status(n.context_digest) != "available" { return false; }
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while i < self.p.fact_count() {
+            let f = self.p.facts.get(i) or dna::Fact { };
+            if self.root(self.fact_node(f)) == id {
+                if self.visibility.receipt_status(f.id) != "available" { return false; }
+                let input = self.string(f.body, "inputs_ref");
+                let result = self.string(f.body, "result_ref");
+                let evidence = self.string(f.body, "evidence_ref");
+                if len(input) > 0 && self.visibility.receipt_status(input) != "available" { return false; }
+                if len(result) > 0 && self.visibility.receipt_status(result) != "available" { return false; }
+                if len(evidence) > 0 && self.visibility.receipt_status(evidence) != "available" { return false; }
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn count() -> Int { return self.roots.len(); }
+    fn at(index: Int) -> String { let entry = self.roots.get(index) or ExecutionIdentity { }; return entry.id; }
+    fn has(id: String) -> Bool { let mut i = 0; while i < self.roots.len() { if self.at(i) == id { return true; } i = i + 1; } return false; }
+    fn node_json(n: dna::BoundNode) -> String {
+        let b = std::json::Builder { };
+        let t = self.p.task(n.id); let s = self.p.step(n.id); let w = self.p.work(n.id);
+        let status = if n.kind == "task" { if len(t.task_id) == 0 { "bound" } else if len(t.disposition) > 0 { t.disposition } else { "admitted" } } else if n.kind == "step" { if len(s.step_id) == 0 { "bound" } else if len(s.disposition) > 0 { s.disposition } else if s.activated { "activated" } else { "registered" } } else { if len(w.work_id) == 0 { "bound" } else if len(w.disposition) > 0 { w.disposition } else if len(w.attempt_disposition) > 0 { "attempt_" + w.attempt_disposition } else if len(w.attempt_id) > 0 { "attempt_admitted" } else { "registered" } };
+        b.begin_object();
+        b.string_field("id", n.id); b.string_field("kind", n.kind); b.string_field("parent_id", n.parent);
+        b.string_field("spawning_step", n.spawning_step); b.string_field("member_key", n.member_key);
+        b.string_field("definition_id", n.definition); b.string_field("revision", to_string(n.revision));
+        b.string_field("step_index", to_string(n.step_index)); b.string_field("state", status);
+        b.string_field("objective", n.objective); b.string_field("target", n.target);
+        b.string_field("context_digest", n.context_digest); b.string_field("knowledge_bindings", n.knowledge_bindings);
+        b.string_field("output_contract", n.output_contract); b.string_field("requires", n.requires);
+        b.string_field("data_class", n.data_class); b.string_field("cost_ceiling", to_string(n.cost_ceiling));
+        b.string_field("allowance", to_string(n.attempts));
+        b.string_field("attempt_id", w.attempt_id); b.string_field("attempt_no", to_string(w.attempt_no));
+        b.string_field("result", self.p.result_of(n.id)); b.string_field("result_ref", self.p.result_ref_of(n.id));
+        b.string_field("pending", if n.kind == "step" { self.p.pending(n.id) } else { "" });
+        b.bool_field("joined", n.kind == "step" && self.p.joined(n.id));
+        b.string_field("failed_member", s.failed_member); b.string_field("reason", t.reason);
+        b.string_field("admission_stop", if n.kind == "task" && len(t.task_id) > 0 { self.p.stop(n.id) } else { "" });
+        b.end_object(); return b.result();
+    }
+    fn attempt_json(f: dna::Fact) -> String {
+        let a = dna::decode_attempt(f.body).value;
+        let outcome = self.p.recorded("attempt.outcome", a.attempt_id);
+        let o = dna::decode_attempt_outcome(outcome).value;
+        let b = std::json::Builder { };
+        b.begin_object(); b.string_field("id", a.attempt_id); b.string_field("work_id", a.work_id);
+        b.string_field("number", to_string(a.attempt_no)); b.string_field("performer_kind", a.performer_kind);
+        b.string_field("disposition", if len(outcome) > 0 { o.disposition } else { "outstanding" });
+        b.string_field("performer", o.performer); b.string_field("result", o.result); b.string_field("result_ref", o.result_ref);
+        b.string_field("evidence_ref", o.evidence_ref); b.string_field("narrative", o.narrative);
+        b.bool_field("accepted", self.p.work(a.work_id).disposition == "done" && self.p.work(a.work_id).attempt_id == a.attempt_id);
+        b.end_object(); return b.result();
+    }
+    fn row(id: String, detail: Bool) -> String {
+        let t = self.p.task(id);
+        let b = std::json::Builder { };
+        b.begin_object(); b.string_field("id", id); b.string_field("engine", if len(t.task_id) > 0 { "wf1" } else { "unclassified" });
+        b.string_field("definition_id", t.definition); b.string_field("revision", to_string(t.revision));
+        b.string_field("state", if len(t.task_id) == 0 { "unclassified" } else if len(t.disposition) > 0 { t.disposition } else { "admitted" });
+        b.string_field("reason", t.reason);
+        b.begin_array_field("nodes");
+        let mut i = 0;
+        if detail { while i < self.p.node_count() { let n = self.p.tree.get(i) or dna::BoundNode { }; if self.root(n.id) == id { b.value(self.node_json(n)); } i = i + 1; } }
+        b.end_array(); b.begin_array_field("attempts"); i = 0;
+        if detail { while i < self.p.fact_count() { let f = self.p.facts.get(i) or dna::Fact { }; if f.kind == "attempt.admitted" && self.root(self.fact_node(f)) == id { b.value(self.attempt_json(f)); } i = i + 1; } }
+        b.end_array(); b.begin_array_field("history"); i = 0;
+        if detail { while i < self.p.fact_count() { let f = self.p.facts.get(i) or dna::Fact { }; if self.root(self.fact_node(f)) == id { b.begin_object(); b.string_field("kind", f.kind); b.string_field("id", f.id); b.string_field("node_id", self.fact_node(f)); b.string_field("order", to_string(i)); b.end_object(); } i = i + 1; } }
+        b.end_array(); b.end_object(); return b.result();
+    }
+}
+
+locus WorkflowWire {
+    params { }
+    fn read(root: String, mode: String, source: Source, query: Query) -> std::http::Response {
+        let http = Http { };
+        if mode != "local" { return http.error(403, "workflow_source_unavailable", "hosted workflow reads require an owning-service visibility provider", false); }
+        let j = dna::GitJournal { repo: root };
+        if j.head() != source.head || j.revision() != source.revision { return http.error(409, "snapshot_changed", "the Record changed while loading executions", true); }
+        let q = WorkflowRead { j: j, visibility: ops::Queries { j: j, receipts: ops::NoReceipts { } } };
+        if !q.load() { return http.error(503, q.code, q.problem, q.code == "workflow_source_unavailable"); }
+        if len(query.id) > 0 && !q.has(query.id) { return http.error(404, "workflow_not_found", "no such visible execution", false); }
+        let total = if len(query.id) > 0 { 1 } else { q.count() };
+        let end = if query.offset + query.limit < total { query.offset + query.limit } else { total };
+        let b = std::json::Builder { }; b.begin_object(); b.begin_array_field("items");
+        let mut i = query.offset;
+        while i < end { b.value(q.row(if len(query.id) > 0 { query.id } else { q.at(i) }, len(query.id) > 0)); i = i + 1; }
+        b.end_array(); b.field("page", http.page(query.limit, query.offset, total, source.head));
+        b.begin_object_field("basis"); b.string_field("projection", "dna.workflow-projection/1"); b.string_field("memory", "record"); b.string_field("routing", "0"); b.bool_field("runtime_association", false); b.end_object(); b.end_object();
+        let record = dna::GitRecord { repo: root };
+        if record.head("journal") != source.head { return http.error(409, "snapshot_changed", "the Record changed while executions were read", true); }
+        return http.success(source, b.result());
+    }
+}

@@ -1,0 +1,183 @@
+import "../../core" as dna;
+import ".." as ops;
+
+locus CapturedProvider {
+    params { value: ops::DefinitionSnapshot = ops::DefinitionSnapshot { }; calls: Int = 0; }
+    fn supported() -> Bool { return self.value.supported; }
+    fn snapshot() -> ops::DefinitionSnapshot { self.calls = self.calls + 1; return self.value; }
+}
+fn provenance() -> ops::DefinitionProvenance {
+    return ops::DefinitionProvenance { source_revision: "loaded-source-a", source_path: "app/workflows.hl", dependency_digest: "host-dependency-claim" };
+}
+fn snapshot_of(document: String) -> ops::DefinitionSnapshot {
+    return ops::DefinitionSnapshot { supported: true, available: true, document: document, digest: dna::digest_of(document), provenance: provenance() };
+}
+fn invalid(document: String, label: String) {
+    let provider = CapturedProvider { value: snapshot_of(document) };
+    let read = ops::Definitions { provider: provider };
+    std::test::assert(!read.load(), label);
+    std::test::assert_eq_str(read.status(), "invalid", label + " is invalid, not empty");
+    std::test::assert_eq_int(read.count(), 0, label + " exposes no partial rows");
+    std::test::assert_eq_str(read.row_json(ops::DefinitionRow { id: "root@1" }), "null", label + " exposes no partial body");
+    std::test::assert_eq_str(read.basis_json(), "null", label + " exposes no valid basis");
+    std::test::assert(len(read.error()) > 0, label + " explains refusal");
+}
+fn test_real_catalog() {
+    let cat = dna::WorkflowCatalog { };
+    let a = cat.define("root", 1, 2, "Close the month · équipe\n<literal>");
+    let b = cat.define("root", 2, 1, "Next revision");
+    let c = cat.define("child", 9007199254740993, 1, "Child exact revision");
+    let work = dna::WorkRequest { objective: "Verify \"quoted\" text\nsecond line", context_digest: "context-digest", knowledge_bindings: "opaque bindings", output_contract: "Assessment", data_class: "internal", requires: "judgment", target: "org/finance", cost_ceiling: 9223372036854775807 };
+    let d = cat.leaf("root", 1, 0, "reconcile", work, 3);
+    let e = cat.child("root", 1, 0, "collect", "child", 9007199254740993);
+    let f = cat.leaf("root", 1, 1, "post", dna::WorkRequest { objective: "post" }, 1);
+    let g = cat.leaf("root", 2, 0, "replacement", dna::WorkRequest { objective: "new" }, 1);
+    let h = cat.leaf("child", 9007199254740993, 0, "contact", dna::WorkRequest { objective: "contact" }, 2);
+    let bound = cat.expand("already-admitted", "root", 1, dna::AdmissionLimits { });
+    std::test::assert(bound.ok, "real catalog has a preexisting bound execution");
+    let bound_count = cat.bound_count();
+    let document = cat.encode();
+    let provider = ops::DeclaredWorkflowCatalog { catalog: cat, provenance: provenance() };
+    let read = ops::Definitions { provider: provider };
+    std::test::assert(read.load(), "native injected catalog loads: " + read.error());
+    std::test::assert(read.load(), "same reader can be used repeatedly");
+    std::test::assert_eq_str(read.captured.document, document, "snapshot preserves exact native encode bytes");
+    std::test::assert_eq_str(read.captured.digest, dna::digest_of(document), "snapshot digest describes those exact bytes");
+    std::test::assert_eq_int(read.count(), 3, "both revisions and exact child retained");
+    std::test::assert_eq_str(read.at(0).id, "root@1", "native catalog order retained");
+    std::test::assert_eq_str(read.at(-1).id, "", "negative index absent");
+    std::test::assert_eq_str(read.at(3).id, "", "past-end index absent");
+    std::test::assert_eq_str(read.definition_of("root@3").id, "", "missing revision never resolves to latest");
+    std::test::assert_eq_int(read.member_count("root@1", 0), 2, "Step zero has leaf and child");
+    std::test::assert_eq_str(read.member_at("root@1", 0, 0).kind, "leaf", "leaf specification distinct");
+    std::test::assert_eq_str(read.member_at("root@1", 0, 1).kind, "child", "child reference distinct");
+    std::test::assert_eq_str(read.member_at("root@1", 1, 0).key, "post", "ordered Step one preserved");
+    std::test::assert_eq_str(read.member_at("root@1", 0, 9).kind, "", "missing member absent");
+    std::test::assert_eq_str(read.dependent_at("child@9007199254740993", 0).id, "root@1", "reverse exact child reference");
+    std::test::assert_eq_str(read.dependent_at("child@9007199254740993", 1).id, "", "only real dependent listed");
+    let wire = read.row_json(read.definition_of("root@1"));
+    std::test::assert(std::str::contains(wire, "\"revision\": \"9007199254740993\"") && std::str::contains(wire, "\"cost_ceiling\": \"9223372036854775807\""), "all large browser integers are exact strings");
+    std::test::assert(std::str::contains(wire, "\"index\": \"0\"") && std::str::contains(wire, "\"index\": \"1\""), "ordered Step indices are strings");
+    std::test::assert(std::str::contains(wire, "\"attempts\": \"3\"") && std::str::contains(wire, "\"leaf\": null") && std::str::contains(wire, "\"child\": null"), "leaf/child tagged shape never implies Work admission");
+    std::test::assert_eq_str(read.member_at("root@1", 0, 0).objective, work.objective, "escaped/multiline leaf text preserved");
+    std::test::assert_eq_str(read.member_at("root@1", 0, 0).knowledge_bindings, work.knowledge_bindings, "opaque knowledge bindings retained without interpretation");
+    std::test::assert_eq_str(cat.encode(), document, "projection did not modify provider definitions");
+    std::test::assert_eq_int(cat.bound_count(), bound_count, "projection did not replace provider's bound execution");
+    std::test::assert_eq_str(cat.bound_at(0).id, "already-admitted", "preexisting bound identity untouched");
+    std::test::assert_eq_str(cat.bound_node("already-admitted/wf1/s1/post").objective, "post", "preexisting bound content untouched");
+    std::test::assert_eq_int(read.catalog.bound_count(), 0, "inspection materializes no execution recipe");
+    std::test::assert(std::str::contains(read.basis_json(), "trusted_host_claims") && std::str::contains(read.basis_json(), "loaded-source-a"), "provenance remains explicit host claims");
+    let later = cat.define("later", 1, 1, "new provider state");
+    let later_leaf = cat.leaf("later", 1, 0, "one", dna::WorkRequest { objective: "later" }, 1);
+    std::test::assert(read.load() && read.count() == 3, "captured view does not refresh itself after provider changes");
+    let fresh = ops::Definitions { provider: provider };
+    std::test::assert(fresh.load() && fresh.count() == 4 && fresh.snapshot() != read.snapshot(), "new reader obtains new catalog version");
+}
+fn test_states_and_capture() {
+    let missing = ops::Definitions { };
+    std::test::assert(!missing.load() && missing.status() == "unsupported", "absent provider is unsupported");
+    let unavailable = ops::Definitions { provider: CapturedProvider { value: ops::DefinitionSnapshot { supported: true, error: "disconnected" } } };
+    std::test::assert(!unavailable.load() && unavailable.status() == "unavailable" && unavailable.error() == "disconnected", "unavailable provider differs from empty");
+    let empty_cat = dna::WorkflowCatalog { };
+    let doc = empty_cat.encode();
+    let provider = CapturedProvider { value: snapshot_of(doc) };
+    let empty = ops::Definitions { provider: provider };
+    std::test::assert(empty.load() && empty.count() == 0 && empty.status() == "available", "supported empty catalog is valid");
+    std::test::assert(empty.load() && provider.calls == 1, "one snapshot call for reader lifetime");
+    let missing_source = ops::Definitions { provider: ops::DeclaredWorkflowCatalog { catalog: empty_cat } };
+    std::test::assert(!missing_source.load() && missing_source.code() == "definition_source_unavailable", "no invented current source identity");
+    let wrong_digest = ops::Definitions { provider: CapturedProvider { value: ops::DefinitionSnapshot { supported: true, available: true, document: doc, digest: "wrong", provenance: provenance() } } };
+    std::test::assert(!wrong_digest.load() && wrong_digest.code() == "definition_digest_mismatch", "captured bytes must match digest");
+    let limits = dna::AdmissionLimits { max_works: 9007199254740993 };
+    let too_large = ops::Definitions { provider: ops::DeclaredWorkflowCatalog { catalog: empty_cat, limits: limits, provenance: provenance() } };
+    std::test::assert(!too_large.load() && too_large.status() == "unavailable" && too_large.code() == "definition_read_limit", "reader budget is not a declaration-invalid claim");
+    let invalid_limits = ops::Definitions { provider: ops::DeclaredWorkflowCatalog { catalog: empty_cat, limits: dna::AdmissionLimits { max_depth: 0 }, provenance: provenance() } };
+    std::test::assert(!invalid_limits.load() && invalid_limits.code() == "definition_limits_invalid", "native invalid limits rejected even for empty catalog");
+    let next_source = CapturedProvider { value: ops::DefinitionSnapshot { supported: true, available: true, document: doc, digest: dna::digest_of(doc), provenance: ops::DefinitionProvenance { source_revision: "loaded-source-b", source_path: "app/workflows.hl", dependency_digest: "host-dependency-claim" } } };
+    let next = ops::Definitions { provider: next_source };
+    std::test::assert(next.load() && next.snapshot() != empty.snapshot(), "same bytes with changed loaded source have a distinct basis");
+    let next_limits = ops::Definitions { provider: ops::DeclaredWorkflowCatalog { catalog: empty_cat, limits: dna::AdmissionLimits { max_attempts: 7 }, provenance: provenance() } };
+    std::test::assert(next_limits.load() && next_limits.snapshot() != empty.snapshot(), "validation limits are part of snapshot identity");
+}
+fn test_validation() {
+    let cat = dna::WorkflowCatalog { };
+    let a = cat.define("root", 1, 1, "ASCII A");
+    let b = cat.leaf("root", 1, 0, "one", dna::WorkRequest { objective: "leaf" }, 1);
+    let doc = cat.encode();
+    invalid("{\"format\":\"dna.workflow-definitions/1\"}", "missing arrays");
+    invalid(doc + "{}", "trailing JSON");
+    invalid(std::str::replace(doc, "\"steps\": 1", "\"steps\": true"), "boolean integer");
+    invalid(std::str::replace(doc, "\"steps\": 1", "\"steps\": 1.0"), "decimal integer");
+    invalid(std::str::replace(doc, "\"revision\": 1", "\"revision\": 9223372036854775808"), "overflow integer");
+    invalid(std::str::replace(doc, "\"revision\": 1", "\"revision\": 1, \"revision\": 1"), "duplicate field");
+    invalid(std::str::replace(doc, "\"objective\": \"leaf\"", "\"objective\": null"), "missing text type");
+    invalid(std::str::replace(doc, "\"objective\": \"leaf\"", "\"objective\": \"leaf\", \"private\": \"x\""), "unknown field");
+    invalid(std::str::replace(doc, "\"title\": \"ASCII A\"", "\"title\": \"ASCII A\", \"id title\": \"joined\""), "unknown joined workflow field");
+    invalid(std::str::replace(doc, "\"format\": \"dna.workflow-definitions/1\"", "\"format\": \"dna.workflow-definitions/1\", \"format workflows\": []"), "unknown joined catalog field");
+    invalid(std::str::replace(doc, "ASCII A", "bad\\q"), "bad escape");
+    invalid(std::str::replace(doc, "ASCII A", "bad\\u0000"), "NUL escape");
+    invalid(std::str::replace(doc, "\"workflow\": \"root\"", "\"workflow\": \"absent\""), "orphan member");
+    invalid(std::str::replace(doc, "\"steps\": 1", "\"steps\": 0"), "empty workflow");
+    invalid(std::str::replace(doc, "\"step\": 0", "\"step\": 1"), "out of range step");
+    invalid(std::str::replace(doc, "\"attempts\": 1", "\"attempts\": 9"), "native retry limit");
+    invalid(std::str::replace(doc, "\"kind\": \"leaf\"", "\"kind\": \"future-kind\""), "unknown member kind");
+    let unicode = ops::Definitions { provider: CapturedProvider { value: snapshot_of(std::str::replace(doc, "ASCII A", "ASCII \\u0041 \\ud83d\\ude00")) } };
+    std::test::assert(unicode.load(), "escaped Unicode admitted: " + unicode.error());
+    std::test::assert_eq_str(unicode.at(0).title, "ASCII A 😀", "strict decoder preserves ASCII and surrogate escape semantics");
+    let source = ops::DeclaredWorkflowCatalog { catalog: cat, provenance: provenance() };
+    let budget = ops::Definitions { provider: source, bounds: ops::DefinitionReadBounds { max_document_bytes: 8 } };
+    std::test::assert(!budget.load() && budget.status() == "unavailable", "document byte budget explicit");
+    let c = cat.define("broken", 1, 1, "unrelated invalid definition");
+    invalid(cat.encode(), "every definition validated including disconnected root");
+    let capped = ops::Definitions { provider: source, bounds: ops::DefinitionReadBounds { max_definitions: 1 } };
+    std::test::assert(!capped.load() && capped.status() == "unavailable", "definition count budget explicit");
+    let cycle = dna::WorkflowCatalog { };
+    let x = cycle.define("first", 1, 1, "");
+    let y = cycle.define("second", 1, 1, "");
+    let z = cycle.child("first", 1, 0, "next", "second", 1);
+    let w = cycle.child("second", 1, 0, "back", "first", 1);
+    invalid(cycle.encode(), "native cycle refusal");
+    let dangling = dna::WorkflowCatalog { };
+    let da = dangling.define("root", 1, 1, "");
+    let db = dangling.child("root", 1, 0, "next", "missing", 7);
+    invalid(dangling.encode(), "exact missing child revision");
+    let duplicate = cat.leaf("root", 1, 0, "one", dna::WorkRequest { objective: "duplicate" }, 1);
+    invalid(cat.encode(), "duplicate Step member key");
+    let limited = dna::WorkflowCatalog { };
+    let la = limited.define("root", 1, 1, "");
+    let lb = limited.define("child", 1, 1, "");
+    let lc = limited.child("root", 1, 0, "first", "child", 1);
+    let ld = limited.child("root", 1, 0, "second", "child", 1);
+    let le = limited.leaf("child", 1, 0, "leaf", dna::WorkRequest { objective: "one" }, 1);
+    let work_limit = ops::Definitions { provider: ops::DeclaredWorkflowCatalog { catalog: limited, provenance: provenance(), limits: dna::AdmissionLimits { max_works: 1 } } };
+    std::test::assert(!work_limit.load() && work_limit.status() == "invalid" && std::str::contains(work_limit.error(), "max_works"), "native supplied Work limit validated");
+    let depth_limit = ops::Definitions { provider: ops::DeclaredWorkflowCatalog { catalog: limited, provenance: provenance(), limits: dna::AdmissionLimits { max_depth: 1 } } };
+    std::test::assert(!depth_limit.load() && depth_limit.status() == "invalid" && std::str::contains(depth_limit.error(), "max_depth"), "native supplied depth limit validated");
+    let member_limit = ops::Definitions { provider: ops::DeclaredWorkflowCatalog { catalog: limited, provenance: provenance(), limits: dna::AdmissionLimits { max_members: 1 } } };
+    std::test::assert(!member_limit.load() && std::str::contains(member_limit.error(), "max_members"), "native supplied Step member limit validated");
+    let small_read = ops::Definitions { provider: ops::DeclaredWorkflowCatalog { catalog: limited, provenance: provenance() }, bounds: ops::DefinitionReadBounds { max_members: 1 } };
+    std::test::assert(!small_read.load() && small_read.status() == "unavailable", "reader member count budget is distinct from admission refusal");
+    let huge_id = std::str::repeat("a", 2048);
+    let long_id = ops::Definitions { provider: CapturedProvider { value: snapshot_of(std::str::replace(doc, "\"id\": \"root\"", "\"id\": \"" + huge_id + "\"")) } };
+    std::test::assert(!long_id.load() && long_id.code() == "definition_read_limit", "large valid-spelling identifier stops before native identifier scanner");
+    let long_key = ops::Definitions { provider: CapturedProvider { value: snapshot_of(std::str::replace(doc, "\"key\": \"one\"", "\"key\": \"" + huge_id + "\"")) } };
+    std::test::assert(!long_key.load() && long_key.code() == "definition_read_limit", "large valid-spelling member key stops before native key scanner");
+}
+fn test_large_shared_leaf() {
+    let cat = dna::WorkflowCatalog { };
+    let a = cat.define("root", 1, 1, "many invocations");
+    let b = cat.define("shared", 1, 1, "one specification");
+    let objective = std::str::repeat("x", 600000);
+    let c = cat.leaf("shared", 1, 0, "one", dna::WorkRequest { objective: objective }, 1);
+    let mut i = 0;
+    while i < 512 { let added = cat.child("root", 1, 0, "child-" + to_string(i), "shared", 1); i = i + 1; }
+    let limits = dna::AdmissionLimits { max_members: 512, max_works: 512 };
+    let provider = ops::DeclaredWorkflowCatalog { catalog: cat, provenance: provenance(), limits: limits };
+    let read = ops::Definitions { provider: provider };
+    std::test::assert(read.load(), "large shared leaf validates without execution materialization: " + read.error());
+    std::test::assert(len(read.captured.document) < 1048576, "large fixture fits document reader budget");
+    std::test::assert_eq_int(read.catalog.bound_count(), 0, "512 references do not copy the 600KiB leaf into bound Works");
+    std::test::assert_eq_int(read.catalog.member_count(), 513, "only native definition specifications retained");
+    std::test::assert_eq_str(read.member_at("shared@1", 0, 0).objective, objective, "shared leaf remains complete");
+}
+fn main() { test_real_catalog(); test_states_and_capture(); test_validation(); test_large_shared_leaf(); }

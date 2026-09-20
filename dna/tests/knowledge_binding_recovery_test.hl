@@ -1,0 +1,213 @@
+// Real native Body/Review outcomes. The fixture supplies only canonical incoming
+// binding requests; production domain code writes proposal, decision and effects.
+import "../core" as dna;
+import "../operations" as ops;
+import "../knowledge" as know;
+
+locus BindingStageJournal {
+    params {
+        inner: dna::GitJournal = dna::GitJournal { };
+        stage: String = "";
+        blocked: Bool = false;
+        lost_reply: Bool = false;
+        faults: Int = 0;
+    }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if self.blocked && kind == self.stage { self.faults = self.faults + 1; return dna::AppendResult { error: "io" }; }
+        return self.inner.append(expected, kind, entity, body);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if self.blocked && kind == self.stage { self.faults = self.faults + 1; return dna::AppendResult { error: "io" }; }
+        let result = self.inner.append_exact(expected, kind, entity, body);
+        if self.lost_reply && kind == self.stage && result.ok {
+            self.faults = self.faults + 1; self.lost_reply = false;
+            return dna::AppendResult { error: "io" };
+        }
+        return result;
+    }
+}
+
+fn event(j: dna::Journal, kind: String, id: String) -> dna::Event { let codec = dna::KnowledgeBindingCodec { }; return codec.fact(j, kind, id, j.revision()); }
+fn count(j: dna::Journal, kind: String, id: String) -> Int {
+    let mut i = 0; let mut n = 0; while i < j.revision() { let e = j.read(i); if e.kind == kind && e.entity == id { n = n + 1; } i = i + 1; } return n;
+}
+fn body_once(repo: String, j: BindingStageJournal, r: dna::KnowledgeBindingRequest) {
+    let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" } };
+    if len(r.request_id) > 0 { body.on_knowledge_binding_requested(r); }
+    body.reconcile_governance();
+}
+fn configured_body_once(repo: String, j: BindingStageJournal) {
+    let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" }, binding_policy_syntax: ops::OrganizationJson { } };
+    body.reconcile_governance();
+}
+fn capture_request(req: dna::WorkRequest) -> String { let b = std::json::Builder { }; b.begin_object(); dna::request_json(b, req); b.end_object(); return b.result(); }
+
+main locus App {
+    bus { publish dna::ReviewVerdict; }
+    fn repo(label: String) -> String {
+        let root = "/tmp/dna-binding-recovery-" + to_string(std::process::pid()) + "-" + label;
+        let clean = dna::run_tool("rm\n-rf\n" + root); std::io::fs::mkdir(root) or discard;
+        let init = dna::run_tool("git\n-C\n" + root + "\ninit\n-q\n-b\nmain"); std::test::assert_eq_int(init.code, 0, "temporary binding Record"); return root;
+    }
+    fn wait(j: dna::Journal, kind: String, id: String) {
+        let mut n = 0; while len(event(j, kind, id).kind) == 0 && n < 200 { std::time::sleep(20ms); n = n + 1; }
+        std::test::assert(len(event(j, kind, id).kind) > 0, "native " + kind + " arrived");
+    }
+    fn verdict(r: dna::KnowledgeBindingRequest, id: String, value: String) {
+        let codec = dna::KnowledgeBindingCodec { };
+        dna::ReviewVerdict <- dna::Verdict { command_id: id, review_id: codec.review_id(r.candidate_digest), subject_digest: r.candidate_digest, verdict: value, reviewer: "board-member", authority: "board", comment: "Exact binding decision." };
+    }
+    fn bootstrap(repo: String, j: BindingStageJournal) -> String {
+        let genesis = j.append_exact(j.revision(), "application.observed", "org", "{}"); std::test::assert(genesis.ok, "application identity exists");
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" } };
+        let digest = body.propose_knowledge(dna::Idea { kind: "concept", name: "concept/binding", text: "Actual native knowledge.", author: "org" }, "org/source");
+        dna::ReviewVerdict <- dna::Verdict { command_id: "baseline/decision", review_id: dna::knowledge_review_id(digest), subject_digest: digest, verdict: "approve", reviewer: "board-member", authority: "board" };
+        self.wait(j, "knowledge.ratified", digest); return digest;
+    }
+    fn request(repo: String, j: BindingStageJournal, id: String, operation: String, idea: String, target: String) -> dna::KnowledgeBindingRequest {
+        let native = dna::KnowledgeBindingCodec { }; let common = ops::KnowledgeCommandCodec { }; let codec = ops::KnowledgeBindingCommandCodec { };
+        let context = ops::GovernanceContext { application_id: j.read(0).digest, principal_mode: "local", principal_name: "alice" };
+        let c = ops::KnowledgeCommand { application_id: context.application_id, request_id: id, operation: "dna.knowledge.binding." + operation, operation_version: "1", position_id: "org", target_id: idea,
+            record_head: std::str::clone(j.head()), idea_id: idea, binding_id: if operation == "unbind" { native.identity(idea, target, "org") } else { "" }, author: "org", target: target, rationale: "Exact équipe 🧭 \"binding\"\r\n<literal>" };
+        let grant = ops::KnowledgeGrant { allowed: true, mode: "review", authority: "knowledge-editor", basis: "binding-test-policy" };
+        let mut r = dna::KnowledgeBindingRequest { application_id: context.application_id, request_id: common.identity(context, id), command_fingerprint: common.fingerprint(context, c), authority: grant.authority, authority_basis: grant.basis,
+            operation: c.operation, idea_id: idea, binding_id: native.identity(idea, target, "org"), author: "org", target: target, by: "alice", because: c.rationale };
+        let receipts = dna::GitReceipts { repo: repo }; let basis = native.basis(j, receipts, r, j.revision()); std::test::assert(basis.ok, "exact native tuple basis");
+        r.binding_basis = basis.event_id; r.candidate_digest = dna::digest_of(native.document(r));
+        let fact = codec.fact(context, c, grant, r); std::test::assert(len(fact) > 0, "canonical native binding command");
+        let recorded = j.append_exact(j.revision(), "knowledge.binding.requested", r.request_id, fact); std::test::assert(recorded.ok, "incoming binding request recorded"); return r;
+    }
+    fn proposal(stage: String, lose: Bool) {
+        let repo = self.repo(stage + if lose { "-lost" } else { "-blocked" }); let j = BindingStageJournal { inner: dna::GitJournal { repo: repo } };
+        let idea = self.bootstrap(repo, j); let r = self.request(repo, j, "proposal", "bind", idea, "org/support");
+        j.stage = stage; j.blocked = !lose; j.lost_reply = lose;
+        body_once(repo, j, dna::KnowledgeBindingRequest { });
+        std::test::assert_eq_int(count(j, "knowledge.binding.started", r.request_id), 0, "raw request cannot bypass trusted delivery");
+        body_once(repo, j, r); std::test::assert(j.faults > 0, "exact proposal stage interrupted");
+        std::test::assert_eq_int(count(j, "knowledge.binding.refused", r.request_id), 0, "storage failure stays pending");
+        let fresh = BindingStageJournal { inner: dna::GitJournal { repo: repo } }; body_once(repo, fresh, dna::KnowledgeBindingRequest { });
+        if stage == "knowledge.binding.started" && !lose {
+            std::test::assert_eq_int(count(fresh, "knowledge.binding.started", r.request_id), 0, "no started proof means redelivery required"); body_once(repo, fresh, r);
+        }
+        body_once(repo, fresh, r); let codec = dna::KnowledgeBindingCodec { };
+        std::test::assert_eq_str(event(fresh, "knowledge.binding.proposed", r.request_id).body, codec.proposed(r), "exact proposal recovered");
+        std::test::assert_eq_int(count(fresh, "knowledge.binding.started", r.request_id), 1, "one delivery proof");
+        std::test::assert_eq_int(count(fresh, "review.requested", "review:" + codec.review_id(r.candidate_digest)), 1, "one exact binding Review");
+        std::test::assert_eq_int(count(fresh, "knowledge.proposed", r.candidate_digest), 0, "binding candidate never becomes a graph idea");
+        let clean = dna::run_tool("rm\n-rf\n" + repo);
+    }
+    fn interrupted_effect(repo: String, j: BindingStageJournal, r: dna::KnowledgeBindingRequest) {
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, membrane: dna::Board { who: "board" } };
+        body.on_knowledge_binding_requested(r); self.verdict(r, "effect/decision", "approve"); self.wait(j, "review.command_decided", "effect/decision");
+        let mut n = 0; while j.faults == 0 && n < 200 { std::time::sleep(20ms); n = n + 1; } std::test::assert(j.faults > 0, "exact consequence stage interrupted");
+    }
+    fn recovery(stage: String, lose: Bool) {
+        let repo = self.repo("effect-" + stage + if lose { "-lost" } else { "-blocked" }); let j = BindingStageJournal { inner: dna::GitJournal { repo: repo } };
+        let idea = self.bootstrap(repo, j); let r = self.request(repo, j, "effect", "bind", idea, "org/support"); j.stage = stage; j.blocked = !lose; j.lost_reply = lose;
+        self.interrupted_effect(repo, j, r);
+        let fresh = BindingStageJournal { inner: dna::GitJournal { repo: repo } }; body_once(repo, fresh, dna::KnowledgeBindingRequest { });
+        let e = event(fresh, "knowledge.binding.bound", r.request_id); let codec = dna::KnowledgeBindingCodec { };
+        std::test::assert(codec.effect_of(fresh, e).ok, "fresh Body resumes exact approved effect");
+        std::test::assert_eq_int(count(fresh, "knowledge.binding.bound", r.request_id), 1, "lost reply cannot duplicate effect");
+        std::test::assert_eq_int(count(fresh, "knowledge.binding.apply_refused", r.request_id), 0, "own committed effect cannot become stale refusal");
+        let clean = dna::run_tool("rm\n-rf\n" + repo);
+    }
+    fn protection(mode: String) {
+        let repo = self.repo("protection-" + mode); let j = BindingStageJournal { inner: dna::GitJournal { repo: repo } };
+        let idea = self.bootstrap(repo, j); let r = self.request(repo, j, "protection", "bind", idea, "org/support");
+        j.stage = "knowledge.binding.bound"; j.blocked = true; self.interrupted_effect(repo, j, r);
+        let kind = if mode == "withheld" || mode == "candidate" { "receipt.withheld" } else { "receipt.classified" };
+        let identity = if mode == "candidate" { r.candidate_digest } else { idea };
+        let detail = if mode == "public" { "{\"class\":\"public\"}" } else if mode == "internal" { "{\"class\":\"internal\"}" }
+        else if mode == "duplicate" { "{\"class\":\"public\",\"class\":\"confidential\"}" }
+        else if mode == "escaped" { "{\"class\":\"pub\\u006cic\"}" } else { "{\"class\":\"confidential\"}" };
+        let restriction = j.append_exact(j.revision(), kind, identity, detail); std::test::assert(restriction.ok, "restriction lands after accepted approval before effect");
+        j.blocked = false; body_once(repo, j, dna::KnowledgeBindingRequest { });
+        std::test::assert_eq_int(count(j, "knowledge.binding.bound", r.request_id), 0, "default composition cannot interpret classified policy or bypass protection");
+        std::test::assert_eq_int(count(j, "knowledge.binding.apply_refused", r.request_id), 0, "visibility loss keeps effect pending rather than inventing refusal");
+        configured_body_once(repo, j);
+        if mode == "public" || mode == "internal" {
+            std::test::assert_eq_int(count(j, "knowledge.binding.bound", r.request_id), 1, "configured strict syntax admits explicit visible classification");
+            let hidden = j.append_exact(j.revision(), "receipt.withheld", idea, "{}"); std::test::assert(hidden.ok, "later protection follows a committed effect");
+            configured_body_once(repo, j);
+            std::test::assert_eq_int(count(j, "knowledge.binding.bound", r.request_id), 1, "later protection does not invalidate or repeat committed effect");
+            std::test::assert_eq_int(count(j, "knowledge.binding.apply_refused", r.request_id), 0, "committed outcome recovery precedes visibility gate");
+        } else { std::test::assert_eq_int(count(j, "knowledge.binding.bound", r.request_id), 0, "strict policy keeps hidden or malformed classification pending"); }
+        let decision = dna::review_command_decision(j, "effect/decision"); std::test::assert(std::json::find_bool_field(decision, "accepted"), "original approved Review remains a separate recorded fact");
+        let clean = dna::run_tool("rm\n-rf\n" + repo);
+    }
+    fn flow() {
+        let repo = self.repo("flow"); let j = BindingStageJournal { inner: dna::GitJournal { repo: repo } }; let idea = self.bootstrap(repo, j);
+        let receipts = dna::GitReceipts { repo: repo }; let codec = dna::KnowledgeBindingCodec { }; let store = know::Mem { };
+        let before = know::apply_record(store, j, receipts); std::test::assert_eq_str(before.error, "", "native baseline projects");
+        std::test::assert_eq_str(store.context_ids("org/support/urgent", 10), "", "original org/source binding does not cover support");
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: receipts, repo: repo }, membrane: dna::Board { who: "board" } };
+        let add = self.request(repo, j, "add", "bind", idea, "org/support"); body.on_knowledge_binding_requested(add);
+        let delayed = self.request(repo, j, "delayed", "bind", idea, "org/support"); body.on_knowledge_binding_requested(delayed);
+        self.verdict(add, "add/decision", "approve"); self.wait(j, "knowledge.binding.bound", add.request_id);
+        let added = know::apply_record(store, j, receipts); std::test::assert_eq_str(added.error, "", "real approved add projects");
+        std::test::assert_eq_str(store.context_ids("org/support/urgent", 10), idea, "binding changes future descendant context membership");
+        let package = dna::ContextPackage { target: "org/support/urgent", digest: dna::digest_of(store.context_ids("org/support/urgent", 10)), included: idea, included_n: 1 };
+        let work = dna::WorkRequest { work_id: "historical/work", task_id: "historical/task", context_digest: package.digest, knowledge_bindings: dna::bindings_of(package) };
+        let historical = capture_request(work);
+        let remove = self.request(repo, j, "remove", "unbind", idea, "org/support"); body.on_knowledge_binding_requested(remove); self.verdict(remove, "remove/decision", "approve"); self.wait(j, "knowledge.binding.unbound", remove.request_id);
+        let removed = know::apply_record(store, j, receipts); std::test::assert_eq_str(removed.error, "", "real approved removal projects");
+        std::test::assert_eq_str(store.context_ids("org/support/urgent", 10), "", "removed tuple leaves future package");
+        std::test::assert_eq_str(store.context_ids("org/source", 10), idea, "original tuple is retained");
+        let partial = know::Mem { };
+        std::test::assert(partial.begin_projection(partial.projection_basis(), j.revision(), j.head()), "pending suffix precedes binding projection");
+        let pending = partial.projection_basis(); let first_pass = know::apply_record(partial, j, receipts);
+        std::test::assert_eq_str(first_pass.error, "", "pending suffix reaches exact removal");
+        // Simulate losing only this last event's watermark write after its
+        // unbind succeeded. The existing pending fence remains authoritative.
+        std::test::assert(partial.set_watermark(event(j, "knowledge.binding.unbound", remove.request_id).seq), "interrupted watermark fixture");
+        let resumed = know::apply_record(partial, j, receipts);
+        std::test::assert_eq_str(resumed.error, "", "exact removal replays after lost watermark");
+        std::test::assert_eq_str(partial.context_ids("org/support/urgent", 10), "", "resuming removal cannot resurrect earlier add");
+        std::test::assert(partial.checkpoint_projection(pending, j.revision(), j.head()), "same pending suffix checkpoints after replay");
+        std::test::assert_eq_str(capture_request(work), historical, "captured historical Work/package evidence is unchanged");
+        std::test::assert_eq_str(dna::request_for_attempt(work, 2).knowledge_bindings, work.knowledge_bindings, "later attempt retains its original Work evidence");
+        self.verdict(delayed, "delayed/decision", "approve"); self.wait(j, "knowledge.binding.apply_refused", delayed.request_id);
+        std::test::assert(std::json::find_bool_field(dna::review_command_decision(j, "delayed/decision"), "accepted"), "stale candidate still has its real accepted Review");
+        std::test::assert_eq_str(dna::native_json_string(event(j, "knowledge.binding.apply_refused", delayed.request_id).body, "reason_code"), "binding_changed", "ABA is refused despite absent original and current tuples");
+        let again = self.request(repo, j, "again", "bind", idea, "org/support"); body.on_knowledge_binding_requested(again); self.verdict(again, "again/decision", "approve"); self.wait(j, "knowledge.binding.bound", again.request_id);
+        let replay = know::apply_record(store, j, receipts); std::test::assert_eq_str(replay.error, "", "fresh-basis rebind projects");
+        let rebuilt = know::Mem { }; let rebuilt_result = know::apply_record(rebuilt, j, receipts); std::test::assert_eq_str(rebuilt_result.error, "", "empty Mem rebuilds from actual Record outcomes");
+        std::test::assert_eq_str(rebuilt.context_ids("org/support/urgent", 10), idea, "rebuild preserves ordered add/remove/rebind");
+        std::test::assert_eq_int(rebuilt.count("bindings"), 2, "only original and current exact tuple exist");
+        let no = self.request(repo, j, "decline", "unbind", idea, "org/support"); body.on_knowledge_binding_requested(no); self.verdict(no, "no/decision", "abstain"); self.wait(j, "review.command_decided", "no/decision");
+        std::test::assert_eq_int(count(j, "knowledge.binding.declined", no.request_id), 0, "accepted abstain has no terminal effect");
+        self.verdict(no, "reject/decision", "reject"); self.wait(j, "knowledge.binding.declined", no.request_id);
+        std::test::assert(codec.effect_of(j, event(j, "knowledge.binding.declined", no.request_id)).ok, "decline requires exact native decision evidence");
+        self.verdict(no, "late/decision", "approve"); self.wait(j, "review.command_decided", "late/decision");
+        std::test::assert(!std::json::find_bool_field(dna::review_command_decision(j, "late/decision"), "accepted"), "late verdict cannot borrow earlier settlement");
+        let retiring = self.request(repo, j, "before-retirement", "bind", idea, "org/second"); body.on_knowledge_binding_requested(retiring);
+        let retirement = body.propose_knowledge(dna::Idea { kind: "retirement", text: "Retire through the actual native Review.", author: "org", supersedes: idea }, "org/source");
+        dna::ReviewVerdict <- dna::Verdict { command_id: "retirement/decision", review_id: dna::knowledge_review_id(retirement), subject_digest: retirement, verdict: "approve", reviewer: "board-member", authority: "board" };
+        self.wait(j, "knowledge.retired", idea); self.verdict(retiring, "retiring-binding/decision", "approve"); self.wait(j, "knowledge.binding.apply_refused", retiring.request_id);
+        std::test::assert_eq_str(dna::native_json_string(event(j, "knowledge.binding.apply_refused", retiring.request_id).body, "reason_code"), "subject_inactive", "approved binding cannot reactivate a retired item");
+        let cleanup = self.request(repo, j, "retired-remove", "unbind", idea, "org/support"); body.on_knowledge_binding_requested(cleanup); self.verdict(cleanup, "retired-remove/decision", "approve"); self.wait(j, "knowledge.binding.unbound", cleanup.request_id);
+        let cleaned = know::apply_record(store, j, receipts); std::test::assert_eq_str(cleaned.error, "", "visible retired item permits exact historical binding removal");
+        std::test::assert_eq_int(store.count("bindings"), 1, "retired removal preserves original historical tuple");
+        std::test::assert(store.idea(idea).present && !store.idea(idea).idea.accepted, "retired receipt and readable historical node remain");
+        std::test::assert_eq_str(capture_request(work), historical, "retirement and unbind retain original task package evidence");
+        // Explicit corrupted-input fixture: no native writer emits this row.
+        let invalid_seq = j.revision(); let bad = j.append_exact(j.revision(), "knowledge.binding.unbound", "malformed", "{\"binding_id\":\"wrong\"}"); std::test::assert(bad.ok, "malformed projection fixture");
+        let invalid = know::apply_record(store, j, receipts); std::test::assert(len(invalid.error) > 0 && store.watermark() == invalid_seq, "invalid binding fact stops before offending watermark");
+        std::test::assert_eq_int(store.count("bindings"), 1, "malformed removal cannot remove remaining historical binding");
+        let clean = dna::run_tool("rm\n-rf\n" + repo);
+    }
+    run() {
+        self.proposal("knowledge.binding.started", false); self.proposal("review.requested", false); self.proposal("knowledge.binding.proposed", false);
+        self.proposal("knowledge.binding.started", true); self.proposal("knowledge.binding.proposed", true);
+        self.recovery("review.settled", false); self.recovery("knowledge.binding.bound", false); self.recovery("knowledge.binding.bound", true);
+        self.flow();
+        self.protection("withheld"); self.protection("candidate"); self.protection("public"); self.protection("internal"); self.protection("duplicate"); self.protection("escaped");
+    }
+}
+fn main() { App { }; }

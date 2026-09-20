@@ -2,24 +2,24 @@
 
 Design draft for [#690](https://github.com/hale-lang/hale/issues/690).
 This document proposes the browser/service boundary; it does **not** describe
-implemented HTTP routes or freeze DNA's internal types. The source assessment
-and first implementation slice are in [COCKPIT-READINESS.md](COCKPIT-READINESS.md).
-The service architecture, command-recovery requirements and implementation cards
-are in [SERVICE-DEVELOPMENT-PLAN.md](../dna/SERVICE-DEVELOPMENT-PLAN.md).
-The first implemented read subset is documented in [dna/api](../dna/api/README.md),
-with executable schemas in `dna/api/contract/v1`. Broader routes and commands
-below remain proposals until their adapters and acceptance gates are delivered.
+implemented HTTP routes or freeze DNA's internal types. The issue defines
+the broader product scope.
+Implemented reads are documented in [dna/api](../dna/api/README.md), with
+executable schemas in `dna/api/contract/v1`; the [browser documentation](cockpit/README.md)
+describes their presentation. Broader routes and commands below are design
+requirements, not a declaration that a service exposes them.
+
+The branch also implements the deliberately smaller `hale.application.v1`
+[generic service profile](service/README.md). It registers an application-owned
+control provider, serves captured state and capabilities, accepts one guarded
+enum change and recovers an exact request receipt. The [plain Hale intake example](examples/intake-control/README.md)
+owns its SQLite configuration, authority and durable outcomes; Iris has no
+universal command database. This implementation does not imply the broader
+runtime joins, contextual authority or DNA operations below are available.
 
 The branch's `/dna/organization` read endpoint projects checked static Structure
 with its own source/dependency/artifact basis. It does not implement the broader
 semantic `/dna/positions` or viewing/acting permission contract proposed below.
-
-The initial audit used main `2f202c90`. The September 18 integration includes
-main `9a3136ca`, where workflow definition, event and projection cards 04–06
-have merged. They supply native models; they do not yet supply a live workflow
-executor or catalog API. The [first browser implementation](cockpit/README.md)
-consumes the implemented practice/review read subset. Broader resource families
-remain proposals.
 
 ## 1. Ownership
 
@@ -325,38 +325,25 @@ Once a version is implemented, DNA internals may change behind its adapter
 provided the browser contract's conformance cases still pass. The UI depends
 on that contract, not on row layouts, process placement or CLI formatting.
 
-## 7. Parallel delivery and acceptance
+## 7. Conformance requirements
 
-1. Agree the common identity/context, read-basis and command-recovery
-   semantics here. Add machine-readable schemas and representative fixtures
-   as the first implementable slice is defined; the prose alone is not a
-   conformance suite.
-2. Build the browser shell and all four model workspaces against a fixture
-   adapter. Fixtures declare themselves illustrative and expose unavailable
-   capabilities. Keep the plain-Hale case in the same suite.
-3. Implement the authenticated head adapter for the practices slice in the
-   readiness note: structured reads, exact-subject review, stable request
-   identity and observable result. Preserve the current organization-wide
-   practice edit scope until position-scoped authorship actually exists.
-4. Add organization/knowledge projections and their explicit authoritative
-   editing operations. Connect definition inspection to the pending catalog;
-   add publish/adoption only when that domain lifecycle is implemented.
-5. Connect the recursive execution adapter as admission, resident execution,
-   recovery and host projection land. Keep engine-specific adapters bounded
-   so ongoing workflow changes do not force a frontend rewrite.
+Machine-readable schemas and representative fixtures must accompany each
+supported contract. Illustrative fixtures identify themselves and expose
+unavailable capabilities; they cannot establish live integration success.
+Conformance includes ordinary Hale without DNA and the four DNA model workspaces.
+Adapters must preserve domain-established authorship scope and expose publication,
+adoption and execution only through their authoritative lifecycle contracts.
 
-Before calling the first live slice complete, both fixture and live adapters
-must demonstrate: inadequate authority refused; position viewing cannot
-impersonate its occupant; slash-bearing ids preserved; exact-subject review
+Supported command adapters must demonstrate: inadequate authority refused;
+position viewing cannot impersonate its occupant; slash-bearing ids preserved; exact-subject review
 and competing supersession; duplicate request recovery after a lost reply;
 same request id/different content refused; failure and unknown effect shown
 truthfully; unavailable sources distinguished from empty; and ordinary Hale
 use without DNA. Hosted mutations also need the deployment's session, origin
 and CSRF protections rather than relying on the local observer's trust model.
 
-Open decisions for the API/DNA implementers: the durable request-to-command
-mapping primitive and retention; source-watermark/cursor formats; the
-authoritative session-to-position capability projection; machine-readable
-schemas for the first operation; and how code-authored definition changes
-are proposed, validated and adopted. These are explicit integration work,
-not facts that the frontend should invent.
+Each adapter must specify its durable request-to-command mapping and retention,
+source-watermark/cursor formats, authoritative session-to-position capability
+projection and operation schemas. Code-authored definition changes require
+explicit proposal, validation and adoption semantics. The frontend consumes
+these contracts and cannot invent their authoritative meaning.

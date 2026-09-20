@@ -1,0 +1,111 @@
+// Actual Dna.ask/person Plan births handoffs in a fresh owned Record. Replay
+// overlays, when used below, are explicitly read-contract probes, not claims of
+// domain completion or command durability. No Host/process engine is started.
+import ".." as api;
+import "../../core" as dna;
+import "../../operations" as ops;
+
+locus TaskApiCases {
+    params { }
+    fn request(root: String, query: String) -> std::http::Response {
+        let record = dna::GitRecord { repo: root }; let head = api::Api { root: root, local_name: "riley" };
+        return head.handle(std::http::Request { method: "GET", path: api::API_PREFIX + "/" + record.identity() + "/dna/tasks" + query });
+    }
+    fn event(j: dna::Journal, kind: String, id: String) -> dna::Event {
+        let refreshed = j.refresh(); let mut i = 0;
+        while i < j.revision() { let e = j.read(i); if e.kind == kind && e.entity == id { return e; } i = i + 1; }
+        return dna::Event { };
+    }
+    fn handed(j: dna::Journal, id: String) -> dna::Event {
+        let mut tries = 0;
+        while self.event(j, "task.handed", id).kind == "" && tries < 100 { std::time::sleep(20ms); tries = tries + 1; }
+        let e = self.event(j, "task.handed", id); std::test::assert(e.kind == "task.handed", "actual native handoff"); return e;
+    }
+    fn first(response: std::http::Response) -> String {
+        let w = api::CommandWire { }; return std::json::array_first(w.raw(w.raw(response.body, "data"), "items")).element;
+    }
+    fn run_cases(root: String, evidence: String) {
+        let record = dna::GitRecord { repo: root }; let w = api::CommandWire { };
+        let fixture = std::io::fs::read_file(evidence + "/task-fixture.json") or raise;
+        let journal = dna::GitJournal { repo: root };
+        let first_id = w.text(fixture, "first_id"); let handoff = self.event(journal, "task.handed", first_id);
+        let second_id = w.text(fixture, "second_id"); let second_handoff = self.event(journal, "task.handed", second_id);
+        std::test::assert(handoff.digest == w.text(fixture, "first_handoff") && second_handoff.digest == w.text(fixture, "second_handoff"), "real seed handoff identity retained");
+        let text = "Human review\r\nΔ <literal & markup>";
+        let before = record.head("journal"); let all = self.request(root, ""); std::test::assert_eq_int(all.status, 200, all.body);
+        let data = w.raw(all.body, "data"); let basis = w.raw(data, "basis"); let page = w.raw(data, "page");
+        std::test::assert_eq_str(w.text(data, "profile"), "dna.task-administration.v1", "native handoff profile");
+        std::test::assert_eq_str(w.text(basis, "record_head"), before, "exact captured Record");
+        std::test::assert_eq_str(w.text(basis, "record_revision"), w.text(w.raw(all.body, "source"), "record_revision"), "matching basis revision");
+        std::test::assert_eq_str(w.raw(page, "total"), "2", "two actual handoffs");
+        let exact = self.request(root, "?id=" + dna::url_encode(first_id) + "&snapshot=" + before); std::test::assert_eq_int(exact.status, 200, exact.body); let row = self.first(exact);
+        std::test::assert_eq_str(w.text(row, "id"), first_id, "exact Task identity");
+        std::test::assert(std::str::contains(w.text(row, "outcome"), text), "native Task text preserves Unicode/CRLF/literal markup");
+        std::test::assert_eq_str(w.text(row, "state"), "handed", "a human handoff remains open");
+        std::test::assert_eq_str(w.text(row, "assignee"), "alex", "actual planner's assignee");
+        std::test::assert_eq_str(w.raw(row, "acceptance_bound"), "true", "explicit handoff bound no current practice");
+        std::test::assert_eq_str(w.text(row, "acceptance_digest"), "", "no practice invented");
+        std::test::assert_eq_str(w.raw(row, "evidence_required"), "false", "native acceptance requirement");
+        std::test::assert_eq_str(w.text(row, "waiting"), "", "no reported decision invented");
+        std::test::assert_eq_str(w.raw(row, "reassignment_supported"), "true", "factual shape supports reassignment, not a caller grant");
+        std::test::assert(len(w.text(row, "assignment_digest")) == 71, "native lifecycle fingerprint");
+        let history = std::json::array_first(w.raw(row, "history"));
+        std::test::assert_eq_str(w.text(history.element, "event_id"), handoff.digest, "actual assignment event identity");
+        std::test::assert_eq_str(w.text(history.element, "sequence"), to_string(handoff.seq), "actual assignment order");
+        std::test::assert_eq_str(w.text(history.element, "kind"), "task.handed", "native history kind");
+        std::test::assert(std::json::array_next(history).done, "one original assignment");
+        let first_page = self.request(root, "?limit=1&snapshot=" + before); let next_page = self.request(root, "?limit=1&offset=1&snapshot=" + before);
+        std::test::assert(first_page.status == 200 && next_page.status == 200, "common pinned pagination");
+        std::test::assert(self.first(first_page) != self.first(next_page), "distinct native rows across pages");
+        std::test::assert_eq_int(self.request(root, "?offset=1").status, 400, "later page requires snapshot");
+        std::test::assert_eq_int(self.request(root, "?id=" + dna::url_encode(first_id) + "&offset=1&snapshot=" + before).status, 400, "exact lookup has offset zero");
+        std::test::assert_eq_int(self.request(root, "?snapshot=stale").status, 409, "stale source guard");
+        std::test::assert_eq_int(self.request(root, "?position=org").status, 400, "no inferred position filter");
+        std::test::assert_eq_int(self.request(root, "?id=one&id=two").status, 400, "duplicate query refused");
+        let missing = self.request(root, "?id=absent"); std::test::assert_eq_int(missing.status, 404, "exact absent Task");
+        std::test::assert_eq_str(record.head("journal"), before, "all reads leave native Record untouched");
+        if evidence != "" { std::io::fs::write_file(evidence + "/tasks-response.json", all.body) or raise; std::io::fs::write_file(evidence + "/task-response.json", exact.body) or raise; }
+        let policy_codec = ops::TaskAuthorityPolicyCodec { };
+        let policy = policy_codec.decode("{\"format\":\"dna.task-authority/1\",\"application_id\":\"" + record.identity() + "\",\"owner\":\"operations\",\"members\":[\"alex\",\"blair\"],\"grants\":[{\"mode\":\"local\",\"name\":\"riley\",\"reassign\":true,\"recover\":true}]}", record.identity(), "local");
+        std::test::assert(policy.valid, "explicit native reassignment authority"); let authority = ops::FixedTaskAuthority { policy: policy };
+        let commands = ops::GovernanceCommands { record: record, tasks_enabled: true, task_authority: authority };
+        let context = ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: "riley" };
+        let change = commands.submit(context, ops::GovernanceCommand { request_id: "task-api-reassign", operation: "dna.task.reassign", application_id: record.identity(), target_kind: "dna.task", target_id: first_id,
+            subject_digest: w.text(row, "assignment_digest"), expected_assignee: "alex", new_assignee: "blair" });
+        std::test::assert(change.ok && change.receipt.task.state == "applied", "actual native reassignment fact committed");
+        let updated = self.request(root, "?id=" + dna::url_encode(first_id)); std::test::assert_eq_int(updated.status, 200, updated.body); let current = self.first(updated);
+        std::test::assert_eq_str(w.text(current, "assignee"), "blair", "fresh Task read observes real native reassignment");
+        std::test::assert_eq_str(w.text(current, "state"), "handed", "reassignment did not complete the Task");
+        std::test::assert(w.text(current, "assignment_digest") != w.text(row, "assignment_digest"), "actual lifecycle change advances exact assignment basis");
+        std::test::assert_eq_str(w.text(current, "obligation"), w.text(row, "obligation"), "obligation retained");
+        std::test::assert_eq_str(w.text(current, "acceptance_digest"), w.text(row, "acceptance_digest"), "original acceptance retained");
+        std::test::assert_eq_str(w.raw(current, "acceptance_bound"), w.raw(row, "acceptance_bound"), "explicit original binding retained");
+        let current_history = std::json::array_first(w.raw(current, "history")); let last_assignment = std::json::array_next(current_history);
+        std::test::assert_eq_str(w.text(last_assignment.element, "event_id"), change.receipt.task.event_id, "command effect and current history share exact native event");
+        std::test::assert_eq_str(w.text(last_assignment.element, "from"), "alex", "history preserves former assignee");
+        std::test::assert_eq_str(w.text(last_assignment.element, "by"), "riley", "history preserves actual principal");
+        std::test::assert(std::json::array_next(last_assignment).done, "one native reassignment");
+        if evidence != "" { std::io::fs::write_file(evidence + "/task-reassigned-response.json", updated.body) or raise; }
+        // Visibility inputs over actual supporting identities; no fabricated
+        // Task outcome is introduced to exercise hidden collection behavior.
+        std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "receipt.withheld", entity: handoff.digest, body: "{}", author: "test" }, false, "").ok, "protect actual supporting handoff");
+        let hidden = self.request(root, "?id=" + dna::url_encode(first_id));
+        std::test::assert(hidden.status == 404 && hidden.body == missing.body, "protected and absent Task indistinguishable");
+        let remaining = self.request(root, ""); std::test::assert_eq_int(remaining.status, 200, remaining.body);
+        std::test::assert_eq_str(w.raw(w.raw(w.raw(remaining.body, "data"), "page"), "total"), "1", "hidden Task excluded from total");
+        std::test::assert_eq_str(w.text(self.first(remaining), "id"), second_id, "visible native Task retained");
+        // Terminal-after-handoff is a labelled read-projection probe, not a
+        // claim that this test exercised the native completion command.
+        std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "task.done", entity: second_id, body: "terminal read fixture", author: "test" }, false, "").ok, "explicit terminal read fixture");
+        let terminal = self.request(root, "?id=" + dna::url_encode(second_id)); std::test::assert_eq_int(terminal.status, 200, terminal.body);
+        std::test::assert_eq_str(w.text(self.first(terminal), "state"), "done", "terminal-after-handoff remains inspectable");
+        std::test::assert_eq_str(w.raw(self.first(terminal), "reassignment_supported"), "false", "terminal Task cannot be reassigned");
+        // A recorded Task birth alone does not establish human administration.
+        std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "task.born", entity: "read-only-no-handoff", body: "input: No human handoff", author: "test" }, false, "").ok, "explicit read-contract no-handoff fixture");
+        let unborn = self.request(root, "?id=read-only-no-handoff"); std::test::assert(unborn.status == 404 && unborn.body == missing.body, "no-handoff and absent share response");
+        std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "ledger.adopted", entity: "org", body: "{}", author: "test" }, false, "").ok, "explicit split-history read-contract fixture");
+        std::test::assert_eq_int(self.request(root, "").status, 503, "split operational history cannot yield a partial Task list");
+        println("PASS Task API: actual native handoffs and reassignment, exact lifecycle/read basis, original acceptance, Unicode/CRLF, pagination/snapshot, protected-support privacy and labelled terminal/split read probes");
+    }
+}
+fn main() { let cases = TaskApiCases { }; cases.run_cases(std::env::arg(1), std::env::arg(2)); }

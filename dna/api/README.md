@@ -1,19 +1,30 @@
 # DNA read API
 
-The service API reads practices and reviews from an existing local DNA Record
-and inspects the project's committed organization source. It runs independently
-of the organization body, Postgres and Iris.
+The service API reads practices, reviews and handed Tasks from an existing local DNA Record
+and inspects the project's committed organization source. An application-composed
+head can also expose its real workflow catalog. Configured Knowledge reads use
+the private native state service and its authoritative graph store. The API runs
+separately from the organization body and Iris. Record and source reads do not
+require Postgres; configured Knowledge reads require the state service.
 Typed projections in `dna/operations` are shared with the native CLI. The API
 does not invoke CLI operational commands or parse terminal rendering. Organization
 inspection uses the native compiler's machine-readable topology export.
 
 This is an experimental source-built service. An optional
 [Iris cockpit](../../iris/cockpit/README.md) browses these reads from the same
-origin. There is no `hale dna api` launcher or Compose service profile yet.
-The remaining work is tracked in
-[SERVICE-DEVELOPMENT-PLAN.md](../SERVICE-DEVELOPMENT-PLAN.md).
+origin. The checkout provides a [cockpit launcher](../../iris/cockpit/README.md#run-locally);
+there is no installed `hale dna api` subcommand or Compose service profile yet.
+Product scope and remaining service work are tracked in
+[#690](https://github.com/hale-lang/hale/issues/690).
 
 ## Run
+
+For the browser and API together, `./iris/cockpit/start.sh PROJECT` builds this
+checkout's native API in temporary storage and serves its nine browser assets.
+Use `--api BINARY` for an existing application-composed head. The launcher
+inherits private service configuration and preserves the project's authentication
+mode; it starts no application body or infrastructure. See the cockpit README
+for fresh-project source capture and service configuration.
 
 From the Hale source checkout, using a current Hale compiler:
 
@@ -35,23 +46,40 @@ To serve the cockpit as well, pass its static directory as the third argument:
 ./dna/api/api /absolute/path/to/a/dna-project 8792 "$PWD/iris/cockpit/web"
 ```
 
-Open <http://127.0.0.1:8792/>. Only `/`, `/app.js` and `/styles.css` are served;
-URLs never become filesystem paths. All three assets must exist and be nonempty
+Open <http://127.0.0.1:8792/>. The asset whitelist is `/`, `/app.js`, `/runtime.js`, `/application.js`,
+`/definition-draft.js`, `/organization-draft.js`, `/knowledge-draft.js`, `/task-administration.js` and `/styles.css`; `/iris/observer.json` supplies static connection metadata.
+URLs never become filesystem paths. All nine assets must exist and be nonempty
 at startup. They are loaded once, so restart after changing them. API-only mode
 retains its existing routes. No legacy mutation routes are enabled in either
 mode. Browser assets and authentication share the API origin; there is no
 cross-origin API contract.
 
+Optional `HALE_IRIS_OBSERVER_ORIGIN` supplies one trusted HTTP(S) origin for
+the browser's independent native observation. Empty/unset permits only same-origin
+connections. A valid configured origin is returned in the public
+`/iris/observer.json` profile `hale.iris.observer.v0` and added exactly to CSP
+`connect-src`; the API does not fetch or proxy it. Nonempty invalid configuration
+refuses shell startup. Paths (including a trailing slash), userinfo, queries,
+fragments, wildcard/encoded hosts and whitespace are rejected. Scheme/host and
+default ports normalize. See [Runtime setup](../../iris/cockpit/README.md#native-runtime-connection).
+
 Use the returned id in the following routes:
 
 | GET route | Result |
 | --- | --- |
-| `/api/hale/v1/applications/{id}/capabilities` | Principal mode, implemented reads and unavailable mutations |
+| `/api/hale/v1/applications/{id}/capabilities` | Principal mode, implemented reads and explicit command capabilities |
 | `/api/hale/v1/applications/{id}/dna/practices` | Named practice proposals, lifecycle, attribution and available canonical text |
 | `/api/hale/v1/applications/{id}/dna/reviews` | Review identity, exact subject, required authority and recorded decision |
+| `/api/hale/v1/applications/{id}/dna/tasks` | Current handed Tasks, preserved responsibility and exact assignment history |
 | `/api/hale/v1/applications/{id}/dna/organization` | Checked declared structure, explicit position groups, contracts and separate ownership map |
+| `/api/hale/v1/applications/{id}/dna/definitions` | Application-injected workflow definitions, ordered Steps, leaf specifications and exact child references |
+| `/api/hale/v1/applications/{id}/dna/knowledge/nodes` | Visible native Knowledge nodes, preserving exact signed revisions |
+| `/api/hale/v1/applications/{id}/dna/knowledge/edges` | Stored edges incident to an exact visible node |
+| `/api/hale/v1/applications/{id}/dna/knowledge/bindings` | Stored bindings for an exact visible node and optional target |
+| `/api/hale/v1/applications/{id}/dna/knowledge/dependents` | The same stored bindings, with other dependency coverage explicitly unavailable |
 
-Collections accept `id`, `limit`, `offset` and `snapshot`. Pass opaque ids through
+Practices, reviews, Tasks, organization and definitions accept `id`, `limit`, `offset`
+and `snapshot`. Knowledge uses cursor pagination as described below. Pass opaque ids through
 URL query encoding, for example `curl --get --data-urlencode 'id=org/reviews/one'`.
 The default page is 25 items, maximum 100. Later pages require the preceding
 collection snapshot; 409 means restart pagination. Errors have structured JSON
@@ -99,6 +127,282 @@ membership establish declared structure. They do not establish runtime liveness,
 occupancy, effective grants or authority. Source-declared ownership paths remain
 separate from compiler instance paths until the application provides that join.
 Capacity and retry values travel as decimal strings (or null when unspecified).
+
+## Workflow definitions
+
+The standalone executable advertises `reads.definitions=false` and returns
+503 `definitions_unsupported`. It cannot discover an arbitrary application's
+in-memory `WorkflowCatalog` from a project directory. A composed head supplies
+the application-owned catalog to `ops::DeclaredWorkflowCatalog`, alongside the
+same declared `AdmissionLimits` and the loaded-source `DefinitionProvenance`,
+then passes that provider to `api::serve(root, port, web, provider)` or `Api`.
+The provider must share the actual catalog used by that application; no parallel
+sample or reconstructed catalog establishes this capability.
+
+`WorkflowCatalogProvider.supported()` declares support without encoding the
+catalog. `snapshot()` captures its native encoded document, digest, limits and
+provenance together once for each definitions request. `DeclaredWorkflowCatalog`
+implements both methods. A host that replaces its catalog must serialize
+replacement against snapshot capture. The query validates a disposable captured
+copy, never expands or admits workflows, and preserves the provider's definitions
+and any already-bound execution. `reads.definitions=true` reports support; it
+does not promise a currently available or valid snapshot.
+
+A successful collection contains every declared revision as a separate item.
+Its `id` is an opaque exact-revision identity for URL query use. Ordered `steps`
+contain members tagged `leaf` or `child`: leaf specifications preserve the native
+Work-request content, while children reference an exact definition revision.
+`dependents` reports reverse child references in the captured catalog. No request
+falls back to the latest revision. Native revisions and cost ceilings are signed
+decimal strings; step indices, attempts and admission limits are unsigned decimal
+strings. Native definition reads can preserve zero or negative revisions without
+claiming such a definition can be admitted. Knowledge bindings remain opaque text.
+These declarations do not establish running Tasks, admitted Works, live state,
+occupancy, authority, or mutation support.
+
+`data.basis` identifies the captured catalog digest and format, declared admission
+limits, and `trusted_host_claims` about its loaded source revision/module and
+optional dependency digest. Empty dependency digest means no dependency claim.
+These claims are supplied by the host for the loaded catalog; a fresh checkout
+HEAD is not substituted. Pagination binds the entire basis and the Record head;
+a catalog, limits, provenance or Record change returns 409 `snapshot_changed`.
+A supported empty catalog is a successful empty collection. Unsupported,
+unavailable, malformed and semantically invalid catalogs produce structured 503
+errors; they never masquerade as empty catalogs. Reader resource bounds produce
+`definition_read_limit`, which does not declare the application's policy invalid.
+
+## Knowledge reads
+
+Set `HALE_DNA_KNOWLEDGE_URL` to the private state service base URL and configure
+`HALE_DNA_KNOWLEDGE_READ_KEY` on both services. The key is at least 32 bytes and
+contains no control characters. The public API sends an authenticated native
+`POST /graph/read`; it does not invoke a CLI or forward browser authorization
+headers. Missing either setting means `reads.knowledge=false` and
+`knowledge_unsupported`. Configured failures remain unavailable, never an empty
+successful graph. Support is a configuration claim, not a health check.
+
+The API derives the reader from its trusted local configuration or existing OIDC
+session before any upstream call. Public queries accept only `id`, `target`,
+`limit` (default 25, range 1..100), `cursor` and `snapshot`. Edges, bindings and
+dependents require an exact node `id`; nodes allow optional exact lookup. Unknown
+or duplicate fields, noncanonical limits and cursor without snapshot fail before
+transport. A missing or hidden exact node receives the same 404. A target is a
+native locus-path relevance context, not identity or authority.
+
+Knowledge pages use `returned`, `has_more` and `next_cursor`, with no offset or
+total. Continue with the same kind, id, target, limit and snapshot. The snapshot
+hash binds the Record, projection watermark and graph generation, routed receipt
+visibility, reader scope and target. All graph collections for that captured view
+share it. A changed view returns 409. The public adapter strictly validates every
+nested response, exact Int64 decimal string and the canonical basis hash; it
+rejects a wrong Record, reader scope, target or inconsistent page. It rebuilds
+public errors with known codes and generic messages, without upstream diagnostic
+text or credentials.
+
+Node `projection_state` is the native projection lifecycle; `source_provenance`
+remains null. Historical empty names remain unknown; empty `supersedes` can also
+mean that the predecessor is protected and unavailable in this view. Its absence
+does not prove there is no predecessor. Edges and bindings
+are actual stored relationships. Coverage is `bindings=complete` and
+`runs/definitions/practices=unavailable`; this slice does not establish runtime
+consumption, source-provenance backfill, curation or write authority.
+
+`Api.knowledge` accepts the structural `KnowledgeProvider` interface for a
+composed host or focused tests. `supported()` does no read; `read(request)` gets
+the captured Source and authenticated reader. The existing `serve` signature
+constructs `ConfiguredKnowledge` from environment settings internally. Response
+bodies are capped at 1 MiB and outbound requests at 16 KiB; the private service
+also enforces its scan budgets. The public API is source-built; the compiler's
+embedded DNA inventory does not currently package this API seed. Packaging a
+distributable API belongs to the service deployment work.
+
+Transport deployment prerequisites remain: the current native HTTP client's
+`timeout_ms` field is not enforced, so this adapter does not claim a request
+deadline. Its `max_retries=0` disables repeat attempts, but the client discards 5xx
+response bodies; these become generic `knowledge_unavailable`. An enforced native
+transport deadline is required before relying on this path for remote deployment.
+
+## Practice and Review command providers
+
+The standalone executable and `serve` continue to compose `NoCommands`. They
+advertise no writes and reject POST with 405. An application can instead call
+`serve_with_commands(root, port, web, definitions, commands)` with its native
+`CommandProvider`, using the same startup and authentication path. This does not
+install a durable command implementation: the application owns it.
+Bind the provider to a named locus in the hosting scope and keep it alive for
+the server's lifetime before passing it to `serve_with_commands`.
+
+The provider exposes operation/version-aware `supported` and `capability`,
+typed `submit(context, CommandRequest)` and shared `lookup(context, request_id)`.
+Supported operations occupy the same application/principal/request namespace; reusing
+a key with different operation/content must conflict. Trusted context carries
+the resolved principal and the application's Record binding.
+The HTTP head validates closed versioned command envelopes, byte limits,
+expected principal, exact application/subject consistency and browser origin.
+The expected principal is a precondition only; it cannot set the authenticated
+actor. An identity change returns `command_context_changed` before dispatch.
+Unknown fields, caller-supplied authority, duplicate keys and invalid Unicode
+are rejected. No CLI command, domain history repair or generic bus publication
+occurs in this adapter.
+
+Submission requires JSON Content-Type, `X-Hale-Command: 1`, and an exact Origin
+matching the trusted command origin. The loopback composition derives it from
+its configured listener; `Api` compositions set `command_origin` explicitly.
+Request Host never selects the trusted origin. Missing configuration disables
+submission. Duplicate safety headers and ambiguous framing are refused. Recovery
+GET accepts exactly one `request_id` and still requires current receipt access.
+The command-ID lookup path is not implemented by these profiles.
+
+The provider owns current authorization, canonical request equivalence, durable
+principal/application/key scoping, exact-head admission and interrupted proposal
+and verdict progression. It must resolve an existing request before applying fresh-subject
+preconditions to a retry. Unrelated Record movement is not a browser draft lock;
+the provider checks the pinned subject and performs its internal admission CAS.
+Receipt lookup joins the exact native request, not the latest practice metadata.
+
+Typed provider results include their captured source basis. The head checks
+scope, identity and receipt-state consistency before serialization, and uses
+that basis rather than the pre-submit Record head. HTTP 202 means a recorded or
+unresolved command state, never Review approval or practice adoption. A successful
+proposal proves candidate and Review creation. A successful verdict command proves
+that this specific verdict was accepted. Review settlement and activation remain
+separate fields in both cases. The [executable wire contract](contract/v1/README.md)
+defines the request, response and independent optional capability profiles.
+
+`dna.review.verdict@1` targets an exact pending practice-candidate Review with
+separate candidate-digest, expected-principal and pending-state preconditions.
+Its literal comment may be empty and is bounded to2048 UTF-8 bytes; supported
+choices are approve, reject and revise. The provider derives reviewer authority
+from trusted policy, checks eligibility and current authority at the delayed
+decision, and must not reinterpret an already-settled approval as permission to
+retry application. Mutation Reviews, reapproval and abstention are excluded.
+The first native practice-review profile is non-mutation, has no approver quorum
+and declares required authority `board`; that label cannot establish the caller's
+grant. Review reads expose existing `is_mutation` and `approvers` facts so clients
+can distinguish this shape; those fields are optional for older read responses.
+An overall settled Review cannot establish this caller's command outcome:
+the provider must correlate the exact request, including refusal beside another
+command's approval. Existing Review-ID-only native joins do not establish that
+durable correlation. Unsupported providers advertise no verdict capability.
+
+`tests/commands_api_test.hl` exercises the adapter with scripted providers.
+`tests/commands/main.hl` is an explicitly opted-in HTTP conformance fixture,
+requiring `HALE_COCKPIT_SCRIPTED_COMMANDS=1`. It appends no native command facts
+and provides no restart durability. It must not be used as an application writer
+or as proof that the administration loop is complete.
+
+## Handed Tasks and reassignment
+
+`GET /api/hale/v1/applications/{id}/dna/tasks` exposes native human-handoff
+history through profile `dna.task-administration.v1`. It is distinct from wf1
+workflow execution. Rows retain the outcome, current state and assignee,
+obligation, explicit acceptance binding, evidence requirements/reference,
+waiting reason and ordered handoff/reassignment history. Acceptance and evidence
+references are opaque strings. `assignment_digest` binds the relevant native
+lifecycle, including intervening and terminal events; `reassignment_supported`
+states factual support, not the caller's authority.
+
+Reads require a trusted-local principal and a complete Record-only projection
+before Ledger adoption. They serve only the current captured head: an old
+`snapshot` returns 409, rather than historical Task contents. Hidden Tasks are
+omitted, including identifiers and counts; incomplete, unsupported or over-limit
+history is unavailable. An unavailable projection is not an empty Task list.
+
+Task reads alone also accept `assignee=<exact person identity>`. It is decoded
+once, must be 1..256 UTF-8 bytes without C0/DEL, and cannot be empty or repeated.
+The filter uses the current recorded assignee, including terminal Tasks with a
+prior handoff, before pagination and total counts. Filtered data echoes
+`assignee`; unfiltered data omits it. With `id`, both identities must match or
+return 404. A later page still requires `snapshot`; other read routes reject
+`assignee`. This does not establish position ownership, complete personal
+responsibility or permission to reassign.
+
+The [native command head](practice_review/README.md) can additionally enable
+`dna.task.reassign@1` with `HALE_DNA_TASK_POLICY`. Its existing
+`HALE_DNA_COMMAND_POLICY` remains required; Task authority is independently
+configured. For example, this is the complete closed Task policy shape; replace
+the application ID and exact local names with your own:
+
+```json
+{
+  "format": "dna.task-authority/1",
+  "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "owner": "operations",
+  "members": ["mara", "dev"],
+  "grants": [
+    {"mode": "local", "name": "riley", "reassign": true, "recover": true}
+  ]
+}
+```
+
+The policy is immutable startup configuration, bound to the application's Record
+genesis ID and identified by its document digest. It permits 1–64 unique members
+and up to 64 unique local principal grants; unknown fields, invalid configuration
+or another application's policy refuse startup. Missing configuration grants
+nothing. `owner` is an explicit authority label, not a source-position or Task-ID
+mapping. Member eligibility also requires current visibility and no recorded
+retirement. Both the former and new assignee must be eligible; an unassigned
+legacy handoff cannot use this reassignment operation. The authenticated actor
+needs the exact grant, not membership in the assignment group. `USER` supplies
+no grant. Restart the provider to load policy changes; Record admission does not
+atomically fence a mutable external policy file.
+
+With a matching source-built composed binary:
+
+```sh
+HALE_DNA_COMMAND_POLICY=/absolute/path/authority.json \
+HALE_DNA_TASK_POLICY=/absolute/path/task-authority.json \
+  iris/cockpit/start.sh /absolute/path/project \
+  --api /absolute/path/practice_review --port 8792
+```
+
+`/capabilities` exposes the optional `task_commands` profile
+`dna.task.reassign.v1`, explicit `writes.task_reassign`, eligible `recipients`
+and separate availability/authorization. Read access or a selected working locus
+does not grant this operation. Submit to the shared
+`POST /api/hale/v1/applications/{id}/commands` route with the usual Origin,
+JSON and `X-Hale-Command: 1` requirements. The closed envelope is:
+
+```json
+{
+  "request_id": "reassign-1",
+  "operation": "dna.task.reassign",
+  "operation_version": "1",
+  "context": {"application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "position_id": "org"},
+  "target": {"application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "kind": "dna.task", "id": "task-id"},
+  "preconditions": {
+    "subject_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "principal": {"mode": "local", "name": "riley"},
+    "assignee": "mara"
+  },
+  "arguments": {"to": "dev"}
+}
+```
+
+Use the exact returned Task ID, assignment digest and current assignee. The
+service checks these and current eligibility in the captured Record, then admits
+one `task.reassigned` fact at the exact predecessor. This fact is both the
+durable command identity and the assignment effect. The same Task remains open;
+its obligation, acceptance, evidence and prior assignment history are preserved.
+No Body, Host or Knowledge graph service is needed for this direct operation.
+The whole request is bounded to 32768 encoded bytes, request keys to 128 bytes
+and person/Task identities to 256 bytes.
+
+The receipt's `task` fields distinguish `applied` from `unknown`, preserving
+exact `from`, `to` and native `event_id`. HTTP 202 alone proves no effect. Fresh
+Task readback is separate from the recorded receipt and may show later changes.
+The application/principal/request key shares the existing Practice/Review/Organization
+namespace; different operation or content conflicts. Recover only through
+`GET /commands?request_id=...`, with the same application prefix and current
+receipt grant. `recover` is independent of `reassign`, so an operator may retain
+lookup after new writes are denied. Lookup does not repeat the mutation and
+resolves the original receipt even after the Task changes.
+
+This profile does not retire people, transfer responsibility across owners,
+modify source ownership, complete Tasks or control workflow execution. OIDC,
+signed trust, Ledger-backed administration and source-to-live ownership joins
+need their own supported service contract. Existing CLI Task commands are not
+made part of this provider by these routes.
 
 ## Identity and content
 
@@ -157,3 +461,91 @@ database or organization body is involved. `HALE_API_BIN` selects an already
 built service. CI builds with the checkout's compiler and runs this suite.
 The native contract checker supports the schema profile used by this API and
 rejects unsupported schema constructs; it is not a general JSON Schema validator.
+
+### Organization source preparation
+
+The same host opt-in also exposes `dna.organization.ownership.draft.v1` through
+`GET` and `POST /api/hale/v1/applications/{application_id}/dna/organization/ownership/draft`.
+This captures the committed `dna/org/owners` map, including an absent/empty map,
+and previews changes through the existing native `Ownership` model and
+`owners_affected`. The response includes candidate assignments, memberships,
+hosting, inherited owners for every scope named in either map, and affected
+owner review members (candidate membership, falling back to original membership
+as the domain does). Empty memberships and a change to single-owner mode are
+reported; they do not establish permission to adopt the source.
+
+The ownership editing profile is bounded to 16 KiB and 256 entries. Each
+non-comment line must be `scope = owner`, `owner: members`, or `host = owner`;
+names cannot contain whitespace or assignment/list/comment delimiters. Empty
+owner/member lists are representable. Duplicate normalized scopes, duplicate
+memberships and repeated hosts are refused instead of silently accepting the
+domain parser's first/last-match behavior. Existing maps outside this profile
+remain readable through the Organization read API but are not editable here.
+The endpoint uses the same exact principal/source/dependency/Record fences,
+Origin/framing guard and 32 KiB request bound as organization source drafts.
+It performs no project or Record writes. Live obligations, instance bindings,
+publication and activation remain unavailable in this preparation profile.
+
+Set `HALE_IRIS_ORG_DRAFTS=1` on the native API host to offer the optional
+`dna.organization.draft.v1` capability. The browser can then read and edit the
+exact committed `dna/org/main.hl`, inspect a source diff, validate the complete
+captured organization with Hale, and export that exact candidate with its
+validation evidence. Neighboring source files and captured dependencies retain
+their original bytes. The module limit is 16 KiB; the JSON request limit is
+32 KiB; the draft projection limit is 256 static instances.
+
+`GET` and `POST /api/hale/v1/applications/{application_id}/dna/organization/draft`
+share the normal authenticated session. POST pins source commit, dependency
+identity, module digest, Record head and expected principal, and requires the
+configured Origin and command intent/framing headers. Changed basis refuses the
+draft. The host checks a disposable snapshot and never edits the working tree,
+Record or running application. This is source preparation: publication,
+retirement, reassignment of live obligations and activation require the owning
+services. Viewing a chart position grants no authority. The capability is off
+by default and does not change `read_only` or any command capability.
+
+### Recorded workflow reads
+
+`GET /api/hale/v1/applications/{application_id}/dna/workflows` exposes the merged
+native `WorkflowProjection` over recorded workflow facts. `reads.workflows` is
+advertised for trusted-local mode. The collection uses the existing `id`, `limit`,
+`offset` and `snapshot` query contract. Lists contain visible root summaries;
+exact details include the immutable bound nodes, admitted attempt histories and
+native transition order. Decimal strings preserve native integer identities.
+`recursive_workflows: false` still means the head supplies no execution service.
+
+This initial adapter reads complete Record routing-0 histories only. Any past
+Ledger adoption makes it unavailable, including after abandonment; it does not
+merge memories or guess a missing Ledger. OIDC reads require an owning-service
+visibility provider and are unavailable here. Reference visibility changes or
+non-public/non-internal Work classes suppress an entire affected execution.
+The response does not dereference receipt bodies, infer runtime identities, or
+make a native transition. Reader budgets are 2,048 Record events, 512 unique
+workflow facts, 64 KiB per fact, 512 KiB cumulative fact bodies and 256 bound
+nodes. Exceeding them reports `workflow_read_limit`, not an invalid workflow.
+# Person retirement
+
+The composed local command head accepts an optional `retire` boolean alongside
+`reassign` and `recover` in each `dna.task-authority/1` grant. Omission preserves
+the existing policy and disables retirement. Keep an explicit `retire: false`
+with `recover: true` when revoking writes but retaining request recovery.
+
+`GET /api/hale/v1/applications/{application_id}/dna/people?id=<person>` returns
+the exact person state, complete supported responsibility plan, plan digest and
+eligible successors. An optional `snapshot` pins its Record head. The read
+refuses protected or unsupported affected history instead of reporting a partial
+plan. `dna.person.retire@1` uses the shared `/commands` identity namespace, target
+`dna.person`, preconditions `{subject_digest, principal}`, and arguments `{to}`.
+An empty successor is permitted only for a complete plan with no held Tasks.
+
+Publication creates ordinary Task reassignment facts and a retirement fact
+off-ref, then publishes the complete chain with one Record compare-and-swap.
+Recovery verifies that exact chain and its transfer manifest. The browser retains
+only request identity across reloads and never resubmits an uncertain request.
+
+This profile requires the updated Body and CLI writers from the same deployment;
+their exact admission checks prevent concurrent handoffs to retired people.
+It supports local Record authority, at most 32 transferred Tasks, and no prior
+Ledger adoption. Source memberships and declared positions are separate. Mixed
+old writers, cross-owner transfer and distributed Record reconciliation are not
+covered by this local atomic publication profile.

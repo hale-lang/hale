@@ -1,6 +1,6 @@
 // The actual loader checks native source; no hand-authored topology fixture and
 // no organization lifecycle execution. The wrapper owns cleanup even on assert.
-import ".." as api;
+import "../../organization_source" as orgsource;
 import "../../core" as dna;
 
 const ORG: String = "import \"vendor/support\" as support; main locus Org { params { worker: support::Worker = support::Worker { }; } }\n";
@@ -28,7 +28,7 @@ locus SnapshotCases {
         self.write(self.repo + "/dna/org/main.hl", ORG);
         self.write(self.repo + "/vendor/support/main.hl", SUPPORT);
         self.commit();
-        let source = api::OrganizationSource { root: self.repo, compiler: self.compiler };
+        let source = orgsource::OrganizationSource { root: self.repo, compiler: self.compiler };
         let before_refs = self.git("show-ref");
         let before_status = self.git("status\n--porcelain");
         let first = source.read();
@@ -82,7 +82,7 @@ locus SnapshotCases {
         let unsafe_dependency = source.read();
         std::test::assert(!unsafe_dependency.ok && unsafe_dependency.code == "organization_dependencies_unavailable", "local dependency links fail closed");
         std::test::assert(!source.unchanged(changed), "failed dependency inspection never counts as unchanged");
-        let inspect = api::OrganizationInspection { scratch: self.root + "/inspection", seconds: 1 };
+        let inspect = orgsource::OrganizationInspection { scratch: self.root + "/inspection", seconds: 1 };
         let started = std::time::now();
         let timeout = inspect.execute("sleep\n10", "/", 4096);
         std::test::assert_eq_int(timeout.code, 124, "native subprocess deadline is enforced");

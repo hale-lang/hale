@@ -22,7 +22,7 @@ behavior.
   source and Record refs unchanged. Native and browser regression cases cover
   exact identities, source changes, unavailable dependencies and mobile/history
   navigation. Semantic position bindings and governed editing remain work in
-  the full [delivery checklist](iris/cockpit/DELIVERY.md).
+  the full [cockpit scope](https://github.com/hale-lang/hale/issues/690).
 
 ### Iris: live read-only cockpit for DNA practices and reviews (GH #690)
 

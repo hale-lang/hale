@@ -1,6 +1,7 @@
-// Thirty-three named, live HTTP integration cases. This is an ordinary native
+// Thirty-four named, live HTTP integration cases. This is an ordinary native
 // Hale test program; no interpreter, database, model or external issuer is used.
 import "../../core" as dna;
+import ".." as api;
 import "./fixture" as fixture;
 import "./issuer" as issuer;
 
@@ -264,29 +265,77 @@ locus Cases {
         f.validate(f.http("GET", fixture::APPLICATIONS, old_session, ""), "ApplicationsResponse", 200);
         f.stop(); f.start(); f.error("GET", fixture::APPLICATIONS, 401, old_session, "");
     }
+    fn web_observer_configuration() {
+        let assets = api::WebAssets { };
+        std::test::assert(assets.parse_origin("").valid, "empty origin is explicitly unconfigured");
+        std::test::assert(assets.parse_origin("http://0xordinary").valid, "hostname hex prefix is not a numeric address by itself");
+        let valid = "http://localhost:8787\nHTTPS://Runtime.Example:0443\nhttp://127.0.0.1:80\nhttps://[::1]:8787\nhttp://[2001:db8:0:0:0:0:0:1]\nhttp://[::ffff:192.0.2.1]:65535\nhttps://runtime.example:00001";
+        let normalized = "http://localhost:8787\nhttps://runtime.example\nhttp://127.0.0.1\nhttps://[::1]:8787\nhttp://[2001:db8:0:0:0:0:0:1]\nhttp://[::ffff:192.0.2.1]:65535\nhttps://runtime.example:1";
+        let mut i = 0;
+        while i < dna::count_lines(valid) {
+            let parsed = assets.parse_origin(dna::line_at(valid, i));
+            std::test::assert(parsed.valid, "valid observer origin: " + dna::line_at(valid, i));
+            std::test::assert_eq_str(parsed.value, dna::line_at(normalized, i), "origin normalization");
+            i = i + 1;
+        }
+        let invalid = "https://example.test/\nhttps://example.test/snapshot\nhttps://user@example.test\nhttps://user:secret@example.test\nhttps://example.test?query\nhttps://example.test#fragment\nhttps://example%2etest\nhttps://example.test:0\nhttps://example.test:65536\nhttps://example.test:abc\nhttps://example.test:\nhttps://*.example.test\nhttps://example.test;connect-src *\nhttps://example.test'\nhttps://example.test\\evil\n https://example.test\nhttps://example.test \nhttp://127.1\nhttp://0177.0.0.1\nhttp://256.0.0.1\nhttp://0x7f000001\nhttp://[::1\nhttp://[::1]evil\nhttp://[1:2:3:4:5:6:7]\nhttp://[1:2:3:4:5:6:7:8:9]\nhttp://[1::2::3]\nhttp://[:::1]\nhttp://[::ffff:999.0.0.1]\nhttp://[fe80::1%25eth0]\nfile://localhost\ndata:text/plain,hello\nhttp://\nhttp://-bad.test\nhttp://bad-.test\nhttp://bad..test\nhttp://équipe.example";
+        i = 0;
+        while i < dna::count_lines(invalid) {
+            std::test::assert(!assets.parse_origin(dna::line_at(invalid, i)).valid, "invalid observer origin refused: " + dna::line_at(invalid, i));
+            i = i + 1;
+        }
+        std::test::assert(!assets.parse_origin("http://example.test\r\nX-Injected: yes").valid, "header injection refused");
+        std::test::assert(!assets.parse_origin("http://example.test\t").valid, "tab refused");
+        let f = fixture::Fixture { root: self.root + "/34-configured", observer_origin: "HTTP://LOCALHOST:08787" };
+        f.prepare_web(); f.start();
+        let config = f.http("GET", "/iris/observer.json", "", "");
+        std::test::assert_eq_int(config.status, 200, config.body);
+        std::test::assert_eq_str(config.body, "{\"profile\":\"hale.iris.observer.v0\",\"origin\":\"http://localhost:8787\"}", "only public exact connection metadata");
+        std::test::assert_eq_str(dna::response_header(config.headers, "Content-Type"), "application/json; charset=utf-8", "configuration JSON media type");
+        std::test::assert_eq_str(dna::response_header(config.headers, "Referrer-Policy"), "no-referrer", "observer metadata sends no referrer");
+        std::test::assert_eq_str(dna::response_header(config.headers, "Cache-Control"), "no-store", "connection metadata not cached");
+        let expected_csp = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' http://localhost:8787; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+        std::test::assert_eq_str(dna::response_header(config.headers, "Content-Security-Policy"), expected_csp, "only configured observer origin added");
+        std::test::assert_eq_str(dna::response_header(f.http("GET", "/", "", "").headers, "Content-Security-Policy"), expected_csp, "shell has identical scoped CSP");
+        std::test::assert_eq_str(f.http("GET", "/iris/observer.json?origin=https%3A%2F%2Fother.example", "", "").body, config.body, "request input cannot alter configured origin");
+        f.error("POST", "/iris/observer.json", 405, "", "{}");
+        f.error("HEAD", "/iris/observer.json", 405, "", "");
+        f.error("GET", "/iris/observer.json/extra", 404, "", "");
+        f.error("GET", "/snapshot", 404, "", "");
+        f.error("POST", "/ctl/review", 405, "", "{}");
+        f.stop();
+        let refused = fixture::Fixture { root: self.root + "/34-invalid", observer_origin: "https://runtime.example/PRIVATE-CONFIG-CANARY" };
+        refused.prepare_web(); let before = refused.refs();
+        refused.startup_refused("HALE_IRIS_OBSERVER_ORIGIN");
+        std::test::assert(!std::str::contains(refused.log(), "PRIVATE-CONFIG-CANARY"), "startup error does not echo invalid configuration");
+        std::test::assert_eq_str(refused.refs(), before, "invalid observer configuration writes no Record refs");
+    }
     fn web_assets() {
         let f = fixture::Fixture { root: self.root + "/26" };
         let p = f.practice("PRIVATE-RECORD-NAME", "PRIVATE-RECORD-TEXT", "org", "", false);
         f.prepare_web();
         std::io::fs::write_file(f.webroot + "/secret.txt", "PRIVATE-ASSET-CANARY") or discard;
         let before = f.refs(); f.start();
-        let paths = "/\n/app.js\n/styles.css";
-        let types = "text/html; charset=utf-8\ntext/javascript; charset=utf-8\ntext/css; charset=utf-8";
+        let paths = "/\n/app.js\n/styles.css\n/runtime.js\n/application.js\n/definition-draft.js\n/organization-draft.js\n/knowledge-draft.js\n/task-administration.js";
         let mut i = 0;
-        while i < 3 {
+        while i < dna::count_lines(paths) {
             let response = f.http("GET", dna::line_at(paths, i), "", "");
             std::test::assert_eq_int(response.status, 200, response.body);
-            std::test::assert_eq_str(dna::response_header(response.headers, "Content-Type"), dna::line_at(types, i), "asset media type");
+            std::test::assert_eq_str(dna::response_header(response.headers, "Content-Type"), if i == 0 { "text/html; charset=utf-8" } else if i == 2 { "text/css; charset=utf-8" } else { "text/javascript; charset=utf-8" }, "asset media type");
             std::test::assert_eq_str(dna::response_header(response.headers, "Cache-Control"), "no-store", "assets are not cached");
             std::test::assert_eq_str(dna::response_header(response.headers, "X-Content-Type-Options"), "nosniff", "assets are not sniffed");
             let policy = dna::response_header(response.headers, "Content-Security-Policy");
             std::test::assert(std::str::contains(policy, "default-src 'none'") && std::str::contains(policy, "script-src 'self'") && std::str::contains(policy, "style-src 'self'") && std::str::contains(policy, "connect-src 'self'") && std::str::contains(policy, "frame-ancestors 'none'") && !std::str::contains(policy, "unsafe-inline"), "same-origin external asset policy");
-            std::test::assert_eq_str(response.body, if i == 0 { fixture::SHELL_HTML } else if i == 1 { fixture::SHELL_JS } else { fixture::SHELL_CSS }, "exact static asset");
+            std::test::assert_eq_str(response.body, if i == 0 { fixture::SHELL_HTML } else if i == 1 { fixture::SHELL_JS } else if i == 2 { fixture::SHELL_CSS } else if i == 3 { fixture::SHELL_RUNTIME_JS } else if i == 4 { fixture::SHELL_APPLICATION_JS } else if i == 5 { fixture::SHELL_DEFINITION_DRAFT_JS } else if i == 6 { fixture::SHELL_ORGANIZATION_DRAFT_JS } else if i == 7 { fixture::SHELL_KNOWLEDGE_DRAFT_JS } else { fixture::SHELL_TASK_ADMINISTRATION_JS }, "exact static asset");
             std::test::assert(!std::str::contains(response.body, p.text) && !std::str::contains(response.body, p.digest) && !std::str::contains(response.body, "PRIVATE-RECORD-NAME"), "static assets have no Record data");
             f.error("POST", dna::line_at(paths, i), 405, "", "{}");
             f.error("HEAD", dna::line_at(paths, i), 405, "", "");
             i = i + 1;
         }
+        let config = f.http("GET", "/iris/observer.json", "", "");
+        std::test::assert_eq_int(config.status, 200, "unconfigured observer metadata is still available");
+        std::test::assert_eq_str(config.body, "{\"profile\":\"hale.iris.observer.v0\",\"origin\":\"\"}", "exact unconfigured connection metadata");
+        std::test::assert(std::str::contains(dna::response_header(config.headers, "Content-Security-Policy"), "connect-src 'self';"), "unconfigured CSP permits only same origin");
         let absent = "/index.html\n/secret.txt\n/main.hl\n/.git/config\n/../secret.txt\n/%2e%2e/secret.txt\n/app.js/../secret.txt\n/app.js.map\n/missing.css\n/nested/app.js\n//app.js\n/%61pp.js";
         i = 0;
         while i < dna::count_lines(absent) { f.error("GET", dna::line_at(absent, i), 404, "", ""); i = i + 1; }
@@ -300,15 +349,15 @@ locus Cases {
     }
     fn web_startup() {
         let mut i = 0;
-        while i < 6 {
+        while i < 12 {
             let f = fixture::Fixture { root: self.root + "/27-" + to_string(i) };
             f.prepare_web();
-            if i < 3 {
-                let filename = if i == 0 { "index.html" } else if i == 1 { "app.js" } else { "styles.css" };
+            if i < 9 {
+                let filename = if i == 0 { "index.html" } else if i == 1 { "app.js" } else if i == 2 { "styles.css" } else if i == 3 { "runtime.js" } else if i == 4 { "application.js" } else if i == 5 { "definition-draft.js" } else if i == 6 { "organization-draft.js" } else if i == 7 { "knowledge-draft.js" } else { "task-administration.js" };
                 let removed = dna::run_tool("rm\n" + f.webroot + "/" + filename);
                 std::test::assert_eq_int(removed.code, 0, "remove required asset");
-            } else if i == 3 { f.webroot = f.root + "/absent"; }
-            else if i == 4 { f.webroot = ""; }
+            } else if i == 9 { f.webroot = f.root + "/absent"; }
+            else if i == 10 { f.webroot = ""; }
             else { std::io::fs::write_file(f.webroot + "/index.html", "") or discard; }
             let before = f.refs(); f.startup_refused("iris-webroot");
             std::test::assert_eq_str(f.refs(), before, "invalid webroot preserves refs");
@@ -322,8 +371,14 @@ locus Cases {
         std::io::fs::write_file(f.root + "/index.html", fixture::SHELL_HTML) or discard;
         std::io::fs::write_file(f.root + "/app.js", fixture::SHELL_JS) or discard;
         std::io::fs::write_file(f.root + "/styles.css", fixture::SHELL_CSS) or discard;
+        std::io::fs::write_file(f.root + "/runtime.js", fixture::SHELL_RUNTIME_JS) or discard;
+        std::io::fs::write_file(f.root + "/application.js", fixture::SHELL_APPLICATION_JS) or discard;
+        std::io::fs::write_file(f.root + "/definition-draft.js", fixture::SHELL_DEFINITION_DRAFT_JS) or discard;
         f.start();
+        f.error("GET", "/application.js", 404, "", "");
+        f.error("GET", "/definition-draft.js", 404, "", "");
         f.error("GET", "/", 404, "", ""); f.error("GET", "/app.js", 404, "", ""); f.error("GET", "/styles.css", 404, "", "");
+        f.error("GET", "/runtime.js", 404, "", ""); f.error("GET", "/iris/observer.json", 404, "", "");
         f.validate(f.http("GET", fixture::APPLICATIONS, "", ""), "ApplicationsResponse", 200);
     }
     fn web_oidc() {
@@ -335,6 +390,10 @@ locus Cases {
         std::test::assert(!std::str::contains(shell.body, p.text), "no practice body in public shell");
         std::test::assert_eq_int(f.http("GET", "/app.js", "", "").status, 200, "public script");
         std::test::assert_eq_int(f.http("GET", "/styles.css", "", "").status, 200, "public styles");
+        std::test::assert_eq_int(f.http("GET", "/runtime.js", "", "").status, 200, "public runtime script");
+        std::test::assert_eq_int(f.http("GET", "/application.js", "", "").status, 200, "public application script");
+        std::test::assert_eq_int(f.http("GET", "/definition-draft.js", "", "").status, 200, "public definition draft script");
+        std::test::assert_eq_int(f.http("GET", "/iris/observer.json", "", "").status, 200, "public observer metadata needs no DNA session");
         f.error("GET", fixture::APPLICATIONS, 401, "", "");
         f.error("GET", f.prefix + "/dna/practices", 401, "dna_session=forged", "");
         let login = f.sign_in("");
@@ -460,6 +519,7 @@ locus Cases {
         self.oidc_refusals();
         self.oidc_incomplete();
         self.oidc_session();
+        self.web_observer_configuration();
         self.web_assets();
         self.web_startup();
         self.api_only();

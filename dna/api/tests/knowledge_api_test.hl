@@ -1,0 +1,164 @@
+// Public adapter tests: the host is structural, while Record/auth are real.
+// Private projection/store/transport acceptance has a separate integration test.
+import ".." as api;
+import "../../core" as dna;
+import "../../ui" as ui;
+import "./fixture" as fixture;
+
+const NODE: String = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+locus KnowledgeHost {
+    params { calls: Int = 0; reader: String = ""; request_body: String = ""; override_body: String = ""; status: Int = 200; }
+    fn supported() -> Bool { return true; }
+    fn read(request: api::KnowledgeRequest) -> api::KnowledgeUpstream {
+        self.calls = self.calls + 1; self.reader = request.reader;
+        let wire = api::KnowledgeWire { };
+        self.request_body = wire.request_json(request);
+        return api::KnowledgeUpstream { transport_ok: true, status: self.status, body: if len(self.override_body) > 0 { self.override_body } else { self.document(request) } };
+    }
+    fn document(request: api::KnowledgeRequest) -> String {
+        let wire = api::KnowledgeWire { };
+        let basis = std::json::Builder { };
+        basis.begin_object();
+        basis.string_field("record_id", request.source.identity); basis.string_field("projection_record_head", request.source.head);
+        basis.string_field("projection_record_revision", to_string(request.source.revision)); basis.string_field("projection_watermark", to_string(request.source.revision));
+        basis.string_field("store_generation", "1"); basis.string_field("routing_version", "0");
+        basis.string_field("visibility_record_head", request.source.head); basis.string_field("visibility_record_revision", to_string(request.source.revision));
+        basis.field("visibility_ledger_head", "null"); basis.field("visibility_ledger_revision", "null");
+        basis.string_field("reader_scope", dna::digest_of("knowledge-reader/1\n" + request.reader)); basis.string_field("target", request.query.target); basis.string_field("coverage", "native_ideas_edges_bindings"); basis.end_object();
+        let b = std::json::Builder { }; b.begin_object(); b.begin_array_field("items");
+        if request.kind == "nodes" {
+            b.begin_object(); b.string_field("id", NODE); b.string_field("kind", "principle");
+            b.field("text", "\"Native \\u0061 \\u00e9 \\ud83e\\udded\""); b.string_field("author", "alice"); b.string_field("projection_state", "ratified");
+            b.string_field("revision", "-9223372036854775808"); b.bool_field("accepted", true); b.string_field("name", ""); b.string_field("supersedes", ""); b.string_field("ratified_seq", "9223372036854775807"); b.field("source_provenance", "null"); b.end_object();
+        } else if request.kind == "edges" {
+            b.begin_object(); b.string_field("id", NODE); b.string_field("from_id", NODE); b.string_field("to_id", NODE); b.string_field("rel", "supports"); b.end_object();
+        } else {
+            b.begin_object(); b.string_field("id", NODE); b.string_field("idea_id", NODE); b.string_field("target", "org"); b.string_field("author", "alice"); b.string_field("class", "principle"); b.string_field("applicability", if len(request.query.target) == 0 { "unfiltered" } else if request.query.target == "org" { "exact" } else { "ancestor" }); b.end_object();
+        }
+        b.end_array(); b.begin_object_field("page"); b.int_field("limit", request.query.limit); b.int_field("returned", 1); b.bool_field("has_more", false); b.field("next_cursor", "null"); b.string_field("snapshot", wire.basis_snapshot(basis.result())); b.end_object();
+        b.field("basis", basis.result()); b.field("coverage", "{\"bindings\":\"complete\",\"runs\":\"unavailable\",\"definitions\":\"unavailable\",\"practices\":\"unavailable\"}"); b.end_object();
+        let http = api::Http { };
+        return http.success(request.source, b.result()).body;
+    }
+}
+
+locus KnowledgeCases {
+    params { f: fixture::Fixture; host: KnowledgeHost = KnowledgeHost { }; }
+    fn field(object: String, key: String, value: String) -> String {
+        let b = std::json::Builder { }; b.begin_object();
+        let mut it = std::json::object_first(object);
+        while !it.done {
+            let name = std::json::obj_key_string(it, object);
+            if name != key { b.field(name, std::json::obj_value_raw(it, object)); }
+            it = std::json::object_next(it, object);
+        }
+        b.field(key, value); b.end_object(); return b.result();
+    }
+    fn get(service: api::Api, suffix: String, status: Int) -> String {
+        let response = service.handle(std::http::Request { method: "GET", path: self.f.prefix + suffix, headers: "X-Reader: attacker\r\nAuthorization: Bearer browser-secret" });
+        std::test::assert_eq_int(response.status, status, response.body);
+        return response.body;
+    }
+    fn reject(request: api::KnowledgeRequest, body: String, status: Int) {
+        let wire = api::KnowledgeWire { };
+        let response = wire.response(request, api::KnowledgeUpstream { transport_ok: true, status: 200, body: body });
+        std::test::assert_eq_int(response.status, status, "upstream validation: " + response.body);
+        std::test::assert(!std::str::contains(response.body, "private-secret"), "never expose upstream payload");
+    }
+    fn run_cases() {
+        let wire = api::KnowledgeWire { };
+        let source = api::SourceReader { root: self.f.root };
+        let captured = source.read();
+        let request = api::KnowledgeRequest { source: captured, reader: "alice", kind: "nodes", query: api::KnowledgeQuery { ok: true } };
+        let body = self.host.document(request);
+        let success = wire.response(request, api::KnowledgeUpstream { transport_ok: true, status: 200, body: body });
+        std::test::assert_eq_int(success.status, 200, success.body);
+        let checked = self.f.validator.validate("KnowledgeNodesResponse", success.body);
+        std::test::assert(checked.ok, checked.error);
+        let data = wire.raw(body, "data"); let page = wire.raw(data, "page"); let basis = wire.raw(data, "basis"); let items = std::json::array_first(wire.raw(data, "items"));
+        std::test::assert_eq_str(wire.string(items.element, "text"), "Native a é 🧭", "strict shared Unicode decoder");
+        std::test::assert_eq_str(wire.string(items.element, "revision"), "-9223372036854775808", "minimum Int64 stays exact");
+        self.reject(request, self.field(body, "source", self.field(wire.raw(body, "source"), "record_id", "\"private-secret\"")), 503);
+        self.reject(request, self.field(body, "data", self.field(data, "basis", self.field(basis, "reader_scope", "\"private-secret\""))), 503);
+        self.reject(request, self.field(body, "data", self.field(data, "basis", self.field(basis, "projection_watermark", "\"0\""))), 503);
+        self.reject(request, self.field(body, "data", self.field(data, "basis", self.field(basis, "routing_version", "\"1\""))), 503);
+        self.reject(request, self.field(body, "data", self.field(data, "basis", self.field(basis, "target", "\"other\""))), 503);
+        let long_head = std::bytes::BytesBuilder { };
+        let mut h = 0;
+        while h < 129 { long_head.append_u8(97); h = h + 1; }
+        let ledger = self.field(self.field(self.field(basis, "routing_version", "\"1\""), "visibility_ledger_revision", "\"1\""), "visibility_ledger_head", "\"" + std::str::from_bytes(long_head.snapshot()) + "\"");
+        self.reject(request, self.field(body, "data", self.field(data, "basis", ledger)), 503);
+        self.reject(request, self.field(body, "data", self.field(data, "page", self.field(page, "snapshot", "\"private-secret\""))), 503);
+        self.reject(request, self.field(body, "data", self.field(data, "page", self.field(page, "returned", "0"))), 503);
+        self.reject(request, self.field(body, "data", self.field(data, "page", self.field(page, "has_more", "true"))), 503);
+        self.reject(request, self.field(body, "data", self.field(data, "page", self.field(page, "limit", "\"25\""))), 503);
+        self.reject(request, self.field(body, "data", self.field(data, "items", "[" + self.field(items.element, "revision", "\"9223372036854775808\"") + "]")), 503);
+        self.reject(request, self.field(body, "data", self.field(data, "items", "[" + self.field(items.element, "text", "7") + "]")), 503);
+        self.reject(request, self.field(body, "data", self.field(data, "items", "[" + self.field(items.element, "source_provenance", "\"invented\"") + "]")), 503);
+        self.reject(request, self.field(body, "actor", "\"private-secret\""), 503);
+        self.reject(request, "{\"api_version\":\"hale.v1\",\"api_version\":\"hale.v1\"}", 503);
+        self.reject(request, "{\"api_vers\\u0069on\":\"hale.v1\"}", 503);
+        self.reject(request, "private-secret", 503);
+        let moved = api::KnowledgeRequest { source: captured, reader: "alice", kind: "nodes", query: api::KnowledgeQuery { ok: true, snapshot: NODE } };
+        self.reject(moved, body, 409);
+        let http = api::Http { };
+        let error = http.error(404, "knowledge_not_found", "private-secret DSN sql", false);
+        let safe = wire.response(request, api::KnowledgeUpstream { transport_ok: true, status: 404, body: error.body });
+        std::test::assert_eq_int(safe.status, 404, safe.body);
+        std::test::assert(!std::str::contains(safe.body, "private-secret"), "error text recreated locally");
+        let private_error = wire.response(request, api::KnowledgeUpstream { transport_ok: true, status: 401, body: error.body });
+        std::test::assert_eq_int(private_error.status, 503, "private auth becomes unavailable");
+        let unknown = http.error(503, "sql-error-private-secret", "private-secret", true);
+        std::test::assert(!std::str::contains(wire.response(request, api::KnowledgeUpstream { transport_ok: true, status: 503, body: unknown.body }).body, "private-secret"), "unknown errors not proxied");
+
+        let service = api::Api { root: self.f.root, local_name: "alice", knowledge: self.host };
+        let cap = self.get(service, "/capabilities", 200);
+        std::test::assert_eq_str(wire.raw(wire.raw(wire.raw(cap, "data"), "reads"), "knowledge"), "true", "supported capability");
+        std::test::assert_eq_int(self.host.calls, 0, "capability does not call upstream");
+        let locked = api::Api { root: self.f.root, mode: "oidc", knowledge: self.host };
+        self.get(locked, "/dna/knowledge/nodes?actor=attacker", 401);
+        std::test::assert_eq_int(self.host.calls, 0, "authentication precedes query and upstream");
+        self.get(service, "/dna/knowledge/nodes?actor=attacker", 400);
+        self.get(service, "/dna/knowledge/nodes?limit=1&limit=2", 400);
+        self.get(service, "/dna/knowledge/nodes?%6cimit=1&limit=2", 400);
+        self.get(service, "/dna/knowledge/nodes?limit=1&", 400);
+        self.get(service, "/dna/knowledge/nodes?limit=01", 400);
+        self.get(service, "/dna/knowledge/nodes?offset=1", 400);
+        self.get(service, "/dna/knowledge/edges", 400);
+        self.get(service, "/dna/knowledge/nodes?id=not-a-digest", 400);
+        self.get(service, "/dna/knowledge/nodes?cursor=opaque", 400);
+        self.get(service, "/dna/knowledge/nodes?target=%00", 400);
+        std::test::assert_eq_int(self.host.calls, 0, "all invalid queries stop before transport");
+        self.get(service, "/dna/knowledge/nodes", 200);
+        std::test::assert_eq_str(self.host.reader, "alice", "reader derived locally, ignoring browser headers");
+        std::test::assert_eq_int(self.host.calls, 1, "one upstream call per graph read");
+        self.get(service, "/dna/knowledge/edges?id=" + NODE, 200);
+        self.get(service, "/dna/knowledge/bindings?id=" + NODE, 200);
+        self.get(service, "/dna/knowledge/dependents?id=" + NODE, 200);
+        self.get(service, "/dna/knowledge/bindings?id=" + NODE + "&target=org", 200);
+        self.get(service, "/dna/knowledge/bindings?id=" + NODE + "&target=org/finance", 200);
+        self.get(service, "/dna/knowledge/bindings?id=" + NODE + "&target=unrelated", 503);
+        let absent = api::Api { root: self.f.root };
+        self.get(absent, "/dna/knowledge/nodes", 503);
+        let config = api::ConfiguredKnowledge { url: "http://127.0.0.1:1" };
+        std::test::assert(!config.supported(), "missing key is unsupported");
+        let invalid = api::ConfiguredKnowledge { url: "http://127.0.0.1:1", read_key: "too-short" };
+        std::test::assert(invalid.supported() && !invalid.configured(), "invalid configured key is unavailable, not absent");
+    }
+}
+
+fn main() {
+    // Keep temporary Record writes isolated from inherited Git plumbing.
+    if std::env::var("HALE_KNOWLEDGE_API_TEST_CLEAN") != "1" {
+        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_KNOWLEDGE_DSN\n-u\nHALE_DNA_KNOWLEDGE_URL\n-u\nHALE_DNA_KNOWLEDGE_READ_KEY\n-u\nHALE_DNA_EVIDENCE_KEY\n-u\nHALE_DNA_OIDC_SECRET\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_KNOWLEDGE_API_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
+        print(clean.stdout);
+        if len(clean.stderr) > 0 { eprintln(clean.stderr); }
+        std::process::exit(if clean.code < 0 { 1 } else { clean.code });
+    }
+    let made = dna::run_tool("mktemp\n-d\n/tmp/hale-knowledge-api.XXXXXX");
+    std::test::assert_eq_int(made.code, 0, made.stderr);
+    let f = fixture::Fixture { root: dna::trim_nl(made.stdout), port: 1 };
+    let cases = KnowledgeCases { f: f };
+    cases.run_cases();
+}

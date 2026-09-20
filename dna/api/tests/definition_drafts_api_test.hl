@@ -1,0 +1,183 @@
+// Direct native API boundary proof over a real Record and shared native catalog.
+// No command provider, application write, source rewrite or publication is used.
+import ".." as api;
+import "../../core" as dna;
+import "../../operations" as ops;
+import "./fixture" as fixture;
+
+const ORIGIN: String = "http://127.0.0.1:8792";
+const CANDIDATE: String = "{\"id\":\"close@2\",\"definition_id\":\"close\",\"revision\":\"2\",\"title\":\"Next · équipe\",\"steps\":[{\"index\":\"0\",\"members\":[{\"key\":\"inspect\",\"kind\":\"leaf\",\"leaf\":{\"objective\":\"Check \\\"literal\\\" evidence\\ncarefully\",\"context_digest\":\"ctx\",\"knowledge_bindings\":\"exact\",\"output_contract\":\"Assessment\",\"data_class\":\"internal\",\"requires\":\"judgment\",\"target\":\"org/finance\",\"cost_ceiling\":\"-9223372036854775808\",\"attempts\":\"2\"},\"child\":null}]}]}";
+
+locus DraftCatalogHost {
+    params {
+        root: String;
+        catalog: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        calls: Int = 0;
+        source_revision: String = "loaded-A";
+        change_basis_at: Int = -1;
+        change_record_at: Int = -1;
+    }
+    fn supported() -> Bool { return true; }
+    fn snapshot() -> ops::DefinitionSnapshot {
+        self.calls = self.calls + 1;
+        if self.calls == self.change_basis_at { self.source_revision = "loaded-B"; }
+        if self.calls == self.change_record_at {
+            let record = dna::GitJournal { repo: self.root };
+            let result = record.append(record.revision(), "fixture.concurrent", "org", "other writer");
+            std::test::assert(result.ok, "concurrent Record test writer");
+        }
+        let document = self.catalog.encode();
+        return ops::DefinitionSnapshot { supported: true, available: true, document: document, digest: dna::digest_of(document), provenance: ops::DefinitionProvenance { source_revision: self.source_revision, source_path: "app/workflows.hl", dependency_digest: "dependencies-A" } };
+    }
+}
+
+locus DraftCases {
+    params { f: fixture::Fixture; host: DraftCatalogHost; json: fixture::Json = fixture::Json { }; }
+    fn body(basis: String, candidate: String) -> String {
+        return "{\"profile\":\"dna.definition.draft.v1\",\"application_id\":\"" + self.f.identity + "\",\"principal\":{\"mode\":\"local\",\"name\":\"alice\"},\"base\":{\"id\":\"close@1\",\"basis\":" + basis + "},\"candidate\":" + candidate + "}";
+    }
+    fn headers(body: String) -> String {
+        return "Origin: " + ORIGIN + "\r\nContent-Type: application/json\r\nX-Hale-Command: 1\r\nContent-Length: " + to_string(len(body));
+    }
+    fn post(service: api::Api, body: String) -> std::http::Response {
+        return service.handle(std::http::Request { method: "POST", path: self.f.prefix + "/dna/definitions/draft", headers: self.headers(body), body: body });
+    }
+    fn error(response: std::http::Response, status: Int, code: String) {
+        std::test::assert_eq_int(response.status, status, response.body);
+        self.json.eq(self.json.raw(response.body, "error"), "code", code);
+    }
+    fn guard_cases(body: String) {
+        let wire = api::DefinitionDraftWire { };
+        let request = std::http::Request { method: "POST", path: "/", headers: self.headers(body), body: body };
+        std::test::assert_eq_str(wire.guard(request, ORIGIN), "", "canonical framing");
+        std::test::assert_eq_str(wire.guard(request, ""), "definition_drafts_unsupported", "no configured origin");
+        let missing_length = "Origin: " + ORIGIN + "\r\nContent-Type: application/json\r\nX-Hale-Command: 1";
+        std::test::assert_eq_str(wire.guard(std::http::Request { method: "POST", path: "/", headers: missing_length, body: body }, ORIGIN), "invalid_definition_draft", "length mandatory");
+        let names = "Content-Length: 1\ncontent-length: " + to_string(len(body)) + "\nTransfer-Encoding: chunked";
+        let mut i = 0;
+        while i < dna::count_lines(names) {
+            let extra = dna::line_at(names, i);
+            std::test::assert(len(wire.guard(std::http::Request { method: "POST", path: "/", headers: self.headers(body) + "\r\n" + extra, body: body }, ORIGIN)) > 0, "duplicate or transfer framing refused");
+            i = i + 1;
+        }
+        std::test::assert_eq_str(wire.guard(std::http::Request { method: "POST", path: "/", headers: self.headers(body) + "\r\nCookie: one\r\ncookie: two", body: body }, ORIGIN), "invalid_definition_draft", "duplicate session header");
+        std::test::assert_eq_str(wire.guard(std::http::Request { method: "POST", path: "/", headers: self.headers(body) + "\r\nAuthorization: one\r\nauthorization: two", body: body }, ORIGIN), "invalid_definition_draft", "duplicate authorization header");
+        std::test::assert_eq_str(wire.guard(std::http::Request { method: "POST", path: "/", headers: self.headers(body) + "\r\nHost: one\r\nhost: two", body: body }, ORIGIN), "invalid_definition_draft", "duplicate Host header");
+        std::test::assert_eq_str(wire.guard(std::http::Request { method: "POST", path: "/", headers: self.headers(body) + "\r\norigin: " + ORIGIN, body: body }, ORIGIN), "invalid_origin", "duplicate Origin");
+        std::test::assert_eq_str(wire.guard(std::http::Request { method: "POST", path: "/", headers: self.headers(body) + "\r\nX-Hale-Command: 1", body: body }, ORIGIN), "invalid_definition_draft", "duplicate intent");
+        std::test::assert_eq_str(wire.guard(std::http::Request { method: "POST", path: "/", headers: self.headers(body) + "\r\nContent-Type: application/json", body: body }, ORIGIN), "unsupported_media_type", "duplicate content type");
+        let large = std::bytes::BytesBuilder { }; let mut n = 0;
+        while n < 32769 { large.append_u8(120); n = n + 1; }
+        std::test::assert_eq_str(wire.guard(std::http::Request { method: "POST", path: "/", headers: "", body: std::str::from_bytes(large.snapshot()) }, ORIGIN), "definition_draft_too_large", "byte limit precedes parsing");
+        std::test::assert(!wire.parse(body[0..(len(body) - 1)] + ",\"actor\":\"mallory\"}", self.f.identity).ok, "closed envelope");
+        std::test::assert(!wire.parse(body[0..(len(body) - 1)] + ",\"candidate\":{} }", self.f.identity).ok, "duplicate key");
+        std::test::assert(!wire.parse(std::str::replace(body, "\"profile\"", "\"\\u0070rofile\""), self.f.identity).ok, "escaped key refused");
+        std::test::assert(!wire.parse(std::str::replace(body, "alice", "alice\\u0000"), self.f.identity).ok, "NUL refused");
+        let bytes = std::bytes::BytesBuilder { }; bytes.append_u8(255);
+        std::test::assert(!wire.parse(std::str::replace(body, "alice", std::str::from_bytes(bytes.snapshot())), self.f.identity).ok, "invalid UTF-8 refused");
+    }
+    fn artifact_serialization(basis: String) {
+        // A transport-only stress case: generated-source semantics are checked
+        // by operations, while the adapter must preserve large literal exports.
+        let bytes = std::bytes::BytesBuilder { };
+        let mut i = 0;
+        while i < 8192 { bytes.append_str("\"é\"\\\n"); i = i + 1; }
+        let text = std::str::from_bytes(bytes.snapshot());
+        let wire = api::DefinitionDraftWire { };
+        let codec = ops::DefinitionDraftCodec { };
+        let result = ops::DefinitionDraftResult { status: 200, valid: true, basis_json: basis, candidate_digest: dna::digest_of(CANDIDATE), catalog_digest: "sha256:serialization-fixture", artifact_digest: dna::digest_of(text), artifact_text: text };
+        let data = wire.data(api::DefinitionDraftRequest { base_id: "close@1" }, "local", "alice", result);
+        let artifact = self.json.raw(data, "artifact");
+        std::test::assert_eq_str(codec.text(artifact, "text"), text, "large artifact exact Unicode and escape roundtrip");
+        self.json.eq(artifact, "digest", dna::digest_of(text));
+    }
+    fn run_cases() {
+        let defined = self.host.catalog.define("close", 1, 1, "Original");
+        let leaf = self.host.catalog.leaf("close", 1, 0, "inspect", dna::WorkRequest { objective: "Original" }, 1);
+        std::test::assert(defined == "" && leaf == "", "real shared native catalog");
+        let service = api::Api { root: self.f.root, local_name: "alice", definitions: self.host, command_origin: ORIGIN };
+        let caps = service.handle(std::http::Request { method: "GET", path: self.f.prefix + "/capabilities" });
+        std::test::assert_eq_int(caps.status, 200, caps.body);
+        self.json.is_bool(self.json.data(caps.body), "read_only", true);
+        self.json.is_bool(self.json.raw(self.json.data(caps.body), "writes"), "practice_propose", false);
+        self.json.is_bool(self.json.raw(self.json.data(caps.body), "definition_drafts"), "publication", false);
+        std::test::assert_eq_int(self.host.calls, 0, "capabilities never capture catalog");
+        let cap_contract = self.f.validator.validate("CapabilitiesResponse", caps.body);
+        std::test::assert(cap_contract.ok, cap_contract.error);
+        let read = service.handle(std::http::Request { method: "GET", path: self.f.prefix + "/dna/definitions" });
+        std::test::assert_eq_int(read.status, 200, read.body);
+        let basis = self.json.raw(self.json.data(read.body), "basis");
+        let body = self.body(basis, CANDIDATE);
+        self.guard_cases(body);
+        self.artifact_serialization(basis);
+        let refs = self.f.refs(); let document = self.host.catalog.encode(); let bound = self.host.catalog.bound_count();
+        let result = self.post(service, body);
+        std::test::assert_eq_int(result.status, 200, result.body);
+        let data = self.json.data(result.body);
+        self.json.eq(data, "candidate_digest", dna::digest_of(CANDIDATE));
+        self.json.eq(self.json.raw(data, "principal"), "name", "alice");
+        self.json.is_bool(self.json.raw(data, "validation"), "valid", true);
+        self.json.eq(data, "publication", "unavailable");
+        let artifact = self.json.raw(data, "artifact");
+        self.json.eq(artifact, "scope", "captured_catalog");
+        let codec = ops::DefinitionDraftCodec { };
+        let text = codec.text(artifact, "text");
+        std::test::assert(std::str::contains(text, "iris_register_workflows") && std::str::contains(text, "cost_ceiling:"), "exact generated artifact");
+        self.json.eq(artifact, "digest", dna::digest_of(text));
+        let checked = self.f.validator.validate("DefinitionDraftResponse", result.body);
+        std::test::assert(checked.ok, checked.error);
+        std::test::assert_eq_str(self.host.catalog.encode(), document, "candidate never mutates application catalog");
+        std::test::assert_eq_int(self.host.catalog.bound_count(), bound, "no native expansion");
+        std::test::assert_eq_str(self.f.refs(), refs, "validation changes no project ref");
+        let calls = self.host.calls;
+        self.error(self.post(service, std::str::replace(body, "alice", "mallory")), 409, "definition_draft_context_changed");
+        std::test::assert_eq_int(self.host.calls, calls, "identity mismatch never captures provider");
+        let locked = api::Api { root: self.f.root, mode: "oidc", definitions: self.host, command_origin: ORIGIN };
+        self.error(self.post(locked, body), 401, "unauthenticated");
+        std::test::assert_eq_int(self.host.calls, calls, "no catalog access before authentication");
+        self.error(service.handle(std::http::Request { method: "POST", path: self.f.prefix + "/dna/definitions/draft?", headers: self.headers(body), body: body }), 400, "invalid_query");
+        self.error(service.handle(std::http::Request { method: "GET", path: self.f.prefix + "/dna/definitions/draft" }), 405, "method_not_allowed");
+        self.error(self.post(service, std::str::replace(body, "loaded-A", "stale")), 409, "definition_basis_changed");
+        self.error(self.post(service, std::str::replace(body, "\"id\":\"close@1\"", "\"id\":\"missing@1\"")), 404, "definition_not_found");
+        let malformed = self.body(basis, std::str::replace(CANDIDATE, "\"revision\":\"2\"", "\"revision\":2"));
+        self.error(self.post(service, malformed), 400, "definition_draft_invalid");
+        let semantic = self.post(service, self.body(basis, "{\"id\":\"close@2\",\"definition_id\":\"close\",\"revision\":\"2\",\"title\":\"Empty\",\"steps\":[]}"));
+        std::test::assert_eq_int(semantic.status, 200, semantic.body);
+        self.json.is_bool(self.json.raw(self.json.data(semantic.body), "validation"), "valid", false);
+        std::test::assert_eq_str(self.json.raw(self.json.data(semantic.body), "artifact"), "null", "native-invalid has no export");
+        let invalid_contract = self.f.validator.validate("DefinitionDraftResponse", semantic.body);
+        std::test::assert(invalid_contract.ok, invalid_contract.error);
+        let long_text = std::bytes::BytesBuilder { }; let mut n = 0;
+        while n < 8193 { long_text.append_u8(120); n = n + 1; }
+        let budget_calls = self.host.calls;
+        self.error(self.post(service, self.body(basis, std::str::replace(CANDIDATE, "Next · équipe", std::str::from_bytes(long_text.snapshot())))), 503, "definition_read_limit");
+        std::test::assert_eq_int(self.host.calls, budget_calls, "candidate text budget checked before provider capture");
+        std::test::assert_eq_str(self.f.refs(), refs, "invalid and refused validation changes no project ref");
+        let no_provider = api::Api { root: self.f.root, local_name: "alice", command_origin: ORIGIN };
+        self.error(self.post(no_provider, body), 503, "definition_drafts_unsupported");
+        let no_origin = api::Api { root: self.f.root, local_name: "alice", definitions: self.host };
+        let hidden = no_origin.handle(std::http::Request { method: "GET", path: self.f.prefix + "/capabilities" });
+        std::test::assert_eq_str(self.json.raw(self.json.data(hidden.body), "definition_drafts"), "", "no capability without configured origin");
+        self.error(self.post(no_origin, body), 503, "definition_drafts_unsupported");
+        self.host.change_basis_at = self.host.calls + 2;
+        self.error(self.post(service, body), 409, "definition_basis_changed");
+        self.host.source_revision = "loaded-A";
+        self.host.change_record_at = self.host.calls + 2;
+        self.error(self.post(service, body), 409, "snapshot_changed");
+    }
+}
+
+fn main() {
+    // The runner supplies a clean Git environment; refuse accidental redirection.
+    let forbidden = "GIT_DIR\nGIT_COMMON_DIR\nGIT_CONFIG\nGIT_NAMESPACE\nGIT_WORK_TREE\nGIT_INDEX_FILE\nGIT_OBJECT_DIRECTORY\nGIT_ALTERNATE_OBJECT_DIRECTORIES\nGIT_CONFIG_COUNT\nGIT_CONFIG_PARAMETERS";
+    let mut i = 0;
+    while i < dna::count_lines(forbidden) { std::test::assert(!std::env::var_exists(dna::line_at(forbidden, i)), "clean fixture Git environment"); i = i + 1; }
+    std::test::assert_eq_str(std::env::var("GIT_CONFIG_NOSYSTEM"), "1", "system config disabled");
+    std::test::assert_eq_str(std::env::var("GIT_CONFIG_GLOBAL"), "/dev/null", "global config disabled");
+    let made = dna::run_tool("mktemp\n-d\n/tmp/hale-definition-draft-api.XXXXXX");
+    std::test::assert_eq_int(made.code, 0, made.stderr);
+    let f = fixture::Fixture { root: dna::trim_nl(made.stdout), port: 1 };
+    let host = DraftCatalogHost { root: f.root };
+    let cases = DraftCases { f: f, host: host };
+    cases.run_cases();
+}

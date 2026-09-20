@@ -1,0 +1,72 @@
+// The native human-handoff projection, exposed as a bounded read. This adapter
+// neither invents an execution engine nor replays Task assignment rules itself.
+import "../core" as dna;
+import "../operations" as ops;
+
+locus TaskWire {
+    params { }
+    fn assignment(h: ops::TaskAssignmentRow) -> String {
+        let b = std::json::Builder { }; b.begin_object();
+        b.field("event_id", dna::record_json_quote(h.event_id)); b.string_field("sequence", to_string(h.sequence));
+        b.field("kind", dna::record_json_quote(h.kind)); b.field("from", dna::record_json_quote(h.from));
+        b.field("to", dna::record_json_quote(h.to)); b.field("by", dna::record_json_quote(h.by));
+        b.end_object(); return b.result();
+    }
+    fn row(p: ops::TaskProjection, t: ops::TaskRow) -> String {
+        let b = std::json::Builder { }; b.begin_object();
+        b.field("id", dna::record_json_quote(t.id)); b.field("outcome", dna::record_json_quote(t.outcome));
+        b.field("state", dna::record_json_quote(t.state)); b.field("assignee", dna::record_json_quote(t.assignee));
+        b.field("obligation", dna::record_json_quote(t.obligation)); b.field("acceptance_digest", dna::record_json_quote(t.acceptance_digest));
+        b.bool_field("acceptance_bound", t.acceptance_bound); b.bool_field("evidence_required", t.evidence_required);
+        b.field("evidence_ref", dna::record_json_quote(t.evidence_ref)); b.field("waiting", dna::record_json_quote(t.waiting));
+        b.field("assignment_digest", dna::record_json_quote(t.assignment_digest)); b.bool_field("reassignment_supported", t.reassignment_supported);
+        b.begin_array_field("history"); let mut i = 0;
+        while i < p.history_count(t.id) { b.value(self.assignment(p.history_at(t.id, i))); i = i + 1; }
+        b.end_array(); b.end_object(); return b.result();
+    }
+    fn unavailable(code: String) -> std::http::Response {
+        let http = Http { };
+        return http.error(503, code, "the complete owning Task history is unavailable", code == "task_source_unavailable");
+    }
+    fn read(context: CommandContext, query: Query) -> std::http::Response {
+        let http = Http { }; let status = OrganizationStatusWire { };
+        let record = dna::GitRecord { repo: context.root };
+        if context.principal_mode != "local" || status.trust(record) != "local" { return self.unavailable("task_source_unavailable"); }
+        let capture = ops::GovernanceCommands { record: record }; let source = capture.capture();
+        if !source.ok { return if source.code == "snapshot_changed" { http.error(409, "snapshot_changed", "the Record changed while capturing Tasks", true) } else { self.unavailable("task_source_unavailable") }; }
+        if source.application_id != context.source.identity || source.head != context.source.head || source.revision != context.source.revision {
+            return http.error(409, "snapshot_changed", "the Record changed while capturing Tasks", true);
+        }
+        let journal = ops::GovernanceJournal { snapshot: source };
+        if !journal.valid { return self.unavailable("task_source_invalid"); }
+        let visible = ops::Queries { j: journal }; let p = ops::TaskProjection { j: journal, visibility: visible };
+        if !p.load() { return self.unavailable(p.code); }
+        let exact = if query.id != "" { p.task_of(query.id) } else { ops::TaskRow { } };
+        if query.id != "" && (exact.id == "" || (query.assignee != "" && exact.assignee != query.assignee)) { return http.error(404, "task_not_found", "no such visible handed Task", false); }
+        let mut total = if query.id != "" { 1 } else { 0 };
+        let mut i = 0;
+        if query.id == "" { while i < p.count() { let row = p.at(i); if query.assignee == "" || row.assignee == query.assignee { total = total + 1; } i = i + 1; } }
+        let b = std::json::Builder { }; b.begin_object(); b.string_field("profile", "dna.task-administration.v1");
+        if query.assignee != "" { b.field("assignee", dna::record_json_quote(query.assignee)); }
+        b.begin_array_field("items");
+        if query.id != "" { b.value(self.row(p, exact)); }
+        else {
+            i = 0; let mut matching = 0;
+            while i < p.count() {
+                let row = p.at(i);
+                if query.assignee == "" || row.assignee == query.assignee {
+                    if matching >= query.offset && matching < query.offset + query.limit { b.value(self.row(p, row)); }
+                    matching = matching + 1;
+                }
+                i = i + 1;
+            }
+        }
+        b.end_array(); b.field("page", http.page(query.limit, query.offset, total, source.head));
+        b.begin_object_field("basis"); b.string_field("projection", "dna.task-administration/1"); b.string_field("memory", "record"); b.string_field("routing", "0");
+        b.string_field("record_head", source.head); b.string_field("record_revision", to_string(source.revision)); b.end_object(); b.end_object();
+        if record.head("journal") != source.head || status.trust(record) != "local" {
+            return http.error(409, "snapshot_changed", "the Record or operational trust changed while Tasks were read", true);
+        }
+        return http.success(context.source, b.result());
+    }
+}

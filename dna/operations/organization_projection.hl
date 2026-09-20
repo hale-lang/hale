@@ -1,0 +1,257 @@
+// Exact source candidate evidence over one captured Record. This projection
+// does not read a moving checkout or infer application from Review approval.
+import "../core" as dna;
+
+type OrganizationCandidateEvidence {
+    ok: Bool = false;
+    request: dna::OrganizationSourceRequest = dna::OrganizationSourceRequest { };
+    request_sequence: Int = -1;
+    mutation_id: String = "";
+    candidate_commit: String = "";
+    candidate_key: String = "";
+    review_body: String = "";
+    review_sequence: Int = -1;
+    proposed_sequence: Int = -1;
+}
+type OrganizationReviewEvidence {
+    review: GovernanceProjectionReview = GovernanceProjectionReview { };
+    required_owners: String = "";
+    approved_owners: String = "";
+    decision_command_id: String = "";
+}
+
+locus OrganizationProjection {
+    params { }
+    fn native_request(j: dna::Journal, id: String, rows: String) -> OrganizationCandidateEvidence {
+        let codec = OrganizationCommandCodec { }; let native = dna::OrganizationSourceRequestCodec { }; let text = GovernanceCommandCodec { };
+        let mut found = OrganizationCandidateEvidence { }; let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "organization.source.requested" {
+                let fact = codec.decode_fact(e);
+                // A malformed source admission is not evidence that this
+                // candidate has no earlier or conflicting request.
+                if !fact.valid { return OrganizationCandidateEvidence { }; }
+                if native.mutation_id(fact.request) == id {
+                    if found.ok || fact.context.application_id != j.read(0).digest
+                        || text.string(dna::line_at(rows, i), "author") != fact.context.principal_name { return OrganizationCandidateEvidence { }; }
+                    found = OrganizationCandidateEvidence { ok: true, request: fact.request, request_sequence: i, mutation_id: id, candidate_key: native.candidate_key(fact.request) };
+                }
+            }
+            i = i + 1;
+        }
+        return found;
+    }
+    fn magnitude(body: String) -> Bool {
+        let fields = AuthorityPolicyCodec { }; let types = DefinitionCodec { };
+        if !fields.fields(body, "loci contract_change effects_widened law_touched placement_change ownership_crossed state_migration external_blast irreversible novelty", 10) { return false; }
+        if !types.integer(std::json::find_field_raw(body, "loci")) || !types.integer(std::json::find_field_raw(body, "external_blast")) || !types.integer(std::json::find_field_raw(body, "novelty")) { return false; }
+        let flags = "contract_change effects_widened law_touched placement_change ownership_crossed state_migration irreversible"; let mut i = 0;
+        while i < dna::word_count(flags) { if !fields.boolean(body, dna::nth_word(flags, i)) { return false; } i = i + 1; }
+        return true;
+    }
+    fn review_shape(body: String, r: dna::OrganizationSourceRequest, candidate: String) -> Bool {
+        let common = GovernanceProjection { }; let fields = AuthorityPolicyCodec { }; let text = GovernanceCommandCodec { }; let native = dna::OrganizationSourceRequestCodec { };
+        let required = "question subject_digest required_authority author mutation_id task_id change_class seed disposition base_commit candidate_commit candidate_shape worktree fitness_signals evidence diff_text diff_json organization_source_request_id organization_source_digest";
+        let approvers = std::json::find_field_raw(body, "approvers");
+        if !common.object(body) || !fields.fields(body, required + " magnitude approvers", if approvers == "" { 20 } else { 21 })
+            || !common.texts(body, required, false) || !common.texts(body, "approvers", true) || !self.magnitude(std::json::find_field_raw(body, "magnitude")) { return false; }
+        let id = native.mutation_id(r);
+        return text.string(body, "question") == "apply " + id + " (organization): " + r.rationale + "?"
+            && text.string(body, "organization_source_request_id") == r.request_id && text.string(body, "organization_source_digest") == r.source_digest
+            && text.string(body, "mutation_id") == id && text.string(body, "subject_digest") == candidate
+            && text.string(body, "candidate_commit") == candidate && text.string(body, "base_commit") == r.source_head
+            && text.string(body, "author") == r.by && text.string(body, "seed") == native.seed() && text.string(body, "change_class") == "organization"
+            && text.string(body, "task_id") == "" && text.string(body, "fitness_signals") == ""
+            && text.bounded(text.string(body, "required_authority"), 256, true, false)
+            && text.bounded(text.string(body, "candidate_shape"), 256, true, false)
+            && text.bounded(text.string(body, "worktree"), 4096, true, false)
+            && text.bounded(text.string(body, "approvers"), 8192, false, false)
+            && text.bounded(text.string(body, "diff_text"), 256, true, false) && text.bounded(text.string(body, "diff_json"), 256, true, false);
+    }
+    fn step_code(j: dna::Journal, candidate: String, mutation: String, step: String, after: Int, before: Int) -> String {
+        let view = GovernanceProjection { }; let fields = AuthorityPolicyCodec { }; let types = DefinitionCodec { }; let text = GovernanceCommandCodec { };
+        let mut result = ""; let mut i = after + 1;
+        while i < before {
+            let e = j.read(i);
+            if e.kind == "evidence." + step && e.entity == candidate {
+                if !view.object(e.body) || !fields.fields(e.body, "mutation_id step ok code output_digest bytes", 6)
+                    || !view.texts(e.body, "mutation_id step output_digest", false) || !fields.boolean(e.body, "ok")
+                    || !types.integer(std::json::find_field_raw(e.body, "code")) || !types.integer(std::json::find_field_raw(e.body, "bytes")) { return ""; }
+                if text.string(e.body, "mutation_id") == mutation {
+                    let code = std::json::find_field_raw(e.body, "code");
+                    if text.string(e.body, "step") != step || (std::json::find_field_raw(e.body, "ok") == "true") != (code == "0")
+                        || std::json::find_int_field(e.body, "bytes") < 0 { return ""; }
+                    result = code;
+                }
+            }
+            i = i + 1;
+        }
+        return result;
+    }
+    fn verification(j: dna::Journal, candidate: String, mutation: String, after: Int, before: Int, body: String) -> Bool {
+        let text = GovernanceCommandCodec { }; let steps = "fmt check verify test diff rollback fleet"; let b = std::bytes::BytesBuilder { }; let mut i = 0;
+        while i < dna::word_count(steps) {
+            let step = dna::nth_word(steps, i); let code = self.step_code(j, candidate, mutation, step, after, before);
+            if code == "" || ((step == "check" || step == "fleet") && code != "0") { return false; }
+            if i > 0 { b.append_str(" "); } b.append_str(step); b.append_str("="); b.append_str(code); i = i + 1;
+        }
+        return std::str::from_bytes(b.snapshot()) == text.string(body, "evidence");
+    }
+    fn candidate(j: dna::Journal, id: String, rows: String) -> OrganizationCandidateEvidence {
+        let text = GovernanceCommandCodec { }; let codec = OrganizationCommandCodec { }; let native = dna::OrganizationSourceRequestCodec { }; let view = GovernanceProjection { };
+        let origin = self.native_request(j, id, rows); if !origin.ok { return origin; }
+        let r = origin.request;
+        let started = view.fact(j, "organization.source.started", r.request_id, false);
+        let proposed = view.fact(j, "organization.source.proposed", r.request_id, false);
+        let failed = view.fact(j, "organization.source.failed", r.request_id, false); let refused = view.fact(j, "organization.source.refused", r.request_id, false);
+        if !started.found || started.invalid || started.body != native.started(r) || started.sequence <= origin.request_sequence
+            || !proposed.found || proposed.invalid || failed.found || failed.invalid || refused.found || refused.invalid { return OrganizationCandidateEvidence { }; }
+        let candidate = text.string(proposed.body, "candidate_commit");
+        if !codec.commit_id(candidate) || proposed.body != native.proposed(r, candidate) { return OrganizationCandidateEvidence { }; }
+        let mutation = view.fact(j, "mutation.proposed", id, false); let committed = view.fact(j, "mutation.candidate", id, false);
+        let review = view.fact(j, "review.requested", id, true);
+        if !mutation.found || mutation.invalid || mutation.body != "prepared organization source " + r.request_id + " at " + r.source_head
+            || mutation.sequence <= started.sequence || !committed.found || committed.invalid || committed.body != candidate || committed.sequence <= mutation.sequence
+            || !review.found || review.invalid || review.sequence <= committed.sequence || proposed.sequence <= review.sequence
+            || !self.review_shape(review.body, r, candidate) || !self.verification(j, candidate, id, committed.sequence, review.sequence, review.body) { return OrganizationCandidateEvidence { }; }
+        let disposition = text.string(review.body, "disposition");
+        if disposition != "release" && disposition != "stage" && disposition != "review" && disposition != "escalate" && disposition != "deny" { return OrganizationCandidateEvidence { }; }
+        let assessed = view.fact(j, "mutation." + disposition, id, false);
+        if !assessed.found || assessed.invalid || assessed.sequence <= committed.sequence || assessed.sequence >= review.sequence
+            || assessed.body != "organization candidate " + candidate { return OrganizationCandidateEvidence { }; }
+        return OrganizationCandidateEvidence { ok: true, request: r, request_sequence: origin.request_sequence, mutation_id: id,
+            candidate_key: origin.candidate_key, candidate_commit: candidate, review_body: review.body, review_sequence: review.sequence, proposed_sequence: proposed.sequence };
+    }
+    fn decision_admission(j: dna::Journal, id: String, before: Int, rows: String) -> GovernanceAdmission {
+        let codec = OrganizationReviewCommandCodec { }; let common = GovernanceCommandCodec { }; let registry = GovernanceCommands { }; let mut i = 0;
+        while i < before {
+            let e = j.read(i);
+            if e.kind == "review.verdict" && common.string(e.body, "command_id") == id {
+                let fact = codec.decode(e);
+                if !fact.valid || fact.context.application_id != j.read(0).digest
+                    || common.string(dna::line_at(rows, i), "author") != fact.context.principal_name { return GovernanceAdmission { }; }
+                // The same namespace rule as command lookup includes other
+                // operation kinds and duplicates anywhere in this snapshot.
+                let found = registry.find(GovernanceSnapshot { text: rows }, j, fact.context, fact.command.request_id);
+                if !found.ok || found.sequence != i || found.authority_profile != codec.profile() { return GovernanceAdmission { }; }
+                return found;
+            }
+            i = i + 1;
+        }
+        return GovernanceAdmission { };
+    }
+    fn review_evidence(j: dna::Journal, candidate: OrganizationCandidateEvidence, rows: String) -> OrganizationReviewEvidence {
+        if !candidate.ok { return OrganizationReviewEvidence { }; }
+        let view = GovernanceProjection { }; let text = GovernanceCommandCodec { };
+        let missing = OrganizationReviewEvidence { review: GovernanceProjectionReview { ok: true } };
+        let approvers = text.string(candidate.review_body, "approvers"); let required = dna::approver_owners(approvers);
+        let mut approved = ""; let mut terminal = GovernanceAdmission { }; let mut terminal_sequence = -1; let mut i = candidate.proposed_sequence + 1;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "review.command_decided" && text.string(e.body, "review_id") == candidate.mutation_id {
+                let unique = view.fact(j, "review.command_decided", e.entity, false);
+                if unique.invalid { return missing; }
+                if unique.sequence != i { i = i + 1; continue; }
+                let admitted = self.decision_admission(j, e.entity, i, rows); let c = admitted.command;
+                if !admitted.ok || admitted.sequence <= candidate.proposed_sequence || c.target_id != candidate.mutation_id
+                    || c.subject_digest != candidate.candidate_commit || !view.decision(e.body, admitted) { return missing; }
+                if std::json::find_bool_field(e.body, "accepted") {
+                    if terminal.ok || admitted.context.principal_name == candidate.request.by
+                        || !dna::authority_satisfies(text.string(admitted.native_body, "authority"), text.string(candidate.review_body, "required_authority")) { return missing; }
+                    let owner = dna::approver_owner(approvers, admitted.context.principal_name);
+                    if approvers != "" && owner == "" { return missing; }
+                    if c.verdict == "approve" && owner != "" { approved = dna::word_add(approved, owner); }
+                    let mut all = true; let mut n = 0;
+                    while n < dna::word_count(required) { if !dna::word_in(dna::nth_word(required, n), approved) { all = false; } n = n + 1; }
+                    let settles = c.verdict != "approve" || all;
+                    if std::json::find_bool_field(e.body, "settled") != settles { return missing; }
+                    if settles { terminal = admitted; terminal_sequence = i; }
+                }
+            }
+            i = i + 1;
+        }
+        let settled = view.fact(j, "review.settled", candidate.mutation_id, false);
+        if settled.invalid { return missing; }
+        let progress = OrganizationReviewEvidence { review: GovernanceProjectionReview { ok: true, state: "pending" }, required_owners: required, approved_owners: approved,
+            decision_command_id: if terminal.ok { terminal.command_id } else { "" } };
+        if !settled.found { return progress; }
+        if !terminal.ok || settled.sequence <= terminal_sequence
+            || settled.body != terminal.command.verdict + " by " + terminal.context.principal_name { return missing; }
+        return OrganizationReviewEvidence { review: GovernanceProjectionReview { ok: true, state: "settled", outcome: terminal.command.verdict,
+            reviewer: terminal.context.principal_name, sequence: settled.sequence }, required_owners: required, approved_owners: approved, decision_command_id: terminal.command_id };
+    }
+    fn review(j: dna::Journal, candidate: OrganizationCandidateEvidence, rows: String) -> GovernanceProjectionReview {
+        return self.review_evidence(j, candidate, rows).review;
+    }
+    fn verdict(j: dna::Journal, a: GovernanceAdmission, rows: String) -> GovernanceReceipt {
+        let view = GovernanceProjection { }; let codec = OrganizationReviewCommandCodec { }; let common = GovernanceCommandCodec { };
+        if !a.ok || a.unknown || a.authority_profile != codec.profile() || !common.valid(a.context, a.command)
+            || a.command_id != common.identity(a.context, a.command.request_id) || a.fingerprint != common.fingerprint(a.context, a.command) { return view.unknown(a); }
+        let parsed = codec.decode(dna::Event { kind: "review.verdict", entity: a.command.target_id, body: a.native_body, prev: common.string(a.native_body, "command_record_head") });
+        if !parsed.valid || parsed.verdict.command_id != a.command_id { return view.unknown(a); }
+        let candidate = self.candidate(j, a.command.target_id, rows); let review = self.review(j, candidate, rows);
+        let mut out = view.with_review(view.identity(a), review, a.command.subject_digest);
+        let decided = view.fact(j, "review.command_decided", a.command_id, false);
+        if decided.invalid { return view.unknown(a); }
+        if !decided.found { return out; }
+        if !candidate.ok || candidate.candidate_commit != a.command.subject_digest || decided.sequence <= a.sequence || !view.decision(decided.body, a) { return view.unknown(a); }
+        if !std::json::find_bool_field(decided.body, "accepted") {
+            out.state = "refused"; out.verdict_state = "refused"; out.reason = "The native source Review refused this command's verdict."; return out;
+        }
+        if !review.ok || review.state == "unavailable" { return view.unknown(a); }
+        out.state = "succeeded"; out.verdict_state = "accepted";
+        // Application and activation stay on the original Organization receipt.
+        return out;
+    }
+    fn unknown(receipt: GovernanceReceipt) -> GovernanceReceipt {
+        let mut out = receipt; out.state = "outcome_unknown"; out.organization.proposal_state = "unknown";
+        out.organization.application_state = "unknown"; out.organization.restart_handoff_state = "unknown"; return out;
+    }
+    fn terminal(body: String, r: dna::OrganizationSourceRequest, failed: Bool) -> Bool {
+        let native = dna::OrganizationSourceRequestCodec { }; let view = GovernanceProjection { }; let text = GovernanceCommandCodec { };
+        if !view.object(body) || !view.texts(body, "stage reason_code why", false) { return false; }
+        let stage = text.string(body, "stage"); let code = text.string(body, "reason_code"); let why = text.string(body, "why");
+        if !text.bounded(why, 4096, false, true) { return false; }
+        if failed { return stage == "verification" && code == "candidate_verification_failed" && body == native.failed(r, stage, code, why); }
+        if stage != "source" && stage != "candidate" && stage != "materialize" && stage != "review" { return false; }
+        if code != "invalid_command" && code != "forbidden" && code != "stale_subject" && code != "organization_worktree_invalid"
+            && code != "organization_candidate_invalid" && code != "organization_snapshot_unsupported" && code != "blocking_review_required" { return false; }
+        return body == native.refused(r, stage, code, why);
+    }
+    fn project(j: dna::Journal, a: GovernanceAdmission, rows: String) -> GovernanceReceipt {
+        let codec = OrganizationCommandCodec { }; let common = GovernanceCommandCodec { }; let native = dna::OrganizationSourceRequestCodec { }; let view = GovernanceProjection { };
+        let mut out = view.identity(a); out.proposal_state = ""; out.verdict_state = ""; out.verdict_value = "";
+        out.organization = OrganizationCommandOutcome { source_head: a.command.source_head, source_digest: dna::digest_of(a.command.source_text) };
+        if !a.ok || a.unknown || !codec.valid(a.context, a.command) || a.command_id != common.identity(a.context, a.command.request_id) || a.fingerprint != codec.fingerprint(a.context, a.command) { return self.unknown(out); }
+        let fact = codec.decode_fact(dna::Event { kind: "organization.source.requested", entity: a.command_id, body: a.native_body, prev: a.command.record_head });
+        if !fact.valid || fact.request.command_fingerprint != a.fingerprint { return self.unknown(out); }
+        let r = fact.request; let id = native.mutation_id(r); out.organization.mutation_id = id;
+        let started = view.fact(j, "organization.source.started", r.request_id, false); let proposed = view.fact(j, "organization.source.proposed", r.request_id, false);
+        let failed = view.fact(j, "organization.source.failed", r.request_id, false); let refused = view.fact(j, "organization.source.refused", r.request_id, false);
+        if started.invalid || proposed.invalid || failed.invalid || refused.invalid || (failed.found && refused.found) || (proposed.found && (failed.found || refused.found)) { return self.unknown(out); }
+        if !started.found { return if proposed.found || failed.found || refused.found { self.unknown(out) } else { out }; }
+        if started.body != native.started(r) || started.sequence <= a.sequence { return self.unknown(out); }
+        if failed.found || refused.found {
+            let terminal = if failed.found { failed } else { refused };
+            if terminal.sequence <= started.sequence || !self.terminal(terminal.body, r, failed.found) { return self.unknown(out); }
+            out.state = "refused"; out.organization.proposal_state = if failed.found { "failed" } else { "refused" };
+            out.reason = if failed.found { "Native verification rejected the exact Organization candidate." } else { "The native source service refused this Organization proposal." };
+            return out;
+        }
+        if !proposed.found {
+            let status = dna::effect_status(j, "commit:" + id + ":prepared-source");
+            if status.unknown || (status.requested && !status.done) { return self.unknown(out); }
+            return out;
+        }
+        let candidate = self.candidate(j, id, rows);
+        if !candidate.ok || native.canonical(candidate.request) != native.canonical(r) { return self.unknown(out); }
+        out.state = "succeeded"; out.organization.proposal_state = "created"; out.organization.candidate_commit = candidate.candidate_commit;
+        let review = self.review_evidence(j, candidate, rows);
+        out.review_id = id; out = view.with_review(out, review.review, candidate.candidate_commit);
+        let application = OrganizationApplication { }; let applied = application.read(j, candidate, review);
+        out.organization.application_state = applied.state; out.organization.application_reason_code = applied.reason_code;
+        out.organization.restart_handoff_state = applied.handoff_state;
+        return out;
+    }
+}

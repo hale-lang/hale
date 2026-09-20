@@ -1,0 +1,54 @@
+// Review adds a distinct admission fact, never a new command identity or a
+// changed encoding of the established direct relationship operations.
+import "../core" as dna;
+
+locus KnowledgeEdgeCommandCodec {
+    params { }
+    fn known(operation: String) -> Bool { return operation == "dna.knowledge.edge.link" || operation == "dna.knowledge.edge.unlink"; }
+    fn matches(context: GovernanceContext, c: KnowledgeCommand, r: dna::KnowledgeEdgeRequest) -> Bool {
+        let common = KnowledgeCommandCodec { }; let native = dna::KnowledgeEdgeCodec { };
+        return self.known(c.operation) && common.valid(context, c) && native.valid(r)
+            && dna::digest_of(native.document(r)) == r.candidate_digest
+            && r.application_id == context.application_id && r.request_id == common.identity(context, c.request_id)
+            && r.command_fingerprint == common.fingerprint(context, c) && r.operation == c.operation
+            && r.edge_id == common.edge_id(c.from_id, c.to_id, c.rel)
+            && r.from_id == c.from_id && r.to_id == c.to_id && r.rel == c.rel
+            && r.by == context.principal_name && r.because == c.rationale;
+    }
+    fn fact(context: GovernanceContext, c: KnowledgeCommand, grant: KnowledgeGrant, r: dna::KnowledgeEdgeRequest) -> String {
+        let common = KnowledgeCommandCodec { }; let native = dna::KnowledgeEdgeCodec { };
+        if !self.matches(context, c, r) || !common.grant_valid(grant) || grant.mode != "review" || r.authority != grant.authority || r.authority_basis != grant.basis { return ""; }
+        let fields = native.started(r);
+        if len(fields) < 2 { return ""; }
+        let b = std::bytes::BytesBuilder { };
+        b.append_str("{\"format\":\"dna.knowledge-edge.request/1\","); b.append_str(fields[1..(len(fields) - 1)]);
+        common.field(b, "command_payload", common.canonical(context, c)); common.field(b, "record_head", c.record_head);
+        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn decode_fact(e: dna::Event) -> KnowledgeFact {
+        let syntax = OrganizationJson { }; let schema = DefinitionCodec { }; let wire = GovernanceCommandCodec { }; let common = KnowledgeCommandCodec { };
+        if e.kind != "knowledge.edge.requested" || len(e.body) > 131072 || !syntax.valid(e.body)
+            || !schema.fields(e.body, "format application_id request_id command_fingerprint authority authority_basis operation edge_id from_id to_id rel by because edge_basis candidate_digest command_payload record_head", "") { return KnowledgeFact { }; }
+        let payload = wire.string(e.body, "command_payload");
+        if len(payload) > 24576 || !syntax.valid(payload) { return KnowledgeFact { }; }
+        let context = GovernanceContext { application_id: wire.string(payload, "application_id"), principal_mode: wire.string(payload, "principal_mode"), principal_name: wire.string(payload, "principal_name") };
+        let c = common.decode(context, payload); let native = dna::KnowledgeEdgeCodec { }; let r = native.decode(e.body);
+        let grant = KnowledgeGrant { allowed: true, mode: "review", authority: wire.string(e.body, "authority"), basis: wire.string(e.body, "authority_basis") };
+        if !self.matches(context, c, r) || e.prev != c.record_head || e.entity != common.identity(context, c.request_id) || payload != common.canonical(context, c) || e.body != self.fact(context, c, grant, r) { return KnowledgeFact { }; }
+        return KnowledgeFact { valid: true, context: context, command: c, command_id: e.entity, fingerprint: common.fingerprint(context, c), edge_id: r.edge_id, authority: grant.authority, authority_basis: grant.basis, edge: r };
+    }
+}
+
+// Core needs the established direct evidence without depending on operations.
+// This adapter accepts only the old direct kinds and delegates their complete
+// closed-schema/canonical validation to the original codec.
+locus StrictKnowledgeDirectEdgeFacts {
+    params { }
+    fn decode(e: dna::Event) -> dna::KnowledgeDirectEdgeFact {
+        if e.kind != "knowledge.edge.linked" && e.kind != "knowledge.edge.unlinked" { return dna::KnowledgeDirectEdgeFact { }; }
+        let codec = KnowledgeCommandCodec { }; let fact = codec.decode_fact(e);
+        if !fact.valid { return dna::KnowledgeDirectEdgeFact { }; }
+        return dna::KnowledgeDirectEdgeFact { ok: true, application_id: fact.context.application_id, edge_id: fact.edge_id,
+            from_id: fact.command.from_id, to_id: fact.command.to_id, rel: fact.command.rel, linked: e.kind == "knowledge.edge.linked" };
+    }
+}

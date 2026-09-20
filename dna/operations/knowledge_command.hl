@@ -1,0 +1,216 @@
+// Knowledge commands use their own public namespace. The Record is the sole
+// authority; a graph generation is read provenance, not a second commit fence.
+import "../core" as dna;
+
+type KnowledgeCommand {
+    request_id: String = "";
+    operation: String = "dna.knowledge.edge.link";
+    operation_version: String = "1";
+    application_id: String = "";
+    position_id: String = "org";
+    target_id: String = "";
+    record_head: String = "";
+    edge_id: String = "";
+    from_id: String = "";
+    to_id: String = "";
+    rel: String = "";
+    rationale: String = "";
+    node_kind: String = "";
+    name: String = "";
+    text: String = "";
+    author: String = "";
+    target: String = "";
+    supersedes: String = "";
+    idea_id: String = "";
+    binding_id: String = "";
+}
+type KnowledgeGrant { allowed: Bool = false; authority: String = ""; basis: String = ""; mode: String = "unavailable"; scopes: String = ""; }
+type KnowledgeCapability { available: Bool = false; authorized: Bool = false; mode: String = "unavailable"; reason: String = ""; policy_basis: String = ""; }
+type KnowledgeNodeOutcome {
+    proposal_state: String = "pending";
+    candidate_digest: String = "";
+    review_id: String = "";
+    review_state: String = "unavailable";
+    review_outcome: String = "";
+    activation_state: String = "unknown";
+    activation_reason: String = "";
+    reason: String = "";
+}
+type KnowledgeBindingOutcome {
+    binding_id: String = "";
+    proposal_state: String = "pending";
+    candidate_digest: String = "";
+    review_id: String = "";
+    review_state: String = "unavailable";
+    review_outcome: String = "";
+    effect_state: String = "unknown";
+    effect_reason: String = "";
+    reason: String = "";
+}
+type KnowledgeEdgeOutcome {
+    proposal_state: String = "pending";
+    candidate_digest: String = "";
+    review_id: String = "";
+    review_state: String = "unavailable";
+    review_outcome: String = "";
+    effect_state: String = "unknown";
+    effect_reason: String = "";
+    reason: String = "";
+}
+type KnowledgeReceipt {
+    command_id: String = ""; request_id: String = ""; application_id: String = "";
+    principal_mode: String = ""; principal_name: String = "";
+    operation: String = "dna.knowledge.edge.link"; operation_version: String = "1";
+    position_id: String = "org"; target_id: String = ""; fingerprint: String = "";
+    state: String = "recorded"; edge_id: String = ""; event_id: String = "";
+    admission_head: String = ""; sequence: Int = -1;
+    authority: String = ""; authority_basis: String = ""; details_visible: Bool = false;
+    node: KnowledgeNodeOutcome = KnowledgeNodeOutcome { };
+    binding: KnowledgeBindingOutcome = KnowledgeBindingOutcome { };
+    // Internal discriminator. The wire carries a relationship object only for
+    // reviewed edges; old direct receipts retain their exact existing shape.
+    reviewed: Bool = false;
+    relationship: KnowledgeEdgeOutcome = KnowledgeEdgeOutcome { };
+}
+type KnowledgeResult {
+    ok: Bool = false; code: String = "commands_unavailable";
+    application_id: String = ""; head: String = ""; revision: Int = 0;
+    receipt: KnowledgeReceipt = KnowledgeReceipt { };
+}
+type KnowledgeFact {
+    valid: Bool = false;
+    context: GovernanceContext = GovernanceContext { };
+    command: KnowledgeCommand = KnowledgeCommand { };
+    command_id: String = ""; fingerprint: String = ""; edge_id: String = "";
+    authority: String = ""; authority_basis: String = "";
+    node: dna::KnowledgeNodeRequest = dna::KnowledgeNodeRequest { };
+    binding: dna::KnowledgeBindingRequest = dna::KnowledgeBindingRequest { };
+    edge: dna::KnowledgeEdgeRequest = dna::KnowledgeEdgeRequest { };
+}
+
+locus KnowledgeCommandCodec {
+    params { }
+    fn digest(id: String) -> Bool {
+        if len(id) != 71 || !std::str::starts_with(id, "sha256:") { return false; }
+        let mut i = 7;
+        while i < 71 {
+            let c = std::str::byte_at_unchecked(id, i);
+            if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn valid(context: GovernanceContext, c: KnowledgeCommand) -> Bool {
+        let wire = GovernanceCommandCodec { };
+        let node = KnowledgeNodeCommandCodec { };
+        if node.known(c.operation) { return node.valid(context, c); }
+        let binding = KnowledgeBindingCommandCodec { };
+        if binding.known(c.operation) { return binding.valid(context, c); }
+        let link = c.operation == "dna.knowledge.edge.link";
+        let unlink = c.operation == "dna.knowledge.edge.unlink";
+        return wire.context_valid(context) && context.application_id == c.application_id
+            && (link || unlink) && c.operation_version == "1" && c.position_id == "org"
+            && c.node_kind == "" && c.name == "" && c.text == "" && c.author == "" && c.target == "" && c.supersedes == ""
+            && c.idea_id == "" && c.binding_id == ""
+            && (if link { len(c.edge_id) == 0 } else { self.digest(c.edge_id) && c.edge_id == self.edge_id(c.from_id, c.to_id, c.rel) })
+            && wire.bounded(c.request_id, 128, true, false) && wire.bounded(c.record_head, 256, true, false)
+            && self.digest(c.from_id) && self.digest(c.to_id) && (c.target_id == c.from_id || c.target_id == c.to_id)
+            && wire.bounded(c.rel, 256, true, false) && wire.bounded(c.rationale, 2048, true, true);
+    }
+    fn identity(context: GovernanceContext, request_id: String) -> String {
+        let wire = GovernanceCommandCodec { };
+        let scoped = wire.identity(context, request_id);
+        if len(scoped) == 0 { return ""; }
+        return "knowledge-command-" + dna::hex_digest("dna.knowledge-command-key/1\n" + scoped);
+    }
+    fn field(b: std::bytes::BytesBuilder, name: String, value: String) {
+        let wire = GovernanceCommandCodec { };
+        b.append_str(",\""); b.append_str(name); b.append_str("\":"); b.append_str(wire.quote(value));
+    }
+    fn canonical(context: GovernanceContext, c: KnowledgeCommand) -> String {
+        if !self.valid(context, c) { return ""; }
+        let b = std::bytes::BytesBuilder { };
+        b.append_str("{\"format\":\"dna.knowledge-command/1\"");
+        self.field(b, "application_id", c.application_id); self.field(b, "principal_mode", context.principal_mode); self.field(b, "principal_name", context.principal_name);
+        self.field(b, "request_id", c.request_id); self.field(b, "operation", c.operation); self.field(b, "operation_version", c.operation_version);
+        self.field(b, "position_id", c.position_id); self.field(b, "target_id", c.target_id); self.field(b, "record_head", c.record_head);
+        let node = KnowledgeNodeCommandCodec { };
+        if node.known(c.operation) {
+            node.fields(b, c);
+            b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        }
+        let binding = KnowledgeBindingCommandCodec { };
+        if binding.known(c.operation) {
+            binding.fields(b, c);
+            b.append_str("}"); return std::str::from_bytes(b.snapshot());
+        }
+        // Omit this field for link: its existing canonical bytes and durable
+        // fingerprints must survive the introduction of another operation.
+        if c.operation == "dna.knowledge.edge.unlink" { self.field(b, "edge_id", c.edge_id); }
+        self.field(b, "from_id", c.from_id); self.field(b, "to_id", c.to_id); self.field(b, "rel", c.rel); self.field(b, "rationale", c.rationale);
+        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn fingerprint(context: GovernanceContext, c: KnowledgeCommand) -> String { return dna::digest_of(self.canonical(context, c)); }
+    fn decode(context: GovernanceContext, document: String) -> KnowledgeCommand {
+        let syntax = OrganizationJson { }; let fields = DefinitionCodec { }; let wire = GovernanceCommandCodec { };
+        if len(document) > 98304 || !syntax.valid(document) { return KnowledgeCommand { }; }
+        let node = KnowledgeNodeCommandCodec { };
+        if node.known(wire.string(document, "operation")) { return node.decode(context, document); }
+        let binding = KnowledgeBindingCommandCodec { };
+        if binding.known(wire.string(document, "operation")) { return binding.decode(context, document); }
+        if len(document) > 24576 { return KnowledgeCommand { }; }
+        let extra = if wire.string(document, "operation") == "dna.knowledge.edge.unlink" { " edge_id" } else { "" };
+        if !fields.fields(document, "format application_id principal_mode principal_name request_id operation operation_version position_id target_id record_head from_id to_id rel rationale" + extra, "") { return KnowledgeCommand { }; }
+        if wire.string(document, "format") != "dna.knowledge-command/1" || wire.string(document, "principal_mode") != context.principal_mode || wire.string(document, "principal_name") != context.principal_name { return KnowledgeCommand { }; }
+        let c = KnowledgeCommand {
+            application_id: wire.string(document, "application_id"), request_id: wire.string(document, "request_id"), operation: wire.string(document, "operation"), operation_version: wire.string(document, "operation_version"),
+            position_id: wire.string(document, "position_id"), target_id: wire.string(document, "target_id"), record_head: wire.string(document, "record_head"),
+            edge_id: wire.string(document, "edge_id"),
+            from_id: wire.string(document, "from_id"), to_id: wire.string(document, "to_id"), rel: wire.string(document, "rel"), rationale: wire.string(document, "rationale")
+        };
+        if !self.valid(context, c) { return KnowledgeCommand { }; }
+        return c;
+    }
+    // Keep the graph reader's established array encoding and ordered identity.
+    fn edge_id(from_id: String, to_id: String, rel: String) -> String {
+        let wire = GovernanceCommandCodec { }; let b = std::json::Builder { };
+        b.begin_array(); b.value(wire.quote(from_id)); b.value(wire.quote(to_id)); b.value(wire.quote(rel)); b.end_array();
+        return dna::digest_of(b.result());
+    }
+    fn grant_valid(grant: KnowledgeGrant) -> Bool {
+        let wire = GovernanceCommandCodec { };
+        return grant.allowed && (grant.mode == "direct" || grant.mode == "review") && wire.bounded(grant.authority, 256, true, false) && wire.bounded(grant.basis, 2048, true, false);
+    }
+    fn event_kind(operation: String) -> String {
+        if operation == "dna.knowledge.edge.link" { return "knowledge.edge.linked"; }
+        if operation == "dna.knowledge.edge.unlink" { return "knowledge.edge.unlinked"; }
+        let node = KnowledgeNodeCommandCodec { };
+        if node.known(operation) { return "knowledge.node.requested"; }
+        let binding = KnowledgeBindingCommandCodec { };
+        if binding.known(operation) { return "knowledge.binding.requested"; }
+        return "";
+    }
+    fn fact(context: GovernanceContext, c: KnowledgeCommand, grant: KnowledgeGrant) -> String {
+        if !self.valid(context, c) || !self.grant_valid(grant) || grant.mode != "direct" { return ""; }
+        let b = std::bytes::BytesBuilder { };
+        b.append_str(if c.operation == "dna.knowledge.edge.unlink" { "{\"format\":\"dna.knowledge-edge.unlink/1\"" } else { "{\"format\":\"dna.knowledge-edge.link/1\"" });
+        self.field(b, "command_id", self.identity(context, c.request_id)); self.field(b, "command_payload", self.canonical(context, c)); self.field(b, "command_fingerprint", self.fingerprint(context, c));
+        self.field(b, "authority", grant.authority); self.field(b, "authority_basis", grant.basis); self.field(b, "record_head", c.record_head);
+        self.field(b, "edge_id", self.edge_id(c.from_id, c.to_id, c.rel)); self.field(b, "from_id", c.from_id); self.field(b, "to_id", c.to_id); self.field(b, "rel", c.rel);
+        b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn decode_fact(e: dna::Event) -> KnowledgeFact {
+        if e.kind == "knowledge.node.requested" { let node = KnowledgeNodeCommandCodec { }; return node.decode_fact(e); }
+        if e.kind == "knowledge.binding.requested" { let binding = KnowledgeBindingCommandCodec { }; return binding.decode_fact(e); }
+        if e.kind == "knowledge.edge.requested" { let edge = KnowledgeEdgeCommandCodec { }; return edge.decode_fact(e); }
+        let syntax = OrganizationJson { }; let fields = DefinitionCodec { }; let wire = GovernanceCommandCodec { };
+        if (e.kind != "knowledge.edge.linked" && e.kind != "knowledge.edge.unlinked") || len(e.body) > 65536 || !syntax.valid(e.body) || !fields.fields(e.body, "format command_id command_payload command_fingerprint authority authority_basis record_head edge_id from_id to_id rel", "") { return KnowledgeFact { }; }
+        let payload = wire.string(e.body, "command_payload");
+        if len(payload) > 24576 || !syntax.valid(payload) { return KnowledgeFact { }; }
+        let context = GovernanceContext { application_id: wire.string(payload, "application_id"), principal_mode: wire.string(payload, "principal_mode"), principal_name: wire.string(payload, "principal_name") };
+        let c = self.decode(context, payload);
+        let grant = KnowledgeGrant { allowed: true, mode: "direct", authority: wire.string(e.body, "authority"), basis: wire.string(e.body, "authority_basis") };
+        if !self.valid(context, c) || !self.grant_valid(grant) || e.kind != self.event_kind(c.operation) || e.prev != c.record_head || e.entity != self.edge_id(c.from_id, c.to_id, c.rel) || payload != self.canonical(context, c) || e.body != self.fact(context, c, grant) { return KnowledgeFact { }; }
+        return KnowledgeFact { valid: true, context: context, command: c, command_id: self.identity(context, c.request_id), fingerprint: self.fingerprint(context, c), edge_id: e.entity, authority: grant.authority, authority_basis: grant.basis };
+    }
+}

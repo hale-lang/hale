@@ -1,0 +1,208 @@
+// Exact binding candidates and Record evidence. The graph is a projection;
+// neither current SQL rows nor a candidate name establish domain authority.
+type KnowledgeBindingSubject { ok: Bool = false; ratified: Bool = false; active: Bool = false; author: String = ""; target: String = ""; }
+type KnowledgeBindingBasis { ok: Bool = false; present: Bool = false; event_id: String = ""; }
+type KnowledgeBindingReplacement { id: String = ""; }
+interface KnowledgeBindingPolicySyntax { fn valid(text: String) -> Bool; }
+locus NoKnowledgeBindingPolicySyntax { params { } fn valid(text: String) -> Bool { return false; } }
+@form(hashmap)
+locus KnowledgeBindingReplacements { capacity { pool rows of KnowledgeBindingReplacement indexed_by id; } }
+type KnowledgeBindingEffect {
+    ok: Bool = false; request: KnowledgeBindingRequest = KnowledgeBindingRequest { };
+    decision_command_id: String = ""; decided_by: String = ""; state: String = "";
+    reason_code: String = ""; observed_basis: String = "";
+}
+locus KnowledgeBindingCodec {
+    params { }
+    @unbounded
+    fn visible(j: Journal, syntax: KnowledgeBindingPolicySyntax, digest: String, end: Int) -> Bool {
+        if !digest_well_formed(digest) || end < 1 || end > j.revision() { return false; }
+        let raw = digest[7..len(digest)]; let mut i = 0;
+        while i < end {
+            let e = j.read(i);
+            if e.kind == "ledger.adopted" || e.kind == "ledger.abandoned" { return false; }
+            if e.entity == digest || e.entity == raw {
+                if e.kind == "receipt.withheld" || e.kind == "receipt.redacted" { return false; }
+                if e.kind == "receipt.classified" || e.kind == "receipt.filed" {
+                    if !syntax.valid(e.body) || !std::str::starts_with(std::str::trim(e.body), "{") { return false; }
+                    let class = std::json::find_field_raw(e.body, "class");
+                    if class != "\"public\"" && class != "\"internal\"" { return false; }
+                }
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn identity(idea_id: String, target: String, author: String) -> String {
+        let b = std::json::Builder { }; b.begin_array();
+        b.value(record_json_quote(idea_id)); b.value(record_json_quote(target)); b.value(record_json_quote(author)); b.end_array();
+        return digest_of(b.result());
+    }
+    fn review_id(digest: String) -> String { return "knowledge-binding:" + digest; }
+    fn valid(r: KnowledgeBindingRequest) -> Bool {
+        let b = KnowledgeNodeRequestCodec { };
+        return (r.operation == "dna.knowledge.binding.bind" || r.operation == "dna.knowledge.binding.unbind")
+            && b.bounded(r.application_id, 256, true, false) && b.bounded(r.request_id, 256, true, false)
+            && digest_well_formed(r.command_fingerprint) && b.bounded(r.authority, 256, true, false) && b.bounded(r.authority_basis, 2048, true, false)
+            && digest_well_formed(r.idea_id) && digest_well_formed(r.binding_id) && digest_well_formed(r.candidate_digest)
+            && b.bounded(r.author, 256, true, false) && b.bounded(r.target, 256, true, false)
+            && b.bounded(r.by, 256, true, false) && b.bounded(r.because, 2048, true, true) && b.bounded(r.binding_basis, 256, false, false)
+            && r.binding_id == self.identity(r.idea_id, r.target, r.author);
+    }
+    fn decode(body: String) -> KnowledgeBindingRequest {
+        return KnowledgeBindingRequest {
+            application_id: native_json_string(body, "application_id"), request_id: native_json_string(body, "request_id"),
+            command_fingerprint: native_json_string(body, "command_fingerprint"), authority: native_json_string(body, "authority"), authority_basis: native_json_string(body, "authority_basis"),
+            operation: native_json_string(body, "operation"), idea_id: native_json_string(body, "idea_id"), binding_id: native_json_string(body, "binding_id"),
+            author: native_json_string(body, "author"), target: native_json_string(body, "target"), by: native_json_string(body, "by"), because: native_json_string(body, "because"),
+            binding_basis: native_json_string(body, "binding_basis"), candidate_digest: native_json_string(body, "candidate_digest")
+        };
+    }
+    fn field(b: std::bytes::BytesBuilder, key: String, value: String) { b.append_str(",\""); b.append_str(key); b.append_str("\":"); b.append_str(record_json_quote(value)); }
+    fn inputs(b: std::bytes::BytesBuilder, r: KnowledgeBindingRequest, candidate: Bool) {
+        self.field(b, "application_id", r.application_id); self.field(b, "request_id", r.request_id);
+        self.field(b, "command_fingerprint", r.command_fingerprint); self.field(b, "authority", r.authority); self.field(b, "authority_basis", r.authority_basis);
+        self.field(b, "operation", r.operation); self.field(b, "idea_id", r.idea_id); self.field(b, "binding_id", r.binding_id);
+        self.field(b, "author", r.author); self.field(b, "target", r.target);
+        if candidate { self.field(b, "class", classify_binding(r.author, r.target)); }
+        self.field(b, "by", r.by); self.field(b, "because", r.because); self.field(b, "binding_basis", r.binding_basis);
+        if !candidate { self.field(b, "candidate_digest", r.candidate_digest); }
+    }
+    fn document(r: KnowledgeBindingRequest) -> String {
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"format\":\"dna.knowledge-binding-change/1\""); self.inputs(b, r, true); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn fields(b: std::bytes::BytesBuilder, r: KnowledgeBindingRequest) {
+        // No format field in the compact typed request; the outer admission
+        // has its own closed format and preserves the full canonical command.
+        b.append_str("{\"application_id\":"); b.append_str(record_json_quote(r.application_id));
+        self.field(b, "request_id", r.request_id); self.field(b, "command_fingerprint", r.command_fingerprint);
+        self.field(b, "authority", r.authority); self.field(b, "authority_basis", r.authority_basis);
+        self.field(b, "operation", r.operation); self.field(b, "idea_id", r.idea_id); self.field(b, "binding_id", r.binding_id);
+        self.field(b, "author", r.author); self.field(b, "target", r.target); self.field(b, "by", r.by); self.field(b, "because", r.because);
+        self.field(b, "binding_basis", r.binding_basis); self.field(b, "candidate_digest", r.candidate_digest);
+    }
+    fn started(r: KnowledgeBindingRequest) -> String { let b = std::bytes::BytesBuilder { }; self.fields(b, r); b.append_str("}"); return std::str::from_bytes(b.snapshot()); }
+    fn proposed(r: KnowledgeBindingRequest) -> String {
+        let b = std::bytes::BytesBuilder { }; self.fields(b, r); self.field(b, "digest", r.candidate_digest); self.field(b, "review_id", self.review_id(r.candidate_digest)); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn refused(r: KnowledgeBindingRequest, reason_code: String, why: String) -> String {
+        let b = std::bytes::BytesBuilder { }; self.fields(b, r); self.field(b, "reason_code", reason_code); self.field(b, "why", why); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn review_request(r: KnowledgeBindingRequest) -> String {
+        let b = std::bytes::BytesBuilder { }; b.append_str("{\"question\":");
+        b.append_str(record_json_quote((if r.operation == "dna.knowledge.binding.bind" { "Bind " } else { "Unbind " }) + r.idea_id + " at " + r.target + " by " + r.author + "?"));
+        self.field(b, "subject_digest", r.candidate_digest); self.field(b, "required_authority", "board"); self.field(b, "author", r.by);
+        self.field(b, "knowledge_binding_digest", r.candidate_digest); self.field(b, "binding_request_id", r.request_id);
+        self.field(b, "target", r.target); self.field(b, "class", classify_binding(r.author, r.target)); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn terminal_fields(b: std::bytes::BytesBuilder, r: KnowledgeBindingRequest, decision: String, reviewer: String) {
+        b.append_str("{\"format\":\"dna.knowledge-binding-effect/1\""); self.field(b, "request_id", r.request_id); self.field(b, "command_fingerprint", r.command_fingerprint);
+        self.field(b, "candidate_digest", r.candidate_digest); self.field(b, "review_id", self.review_id(r.candidate_digest));
+        self.field(b, "decision_command_id", decision); self.field(b, "decided_by", reviewer); self.field(b, "operation", r.operation);
+        self.field(b, "idea_id", r.idea_id); self.field(b, "binding_id", r.binding_id); self.field(b, "author", r.author); self.field(b, "target", r.target);
+        self.field(b, "class", classify_binding(r.author, r.target)); self.field(b, "binding_basis", r.binding_basis);
+    }
+    fn effect(r: KnowledgeBindingRequest, decision: String, reviewer: String) -> String {
+        let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn declined(r: KnowledgeBindingRequest, decision: String, reviewer: String, outcome: String) -> String {
+        let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); self.field(b, "outcome", outcome); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    fn apply_refused(r: KnowledgeBindingRequest, decision: String, reviewer: String, reason_code: String, observed_basis: String) -> String {
+        let b = std::bytes::BytesBuilder { }; self.terminal_fields(b, r, decision, reviewer); self.field(b, "reason_code", reason_code); self.field(b, "observed_basis", observed_basis); b.append_str("}"); return std::str::from_bytes(b.snapshot());
+    }
+    @unbounded
+    fn fact(j: Journal, kind: String, entity: String, end: Int) -> Event {
+        let mut found = Event { }; let mut i = 0;
+        while i < end {
+            let e = j.read(i);
+            if e.kind == kind && e.entity == entity {
+                if len(found.kind) > 0 && found.body != e.body { return Event { kind: "invalid" }; }
+                if len(found.kind) == 0 { found = e; }
+            }
+            i = i + 1;
+        }
+        return found;
+    }
+    fn request_of(j: Journal, review_id: String) -> KnowledgeBindingRequest {
+        let review = self.fact(j, "review.requested", "review:" + review_id, j.revision());
+        if review.kind != "review.requested" { return KnowledgeBindingRequest { }; }
+        let id = native_json_string(review.body, "binding_request_id");
+        let started = self.fact(j, "knowledge.binding.started", id, j.revision()); let r = self.decode(started.body);
+        let incoming = self.fact(j, "knowledge.binding.requested", id, j.revision());
+        if started.kind != "knowledge.binding.started" || started.entity != r.request_id || !self.valid(r) || started.body != self.started(r)
+            || incoming.kind != "knowledge.binding.requested" || self.started(self.decode(incoming.body)) != self.started(r) || incoming.seq >= started.seq || started.seq >= review.seq
+            || digest_of(self.document(r)) != r.candidate_digest || self.review_id(r.candidate_digest) != review_id || review.body != self.review_request(r)
+            || j.revision() == 0 || j.read(0).digest != r.application_id { return KnowledgeBindingRequest { }; }
+        return r;
+    }
+    fn effect_of(j: Journal, e: Event) -> KnowledgeBindingEffect {
+        let bound = e.kind == "knowledge.binding.bound"; let unbound = e.kind == "knowledge.binding.unbound";
+        let declined = e.kind == "knowledge.binding.declined"; let refused = e.kind == "knowledge.binding.apply_refused";
+        if !bound && !unbound && !declined && !refused { return KnowledgeBindingEffect { }; }
+        let review_id = native_json_string(e.body, "review_id"); let r = self.request_of(j, review_id);
+        let proposed = self.fact(j, "knowledge.binding.proposed", r.request_id, e.seq);
+        let review = self.fact(j, "review.requested", "review:" + review_id, e.seq);
+        let decision = native_json_string(e.body, "decision_command_id"); let reviewer = native_json_string(e.body, "decided_by");
+        let settled = self.fact(j, "review.settled", review_id, e.seq);
+        let outcome = if declined { native_json_string(e.body, "outcome") } else { "approve" };
+        if !self.valid(r) || e.entity != r.request_id || proposed.kind != "knowledge.binding.proposed" || proposed.body != self.proposed(r) || review.kind != "review.requested" || review.body != self.review_request(r) || review.seq >= proposed.seq
+            || settled.kind != "review.settled" || settled.seq <= review.seq || settled.body != outcome + " by " + reviewer || reviewer == r.by || len(reviewer) == 0
+            || (bound && r.operation != "dna.knowledge.binding.bind") || (unbound && r.operation != "dna.knowledge.binding.unbind")
+            || (declined && outcome != "reject" && outcome != "revise") { return KnowledgeBindingEffect { }; }
+        if len(decision) > 0 {
+            let fact = self.fact(j, "review.command_decided", decision, e.seq); let v = review_command_verdict(decision, fact.body);
+            if fact.kind != "review.command_decided" || fact.seq >= settled.seq || fact.seq <= review.seq || v.review_id != review_id || v.subject_digest != r.candidate_digest || v.reviewer != reviewer || v.verdict != outcome
+                || !authority_satisfies(v.authority, "board") || fact.body != review_command_body(v, true, "", true, outcome) { return KnowledgeBindingEffect { }; }
+        }
+        let code = native_json_string(e.body, "reason_code"); let observed = native_json_string(e.body, "observed_basis");
+        if refused && code != "binding_changed" && code != "subject_inactive" { return KnowledgeBindingEffect { }; }
+        let expected = if declined { self.declined(r, decision, reviewer, outcome) } else if refused { self.apply_refused(r, decision, reviewer, code, observed) } else { self.effect(r, decision, reviewer) };
+        if e.body != expected { return KnowledgeBindingEffect { }; }
+        return KnowledgeBindingEffect { ok: true, request: r, decision_command_id: decision, decided_by: reviewer, state: if bound { "bound" } else if unbound { "unbound" } else if declined { "declined" } else { "refused" }, reason_code: code, observed_basis: observed };
+    }
+    @unbounded
+    fn subject(j: Journal, receipts: Receipts, idea_id: String) -> KnowledgeBindingSubject {
+        return self.subject_at(j, receipts, idea_id, j.revision());
+    }
+    @unbounded
+    fn subject_at(j: Journal, receipts: Receipts, idea_id: String, end: Int) -> KnowledgeBindingSubject {
+        if end < 0 || end > j.revision() { return KnowledgeBindingSubject { }; }
+        if !digest_well_formed(idea_id) { return KnowledgeBindingSubject { }; }
+        let doc = receipts.read(idea_id[7..len(idea_id)]); let b = KnowledgeNodeRequestCodec { };
+        if len(doc) == 0 || len(doc) > 98304 || digest_of(doc) != idea_id { return KnowledgeBindingSubject { }; }
+        let author = native_json_string(doc, "author"); let target = native_json_string(doc, "target"); let kind = native_json_string(doc, "kind");
+        if !b.bounded(author, 256, true, false) || !b.bounded(target, 256, true, false) || !b.bounded(kind, 128, true, false) || kind == "retirement" || classify_binding(author, target) == "lateral" { return KnowledgeBindingSubject { }; }
+        let replacements = KnowledgeBindingReplacements { };
+        let mut ratified = false; let mut retired = false; let mut i = 0;
+        while i < end {
+            let e = j.read(i);
+            if e.entity == idea_id && e.kind == "knowledge.ratified" { ratified = true; }
+            if e.entity == idea_id && e.kind == "knowledge.retired" { retired = true; }
+            if e.kind == "knowledge.proposed" && native_json_string(e.body, "supersedes") == idea_id { replacements.set(KnowledgeBindingReplacement { id: e.entity }); }
+            if e.kind == "knowledge.ratified" && (len((replacements.get(e.entity) or KnowledgeBindingReplacement { }).id) > 0 || native_json_string(e.body, "supersedes") == idea_id) { retired = true; }
+            i = i + 1;
+        }
+        return KnowledgeBindingSubject { ok: true, ratified: ratified, active: ratified && !retired, author: author, target: target };
+    }
+    @unbounded
+    fn basis(j: Journal, receipts: Receipts, r: KnowledgeBindingRequest, end: Int) -> KnowledgeBindingBasis {
+        if end < 0 || end > j.revision() || r.binding_id != self.identity(r.idea_id, r.target, r.author) { return KnowledgeBindingBasis { }; }
+        let subject = self.subject_at(j, receipts, r.idea_id, end);
+        if !subject.ok || !subject.ratified { return KnowledgeBindingBasis { }; }
+        let mut out = KnowledgeBindingBasis { ok: true }; let mut i = 0;
+        while i < end {
+            let e = j.read(i);
+            if e.kind == "knowledge.ratified" && e.entity == r.idea_id && subject.author == r.author && subject.target == r.target {
+                out.present = true; out.event_id = e.digest;
+            }
+            if (e.kind == "knowledge.binding.bound" || e.kind == "knowledge.binding.unbound") && native_json_string(e.body, "binding_id") == r.binding_id {
+                let fact = self.effect_of(j, e);
+                if !fact.ok || fact.request.binding_basis != out.event_id || fact.request.idea_id != r.idea_id || fact.request.author != r.author || fact.request.target != r.target { return KnowledgeBindingBasis { }; }
+                out.present = e.kind == "knowledge.binding.bound"; out.event_id = e.digest;
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+}

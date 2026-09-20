@@ -4,8 +4,14 @@ import "../../../core" as dna;
 import "../../contract/v1/validator" as wire_contract;
 
 const APPLICATIONS: String = "/api/hale/v1/applications";
-const SHELL_HTML: String = "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/styles.css\"></head><body><main>Static Iris fixture</main><script src=\"/app.js\" defer></script></body></html>";
+const SHELL_KNOWLEDGE_DRAFT_JS: String = "window.fixtureKnowledgeDraft = true;";
+const SHELL_TASK_ADMINISTRATION_JS: String = "window.fixtureTaskAdministration = true;";
+const SHELL_ORGANIZATION_DRAFT_JS: String = "window.fixtureOrganizationDraft = true;";
+const SHELL_HTML: String = "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/styles.css\"></head><body><main>Static Iris fixture</main><script src=\"/runtime.js\" defer></script><script src=\"/application.js\" defer></script><script src=\"/definition-draft.js\" defer></script><script src=\"/app.js\" defer></script></body></html>";
 const SHELL_JS: String = "document.querySelector('main').dataset.ready = 'yes';";
+const SHELL_RUNTIME_JS: String = "window.IrisRuntime = Object.freeze({ fixture: true });";
+const SHELL_APPLICATION_JS: String = "window.IrisApplication = Object.freeze({ fixture: true });";
+const SHELL_DEFINITION_DRAFT_JS: String = "window.IrisDefinitionDraft = Object.freeze({ fixture: true });";
 const SHELL_CSS: String = "main { color: navy; }";
 
 type HttpResponse { status: Int = 0; headers: String = ""; body: String = ""; }
@@ -84,6 +90,7 @@ locus Fixture {
         oidc: Bool = false;
         web_requested: Bool = false;
         webroot: String = "";
+        observer_origin: String = "";
         api: std::process::Child = std::process::Child { };
         journal: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/hale-api-fixture" };
         receipts: dna::GitReceipts = dna::GitReceipts { repo: "/nonexistent/hale-api-fixture" };
@@ -129,12 +136,18 @@ locus Fixture {
         std::io::fs::mkdir(self.webroot) or discard;
         std::io::fs::write_file(self.webroot + "/index.html", SHELL_HTML) or discard;
         std::io::fs::write_file(self.webroot + "/app.js", SHELL_JS) or discard;
+        std::io::fs::write_file(self.webroot + "/runtime.js", SHELL_RUNTIME_JS) or discard;
+        std::io::fs::write_file(self.webroot + "/application.js", SHELL_APPLICATION_JS) or discard;
+        std::io::fs::write_file(self.webroot + "/definition-draft.js", SHELL_DEFINITION_DRAFT_JS) or discard;
+        std::io::fs::write_file(self.webroot + "/organization-draft.js", SHELL_ORGANIZATION_DRAFT_JS) or discard;
+        std::io::fs::write_file(self.webroot + "/knowledge-draft.js", SHELL_KNOWLEDGE_DRAFT_JS) or discard;
+        std::io::fs::write_file(self.webroot + "/task-administration.js", SHELL_TASK_ADMINISTRATION_JS) or discard;
         std::io::fs::write_file(self.webroot + "/styles.css", SHELL_CSS) or discard;
     }
     fn spawn() {
         let binary = std::env::var("HALE_API_BIN");
         std::test::assert(len(binary) > 0 && std::io::fs::file_exists(binary), "build dna/api and set absolute HALE_API_BIN");
-        let argv = "sh\n-c\ncd \"$1\" && unset HALE_DNA_KNOWLEDGE_DSN HALE_DNA_KNOWLEDGE_URL HALE_DNA_EVIDENCE_KEY && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 HALE_DNA_OIDC_SECRET=fake-secret && if [ \"$4\" = web ]; then exec \"$2\" \"$1\" \"$3\" \"$5\" >\"$1/api.log\" 2>&1; else exec \"$2\" \"$1\" \"$3\" >\"$1/api.log\" 2>&1; fi\nsh\n" + self.root + "\n" + binary + "\n" + to_string(self.port) + "\n" + (if self.web_requested { "web" } else { "api" }) + (if len(self.webroot) > 0 { "\n" + self.webroot } else { "" });
+        let argv = "sh\n-c\ncd \"$1\" && unset HALE_DNA_KNOWLEDGE_DSN HALE_DNA_KNOWLEDGE_URL HALE_DNA_EVIDENCE_KEY && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 HALE_DNA_OIDC_SECRET=fake-secret HALE_IRIS_OBSERVER_ORIGIN=\"${6#origin=}\" && if [ \"$4\" = web ]; then exec \"$2\" \"$1\" \"$3\" \"${5#webroot=}\" >\"$1/api.log\" 2>&1; else exec \"$2\" \"$1\" \"$3\" >\"$1/api.log\" 2>&1; fi\nsh\n" + self.root + "\n" + binary + "\n" + to_string(self.port) + "\n" + (if self.web_requested { "web" } else { "api" }) + "\nwebroot=" + self.webroot + "\norigin=" + self.observer_origin;
         let child = std::process::spawn(argv) or std::process::Child { };
         // Child is structural: transfer its OS handles into a newly constructed
         // field, then disarm the short-lived wrapper before its dissolve.
@@ -213,6 +226,21 @@ locus Fixture {
         std::test::assert(len(self.json.string(self.json.raw(payload, "error"), "code")) > 0, "typed error code");
     }
     fn receipt(text: String) -> String { return "sha256:" + self.receipts.store(text); }
+    // Canonical receipts and Record rows exercise the real knowledge tail.
+    // Relationship state is composed separately into the native graph store.
+    fn knowledge(name: String, text: String, target: String, supersedes: String, ratified: Bool) -> String {
+        let idea = dna::Idea { kind: "goal", name: name, text: text, author: "org", provenance: "proposed", supersedes: supersedes };
+        let digest = self.receipt(dna::knowledge_document(idea, target));
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("digest", digest);
+        b.string_field("author", idea.author);
+        b.string_field("target", target);
+        b.string_field("class", dna::classify_binding(idea.author, target));
+        b.end_object();
+        self.append(if ratified { "knowledge.ratified" } else { "knowledge.proposed" }, digest, b.result());
+        return digest;
+    }
     fn blob(digest: String) -> String { return self.git("cat-file\n-p\nrefs/dna/receipts/" + digest[7..len(digest)]); }
     fn practice(name: String, text: String, target: String, review: String, design: Bool) -> Practice {
         let b = std::json::Builder { };

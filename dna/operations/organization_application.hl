@@ -1,0 +1,92 @@
+// Historical source application is distinct from candidate creation, Review,
+// and an observed running process. Only the original native effect chain can
+// establish application; a later source checkout is not evidence for it.
+import "../core" as dna;
+
+type OrganizationApplyEvidence {
+    state: String = "unknown";
+    reason_code: String = "";
+    handoff_state: String = "unknown";
+    applied_sequence: Int = -1;
+    handoff_sequence: Int = -1;
+}
+type OrganizationApplyResult {
+    valid: Bool = false;
+    state: String = "unknown";
+    sequence: Int = -1;
+}
+
+locus OrganizationApplication {
+    params { }
+    fn refusal_code(code: String) -> Bool {
+        return code == "invalid_command" || code == "forbidden" || code == "stale_subject"
+            || code == "organization_worktree_invalid" || code == "organization_candidate_invalid"
+            || code == "organization_snapshot_unsupported" || code == "organization_deployment_unsupported";
+    }
+    fn result_state(body: String) -> String {
+        if body == "ok" || std::str::starts_with(body, "ok (") { return "applied"; }
+        if body == "failed" || std::str::starts_with(body, "failed (") { return "failed"; }
+        if body == "unknown" || std::str::starts_with(body, "unknown (") { return "unknown"; }
+        return "";
+    }
+    fn result(j: dna::Journal, key: String, claim: GovernanceProjectionFact) -> OrganizationApplyResult {
+        let mut out = OrganizationApplyResult { valid: true, state: "pending" }; let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == "effect.result" && e.entity == key {
+                let state = self.result_state(e.body);
+                if !claim.found || e.seq <= claim.sequence || state == ""
+                    || ((out.state == "applied" || out.state == "failed") && state != out.state) { return OrganizationApplyResult { }; }
+                out = OrganizationApplyResult { valid: true, state: state, sequence: e.seq };
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+    fn read(j: dna::Journal, candidate: OrganizationCandidateEvidence, review: OrganizationReviewEvidence) -> OrganizationApplyEvidence {
+        let view = GovernanceProjection { }; let native = dna::OrganizationSourceRequestCodec { }; let text = GovernanceCommandCodec { };
+        if !candidate.ok || !review.review.ok || review.review.state == "unavailable" { return OrganizationApplyEvidence { }; }
+        let id = candidate.mutation_id; let commit = candidate.candidate_commit; let r = candidate.request;
+        let key = dna::effect_key(r.source_owner, "apply", commit);
+        let claim = view.fact(j, "effect.requested", key, false); let result = self.result(j, key, claim);
+        let applied = view.fact(j, "mutation.applied", id, false); let refused = view.fact(j, "mutation.refused", id, false);
+        let rejected = view.fact(j, "mutation.rejected", id, false); let revised = view.fact(j, "mutation.revise", id, false);
+        let handoff = view.fact(j, "expression.restart_requested", id, false);
+        if claim.invalid || applied.invalid || refused.invalid || rejected.invalid || revised.invalid || handoff.invalid || !result.valid { return OrganizationApplyEvidence { }; }
+        let effects = claim.found || result.sequence >= 0 || applied.found || handoff.found;
+        let pending = OrganizationApplyEvidence { state: "pending", handoff_state: "pending" };
+        if review.review.state != "settled" {
+            return if effects || refused.found || rejected.found || revised.found { OrganizationApplyEvidence { } } else { pending };
+        }
+        let settled = review.review.sequence;
+        if review.review.outcome == "reject" || review.review.outcome == "revise" {
+            if effects || refused.found || (rejected.found && revised.found) { return OrganizationApplyEvidence { }; }
+            let decline = if review.review.outcome == "reject" { rejected } else { revised };
+            let other = if review.review.outcome == "reject" { revised } else { rejected };
+            if other.found { return OrganizationApplyEvidence { }; }
+            if !decline.found { return pending; }
+            if decline.sequence <= settled || decline.body != "review " + review.review.outcome + " by " + review.review.reviewer + "; genome and expression untouched" { return OrganizationApplyEvidence { }; }
+            return OrganizationApplyEvidence { state: "declined", handoff_state: "pending" };
+        }
+        if review.review.outcome != "approve" || rejected.found || revised.found || review.decision_command_id == "" { return OrganizationApplyEvidence { }; }
+        if refused.found {
+            let code = text.string(refused.body, "reason_code");
+            if effects || refused.sequence <= settled || !self.refusal_code(code)
+                || refused.body != native.apply_refused(r, review.decision_command_id, commit, code) { return OrganizationApplyEvidence { }; }
+            return OrganizationApplyEvidence { state: "refused", reason_code: code, handoff_state: "pending" };
+        }
+        if !claim.found { return if effects { OrganizationApplyEvidence { } } else { pending }; }
+        if claim.body != id || claim.sequence <= settled { return OrganizationApplyEvidence { }; }
+        if applied.found && (applied.body != commit || applied.sequence <= claim.sequence) { return OrganizationApplyEvidence { }; }
+        if handoff.found && (!applied.found || handoff.sequence <= applied.sequence
+                || handoff.body != "apply " + commit + " seed " + native.seed() + " fitness " + text.string(candidate.review_body, "fitness_signals")) { return OrganizationApplyEvidence { }; }
+        if result.state == "failed" {
+            return if applied.found || handoff.found { OrganizationApplyEvidence { } } else { OrganizationApplyEvidence { state: "failed", reason_code: "native_apply_failed", handoff_state: "pending" } };
+        }
+        // A durable dispatch claim without a complete result has an unknown
+        // effect, even when the source proposal and Review are already complete.
+        if result.state != "applied" || !applied.found { return OrganizationApplyEvidence { }; }
+        return OrganizationApplyEvidence { state: "applied", handoff_state: if handoff.found { "requested" } else { "pending" },
+            applied_sequence: applied.sequence, handoff_sequence: if handoff.found { handoff.sequence } else { -1 } };
+    }
+}

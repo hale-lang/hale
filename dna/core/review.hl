@@ -47,8 +47,76 @@ locus VerdictRows {
     capacity { heap rows of Verdict; }
 }
 
+// A concrete, assembly-owned forwarding child keeps the Journal handle alive
+// for spawned Reviews without forwarding an interface through a constructor.
+locus ReviewJournal {
+    params { inner: Journal = MemJournal { }; }
+    fn bind(j: Journal) { self.inner = j; }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn read(i: Int) -> Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return self.inner.append(expected, kind, entity, body); }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return self.inner.append_exact(expected, kind, entity, body); }
+}
+
+// Command outcomes are separate from Review settlement: an admitted abstention
+// has an outcome of its own, and a refusal cannot borrow another caller's approval.
+fn review_command_body(v: Verdict, accepted: Bool, refusal: String, settled: Bool, outcome: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("command_id", v.command_id);
+    b.string_field("review_id", v.review_id);
+    b.string_field("subject_digest", v.subject_digest);
+    b.string_field("verdict", v.verdict);
+    b.string_field("reviewer", v.reviewer);
+    b.string_field("authority", v.authority);
+    b.bool_field("accepted", accepted);
+    b.string_field("refusal", refusal);
+    b.bool_field("settled", settled);
+    b.string_field("outcome", outcome);
+    b.string_field("comment", v.comment);
+    b.end_object();
+    return b.result();
+}
+
+fn review_command_verdict(command_id: String, body: String) -> Verdict {
+    return Verdict {
+        command_id: command_id,
+        review_id: native_json_string(body, "review_id"),
+        subject_digest: native_json_string(body, "subject_digest"),
+        verdict: native_json_string(body, "verdict"),
+        reviewer: native_json_string(body, "reviewer"),
+        authority: native_json_string(body, "authority"),
+        comment: native_json_string(body, "comment")
+    };
+}
+
+fn review_command_matches(body: String, v: Verdict) -> Bool {
+    let old = review_command_verdict(v.command_id, body);
+    return native_json_string(body, "command_id") == v.command_id
+        && old.review_id == v.review_id && old.subject_digest == v.subject_digest
+        && old.verdict == v.verdict && old.reviewer == v.reviewer
+        && old.authority == v.authority && old.comment == v.comment;
+}
+
+@unbounded
+fn review_command_decision(j: Journal, command_id: String) -> String {
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "review.command_decided" && e.entity == command_id { return e.body; }
+        i = i + 1;
+    }
+    return "";
+}
+
 locus Review {
     params {
+        journal: Journal = MemJournal { };
+        organization_source_request: OrganizationSourceRequest = OrganizationSourceRequest { };
+        organization_source_facts: OrganizationSourceFacts = NoOrganizationSourceFacts { };
         review_id: String = "";
         question: String = "";
         subject_digest: String = ""; // the candidate, pinned
@@ -66,7 +134,9 @@ locus Review {
         comment: String = ""; // the deciding verdict's comment
         refused: Int = 0; // verdicts refused (wrong digest / authority / independence)
         last_refusal: String = "";
+        command_verdicts: VerdictRows = VerdictRows { };
     }
+    birth() { self.restore_command_decisions(); }
     contract {
         expose review_id: String;
         expose settled: Bool;
@@ -89,6 +159,18 @@ locus Review {
     }
     @unbounded
     fn on_verdict(v: Verdict) {
+        if len(v.command_id) > 0 {
+            let decision = self.command_decide(v);
+            if len(decision) == 0 { return; }
+            ReviewSettled <- ReviewSettlement {
+                command_id: v.command_id, review_id: self.review_id,
+                outcome: native_json_string(decision, "outcome"),
+                decided_by: native_json_string(decision, "reviewer"),
+                refusal: native_json_string(decision, "refusal"),
+                comment: native_json_string(decision, "comment")
+            };
+            return;
+        }
         if self.settled {
             // A verdict at a settled Review. The verdict is spent — but
             // an approved candidate that never applied can be applied
@@ -115,11 +197,129 @@ locus Review {
             ReviewSettled <- ReviewSettlement { review_id: self.review_id, refusal: self.last_refusal };
         }
     }
+    // Rebuild only persisted command decisions. A decision survives even if
+    // the process stopped before the assembly wrote Review/knowledge facts.
+    @unbounded
+    fn restore_command_decisions() {
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            if e.kind == "review.command_decided" && native_json_string(e.body, "review_id") == self.review_id {
+                let v = review_command_verdict(e.entity, e.body);
+                let mut seen = false;
+                let mut k = 0;
+                while k < self.command_verdicts.len() {
+                    let prior = self.command_verdicts.get(k) or Verdict { };
+                    if prior.command_id == e.entity { seen = true; }
+                    k = k + 1;
+                }
+                if !seen {
+                    self.command_verdicts.push(v);
+                    if std::json::find_bool_field(e.body, "accepted") && v.subject_digest == self.subject_digest && self.source_verdict_admitted(v, e.seq) {
+                        self.verdicts.push(v);
+                        if v.verdict == "approve" && len(self.approvers) > 0 {
+                            self.approved_owners = word_add(self.approved_owners, approver_owner(self.approvers, v.reviewer));
+                        }
+                        if std::json::find_bool_field(e.body, "settled") {
+                            self.settled = true;
+                            self.outcome = native_json_string(e.body, "outcome");
+                            self.decided_by = v.reviewer;
+                            self.comment = v.comment;
+                        }
+                    } else {
+                        self.refused = self.refused + 1;
+                        self.last_refusal = native_json_string(e.body, "refusal");
+                    }
+                }
+            }
+            i = i + 1;
+        }
+    }
+    fn source_verdict_admitted(v: Verdict, before: Int) -> Bool {
+        if len(self.organization_source_request.request_id) == 0 { return true; }
+        let codec = OrganizationSourceRequestCodec { };
+        return codec.verdict_admitted(self.journal, self.organization_source_facts, self.organization_source_request, v, before);
+    }
+    @unbounded
+    fn command_refusal(v: Verdict) -> String {
+        if !self.source_verdict_admitted(v, self.journal.revision()) { return "prepared source requires its exact authorized command profile"; }
+        if self.settled { return "already settled: " + self.outcome; }
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            if e.kind == "review.settled" && e.entity == self.review_id { return "already settled: " + e.body; }
+            i = i + 1;
+        }
+        if v.subject_digest != self.subject_digest { return "digest mismatch: " + v.subject_digest + " != " + self.subject_digest; }
+        if !authority_satisfies(v.authority, self.required_authority) { return "authority " + v.authority + " does not satisfy " + self.required_authority; }
+        if v.reviewer == self.author { return "reviewer " + v.reviewer + " authored the candidate"; }
+        if v.verdict != "approve" && v.verdict != "reject" && v.verdict != "revise" && v.verdict != "abstain" { return "unknown verdict: " + v.verdict; }
+        if len(self.approvers) > 0 && len(approver_owner(self.approvers, v.reviewer)) == 0 { return "reviewer " + v.reviewer + " is a member of no owner this change affects (" + approver_owners(self.approvers) + ")"; }
+        return "";
+    }
+    @unbounded
+    fn command_settles(v: Verdict) -> Bool {
+        if v.verdict == "abstain" { return false; }
+        if v.verdict != "approve" || len(self.approvers) == 0 { return true; }
+        let owners = word_add(self.approved_owners, approver_owner(self.approvers, v.reviewer));
+        let mut i = 0;
+        while len(nth_word(approver_owners(self.approvers), i)) > 0 {
+            if !word_in(nth_word(approver_owners(self.approvers), i), owners) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    // The exact append is the decision. No live state changes before it. On
+    // an ambiguous error, re-read the same identity before reporting nothing;
+    // redelivery can then recover the original acceptance instead of refusing
+    // it merely because an in-memory Review had advanced ahead of its Record.
+    @unbounded
+    fn command_decide(v: Verdict) -> String {
+        if len(v.command_id) == 0 || v.review_id != self.review_id { return ""; }
+        let mut tries = 0;
+        while tries < 20 {
+            let moved = self.journal.refresh();
+            let revision = self.journal.revision();
+            let existing = review_command_decision(self.journal, v.command_id);
+            if len(existing) > 0 {
+                if !review_command_matches(existing, v) { return ""; }
+                let codec = OrganizationSourceRequestCodec { }; let decided = codec.fact(self.journal, "review.command_decided", v.command_id);
+                if std::json::find_bool_field(existing, "accepted") && !self.source_verdict_admitted(v, decided.seq) { return ""; }
+                self.restore_command_decisions();
+                return existing;
+            }
+            self.restore_command_decisions();
+            let refusal = self.command_refusal(v);
+            let accepted = len(refusal) == 0;
+            let settled = accepted && self.command_settles(v);
+            let decision = review_command_body(v, accepted, refusal, settled, if settled { v.verdict } else { "" });
+            let appended = self.journal.append_exact(revision, "review.command_decided", v.command_id, decision);
+            if appended.ok {
+                self.restore_command_decisions();
+                return decision;
+            }
+            let refreshed = self.journal.refresh();
+            let recovered = review_command_decision(self.journal, v.command_id);
+            if len(recovered) > 0 {
+                if !review_command_matches(recovered, v) { return ""; }
+                let codec = OrganizationSourceRequestCodec { }; let decided = codec.fact(self.journal, "review.command_decided", v.command_id);
+                if std::json::find_bool_field(recovered, "accepted") && !self.source_verdict_admitted(v, decided.seq) { return ""; }
+                self.restore_command_decisions();
+                return recovered;
+            }
+            if appended.error != "stale_revision" { return ""; }
+            tries = tries + 1;
+        }
+        return "";
+    }
     // Whether a verdict at a settled Review is the same approval again.
     // Reached per verdict from the membrane handler, like `consider`:
     // bounded by the reviewers of one candidate.
     @unbounded
     fn readmit(v: Verdict) -> Bool {
+        if len(self.organization_source_request.request_id) > 0 {
+            self.last_refusal = "prepared source requires its exact authorized command profile"; self.refused = self.refused + 1; return false;
+        }
         self.refused = self.refused + 1;
         if self.outcome != "approve" { self.last_refusal = "already settled: " + self.outcome; return false; }
         if v.verdict != "approve" { self.last_refusal = "already settled: approve; a " + v.verdict + " does not reopen it"; return false; }
@@ -135,6 +335,9 @@ locus Review {
     // of one candidate.
     @unbounded
     fn consider(v: Verdict) -> Bool {
+        if len(self.organization_source_request.request_id) > 0 {
+            self.last_refusal = "prepared source requires its exact authorized command profile"; self.refused = self.refused + 1; return false;
+        }
         if self.settled { self.last_refusal = "already settled"; self.refused = self.refused + 1; return false; }
         if v.subject_digest != self.subject_digest {
             self.last_refusal = "digest mismatch: " + v.subject_digest + " != " + self.subject_digest;
