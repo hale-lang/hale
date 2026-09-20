@@ -34,6 +34,83 @@ pub fn parse(tokens: Vec<Token>, _source: &str) -> Result<Program, Vec<Diag>> {
     }
 }
 
+/// GH #723: the fn-level contract decorators collected from one run.
+///
+/// `@unbounded` (the memory-bound advisory carve-out), `@hot` (hot-path
+/// certification), `@budget(...)` (quantitative ceilings) and the
+/// effect assertions (`@no_*` sugar and the general `@effects(...)`)
+/// state orthogonal things, so the parser accepts whatever is written
+/// in whatever order and merges it onto the fn. Whether the resulting
+/// STACK makes sense is a check-time question (see
+/// `FnDecl::decorators`), so nothing here rejects a combination.
+#[derive(Default)]
+struct FnDecorators {
+    unbounded: bool,
+    hot: bool,
+    budget: Option<u32>,
+    quantities: Vec<(QuantDim, u64)>,
+    effects: Vec<EffectAssert>,
+    /// Every decorator as written, in source order — the record the
+    /// coherence check points at.
+    written: Vec<FnDecorator>,
+    /// The decorators' merged span, folded into the fn's span so the
+    /// declaration still starts at its first `@`.
+    span: Option<Span>,
+}
+
+impl FnDecorators {
+    fn note(&mut self, name: &str, span: Span) {
+        self.written.push(FnDecorator {
+            name: name.to_string(),
+            span,
+        });
+        self.span = Some(match self.span {
+            Some(prev) => prev.merge(span),
+            None => span,
+        });
+    }
+
+    /// True when nothing that constrains a fn was written. An
+    /// `@effects(depends: {…})` is exactly this case: a locus-level
+    /// clause spelled with the fn decorators' syntax.
+    fn is_contract_free(&self) -> bool {
+        !self.unbounded
+            && !self.hot
+            && self.budget.is_none()
+            && self.quantities.is_empty()
+            && self.effects.is_empty()
+    }
+
+    /// The decorators as written, for a diagnostic: "`@unbounded`,
+    /// `@no_syscall`".
+    fn written_list(&self) -> String {
+        self.written
+            .iter()
+            .map(|d| format!("`@{}`", d.name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Stamp the run onto the fn it precedes.
+    fn apply_to_fn(self, fn_decl: &mut FnDecl) {
+        if self.unbounded {
+            fn_decl.unbounded = true;
+        }
+        if self.hot {
+            fn_decl.hot = true;
+        }
+        if self.budget.is_some() {
+            fn_decl.budget = self.budget;
+        }
+        fn_decl.quantities.extend(self.quantities);
+        fn_decl.effects.extend(self.effects);
+        fn_decl.decorators = self.written;
+        if let Some(s) = self.span {
+            fn_decl.span = s.merge(fn_decl.span);
+        }
+    }
+}
+
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
@@ -473,18 +550,18 @@ impl Parser {
             // GH #436: `@sealed locus` — state confinement.
             let is_sealed = matches!(&kind_tok,
                 TokenKind::Ident(s) if s == "sealed");
-            let is_unbounded =
-                matches!(&kind_tok, TokenKind::Ident(s) if s == "unbounded");
-            let is_budget =
-                matches!(&kind_tok, TokenKind::Ident(s) if s == "budget");
-            let is_hot =
-                matches!(&kind_tok, TokenKind::Ident(s) if s == "hot");
-            // #265: `@no_recursion` / `@no_ffi` / `@no_block` — bare
-            // flags before a fn, stackable with each other and with
-            // `@hot` / `@budget(...)`.
-            let is_effect = matches!(&kind_tok,
-                TokenKind::Ident(s) if Self::effect_assert_for(s).is_some()
-                    || Self::is_effects_form(s));
+            // GH #723: the fn-level CONTRACT decorators — `@unbounded`,
+            // `@hot`, `@budget(...)`, and the effect assertions
+            // (`@no_syscall` … and the general `@effects(...)`). They
+            // state orthogonal things, so they stack in any order and
+            // are parsed as one run. The spelling is kept for the
+            // fn-only diagnostic, which names the one that was written.
+            let fn_deco_name: Option<String> = match &kind_tok {
+                TokenKind::Ident(s) if Self::is_fn_decorator(s) => {
+                    Some(s.clone())
+                }
+                _ => None,
+            };
             if is_export {
                 // WASM entry-inversion. `@export fn …` is a free-fn
                 // module export; `@export locus …` is the persistent
@@ -598,97 +675,40 @@ impl Parser {
                 });
                 continue;
             }
-            if is_unbounded {
-                // fn-only carve-out. Mirrors `@ffi` / `@export fn`: consume
-                // the marker, parse the fn, tag it. It can't sit on a locus
-                // (a locus opts *in* with `@bounded`; `@unbounded` opts a
-                // single fn *out*).
+            if let Some(deco_name) = &fn_deco_name {
+                // GH #723: one run, any order. Each of these used to
+                // parse the `fn` itself and return, so a second
+                // decorator met a parser already past the point where
+                // an `@` could appear — `@unbounded @no_syscall fn`
+                // failed with "expected `fn` after `@unbounded`", and
+                // the reverse order failed symmetrically. They are
+                // orthogonal contracts (`@unbounded` speaks to the
+                // memory-bound advisory, an effect assertion to the
+                // reachable effect set), so they compose.
+                //
+                // All of them are fn-only: a locus opts *in* with
+                // `@bounded`, and `@form(...)` / `@locality(...)` /
+                // `@export locus` precede a `locus`.
                 if form.is_some() || locality.is_some() || export_locus
                     || bounded_locus
                 {
                     return Err(Diag::parse(
                         self.peek_token().span,
-                        "`@unbounded` is fn-only; it can't stack with \
-                         `@form(...)` / `@locality(...)` / `@bounded` / \
-                         `@export locus` (those precede `locus`)",
+                        format!(
+                            "`@{}` is fn-only; it can't stack with \
+                             `@form(...)` / `@locality(...)` / `@bounded` / \
+                             `@export locus` (those precede `locus`)",
+                            deco_name
+                        ),
                     ));
                 }
-                let at = self.expect(TokenKind::At, "@")?;
-                self.bump(); // consume `unbounded`
-                if !matches!(self.peek(), TokenKind::Fn) {
-                    return Err(Diag::parse(
-                        self.peek_token().span,
-                        "expected `fn` after `@unbounded` — it acknowledges an \
-                         intentionally-unbounded fn, so a `locus` opts in with \
-                         `@bounded` instead",
-                    ));
-                }
-                let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
-                fn_decl.unbounded = true;
-                fn_decl.span = at.span.merge(fn_decl.span);
-                return Ok(TopDecl::Fn(fn_decl));
-            }
-            if is_budget {
-                // fn-only, like `@unbounded` / `@ffi` / `@export fn`.
-                if form.is_some() || locality.is_some() || export_locus
-                    || bounded_locus
-                {
-                    return Err(Diag::parse(
-                        self.peek_token().span,
-                        "`@budget(...)` is fn-only; it can't stack with \
-                         `@form(...)` / `@locality(...)` / `@bounded` / \
-                         `@export locus` (those precede `locus`)",
-                    ));
-                }
-                let (budget, qdims, bspan) = self.parse_budget_full()?;
-                if !matches!(self.peek(), TokenKind::Fn) {
-                    return Err(Diag::parse(
-                        self.peek_token().span,
-                        "expected `fn` after `@budget(alloc_per_call = N)` — \
-                         it is a per-call allocation contract on a fn",
-                    ));
-                }
-                let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
-                fn_decl.budget = budget;
-                fn_decl.quantities = qdims;
-                fn_decl.span = bspan.merge(fn_decl.span);
-                return Ok(TopDecl::Fn(fn_decl));
-            }
-            if is_effect {
-                let (effects, espan, dep) =
-                    self.parse_effect_asserts_inner()?;
-                let espan = espan.expect("at least one assertion parsed");
-                if let Some(d) = dep {
-                    if depends.is_some() {
-                        return Err(Diag::parse(
-                            d.span,
-                            "duplicate `depends:` clause",
-                        ));
-                    }
-                    depends = Some(d);
-                }
-                // Optional `@hot` and/or `@budget(...)` may follow.
-                let mut hot = false;
-                if matches!(self.peek(), TokenKind::At)
-                    && matches!(self.peek_at(1), TokenKind::Ident(s) if s == "hot")
-                {
-                    self.bump();
-                    self.bump();
-                    hot = true;
-                }
-                let budget = if matches!(self.peek(), TokenKind::At)
-                    && matches!(self.peek_at(1), TokenKind::Ident(s) if s == "budget")
-                {
-                    Some(self.parse_budget_full()?)
-                } else {
-                    None
-                };
+                let decos = self.parse_fn_decorators(&mut depends)?;
                 // RFC #330: a `depends:`-only `@effects(...)` precedes
                 // a LOCUS, not a fn — dependence enters through
                 // subscriptions. Fall through to the locus path,
                 // carrying the clause.
                 if depends.is_some()
-                    && effects.is_empty()
+                    && decos.is_contract_free()
                     && !matches!(self.peek(), TokenKind::Fn)
                 {
                     continue;
@@ -713,59 +733,17 @@ impl Parser {
                 if !matches!(self.peek(), TokenKind::Fn) {
                     return Err(Diag::parse(
                         self.peek_token().span,
-                        "expected `fn` after an effect assertion \
-                         (`@no_recursion` / `@no_ffi` / `@no_block`) — they \
-                         are contracts over what a fn can reach",
+                        format!(
+                            "expected `fn` after {} — `@unbounded`, `@hot`, \
+                             `@budget(...)` and the effect assertions are \
+                             contracts on a fn; a `locus` opts in with \
+                             `@bounded` instead",
+                            decos.written_list()
+                        ),
                     ));
                 }
                 let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
-                fn_decl.effects = effects;
-                fn_decl.hot = hot;
-                if let Some((b, q, _)) = budget {
-                    fn_decl.budget = b;
-                    fn_decl.quantities = q;
-                }
-                fn_decl.span = espan.merge(fn_decl.span);
-                return Ok(TopDecl::Fn(fn_decl));
-            }
-            if is_hot {
-                // Gap D (2026-07-17): `@hot fn` — hot-path
-                // certification; promotes the hot-path allocation
-                // lint to errors inside this fn and enables the
-                // stricter perf hints. fn-only. Stacks with a
-                // FOLLOWING `@budget(...)`:
-                //   `@hot @budget(alloc_per_call = 0) fn send(...)`.
-                if form.is_some() || locality.is_some() || export_locus
-                    || bounded_locus
-                {
-                    return Err(Diag::parse(
-                        self.peek_token().span,
-                        "`@hot` is fn-only; it can't stack with \
-                         `@form(...)` / `@locality(...)` / `@bounded` / \
-                         `@export locus` (those precede `locus`)",
-                    ));
-                }
-                let at = self.expect(TokenKind::At, "@")?;
-                self.bump(); // consume `hot`
-                let budget = if matches!(self.peek(), TokenKind::At) {
-                    Some(self.parse_budget_full()?)
-                } else {
-                    None
-                };
-                if !matches!(self.peek(), TokenKind::Fn) {
-                    return Err(Diag::parse(
-                        self.peek_token().span,
-                        "expected `fn` (or `@budget(...) fn`) after `@hot` \
-                         — it certifies a fn as a hot path",
-                    ));
-                }
-                let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
-                fn_decl.hot = true;
-                if let Some((b, q, _)) = budget {
-                    fn_decl.budget = b;
-                    fn_decl.quantities = q;
-                }
-                fn_decl.span = at.span.merge(fn_decl.span);
+                decos.apply_to_fn(&mut fn_decl);
                 return Ok(TopDecl::Fn(fn_decl));
             }
             if is_form {
@@ -2630,29 +2608,41 @@ impl Parser {
         (self.effect_names.len() - 1) as u16
     }
 
-    fn parse_effect_asserts(&mut self) -> Result<(Vec<EffectAssert>, Option<Span>), Diag> {
-        let (a, s, dep) = self.parse_effect_asserts_inner()?;
-        if let Some(d) = dep {
-            // RFC #330: dependence enters through subscriptions, which
-            // are a locus-level declaration, so there is nothing for a
-            // fn-level `depends:` to mean. Rejected explicitly rather
-            // than silently ignored — a contract that parses and does
-            // nothing is the failure mode this whole surface exists to
-            // avoid.
-            return Err(Diag::parse(
-                d.span,
-                "`depends:` is a locus-level contract — put                  `@effects(depends: {…})` on the `locus`, not on a fn.                  Dependence enters through the subscriptions declared                  in the locus's `bus {}` block.",
-            ));
-        }
-        Ok((a, s))
+    /// GH #723: is `name` (the ident right after `@`) one of the
+    /// fn-level CONTRACT decorators? They stack in any order, so they
+    /// are parsed as one run by [`Parser::parse_fn_decorators`].
+    ///
+    /// `@ffi(...)` and `@export` are deliberately NOT here: they say
+    /// what a declaration IS (an external binding, a wasm export), not
+    /// what it promises, and each is exclusive with the other.
+    fn is_fn_decorator(name: &str) -> bool {
+        name == "unbounded"
+            || name == "hot"
+            || name == "budget"
+            || Self::effect_assert_for(name).is_some()
+            || Self::is_effects_form(name)
     }
 
-    fn parse_effect_asserts_inner(
+    /// GH #723: parse a run of fn-level contract decorators in ANY
+    /// order — `@unbounded`, `@hot`, `@budget(...)`, the `@no_*`
+    /// assertions and the general `@effects(...)`.
+    ///
+    /// Each one used to parse the `fn` itself and return, which is why
+    /// they could not stack: the second decorator arrived at a parser
+    /// already past the point where an `@` was admissible. Collecting
+    /// them first and stamping the fn once makes order irrelevant, and
+    /// leaves the *coherence* of a stack (a decorator twice, a
+    /// contradictory pair) to check time, where the diagnostic can
+    /// point at a decorator and name the other one.
+    ///
+    /// `depends` carries an RFC #330 `@effects(depends: {…})` clause
+    /// back out: that clause is LOCUS-level, so only the caller knows
+    /// whether what follows is a `locus` (legal) or a `fn` (rejected).
+    fn parse_fn_decorators(
         &mut self,
-    ) -> Result<(Vec<EffectAssert>, Option<Span>, Option<DependsSet>), Diag> {
-        let mut out = Vec::new();
-        let mut span: Option<Span> = None;
-        let mut depends: Option<DependsSet> = None;
+        depends: &mut Option<DependsSet>,
+    ) -> Result<FnDecorators, Diag> {
+        let mut out = FnDecorators::default();
         loop {
             if !matches!(self.peek(), TokenKind::At) {
                 break;
@@ -2661,37 +2651,47 @@ impl Parser {
                 TokenKind::Ident(s) => s.clone(),
                 _ => break,
             };
+            if !Self::is_fn_decorator(&name) {
+                break;
+            }
+            if name == "budget" {
+                let (alloc, dims, bspan) = self.parse_budget_full()?;
+                if alloc.is_some() {
+                    out.budget = alloc;
+                }
+                out.quantities.extend(dims);
+                out.note("budget", bspan);
+                continue;
+            }
             if Self::is_effects_form(&name) {
                 let (mut asserts, aspan, dep) =
                     self.parse_effects_annotation_inner()?;
-                if dep.is_some() {
-                    depends = dep;
+                if let Some(d) = dep {
+                    if depends.is_some() {
+                        return Err(Diag::parse(
+                            d.span,
+                            "duplicate `depends:` clause",
+                        ));
+                    }
+                    *depends = Some(d);
                 }
-                out.append(&mut asserts);
-                span = Some(match span {
-                    Some(prev) => prev.merge(aspan),
-                    None => aspan,
-                });
+                out.effects.append(&mut asserts);
+                out.note("effects", aspan);
                 continue;
             }
-            let Some(eff) = Self::effect_assert_for(&name) else {
-                break;
-            };
             let at = self.expect(TokenKind::At, "@")?;
-            self.bump(); // the assertion ident
-            if out.contains(&eff) {
-                return Err(Diag::parse(
-                    at.span,
-                    format!("duplicate `@{}` assertion", name),
-                ));
+            self.bump(); // the decorator ident
+            match name.as_str() {
+                "unbounded" => out.unbounded = true,
+                "hot" => out.hot = true,
+                _ => out.effects.push(
+                    Self::effect_assert_for(&name)
+                        .expect("is_fn_decorator admitted this name"),
+                ),
             }
-            out.push(eff);
-            span = Some(match span {
-                Some(prev) => prev.merge(at.span),
-                None => at.span,
-            });
+            out.note(&name, at.span);
         }
-        Ok((out, span, depends))
+        Ok(out)
     }
 
     /// Lever 2 (2026-07-16): `@budget(alloc_per_call = N)` — an opt-in
@@ -3333,120 +3333,47 @@ impl Parser {
             TokenKind::OnFailure => self.parse_failure_decl().map(LocusMember::Failure),
             TokenKind::Closure => self.parse_closure_decl().map(LocusMember::Closure),
             TokenKind::Fn => self.parse_fn_decl().map(LocusMember::Fn),
-            // GH #18 item 1: `@unbounded` carve-out on a locus member —
-            // either a method (`@unbounded fn`, the common case: silence
-            // one handler) or a lifecycle hook (`@unbounded run { … }`, a
-            // `run`-loop accumulation). The only `@`-annotation valid on a
-            // member.
+            // The fn-level contract decorators on a locus member:
+            // `@unbounded` (GH #18 item 1 — on a method or on a
+            // lifecycle hook, `@unbounded run { … }`), `@budget(...)`,
+            // `@hot`, and the #265 effect assertions. GH #723: they
+            // stack in any order, so the run is collected first and
+            // stamped on the member once.
             TokenKind::At => {
-                let kind_tok = self.peek_at(1);
-                // `@budget(alloc_per_call = N)` on a method — the hot-path
-                // allocation contract. fn-only (a lifecycle `run()` is
-                // one-shot; the contract is about per-call cost).
-                if matches!(&kind_tok, TokenKind::Ident(s) if s == "budget") {
-                    let (budget, qdims, bspan) = self.parse_budget_full()?;
-                    if !matches!(self.peek(), TokenKind::Fn) {
-                        return Err(Diag::parse(
-                            self.peek_token().span,
-                            "expected `fn` after `@budget(alloc_per_call = N)` \
-                             — it is a per-call allocation contract on a \
-                             method",
-                        ));
-                    }
-                    let mut fn_decl = self.parse_fn_decl()?;
-                    fn_decl.budget = budget;
-                    fn_decl.quantities = qdims;
-                    fn_decl.span = bspan.merge(fn_decl.span);
-                    return Ok(LocusMember::Fn(fn_decl));
-                }
-                // #265: effect assertions on a method/handler (the
-                // common placement — a bus handler is a member fn).
-                if matches!(&kind_tok,
-                    TokenKind::Ident(s) if Self::effect_assert_for(s).is_some()
-                        || Self::is_effects_form(s))
-                {
-                    let (effects, espan) = self.parse_effect_asserts()?;
-                    let espan = espan.expect("at least one assertion parsed");
-                    let mut hot = false;
-                    if matches!(self.peek(), TokenKind::At)
-                        && matches!(self.peek_at(1), TokenKind::Ident(s) if s == "hot")
-                    {
-                        self.bump();
-                        self.bump();
-                        hot = true;
-                    }
-                    let budget = if matches!(self.peek(), TokenKind::At)
-                        && matches!(self.peek_at(1), TokenKind::Ident(s) if s == "budget")
-                    {
-                        Some(self.parse_budget_full()?)
-                    } else {
-                        None
-                    };
-                    if !matches!(self.peek(), TokenKind::Fn) {
-                        return Err(Diag::parse(
-                            self.peek_token().span,
-                            "expected `fn` after an effect assertion on a \
-                             method (`@no_recursion` / `@no_ffi` / \
-                             `@no_block`)",
-                        ));
-                    }
-                    let mut fn_decl = self.parse_fn_decl()?;
-                    fn_decl.effects = effects;
-                    fn_decl.hot = hot;
-                    if let Some((b, q, _)) = budget {
-                        fn_decl.budget = b;
-                        fn_decl.quantities = q;
-                    }
-                    fn_decl.span = espan.merge(fn_decl.span);
-                    return Ok(LocusMember::Fn(fn_decl));
-                }
-                // Gap D (2026-07-17): `@hot fn` on a method/handler —
-                // the common placement (a bus handler is a member fn).
-                // Optionally followed by `@budget(...)`.
-                if matches!(&kind_tok, TokenKind::Ident(s) if s == "hot") {
-                    let at = self.expect(TokenKind::At, "@")?;
-                    self.bump(); // consume `hot`
-                    let budget = if matches!(self.peek(), TokenKind::At) {
-                        Some(self.parse_budget_full()?)
-                    } else {
-                        None
-                    };
-                    if !matches!(self.peek(), TokenKind::Fn) {
-                        return Err(Diag::parse(
-                            self.peek_token().span,
-                            "expected `fn` (or `@budget(...) fn`) after \
-                             `@hot` — it certifies a method/handler as a \
-                             hot path",
-                        ));
-                    }
-                    let mut fn_decl = self.parse_fn_decl()?;
-                    fn_decl.hot = true;
-                    if let Some((b, q, _)) = budget {
-                        fn_decl.budget = b;
-                        fn_decl.quantities = q;
-                    }
-                    fn_decl.span = at.span.merge(fn_decl.span);
-                    return Ok(LocusMember::Fn(fn_decl));
-                }
-                if !matches!(&kind_tok, TokenKind::Ident(s) if s == "unbounded") {
+                let is_fn_deco = matches!(self.peek_at(1),
+                    TokenKind::Ident(s) if Self::is_fn_decorator(s));
+                if !is_fn_deco {
                     return Err(Diag::parse(
                         self.peek_token().span,
                         "the only `@` annotations valid on a locus member are \
                          `@unbounded` (on a `fn` or a lifecycle hook — \
                          acknowledge an intentionally-unbounded body), \
                          `@budget(alloc_per_call = N)` (on a `fn` — a per-call \
-                         allocation contract), and `@hot` (on a `fn` — \
+                         allocation contract), `@hot` (on a `fn` — \
                          hot-path certification, promotes the hot-path lint \
-                         to errors)",
+                         to errors), and the effect assertions (`@no_syscall` \
+                         … / `@effects(...)`, on a `fn`)",
                     ));
                 }
-                let at = self.expect(TokenKind::At, "@")?;
-                self.bump(); // consume `unbounded`
+                // A member-level `depends:` has no locus to belong to
+                // here (it precedes the `locus` itself), so the clause
+                // is rejected rather than parsed into silence.
+                let mut depends: Option<DependsSet> = None;
+                let decos = self.parse_fn_decorators(&mut depends)?;
+                if let Some(d) = depends {
+                    return Err(Diag::parse(
+                        d.span,
+                        "`depends:` is a locus-level contract — put \
+                         `@effects(depends: {…})` on the `locus`, not on \
+                         one of its members. Dependence enters through \
+                         the subscriptions declared in the locus's \
+                         `bus {}` block.",
+                    ));
+                }
                 match self.peek() {
                     TokenKind::Fn => {
                         let mut fn_decl = self.parse_fn_decl()?;
-                        fn_decl.unbounded = true;
-                        fn_decl.span = at.span.merge(fn_decl.span);
+                        decos.apply_to_fn(&mut fn_decl);
                         Ok(LocusMember::Fn(fn_decl))
                     }
                     TokenKind::Birth
@@ -3455,15 +3382,51 @@ impl Parser {
                     | TokenKind::Run
                     | TokenKind::Drain
                     | TokenKind::Dissolve => {
+                        // A lifecycle hook takes `@unbounded` and
+                        // nothing else: a hook is one-shot (so a
+                        // per-call ceiling has no calls to divide by)
+                        // and it is not a fn a caller can assert over.
+                        // `LifecycleDecl` therefore carries the one
+                        // flag rather than a decorator list, which is
+                        // also why a repeat is caught here instead of
+                        // at check time.
+                        if let Some((i, d)) = decos
+                            .written
+                            .iter()
+                            .enumerate()
+                            .find(|(i, d)| *i > 0 || d.name != "unbounded")
+                        {
+                            return Err(Diag::parse(
+                                d.span,
+                                if i > 0 && d.name == "unbounded" {
+                                    "duplicate `@unbounded` on a lifecycle \
+                                     hook — state it once"
+                                        .to_string()
+                                } else {
+                                    format!(
+                                        "`@{}` can't precede a lifecycle hook \
+                                         — a hook takes `@unbounded` and \
+                                         nothing else. Put the other \
+                                         contracts on a `fn` the hook calls.",
+                                        d.name
+                                    )
+                                },
+                            ));
+                        }
                         let mut lc = self.parse_lifecycle_decl()?;
                         lc.unbounded = true;
-                        lc.span = at.span.merge(lc.span);
+                        if let Some(s) = decos.span {
+                            lc.span = s.merge(lc.span);
+                        }
                         Ok(LocusMember::Lifecycle(lc))
                     }
                     _ => Err(Diag::parse(
                         self.peek_token().span,
-                        "expected `fn` or a lifecycle hook (`run`, `birth`, \
-                         …) after `@unbounded`",
+                        format!(
+                            "expected `fn` after {} (or a lifecycle hook \
+                             — `run`, `birth`, … — after `@unbounded`)",
+                            decos.written_list()
+                        ),
                     )),
                 }
             }
@@ -5591,6 +5554,7 @@ impl Parser {
                 hot: false,
                 effects: Vec::new(),
                 quantities: Vec::new(),
+                decorators: Vec::new(),
                 span: kw.span.merge(semi.span),
                 body,
             });
@@ -5619,6 +5583,7 @@ impl Parser {
                 hot: false,
                 effects: Vec::new(),
                 quantities: Vec::new(),
+                decorators: Vec::new(),
                 span: kw.span.merge(semi.span),
                 body,
             });
@@ -5640,9 +5605,10 @@ impl Parser {
             export: false,
             unbounded: false,
             budget: None,
-                hot: false,
-                effects: Vec::new(),
-                quantities: Vec::new(),
+            hot: false,
+            effects: Vec::new(),
+            quantities: Vec::new(),
+            decorators: Vec::new(),
             span: kw.span.merge(body.span),
             body,
         })
@@ -7888,6 +7854,85 @@ main locus App {
         let msg = format!("{:?}", err);
         assert!(
             msg.contains("opts in with `@bounded`"),
+            "wrong error: {msg}"
+        );
+    }
+
+    /// GH #723: `@unbounded` and an effect assertion are orthogonal
+    /// contracts and stack on one fn in EITHER order. Each decorator
+    /// used to parse the `fn` itself and return, so the second one met
+    /// a parser already past the point where an `@` was admissible —
+    /// both orders were parse errors, and a `@unbounded` method needed
+    /// a free `@no_syscall` wrapper to carry both contracts.
+    #[test]
+    fn parse_unbounded_stacks_with_effect_assertions_either_order() {
+        for src in [
+            "@unbounded @no_syscall fn f() { }",
+            "@no_syscall @unbounded fn f() { }",
+        ] {
+            let prog = parse_str(src).unwrap_or_else(|e| {
+                panic!("{src} must parse, got {e:?}");
+            });
+            let TopDecl::Fn(f) = &prog.items[0] else {
+                panic!("expected fn");
+            };
+            assert!(f.unbounded, "{src}: `@unbounded` lost");
+            assert_eq!(
+                f.effects,
+                vec![EffectAssert::Forbid(vec![EffectClass::Syscall])],
+                "{src}: the assertion was lost"
+            );
+            // Both decorators are on the record the coherence check
+            // reads, in source order.
+            let names: Vec<&str> =
+                f.decorators.iter().map(|d| d.name.as_str()).collect();
+            assert_eq!(names.len(), 2, "{src}: {names:?}");
+            assert!(names.contains(&"unbounded") && names.contains(&"no_syscall"));
+        }
+    }
+
+    /// A whole stack, in an order no single-slot parser could take —
+    /// and on a METHOD, the placement the wrapper worked around.
+    #[test]
+    fn parse_full_decorator_stack_on_a_method() {
+        let src = r#"
+locus L {
+    @no_syscall @unbounded @deterministic @budget(alloc_per_call = 3)
+    fn handle() { }
+}
+"#;
+        let prog = parse_str(src).expect("parse failed");
+        let TopDecl::Locus(l) = &prog.items[0] else {
+            panic!("expected locus");
+        };
+        let LocusMember::Fn(f) = &l.members[0] else {
+            panic!("expected method");
+        };
+        assert!(f.unbounded);
+        assert_eq!(f.budget, Some(3));
+        assert_eq!(f.effects.len(), 2, "no_syscall + deterministic");
+        assert_eq!(f.decorators.len(), 4);
+    }
+
+    /// A lifecycle hook still takes `@unbounded` and nothing else: it is
+    /// one-shot (so a per-call ceiling has no calls to divide by) and
+    /// `LifecycleDecl` carries the one flag rather than a stack.
+    #[test]
+    fn parse_lifecycle_hook_rejects_other_decorators() {
+        let err = parse_str("locus L { @no_syscall @unbounded run() { } }")
+            .expect_err("expected parse error");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("can't precede a lifecycle hook"),
+            "wrong error: {msg}"
+        );
+        // …and a repeat on a hook is caught in the same place (a hook
+        // has no decorator list for the check-time rule to read).
+        let err = parse_str("locus L { @unbounded @unbounded run() { } }")
+            .expect_err("expected parse error");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("duplicate `@unbounded` on a lifecycle hook"),
             "wrong error: {msg}"
         );
     }

@@ -8255,6 +8255,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     hot: false,
                     effects: Vec::new(),
                     quantities: Vec::new(),
+                    decorators: Vec::new(),
                     body: Block {
                         stmts: Vec::new(),
                         tail: None,
@@ -12020,6 +12021,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 hot: fd.hot,
                 effects: Vec::new(),
                 quantities: Vec::new(),
+                decorators: Vec::new(),
                 body: Self::substitute_block_type_ascriptions(
                     &fd.body, subst,
                 ),
@@ -12270,6 +12272,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             hot: template.hot,
             effects: Vec::new(),
             quantities: Vec::new(),
+            decorators: Vec::new(),
             body: new_body,
             span: template.span.clone(),
         })

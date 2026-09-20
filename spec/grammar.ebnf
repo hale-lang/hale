@@ -253,7 +253,7 @@ sealed_annotation = "@" , "sealed" ;
    the memory-bound proof — its bodies are checked for unbounded
    allocations on every `hale check`, without the
    `--warn-unbounded-alloc` survey flag. The in-source opt-in; the
-   `@unbounded` carve-out (see `fn_decorator` / `locus_member`)
+   `@unbounded` carve-out (see `contract_decorator` / `locus_member`)
    silences a single fn or lifecycle hook inside it. `bounded` is a
    contextual word recognized only after `@` in decorator position.
    See `spec/verification.md`. *)
@@ -733,7 +733,12 @@ slot_kind         = "pool" | "heap" ;
    compiler-supplied defaults. *)
 
 (* The optional `@unbounded` prefix (unbounded_annotation, § 13) is
-   the memory-bound-proof carve-out on a `run`-loop accumulation. *)
+   the memory-bound-proof carve-out on a `run`-loop accumulation. It
+   is the ONLY decorator a hook takes, and only once: a hook is
+   one-shot (so a per-call ceiling has no calls to divide by) and it
+   is not a fn a caller asserts over, so the other contract
+   decorators — which stack freely on a `fn`, see
+   `contract_decorator` — belong on a `fn` the hook calls. *)
 lifecycle_decl    = [ unbounded_annotation ] ,
                     lifecycle_keyword , [ "(" , [ param_list ] , ")" ] ,
                     [ "->" , type_expr ] , block ;
@@ -960,13 +965,21 @@ function_type     = "fn" , "(" , [ type_expr , { "," , type_expr } ] , ")" ,
 const_decl        = "const" , IDENTIFIER , ":" , type_expr , "=" ,
                     expression , ";" ;
 
-function_decl     = [ function_decorator ] ,
+function_decl     = [ ffi_annotation | export_annotation
+                      | { contract_decorator } ] ,
                     "fn" , IDENTIFIER , [ generic_params ] ,
                     "(" , [ param_list ] , ")" ,
                     [ "->" , type_expr ] , [ fallible_marker ] ,
                     ( block | ";" ) ;
 
-(* A free fn may carry one fn-level decorator. `@ffi("c"|"js")`
+(* A fn carries EITHER one identity decorator — `@ffi(...)` or
+   `@export`, which say what the declaration is — or any number of
+   CONTRACT decorators, which say what it promises. The contract
+   decorators stack in any order (GH #723); whether a particular
+   stack is coherent is a check-time rule, not a grammar rule (see
+   `spec/verification.md` § Decorator stacks).
+
+   `@ffi("c"|"js")`
    marks an external binding — a native C-ABI symbol ("c") or a
    WASM host import ("js"); the body is absent (terminates with
    `;`). `@export` marks a wasm module export the JS host calls by
@@ -989,8 +1002,7 @@ function_decl     = [ function_decorator ] ,
    `@form` inserts, transitively through resolved callees, plus the
    known-allocating `recv` family — and errors if the fn allocates
    more than `N` per call; a loop-nested allocation is unbounded per
-   call. `N = 0` is the zero-alloc certificate. fn-only; mutually
-   exclusive with `@unbounded` (only one fn decorator parses).
+   call. `N = 0` is the zero-alloc certificate. fn-only.
    `budget` / `alloc_per_call` are contextual, recognized only in
    this annotation. See `spec/verification.md`.
 
@@ -998,18 +1010,29 @@ function_decl     = [ function_decorator ] ,
    the hot-path allocation lint's findings inside it become hard
    errors and the stricter perf hints activate. fn-only (free fn or
    locus method); `hot` is contextual, recognized only after `@`.
-   The one decorator that STACKS: an optional `budget_annotation`
-   may follow it (`@hot @budget(alloc_per_call = 0) fn …`). See
-   `spec/verification.md`. *)
-function_decorator = ffi_annotation | export_annotation
-                   | unbounded_annotation | budget_annotation
-                   | hot_annotation ;
+   See `spec/verification.md`.
+
+   `effect_annotation` is the #265 categoric assertion surface: the
+   general `@effects(...)` and its `@no_*` sugar. See
+   `spec/verification.md` § Effect assertions for the clause forms
+   inside `@effects(...)`. *)
+contract_decorator = unbounded_annotation | budget_annotation
+                   | hot_annotation | effect_annotation ;
 ffi_annotation    = "@" , "ffi" , "(" , STRING_LIT , ")" ;
 export_annotation = "@" , "export" ;
 unbounded_annotation = "@" , "unbounded" ;
 budget_annotation = "@" , "budget" , "(" , "alloc_per_call" ,
                     "=" , INT_LIT , ")" ;
-hot_annotation    = "@" , "hot" , [ budget_annotation ] ;
+hot_annotation    = "@" , "hot" ;
+effect_annotation = "@" , effect_assert_flag
+                  | "@" , "effects" , "(" , effect_clauses , ")" ;
+effect_assert_flag = "no_syscall" | "no_block" | "no_ffi"
+                  | "no_publish" | "no_spawn" | "no_recursion"
+                  | "no_panic" | "deterministic" ;
+(* `effect_clauses`: the `none:` / `only:` / `is:` / `causes:` /
+   `publish:` / `depends:` clause forms, comma-separated. Enumerated
+   with their meanings in `spec/verification.md` § Effect
+   assertions. *)
 
 (* v1.x-FORM-1: a fallible fn's return type is "value of T, or
    an error has occurred with payload P." Callers MUST address

@@ -1549,8 +1549,10 @@ assume the others in a build:
   helper the runtime calls on the hot path with a guarantee it touches no
   arena. Opaque calls other than the `recv` family are outside what the
   budget sees (the same boundary the escape analysis draws); pair the
-  contract with `recv_into` + a reused `BytesBuilder`. fn-only; mutually
-  exclusive with `@unbounded`. A violation reports the measured count and
+  contract with `recv_into` + a reused `BytesBuilder`. fn-only; stacks
+  with the other contract decorators (see § Decorator stacks below,
+  which is also where `@budget(alloc_per_call = 0)` against
+  `@unbounded` is settled). A violation reports the measured count and
   points at every offending allocation with the fast-path fix.
 - **Effect assertions — `@effects(...)` and its `@no_*` sugar**
   (GH #265, 2026-07-29). `@budget`'s discipline generalized from
@@ -1586,8 +1588,9 @@ assume the others in a build:
   | `@no_recursion` | `@effects(none: {recursion})` |
   | `@deterministic` | `@effects(none: {time, entropy, env})` |
 
-  All stack with each other and with `@hot` / `@budget(...)`, so the
-  full hot-path certificate is one line:
+  All stack with each other and with `@hot` / `@budget(...)` /
+  `@unbounded`, in any order (§ Decorator stacks), so the full hot-path
+  certificate is one line:
   `@no_block @no_syscall @deterministic @no_recursion @hot
   @budget(alloc_per_call = 0)`.
 
@@ -2123,3 +2126,62 @@ hashmap's enter/drain/grow protocol, the pinned-locus mailbox monitor,
 the cooperative-pool bus queue's conditional lock, and the arena
 subregion-slot freelist lock. (The per-thread chunk pool needs no model
 — it is `__thread`, with no cross-thread access.) See `verification/`.
+
+## Decorator stacks (GH #723)
+
+A fn's decorators are a LIST, not a slot. The **identity** decorators —
+`@ffi(...)`, `@export` — say what the declaration is, and each is
+exclusive with the other. The **contract** decorators — `@unbounded`,
+`@hot`, `@budget(...)`, and the effect assertions (`@effects(...)` and
+its `@no_*` sugar) — say what it promises, and *all of them stack, in
+any order*:
+
+```hale
+@unbounded @no_syscall               fn absorb(log: Lines, l: String) { … }
+@no_syscall @unbounded               fn absorb(log: Lines, l: String) { … }   // same thing
+@no_block @deterministic @unbounded @budget(alloc_per_call = 4)
+                                     fn label(n: Int) -> String { … }
+```
+
+Order carries no meaning: a stack is a set of contracts over one fn,
+each checked by its own analysis. `@unbounded` suppressing the
+allocation advisory and `@no_syscall` proving no reachable syscall are
+independent claims, and a fn that accumulates deliberately while
+promising it touches nothing outside its arena needs to state both.
+(Before #723 each decorator parsed the `fn` itself, so a second one was
+a *syntax* error — which forced the workaround of wrapping
+`@unbounded` methods in a free `@no_syscall` fn purely to carry the
+second contract.)
+
+A **lifecycle hook** is the exception: `@unbounded run { … }` and
+nothing else. A hook is one-shot, so a per-call ceiling has no calls to
+divide by, and it is not a fn a caller asserts over. Put the other
+contracts on a `fn` the hook calls.
+
+What a stack cannot do is contradict itself. Two shapes are **errors at
+check time, reported at the decorator** (not parse errors — the
+declaration is well-formed, its meaning is not):
+
+- **The same contract decorator twice.** The second is either redundant
+  or silently overrides the first, and either way the author wrote
+  something they did not mean. The general `@effects(...)` is exempt: it
+  is a set of clauses (`none:` / `publish:` / `is:` / …) and two of them
+  compose, where a bare flag can only repeat itself. (A repeated
+  *dimension* inside one `@budget(...)` is rejected in the same spirit.)
+- **`@unbounded` against a contract that forbids allocation.** Every
+  conflicting pair is this one pair in three spellings: `@hot` (which
+  promotes the very advisory `@unbounded` silences to a hard error), an
+  assertion that forbids the `alloc` class (`@effects(none: {alloc})`,
+  or an `@effects(only: {…})` that leaves `alloc` out — a closed set
+  forbids what it omits), and `@budget(alloc_per_call = 0)`, the
+  zero-allocation certificate. Each says there is no allocation to
+  acknowledge; `@unbounded` says there is one and it is deliberate. A
+  decorator that contradicts its neighbour cannot be enforced, and both
+  together describe no program.
+
+A per-call ceiling **above** zero is not a contradiction:
+`@budget(alloc_per_call = 2) @unbounded` reads "at most two allocations
+per call, and their aggregate growth is intended" — a cache insert per
+call is exactly that shape. The two decorators measure different
+things (per call vs. in aggregate), which is why only the zero case
+collides.

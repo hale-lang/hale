@@ -673,6 +673,13 @@ They attach to the declaration that follows.
 | `@no_syscall` `@no_block` `@no_ffi` `@no_publish` `@no_spawn` `@no_recursion` `@deterministic` | fn | sugar for the `@effects(none: …)` forms |
 | `@no_panic` | fn | no reachable trap (disposition coverage — a different analysis) |
 
+The fn CONTRACT annotations — `@unbounded`, `@hot`, `@budget(...)` and
+the effect assertions — stack on one fn in any order; `@ffi` and
+`@export` say what a declaration IS and take the slot alone. A stack
+that contradicts itself (the same annotation twice, or `@unbounded`
+with a contract that forbids allocation) is a check-time error at the
+annotation. See `spec/verification.md` § Decorator stacks.
+
 `effect NAME = { A, B };` optionally DEFINES a class as the union of
 others. A composed class owns no bit of its own, so forbidding it
 forbids every member, and a fn reaching a member carries it. Members
