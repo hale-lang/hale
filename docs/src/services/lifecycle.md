@@ -153,6 +153,17 @@ fire-and-forget. When several `let`-bound loci share a scope,
 they dissolve in reverse order of creation (the later one, which
 may depend on the earlier, goes first).
 
+Whichever line you're on, the timing is the timing of the **whole
+tree** the locus owns. A locus you write as another locus's param
+field has no teardown moment of its own — it's the owner's, and so
+is the one *it* holds, all the way down. When the owner goes, every
+level's `drain()` has run (deepest first), every level's
+`dissolve()` body has run (outermost first) and every level's arena
+is gone. The exception is a handle you pass *in* — `Mid { leaf:
+shared }` borrows `shared`, so the cascade steps over it at
+whatever depth it sits, and `shared` is released once, by the scope
+that made it.
+
 **The scope is the enclosing function, not the enclosing block.** A
 `let` inside a loop body therefore doesn't dissolve per iteration — the
 whole run accumulates and releases at once when the function returns:

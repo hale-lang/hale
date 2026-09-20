@@ -1442,6 +1442,7 @@ pub fn build_executable_with_options(
         generic_fn_templates: BTreeMap::new(),
         generic_locus_templates: BTreeMap::new(),
         defer_next_locus_dissolve: false,
+        locus_cascade_path: Vec::new(),
         instantiating_for_parent_field: false,
         instantiating_into_payload_arena: false,
         placement_for_next_locus_instantiation: None,
@@ -3929,6 +3930,16 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// literals (`Stream { ... };`) are unaffected — the flag
     /// only fires from `Stmt::Let`.
     pub(crate) defer_next_locus_dissolve: bool,
+    /// GH #750: the ancestor chain the teardown cascade is
+    /// currently inside. `emit_locus_field_drains` /
+    /// `emit_locus_field_dissolves` recurse into a child's own
+    /// locus-typed param fields, so a locus type that (directly or
+    /// transitively) holds a field of its own type would emit an
+    /// unbounded cascade. Each recursion step pushes the locus it
+    /// is descending FROM and pops on the way out; a field whose
+    /// type is already on the path is left to the teardown of the
+    /// ancestor that owns it. Empty outside a cascade.
+    pub(crate) locus_cascade_path: Vec<String>,
     /// Phase-2 (2): set by `lower_locus_instantiation` around the
     /// param-init loop when evaluating a child locus literal as a
     /// field default / override. The child must NOT dissolve

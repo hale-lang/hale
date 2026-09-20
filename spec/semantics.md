@@ -396,6 +396,19 @@ the F.4 depth-first cascade. The reason: a later-created
 locus may depend on an earlier-created one, so the later one
 must dissolve first.
 
+Whichever of the four shapes applies, the timing is the
+timing of the **whole owned tree**, not of one level of it.
+A locus held as another locus's param field never has a
+teardown of its own — its instantiation is parent-owned, and
+the owner's teardown cascades into it (F.29). That cascade
+runs to the leaves: a grandchild's `drain()`, its `dissolve()`
+body, its capacity slots and its arena are the owner's
+responsibility just as a child's are, at exactly the moment
+the owner's timing fires. A field the owner did NOT construct
+(`Mid { leaf: shared }`, an external handle passed in) is
+excluded at whatever depth it appears, and is torn down once
+by its real owner, at its owner's timing.
+
 The deferred-dissolve mechanism is fn-level, not block-level,
 in v0. Loops that bind a locus per iteration — or that call a
 method on a fresh literal per iteration — accumulate dissolves

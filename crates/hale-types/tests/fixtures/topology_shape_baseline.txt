@@ -528,6 +528,7 @@ crates/hale-codegen/tests/fixtures/examples/85-bindings-unix/main.hl c610fbb420c
 crates/hale-codegen/tests/fixtures/examples/86-formatting/main.hl f2c1228edb650960
 crates/hale-codegen/tests/fixtures/examples/87-temp-locus-receiver/main.hl 16381b7a9428a375
 crates/hale-codegen/tests/fixtures/examples/88-async-handler-payload/main.hl 35fece95d337b084
+crates/hale-codegen/tests/fixtures/examples/89-nested-locus-teardown/main.hl 10752f290e4e7986
 crates/hale-codegen/tests/fixtures/examples/claim-forms.hl fc7429933db197c9
 crates/hale-codegen/tests/fixtures/examples/constitutions.hl 3e28431eef6c20e2
 crates/hale-codegen/tests/fixtures/examples/docs-server/main.hl 1c46881b16096baf
@@ -1183,6 +1184,8 @@ crates/hale-codegen/tests/unit_fallible.rs#2 2691ab444051ef98
 crates/hale-codegen/tests/unit_fallible.rs#3 2691ab444051ef98
 crates/hale-codegen/tests/unit_fallible.rs#4 2691ab444051ef98
 crates/hale-codegen/tests/unit_fallible.rs#5 340fa633f2a05645
+crates/hale-codegen/tests/unowned_literal_pair_leak.rs#0 5e57c7417243a97d
+crates/hale-codegen/tests/unowned_literal_pair_leak.rs#5 69883b8a498b001f
 crates/hale-codegen/tests/view_coerce_e1.rs#0 78a473791628c164
 crates/hale-codegen/tests/view_coerce_e1.rs#1 ccd9c4998f940d14
 crates/hale-codegen/tests/view_coerce_e1.rs#2 f2c1228edb650960
