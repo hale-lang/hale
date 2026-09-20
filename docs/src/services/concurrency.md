@@ -281,6 +281,12 @@ same call either way; the substrate picks the parking lowering at
 the syscall boundary. This is how you get async-style throughput
 without async-style function coloring.
 
+A bus handler on such a pool keeps its payload across a park: park on
+a read, a `sleep`, or a subprocess drain in the middle of a handler,
+and the payload parameter still reads what it read at entry — it is
+that delivery's own until the handler returns, no matter how many
+other deliveries the pool starts in between.
+
 ## The compiler checks your placement
 
 Two placement mistakes are caught for you, because both the

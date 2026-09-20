@@ -1,0 +1,149 @@
+// 88-async-handler-payload — a handler on a cooperative (async_io)
+// subscriber owns its payload across a park (GH #781).
+//
+// A handler placed on an `async_io` pool that parks mid-flight
+// (`std::time::sleep` here, a socket read or a subprocess drain in
+// anger) comes back to a payload that is still its own. That is the
+// guarantee spec/runtime.md states, and it is what this program
+// checks: each handler reads its payload at entry, parks, and reads
+// it again, reporting whether the two agree.
+//
+// Here for the run oracles, and it reports through the process exit
+// code so the exit oracle is the judge. Before the fix the drain
+// handed the coro a pointer into the stack frame it dequeued the cell
+// into; the frame died at the park and the next dequeue reused the
+// slot, so every parked delivery read the LAST published value (exit
+// 21 / 22 below) and a payload too big for the cell's inline buffer
+// leaked its heap spill on every park (the ASan oracle sees that).
+// `Frame` carries an 80-element array precisely to exceed the inline
+// threshold and exercise the spill.
+//
+// `Prompt` is the pinned control: it never parks, so its cell always
+// outlived its handler and it was never affected.
+
+type Job {
+    n: Int = 0;
+}
+
+topic Jobs {
+    payload: Job;
+    subject: "ex88.job";
+}
+
+type Frame {
+    n: Int = 0;
+    cells: [Int; 80] = [0; 80];
+}
+
+topic Frames {
+    payload: Frame;
+    subject: "ex88.frame";
+}
+
+type Seen {
+    who: String = "";
+    owned: Int = 0;
+}
+
+topic Seens {
+    payload: Seen;
+    subject: "ex88.seen";
+}
+
+locus Parker {
+    bus {
+        subscribe Jobs as on_job;
+        subscribe Frames as on_frame;
+        publish Seens;
+    }
+    fn on_job(j: Job) {
+        let before = j.n;
+        std::time::sleep(8ms);
+        let mut owned = 0;
+        if j.n == before {
+            owned = 1;
+        }
+        Seens <- Seen { who: "small", owned: owned };
+    }
+    fn on_frame(f: Frame) {
+        let before = f.n;
+        std::time::sleep(8ms);
+        let mut owned = 0;
+        if f.n == before {
+            owned = 1;
+        }
+        Seens <- Seen { who: "spilled", owned: owned };
+    }
+}
+
+locus Prompt {
+    bus {
+        subscribe Jobs as on_job;
+        publish Seens;
+    }
+    fn on_job(j: Job) {
+        let before = j.n;
+        let mut owned = 0;
+        if j.n == before {
+            owned = 1;
+        }
+        Seens <- Seen { who: "pinned", owned: owned };
+    }
+}
+
+main locus App {
+    params {
+        p: Parker = Parker { };
+        q: Prompt = Prompt { };
+        small: Int = 0;
+        spilled: Int = 0;
+        pinned: Int = 0;
+    }
+    placement {
+        p: cooperative(pool = io) where async_io;
+        q: pinned(core = 1);
+    }
+    bus {
+        publish Jobs;
+        publish Frames;
+        subscribe Seens as on_seen;
+    }
+    fn on_seen(s: Seen) {
+        if s.who == "small" {
+            self.small = self.small + s.owned;
+        }
+        if s.who == "spilled" {
+            self.spilled = self.spilled + s.owned;
+        }
+        if s.who == "pinned" {
+            self.pinned = self.pinned + s.owned;
+        }
+    }
+    run() {
+        let mut i = 0;
+        while i < 4 {
+            Jobs <- Job { n: i };
+            Frames <- Frame { n: i };
+            i = i + 1;
+        }
+        std::time::sleep(600ms);
+        println("parked small payloads owned: ", self.small);
+        println("parked spilled payloads owned: ", self.spilled);
+        println("pinned payloads owned: ", self.pinned);
+        // The oracle is the exit code: a payload that changed under a
+        // parked handler is a wrong answer, not a slow one.
+        if self.small != 4 {
+            std::process::exit(21);
+        }
+        if self.spilled != 4 {
+            std::process::exit(22);
+        }
+        if self.pinned != 4 {
+            std::process::exit(23);
+        }
+    }
+}
+
+fn main() {
+    App { };
+}
