@@ -116,6 +116,13 @@ keys are application-given, `[a-z0-9-]+`, unique within their step.
 Two invocations of the same definition are two child Tasks with two
 different ids, because their parent, step or member key differs.
 
+An admission's recipe binds its task under exactly this workflow
+identity: the projection refuses an admission whose recipe binds the
+task under any other — another revision's, or a name of no such form —
+and a restored execution runs under the identity its recipe bound,
+read from the record, never re-derived from the task and revision.
+**[proven: `workflow_recovery_test.hl`, card 13]**
+
 A result is valid only if it names its expected entity:
 
 - a Work outcome names `work_id` and `attempt_id`, and the attempt is
@@ -148,12 +155,38 @@ its history and model evidence one attempt number.
    drain policy: by default they keep their responsibility until their
    own outcome, which is recorded and cannot reopen the step.
 5. Cancellation stops further admission and fences outstanding members.
-   It does not undo external effects.
+   It does not undo external effects. The fence is durable: the
+   executor reads the execution's cancellation (its own or an
+   ancestor's `workflow.settled`) at the same captured reading its
+   execution claim is exact at, so an attempt not yet claimed under a
+   cancelled execution starts no new work whatever notification lagged,
+   and one claimed before still records its outcome. A step that had
+   failed and is draining when the cancellation lands keeps its
+   failure and forwards the fence to its live members; the fence is
+   never a second step outcome, and it is the one message a member acts
+   on for a cancellation, so a member that retires or settles on it
+   ends exactly once (a resident that ends with a second message queued
+   for it is #703). **[proven for one execution, card 10:
+   a cancellation while step 0's leaf is out settles the execution
+   cancelled, the leaf cancelled, births no step 1, and the leaf's late
+   reply is recorded and reopens nothing; a cancellation that lands
+   between an attempt's admission and its request to run leaves it
+   unclaimed and unrun; a cancellation during a failed step's drain
+   fences the pending sibling and the failure stands; the fence reaches
+   down: a root cancelled while its grandchild's leaf is out settles
+   the child and the grandchild cancelled and the leaf under them —
+   card 11]**
 6. Logical failure and physical reclamation are separate. An
    outstanding responsibility stays reachable until its outcome or an
    explicit fence. There is no invented timeout.
 
-**[decided]**
+**[decided; 1, 2, 4 and 6 proven for one step and its leaves:
+`workflow_step_test.hl`, card 09 — the set registered and activated
+before a leaf is born; completion in either order; waiting on a delayed
+member; a failed member failing the step at once, its sibling's later
+reply recorded and reopening nothing, the `StepRun` alive until that
+member settled; a leaf retried within its allowance. 5 is card 06's
+projection so far; 3 is card 08's.]**
 
 The current `Step` counts child settlements without checking their
 disposition or spawning step. The new execution path replaces that
@@ -246,7 +279,14 @@ One retry owner: the durable Work lifecycle admits each attempt under
 the bound routing/retry policy. The new executor path runs exactly one
 admitted attempt per request and never retries on its own. The current
 `WorkSystem` loop, which retries internally, stays for legacy callers
-until card 18. **[decided]**
+until card 18. **[decided; proven: `workflow_attempt_test.hl`, card 08 —
+`AttemptExecutor` runs nothing before a durable admission, reuses a
+recorded outcome, decides and claims the execution at one refreshed
+reading of the record — an outcome durable before the claim is the
+answer, never a second run — so a duplicate request attaches, judges
+every reply by one rule (this attempt, the selected performer, a
+disposition the contract carries), persists the outcome exactly before
+answering, and reports an outcome the record refused as unrecorded]**
 
 A settled attempt is never executed again. Durable dispatch may be
 redelivered; a duplicate request for a running attempt attaches to its
@@ -268,6 +308,7 @@ are added to `memory_of` explicitly. `task.*` names are not reused.
 |---|---|---|
 | `workflow.admitted` | Task | engine `wf1`, bound recipe, inputs |
 | `workflow.refused` | Task | the violated bound or validation |
+| `workflow.ask_refused` | an ask, by decision (`<ask>#<n>`) | a refusal that reached no Task: the id taken meanwhile, no free id, the record moved too often (card 07) |
 | `step.registered` | Step | the required-member set |
 | `step.activated` | Step | activation id |
 | `attempt.admitted` | Attempt | Work, attempt number, bound request |
@@ -308,7 +349,12 @@ One positive discriminator: `workflow.admitted` with `engine: wf1`
 marks a new-engine execution, written atomically with its bound recipe
 before anything runs. A Task without it keeps the legacy recovery path.
 A partial new admission never falls through to legacy `requires: edit`
-recovery. **[decided]**
+recovery. **[decided; proven: `workflow_admission_test.hl`,
+`workflow_admission_contention_test.hl`, card 07 — the admission is
+appended with exact compare-and-append before the `task.born` summary,
+a refusal writes no summary and requests no work, the same ask id is one
+execution, a contended id is re-minted, and a restart counts admitted
+ids and resumes no admitted Task as edit work]**
 
 **The committed proposal is reconstructable from the journal alone.**
 Every row a transition commits carries the scope, key and proposal id
@@ -381,6 +427,35 @@ in `dna/core/workflow_runtime.hl`:
 | `StepRun` | `WorkRun` | `WorkflowRun` | its registered members and barrier; requests child workflows over the bus |
 | `WorkRun` | — | `StepRun` | one leaf across its attempts; admits each attempt |
 
+`StepRun` and `WorkRun` exist (card 09), `WorkflowRun` (card 10) and
+`TaskRun` with the Task owner `Executions` (card 11), beside
+`WorkflowRuntime`, the committer and executor they propose to. A step
+asks its Task for a child member (`ChildRequested`, keyed by the parent
+task); the Task cuts the subtree from its recipe and asks the owner
+(`ChildAdmitRequested`, keyed by scope), which births one `TaskRun` per
+Task id; the child proposes its own admission and runs behind it; a
+child that settled answers its spawning step (`ChildSettled`, keyed by
+that step) and, once its workflow drained and left, tells it so
+(`ChildLeft`), which is what the step's drain waits for; a workflow
+that left tells its Task (`WorkflowLeft`). A fence that reaches a child
+while its admission answer is out is applied when the answer comes; a
+record-held child admission is decided again by the state when the
+spawning step settles, as a leaf's is — and a step that settles or is
+fenced while the answer is out owes one re-decision, taken on a
+refusal by the record, whichever of the two arrives first. A leave
+from a child that has not answered is nobody's. **[proven, card 11 review: a
+root cancelled by another hand as the child's admission lands, the
+child settling cancelled behind it; a held child admission under a
+step its sibling failed, retiring and the root failing; the tree
+cancelled with the deepest Work's settlement refused once, no ancestor
+reclaiming before that Work settled and each level left]** A `WorkflowRun` births step i+1 only from the
+handler that hears step i drained (`StepDrained`, keyed by task, which a
+step publishes as it leaves) behind its committed completion, and a
+cancellation (`WorkflowCancelRequested`) is a `workflow.settled`
+proposal that, landed, fences the active step through `WorkflowSettled`. A `StepRun` copies the leaves it is handed into its own
+rows at birth: what an owner builds in its handler dies with the
+handler.
+
 Attempts are facts (`attempt.admitted`, `attempt.outcome`) and executor
 calls, not a resident locus.
 
@@ -394,8 +469,17 @@ The envelope, amended after the review of card 03, frozen for card 05:
 topic TransitionProposed  { payload: TransitionProposal; keyed_by scope; }
 type  TransitionProposal  { scope; key; proposal_id; kind; entity; body }
 topic TransitionAnswered  { payload: TransitionAnswer;   keyed_by key; }
-type  TransitionAnswer    { scope; key; proposal_id; ok; revision; why }
+type  TransitionAnswer    { scope; key; proposal_id; ok; revision; why; basis }
+topic RecordResumed       { payload: RecordResume;       keyed_by scope; }
+type  RecordResume        { scope; why }
 ```
+
+`basis` (card 09) says who refused: `state` (the transition has no
+basis in the projection), `record` (the append was refused, or the
+record moved too often — the transition may be proposed again), or
+`conflict` (the proposal disagrees with what its id committed, or with
+itself). `RecordResumed` says the record is writable again; whoever
+knows publishes it — the host after a reconnect, a fixture.
 
 - **`proposal_id` names one logical transition**, stably: it is derived
   from what the transition does (the entity and the step, attempt or
@@ -423,16 +507,89 @@ type  TransitionAnswer    { scope; key; proposal_id; ok; revision; why }
   forged proposal, not a race. The lifetime proof's lookup shows the
   replay half; card 05 implements the comparison (`transition_conflict`,
   which names the part that differs) and the durable reference beside
-  each committed fact (§8) that a restart compares against. Card 07
-  wires both into the committer.
+  each committed fact (§8) that a restart compares against. Card 09's
+  runtime rebuilds the committed ids from those references as it
+  catches up, and answers a repeated id from the committed row and a
+  conflicting one with a refusal. **[proven, card 09]**
 - **The committer validates against current state before appending**,
   and appends with exact compare-and-append. On a stale revision it
   refreshes and evaluates the transition again against the new state;
   it does not simply retry the append. The proof's committer has no
   domain state and only retries; cards 06 and 07 implement the
-  re-evaluation.
+  re-evaluation, and card 09's `WorkflowRuntime` is the committer for
+  the residents: it catches its projection up from the record and
+  takes that reading's revision as the one it decides and appends at —
+  never a second look, which a row landing between two looks would
+  slip past — validates with a dry run of the projection, appends
+  exactly, applies once the append landed, and on a stale append
+  decides again. **[proven: the same transition committed by another
+  runtime under the decision stands as one row; a conflicting id is
+  refused; a proposal the state refuses lands nothing; an append the
+  record refuses moves nothing — `workflow_step_test.hl`]**
 - **Only `ok` dispatches.** On a refusal the proposer dispatches
   nothing.
+- **The committer is fenced on its lease, atomically with each write**
+  (card 12b): the lease is rows of the record (`lease.taken`, carrying
+  a per-key epoch as the token, the holder and the expiry as JSON;
+  `lease.renewed`; `lease.released`), read at the revision the write is
+  exact at — the token the row's own, stable under a routed reader
+  that starts fresh — so a takeover — a row — makes a
+  stale holder's append fail and be decided again, and fenced. Every
+  write: a commit, a claim, a redelivery, an outcome, a close. A stale
+  holder answers `fenced`, which a proposer holds as it holds `record`
+  and proposes again when the record resumes under a live token. A
+  local ownership check before an append is not the fence and cannot
+  be. **[proven, card 12b: a takeover landing after the holder's own
+  check and before its append, under a transition and under a claim;
+  a restarted holder under the same name with a new token; two takes
+  of a free lease at once]**
+- **A refusal by the record is not an outcome.** An append the record
+  refused, or a record that moved too often, leaves the proposer
+  holding its transition: it publishes no settlement it does not have,
+  reclaims nothing, and proposes the same transition again when the
+  record resumes (`RecordResumed`) or, for a Work, when its attempt's
+  reply reaches it again. A member has answered its Step only once its
+  settlement is in the record. A refusal by the state before anything
+  was dispatched ends a Step, refused, with nothing durable lost; a
+  refusal by the state of an outcome the members added up to leaves the
+  Step running for the members to decide again. **[proven, card 09:
+  both settlements and the completion refused once by the record, all
+  three landing afterwards, no `refused` answer in between]**
+- **A leaf never admitted retires under its settled Step.** A Work whose
+  first admission the state refused has no attempt, no claim and no
+  effect to await. Under a Step that has durably settled — the Step
+  publishes its outcome only after its row landed, and the Work hears
+  it — it retires (`MemberRetired`, keyed by the Step), which is not a
+  settlement: it answers nothing, and only a durable Work settlement
+  publishes `MemberSettled`. A first admission the record refused is
+  proposed again when the Step settles, so the state — not the Work —
+  says whether it can still be admitted; one it admits runs and settles
+  as the drain has it. The Step counts a retired member toward its
+  drain, only under its settled stage and only for the Work bound under
+  the key, and reclaims itself once every admitted responsibility
+  settled. A leaf the state refuses while its Step runs (misbound) is
+  not retired: it stays, unattempted and reachable, until it is fenced.
+  **[proven, card 09: the record-refused first admission under a Step
+  that failed meanwhile retires and the Step drains; the same under a
+  Step that completes is admitted on resume and settles; a misbound
+  leaf under a running Step stays; a forged retirement while the Step
+  runs, or naming another Work, changes nothing]**
+- **A member is a key and the Work bound under it.** A settlement that
+  names a required key for another Work is no member's: it changes no
+  answered, done, failed or drain state. **[proven, card 09: a failed
+  `b` of another execution under this step's key fails nothing and the
+  real `b` lives on]**
+- **The body carries the proposal's own reference.** The transition
+  reference inside a proposed body must be the envelope's scope, key
+  and proposal id, whole, or the proposal is refused as a conflict with
+  itself before the state sees it: a row would otherwise say it was
+  committed under a proposal it was not. A committed proposal is
+  rebuilt from its row — the reference gives scope, key and id, the row
+  the kind, entity and body — and compared field by field
+  (`transition_conflict`) with the proposal sent again. **[proven, card
+  09: a body without its reference and one carrying another id are
+  refused; the committed transition re-sent under another key is a
+  conflict; re-sent whole it is a replay]**
 
 `scope` names the one committer that answers: `Dna` in an assembled
 organism (its journal), or a standalone `Metabolism` over its own memory
@@ -447,7 +604,7 @@ journal and dispatched once. Each case fails with the proposer's
 identity check or the committer's lookup removed.]**
 
 What the fixtures do not establish, left to the cards that own it:
-domain re-evaluation on a stale revision (06, 07); every stale and
+domain re-evaluation on a stale revision (06, 07, 09); every stale and
 duplicate child or attempt case (05, 06, 09–11); delivery across an
 off-thread binding (a bound organism's sockets) and restart (12–13, 19).
 The two supplied diagnostic probes print, so `hale test` reports them
@@ -484,7 +641,19 @@ equivalent definition.
 | transition identity: repeated, old and foreign answers ignored; re-sent proposals answered once | proven, card 03 (review) |
 | the shape works in a program that imports the DNA core, beside DNA's flow types | proven, card 03 |
 | `release` is type-wide | proven, card 03 |
-| delivery across off-thread bindings; restart | not yet, cards 12–13, 19 |
+| definitions bind whole or refuse; capacity is checked before a node is built | proven, card 04 (#691) |
+| every fact is read whole or not at all; a recipe binds whole or not at all | proven, card 05 (#693) |
+| the join is by identity and kind against the admitted recipe; every transition has its basis; a cancelled ancestor fences all below it | proven, card 06 (#694) |
+| one admitted attempt runs once: nothing before its durable admission, a settled one reused, a running one attached to, the reply's identity checked, the outcome persisted exactly before answering, a refused append stopping the path | proven, card 08 |
+| the admission precedes the summary; a refusal requests nothing and is recorded (or reported unrecorded), a Task-bound one exactly at the decision's revision and never on another body's execution, one that reached no Task as `workflow.ask_refused` under `<ask>#<n>`, decided and appended at one revision, the same decision replayed and a new one ordinal-numbered; one ask id is one execution, decided and appended at one revision; a taken id is skipped and a contended one re-minted; only the position's owner admits; an admitted Task is never legacy edit work after a restart | proven, card 07 |
+| one step alive across delayed replies: the member set registered and activated before a leaf is born; two leaves completing in either order; an immediate and a delayed reply leaving it waiting and reachable; a repeated answer and a stray one changing nothing; a failed member failing it at once and a sibling's later reply recorded without reopening it; reclaimed only once every member settled; a leaf retried within its allowance; every transition a proposal decided at one reading, the same row committed meanwhile standing once, a conflict refused, an invalid or refused append moving nothing | proven, card 09 |
+| ordered steps advance only behind a committed completion: the original delayed two-step reproduction passes through the new engine (four requests then done; six while waiting, eight after the held replies); A → {B,C} → D in exact order under immediate, delayed, out-of-order and mixed replies; a duplicate completion births no second step; a failed member blocks D and the execution fails once its step drained; a cancellation fences the active step, requests nothing further and a late reply reopens nothing; an activation the record refuses dispatches nothing until the record resumes | proven, card 10 |
+| recursive child workflows: the canonical three-level example runs through one engine; a delayed grandchild leaf keeps root D from starting; a failed grandchild fails its step, its execution, the child's step, the child, the root's step and the root, and D never runs; a child settlement for a leaf's key, another root's child, the wrong step, or delivered again changes nothing; two roots at once and two uses of one definition never share an id; a child's admission the record refused runs nothing until the record resumes; a child request naming the wrong step or asked again births nothing; the fence reaches the grandchild's leaf; cleanup from the leaves upward | proven, card 11 |
+| restore of one Work: an incarnation booted over the record the crash left asks the record what it holds, re-proposes and the committer replays, so identities are the record's; cut before the attempt's admission, after it, after the claim, after the outcome, and after completion, each deterministic boot runs to the completed record row for row (the redelivery row aside); settled work never reruns and an open claim under a recorded outcome is closed, a refused close leaving the Work holding; redelivery is derived from the incarnation's own claims, is a row appended exactly at its reading (an outcome landing under it makes it stale and nothing runs), and happens once per incarnation, so a duplicate dispatch attaches and a request under another Work's name is nobody's; the old process's reply for the still-current attempt is accepted; a cancelled record with its admitted Work unsettled births the current step fenced, settles the Work cancelled and drains before leaving, and a cancelled-and-drained one births nothing; a cancellation heard while the record is being asked waits for the answer, and a cancellation landing with no step active asks the record again and drains what it still holds admitted through the current step, born fenced, before leaving; every path that answers from a recorded outcome — a request that finds it, the ordinary execution that runs into it on its own reading, an attachment that finds it, a duplicate terminal reply — closes the open claim as a request does, and a refused close is reported on every path and holds the Work, which asks again when the record resumes; an effect that resulted unknown stays unresolved; a completed record rebooted twice gains no row and births nothing | proven, card 12a |
+| retries under a restart, and the fence: attempt zero fails, attempt one is admitted and, rebooted, resumed — redelivered — with no attempt two; a late success for attempt zero changes nothing; an admission the record refuses invokes no performer and spends no retry, and lands on resume; a holder whose lease expired (unclaimed, taken by another, or re-taken under its own name with a new token) commits no transition, records no reply and claims no request, a takeover landing between its check and its append fences that append, two takes of a free lease land one, and what it held goes through once it holds a live token again; the card 01 retry-identity regression passes on the stack merged with main | proven, card 12b |
+| uncertain external effects at a restart: a durable adapter that recorded the invocation is asked before any redelivery, its record becomes the outcome and the effect is not performed twice; an adapter that cannot say leaves the claim resulted unknown, durably, with no blind replay, until a person resolves it and the resolution becomes the outcome; a documented idempotent adapter is replayed; one that attests it never acted is redelivered; an adapter's record that is not this attempt's — another performer, or another attempt from the right performer — records nothing and is never relabelled; a stale unknown append is decided again, so an unrelated move lands the unknown row after it and a resolution landing meanwhile is the outcome; reconciliation is routed by the admitted performer kind and its evidence must name that kind and identity, so another performer's negative evidence authorizes no replay; the assembly's restart rule leaves attempt claims to the runtime; `effect_outcomes_test.hl` stays green | proven, card 12c |
+| recovering the tree: a restart asks with the task id and the performer kinds for attempts the record has not admitted, and the runtime answers the admission from the record, so a restored execution runs its bound recipe (revision 1 while the catalog offers revision 2, which a new admission runs); a task never admitted or admitted with an unreadable recipe is refused out loud and nothing is invented; restarts after one sibling succeeded, while a grandchild waits, after the child completed and before the parent's step did, and after the parent's step completed and before the next was dispatched, each complete with every attempt claimed once, every step activated once and the root settling last; the admission recovered is the one the projection accepted, never the last row naming the task (a refused re-admission or a cross-task row is not the execution; only refused rows is refused with the projection's reason); a child asked as a root is refused and recovered through its parent; an answer is taken only to the owner's outstanding question, for its task, once — strays birth nothing; an admitted attempt resumes under the record's performer kind, the asked kinds binding only unadmitted attempts; the workflow identity is the recipe's, which the projection holds to §4; a Work's state question carries its scope and an identity and the answer is taken once by both — a same-named Work in another scope's record takes nothing from that record's answer; a fence heard while the state question is out is decided after the answer, never by a settlement naming no attempt | proven, card 13 |
+| delivery across off-thread bindings | not yet, card 19 |
 
 Card 03 native runs: `HALE_BIN=target/release/hale HALE_DNA_SOURCE=$PWD
 target/release/hale test dna/tests/<fixture>` with hale 0.20.0 built from

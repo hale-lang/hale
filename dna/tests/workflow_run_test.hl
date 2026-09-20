@@ -1,0 +1,436 @@
+// dna/tests/workflow_run_test.hl — ordered steps advance behind committed
+// completions (DNA workflow card 10).
+//
+// The original two-step reproduction (two Works per step; with immediate
+// replies it finished, with delayed replies the second step never
+// started) ported to the new engine: an admitted execution run by a
+// WorkflowRun over the card 09 residents and runtime. Then A → {B,C} → D
+// under immediate, delayed and mixed replies, observing the exact order
+// in the record; a failed member of the middle step blocks D and fails
+// the workflow once its step has drained; a cancellation fences the
+// active step — outstanding attempts settle cancelled, nothing further
+// is requested — and a reply that comes later is recorded and reopens
+// nothing; an activation the record refuses dispatches nothing until
+// the record resumes; a duplicate completion cannot start the next step
+// twice.
+
+import "../core" as dna;
+
+locus Counting {
+    params { calls: Int = 0; }
+    fn kind() -> String { return "service"; }
+    fn identity() -> String { return "counter"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        return dna::WorkResult { disposition: "done", result: "counted:" + req.objective, performer: "counter", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+    }
+}
+
+locus Delayed {
+    params { calls: Int = 0; }
+    fn kind() -> String { return "agent"; }
+    fn identity() -> String { return "delayed"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        return dna::WorkResult { disposition: "pending", performer: "delayed", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+    }
+}
+
+locus Failing {
+    params { calls: Int = 0; }
+    fn kind() -> String { return "human"; }
+    fn identity() -> String { return "alice"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        return dna::WorkResult { disposition: "failed", result: "no", performer: "alice", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+    }
+}
+
+// A journal that refuses the rows it is told to, once each — and, as
+// one row lands, asks for the execution's cancellation: the cancel
+// request reaches the workflow before the Work that admitted the
+// attempt hears its admission landed, so the cancellation is durable
+// before the attempt is asked to run.
+locus Refusing {
+    params {
+        inner: dna::MemJournal = dna::MemJournal { };
+        refuse_once: String = "";
+        refused_yet: String = "";
+        cancel_on: String = ""; // "<kind>:<entity>" whose landing asks the cancellation
+        cancel_task: String = "";
+        cancelled: Bool = false;
+    }
+    bus { publish dna::WorkflowCancelRequested; }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return self.inner.append(expected, kind, entity, body); }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if dna::set_has(self.refuse_once, kind + ":" + entity) && !dna::set_has(self.refused_yet, kind + ":" + entity) {
+            self.refused_yet = dna::set_add(self.refused_yet, kind + ":" + entity);
+            return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() };
+        }
+        let r = self.inner.append_exact(expected, kind, entity, body);
+        if r.ok && !self.cancelled && kind + ":" + entity == self.cancel_on {
+            self.cancelled = true;
+            dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: self.cancel_task, reason: "cancelled as the admission landed" };
+        }
+        return r;
+    }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+}
+
+// What an execution is asked to run: which leaf runs on which performer
+// kind ("<key>=<kind>", the same key across steps runs the same kind).
+type WorkflowAsk { scope: String = ""; task_id: String = ""; kinds: String = ""; tamper: String = ""; }
+topic WorkflowAsks { payload: WorkflowAsk; subject: "wf.run.ask"; keyed_by scope; }
+
+// The owner births a WorkflowRun in its handler from the bound recipe
+// it holds, and never releases it.
+locus Owner {
+    params { scope: String = ""; cat: dna::WorkflowCatalog = dna::WorkflowCatalog { }; asked: Int = 0; }
+    bus { subscribe WorkflowAsks as on_ask where key == self.scope; }
+    accept(w: dna::WorkflowRun) { }
+    @unbounded
+    fn on_ask(a: WorkflowAsk) {
+        self.asked = self.asked + 1;
+        let mut leaves = dna::LeafSpecRows { };
+        let mut steps = 0;
+        let mut workflow_id = "";
+        let mut i = 0;
+        while i < self.cat.bound_count() {
+            let n = self.cat.bound_at(i);
+            if n.kind == "task" && n.id == a.task_id { workflow_id = n.workflow_id; }
+            if n.kind == "step" && n.parent == a.task_id { steps = steps + 1; }
+            if n.kind == "work" && std::str::starts_with(n.id, a.task_id + "/") {
+                let mut leaf = dna::leaf_of(n, a.task_id, dna::map_get(a.kinds, n.member_key, "="));
+                // a leaf the owner misbinds: its request is not the bound one
+                if a.tamper == n.member_key { leaf.request.objective = "something else"; }
+                leaves.push(leaf);
+            }
+            i = i + 1;
+        }
+        dna::WorkflowRun { scope: self.scope, task_id: a.task_id, workflow_id: workflow_id, step_count: steps, leaves: leaves };
+    }
+}
+
+main locus App {
+    params {
+        cat: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        limits: dna::AdmissionLimits = dna::AdmissionLimits { };
+        rt: dna::WorkflowRuntime = dna::WorkflowRuntime {
+            scope: "main",
+            journal: Refusing { refuse_once: "step.activated:t8/wf1/s1", cancel_on: "attempt.admitted:t9/wf1/s0/a/a0", cancel_task: "t9" },
+            work: dna::WorkSystem { service: Counting { }, agent: Delayed { }, human: Failing { } }
+        };
+        owner: Owner = Owner { scope: "main" };
+        lives: String = "";
+        outcomes: String = ""; // "<task>:<disposition> " per WorkflowSettled
+        steps: String = ""; // "<step>:<disposition> " per StepSettled
+    }
+    bus {
+        subscribe dna::RunLives as on_life;
+        subscribe dna::WorkflowSettled as on_outcome;
+        subscribe dna::StepSettled as on_step;
+        publish WorkflowAsks;
+        publish dna::WorkflowCancelRequested;
+        publish dna::StepDrained;
+        publish dna::RecordResumed;
+    }
+    fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
+    fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
+    fn on_step(s: dna::StepSettlement) { self.steps = self.steps + s.step_id + ":" + s.disposition + " "; }
+    @unbounded
+    fn count(list: String, item: String) -> Int {
+        let mut n = 0;
+        let mut rest = list;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            if rest[0..sp] == item { n = n + 1; }
+            rest = rest[(sp + 1)..len(rest)];
+        }
+        return n;
+    }
+    @unbounded
+    fn rows(kind: String, entity: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.rt.journal.revision() {
+            let e = self.rt.journal.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    // The execution claims of one task, in the order the record holds
+    // them: "<work>/<attempt> " each — the exact order of dispatch.
+    @unbounded
+    fn claims(task_id: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.rt.journal.revision() {
+            let e = self.rt.journal.read(i);
+            if e.kind == "effect.requested" && std::str::starts_with(e.entity, "attempt:" + task_id + "/") {
+                out = out + e.entity[(8 + len(task_id) + 1)..len(e.entity)] + " ";
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+    fn settle() {
+        let mut i = 0;
+        while i < 10 {
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    @unbounded
+    fn until(list_is_lives: Bool, item: String, n: Int) {
+        let mut i = 0;
+        while i < 1000 {
+            if self.count(if list_is_lives { self.lives } else { self.outcomes }, item) >= n { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    fn admit(task_id: String, definition: String) {
+        let x = self.cat.expand(task_id, definition, 1, self.limits);
+        std::test::assert(x.ok, task_id + " expands: " + x.why);
+        let body = dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: task_id, definition: definition, revision: 1, request: "ask-" + task_id,
+            recipe: self.cat.encode_bound(), limits: self.limits, works: x.works, tasks: x.tasks, steps: x.steps, depth: x.depth
+        });
+        let r = self.rt.journal.append(self.rt.journal.revision(), "workflow.admitted", task_id, body);
+        std::test::assert(r.ok, task_id + " is admitted in the record: " + r.error);
+        let y = self.owner.cat.expand(task_id, definition, 1, self.limits);
+        std::test::assert(y.ok, task_id + " expands for the owner: " + y.why);
+    }
+    fn reply(attempt_id: String, disposition: String) -> dna::Executed {
+        return self.rt.settle(attempt_id, dna::WorkResult { disposition: disposition, result: "later", performer: "delayed", attempt_id: attempt_id });
+    }
+    fn define(c: dna::WorkflowCatalog) {
+        std::test::assert_eq_str(c.define("two-steps", 1, 2, "two sequential steps"), "", "two-steps");
+        std::test::assert_eq_str(c.leaf("two-steps", 1, 0, "a", dna::WorkRequest { objective: "first a" }, 1), "", "a");
+        std::test::assert_eq_str(c.leaf("two-steps", 1, 0, "b", dna::WorkRequest { objective: "first b" }, 1), "", "b");
+        std::test::assert_eq_str(c.leaf("two-steps", 1, 1, "c", dna::WorkRequest { objective: "second c" }, 1), "", "c");
+        std::test::assert_eq_str(c.leaf("two-steps", 1, 1, "d", dna::WorkRequest { objective: "second d" }, 1), "", "d");
+        std::test::assert_eq_str(c.define("diamond", 1, 3, "A then B and C then D"), "", "diamond");
+        std::test::assert_eq_str(c.leaf("diamond", 1, 0, "a", dna::WorkRequest { objective: "A" }, 1), "", "A");
+        std::test::assert_eq_str(c.leaf("diamond", 1, 1, "b", dna::WorkRequest { objective: "B" }, 1), "", "B");
+        std::test::assert_eq_str(c.leaf("diamond", 1, 1, "c", dna::WorkRequest { objective: "C" }, 1), "", "C");
+        std::test::assert_eq_str(c.leaf("diamond", 1, 2, "d", dna::WorkRequest { objective: "D" }, 1), "", "D");
+    }
+    run() {
+        self.define(self.cat);
+        self.define(self.owner.cat);
+
+        // ---- the original reproduction, control: immediate replies
+        self.admit("t1", "two-steps");
+        WorkflowAsks <- WorkflowAsk { scope: "main", task_id: "t1", kinds: "a=service b=service c=service d=service" };
+        self.until(false, "t1:done", 1);
+        self.until(true, "t1:dissolved", 1);
+        std::test::assert_eq_int(self.rt.requests, 4, "CONTROL: both steps ran, two works each — four requests");
+        std::test::assert_eq_str(self.claims("t1"), "wf1/s0/a/a0 wf1/s0/b/a0 wf1/s1/c/a0 wf1/s1/d/a0 ", "in step order");
+        std::test::assert_eq_int(self.rows("workflow.settled", "t1"), 1, "and the execution settled, one row");
+        std::test::assert_eq_int(self.count(self.outcomes, "t1:done"), 1, "done, once");
+        std::test::assert_eq_int(self.count(self.lives, "t1/wf1/s0:dissolved") + self.count(self.lives, "t1/wf1/s1:dissolved") + self.count(self.lives, "t1:dissolved"), 3, "both steps and the workflow reclaimed themselves");
+
+        // ---- the original reproduction: delayed replies
+        self.admit("t2", "two-steps");
+        WorkflowAsks <- WorkflowAsk { scope: "main", task_id: "t2", kinds: "a=agent b=agent c=agent d=agent" };
+        self.until(true, "t2/wf1/s0/b:born", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rt.requests, 6, "WAITING: the first step's two requests went out, the second step has not started before replies");
+        std::test::assert_eq_int(self.rows("step.activated", "t2/wf1/s1"), 0, "the second step is not activated");
+        std::test::assert_eq_int(self.rows("workflow.settled", "t2"), 0, "waiting is not completion");
+        std::test::assert_eq_int(self.count(self.lives, "t2:dissolved"), 0, "the workflow is alive, waiting");
+        let a2 = self.reply("t2/wf1/s0/a/a0", "done");
+        let b2 = self.reply("t2/wf1/s0/b/a0", "done");
+        std::test::assert(a2.ok && b2.ok, "both held replies are delivered: " + a2.why + " " + b2.why);
+        self.until(true, "t2/wf1/s1/d:born", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rt.requests, 8, "AFTER REPLIES: the workflow advanced to its second step — eight requests");
+        std::test::assert_eq_int(self.rows("step.completed", "t2/wf1/s0"), 1, "behind the first step's committed completion");
+        std::test::assert_eq_int(self.rows("step.activated", "t2/wf1/s1"), 1, "one activation of the second step");
+        std::test::assert_eq_int(self.rows("workflow.settled", "t2"), 0, "the second step's replies are still out");
+        let c2 = self.reply("t2/wf1/s1/c/a0", "done");
+        let d2 = self.reply("t2/wf1/s1/d/a0", "done");
+        std::test::assert(c2.ok && d2.ok, "the second step's replies are delivered");
+        self.until(false, "t2:done", 1);
+        self.until(true, "t2:dissolved", 1);
+        std::test::assert_eq_int(self.rows("workflow.settled", "t2"), 1, "and the execution settled done");
+        std::test::assert_eq_str(self.claims("t2"), "wf1/s0/a/a0 wf1/s0/b/a0 wf1/s1/c/a0 wf1/s1/d/a0 ", "in step order");
+
+        // ---- A → {B,C} → D, immediate
+        self.admit("t3", "diamond");
+        WorkflowAsks <- WorkflowAsk { scope: "main", task_id: "t3", kinds: "a=service b=service c=service d=service" };
+        self.until(false, "t3:done", 1);
+        self.until(true, "t3:dissolved", 1);
+        std::test::assert_eq_str(self.claims("t3"), "wf1/s0/a/a0 wf1/s1/b/a0 wf1/s1/c/a0 wf1/s2/d/a0 ", "A, then B and C, then D");
+
+        // ---- delayed, answered out of order: D waits for both B and C
+        self.admit("t4", "diamond");
+        WorkflowAsks <- WorkflowAsk { scope: "main", task_id: "t4", kinds: "a=agent b=agent c=agent d=agent" };
+        self.until(true, "t4/wf1/s0/a:born", 1);
+        self.settle();
+        std::test::assert_eq_str(self.claims("t4"), "wf1/s0/a/a0 ", "only A was requested");
+        let a4 = self.reply("t4/wf1/s0/a/a0", "done");
+        self.until(true, "t4/wf1/s1/c:born", 1);
+        self.settle();
+        std::test::assert_eq_str(self.claims("t4"), "wf1/s0/a/a0 wf1/s1/b/a0 wf1/s1/c/a0 ", "A done: B and C requested, D not");
+        // a duplicate completion of step 0 cannot start step 1 twice
+        dna::StepDrained <- dna::StepDrain { task_id: "t4", step_id: "t4/wf1/s0", step_index: 0, disposition: "completed" };
+        self.settle();
+        std::test::assert_eq_int(self.count(self.lives, "t4/wf1/s1:born"), 1, "a duplicate completion of step 0 births no second step 1");
+        std::test::assert_eq_int(self.rows("step.registered", "t4/wf1/s1") + self.rows("step.activated", "t4/wf1/s1"), 2, "one registration and one activation of step 1");
+        let c4 = self.reply("t4/wf1/s1/c/a0", "done");
+        self.settle();
+        std::test::assert_eq_str(self.claims("t4"), "wf1/s0/a/a0 wf1/s1/b/a0 wf1/s1/c/a0 ", "C done before B: D still waits");
+        std::test::assert_eq_int(self.rows("step.completed", "t4/wf1/s1"), 0, "step 1 has not completed");
+        let b4 = self.reply("t4/wf1/s1/b/a0", "done");
+        self.until(true, "t4/wf1/s2/d:born", 1);
+        self.settle();
+        std::test::assert_eq_str(self.claims("t4"), "wf1/s0/a/a0 wf1/s1/b/a0 wf1/s1/c/a0 wf1/s2/d/a0 ", "B done too: D requested");
+        let d4 = self.reply("t4/wf1/s2/d/a0", "done");
+        self.until(false, "t4:done", 1);
+        self.until(true, "t4:dissolved", 1);
+        std::test::assert_eq_int(self.rows("workflow.settled", "t4"), 1, "and the execution settled done");
+
+        // ---- mixed: B immediate, C delayed
+        self.admit("t5", "diamond");
+        WorkflowAsks <- WorkflowAsk { scope: "main", task_id: "t5", kinds: "a=service b=service c=agent d=service" };
+        self.until(true, "t5/wf1/s1/b:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_str(self.claims("t5"), "wf1/s0/a/a0 wf1/s1/b/a0 wf1/s1/c/a0 ", "B answered at once, C is out: D waits");
+        std::test::assert_eq_int(self.rows("step.completed", "t5/wf1/s1"), 0, "step 1 waits for C");
+        let c5 = self.reply("t5/wf1/s1/c/a0", "done");
+        self.until(false, "t5:done", 1);
+        self.until(true, "t5:dissolved", 1);
+        std::test::assert_eq_str(self.claims("t5"), "wf1/s0/a/a0 wf1/s1/b/a0 wf1/s1/c/a0 wf1/s2/d/a0 ", "C done: D ran, and the execution completed");
+
+        // ---- failure blocks D: C fails while B is out; the workflow fails
+        //      once step 1 has drained
+        self.admit("t6", "diamond");
+        WorkflowAsks <- WorkflowAsk { scope: "main", task_id: "t6", kinds: "a=service b=agent c=human d=service" };
+        self.until(true, "t6/wf1/s1/c:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("step.failed", "t6/wf1/s1"), 1, "C failed step 1");
+        std::test::assert_eq_str(self.claims("t6"), "wf1/s0/a/a0 wf1/s1/b/a0 wf1/s1/c/a0 ", "D was never requested");
+        std::test::assert_eq_int(self.rows("workflow.settled", "t6"), 0, "the workflow has not settled: B is still out");
+        std::test::assert_eq_int(self.count(self.lives, "t6:dissolved"), 0, "and stays");
+        let b6 = self.reply("t6/wf1/s1/b/a0", "done");
+        self.until(false, "t6:failed", 1);
+        self.until(true, "t6:dissolved", 1);
+        std::test::assert_eq_int(self.rows("workflow.settled", "t6"), 1, "B settled: the drain is complete and the execution settled failed");
+        std::test::assert_eq_int(self.count(self.outcomes, "t6:failed"), 1, "failed, once");
+        std::test::assert_eq_int(self.rows("step.registered", "t6/wf1/s2"), 0, "step 2 was never born");
+        std::test::assert_eq_str(self.claims("t6"), "wf1/s0/a/a0 wf1/s1/b/a0 wf1/s1/c/a0 ", "and D never ran");
+
+        // ---- cancellation before the next step: A is out when the
+        //      execution is cancelled; A settles cancelled, B and C are
+        //      never requested, and A's late reply reopens nothing
+        self.admit("t7", "diamond");
+        WorkflowAsks <- WorkflowAsk { scope: "main", task_id: "t7", kinds: "a=agent b=service c=service d=service" };
+        self.until(true, "t7/wf1/s0/a:born", 1);
+        self.settle();
+        dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: "t7", reason: "the operator said so" };
+        self.until(false, "t7:cancelled", 1);
+        self.until(true, "t7:dissolved", 1);
+        std::test::assert_eq_int(self.rows("workflow.settled", "t7"), 1, "the cancellation is a row");
+        std::test::assert_eq_int(self.rows("work.settled", "t7/wf1/s0/a"), 1, "A, out under the fence, settled");
+        std::test::assert_eq_int(self.count(self.steps, "t7/wf1/s0:cancelled"), 1, "step 0 fenced, once");
+        std::test::assert_eq_str(self.claims("t7"), "wf1/s0/a/a0 ", "nothing of step 1 was requested");
+        std::test::assert_eq_int(self.rows("step.registered", "t7/wf1/s1"), 0, "step 1 was never born");
+        std::test::assert_eq_int(self.count(self.lives, "t7/wf1/s0:dissolved") + self.count(self.lives, "t7/wf1/s0/a:dissolved"), 2, "the step and A reclaimed themselves");
+        let a7 = self.reply("t7/wf1/s0/a/a0", "done");
+        std::test::assert(a7.ok, "A's late reply is recorded: " + a7.why);
+        self.settle();
+        std::test::assert_eq_int(self.rows("attempt.outcome", "t7/wf1/s0/a/a0"), 1, "as the attempt's outcome");
+        std::test::assert_eq_int(self.rows("step.registered", "t7/wf1/s1") + self.rows("step.completed", "t7/wf1/s0"), 0, "which reopens nothing");
+        // cancelling a settled execution is refused by the state
+        let refused_before = self.rt.refused;
+        dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: "t1", reason: "too late" };
+        self.settle();
+        std::test::assert_eq_int(self.rows("workflow.settled", "t1"), 1, "a settled execution is not cancelled: one row still");
+
+        // ---- an activation the record refuses dispatches nothing
+        self.admit("t8", "diamond");
+        WorkflowAsks <- WorkflowAsk { scope: "main", task_id: "t8", kinds: "a=service b=service c=service d=service" };
+        self.until(true, "t8/wf1/s1:born", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("step.registered", "t8/wf1/s1"), 1, "step 1 registered");
+        std::test::assert_eq_int(self.rows("step.activated", "t8/wf1/s1"), 0, "but the record refused its activation");
+        std::test::assert_eq_str(self.claims("t8"), "wf1/s0/a/a0 ", "so nothing of it was requested");
+        std::test::assert_eq_int(self.count(self.lives, "t8/wf1/s1/b:born"), 0, "no leaf of it was born");
+        dna::RecordResumed <- dna::RecordResume { scope: "main", why: "writable again" };
+        self.until(false, "t8:done", 1);
+        self.until(true, "t8:dissolved", 1);
+        std::test::assert_eq_int(self.rows("step.activated", "t8/wf1/s1"), 1, "resumed, the activation landed, once");
+        std::test::assert_eq_str(self.claims("t8"), "wf1/s0/a/a0 wf1/s1/b/a0 wf1/s1/c/a0 wf1/s2/d/a0 ", "and the execution ran on to D");
+
+        // ---- the fence is in the record, not in a notification: the
+        //      cancellation lands between A's admission and A's request
+        //      to run, and A does not run
+        self.admit("t9", "diamond");
+        WorkflowAsks <- WorkflowAsk { scope: "main", task_id: "t9", kinds: "a=service b=service c=service d=service" };
+        self.until(false, "t9:cancelled", 1);
+        self.until(true, "t9:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("attempt.admitted", "t9/wf1/s0/a/a0"), 1, "A's attempt was admitted");
+        std::test::assert_eq_int(self.rows("workflow.settled", "t9"), 1, "and the cancellation landed");
+        std::test::assert_eq_str(self.claims("t9"), "", "before A was claimed: A does not run");
+        std::test::assert_eq_int(self.rows("attempt.outcome", "t9/wf1/s0/a/a0"), 0, "no performer ran, no outcome");
+        std::test::assert_eq_int(self.rows("work.settled", "t9/wf1/s0/a"), 1, "A settled under the fence");
+        std::test::assert_eq_int(self.count(self.lives, "t9/wf1/s0:dissolved") + self.count(self.lives, "t9/wf1/s0/a:dissolved"), 2, "and the step and A reclaimed themselves");
+
+        // ---- cancellation during a failed step's drain: the failure
+        //      stands, the pending sibling is fenced, everything reclaims
+        self.admit("t10", "diamond");
+        WorkflowAsks <- WorkflowAsk { scope: "main", task_id: "t10", kinds: "a=service b=agent c=human d=service" };
+        self.until(true, "t10/wf1/s1/c:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("step.failed", "t10/wf1/s1"), 1, "C failed step 1; B is out");
+        std::test::assert_eq_int(self.rows("workflow.settled", "t10"), 0, "the execution has not settled: the step drains");
+        dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: "t10", reason: "enough" };
+        self.until(false, "t10:cancelled", 1);
+        self.until(true, "t10:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("workflow.settled", "t10"), 1, "cancelled during the drain: one row");
+        std::test::assert_eq_int(self.rows("work.settled", "t10/wf1/s1/b"), 1, "B, out under the failed step, was fenced and settled");
+        std::test::assert_eq_int(self.count(self.steps, "t10/wf1/s1:failed"), 1, "the step's failure stands");
+        std::test::assert_eq_int(self.count(self.steps, "t10/wf1/s1:cancelled"), 0, "no second, contradicting step outcome was announced");
+        std::test::assert_eq_int(self.count(self.lives, "t10/wf1/s1/b:dissolved") + self.count(self.lives, "t10/wf1/s1:dissolved"), 2, "B and the step reclaimed themselves");
+        let b10 = self.reply("t10/wf1/s1/b/a0", "done");
+        std::test::assert(b10.ok, "B's late reply is recorded: " + b10.why);
+        self.settle();
+        std::test::assert_eq_int(self.rows("attempt.outcome", "t10/wf1/s1/b/a0"), 1, "as its attempt's outcome");
+        std::test::assert_eq_int(self.rows("step.registered", "t10/wf1/s2"), 0, "and D was never born");
+
+        // ---- cancelling a step with a leaf the state refused: A is out,
+        //      B was refused (misbound) and stays resident; the
+        //      cancellation fences A, retires B, reclaims everything
+        self.admit("t11", "two-steps");
+        WorkflowAsks <- WorkflowAsk { scope: "main", task_id: "t11", kinds: "a=agent b=service c=service d=service", tamper: "b" };
+        self.until(true, "t11/wf1/s0/b:born", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("attempt.admitted", "t11/wf1/s0/a/a0"), 1, "A admitted and out");
+        std::test::assert_eq_int(self.rows("attempt.admitted", "t11/wf1/s0/b/a0"), 0, "B refused by the state");
+        std::test::assert_eq_int(self.count(self.lives, "t11/wf1/s0/b:dissolved"), 0, "and resident");
+        dna::WorkflowCancelRequested <- dna::WorkflowCancel { task_id: "t11", reason: "cancel with a refused leaf" };
+        self.until(false, "t11:cancelled", 1);
+        self.until(true, "t11:dissolved", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows("work.settled", "t11/wf1/s0/a"), 1, "A settled under the fence");
+        std::test::assert_eq_int(self.rows("work.settled", "t11/wf1/s0/b"), 0, "B, never admitted, settled nothing");
+        std::test::assert_eq_int(self.count(self.lives, "t11/wf1/s0/b:dissolved"), 1, "B retired");
+        std::test::assert_eq_int(self.count(self.lives, "t11/wf1/s0/a:dissolved") + self.count(self.lives, "t11/wf1/s0:dissolved") + self.count(self.lives, "t11:dissolved"), 3, "A, the step and the workflow reclaimed themselves");
+        std::test::assert_eq_int(self.rows("step.registered", "t11/wf1/s1"), 0, "step 1 was never born");
+
+        std::test::assert(self.rt.journal.verify_chain(), "the record's chain holds");
+        std::test::assert_eq_int(self.rt.conflicts, 0, "no conflict");
+        std::test::assert_eq_int(self.owner.asked, 11, "eleven executions were asked");
+    }
+}
+
+fn main() { App { }; }

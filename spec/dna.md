@@ -1013,8 +1013,504 @@ is the output of the attempt it settled on, readable only once it has
 settled; what an outstanding or superseded attempt said is never the
 Work's result.
 
-Nothing yet admits, records or executes a workflow; these are the
-durable shapes it is written in, and the state they add up to.
+## Workflow admission
+
+An application admits a defined workflow through the assembly
+(`Dna.admit_workflow(WorkflowAsk)`): which definition and revision, with
+what inputs, under an identity of the caller's. The durable fact precedes
+everything. The id is minted, the definition expanded under the
+assembly's `admission_limits` (its `catalog` holds what the application
+defined), and the admission — engine, bound recipe, limits, counts, the
+ask's identity — appended with exact compare-and-append before anything
+could run; only then the legacy `task.born` summary, so the tooling of
+the day lists the Task. A refusal, by the catalog or by the record, is a
+`workflow.refused` row under the id it minted and nothing else: no
+summary, no child, no work request. Nothing dispatches here; later cards
+execute.
+
+The ask's id is the admission's identity. Asked again — relayed after a
+lost answer, retried — it is one execution, found in the record by that
+id. One decision, one revision: the record is read once, at a revision
+the body captures; whether the ask already landed and whether a candidate
+id is already an execution's or a refusal's are decided against that
+reading; and the append is exact at that same revision. An exact append
+protects the revision it was given, not a decision taken at an older
+one, so when the record has moved — stale, or the store's unique claim on
+the id — the whole decision is taken again from a fresh reading. A taken
+id is skipped before any append. Two bodies contending for one Task id
+cannot both take it, and one ask admitted by another body between this
+body's reading and its append is found on the next reading, not
+admitted twice.
+
+Only the owner of the position admits (GH #664): the same rule `ask`
+applies, applied before an id is minted, so a body over a shared record
+that names no owner admits no workflow either — it answers the asker and
+writes nothing, the ask being the owner's to admit. A refusal, whether
+the catalog's or the store's, is written as the versioned
+`workflow.refused` and the write is checked: when the record will not
+take even that, the answer says the refusal went unrecorded rather than
+presenting it as recorded. A refusal bound to a Task id carries the
+admission's own guarantee — it is appended exactly at the revision that
+found the id free, and when the record has moved it is read again: the
+ask may have landed from another body, in which case that execution is
+the answer, and the id may be another execution's now, in which case the
+refusal is not a Task's at all. A refusal that reaches no Task — the id
+taken meanwhile, every id it would mint already taken, the record moved
+under it too often — is a fact of its own kind, `workflow.ask_refused`,
+under the ask's own identity and a decision ordinal (`<ask>#<n>`), which
+can share no identity with any Task under any owner's name; the
+projection holds it beside the executions, never as one. The same ask
+refused again for the same reason is the same decision, answered without
+another row; refused for another reason, it is the next ordinal. That
+decision, too, is one reading of the record: the decisions already taken
+on the ask are counted at a captured revision, the ordinal chosen against
+that count, and the append is exact at that revision, so another body
+deciding on the same ask meanwhile moves the record and the decision is
+taken again — its decision for the same reason becomes this body's
+answer, and for another reason takes the ordinal ahead of this body's.
+Nothing is appended as a changed body under a recorded identity, and a
+refusal never attaches to an execution another body admitted. A restart counts admitted and refused
+ids among those minted, so an id is never minted twice, and an admitted
+Task is never resumed as legacy edit work, with or without its summary
+row: the admission is the one positive discriminator, and its recovery
+belongs to the engine's own cards.
+
+## Workflow execution: one attempt
+
+The durable Work owner admits an attempt (`attempt.admitted`) and then
+asks for it to run through `AttemptExecutor` (`dna/core/
+workflow_execution.hl`), which runs one admitted attempt once. Nothing
+runs before the admission is in the record as admitted: the attempt's
+identity, its performer kind and every field of its request are checked
+against the recorded admission. An attempt whose outcome is recorded is
+not run again; the recorded outcome is the answer, claim or no claim.
+The decision to run is one reading of the record: refreshed, read at a
+captured revision — the admission, whether the attempt is settled,
+whether its execution is claimed — and the claim appended exactly at that
+revision, with the effect claim of the existing effect records, keyed by
+the attempt. When the record has moved the decision is taken again: an
+outcome recorded meanwhile is the answer and the performer is not
+called; a claim taken meanwhile is attached to; only a claim that lands
+is followed by a performer call. A request that arrives while the
+attempt is running attaches to its pending outcome instead of starting a
+second performer, and a claim the record refuses runs nothing. The performer the admission names runs
+once. Every reply, the one that comes back from the call and the one
+that comes later, is judged first for whose it is: it must be about this
+attempt (a reply that echoes an `attempt_id` must echo this one) and
+from that performer (the identity the kind selects), and a reply that
+is neither is not this attempt's pending answer either — it is refused
+before anything is made of it, and the attempt stays outstanding under
+its claim. A reply that is this attempt's and not terminal leaves it
+outstanding and records nothing; a terminal one must say something the
+outcome contract carries — `done`, `failed`, `declined` or `timeout` —
+or it is refused without a row and without closing the claim. The
+later reply is settled through the same path, under the same rules. An accepted outcome is persisted as `attempt.outcome` with an
+exact append before anything is answered, and a reply for an attempt
+whose outcome is already recorded changes nothing; an outcome the
+record will not take is reported unrecorded, never as done, and nothing
+advances on it.
+
+The executor retries nothing (one retry owner: the Work's lifecycle) and
+advances nothing (the Work settles on the outcome in a later card). It
+makes no claim that external effects happen once: a performer that
+acted and died before its outcome was saved is a later card's. The
+legacy `WorkSystem` request loop, which retries internally, stays for
+legacy callers.
+
+## Workflow execution: one step
+
+One active step and its leaf Works are resident loci
+(`dna/core/workflow_runtime.hl`), in the shape the lifetime proof
+established: a `StepRun` is an accepted child no parent releases, born
+from its owner's handler, alive after its `run()` and every handler
+return, advancing from its own handlers keyed by its id, ending with
+`terminate;`. It owns its `WorkRun`s the same way, one per leaf, born
+from the handler that heard the activation land. Neither holds a
+journal: each proposes every transition to the one `WorkflowRuntime`
+over the bus — `TransitionProposed`, keyed by scope — holds one
+proposal at a time, and acts only on that proposal's answer, and only on
+`ok`. A refusal dispatches nothing.
+
+`WorkflowRuntime` is the committer, and the executor, over one journal.
+A proposal is decided at one reading: the runtime refreshes, applies
+what the record holds beyond what its projection has seen and remembers
+each committed proposal's id and revision, and that reading's revision
+is the one the decision is taken at and the one the append is exact at
+— never a second look. A proposal already committed is answered again
+from what was committed, if it is the same proposal; the same id
+carrying another transition is a conflict, refused with nothing
+appended. Otherwise the transition is validated against the projection
+without touching it (a dry run of card 06's rules), appended exactly at
+that revision, and applied for real once the append has landed. When
+the record has moved under the decision — another runtime committed the
+same transition, or anything else — the append is stale and the
+decision is taken again against the new state: the same transition
+committed meanwhile is answered from its row, and one row stands. An
+append the record refuses answers a refusal and moves nothing, so the
+same transition proposed again is decided against the state as it is.
+A proposal the state refuses lands nothing: the record is not the place
+a transition is found invalid. An answer says who refused (`basis`:
+`state`, `record` or `conflict`), because the residents treat them
+differently. The body of a proposal carries the reference the row will
+be committed under, and it must be the proposal's own scope, key and id,
+whole, or the proposal is refused as a conflict with itself before the
+state sees it; a committed proposal is rebuilt from its row and compared
+field by field with one sent again — the same, whole, is a replay
+answered from the row; anything else under that id, another key
+included, is a conflict. A Work asks the runtime to run its
+admitted attempt by id (`AttemptRequested`); the runtime reads the
+admission from the record and runs it through the one-attempt path
+above, and every reply — the one that came back from the call and the
+one that came later, through `settle` — reaches the Work the same way
+(`AttemptReplied`, keyed by the Work), so an immediate and a delayed
+reply are one reducer and one completion path.
+
+The barrier holds as the contract has it. A `StepRun` registers its
+whole member set (`step.registered`), activates (`step.activated`), and
+only then births its leaves; a member answers once, by its key
+(`MemberSettled`, keyed by the step): a member that answered again and
+an answer from no member of the step change nothing. Two required
+leaves complete the step in either order; one immediate reply and one
+delayed one leave it waiting, alive, with the outstanding Work
+reachable. A member that failed fails the step at once
+(`step.failed`, naming the member) and a step whose every member settled
+done completes it (`step.completed`); either publishes one terminal
+outcome (`StepSettled`, keyed by the step) and settles the step. A
+member is its key and the Work bound under it: a settlement naming a
+required key for another Work is no member's and changes nothing. After
+that a sibling's later reply is recorded — its attempt's outcome and its
+Work's settlement land as facts — and reopens nothing; the `StepRun`
+stays until every member it dispatched has settled, then reclaims
+itself, and a `WorkRun` reclaims itself once its settlement is answered.
+A leaf with allowance left is retried before it fails: each attempt is
+admitted as a proposal of its own, and a retry the record will not take
+— the step failed meanwhile — settles the Work failed on the attempt
+that failed, the drain. A refusal by the record is no outcome: a Work
+or a Step whose append the record refused holds its transition, tells
+nobody it settled, reclaims nothing, and proposes the same transition
+again when the record resumes (`RecordResumed`, published by whoever
+knows the record is writable again) or, for a Work, when its attempt's
+reply reaches it again; a member has answered its step only once its
+settlement is in the record. A Work whose first admission the state
+refused has nothing admitted, no claim and no effect to await: under a
+Step that has durably settled it retires (`MemberRetired`, keyed by the
+step), which is not a settlement — it answers nothing — and the step
+counts it toward its drain and reclaims itself once every admitted
+responsibility settled; a first admission the record refused is
+proposed again when the step settles, so the state says whether it can
+still be admitted. One the state refuses while its step runs stays,
+unattempted and reachable, until it is fenced. Nothing
+here orders steps, spawns child workflows or survives a restart; those
+are later cards.
+
+## Workflow execution: ordered steps
+
+One admitted execution is a `WorkflowRun`, resident like its steps: it
+holds every leaf of the execution (copied at birth), births step 0, and
+births step i+1 only from the handler that hears step i has drained —
+`StepDrained`, keyed by the task, which a `StepRun` publishes as it
+leaves, once every member it admitted has settled or retired — behind
+that step's committed completion. No ordering lives in the workflow
+that the record does not enforce: the projection refuses a step's
+activation while the step before has not completed, and the
+activation's own identity (`<step>@activated`) is one row at the
+committer, so a duplicate completion cannot start the next step twice;
+a drain message for a step the workflow has advanced past, or for none
+it has active, changes nothing. When the last step drained completed
+the workflow proposes `workflow.settled` done; a failed step drains
+first, then the workflow proposes `workflow.settled` failed, and later
+steps are never born. Both are proposals like any other: decided at one
+reading, held when the record refuses them, proposed again on
+`RecordResumed`.
+
+A cancellation is asked of a workflow by task (`WorkflowCancelRequested`)
+and is a proposal too: `workflow.settled` cancelled, which the state
+takes at any point before the execution settled and refuses after.
+Once it landed the workflow says so (`WorkflowSettled`, keyed by the
+task) and births nothing further; its active step hears it and fences
+what it dispatched (`StepFenced`, keyed by the step) — a step with no
+outcome yet is `cancelled` (no row of its own; the task's row is its
+basis), and a step that had failed and is draining keeps its failure:
+the fence is not a second outcome. The fence is the one message a Work
+acts on for a cancellation (a cancelled step settlement is for the
+owner; a Work ignores it), so a Work that retires or settles on it
+acts, and ends, exactly once. Its Works hear the fence: an
+admitted attempt still awaiting its reply settles cancelled (the
+projection allows that settlement only under a cancelled task); a first
+admission the record refused is proposed again and, refused by the
+state, retires; one the state had refused retires. The fence itself is
+in the record, not in a notification: the executor reads the
+execution's durable cancellation — the task's `workflow.settled`, or an
+ancestor's, walked through the admissions — at the same reading its
+execution claim is exact at, and an attempt not yet claimed under a
+cancelled execution does not run, however the notification lagged,
+while one claimed before the cancellation still records its outcome.
+Nothing external is undone — a reply that comes later is recorded as
+the attempt's outcome and reopens nothing. The workflow leaves once the
+fenced step has drained. An activation the record
+refuses dispatches nothing: the step holds it, no leaf is born, and the
+record's resumption lands it once. Nothing here spawns child workflows
+or survives a restart; those are later cards.
+
+## Workflow execution: child workflows
+
+One admitted Task is a `TaskRun`, resident like the rest: it holds the
+bound recipe, decoded into its own catalog at birth, and from it the
+leaves and children of every step, and births the one `WorkflowRun`
+that runs them. The executions owner (`Executions`, the Task owner the
+contract names, one per scope) accepts every `TaskRun` and never
+releases one: a root asked of it (`ExecutionAsked`) with its admission
+already in the record, and a child asked by its parent Task. One
+execution is one Task: a Task asked twice is born once. The same
+engine runs every level; there is no other path for a child.
+
+A step that dispatches a child member asks its own Task
+(`ChildRequested`, keyed by the parent task), which holds the recipe
+the child is bound in; the Task cuts the subtree the recipe bound
+under that child, exactly, and asks the owner to admit and run it
+(`ChildAdmitRequested`, keyed by scope). A request that names a child
+the recipe does not bind under that step and key is ignored. The child
+proposes its own admission first — `workflow.admitted` with the
+subtree, its parent, its spawning step and its member key, which the
+projection accepts only for what the parent bound, from a step that is
+registered, active and unsettled — and runs only once that landed; an
+admission the record refused is held and proposed again when the
+record resumes, or when the spawning step settles or is fenced — so
+the state, not the child, says whether it can still be admitted, and
+under a failed step it retires on that answer; one the state refused
+retires under the settled or fenced spawning step, as a leaf does. A
+fence that reaches a child while its admission answer is out is kept,
+with its reason, and applied when the answer comes: an admission that
+landed starts and is cancelled at once through its own settlement. A
+spawning step that settles or is fenced while the answer is out owes
+the child one re-decision, taken on that answer if it is a refusal by
+the record: the admission is proposed again once, and the state says —
+neither ordering of the two messages is assumed, and a record that
+keeps refusing is not spun against. A child that settled tells the step that spawned it once
+(`ChildSettled`, keyed by that step) after its row landed, and the step
+counts the exact child bound under the key: a settlement for another
+Task under the key, for a key that is no child of the step, or
+delivered again changes nothing; a failed child fails the step at
+once, as a failed leaf does. The Task leaves once its workflow has
+(`WorkflowLeft`), and tells the step that spawned it so (`ChildLeft`,
+keyed by that step): the step's drain waits for a child that settled
+to have left, not for its settlement, so no ancestor reclaims itself
+ahead of a descendant still holding something — a Work whose
+settlement the record refused, say. A leave from a child that has not
+answered is nobody's: a leave follows a settlement. A step fenced by its Task's cancellation fences a
+running child the same way: the child's Task asks its own workflow to
+cancel, which settles cancelled through the same proposal, so the
+fence reaches every level below and each level drains and reclaims
+from the leaves upward.
+
+## Workflow execution: restore
+
+Restore is not a mode. An execution asked of the executions owner over
+the record a crash left — or fresh: the same ask — first asks the
+runtime what the record holds about it (`ExecutionStateAsked`,
+answered from the projection): one the record has settled is over —
+its settlement is announced and the workflow leaves, birthing nothing
+— except a cancelled one whose admitted Works have not settled:
+cancelled is not cancelled-and-drained, and the current step is born
+fenced, so those Works settle cancelled, the step drains, and the
+workflow leaves behind it. A cancellation heard while the record is
+being asked waits for the answer: an execution the record has settled
+is not cancelled, and one still open is cancelled first — and then,
+as whenever a cancellation lands with no step active, the record is
+asked again what it still holds admitted and unsettled, and that is
+drained through the current step, born fenced, before the workflow
+leaves. One still open proposes its transitions exactly as a fresh one
+does,
+and the committer answers what the record already holds as a replay,
+so every Task, Step, Work and Attempt id a restored incarnation uses is
+the record's, never minted again — a completed record rebooted gains
+no row and runs nothing, and a cancelled one ends the restored
+execution before anything is born.
+
+The one thing a restart adds is redelivery, and the runtime derives it
+from its own incarnation, never from a request: a request for an
+attempt names the attempt and the Work it is an attempt of, and the
+runtime knows which attempts it claimed itself and which it already
+redelivered. Every request is decided against the record at one
+reading: an attempt whose outcome is recorded is answered from it and
+never runs again, and a claim the dead incarnation left open under it
+is closed with it, durably, before the Work is answered — on every
+path that answers from a recorded outcome: a request that finds it,
+one that runs into it on its own reading after seeing the attempt
+unclaimed, one that attaches to a running attempt and finds it, and a
+reply — and
+a close the record refuses leaves the Work holding its responsibility,
+told so, until a later request or reply closes it: a Work whose
+request was refused without an outcome asks again when the record
+resumes; one never claimed runs through the
+ordinary path, which claims first; one claimed by this incarnation, or
+redelivered by it, is running, and the request attaches, so a duplicate
+dispatch starts no second invocation; one claimed and never answered by
+a claimant this incarnation is not was claimed by an incarnation nobody
+will hear from again — unless its effect resulted unknown (a restart
+the existing recovery reconciled no further), which stays visibly
+unresolved, nothing running on it until card 12c's reconciliation
+says what happened. Otherwise its dispatch is issued again with the
+same attempt id and no new claim — a transport redelivery, not a new
+attempt — and that decision is a row (`effect.redelivered`) appended
+exactly at the reading that saw the claim, no outcome and no fence, so
+an outcome or a cancellation landing meanwhile makes it stale and the
+decision is taken again. A reply from the old process for the
+still-current attempt is accepted and recorded like any reply, and
+whichever reply arrives second changes nothing. The admission's
+performer kind is durable: the restored incarnation runs the attempt on
+that kind. What an invocation that died did before it died is a later
+card's, as is cross-process delivery.
+
+## Workflow execution: recovering the tree
+
+A restart rebuilds an execution from the record alone. The executions
+owner is asked with nothing but the task's id and which performer kind
+runs each leaf (`ExecutionAsked`); it asks the runtime for the
+admission as the record holds it (`AdmissionAsked`), and the runtime
+answers from the row, read whole, and from its projection's word that
+the row was admitted (`AdmissionAnswered`): the definition and the
+bound revision, the recipe, the limits. The Task is born from that
+answer, so an execution restored after a restart runs what it was
+admitted with — its bound recipe — whatever the catalog offers now; a
+definition changed to a new revision between shutdown and restart
+binds new admissions and touches no old execution. A task the record
+never admitted, one admitted with a recipe that cannot be read, or one
+whose admission the projection refused is not resumed: the owner says
+so (`ExecutionRefused`, with why) and nothing is born or invented for
+it. From there the residents re-propose through the transition code
+live execution uses, and the record decides what replays and what
+runs: a step the record completed is not reborn and the next step
+starts once; a child the record settled announces its settlement and
+leaves, and its parent's step completes on it; a member still waiting
+is recovered where the record left it — its admitted attempt
+redelivered, under card 12c's reconciliation — and completed members
+do not rerun; the grandchild settles, then the child, then the root.
+Only unfinished responsibilities exist in memory after a restart, and
+every id and every required-member set is the record's.
+
+The admission recovered is the one the projection accepted — the body
+it recorded when it applied the row — never the last row in the record
+that names the task: a later row the projection refused (a
+re-admission under another revision, a row whose body names another
+task) is not the execution, and a task the projection holds no
+admission of is refused with the projection's reason for the last row
+it refused, from a dry replay of that row. A child of another Task is
+not recovered by asking for it: the answer says whose child it is,
+under which step and key, and the child comes back through its parent,
+in its bound place. The workflow identity an execution runs under is
+the one its recipe bound, read from the record and never re-derived;
+the projection refuses an admission whose recipe binds the task under
+any workflow but `<task>/wf<revision>` (§4 of the contract), so the
+recipe and the identity never say different things. Every question the
+owner puts to the record carries an identity of its own
+(`AdmissionAsked.ask_id`), held outstanding until answered; an answer
+is taken only to a question this owner holds outstanding, for the task
+it asked about, and only once — an answer nobody asked for, however
+positive, and an answer under a question already answered, are strays
+and birth nothing. A leaf asks the record what it holds about it before
+proposing anything (`WorkStateAsked` / `WorkStateAnswered`): a settled
+Work has answered and leaves; a Work with an admitted attempt resumes
+that attempt under its number, id and performer kind as the record has
+them — the kinds a restart is asked with bind only attempts not yet
+admitted — and a Work never attempted admits its first attempt under
+the asked kind. The state question carries the Work's scope and an
+identity of its own (`WorkStateAsked.ask_id`), held outstanding until
+answered; the answer carries both back, and the Work takes only the
+answer to its one outstanding question — its scope, its identity —
+once: a same-named Work in another scope's record (ids are minted
+within a record) is not this Work, and a stale or unsolicited answer is
+no state. A fence heard while the state question is outstanding is
+remembered and decided on after the answer: an admitted attempt is
+re-proposed and, admitted under the fence, settles cancelled; a Work
+never attempted proposes its first admission, which the state refuses
+under the cancelled Task, and retires. No settlement ever names no
+attempt.
+
+## Workflow execution: uncertain external effects
+
+An attempt's performer may have acted before the outcome was saved:
+the incarnation claimed the attempt, invoked the adapter, and died
+before the outcome row landed. Recovery reconciles before it decides
+on a redelivery. The work system carries an effect adapter's
+reconciliation beside each of its performers, one per kind as the
+performers are (`Reconciler`, default `NoEvidence`): the adapter of the
+admitted kind is asked, for the identity that kind selects, about an
+attempt whose claim an incarnation that died left open, and it says
+whether it can tell, whether it acted, what it recorded when it did, or
+that acting again is documented safe. Its answer names the kind and
+identity it speaks for, and evidence that does not name the admitted
+performer's is no evidence about the attempt — another adapter's
+attestation that nothing acted, or its documented idempotence, does not
+authorize replaying this performer. An adapter that acted hands back
+the outcome it recorded, as it recorded it — judged for whose it is
+exactly as any reply is, the performer it names and the attempt it
+names if it names one, never relabelled — and that is the attempt's
+outcome, recorded and its claim closed; nothing is performed twice. An adapter
+that attests it never acted, or whose effect is documented idempotent,
+has the dispatch issued again (`effect.redelivered`, saying which).
+An adapter that cannot say leaves the claim resulted unknown, durably
+and visibly (`effect.result unknown (reconciled after a restart: …)`,
+the existing rule-3 mark, appended exactly at the reading and under
+the fence; the record moving under that append — an outcome, a
+resolution, a takeover, or something unrelated — has the decision
+taken again at the new reading, so a resolution that landed meanwhile
+is the outcome and an unrelated move just lands the unknown row
+after it), and the attempt waits — asked again it still waits, nothing
+is replayed blind — until a person resolves it (`hale dna effect
+resolve <key> --outcome ok|failed`); then the resolution is the
+attempt's outcome, recorded so the Work settles on it. The assembly's
+own restart rule, which results the other effect families by evidence
+or marks them unknown, leaves an attempt's claim to the runtime's
+adapter. One flat leaf; no exactly-once external execution is promised
+and no compensation is invented: what is promised is that recovery
+never performs an effect twice on its own say-so, and never pretends to
+know what it cannot.
+
+## Workflow execution: retries under a restart, and the fence
+
+A retry is the next numbered attempt of a Work, and it is admitted only
+after the record holds the outcome that permits it — a failed attempt
+with allowance left, the allowance the recipe bound — as card 06's
+rules have it; its request and performer kind are the admission's,
+durable, so nothing is planned again for it. Under a restart the
+retry is the record's: a reboot proposes attempt zero, is answered
+from its recorded failure, proposes attempt one, which the record
+already holds and replays, and asks for it — redelivered if the
+incarnation that claimed it died — and never mints attempt two. A late
+success for attempt zero is answered from its recorded failure and
+changes nothing; the Work's current attempt is attempt one. An
+admission the record refuses invokes no performer and spends no retry:
+the Work holds it, with its number, and proposes it again when the
+record resumes.
+
+The runtime runs under a lease that is rows of its own record
+(`lease.taken`, carrying the fencing token — a per-key epoch allocated
+under the exact append that takes it — the holder and the expiry;
+`lease.renewed`, which moves the expiry and keeps the token;
+`lease.released`; each a JSON body, so a holder reads back as it was
+written and an empty holder is refused): a key, a holder, the token
+the holder was granted, and the clock it judges the lease by. The
+token is the row's own, never its position: a routed reader that
+starts fresh reads the record's rows before the ledger's and finds the
+same lease a reader that was live found, and the lease is the take
+with the highest token, renewed and released by rows that name it. Ownership is read at the revision a write is exact at, so the
+fence is atomic with the write by construction: a takeover is a row, it
+moves the revision, and a stale holder's exact append fails and is
+decided again — at the new revision the record names the new holder,
+and the write is fenced. That holds for every write the runtime makes:
+a transition it commits, a claim, a redelivery, an outcome it records,
+a claim it closes. A holder whose lease expired — unclaimed, re-taken
+by another, or re-taken under its own name by a restarted incarnation
+with a new token — commits nothing, however live it feels, and answers
+`fenced`, which a resident holds as it holds a refusal by the record
+and proposes again once the record resumes under a live token; a
+request that only attaches to a running attempt writes nothing and is
+not fenced. Two takes of a free lease at once land one: the other is
+stale, decided again and refused. The cell leases (`MemLeases`,
+`GitLeases`) stay for what they hold — a body, a mutation — where the
+operation they fence is not an append to this record. A runtime with no
+lease key is unfenced: a standalone runtime over a memory record.
 
 ## Storage interfaces
 

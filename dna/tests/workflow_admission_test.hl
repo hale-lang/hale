@@ -1,0 +1,259 @@
+// dna/tests/workflow_admission_test.hl — an execution is admitted
+// atomically (DNA workflow card 07).
+//
+// The durable fact precedes everything. An ask for a defined workflow
+// mints an id, expands the definition under the assembly's limits, and
+// appends the admission — engine, bound recipe, limits, counts, the
+// caller's identity — with exact compare-and-append before anything
+// could run; only then the legacy `task.born` summary. A refusal, by the
+// catalog or by the record, is a `workflow.refused` row and nothing
+// else: no summary, no child, no work request.
+//
+// The ask's id is the admission's identity: asked again, it is one
+// execution. And a restart recognizes an admitted execution by its
+// admission — with or without its summary row — so its id is never
+// minted again and it is never mistaken for legacy edit work.
+
+import "../core" as dna;
+
+main locus App {
+    params {
+        dna: dna::Dna = dna::Dna {
+            work: dna::WorkSystem {
+                human: dna::HumanWorkGateway { operator: "alice", answer: "done" },
+                selection: dna::HumanFirstSelection { }
+            },
+            review_policy: dna::PostReviewRefactors { },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
+            deployment: dna::NoDeployment { },
+            admission_limits: dna::AdmissionLimits { max_depth: 6, max_steps: 12, max_members: 9, max_attempts: 4, max_works: 99 }
+        };
+        back: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        seed: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        other: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        p: dna::WorkflowProjection = dna::WorkflowProjection { };
+        // a body whose owner is called `ask`: it mints `ask:t<n>`
+        asker: dna::Dna = dna::Dna {
+            work: dna::WorkSystem {
+                human: dna::HumanWorkGateway { operator: "alice", answer: "done" },
+                selection: dna::HumanFirstSelection { }
+            },
+            review_policy: dna::PostReviewRefactors { },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
+            deployment: dna::NoDeployment { },
+            ownership: dna::Ownership { text: "org = ask\nask: alice\n", me: "ask", me_env: "" }
+        };
+        // a body over a shared record that names no owner: it admits
+        // nothing (GH #664), workflows included
+        nobody: dna::Dna = dna::Dna {
+            work: dna::WorkSystem {
+                human: dna::HumanWorkGateway { operator: "alice", answer: "done" },
+                selection: dna::HumanFirstSelection { }
+            },
+            review_policy: dna::PostReviewRefactors { },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" } },
+            deployment: dna::NoDeployment { },
+            ownership: dna::Ownership { text: "org = acme\n", me: "", me_env: "" }
+        };
+    }
+    @unbounded
+    fn rows(kind: String, entity: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.dna.journal.revision() {
+            let e = self.dna.journal.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn asker_rows(kind: String, entity: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.asker.journal.revision() {
+            let e = self.asker.journal.read(i);
+            if e.kind == kind && e.entity == entity { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn seq_of(kind: String, entity: String) -> Int {
+        let mut i = 0;
+        while i < self.dna.journal.revision() {
+            let e = self.dna.journal.read(i);
+            if e.kind == kind && e.entity == entity { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+    @unbounded
+    fn body_of(kind: String, entity: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.dna.journal.revision() {
+            let e = self.dna.journal.read(i);
+            if e.kind == kind && e.entity == entity { out = std::str::clone(e.body); }
+            i = i + 1;
+        }
+        return out;
+    }
+    fn define_all(c: dna::WorkflowCatalog) {
+        std::test::assert_eq_str(c.define("close-month", 1, 2, "close the month"), "", "close-month");
+        std::test::assert_eq_str(c.define("collect-receipts", 1, 2, ""), "", "collect-receipts");
+        std::test::assert_eq_str(c.define("chase-supplier", 1, 1, ""), "", "chase-supplier");
+        std::test::assert_eq_str(c.leaf("close-month", 1, 0, "a", dna::WorkRequest { objective: "reconcile the bank feed" }, 3), "", "a");
+        std::test::assert_eq_str(c.child("close-month", 1, 0, "b", "collect-receipts", 1), "", "b");
+        std::test::assert_eq_str(c.leaf("close-month", 1, 1, "d", dna::WorkRequest { objective: "post the journal entries" }, 1), "", "d");
+        std::test::assert_eq_str(c.leaf("collect-receipts", 1, 0, "b1", dna::WorkRequest { objective: "list missing receipts" }, 1), "", "b1");
+        std::test::assert_eq_str(c.child("collect-receipts", 1, 1, "c", "chase-supplier", 1), "", "c");
+        std::test::assert_eq_str(c.leaf("chase-supplier", 1, 0, "c1", dna::WorkRequest { objective: "email the supplier" }, 2), "", "c1");
+    }
+    run() {
+        self.define_all(self.dna.catalog);
+        // an ask that names no identity is no ask
+        std::test::assert(std::str::contains(self.dna.admit_workflow(dna::WorkflowAsk { definition: "close-month" }), "names its request id"), "an admission has an identity");
+        std::test::assert_eq_int(self.dna.journal.revision(), 0, "and nothing was written for one without");
+
+        // ---- a refusal is a row and nothing else
+        let refused = self.dna.admit_workflow(dna::WorkflowAsk { id: "w0", definition: "nope", revision: 1 });
+        std::test::assert(std::str::starts_with(refused, "refused: "), "an undefined workflow is refused: " + refused);
+        std::test::assert_eq_int(self.rows("workflow.refused", "t1"), 1, "the refusal is in the record under the id it minted");
+        std::test::assert_eq_int(self.rows("workflow.admitted", ""), 0, "no admission");
+        std::test::assert_eq_int(self.rows("task.born", ""), 0, "no summary");
+        std::test::assert_eq_int(self.dna.work.requests, 0, "and zero work requests");
+        std::test::assert_eq_int(self.rows("mutation.proposed", "") + self.rows("task.resumed", ""), 0, "nothing edited or resumed either");
+        let why = dna::decode_refusal(self.body_of("workflow.refused", "t1"));
+        std::test::assert(why.ok && std::str::contains(why.value.why, "nope") && why.value.limits.max_works == 99, "the refusal says why, under the limits applied: " + why.why + why.value.why);
+
+        // ---- an admission: the authoritative row, then the summary
+        let id = self.dna.admit_workflow(dna::WorkflowAsk { id: "w1", definition: "close-month", revision: 1, inputs: "{\"month\": \"2026-08\"}", inputs_ref: "sha256:beef", from: "riley" });
+        std::test::assert_eq_str(id, "t2", "the next id, after the refused one: " + id);
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t2"), 1, "one admission");
+        std::test::assert_eq_int(self.rows("task.born", "t2"), 1, "one summary");
+        std::test::assert(self.seq_of("workflow.admitted", "t2") < self.seq_of("task.born", "t2"), "the admission precedes the summary");
+        std::test::assert_eq_int(self.dna.work.requests, 0, "nothing was dispatched: this card admits");
+        let a = dna::decode_admission(self.body_of("workflow.admitted", "t2"));
+        std::test::assert(a.ok, "the admission reads back: " + a.why);
+        std::test::assert(a.value.request == "w1" && a.value.definition == "close-month" && a.value.revision == 1 && a.value.inputs == "{\"month\": \"2026-08\"}" && a.value.inputs_ref == "sha256:beef", "carrying the ask");
+        std::test::assert(a.value.limits.max_works == 99 && a.value.limits.max_depth == 6, "and the limits it was admitted under, the assembly's");
+        std::test::assert(a.value.works == 4 && a.value.tasks == 3 && a.value.steps == 5 && a.value.depth == 3, "and what it expanded to");
+        std::test::assert(a.value.transition.scope == "org" && a.value.transition.key == "t2" && a.value.transition.proposal_id == "t2@admitted", "under its transition: " + a.value.transition.proposal_id);
+        std::test::assert_eq_str(self.back.decode_bound(a.value.recipe), "", "the recipe reads back");
+        std::test::assert_eq_int(self.back.bound_count(), 12, "as the whole bound tree");
+        std::test::assert_eq_str(self.back.bound_node("t2").kind, "task", "rooted at the minted id");
+        std::test::assert(std::str::contains(self.body_of("task.born", "t2"), "w1: close-month@1 (workflow)"), "the summary names the ask: " + self.body_of("task.born", "t2"));
+
+        // ---- the same ask again is the same execution
+        std::test::assert_eq_str(self.dna.admit_workflow(dna::WorkflowAsk { id: "w1", definition: "close-month", revision: 1 }), "t2", "asked again, it is t2");
+        std::test::assert_eq_int(self.rows("workflow.admitted", ""), 1, "and still one admission");
+        std::test::assert_eq_int(self.rows("task.born", ""), 1, "and one summary");
+        std::test::assert_eq_str(self.dna.admit_workflow(dna::WorkflowAsk { id: "w2", definition: "close-month", revision: 1 }), "t3", "another ask is another execution");
+        std::test::assert_eq_int(self.rows("workflow.admitted", ""), 2, "two admissions");
+
+        // ---- an id another body took is skipped before any append
+        //      (the record is read once and the candidate decided against
+        //      that reading; no stale report is needed to know it is gone)
+        self.define_all(self.other);
+        let xo = self.other.expand("t4", "close-month", 1, dna::AdmissionLimits { });
+        std::test::assert(xo.ok, "t4 expands for the other body: " + xo.why);
+        let theirs = self.dna.journal.append(self.dna.journal.revision(), "workflow.admitted", "t4", dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: "t4", definition: "close-month", revision: 1, request: "theirs",
+            recipe: self.other.encode_bound(), limits: dna::AdmissionLimits { },
+            works: xo.works, tasks: xo.tasks, steps: xo.steps, depth: xo.depth
+        }));
+        std::test::assert(theirs.ok, "another body's admission under t4 is in the record");
+        std::test::assert_eq_str(self.dna.admit_workflow(dna::WorkflowAsk { id: "w4", definition: "close-month", revision: 1 }), "t5", "the next ask skips t4 and takes t5");
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t4"), 1, "one admission under t4, the other body's");
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t5"), 1, "and one under t5");
+        std::test::assert_eq_str(self.dna.admit_workflow(dna::WorkflowAsk { id: "theirs", definition: "close-month", revision: 1 }), "t4", "the other body's ask, asked here, is its execution");
+
+        // ---- a body that names no owner admits nothing
+        self.define_all(self.nobody.catalog);
+        let none = self.nobody.admit_workflow(dna::WorkflowAsk { id: "w-nobody", definition: "close-month", revision: 1 });
+        std::test::assert(std::str::contains(none, "not this organization's to admit"), "an unnamed body over a shared record admits no workflow: " + none);
+        std::test::assert_eq_int(self.nobody.journal.revision(), 0, "and writes nothing: no id was minted for it");
+
+        // ---- the crash window: admitted, and stopped before the summary
+        self.define_all(self.seed);
+        let x = self.seed.expand("t7", "close-month", 1, dna::AdmissionLimits { });
+        std::test::assert(x.ok, "t7 expands: " + x.why);
+        let orphan = self.dna.journal.append(self.dna.journal.revision(), "workflow.admitted", "t7", dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: "t7", definition: "close-month", revision: 1, request: "w7",
+            recipe: self.seed.encode_bound(), limits: dna::AdmissionLimits { },
+            works: x.works, tasks: x.tasks, steps: x.steps, depth: x.depth
+        }));
+        std::test::assert(orphan.ok, "an admission with no summary is in the record, as a crash would leave it");
+        let before = self.dna.journal.revision();
+        // the organism starts again over that record
+        self.dna.rehydrate();
+        std::test::assert_eq_int(self.rows("task.pending", "t7") + self.rows("task.resumed", "t7"), 0, "t7 is not pended or resumed as legacy work");
+        std::test::assert_eq_int(self.rows("mutation.proposed", ""), 0, "nothing was edited for it");
+        std::test::assert_eq_int(self.dna.work.requests, 0, "and no work was requested");
+        std::test::assert_eq_str(self.dna.admit_workflow(dna::WorkflowAsk { id: "w7", definition: "close-month", revision: 1 }), "t7", "the ask that made it, asked again, is t7");
+        std::test::assert_eq_str(self.dna.admit_workflow(dna::WorkflowAsk { id: "w8", definition: "close-month", revision: 1 }), "t8", "and the next id is minted past it, not over it");
+        // with its summary written late, still not legacy work
+        let late = self.dna.journal.append(self.dna.journal.revision(), "task.born", "t7", "w7: close-month@1 (workflow)");
+        self.dna.rehydrate();
+        std::test::assert_eq_int(self.rows("task.pending", "t7") + self.rows("task.resumed", "t7"), 0, "with its summary, t7 is still an admitted execution, not edit work");
+        std::test::assert_eq_int(self.dna.work.requests, 0, "and still nothing was requested");
+
+        // ---- the record is far ahead of this body's count: every id it
+        //      would mint is taken, and the ask is refused on the record,
+        //      under the ask itself, claiming no Task
+        let mut k = 9;
+        while k < 80 {
+            let taken = self.dna.journal.append(self.dna.journal.revision(), "task.born", "t" + to_string(k), "i" + to_string(k) + ": another body's");
+            k = k + 1;
+        }
+        let refusals = self.rows("workflow.refused", "");
+        let admitted = self.rows("workflow.admitted", "");
+        let full = self.dna.admit_workflow(dna::WorkflowAsk { id: "w-full", definition: "close-month", revision: 1 });
+        std::test::assert(std::str::contains(full, "no free id within 64"), "an ask that finds every id taken is refused: " + full);
+        std::test::assert_eq_int(self.rows("workflow.refused", ""), refusals, "no Task was refused: none was reached");
+        std::test::assert_eq_int(self.rows("workflow.ask_refused", "w-full#1"), 1, "the ask itself is refused, as its first decision");
+        let r = dna::decode_ask_refusal(self.body_of("workflow.ask_refused", "w-full#1"));
+        std::test::assert(r.ok && r.value.request == "w-full" && r.value.decision == 1 && std::str::contains(r.value.why, "no free id"), "as the versioned ask refusal: " + r.why + r.value.why);
+        std::test::assert_eq_int(self.rows("workflow.admitted", ""), admitted, "no admission was written for it");
+        std::test::assert_eq_int(self.dna.work.requests, 0, "and nothing was dispatched");
+        // asked again: the scan that was exhausted minted past the taken
+        // block, so the counter now stands beyond it and the ask is admitted
+        // — a decision is a decision on the record as it was
+        let full_again = self.dna.admit_workflow(dna::WorkflowAsk { id: "w-full", definition: "close-month", revision: 1 });
+        std::test::assert_eq_str(full_again, "t80", "asked again past the taken block, it is admitted: " + full_again);
+        std::test::assert_eq_int(self.rows("workflow.ask_refused", ""), 1, "the refusal stands as the first decision on the ask");
+        std::test::assert_eq_int(self.rows("workflow.admitted", "t80"), 1, "and the admission is the second");
+
+        // ---- an owner called `ask`: its Tasks are `ask:t<n>`, and an ask
+        //      refusal can share no identity with them, whatever the ask is
+        //      called — even `t1`
+        self.define_all(self.asker.catalog);
+        let seed = self.asker.admit_workflow(dna::WorkflowAsk { id: "seed", definition: "close-month", revision: 1 });
+        std::test::assert_eq_str(seed, "ask:t1", "the owner called ask mints ask:t1: " + seed);
+        let mut k = 2;
+        while k < 70 {
+            let taken = self.asker.journal.append(self.asker.journal.revision(), "task.born", "ask:t" + to_string(k), "another body's");
+            k = k + 1;
+        }
+        let collide = self.asker.admit_workflow(dna::WorkflowAsk { id: "t1", definition: "close-month", revision: 1 });
+        std::test::assert(std::str::contains(collide, "no free id"), "an ask called t1 finds every id taken: " + collide);
+        std::test::assert_eq_int(self.asker_rows("workflow.refused", "ask:t1"), 0, "and no refusal lands on the Task ask:t1");
+        std::test::assert_eq_int(self.asker_rows("workflow.ask_refused", "t1#1"), 1, "it is refused under the ask, t1#1");
+        // the whole record replays into the reducer: the seed's admission
+        // stands, and the refusal contradicts nothing
+        let mut i = 0;
+        while i < self.asker.journal.revision() {
+            let e = self.asker.journal.read(i);
+            if std::str::starts_with(e.kind, "workflow.") {
+                let applied = dna::replay(self.p, e.kind, e.entity, e.body);
+                std::test::assert(applied.ok, "the record replays into the reducer: " + e.kind + " " + e.entity + ": " + applied.why);
+            }
+            i = i + 1;
+        }
+        std::test::assert_eq_str(self.p.task("ask:t1").disposition, "", "ask:t1 is still running in the reducer's eyes");
+        std::test::assert_eq_int(self.p.ask_decisions("t1"), 1, "and the ask t1 has one decision");
+    }
+}
+
+fn main() { App { }; }

@@ -119,6 +119,18 @@ locus FactRows {
     capacity { heap rows of Fact; }
 }
 
+// One decision refusing an ask before any Task was reached.
+type AskView {
+    request: String = "";
+    decision: Int = 0;
+    why: String = "";
+}
+
+@form(vec)
+locus AskViewRows {
+    capacity { heap rows of AskView; }
+}
+
 // What applying one fact did. `ok` is false only when the fact does not
 // belong here; a replay is `ok` and moved nothing.
 type Applied {
@@ -150,6 +162,34 @@ fn set_add(set: String, key: String) -> String {
     if set_has(set, key) { return set; }
     if len(set) == 0 { return key; }
     return set + " " + key;
+}
+
+// The set without `key`: the whole key, never a prefix of one.
+@unbounded
+fn set_remove(set: String, key: String) -> String {
+    let mut out = "";
+    let mut rest = set;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest + " ", " ");
+        let one = rest[0..sp];
+        rest = if sp + 1 >= len(rest) { "" } else { rest[(sp + 1)..len(rest)] };
+        if len(one) == 0 || one == key { continue; }
+        out = if len(out) == 0 { one } else { out + " " + one };
+    }
+    return out;
+}
+
+// How many keys a space-separated set names.
+@unbounded
+fn set_count(set: String) -> Int {
+    if len(set) == 0 { return 0; }
+    let mut n = 1;
+    let mut i = 0;
+    while i < len(set) {
+        if std::str::byte_at_unchecked(set, i) == 32 { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
 }
 
 // The value after `<key><sep>` in a space-separated map, "" when the map
@@ -241,10 +281,15 @@ locus WorkflowProjection {
         steps: StepViewRows = StepViewRows { };
         tasks: TaskViewRows = TaskViewRows { };
         facts: FactRows = FactRows { };
+        asks: AskViewRows = AskViewRows { };
         // every node every admission bound, by id: the authority
         tree: BoundNodeRows = BoundNodeRows { };
         // reads one recipe at a time, on its way into `tree`
         reader: WorkflowCatalog = WorkflowCatalog { };
+        // a dry run answers what applying would do and changes nothing: a
+        // committer validates a transition this way before its exact
+        // append, and applies it for real once the append has landed
+        dry: Bool = false;
     }
 
     // ---- what it knows ------------------------------------------------
@@ -277,6 +322,41 @@ locus WorkflowProjection {
         return StepView { };
     }
 
+    // How many Works of a task hold an admitted attempt and no
+    // settlement: what a cancelled execution still owes before it has
+    // drained (card 12a).
+    @unbounded
+    fn outstanding_works(task_id: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.works.len() {
+            let w = self.works.get(i) or WorkView { };
+            if w.task_id == task_id && len(w.disposition) == 0 { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    // The index of the first step of a task the record has not completed,
+    // in the recipe's order: where an execution still open resumes.
+    @unbounded
+    fn current_step(task_id: String) -> Int {
+        let mut index = 0;
+        let mut found = true;
+        while found {
+            found = false;
+            let mut i = 0;
+            while i < self.tree.len() {
+                let n = self.tree.get(i) or BoundNode { };
+                if n.kind == "step" && n.parent == task_id && n.step_index == index {
+                    found = true;
+                    if self.step(n.id).disposition != "completed" { return index; }
+                }
+                i = i + 1;
+            }
+            if found { index = index + 1; }
+        }
+        return index;
+    }
     @unbounded
     fn task(task_id: String) -> TaskView {
         let mut i = 0;
@@ -404,6 +484,12 @@ locus WorkflowProjection {
             out = out + "work " + w.work_id + " " + w.attempt_id + " " + w.attempt_disposition + " " + w.attempt_result + " | " + w.disposition + " " + w.result + " " + w.result_ref + "\n";
             i = i + 1;
         }
+        i = 0;
+        while i < self.asks.len() {
+            let a = self.asks.get(i) or AskView { };
+            out = out + "ask " + a.request + "#" + to_string(a.decision) + " " + a.why + "\n";
+            i = i + 1;
+        }
         return out + "facts " + to_string(self.facts.len()) + " nodes " + to_string(self.tree.len()) + "\n";
     }
 
@@ -430,6 +516,8 @@ locus WorkflowProjection {
         return refused(kind + " " + id + " is already recorded, and this row says something else");
     }
 
+    // one row per committed fact: the projection is the record's size
+    @unbounded
     fn record(kind: String, id: String, body: String) {
         self.facts.push(Fact { kind: kind, id: id, body: body });
     }
@@ -447,6 +535,7 @@ locus WorkflowProjection {
     fn apply(kind: String, entity: String, body: String) -> Applied {
         if kind == "workflow.admitted" { return self.admitted(entity, body); }
         if kind == "workflow.refused" { return self.refusal(entity, body); }
+        if kind == "workflow.ask_refused" { return self.ask_refused(entity, body); }
         if kind == "step.registered" { return self.registered(entity, body); }
         if kind == "step.activated" { return self.activated(entity, body); }
         if kind == "attempt.admitted" { return self.attempt(entity, body); }
@@ -479,6 +568,13 @@ locus WorkflowProjection {
         if root.kind != "task" { return refused("the recipe an admission of " + a.task_id + " carries does not bind that task"); }
         if root.definition != a.definition || root.revision != a.revision {
             return refused("task " + a.task_id + " is bound to " + definition_name(root.definition, root.revision) + ", not " + definition_name(a.definition, a.revision));
+        }
+        // the workflow the recipe binds the task under is §4's, and is
+        // read from the recipe from here on — never re-derived — so the
+        // two never say different things
+        let wf = a.task_id + "/wf" + to_string(a.revision);
+        if root.workflow_id != wf {
+            return refused("the recipe an admission of " + a.task_id + " carries binds it under `" + root.workflow_id + "`, not `" + wf + "`, the workflow of " + a.task_id + " at revision " + to_string(a.revision));
         }
         if root.parent != a.parent_task || root.spawning_step != a.spawning_step || root.member_key != a.member_key {
             return refused("task " + a.task_id + " is bound under <" + root.parent + " " + root.spawning_step + " " + root.member_key + ">, not <" + a.parent_task + " " + a.spawning_step + " " + a.member_key + ">");
@@ -519,6 +615,7 @@ locus WorkflowProjection {
                 }
                 i = i + 1;
             }
+            if self.dry { return applied(); }
             i = 0;
             while i < self.reader.bound_count() {
                 self.tree.push(self.reader.bound_at(i));
@@ -527,6 +624,7 @@ locus WorkflowProjection {
         } else {
             let gap = self.subtree_gap(a.task_id);
             if len(gap) > 0 { return refused("the recipe an admission of " + a.task_id + " carries " + gap); }
+            if self.dry { return applied(); }
         }
         self.tasks.push(TaskView {
             task_id: a.task_id, definition: a.definition, revision: a.revision,
@@ -548,6 +646,7 @@ locus WorkflowProjection {
         if len(self.task(r.task_id).task_id) > 0 {
             return refused("task " + r.task_id + " was admitted; a refusal does not undo that");
         }
+        if self.dry { return applied(); }
         self.tasks.push(TaskView {
             task_id: r.task_id, definition: r.definition, revision: r.revision,
             parent_task: r.parent_task, spawning_step: r.spawning_step, member_key: r.member_key,
@@ -584,6 +683,45 @@ locus WorkflowProjection {
         }
         if bound != self.reader.bound_count() { return "binds " + to_string(self.reader.bound_count()) + " node(s) where its parent bound " + to_string(bound); }
         return "";
+    }
+
+    // An ask refused before any Task: its own row under its own identity,
+    // `<ask>#<decision>`. No Task is looked up and none is written, so it
+    // can contradict no execution, whatever an owner is called.
+    @unbounded
+    fn ask_refused(entity: String, body: String) -> Applied {
+        let read = decode_ask_refusal(body);
+        if !read.ok { return refused(read.why); }
+        let r = read.value;
+        let bad = self.envelope(entity, ask_refusal_id(r.request, r.decision), "ask refusal");
+        if len(bad) > 0 { return refused(bad); }
+        let seen = self.known("workflow.ask_refused", entity, body);
+        if len(seen.why) > 0 { return seen; }
+        let mut i = 0;
+        while i < self.asks.len() {
+            let a = self.asks.get(i) or AskView { };
+            if a.request == r.request && a.decision == r.decision {
+                return refused("ask " + r.request + " decision " + to_string(r.decision) + " is already recorded, and this row says something else");
+            }
+            i = i + 1;
+        }
+        if self.dry { return applied(); }
+        self.asks.push(AskView { request: r.request, decision: r.decision, why: r.why });
+        self.record("workflow.ask_refused", entity, body);
+        return applied();
+    }
+
+    // The decisions recorded on one ask, "" when none.
+    @unbounded
+    fn ask_decisions(request: String) -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.asks.len() {
+            let a = self.asks.get(i) or AskView { };
+            if a.request == request { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
     }
 
     // ---- a step: registered against the recipe, activated in order ----
@@ -674,6 +812,7 @@ locus WorkflowProjection {
                 return refused("step " + m.step_id + " registers `" + required + "` and leaves out `" + key + "`, which the recipe bound under it; a required set is whole");
             }
         }
+        if self.dry { return applied(); }
         self.steps.push(StepView {
             step_id: m.step_id, task_id: m.task_id, workflow_id: m.workflow_id,
             step_index: m.step_index, required: required, kinds: kinds, entities: entities
@@ -719,6 +858,7 @@ locus WorkflowProjection {
                 if len(ahead) > 0 {
                     return refused("step " + a.step_id + " cannot activate while step " + ahead + " has not completed");
                 }
+                if self.dry { return applied(); }
                 s.activated = true;
                 self.steps.set(i, s) or discard;
                 self.record("step.activated", a.step_id, body);
@@ -776,6 +916,7 @@ locus WorkflowProjection {
                 if w.attempt_disposition == "done" {
                     return refused("attempt " + w.attempt_id + " was done; a Work that succeeded is not retried");
                 }
+                if self.dry { return applied(); }
                 w.attempt_id = std::str::clone(a.attempt_id);
                 w.attempt_no = a.attempt_no;
                 w.attempt_disposition = "";
@@ -790,6 +931,7 @@ locus WorkflowProjection {
         if a.attempt_no != 0 {
             return refused("attempt " + a.attempt_id + " is not the first attempt of " + a.work_id + "; that is " + attempt_id_of(a.work_id, 0));
         }
+        if self.dry { return applied(); }
         self.works.push(WorkView {
             work_id: a.work_id, step_id: a.step_id, task_id: a.task_id,
             member_key: work_key_under(a.step_id, a.work_id), allowance: bound.attempts,
@@ -820,6 +962,7 @@ locus WorkflowProjection {
                 if len(w.attempt_disposition) > 0 {
                     return refused("attempt " + o.attempt_id + " was " + w.attempt_disposition + "; an attempt has one outcome");
                 }
+                if self.dry { return applied(); }
                 w.attempt_disposition = std::str::clone(o.disposition);
                 w.attempt_result = std::str::clone(o.result);
                 w.attempt_result_ref = std::str::clone(o.result_ref);
@@ -860,6 +1003,7 @@ locus WorkflowProjection {
                 }
                 let basis = self.settlement_basis(w, o.disposition);
                 if len(basis) > 0 { return refused(basis); }
+                if self.dry { return applied(); }
                 w.disposition = std::str::clone(o.disposition);
                 if o.disposition == "done" {
                     w.result = std::str::clone(w.attempt_result);
@@ -961,6 +1105,7 @@ locus WorkflowProjection {
                     let why = self.failure_basis(s, o.failed_member);
                     if len(why) > 0 { return refused(why); }
                 }
+                if self.dry { return applied(); }
                 s.disposition = std::str::clone(o.disposition);
                 s.failed_member = std::str::clone(o.failed_member);
                 self.steps.set(i, s) or discard;
@@ -1026,6 +1171,7 @@ locus WorkflowProjection {
                     let gap = self.child_gap(t.spawning_step, t.member_key, t.task_id);
                     if len(gap) > 0 { return refused(gap); }
                 }
+                if self.dry { return applied(); }
                 let up = std::str::clone(t.spawning_step);
                 let key = std::str::clone(t.member_key);
                 t.disposition = std::str::clone(o.disposition);

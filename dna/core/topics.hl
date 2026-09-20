@@ -45,8 +45,185 @@ type TransitionAnswer {
     ok: Bool = false;
     revision: Int = 0;
     why: String = "";
+    // on a refusal, who refused: "state" (the transition has no basis in
+    // the projection), "record" (the append was refused, or the record
+    // moved too often — the transition may be proposed again), "conflict"
+    // (the proposal disagrees with what its id committed, or with itself),
+    // "fenced" (the committer no longer holds the lease its scope runs
+    // under — card 12b — the transition may be proposed again once it does)
+    basis: String = "";
 }
 topic TransitionAnswered { payload: TransitionAnswer; subject: "dna.transition.answered"; keyed_by key; }
+
+// GH #646 workflow card 09: what the residents and the runtime say to
+// each other. A Work asks the runtime to run an admitted attempt, by id
+// (the runtime reads the admission from the record); the runtime answers
+// every reply — the one that came back from the call and the one that
+// came later — keyed by the Work; a Work that settled tells its Step,
+// keyed by the Step; a Step that settled tells its owner.
+type AttemptRequest { scope: String = ""; attempt_id: String = ""; work_id: String = ""; }
+topic AttemptRequested { payload: AttemptRequest; subject: "dna.attempt.requested"; keyed_by scope; }
+type AttemptReply {
+    work_id: String = "";
+    attempt_id: String = "";
+    ok: Bool = false;
+    ran: Bool = false;
+    attached: Bool = false;
+    reused: Bool = false;
+    disposition: String = ""; // "" while the attempt is outstanding
+    result: String = "";
+    why: String = "";
+}
+topic AttemptReplied { payload: AttemptReply; subject: "dna.attempt.replied"; keyed_by work_id; }
+type MemberSettlement { step_id: String = ""; key: String = ""; work_id: String = ""; disposition: String = ""; }
+topic MemberSettled { payload: MemberSettlement; subject: "dna.member.settled"; keyed_by step_id; }
+// A leaf that was never admitted and can no longer be — its first
+// admission refused by the state under a Step that has durably settled
+// — retires: no attempt, no claim, no effect to await. Not a
+// settlement (a member has answered only once its settlement is in the
+// record); its Step stops waiting for it.
+type MemberRetirement { step_id: String = ""; key: String = ""; work_id: String = ""; why: String = ""; }
+topic MemberRetired { payload: MemberRetirement; subject: "dna.member.retired"; keyed_by step_id; }
+type StepSettlement { step_id: String = ""; task_id: String = ""; disposition: String = ""; failed_member: String = ""; why: String = ""; }
+topic StepSettled { payload: StepSettlement; subject: "dna.step.settled"; keyed_by step_id; }
+// GH #646 workflow card 10: a step that ended tells its workflow, by
+// task, once it has drained — every admitted member settled or retired
+// — so the workflow advances only behind a committed completion; a
+// cancellation is asked of a workflow by task; a workflow that settled
+// says so, by task, so its active step fences what it dispatched.
+type StepDrain { task_id: String = ""; step_id: String = ""; step_index: Int = 0; disposition: String = ""; }
+topic StepDrained { payload: StepDrain; subject: "dna.step.drained"; keyed_by task_id; }
+type WorkflowCancel { task_id: String = ""; reason: String = ""; }
+topic WorkflowCancelRequested { payload: WorkflowCancel; subject: "dna.workflow.cancel"; keyed_by task_id; }
+// A step fenced by its workflow's cancellation tells the Works it
+// dispatched — whatever the step's own outcome was: a step that had
+// failed and was draining keeps its failure — so an attempt still out
+// settles cancelled and one never admitted retires.
+type StepFence { step_id: String = ""; task_id: String = ""; reason: String = ""; }
+topic StepFenced { payload: StepFence; subject: "dna.step.fenced"; keyed_by step_id; }
+type WorkflowSettlement { task_id: String = ""; disposition: String = ""; reason: String = ""; }
+topic WorkflowSettled { payload: WorkflowSettlement; subject: "dna.workflow.settled"; keyed_by task_id; }
+// GH #646 workflow card 11: child workflows. A step asks its Task for
+// a child member's execution, by the parent task; the Task, which holds
+// the bound recipe, cuts the subtree and asks the executions owner to
+// admit and run it, by scope; a child that settled tells the step that
+// spawned it, by that step; a workflow that left tells its Task.
+type ChildRequest { parent_task: String = ""; step_id: String = ""; step_index: Int = 0; key: String = ""; child_task: String = ""; definition: String = ""; revision: Int = 0; }
+topic ChildRequested { payload: ChildRequest; subject: "dna.child.requested"; keyed_by parent_task; }
+type ChildAdmission {
+    scope: String = "";
+    task_id: String = "";
+    workflow_id: String = "";
+    parent_task: String = "";
+    spawning_step: String = "";
+    member_key: String = "";
+    definition: String = "";
+    revision: Int = 0;
+    recipe: String = ""; // the bound subtree, the parent's recipe cut at the child
+    kinds: String = ""; // "<key>=<performer kind>" per leaf key
+    limits: AdmissionLimits = AdmissionLimits { };
+    works: Int = 0;
+    tasks: Int = 0;
+    steps: Int = 0;
+    depth: Int = 0;
+}
+topic ChildAdmitRequested { payload: ChildAdmission; subject: "dna.child.admit"; keyed_by scope; }
+// A root execution asked of the executions owner: its admission is in
+// the record already (card 07), and everything the execution is — its
+// definition and bound revision, its recipe, its workflow identity, its
+// limits — comes from the admission the projection accepted, never from
+// the asker (card 13): an execution restored after a restart runs what
+// it was admitted with, whatever the catalog offers now. The ask names
+// the task, and which performer kind runs a leaf whose attempt is not
+// yet admitted — an admitted attempt's kind is the record's. A child
+// execution is not asked here: it is recovered through its parent.
+// Card 18 wires this to the public admission.
+type ExecutionAsk {
+    scope: String = "";
+    task_id: String = "";
+    kinds: String = "";
+}
+topic ExecutionAsked { payload: ExecutionAsk; subject: "dna.execution.asked"; keyed_by scope; }
+// The owner asks the runtime for an execution's admission as the
+// projection accepted it, under a question of its own identity; the
+// runtime answers that question — the same scope, task and identity —
+// or says why the execution cannot be resumed: never admitted, admitted
+// with a row the projection refused, or a child of another Task. The
+// owner holds the question outstanding and consumes the answer once.
+type AdmissionAsk { scope: String = ""; ask_id: String = ""; task_id: String = ""; kinds: String = ""; }
+topic AdmissionAsked { payload: AdmissionAsk; subject: "dna.admission.asked"; keyed_by scope; }
+type AdmissionAnswer {
+    scope: String = "";
+    ask_id: String = "";
+    task_id: String = "";
+    kinds: String = "";
+    admitted: Bool = false;
+    definition: String = "";
+    revision: Int = 0;
+    workflow_id: String = "";
+    recipe: String = "";
+    limits: AdmissionLimits = AdmissionLimits { };
+    why: String = "";
+}
+topic AdmissionAnswered { payload: AdmissionAnswer; subject: "dna.admission.answered"; keyed_by scope; }
+// A Work asks the record what it holds about it before it proposes
+// anything (card 13): its current attempt, if one is admitted — that
+// attempt's number, id and performer kind are the record's, never the
+// ask's — and whether it has settled. The question carries the Work's
+// scope and an identity of its own; the answer carries both back, and
+// the Work takes only the answer to its one outstanding question, once:
+// a same-named Work in another scope's record — ids are minted within a
+// record — is not this Work, and its record's answer is not this one's.
+type WorkStateAsk { scope: String = ""; ask_id: String = ""; work_id: String = ""; }
+topic WorkStateAsked { payload: WorkStateAsk; subject: "dna.work.state.asked"; keyed_by scope; }
+type WorkState {
+    scope: String = "";
+    ask_id: String = "";
+    work_id: String = "";
+    attempted: Bool = false;
+    attempt_id: String = "";
+    attempt_no: Int = -1;
+    performer_kind: String = "";
+    attempt_disposition: String = "";
+    disposition: String = "";
+}
+topic WorkStateAnswered { payload: WorkState; subject: "dna.work.state.answered"; keyed_by work_id; }
+// An execution the owner would not run: what it was asked for and why.
+type ExecutionRefusal { scope: String = ""; task_id: String = ""; why: String = ""; }
+topic ExecutionRefused { payload: ExecutionRefusal; subject: "dna.execution.refused"; keyed_by scope; }
+type ChildSettlement { step_id: String = ""; key: String = ""; task_id: String = ""; disposition: String = ""; }
+topic ChildSettled { payload: ChildSettlement; subject: "dna.child.settled"; keyed_by step_id; }
+// A child that left — its workflow drained and reclaimed — tells the
+// step that spawned it, by that step: the step's drain waits for this,
+// not for the child's settlement, so a tree reclaims from the leaves up.
+type ChildLeave { step_id: String = ""; key: String = ""; task_id: String = ""; }
+topic ChildLeft { payload: ChildLeave; subject: "dna.child.left"; keyed_by step_id; }
+type WorkflowLeave { task_id: String = ""; }
+topic WorkflowLeft { payload: WorkflowLeave; subject: "dna.workflow.left"; keyed_by task_id; }
+// GH #646 workflow card 12a: what the record holds about one execution,
+// asked of the runtime by its workflow before it starts — restored after
+// a restart or fresh, the same question — and answered from the
+// projection: an execution the record has settled is over, whatever is
+// in memory.
+type ExecutionStateAsk { scope: String = ""; task_id: String = ""; }
+topic ExecutionStateAsked { payload: ExecutionStateAsk; subject: "dna.execution.state.asked"; keyed_by scope; }
+type ExecutionState {
+    task_id: String = "";
+    admitted: Bool = false;
+    disposition: String = "";
+    reason: String = "";
+    outstanding: Int = 0; // Works with an admitted attempt and no settlement: a cancelled execution's undrained responsibilities
+    current_step: Int = 0; // the first step the record has not completed
+}
+topic ExecutionStateAnswered { payload: ExecutionState; subject: "dna.execution.state.answered"; keyed_by task_id; }
+// The record is writable again: a resident holding a transition the
+// record refused proposes it again. Published by whoever knows — the
+// host after a reconnect, a fixture — keyed by the committer's scope.
+type RecordResume { scope: String = ""; why: String = ""; }
+topic RecordResumed { payload: RecordResume; subject: "dna.record.resumed"; keyed_by scope; }
+// what a resident says about its own life, for the owner and the proofs
+type RunLife { key: String = ""; what: String = ""; }
+topic RunLives { payload: RunLife; subject: "dna.run.life"; }
 
 // Upward-only signals (child -> supersystem).
 type Pressure { source: String = ""; what: String = ""; count: Int = 0; }

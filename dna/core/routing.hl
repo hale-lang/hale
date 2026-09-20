@@ -20,7 +20,7 @@ fn memory_of(kind: String) -> String {
     let dot = std::str::index_of(kind, ".");
     let family = if dot < 0 { kind } else { kind[0..dot] };
     // the whole family is operational
-    if family == "intent" || family == "task" || family == "decision" || family == "completion" || family == "exception" || family == "schedule" || family == "receipt" || family == "handoff" || family == "pressure" || family == "instance" || family == "effect" || family == "report" { return "ledger"; }
+    if family == "intent" || family == "task" || family == "decision" || family == "completion" || family == "exception" || family == "schedule" || family == "receipt" || family == "handoff" || family == "pressure" || family == "instance" || family == "effect" || family == "report" || family == "lease" { return "ledger"; }
     // families split by kind
     if kind == "concern.requested" || kind == "concern.raised" || kind == "concern.refused" { return "ledger"; }
     if kind == "grant.reserved" || kind == "grant.released" || kind == "grant.fenced" || kind == "grant.reservation_refused" { return "ledger"; }
@@ -30,7 +30,7 @@ fn memory_of(kind: String) -> String {
     // GH #646 card 05: a workflow execution's own facts. The whole
     // `workflow`, `step` and `attempt` families and `work.settled` are the
     // day's work; they are named here rather than left to the default.
-    if kind == "workflow.admitted" || kind == "workflow.refused" || kind == "workflow.settled" { return "ledger"; }
+    if kind == "workflow.admitted" || kind == "workflow.refused" || kind == "workflow.ask_refused" || kind == "workflow.settled" { return "ledger"; }
     if kind == "step.registered" || kind == "step.activated" || kind == "step.completed" || kind == "step.failed" { return "ledger"; }
     if kind == "work.settled" || kind == "attempt.admitted" || kind == "attempt.outcome" { return "ledger"; }
     // everything else — mutations, reviews, knowledge, practices, grants

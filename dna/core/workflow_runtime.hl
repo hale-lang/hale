@@ -1,0 +1,1542 @@
+// dna/core/workflow_runtime.hl — one step alive across delayed replies
+// (DNA workflow card 09; dna/WORKFLOW-CONTRACT.md §5, §6, §9).
+//
+// The resident shape card 03 proved, carrying the execution: a `StepRun`
+// is an accepted child that no parent releases, born from a handler,
+// alive after its `run()` returns, advancing from its own keyed handlers
+// and ending with `terminate;`. It owns its leaf `WorkRun`s the same
+// way. Neither holds a journal (F.3): each proposes every transition to
+// the one runtime over the bus, keyed by its own id, holds one proposal
+// at a time, and acts only on that proposal's answer — and only on `ok`.
+//
+// `WorkflowRuntime` is that committer, and the executor of card 08, over
+// one journal. A proposal is validated against the projection of card 06
+// (a dry run), appended exactly at the revision the projection was read
+// at, and applied for real once the append has landed; a proposal
+// already committed is answered again from what was committed; the same
+// id carrying another transition is a conflict. Every reply — the one
+// that came back from a performer call and the one that came later —
+// goes to the Work the same way, and the Work settles through the same
+// reducer and the same path.
+//
+// The barrier (§5): a StepRun registers its whole member set, durably,
+// before it dispatches anything; a member answers once, by its key; the
+// step completes when every member has settled done, fails at once on a
+// member that failed, and publishes one terminal outcome. After that a
+// sibling's later reply changes nothing about the step — it is recorded,
+// its Work settles, and the StepRun stays until every responsibility it
+// admitted has settled, then reclaims itself. Card 10 orders steps and
+// card 11 spawns child workflows; here there is one step and its leaves.
+
+// The kinds the projection reads: what the runtime applies from the
+// record, and what it remembers proposal ids for.
+fn is_workflow_fact(kind: String) -> Bool {
+    return std::str::starts_with(kind, "workflow.") || std::str::starts_with(kind, "step.") || std::str::starts_with(kind, "attempt.") || kind == "work.settled";
+}
+
+// The proposal id a committed fact carries, "" when none.
+fn proposal_of(body: String) -> String {
+    return transition_of(body).proposal_id;
+}
+
+// The one committer, and the executor, over one journal.
+locus WorkflowRuntime {
+    params {
+        scope: String = "org";
+        journal: Journal = MemJournal { };
+        work: WorkSystem = WorkSystem { };
+        p: WorkflowProjection = WorkflowProjection { };
+        // The lease this scope's committer runs under (card 12b): a key,
+        // this holder's name, the fencing token it was granted, and the
+        // clock it judges the lease by. The lease is rows of the record
+        // itself (`lease_take` / `lease_at`), so every write this runtime
+        // makes — a transition, a claim, a redelivery, an outcome, a close
+        // — is fenced as of the very revision it is exact at: a takeover
+        // is a row, it moves the revision, and a stale holder's append
+        // fails and is decided again, however live that holder feels. No
+        // key: unfenced — a standalone runtime over a memory record.
+        lease_key: String = "";
+        holder: String = "";
+        token: Int = 0;
+        now: Int = 0;
+        fenced_off: Int = 0; // what the fence refused
+        cursor: Int = 0; // rows applied to the projection
+        committed: String = "\n"; // "<proposal id>=<revision>\n" per committed proposal
+        answered: Int = 0;
+        requests: Int = 0; // attempts asked for
+        claimed: String = ""; // attempt ids this incarnation claimed: those are running here
+        redelivered: String = ""; // attempt ids this incarnation redelivered: once each
+        refused: Int = 0;
+        replayed: Int = 0;
+        conflicts: Int = 0;
+    }
+    bus {
+        subscribe TransitionProposed as on_proposal where key == self.scope;
+        subscribe AttemptRequested as on_attempt where key == self.scope;
+        subscribe ExecutionStateAsked as on_state where key == self.scope;
+        subscribe AdmissionAsked as on_admission where key == self.scope;
+        subscribe WorkStateAsked as on_work_state where key == self.scope;
+        publish TransitionAnswered;
+        publish AttemptReplied;
+        publish ExecutionStateAnswered;
+        publish AdmissionAnswered;
+        publish WorkStateAnswered;
+    }
+    // Apply what the record holds beyond what the projection has seen,
+    // and remember each committed proposal's id and revision. Returns the
+    // revision the projection now reflects: the one reading a decision is
+    // taken at, and the one its append is exact at — never a second look.
+    @unbounded
+    fn catch_up() -> Int {
+        let n = self.journal.revision();
+        while self.cursor < n {
+            let e = self.journal.read(self.cursor);
+            if is_workflow_fact(e.kind) {
+                let a = replay(self.p, e.kind, e.entity, e.body);
+                let pid = proposal_of(e.body);
+                if len(pid) > 0 { self.committed = self.committed + pid + "=" + to_string(self.cursor + 1) + "\n"; }
+            }
+            self.cursor = self.cursor + 1;
+        }
+        return n;
+    }
+    // The revision a committed proposal landed at, -1 when none did.
+    fn committed_at(proposal_id: String) -> Int {
+        let seen = std::str::index_of(self.committed, "\n" + proposal_id + "=");
+        if seen < 0 { return -1; }
+        let from = seen + len(proposal_id) + 2;
+        let rest = self.committed[from..len(self.committed)];
+        return std::str::parse_int(rest[0..std::str::index_of(rest, "\n")]) or - 1;
+    }
+    fn answer(t: TransitionProposal, ok: Bool, revision: Int, why: String) {
+        self.answered = self.answered + 1;
+        TransitionAnswered <- TransitionAnswer { scope: self.scope, key: t.key, proposal_id: t.proposal_id, ok: ok, revision: revision, why: why };
+    }
+    // Take (or renew) the scope's lease at `now`; false when another
+    // holder has it. The token granted is what every commit is fenced on.
+    fn take_lease(now: Int, ttl: Int) -> Bool {
+        self.now = now;
+        if len(self.lease_key) == 0 { return true; }
+        let l = lease_take(self.journal, self.lease_key, self.holder, now, ttl);
+        if !l.present { return false; }
+        self.token = l.token;
+        return true;
+    }
+    // Renew the lease under the same token; false when it is no longer
+    // this holder's.
+    fn renew_lease(now: Int, ttl: Int) -> Bool {
+        self.now = now;
+        if len(self.lease_key) == 0 { return true; }
+        return lease_renew(self.journal, self.lease_key, self.holder, self.token, now, ttl);
+    }
+    // The clock moves; the lease is judged at the new time.
+    fn tick(now: Int) { self.now = now; }
+    fn fence() -> Fence {
+        return Fence { key: self.lease_key, holder: self.holder, token: self.token, now: self.now };
+    }
+    // Whether this runtime may commit exactly at `rev`: unfenced, or
+    // holding the live token as of that reading of the record.
+    fn holds_at(rev: Int) -> Bool { return fence_holds(self.journal, self.fence(), rev); }
+    fn refuse(t: TransitionProposal, basis: String, revision: Int, why: String) {
+        self.refused = self.refused + 1;
+        if basis == "conflict" { self.conflicts = self.conflicts + 1; }
+        self.answered = self.answered + 1;
+        TransitionAnswered <- TransitionAnswer { scope: self.scope, key: t.key, proposal_id: t.proposal_id, ok: false, revision: revision, why: why, basis: basis };
+    }
+    // The proposal a committed row was committed under, rebuilt from the
+    // row: its reference gives the scope, key and id; the row the rest.
+    fn committed_proposal(at: Int) -> TransitionProposal {
+        let e = self.journal.read(at - 1);
+        let r = transition_of(e.body);
+        return TransitionProposal { scope: r.scope, key: r.key, proposal_id: r.proposal_id, kind: e.kind, entity: e.entity, body: e.body };
+    }
+    @unbounded
+    fn on_proposal(t: TransitionProposal) {
+        // the body carries the reference the row will be committed under
+        // (§8): it must be this proposal's own, whole, or the row would
+        // say it was committed under another proposal than it was
+        let r = transition_of(t.body);
+        if r.scope != t.scope || r.key != t.key || r.proposal_id != t.proposal_id {
+            self.refuse(t, "conflict", self.journal.revision(), "proposal " + t.proposal_id + " carries a transition reference <" + r.scope + " " + r.key + " " + r.proposal_id + "> that is not its own <" + t.scope + " " + t.key + " " + t.proposal_id + ">");
+            return;
+        }
+        let mut tries = 0;
+        while tries < 6 {
+            tries = tries + 1;
+            let moved = self.journal.refresh();
+            let rev = self.catch_up();
+            // a proposal committed before is answered again from what was
+            // committed — if it is the same proposal, in every field the
+            // contract names (§9); another transition under a committed id
+            // is a conflict
+            let at = self.committed_at(t.proposal_id);
+            if at >= 0 {
+                let differs = transition_conflict(self.committed_proposal(at), t);
+                if len(differs) == 0 {
+                    self.replayed = self.replayed + 1;
+                    self.answer(t, true, at, "");
+                } else {
+                    self.refuse(t, "conflict", at, differs);
+                }
+                return;
+            }
+            // validated against the state, without touching it
+            self.p.dry = true;
+            let check = replay(self.p, t.kind, t.entity, t.body);
+            self.p.dry = false;
+            if !check.ok {
+                self.refuse(t, "state", rev, check.why);
+                return;
+            }
+            if !check.changed {
+                // the fact is already in the state under another proposal
+                // (a row written by another hand): nothing to append
+                self.replayed = self.replayed + 1;
+                self.answer(t, true, rev, check.why);
+                return;
+            }
+            // the fence, as of the reading the append is exact at: a
+            // takeover landed since is a row, and this append is stale
+            if !self.holds_at(rev) {
+                self.fenced_off = self.fenced_off + 1;
+                self.refuse(t, "fenced", rev, fenced(self.journal, self.fence(), t.kind + " " + t.entity).why);
+                return;
+            }
+            let w = self.journal.append_exact(rev, t.kind, t.entity, t.body);
+            if w.ok {
+                let seen = self.catch_up();
+                self.answer(t, true, w.revision, "");
+                return;
+            }
+            if w.error != "stale_revision" && w.error != "claimed" {
+                self.refuse(t, "record", rev, "the record refused " + t.kind + " " + t.entity + ": " + w.error);
+                return;
+            }
+            // the record moved under the decision: it is taken again
+        }
+        self.refuse(t, "record", self.journal.revision(), "the record moved under " + t.proposal_id + " " + to_string(tries) + " times");
+    }
+    fn reply(x: Executed, work_id: String, attempt_id: String) {
+        AttemptReplied <- AttemptReply {
+            work_id: work_id, attempt_id: attempt_id, ok: x.ok, ran: x.ran, attached: x.attached, reused: x.reused,
+            disposition: x.disposition, result: x.outcome.result, why: x.why
+        };
+    }
+    // A Work asks for its admitted attempt to run: the runtime reads the
+    // admission from the record — the authority — and runs it once.
+    fn on_attempt(r: AttemptRequest) {
+        self.requests = self.requests + 1;
+        let moved = self.journal.refresh();
+        let admitted = recorded_attempt_admission(self.journal, r.attempt_id, self.journal.revision());
+        if !admitted.ok {
+            self.reply(Executed { why: "attempt " + r.attempt_id + " was never admitted; nothing runs before its admission is in the record" }, r.work_id, r.attempt_id);
+            return;
+        }
+        // the request is the Work's own: an attempt asked for under
+        // another Work's name is nobody's
+        if admitted.value.work_id != r.work_id {
+            self.reply(Executed { why: "attempt " + r.attempt_id + " is an attempt of " + admitted.value.work_id + ", not of " + r.work_id + "; not this Work's to ask for" }, r.work_id, r.attempt_id);
+            return;
+        }
+        // whether this incarnation claimed or redelivered the attempt is
+        // the runtime's own knowledge, never the request's word; the
+        // fence is the executor's, at each write's own reading
+        let x = dispatch_attempt(self.journal, self.work, self.scope, admitted.value, set_has(self.claimed, r.attempt_id), set_has(self.redelivered, r.attempt_id), self.fence());
+        if x.fenced { self.fenced_off = self.fenced_off + 1; }
+        if x.ran && !x.redelivered { self.claimed = set_add(self.claimed, r.attempt_id); }
+        if x.redelivered { self.redelivered = set_add(self.redelivered, r.attempt_id); }
+        self.reply(x, r.work_id, r.attempt_id);
+    }
+    // An execution's admission as the record holds it (card 13): the row,
+    // read whole, and the projection's word that it was admitted. A task
+    // the record never admitted, or admitted with a recipe that cannot be
+    // read or that the projection refused, is not resumed — the answer
+    // says why, and nothing is invented for it.
+    // The admission is the one the projection ACCEPTED — the body it
+    // recorded when it applied the row — never the last row in the
+    // record that names the task: a later row the projection refused
+    // (a re-admission under another revision, a row whose body names
+    // another task) is not the execution. A task the projection holds
+    // no admission of is answered with why: the record holds no row, or
+    // holds rows it refused, for the reason a dry replay of the last
+    // one gives. A child of another Task is not recovered here: it is
+    // recovered through its parent, in its bound position.
+    @unbounded
+    fn on_admission(q: AdmissionAsk) {
+        let moved = self.journal.refresh();
+        let seen = self.catch_up();
+        let body = self.p.recorded("workflow.admitted", q.task_id);
+        if len(body) == 0 {
+            let mut raw = "";
+            let mut i = 0;
+            while i < seen {
+                let e = self.journal.read(i);
+                if e.kind == "workflow.admitted" && e.entity == q.task_id { raw = e.body; }
+                i = i + 1;
+            }
+            if len(raw) == 0 {
+                AdmissionAnswered <- AdmissionAnswer { scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, why: "task " + q.task_id + " was never admitted: the record holds no admission of it" };
+                return;
+            }
+            self.p.dry = true;
+            let would = replay(self.p, "workflow.admitted", q.task_id, raw);
+            self.p.dry = false;
+            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, why: "the admission of " + q.task_id + " is in the record and the projection refused it: " + would.why };
+            return;
+        }
+        let read = decode_admission(body);
+        if !read.ok {
+            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, why: "the admission of " + q.task_id + " the projection accepted cannot be read back: " + read.why };
+            return;
+        }
+        let a = read.value;
+        if len(a.parent_task) > 0 {
+            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, why: "task " + q.task_id + " is a child of " + a.parent_task + ", spawned by step " + a.spawning_step + " as `" + a.member_key + "`: it is recovered through its parent, not asked as a root" };
+            return;
+        }
+        let gap = self.p.reader.decode_bound(a.recipe);
+        if len(gap) > 0 {
+            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, why: "the admission of " + q.task_id + " carries a recipe that cannot be read: " + gap };
+            return;
+        }
+        // the execution's workflow identity is the one the recipe bound,
+        // read from its root node — never re-derived
+        let root = self.p.reader.bound_node(q.task_id);
+        if root.kind != "task" || len(root.workflow_id) == 0 {
+            AdmissionAnswered <- AdmissionAnswer { scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, why: "the recipe the admission of " + q.task_id + " carries binds no workflow identity for it" };
+            return;
+        }
+        AdmissionAnswered <- AdmissionAnswer {
+            scope: self.scope, ask_id: q.ask_id, task_id: q.task_id, kinds: q.kinds, admitted: true,
+            definition: a.definition, revision: a.revision, workflow_id: root.workflow_id,
+            recipe: a.recipe, limits: a.limits
+        };
+    }
+    // What the record holds about a Work: its current attempt, as the
+    // projection has it, and that attempt's performer kind from the
+    // admission the projection recorded for it.
+    fn on_work_state(q: WorkStateAsk) {
+        let moved = self.journal.refresh();
+        let seen = self.catch_up();
+        let w = self.p.work(q.work_id);
+        let mut kind = "";
+        if len(w.attempt_id) > 0 {
+            let read = decode_attempt(self.p.recorded("attempt.admitted", w.attempt_id));
+            if read.ok { kind = read.value.performer_kind; }
+        }
+        WorkStateAnswered <- WorkState {
+            scope: self.scope, ask_id: q.ask_id,
+            work_id: q.work_id, attempted: len(w.attempt_id) > 0, attempt_id: w.attempt_id, attempt_no: w.attempt_no,
+            performer_kind: kind, attempt_disposition: w.attempt_disposition, disposition: w.disposition
+        };
+    }
+    // What the record holds about an execution, from the projection.
+    fn on_state(q: ExecutionStateAsk) {
+        let moved = self.journal.refresh();
+        let seen = self.catch_up();
+        let t = self.p.task(q.task_id);
+        ExecutionStateAnswered <- ExecutionState {
+            task_id: q.task_id, admitted: len(t.task_id) > 0, disposition: t.disposition, reason: t.reason,
+            outstanding: self.p.outstanding_works(q.task_id), current_step: self.p.current_step(q.task_id)
+        };
+    }
+    // A reply that arrives later goes to its Work the same way.
+    fn settle(attempt_id: String, r: WorkResult) -> Executed {
+        let x = settle_attempt(self.journal, self.work, self.scope, attempt_id, r, self.fence());
+        if x.fenced { self.fenced_off = self.fenced_off + 1; }
+        let admitted = recorded_attempt_admission(self.journal, attempt_id, self.journal.revision());
+        self.reply(x, if admitted.ok { admitted.value.work_id } else { "" }, attempt_id);
+        return x;
+    }
+}
+
+// ---- the residents -----------------------------------------------------
+
+// One leaf across its attempts. It admits each attempt (a proposal), asks
+// the runtime to run it, hears every reply keyed by its id, and settles
+// the Work — done on a done attempt, failed when a failed attempt has no
+// allowance left — through a proposal like any other transition. Then it
+// tells its Step, once, and ends.
+locus WorkRun {
+    params {
+        scope: String = "";
+        work_id: String = "";
+        step_id: String = "";
+        task_id: String = "";
+        key: String = "";
+        performer_kind: String = "";
+        request: WorkRequest = WorkRequest { };
+        allowance: Int = 1;
+        attempt_no: Int = -1;
+        attempt_id: String = "";
+        outstanding: String = ""; // the one proposal awaiting its answer
+        proposing: String = ""; // what the outstanding (or held) proposal is: "admit" | "settle"
+        settling: String = ""; // the disposition being proposed
+        held: Bool = false; // the record refused the proposal: it is proposed again when the record resumes
+        request_held: Bool = false; // the runtime refused the request without an outcome: it is asked again when the record resumes
+        unadmitted: Bool = false; // the state refused the first admission: nothing to settle on
+        step_settled: String = ""; // the Step's durable disposition, once it published one
+        fenced: Bool = false; // the execution was cancelled: nothing new runs
+        settled: Bool = false;
+        stale: Int = 0; // replies that were not this attempt's
+        state_asked: String = ""; // the one state question awaiting the record's answer (card 13)
+        state_strays: Int = 0; // state answers to no question of this Work's
+        fence_reason: String = ""; // a fence heard while the state question was outstanding
+    }
+    bus {
+        subscribe TransitionAnswered as on_answer where key == self.work_id;
+        subscribe AttemptReplied as on_reply where key == self.work_id;
+        subscribe RecordResumed as on_resumed where key == self.scope;
+        subscribe StepSettled as on_step where key == self.step_id;
+        subscribe StepFenced as on_fenced where key == self.step_id;
+        subscribe WorkStateAnswered as on_work_state where key == self.work_id;
+        publish TransitionProposed;
+        publish AttemptRequested;
+        publish MemberSettled;
+        publish MemberRetired;
+        publish WorkStateAsked;
+        publish RunLives;
+    }
+    birth() { RunLives <- RunLife { key: self.work_id, what: "born" }; }
+    // Before proposing anything, the record is asked what it holds about
+    // this Work (card 13): a settled Work has answered — its step hears
+    // that and the Work leaves; a Work with an admitted attempt resumes
+    // that attempt, under its number, id and performer kind as the
+    // record has them, never as the ask has them; a Work the record
+    // never attempted admits its first attempt under the kind the ask
+    // names. The question has an identity, held outstanding until its
+    // answer; only the answer to it — this scope, this question — is
+    // taken, once. A same-named Work in another scope's record is not
+    // this Work, and a stale or unsolicited answer is no state.
+    run() {
+        self.state_asked = self.work_id + "@state";
+        WorkStateAsked <- WorkStateAsk { scope: self.scope, ask_id: self.state_asked, work_id: self.work_id };
+    }
+    fn on_work_state(w: WorkState) {
+        if len(self.state_asked) == 0 || w.scope != self.scope || w.ask_id != self.state_asked || w.work_id != self.work_id {
+            self.state_strays = self.state_strays + 1;
+            return;
+        }
+        self.state_asked = "";
+        if self.settled || self.attempt_no >= 0 { return; } // before anything was proposed
+        if len(w.disposition) > 0 {
+            self.settled = true;
+            self.settling = std::str::clone(w.disposition);
+            MemberSettled <- MemberSettlement { step_id: self.step_id, key: self.key, work_id: self.work_id, disposition: w.disposition };
+            terminate;
+        }
+        if w.attempted {
+            self.attempt_no = w.attempt_no;
+            self.attempt_id = std::str::clone(w.attempt_id);
+            if len(w.performer_kind) > 0 { self.performer_kind = std::str::clone(w.performer_kind); }
+            // fenced while the question was out: the admitted attempt is
+            // re-proposed and, admitted under the fence, settles cancelled
+            // — the one path every fenced admission takes
+            self.propose_admission();
+            return;
+        }
+        // never attempted: its first admission is proposed — and, fenced
+        // while the question was out, refused by the state, so the Work
+        // retires under its cancelled Step, never settling on no attempt
+        self.admit_next();
+    }
+    // Nothing of this Work was ever admitted, and under its settled Step
+    // nothing can be: no attempt, no claim, no effect to await. It
+    // retires — which is not a settlement — and its Step stops waiting.
+    fn retired() -> Bool {
+        return self.unadmitted && len(self.step_settled) > 0;
+    }
+    fn request() -> WorkRequest {
+        let mut r = self.request;
+        r.work_id = std::str::clone(self.work_id);
+        r.task_id = std::str::clone(self.task_id);
+        r.step_id = std::str::clone(self.step_id);
+        r.attempt_no = self.attempt_no;
+        return r;
+    }
+    fn admit_next() {
+        self.attempt_no = self.attempt_no + 1;
+        self.attempt_id = attempt_id_of(self.work_id, self.attempt_no);
+        self.propose_admission();
+    }
+    fn propose_admission() {
+        self.proposing = "admit";
+        self.held = false;
+        self.outstanding = transition_id(self.attempt_id, "admitted");
+        TransitionProposed <- TransitionProposal {
+            scope: self.scope, key: self.work_id, proposal_id: self.outstanding, kind: "attempt.admitted", entity: self.attempt_id,
+            body: encode_attempt(AdmittedAttempt {
+                attempt_id: self.attempt_id, work_id: self.work_id, step_id: self.step_id, task_id: self.task_id,
+                attempt_no: self.attempt_no, performer_kind: self.performer_kind, request: self.request(),
+                transition: TransitionRef { scope: self.scope, key: self.work_id, proposal_id: self.outstanding }
+            })
+        };
+    }
+    fn settle_as(disposition: String) {
+        self.proposing = "settle";
+        self.settling = disposition;
+        self.held = false;
+        self.outstanding = transition_id(self.work_id, "settled");
+        TransitionProposed <- TransitionProposal {
+            scope: self.scope, key: self.work_id, proposal_id: self.outstanding, kind: "work.settled", entity: self.work_id,
+            body: encode_work_outcome(WorkOutcome {
+                work_id: self.work_id, step_id: self.step_id, attempt_id: self.attempt_id, disposition: disposition,
+                transition: TransitionRef { scope: self.scope, key: self.work_id, proposal_id: self.outstanding }
+            })
+        };
+    }
+    fn on_answer(a: TransitionAnswer) {
+        // only the answer to the one outstanding proposal, and only once
+        if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
+        self.outstanding = "";
+        if !a.ok && (a.basis == "record" || a.basis == "fenced") {
+            // the record would not take it — an append refused, the record
+            // moved too often: that is not a settlement. The Work keeps its
+            // responsibility and proposes the same transition again when
+            // the record resumes, or when the next reply reaches it
+            self.held = true;
+            return;
+        }
+        if !a.ok && self.proposing == "admit" && self.attempt_no > 0 {
+            // a retry the state would not take — the Step failed
+            // meanwhile, or the Task was fenced: the Work settles on the
+            // attempt that failed (the drain, §5)
+            self.attempt_no = self.attempt_no - 1;
+            self.attempt_id = attempt_id_of(self.work_id, self.attempt_no);
+            self.settle_as("failed");
+            return;
+        }
+        if !a.ok && self.proposing == "admit" {
+            // the state refused the first admission: nothing ran, nothing
+            // can settle. Under a Step that has settled the Work retires;
+            // else it stays, unattempted, reachable until it is fenced,
+            // and publishes no outcome it does not have
+            self.unadmitted = true;
+            if self.retired() {
+                MemberRetired <- MemberRetirement { step_id: self.step_id, key: self.key, work_id: self.work_id, why: a.why };
+                terminate;
+            }
+            return;
+        }
+        if !a.ok {
+            // the state refused the settlement: this Work's view of its
+            // attempt was wrong. It stays; the next reply decides again
+            return;
+        }
+        if self.proposing == "admit" && self.fenced {
+            // admitted under the fence, not yet run: it does not run
+            self.settle_as("cancelled");
+            return;
+        }
+        if self.proposing == "admit" {
+            AttemptRequested <- AttemptRequest { scope: self.scope, attempt_id: self.attempt_id, work_id: self.work_id };
+            return;
+        }
+        // the settlement is in the record: now, and only now, the member
+        // has answered
+        self.settled = true;
+        MemberSettled <- MemberSettlement { step_id: self.step_id, key: self.key, work_id: self.work_id, disposition: self.settling };
+        terminate;
+    }
+    fn on_reply(r: AttemptReply) {
+        if self.settled || self.unadmitted || r.attempt_id != self.attempt_id || len(self.outstanding) > 0 {
+            self.stale = self.stale + 1;
+            return;
+        }
+        if len(r.disposition) == 0 {
+            // outstanding: the Work waits; refused without an outcome — a
+            // claim the record would not close, a record that moved too
+            // often — the Work keeps its request and asks again when the
+            // record resumes
+            if !r.ok { self.request_held = true; }
+            return;
+        }
+        if r.disposition == "done" { self.settle_as("done"); return; }
+        if self.attempt_no + 1 < self.allowance { self.admit_next(); return; }
+        self.settle_as("failed");
+    }
+    // The record is writable again: what it refused is proposed again.
+    fn on_resumed(r: RecordResume) {
+        if self.settled || len(self.outstanding) > 0 { return; }
+        if self.request_held && !self.held {
+            self.request_held = false;
+            AttemptRequested <- AttemptRequest { scope: self.scope, attempt_id: self.attempt_id, work_id: self.work_id };
+            return;
+        }
+        if !self.held { return; }
+        if self.proposing == "admit" { self.propose_admission(); return; }
+        self.settle_as(self.settling);
+    }
+    // The Step settled, durably (its outcome is published only after
+    // its row landed). A first admission the record refused is proposed
+    // again now — the state, not this Work, says whether it can still be
+    // admitted — and one the state refused retires. Under a cancelled
+    // Step (its Task settled cancelled: the fence, §5) an admitted
+    // attempt still awaiting its reply settles cancelled: nothing more
+    // is waited for, and nothing external is undone.
+    // A cancellation is not acted on here: the Step says it with one
+    // message, `StepFenced`, so a Work that retires or settles on it
+    // acts, and ends, exactly once.
+    fn on_step(s: StepSettlement) {
+        if s.disposition != "completed" && s.disposition != "failed" { return; }
+        self.step_settled = std::str::clone(s.disposition);
+        if self.settled || len(self.outstanding) > 0 { return; }
+        if self.held && self.proposing == "admit" && self.attempt_no == 0 { self.propose_admission(); return; }
+        if self.retired() {
+            MemberRetired <- MemberRetirement { step_id: self.step_id, key: self.key, work_id: self.work_id, why: "never admitted; step " + self.step_id + " " + s.disposition };
+            terminate;
+        }
+    }
+    // The execution was cancelled, durably, and the Step says so to what
+    // it dispatched — whatever the Step's own outcome was. An admitted
+    // attempt still out settles cancelled (the projection allows that
+    // only under a cancelled task); a first admission the record refused
+    // is proposed again and, refused by the state, retires; one the state
+    // had refused retires now. Nothing external is undone: a reply that
+    // comes later is recorded as the attempt's outcome by the runtime.
+    fn on_fenced(f: StepFence) {
+        self.fenced = true;
+        if len(self.step_settled) == 0 { self.step_settled = "cancelled"; }
+        // the record has not yet said what this Work is (card 13): the
+        // fence is remembered, and decided on after the exact state
+        // answer — on the admitted attempt, or by retiring a Work never
+        // admitted — never by a settlement naming no attempt
+        if len(self.state_asked) > 0 { self.fence_reason = std::str::clone(f.reason); return; }
+        if self.settled || len(self.outstanding) > 0 { return; }
+        if self.held && self.proposing == "admit" && self.attempt_no == 0 { self.propose_admission(); return; }
+        if self.unadmitted {
+            MemberRetired <- MemberRetirement { step_id: self.step_id, key: self.key, work_id: self.work_id, why: "never admitted; " + f.reason };
+            terminate;
+        }
+        if !self.held { self.settle_as("cancelled"); }
+    }
+    dissolve() { RunLives <- RunLife { key: self.work_id, what: "dissolved" }; }
+}
+
+@form(vec)
+locus LeafSpecRows {
+    capacity { heap rows of LeafSpec; }
+}
+
+// What a Step needs to know about one leaf member to own it: the
+// request the recipe bound for it, whole, so what the Work admits is what
+// was admitted; and which performer kind runs it.
+type LeafSpec {
+    key: String = "";
+    work_id: String = "";
+    step_id: String = ""; // the step it is a member of
+    step_index: Int = 0;
+    performer_kind: String = "";
+    request: WorkRequest = WorkRequest { };
+    allowance: Int = 1;
+}
+
+// A leaf that is this arena's own: what was handed in from a handler's
+// arena dies with the handler; a resident keeps its own copy.
+fn own_leaf(l: LeafSpec) -> LeafSpec {
+    let r = l.request;
+    return LeafSpec {
+        key: std::str::clone(l.key), work_id: std::str::clone(l.work_id), step_id: std::str::clone(l.step_id), step_index: l.step_index,
+        performer_kind: std::str::clone(l.performer_kind), allowance: l.allowance,
+        request: WorkRequest {
+            work_id: std::str::clone(r.work_id), task_id: std::str::clone(r.task_id), step_id: std::str::clone(r.step_id),
+            objective: std::str::clone(r.objective), context_digest: std::str::clone(r.context_digest),
+            knowledge_bindings: std::str::clone(r.knowledge_bindings), output_contract: std::str::clone(r.output_contract),
+            data_class: std::str::clone(r.data_class), requires: std::str::clone(r.requires), target: std::str::clone(r.target),
+            cost_ceiling: r.cost_ceiling, attempt_no: r.attempt_no
+        }
+    };
+}
+
+// A leaf from its bound node.
+fn leaf_of(n: BoundNode, task_id: String, performer_kind: String) -> LeafSpec {
+    return LeafSpec { key: n.member_key, work_id: n.id, step_id: n.parent, step_index: n.step_index, performer_kind: performer_kind, request: bound_request(n, task_id, n.parent), allowance: n.attempts };
+}
+
+@form(vec)
+locus ChildSpecRows {
+    capacity { heap rows of ChildSpec; }
+}
+
+// What a Step needs to know about one child member to own it: the Task
+// the recipe bound under the key, and the definition it runs.
+type ChildSpec {
+    key: String = "";
+    task_id: String = "";
+    step_id: String = "";
+    step_index: Int = 0;
+    definition: String = "";
+    revision: Int = 0;
+}
+
+fn own_child(c: ChildSpec) -> ChildSpec {
+    return ChildSpec {
+        key: std::str::clone(c.key), task_id: std::str::clone(c.task_id), step_id: std::str::clone(c.step_id), step_index: c.step_index,
+        definition: std::str::clone(c.definition), revision: c.revision
+    };
+}
+
+// A child member from its bound task node.
+fn child_of(n: BoundNode, step_index: Int) -> ChildSpec {
+    return ChildSpec { key: n.member_key, task_id: n.id, step_id: n.spawning_step, step_index: step_index, definition: n.definition, revision: n.revision };
+}
+
+// ---- one execution, root or child --------------------------------------
+
+// One admitted Task. It holds the bound recipe — decoded into its own
+// catalog at birth — and from it the leaves and children of every step,
+// and births the one WorkflowRun that runs them. A child proposes its
+// own admission first (`workflow.admitted`, the subtree its parent bound
+// under it, exactly), and runs only once that landed; a root's admission
+// is the assembly's (card 07) and is in the record before the Task is
+// born. A step of this Task that dispatches a child member asks here,
+// by this Task's id; the Task cuts the subtree from its recipe and asks
+// the executions owner to admit and run it. A child that settled tells
+// the step that spawned it, by that step, once; the Task leaves once its
+// workflow has.
+locus TaskRun {
+    params {
+        scope: String = "";
+        task_id: String = "";
+        workflow_id: String = "";
+        parent_task: String = ""; // "" at the root
+        spawning_step: String = "";
+        member_key: String = "";
+        definition: String = "";
+        revision: Int = 0;
+        recipe: String = "";
+        kinds: String = "";
+        limits: AdmissionLimits = AdmissionLimits { };
+        works: Int = 0;
+        tasks: Int = 0;
+        steps: Int = 0;
+        depth: Int = 0;
+        admit: Bool = false; // propose the admission (a child); false: it is in the record already (a root)
+        cat: WorkflowCatalog = WorkflowCatalog { }; // the recipe, decoded
+        outstanding: String = "";
+        held: Bool = false;
+        started: Bool = false;
+        unadmitted: Bool = false; // the state refused the admission
+        step_settled: Bool = false; // the spawning step settled or was fenced
+        fenced: Bool = false; // the spawning step was fenced: this execution is to be cancelled
+        fence_reason: String = "";
+        redrive: Bool = false; // the spawning step settled or was fenced while the admission answer was out: one re-decision owed
+        disposition: String = "";
+        told: Bool = false; // the spawning step heard the settlement
+        gap: String = ""; // the recipe could not be read
+    }
+    bus {
+        subscribe TransitionAnswered as on_answer where key == self.task_id;
+        subscribe WorkflowSettled as on_settled where key == self.task_id;
+        subscribe WorkflowLeft as on_left where key == self.task_id;
+        subscribe ChildRequested as on_child where key == self.task_id;
+        subscribe StepSettled as on_step where key == self.spawning_step;
+        subscribe StepFenced as on_fenced where key == self.spawning_step;
+        subscribe RecordResumed as on_resumed where key == self.scope;
+        publish TransitionProposed;
+        publish ChildAdmitRequested;
+        publish ChildSettled;
+        publish ChildLeft;
+        publish MemberRetired;
+        publish WorkflowCancelRequested;
+        publish ExecutionRefused;
+        publish RunLives;
+    }
+    accept(w: WorkflowRun) { }
+    birth() {
+        self.gap = self.cat.decode_bound(self.recipe);
+        RunLives <- RunLife { key: "task:" + self.task_id, what: "born" };
+    }
+    run() {
+        if len(self.gap) > 0 {
+            // a recipe that cannot be read runs nothing, and says so:
+            // nothing is invented for it
+            ExecutionRefused <- ExecutionRefusal { scope: self.scope, task_id: self.task_id, why: "the recipe of " + self.task_id + " cannot be read: " + self.gap };
+            return;
+        }
+        if self.admit { self.propose_admission(); return; }
+        self.start();
+    }
+    fn propose_admission() {
+        self.held = false;
+        self.outstanding = transition_id(self.task_id, "admitted");
+        TransitionProposed <- TransitionProposal {
+            scope: self.scope, key: self.task_id, proposal_id: self.outstanding, kind: "workflow.admitted", entity: self.task_id,
+            body: encode_admission(AdmittedWorkflow {
+                task_id: self.task_id, definition: self.definition, revision: self.revision,
+                parent_task: self.parent_task, spawning_step: self.spawning_step, member_key: self.member_key,
+                request: self.task_id, recipe: self.recipe, limits: self.limits,
+                works: self.works, tasks: self.tasks, steps: self.steps, depth: self.depth,
+                transition: TransitionRef { scope: self.scope, key: self.task_id, proposal_id: self.outstanding }
+            })
+        };
+    }
+    // The workflow is born with every leaf and child of this Task, by
+    // step, from the recipe.
+    @unbounded
+    fn start() {
+        if self.started { return; }
+        self.started = true;
+        let mut leaves = LeafSpecRows { };
+        let mut children = ChildSpecRows { };
+        let mut step_count = 0;
+        let mut i = 0;
+        while i < self.cat.bound_count() {
+            let n = self.cat.bound_at(i);
+            if n.kind == "step" && n.parent == self.task_id { step_count = step_count + 1; }
+            if n.kind == "work" && self.cat.bound_node(n.parent).parent == self.task_id {
+                leaves.push(leaf_of(n, self.task_id, map_get(self.kinds, n.member_key, "=")));
+            }
+            if n.kind == "task" && n.parent == self.task_id {
+                children.push(child_of(n, self.cat.bound_node(n.spawning_step).step_index));
+            }
+            i = i + 1;
+        }
+        WorkflowRun { scope: self.scope, task_id: self.task_id, workflow_id: self.workflow_id, step_count: step_count, leaves: leaves, child_specs: children };
+    }
+    fn on_answer(a: TransitionAnswer) {
+        if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
+        self.outstanding = "";
+        if !a.ok && (a.basis == "record" || a.basis == "fenced") {
+            self.held = true;
+            // the spawning step settled or was fenced while this answer
+            // was out: the re-decision that settlement owed is taken now,
+            // once — the state, not the record, says whether the child
+            // can still be admitted
+            if self.redrive { self.redrive = false; self.propose_admission(); }
+            return;
+        }
+        if !a.ok {
+            // the state refused the admission: nothing runs. Under a
+            // spawning step that has settled or was fenced the child
+            // retires; else it stays, reachable, until that step does
+            self.unadmitted = true;
+            if self.step_settled {
+                MemberRetired <- MemberRetirement { step_id: self.spawning_step, key: self.member_key, work_id: self.task_id, why: a.why };
+                terminate;
+            }
+            return;
+        }
+        self.start();
+        // a fence that arrived while the admission was being decided
+        // applies now: the execution starts behind its admission and is
+        // cancelled at once, through its own settlement
+        if self.fenced { WorkflowCancelRequested <- WorkflowCancel { task_id: self.task_id, reason: self.fence_reason }; }
+    }
+    // A step of this Task dispatches a child member: the subtree the
+    // recipe bound under it, exactly, goes to the executions owner.
+    @unbounded
+    fn on_child(r: ChildRequest) {
+        let n = self.cat.bound_node(r.child_task);
+        if n.kind != "task" || n.parent != self.task_id || n.spawning_step != r.step_id || n.member_key != r.key { return; }
+        let mut works = 0;
+        let mut tasks = 0;
+        let mut steps = 0;
+        let mut depth = 0;
+        let mut i = 0;
+        while i < self.cat.bound_count() {
+            let m = self.cat.bound_at(i);
+            if self.cat.under(m.id, r.child_task) {
+                if m.kind == "work" { works = works + 1; }
+                if m.kind == "step" { steps = steps + 1; }
+                if m.kind == "task" { tasks = tasks + 1; if m.depth > depth { depth = m.depth; } }
+            }
+            i = i + 1;
+        }
+        ChildAdmitRequested <- ChildAdmission {
+            scope: self.scope, task_id: r.child_task, workflow_id: n.workflow_id, parent_task: self.task_id,
+            spawning_step: r.step_id, member_key: r.key, definition: n.definition, revision: n.revision,
+            recipe: self.cat.encode_bound_under(r.child_task), kinds: self.kinds, limits: self.limits,
+            works: works, tasks: tasks, steps: steps, depth: depth
+        };
+    }
+    // This Task's workflow settled, durably: the step that spawned it
+    // hears it, once, by the member it is.
+    fn on_settled(w: WorkflowSettlement) {
+        if len(self.disposition) > 0 { return; }
+        self.disposition = std::str::clone(w.disposition);
+        if len(self.parent_task) > 0 && !self.told {
+            self.told = true;
+            ChildSettled <- ChildSettlement { step_id: self.spawning_step, key: self.member_key, task_id: self.task_id, disposition: self.disposition };
+        }
+    }
+    // This Task's workflow left: it drained and reclaimed. The step that
+    // spawned this Task hears that — its drain waits for it — and the
+    // Task leaves.
+    fn on_left(l: WorkflowLeave) {
+        if len(self.parent_task) > 0 {
+            ChildLeft <- ChildLeave { step_id: self.spawning_step, key: self.member_key, task_id: self.task_id };
+        }
+        terminate;
+    }
+    // The spawning step settled: a child the state refused retires; a
+    // first admission the record refused is proposed again now, so the
+    // state — not this Task — says whether it can still be admitted
+    // (under a failed step it cannot, and the child retires on that
+    // answer), as a leaf's is.
+    fn on_step(s: StepSettlement) {
+        if s.disposition != "completed" && s.disposition != "failed" { return; }
+        // the first observation of the step's terminal settlement is the
+        // one that counts: the same signal delivered again — a replay
+        // across a boundary a later card adds — owes nothing more
+        if self.step_settled { return; }
+        self.step_settled = true;
+        if len(self.outstanding) > 0 { self.redrive = true; return; } // the answer takes it
+        if self.unadmitted {
+            MemberRetired <- MemberRetirement { step_id: self.spawning_step, key: self.member_key, work_id: self.task_id, why: "never admitted; step " + self.spawning_step + " " + s.disposition };
+            terminate;
+        }
+        if self.held && self.admit && !self.started { self.propose_admission(); }
+    }
+    // The spawning step was fenced (its Task cancelled): a child the
+    // state refused retires; a running one is cancelled the same way,
+    // through its own settlement — the fence reaches down the tree.
+    fn on_fenced(f: StepFence) {
+        // the first fence is the one that counts; a settlement followed by
+        // a fence is a distinct state change and is heard
+        if self.fenced { return; }
+        self.step_settled = true;
+        self.fenced = true;
+        self.fence_reason = std::str::clone(f.reason);
+        if len(self.outstanding) > 0 { self.redrive = true; return; } // the answer applies it
+        if self.unadmitted {
+            MemberRetired <- MemberRetirement { step_id: self.spawning_step, key: self.member_key, work_id: self.task_id, why: "never admitted; " + f.reason };
+            terminate;
+        }
+        if self.held && self.admit && !self.started { self.propose_admission(); return; }
+        if self.started && len(self.disposition) == 0 {
+            WorkflowCancelRequested <- WorkflowCancel { task_id: self.task_id, reason: f.reason };
+        }
+    }
+    fn on_resumed(r: RecordResume) {
+        if !self.held || len(self.outstanding) > 0 || self.started { return; }
+        self.propose_admission();
+    }
+    dissolve() { RunLives <- RunLife { key: "task:" + self.task_id, what: "dissolved" }; }
+}
+
+// The owner of every execution in a scope: it accepts the Tasks — a
+// root asked of it with its admission already in the record, a child
+// asked by its parent Task with the subtree to admit — and never
+// releases one. The Task owner the contract names (§9).
+locus Executions {
+    params {
+        scope: String = "";
+        roots: Int = 0;
+        child_count: Int = 0;
+        born: String = ""; // task ids with a TaskRun born here: one execution is one Task, asked twice or not
+        repeats: Int = 0;
+        refused: Int = 0;
+        asked: Int = 0; // questions put to the record, each under its own identity
+        outstanding: String = ""; // "<ask id>" per question awaiting its answer
+        strays: Int = 0; // answers to no outstanding question
+    }
+    bus {
+        subscribe ExecutionAsked as on_root where key == self.scope;
+        subscribe AdmissionAnswered as on_admission where key == self.scope;
+        subscribe ChildAdmitRequested as on_child where key == self.scope;
+        publish AdmissionAsked;
+        publish ExecutionRefused;
+    }
+    accept(t: TaskRun) { }
+    // A root is run as the record admitted it: the owner asks the runtime
+    // for the admission under a question of its own identity, holds the
+    // question outstanding, and births the Task from the answer to it
+    @unbounded
+    fn on_root(a: ExecutionAsk) {
+        if set_has(self.born, a.task_id) { self.repeats = self.repeats + 1; return; }
+        self.asked = self.asked + 1;
+        let ask_id = a.task_id + "@ask" + to_string(self.asked);
+        self.outstanding = set_add(self.outstanding, ask_id);
+        AdmissionAsked <- AdmissionAsk { scope: self.scope, ask_id: ask_id, task_id: a.task_id, kinds: a.kinds };
+    }
+    // Only the answer to a question this owner holds outstanding — the
+    // same scope, task and identity — and only once; anything else,
+    // including a positive answer nobody asked for, is a stray.
+    @unbounded
+    fn on_admission(a: AdmissionAnswer) {
+        if a.scope != self.scope || !set_has(self.outstanding, a.ask_id) || !std::str::starts_with(a.ask_id, a.task_id + "@ask") {
+            self.strays = self.strays + 1;
+            return;
+        }
+        self.outstanding = set_remove(self.outstanding, a.ask_id);
+        if set_has(self.born, a.task_id) { self.repeats = self.repeats + 1; return; }
+        if !a.admitted {
+            self.refused = self.refused + 1;
+            ExecutionRefused <- ExecutionRefusal { scope: self.scope, task_id: a.task_id, why: a.why };
+            return;
+        }
+        self.born = set_add(self.born, a.task_id);
+        self.roots = self.roots + 1;
+        TaskRun {
+            scope: self.scope, task_id: a.task_id, workflow_id: a.workflow_id, definition: a.definition, revision: a.revision,
+            recipe: a.recipe, kinds: a.kinds, limits: a.limits, admit: false
+        };
+    }
+    @unbounded
+    fn on_child(c: ChildAdmission) {
+        if set_has(self.born, c.task_id) { self.repeats = self.repeats + 1; return; }
+        self.born = set_add(self.born, c.task_id);
+        self.child_count = self.child_count + 1;
+        TaskRun {
+            scope: self.scope, task_id: c.task_id, workflow_id: c.workflow_id, parent_task: c.parent_task,
+            spawning_step: c.spawning_step, member_key: c.member_key, definition: c.definition, revision: c.revision,
+            recipe: c.recipe, kinds: c.kinds, limits: c.limits, works: c.works, tasks: c.tasks, steps: c.steps, depth: c.depth, admit: true
+        };
+    }
+}
+
+// One admitted execution: its ordered steps. It births step 0, and
+// births step i+1 only from the handler that hears step i drained behind
+// its committed completion — the projection refuses an activation while
+// the step before has not completed, so no ordering lives here that the
+// record does not enforce. A duplicate of that message names a step the
+// workflow has advanced past and changes nothing; the activation's own
+// identity (`<step>@activated`) is one row at the committer. A failed
+// step drains, then the workflow settles failed; later steps are never
+// born. A cancellation asked of the workflow settles it cancelled — a
+// proposal like any other — and once that landed the active step fences
+// its Works; no further step is born; the workflow leaves once the
+// active step has drained. Nothing external is undone.
+locus WorkflowRun {
+    params {
+        scope: String = "";
+        task_id: String = "";
+        workflow_id: String = "";
+        step_count: Int = 0;
+        leaves: LeafSpecRows = LeafSpecRows { }; // every leaf of the execution, as handed in
+        mine: LeafSpecRows = LeafSpecRows { }; // the workflow's own copy
+        child_specs: ChildSpecRows = ChildSpecRows { }; // every child member of the execution, as handed in
+        mine_children: ChildSpecRows = ChildSpecRows { };
+        current: Int = -1; // the active step's index
+        active: Bool = false; // a StepRun of `current` is alive
+        stage: String = ""; // "" | "asking" | "running" | "settling" | "settled" | "draining" (settled, asking the record what is still owed)
+        outstanding: String = "";
+        held: Bool = false;
+        proposing: String = ""; // the disposition being proposed
+        reason: String = "";
+        disposition: String = ""; // the durable outcome, once landed
+        cancel_asked: Bool = false;
+        cancel_reason: String = "";
+        fence_steps: Bool = false; // the record has cancelled this execution: every step born is fenced at birth
+        duplicates: Int = 0; // drain messages for a step that is not the active one
+    }
+    bus {
+        subscribe TransitionAnswered as on_answer where key == self.task_id;
+        subscribe StepDrained as on_drained where key == self.task_id;
+        subscribe WorkflowCancelRequested as on_cancel where key == self.task_id;
+        subscribe ExecutionStateAnswered as on_state where key == self.task_id;
+        subscribe RecordResumed as on_resumed where key == self.scope;
+        publish TransitionProposed;
+        publish WorkflowSettled;
+        publish WorkflowLeft;
+        publish ExecutionStateAsked;
+        publish RunLives;
+    }
+    accept(s: StepRun) { }
+    @unbounded
+    birth() {
+        let mut i = 0;
+        while i < self.leaves.len() {
+            self.mine.push(own_leaf(self.leaves.get(i) or LeafSpec { }));
+            i = i + 1;
+        }
+        i = 0;
+        while i < self.child_specs.len() {
+            self.mine_children.push(own_child(self.child_specs.get(i) or ChildSpec { }));
+            i = i + 1;
+        }
+        RunLives <- RunLife { key: self.task_id, what: "born" };
+    }
+    // Before anything is born, the record is asked what it holds about
+    // this execution: restored after a restart or fresh, the same
+    // question. An execution the record has settled is over — its
+    // settlement is announced and the workflow leaves, birthing nothing;
+    // one still open starts at step 0, and every step already in the
+    // record replays.
+    run() {
+        self.stage = "asking";
+        ExecutionStateAsked <- ExecutionStateAsk { scope: self.scope, task_id: self.task_id };
+    }
+    // The record's answer. Settled and nothing outstanding: over — the
+    // settlement is announced and the workflow leaves. Cancelled with
+    // admitted Works unsettled: the current step is born fenced, so those
+    // Works settle cancelled and the step drains, and the workflow leaves
+    // behind it; cancelled is not cancelled-and-drained. Open: the
+    // current step starts; a cancellation heard while asking is proposed
+    // now, first.
+    fn on_state(s: ExecutionState) {
+        if self.stage == "draining" {
+            // the cancellation landed with no step active: what the record
+            // still holds admitted and unsettled is drained through the
+            // current step, born fenced; nothing owed, the workflow leaves
+            self.stage = "settled";
+            if s.outstanding > 0 && s.current_step < self.step_count {
+                self.fence_steps = true;
+                self.start_step(s.current_step);
+                return;
+            }
+            WorkflowLeft <- WorkflowLeave { task_id: self.task_id };
+            terminate;
+        }
+        if self.stage != "asking" { return; }
+        if s.disposition == "done" || s.disposition == "failed" || s.disposition == "cancelled" {
+            self.stage = "settled";
+            self.disposition = std::str::clone(s.disposition);
+            self.reason = std::str::clone(s.reason);
+            WorkflowSettled <- WorkflowSettlement { task_id: self.task_id, disposition: self.disposition, reason: self.reason };
+            if s.disposition == "cancelled" && s.outstanding > 0 && s.current_step < self.step_count {
+                self.fence_steps = true;
+                self.start_step(s.current_step);
+                return;
+            }
+            WorkflowLeft <- WorkflowLeave { task_id: self.task_id };
+            terminate;
+        }
+        self.stage = "running";
+        if self.cancel_asked { self.propose_outcome("cancelled", self.cancel_reason); return; }
+        self.start_step(if s.current_step < self.step_count { s.current_step } else { 0 });
+    }
+    // Step `index` is born, this workflow's own child, with the leaves
+    // bound under it.
+    @unbounded
+    fn start_step(index: Int) {
+        let step_id = self.workflow_id + "/s" + to_string(index);
+        let mut rows = LeafSpecRows { };
+        let mut i = 0;
+        while i < self.mine.len() {
+            let l = self.mine.get(i) or LeafSpec { };
+            if l.step_id == step_id { rows.push(l); }
+            i = i + 1;
+        }
+        let mut kids = ChildSpecRows { };
+        i = 0;
+        while i < self.mine_children.len() {
+            let c = self.mine_children.get(i) or ChildSpec { };
+            if c.step_id == step_id { kids.push(c); }
+            i = i + 1;
+        }
+        self.current = index;
+        self.active = true;
+        StepRun { scope: self.scope, step_id: step_id, task_id: self.task_id, workflow_id: self.workflow_id, step_index: index, leaves: rows, child_specs: kids, fenced_at_birth: self.fence_steps };
+    }
+    fn propose_outcome(disposition: String, reason: String) {
+        self.stage = "settling";
+        self.proposing = disposition;
+        self.reason = reason;
+        self.held = false;
+        self.outstanding = transition_id(self.task_id, disposition);
+        TransitionProposed <- TransitionProposal {
+            scope: self.scope, key: self.task_id, proposal_id: self.outstanding, kind: "workflow.settled", entity: self.task_id,
+            body: encode_workflow_outcome(WorkflowOutcome {
+                task_id: self.task_id, disposition: disposition, reason: reason,
+                transition: TransitionRef { scope: self.scope, key: self.task_id, proposal_id: self.outstanding }
+            })
+        };
+    }
+    // A step drained: its committed outcome, and every responsibility it
+    // admitted settled or retired. Only the active step's, once.
+    fn on_drained(d: StepDrain) {
+        if !self.active || d.step_index != self.current || d.step_id != self.workflow_id + "/s" + to_string(self.current) {
+            self.duplicates = self.duplicates + 1;
+            return;
+        }
+        self.active = false;
+        if self.stage == "settled" { WorkflowLeft <- WorkflowLeave { task_id: self.task_id }; terminate; } // cancelled meanwhile: the step fenced and drained
+        if len(self.outstanding) > 0 || self.held { return; } // a settlement is being decided; it decides
+        if self.cancel_asked { self.propose_outcome("cancelled", self.cancel_reason); return; }
+        if d.disposition == "completed" {
+            if self.current + 1 < self.step_count { self.start_step(self.current + 1); return; }
+            self.propose_outcome("done", "");
+            return;
+        }
+        if d.disposition == "failed" { self.propose_outcome("failed", "step " + d.step_id + " failed"); return; }
+        // refused: the step could not run. The execution is neither done
+        // nor failed by the record's rules; it stays, reachable, until
+        // it is cancelled
+    }
+    fn on_answer(a: TransitionAnswer) {
+        if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
+        self.outstanding = "";
+        if !a.ok && (a.basis == "record" || a.basis == "fenced") { self.held = true; return; }
+        if !a.ok {
+            // the state refused this outcome: the workflow is not that yet
+            self.stage = "running";
+            if self.cancel_asked && self.proposing != "cancelled" { self.propose_outcome("cancelled", self.cancel_reason); }
+            return;
+        }
+        self.stage = "settled";
+        self.disposition = std::str::clone(self.proposing);
+        WorkflowSettled <- WorkflowSettlement { task_id: self.task_id, disposition: self.disposition, reason: self.reason };
+        if !self.active && self.disposition == "cancelled" {
+            // cancelled with no step active — before the current step was
+            // restored, or between steps: the record says what is still
+            // admitted and unsettled, and that is drained before leaving
+            self.stage = "draining";
+            ExecutionStateAsked <- ExecutionStateAsk { scope: self.scope, task_id: self.task_id };
+            return;
+        }
+        if !self.active { WorkflowLeft <- WorkflowLeave { task_id: self.task_id }; terminate; }
+        // cancelled with a step active: the step fences its Works and
+        // drains; the workflow leaves when it hears that
+    }
+    fn on_cancel(c: WorkflowCancel) {
+        if self.stage == "settled" || self.cancel_asked { return; }
+        self.cancel_asked = true;
+        self.cancel_reason = std::str::clone(c.reason);
+        if self.stage == "asking" { return; } // the record's answer comes first: an execution it has settled is not cancelled
+        if len(self.outstanding) > 0 { return; } // decided after the outstanding answer
+        self.propose_outcome("cancelled", self.cancel_reason);
+    }
+    fn on_resumed(r: RecordResume) {
+        if !self.held || len(self.outstanding) > 0 || self.stage == "settled" { return; }
+        self.propose_outcome(self.proposing, self.reason);
+    }
+    dissolve() { RunLives <- RunLife { key: self.task_id, what: "dissolved" }; }
+}
+
+// One active step and its leaf Works. It registers its whole member set
+// (a proposal), activates (a proposal), and only then births its
+// WorkRuns — its own children, from the handler that heard the
+// activation land. A member answers once, by its key. The step completes
+// when every required member has settled done, and fails at once when
+// one fails; either way one terminal outcome is published. After that
+// the step is settled: a sibling's later reply is recorded by its Work
+// and changes nothing here, and the StepRun stays until every member it
+// admitted has settled — outstanding responsibilities stay reachable —
+// then reclaims itself.
+locus StepRun {
+    params {
+        scope: String = "";
+        step_id: String = "";
+        task_id: String = "";
+        workflow_id: String = "";
+        step_index: Int = 0;
+        leaves: LeafSpecRows = LeafSpecRows { }; // what the owner handed in
+        mine: LeafSpecRows = LeafSpecRows { }; // the step's own copy of it
+        child_specs: ChildSpecRows = ChildSpecRows { }; // the child members handed in
+        mine_children: ChildSpecRows = ChildSpecRows { };
+        required: String = ""; // member keys, in order
+        answered: String = ""; // keys that have settled, done or not
+        left: String = ""; // child keys whose execution has drained and left
+        retired: String = ""; // keys of leaves never admitted, retired under the settled step
+        done: String = ""; // keys that settled done
+        stage: String = ""; // "" | "registering" | "activating" | "running" | "completing" | "failing" | "settled"
+        dispatched: Bool = false; // the leaves were born
+        fenced_at_birth: Bool = false; // born under an execution the record has cancelled: fenced as soon as its members are
+        outstanding: String = "";
+        held: Bool = false; // the record refused the stage's proposal: proposed again when the record resumes
+        disposition: String = ""; // the one terminal outcome, once published
+        failed_member: String = "";
+        duplicates: Int = 0; // answers from a member that had answered
+        strays: Int = 0; // answers from no member of this step, or from another Work than the one bound under the key
+    }
+    bus {
+        subscribe TransitionAnswered as on_answer where key == self.step_id;
+        subscribe MemberSettled as on_member where key == self.step_id;
+        subscribe MemberRetired as on_retired where key == self.step_id;
+        subscribe ChildSettled as on_child where key == self.step_id;
+        subscribe ChildLeft as on_child_left where key == self.step_id;
+        subscribe RecordResumed as on_resumed where key == self.scope;
+        subscribe WorkflowSettled as on_workflow where key == self.task_id;
+        publish TransitionProposed;
+        publish ChildRequested;
+        publish StepSettled;
+        publish StepFenced;
+        publish StepDrained;
+        publish RunLives;
+    }
+    accept(w: WorkRun) { }
+    // The step is leaving: every admitted member settled or retired. Its
+    // workflow hears that, once, before the step is reclaimed.
+    fn leaving() {
+        StepDrained <- StepDrain { task_id: self.task_id, step_id: self.step_id, step_index: self.step_index, disposition: self.disposition };
+    }
+    @unbounded
+    birth() {
+        // the leaves are copied while the owner's arena is still alive
+        let mut i = 0;
+        while i < self.leaves.len() {
+            self.mine.push(own_leaf(self.leaves.get(i) or LeafSpec { }));
+            i = i + 1;
+        }
+        i = 0;
+        while i < self.child_specs.len() {
+            self.mine_children.push(own_child(self.child_specs.get(i) or ChildSpec { }));
+            i = i + 1;
+        }
+        RunLives <- RunLife { key: self.step_id, what: "born" };
+    }
+    @unbounded
+    fn members_text() -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.mine.len() {
+            let l = self.mine.get(i) or LeafSpec { };
+            out = out + (if len(out) > 0 { " " } else { "" }) + l.key + ":leaf:" + l.work_id;
+            self.required = set_add(self.required, l.key);
+            i = i + 1;
+        }
+        i = 0;
+        while i < self.mine_children.len() {
+            let c = self.mine_children.get(i) or ChildSpec { };
+            out = out + (if len(out) > 0 { " " } else { "" }) + c.key + ":child:" + c.task_id;
+            self.required = set_add(self.required, c.key);
+            i = i + 1;
+        }
+        return out;
+    }
+    // The child Task bound under a member key, "" when the key is no
+    // child member.
+    @unbounded
+    fn bound_child(key: String) -> String {
+        let mut i = 0;
+        while i < self.mine_children.len() {
+            let c = self.mine_children.get(i) or ChildSpec { };
+            if c.key == key { return c.task_id; }
+            i = i + 1;
+        }
+        return "";
+    }
+    // The Work bound under a member key, "" when the key is no member.
+    @unbounded
+    fn bound_work(key: String) -> String {
+        let mut i = 0;
+        while i < self.mine.len() {
+            let l = self.mine.get(i) or LeafSpec { };
+            if l.key == key { return l.work_id; }
+            i = i + 1;
+        }
+        return "";
+    }
+    run() { self.propose_registration(); }
+    // the whole required set, durably, before anything is dispatched
+    fn propose_registration() {
+        self.stage = "registering";
+        self.held = false;
+        self.outstanding = transition_id(self.step_id, "registered");
+        TransitionProposed <- TransitionProposal {
+            scope: self.scope, key: self.step_id, proposal_id: self.outstanding, kind: "step.registered", entity: self.step_id,
+            body: encode_members(RegisteredMembers {
+                step_id: self.step_id, task_id: self.task_id, workflow_id: self.workflow_id, step_index: self.step_index,
+                members: self.members_text(),
+                transition: TransitionRef { scope: self.scope, key: self.step_id, proposal_id: self.outstanding }
+            })
+        };
+    }
+    fn propose_activation() {
+        self.stage = "activating";
+        self.held = false;
+        self.outstanding = transition_id(self.step_id, "activated");
+        TransitionProposed <- TransitionProposal {
+            scope: self.scope, key: self.step_id, proposal_id: self.outstanding, kind: "step.activated", entity: self.step_id,
+            body: encode_activation(ActivatedStep {
+                step_id: self.step_id, task_id: self.task_id, workflow_id: self.workflow_id, step_index: self.step_index,
+                dispatched: self.required,
+                transition: TransitionRef { scope: self.scope, key: self.step_id, proposal_id: self.outstanding }
+            })
+        };
+    }
+    fn propose_step(kind: String, disposition: String, failed: String) {
+        self.held = false;
+        self.outstanding = transition_id(self.step_id, disposition);
+        TransitionProposed <- TransitionProposal {
+            scope: self.scope, key: self.step_id, proposal_id: self.outstanding, kind: kind, entity: self.step_id,
+            body: encode_step_outcome(StepOutcome {
+                step_id: self.step_id, task_id: self.task_id, disposition: disposition, members: self.required, failed_member: failed,
+                transition: TransitionRef { scope: self.scope, key: self.step_id, proposal_id: self.outstanding }
+            })
+        };
+    }
+    // What the members say the step is, once nothing is in flight: failed
+    // on the member that failed, completed once every member settled
+    // done, else still running.
+    fn decide() {
+        if len(self.outstanding) > 0 || self.stage == "settled" { return; }
+        if len(self.failed_member) > 0 {
+            self.stage = "failing";
+            self.propose_step("step.failed", "failed", self.failed_member);
+            return;
+        }
+        if set_count(self.done) >= set_count(self.required) {
+            self.stage = "completing";
+            self.propose_step("step.completed", "completed", "");
+            return;
+        }
+        self.stage = "running";
+    }
+    fn finish(disposition: String, why: String) {
+        self.stage = "settled";
+        self.disposition = disposition;
+        StepSettled <- StepSettlement { step_id: self.step_id, task_id: self.task_id, disposition: disposition, failed_member: self.failed_member, why: why };
+    }
+    // every member the step dispatched has settled, or retired never
+    // admitted, and every child that settled has also left — its own
+    // steps drained and reclaimed — so a tree reclaims from the leaves
+    // upward, never an ancestor ahead of a descendant still holding
+    // something
+    fn drained() -> Bool {
+        if !self.dispatched { return true; }
+        if set_count(self.answered) + set_count(self.retired) < set_count(self.required) { return false; }
+        return self.children_left();
+    }
+    @unbounded
+    fn children_left() -> Bool {
+        let mut i = 0;
+        while i < self.mine_children.len() {
+            let c = self.mine_children.get(i) or ChildSpec { };
+            if set_has(self.answered, c.key) && !set_has(self.left, c.key) { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    // A child that settled has now left: it drained and reclaimed. A
+    // leave from a child that has not answered is nobody's: a leave
+    // follows a settlement, never precedes one.
+    fn on_child_left(c: ChildLeave) {
+        let bound = self.bound_child(c.key);
+        if len(bound) == 0 || bound != c.task_id || !set_has(self.answered, c.key) { self.strays = self.strays + 1; return; }
+        self.left = set_add(self.left, c.key);
+        if self.stage == "settled" && self.drained() { self.leaving(); terminate; }
+    }
+    @unbounded
+    fn on_answer(a: TransitionAnswer) {
+        if a.scope != self.scope || a.proposal_id != self.outstanding || len(self.outstanding) == 0 { return; }
+        self.outstanding = "";
+        if !a.ok && (a.basis == "record" || a.basis == "fenced") {
+            // the record would not take it: that is no outcome of the
+            // step. The stage's transition is held and proposed again
+            // when the record resumes
+            self.held = true;
+            return;
+        }
+        if !a.ok && !self.dispatched {
+            // the state refused the step before anything was dispatched:
+            // it cannot run. Nothing durable is lost; the owner hears it
+            self.finish("refused", a.why);
+            self.leaving();
+            terminate;
+        }
+        if !a.ok {
+            // the state refused the outcome the members added up to: this
+            // step's view was wrong. It stays running; the members decide
+            self.stage = "running";
+            return;
+        }
+        if self.stage == "registering" { self.propose_activation(); return; }
+        if self.stage == "activating" {
+            // the activation landed: the leaves are born, this step's own
+            // children, from this handler
+            self.stage = "running";
+            self.dispatched = true;
+            let mut i = 0;
+            while i < self.mine.len() {
+                let l = self.mine.get(i) or LeafSpec { };
+                WorkRun {
+                    scope: self.scope, work_id: l.work_id, step_id: self.step_id, task_id: self.task_id, key: l.key,
+                    performer_kind: l.performer_kind, request: l.request, allowance: l.allowance
+                };
+                i = i + 1;
+            }
+            // and the child members are asked of this step's Task, which
+            // holds the recipe they are bound in
+            i = 0;
+            while i < self.mine_children.len() {
+                let c = self.mine_children.get(i) or ChildSpec { };
+                ChildRequested <- ChildRequest {
+                    parent_task: self.task_id, step_id: self.step_id, step_index: self.step_index, key: c.key,
+                    child_task: c.task_id, definition: c.definition, revision: c.revision
+                };
+                i = i + 1;
+            }
+            // born under an execution the record has cancelled: the
+            // members are fenced now that they exist — what was admitted
+            // settles cancelled, what never was retires — and the step
+            // drains and leaves as any fenced step does
+            if self.fenced_at_birth {
+                self.finish("cancelled", "cancelled before the restart");
+                StepFenced <- StepFence { step_id: self.step_id, task_id: self.task_id, reason: "task " + self.task_id + " was cancelled before the restart" };
+            }
+            return;
+        }
+        if self.stage == "completing" { self.finish("completed", ""); }
+        if self.stage == "failing" { self.finish("failed", ""); }
+        if self.stage == "settled" && self.drained() { self.leaving(); terminate; }
+    }
+    fn on_member(m: MemberSettlement) {
+        // a member is a key AND the Work bound under it: a settlement
+        // naming a required key for another Work is no member's
+        let bound = self.bound_work(m.key);
+        if len(bound) == 0 || bound != m.work_id { self.strays = self.strays + 1; return; }
+        if set_has(self.answered, m.key) { self.duplicates = self.duplicates + 1; return; }
+        self.answered = set_add(self.answered, m.key);
+        if m.disposition == "done" { self.done = set_add(self.done, m.key); }
+        if m.disposition != "done" && len(self.failed_member) == 0 { self.failed_member = std::str::clone(m.key); }
+        // the step is settled: a member's later answer is recorded by the
+        // member and changes nothing here, except that once every member
+        // has answered the step reclaims itself
+        if self.stage == "settled" {
+            if self.drained() { self.leaving(); terminate; }
+            return;
+        }
+        self.decide();
+    }
+    // A child member answered: its execution settled, durably (the
+    // child's Task says so only after its row landed). The exact child
+    // bound under the key, once; a settlement for another Task under
+    // this key, or for a key that is no child here, is no member's.
+    fn on_child(c: ChildSettlement) {
+        let bound = self.bound_child(c.key);
+        if len(bound) == 0 || bound != c.task_id { self.strays = self.strays + 1; return; }
+        if set_has(self.answered, c.key) { self.duplicates = self.duplicates + 1; return; }
+        self.answered = set_add(self.answered, c.key);
+        if c.disposition == "done" { self.done = set_add(self.done, c.key); }
+        if c.disposition != "done" && len(self.failed_member) == 0 { self.failed_member = std::str::clone(c.key); }
+        if self.stage == "settled" {
+            if self.drained() { self.leaving(); terminate; }
+            return;
+        }
+        self.decide();
+    }
+    // A leaf or child that was never admitted retires under the settled
+    // step: it has not answered — it settled nothing — and the step no
+    // longer waits for it. Only under the settled step, and only a
+    // member: the Work or Task bound under the key.
+    fn on_retired(m: MemberRetirement) {
+        let mut bound = self.bound_work(m.key);
+        if len(bound) == 0 { bound = self.bound_child(m.key); }
+        if len(bound) == 0 || bound != m.work_id || self.stage != "settled" { self.strays = self.strays + 1; return; }
+        if set_has(self.answered, m.key) || set_has(self.retired, m.key) { self.duplicates = self.duplicates + 1; return; }
+        self.retired = set_add(self.retired, m.key);
+        if self.drained() { self.leaving(); terminate; }
+    }
+    // The workflow settled, durably. Cancelled, it fences this step: the
+    // step's outcome is `cancelled` — no row of its own; the Task's row
+    // is the basis — its Works hear it and settle cancelled or retire,
+    // and the step leaves once they have. A step not yet dispatched
+    // leaves at once; a step already settled changes nothing.
+    fn on_workflow(w: WorkflowSettlement) {
+        if w.disposition != "cancelled" { return; }
+        if self.stage == "settled" && self.disposition == "cancelled" { return; }
+        // a step with no outcome yet is cancelled; one that had failed and
+        // is draining keeps its failure — either way what it dispatched
+        // and still waits for is fenced, with the one message its Works
+        // act on (the settlement is for the owner; a Work ignores a
+        // cancelled one, so it never has a second message to end on)
+        if self.stage != "settled" { self.finish("cancelled", w.reason); }
+        if self.dispatched && !self.drained() {
+            StepFenced <- StepFence { step_id: self.step_id, task_id: self.task_id, reason: "task " + self.task_id + " was cancelled: " + w.reason };
+            return;
+        }
+        self.leaving();
+        terminate;
+    }
+    // The record is writable again: what it refused is proposed again.
+    fn on_resumed(r: RecordResume) {
+        if !self.held || len(self.outstanding) > 0 || self.stage == "settled" { return; }
+        if self.stage == "registering" { self.propose_registration(); return; }
+        if self.stage == "activating" { self.propose_activation(); return; }
+        self.decide();
+    }
+    dissolve() { RunLives <- RunLife { key: self.step_id, what: "dissolved" }; }
+}
