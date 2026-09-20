@@ -1207,6 +1207,28 @@ reclaim on a real-world long-running workload:
      libc directly. `LOTUS_CHUNK_POOL_STATS=1` dumps the
      per-thread counters at exit.
 
+     **Recycling hides use-after-free, so instrumented
+     builds turn it off.** A recycled chunk hands the SAME
+     bytes back out, so a load from an arena that was
+     destroyed reads memory the process still owns:
+     AddressSanitizer never sees a `free` and reports
+     nothing. `LOTUS_NO_CHUNK_POOL=1` makes
+     `lotus_arena_destroy` really `free()` each chunk and
+     every chunk request really `malloc()`, so an arena
+     use-after-free surfaces as a `heap-use-after-free`
+     with the free stack and the read stack. It covers the
+     coroutine free-list on the same grounds — a released
+     coro keeps its 64 KiB stack for the next handler — and
+     is the state the ASan corpus oracle runs in. A
+     sanitizer build (`LOTUS_ASAN=1`, `LOTUS_UBSAN=1`)
+     defaults it ON via `-DLOTUS_NO_CHUNK_POOL_DEFAULT=1`
+     in the runtime cflags, so no instrumented run has to
+     ask; the env var overrides that default in both
+     directions (`=1` on an ordinary build, `=0` under a
+     sanitizer). Ordinary builds are unaffected: recycling
+     is the shipped allocator behavior, and turning it off
+     costs a `malloc`/`free` pair per arena chunk.
+
   3. **`lotus_str_clone` / `lotus_bytes_clone` skip
      optimizations.** Two cases pass through without
      allocating:

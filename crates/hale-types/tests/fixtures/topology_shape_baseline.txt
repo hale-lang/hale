@@ -888,6 +888,7 @@ crates/hale-codegen/tests/nested_long_running_child.rs#2 1e551372d2bca719
 crates/hale-codegen/tests/nested_long_running_child.rs#3 97f5fab961ae8fb0
 crates/hale-codegen/tests/nested_struct_bus_payload.rs#0 03313d72623aa0d5
 crates/hale-codegen/tests/nested_struct_bus_payload.rs#1 9829a98896fec443
+crates/hale-codegen/tests/no_chunk_pool_knob.rs#0 4707eb603fd26fa8
 crates/hale-codegen/tests/noalias_self.rs#0 c48db3a4a7ec3bdf
 crates/hale-codegen/tests/noalias_self.rs#1 eca8127dcb7fdece
 crates/hale-codegen/tests/obs_emission.rs#0 b524dee0804a0399

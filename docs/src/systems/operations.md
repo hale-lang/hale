@@ -379,7 +379,15 @@ build --dev` keeps more of the frame live.
 
 `addr2line -e ./myservice 0x4a2f10` resolves crash-dump addresses
 to source lines, and ASAN reports carry file:line through both the
-Hale code and the runtime. Profile with
+Hale code and the runtime. One thing to know when chasing a
+suspected use-after-free: the runtime recycles a destroyed arena's
+64 KiB chunks through a thread-local pool, so a read from memory
+that was already reclaimed lands on bytes the process still owns
+and the sanitizer stays quiet — a wrong answer, not a report. Run
+with `LOTUS_NO_CHUNK_POOL=1` to hand every chunk straight back to
+libc; the same read then aborts with a `heap-use-after-free`
+naming where it was freed and where it was read. An
+AddressSanitizer build has this on by default. Profile with
 `perf record --call-graph dwarf` (frame pointers are deliberately
 not forced — they cost ~22% on runtime fast paths). Opt out of
 debug info with `LOTUS_NO_DEBUGINFO=1`.
