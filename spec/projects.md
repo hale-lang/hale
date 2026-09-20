@@ -362,15 +362,53 @@ binding resolves against the imported declaration. Two aliases for
 one library are one type, because the declaration they name is one
 declaration.
 
-Two things stay permissive, both because the declaration genuinely
-is not in the bundle: a path whose head no seed of the bundle
-resolved (the tolerance the rule above is stated against), and a
-check of a single FILE of a multi-file seed, where the `import`
-line may live in a sibling — one file is not a whole program, the
-same boundary the unbound-identifier rule draws. (GH #833: until
-then the annotation typed as unknown, so nothing was checked
-against it and the mismatch surfaced at build, unlocated, or not
-at all.)
+One thing stays permissive, because the declaration genuinely is
+not in the bundle: a check of a single FILE of a multi-file seed,
+where the `import` line may live in a sibling — one file is not a
+whole program, the same boundary the unbound-identifier rule
+draws. (GH #833: until then the annotation typed as unknown, so
+nothing was checked against it and the mismatch surfaced at build,
+unlocated, or not at all.)
+
+**An unresolvable qualified name is a located error.** The other
+half of the same rule. In a whole program, a qualified path that
+resolves to *nothing* is an error located at the path, in every
+position a path can stand in — an annotation, a call, a struct or
+locus literal, a const, an enum variant. Two shapes, two messages:
+
+```text
+main.hl:4:13: type error: `zz::f`: `zz` is not an import or a type of this seed
+main.hl:6:13: type error: `b::Greeting` is not declared by the library imported as `b`; `b` provides: Mood, Tick, hello
+```
+
+The first is a head that names nothing — not `std::`, not an
+import this build resolved, not a declaration of this seed. The
+second is a head an import *does* answer, with a name behind it
+that the library never declared; it carries a did-you-mean when a
+spelling is close and the library's own surface when none is. A
+`bindings { }` entry needs no separate rule: a topic nothing
+declares has always been a located error there, qualified or not.
+
+Permissive, and for the same reason as above — the declaration is
+genuinely absent, or this is not a whole program: an import the
+bundle never RESOLVED (a consumer holding one seed without its
+libraries, such as the language server's per-directory bundle),
+and a check of a single FILE of a multi-file seed. `std::` is
+exempt because the stdlib tables answer a `std::` path and report
+their own typos, and a head that names a declaration
+(`Color::Red`, a `type C2 = Color;` alias) is not an import at
+all. So are `time::sleep` and `time::monotonic`, the two paths the
+compiler still lowers without the `std::` prefix — the rule refuses
+nothing the build accepts. Every *other* unprefixed stdlib path is a
+dropped prefix, and says so where it stands: "`env::args_count` is
+unresolved — did you mean `std::env::args_count`?", which is the
+message the build has always given for it.
+
+(GH #803: until then every one of these passed `hale check` and
+`hale verify` and died in codegen — `path call zz::f in
+expression position`, `unknown qualified name b::Nope`,
+`qualified type zz::T not in stdlib path-renames table` — late,
+from another layer, and with no source location.)
 
 **No re-exports.** B's decls are not visible to A's importers
 unless they declare their own dependency on B. The `<lib_id>`
@@ -422,8 +460,9 @@ contested it.
 Exempt from the rule: `std::`, the bundled namespace no seed
 imports, and a head naming one of the seed's own declarations
 (`Color::Red` is an enum variant, not an alias). A head NO seed in
-the build declares is refused where it always was, at build —
-nothing resolves through it either way.
+the build declares is not this rule's — nothing resolves through it
+in either direction — and is refused by the unresolvable-qualified
+rule above, at the path.
 
 One seed whose own files disagree — the same alias bound to two
 libraries inside a single namespace — resolves to one of them, as

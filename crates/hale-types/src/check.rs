@@ -13117,6 +13117,10 @@ impl<'a> Checker<'a> {
                     self.check_type_annotation(arg);
                 }
                 if path.segments.len() != 1 {
+                    // GH #803: the QUALIFIED twin of this rule, whose
+                    // answer is the same in every position a path can
+                    // stand in and so is written once, below.
+                    self.check_qualified_path(path);
                     return;
                 }
                 let name = &path.segments[0].name;
@@ -13244,6 +13248,214 @@ impl<'a> Checker<'a> {
         closest_bare_name(name, &cands).map(|h| h.to_string())
     }
 
+    /// GH #803: the located refusal of a qualified path that resolves
+    /// to nothing, at the position the author wrote it.
+    ///
+    /// The resolver is where the tolerance lives (`resolve_type_expr`
+    /// maps an unknown path to `Ty::Unknown`), but it has no
+    /// diagnostic sink and some forty call sites — PR #851's note —
+    /// so the rule is emitted from the positions instead: every
+    /// annotation (`check_type_annotation`), a call / const / enum
+    /// variant (`Expr::Path`), and a struct or locus literal
+    /// (`check_struct_literal`). A `bindings { }` topic needs no site
+    /// of its own: `check_main_and_bindings` already refuses a topic
+    /// nothing declares, qualified or not.
+    fn check_qualified_path(&mut self, path: &QualifiedName) {
+        if let Some(msg) = self.unresolved_qualified(path) {
+            self.diags.push(Diag::ty(path.span, msg));
+        }
+    }
+
+    /// GH #803 (GH #911 B2): does this qualified path name something
+    /// no seed in the program declares? If so, what to say about it.
+    ///
+    /// The bare-TYPE rule above (#877) and the bare-IDENTIFIER rule
+    /// (#721) end at the same reasoning, and this is its last
+    /// spelling: in a program every import of which is resolved, a
+    /// name nothing declares is a typo, and a typo deserves a span.
+    /// `zz::f()` in a seed that imports nothing as `zz` passed `hale
+    /// check` and `hale verify` and then died in codegen as `path
+    /// call zz::f in expression position` — no location, a different
+    /// layer, and after the gate had said yes.
+    ///
+    /// Two answers, because the author made one of two mistakes:
+    ///
+    /// - the HEAD names nothing at all — not `std::`, not an import
+    ///   this build resolved, not a declaration of this program.
+    ///   Nothing can ever answer it.
+    /// - the head IS answered by an import and the name behind it is
+    ///   not one that library declares (`b::Greeting` where `b`
+    ///   provides `Greeting` under some other spelling, or not at
+    ///   all). PR #819's `import_library_key.rs` had to run every
+    ///   such case through `build` precisely because `check` could
+    ///   not see it.
+    ///
+    /// Permissive, each case for a reason:
+    ///
+    /// - `std::`, the bundled namespace no seed imports — the stdlib
+    ///   tables answer a `std::` path and report their own typos.
+    /// - an import this bundle never RESOLVED (GH #724: a consumer
+    ///   holding one seed without its libraries — the LSP's
+    ///   per-directory bundle). The declaration genuinely is not
+    ///   here, which is why every other qualified reference is
+    ///   tolerant in that situation too.
+    /// - a head that names a declaration: `Color::Red`, a wire
+    ///   struct's `Frame::seq`, a `type C2 = Color;` alias, a generic
+    ///   parameter. None of those is an import at all.
+    /// - one file of a multi-file seed (`strict_idents` off), whose
+    ///   `import` line may live in a sibling — #721's boundary, and
+    ///   the reason the flag rather than the CLI decides.
+    ///
+    /// Scoped per seed by GH #762 / #746 rather than here: a head
+    /// another seed declares and this one does not is that rule's,
+    /// reported by the CLI before the table can answer it.
+    fn unresolved_qualified(&self, path: &QualifiedName) -> Option<String> {
+        if !self.strict_idents || path.segments.len() < 2 {
+            return None;
+        }
+        let head = path.segments[0].name.as_str();
+        let name = path.segments[1].name.as_str();
+        if head == "std"
+            || self.unresolved_import_aliases.contains(head)
+            || self.type_name_is_declared(head)
+            || self.top.lookup(head).is_some()
+        {
+            return None;
+        }
+        // The rule must refuse nothing the build accepts, and codegen
+        // still lowers two unprefixed paths itself.
+        if UNPREFIXED_STDLIB_PATHS
+            .iter()
+            .any(|(ns, f)| *ns == head && *f == name)
+        {
+            return None;
+        }
+        // The names this build's imports registered under this head.
+        // A row for the name being written means the path resolves
+        // exactly as codegen resolves it, and there is nothing to say.
+        let mut provided: Vec<&str> = Vec::new();
+        for (key, _) in self.import_renames.iter() {
+            if key.first().map(|s| s.as_str()) != Some(head) {
+                continue;
+            }
+            match key.get(1) {
+                Some(n) if n == name => return None,
+                Some(n) => provided.push(n.as_str()),
+                None => {}
+            }
+        }
+        // GH #746 gives a CONTESTED alias a head of its own (`u` ->
+        // `u$0`) in the table and in its seed's own references; the
+        // author wrote `u`, so that is what the message says.
+        let alias = unscoped_alias(head);
+        if !provided.is_empty() {
+            provided.sort_unstable();
+            provided.dedup();
+            // Internal `__` names are reachable but are not the
+            // surface to advertise.
+            provided.retain(|n| !n.starts_with("__"));
+            let base = format!(
+                "`{}::{}` is not declared by the library imported as `{}`",
+                alias, name, alias
+            );
+            return Some(match nearest_qualified_segment(name, &provided) {
+                Some(hit) => {
+                    format!("{} — did you mean `{}::{}`?", base, alias, hit)
+                }
+                // No near spelling: what the library DOES provide is
+                // the next most useful thing to say, which is the
+                // shape codegen's twin message has for the same table
+                // (`unknown_qualified_name` in codegen.rs).
+                None if !provided.is_empty() => {
+                    let extra = provided.len().saturating_sub(8);
+                    let mut shown = provided[..provided.len().min(8)]
+                        .join(", ");
+                    if extra > 0 {
+                        shown.push_str(&format!(", … ({} more)", extra));
+                    }
+                    format!("{}; `{}` provides: {}", base, alias, shown)
+                }
+                None => base,
+            });
+        }
+        let written: Vec<&str> = std::iter::once(alias)
+            .chain(path.segments[1..].iter().map(|s| s.name.as_str()))
+            .collect();
+        let written = written.join("::");
+        // The stdlib lives under `std::`, and dropping the prefix is
+        // the canonical typo (`env::args_count`). When the prefix
+        // would resolve the path — in the surface table or in the
+        // Hale-source stdlib — say that instead, which is the answer
+        // codegen gives for the same mistake.
+        let prefixed: Vec<&str> = std::iter::once("std")
+            .chain(path.segments.iter().map(|s| s.name.as_str()))
+            .collect();
+        if crate::stdlib_surface::signature_for(&prefixed).is_some()
+            || crate::stdlib_bodies::mangled_locus_name(&prefixed).is_some()
+        {
+            return Some(format!(
+                "`{}` is unresolved — did you mean `std::{}`? The \
+                 stdlib lives under the `std::` prefix",
+                written, written
+            ));
+        }
+        let hint = self
+            .closest_path_head(head)
+            .map(|h| format!(" — did you mean `{}`?", h))
+            .unwrap_or_default();
+        Some(format!(
+            "`{}`: `{}` is not an import or a type of this seed{}",
+            written, alias, hint
+        ))
+    }
+
+    /// Nearest spelling to a qualified path's HEAD among the things a
+    /// head can be: the aliases this build's imports registered
+    /// first — a mistyped alias is the likely mistake — then the
+    /// program's own type-like names. Primitives are not candidates
+    /// (`Int::x` is not a path anyone means to write, and `zz` is
+    /// three edits from `Int`), and mangled symbols are unspellable
+    /// in source, so suggesting one would be advice that cannot be
+    /// taken.
+    fn closest_path_head(&self, head: &str) -> Option<String> {
+        let mut aliases: Vec<&str> = self
+            .import_renames
+            .iter()
+            .filter_map(|(key, _)| key.first())
+            .map(|h| unscoped_alias(h.as_str()))
+            .collect();
+        aliases.sort_unstable();
+        aliases.dedup();
+        if let Some(hit) = nearest_qualified_segment(head, &aliases) {
+            return Some(hit);
+        }
+        let mut types: Vec<&str> = self
+            .known
+            .keys()
+            .map(|k| k.as_str())
+            .filter(|k| !k.starts_with("__"))
+            .collect();
+        types.extend(
+            self.top
+                .symbols
+                .iter()
+                .filter(|(_, s)| {
+                    matches!(
+                        s,
+                        TopSymbol::Locus(_)
+                            | TopSymbol::Type(_)
+                            | TopSymbol::Perspective(_)
+                            | TopSymbol::Interface(_)
+                    )
+                })
+                .map(|(k, _)| k.as_str())
+                .filter(|k| !k.starts_with("__")),
+        );
+        types.sort_unstable();
+        types.dedup();
+        nearest_qualified_segment(head, &types)
+    }
+
     fn check_expr(&mut self, expr: &Expr) -> Ty {
         match expr {
             Expr::Literal(lit, span) => {
@@ -13292,6 +13504,12 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                // GH #803: nothing above answered the path, and in a
+                // whole program nothing else will. This is the CALL
+                // position too — a `Expr::Call` with a path callee
+                // checks the callee through here — and the const and
+                // enum-variant positions.
+                self.check_qualified_path(qn);
                 Ty::Unknown
             }
             Expr::Path2 { .. } => Ty::Unknown,
@@ -15587,6 +15805,14 @@ impl<'a> Checker<'a> {
                     }
                     return Ty::Unknown;
                 } else {
+                    // GH #803: a non-`std::` qualified literal the
+                    // rename table cannot answer. The tolerance below
+                    // stays — the inits are still checked, and the
+                    // literal is still `Unknown` — but in a whole
+                    // program the path itself is now reported, rather
+                    // than left for codegen's `unknown qualified name
+                    // `zz::T``.
+                    self.check_qualified_path(path);
                     for init in inits {
                         let _ = self.check_expr(&init.value);
                     }
@@ -16269,6 +16495,21 @@ pub const BARE_BUILTIN_CALLEES: &[&str] = &[
     hale_syntax::parser::FMT_BUILTIN,
 ];
 
+/// GH #803: the qualified paths codegen answers WITHOUT the `std::`
+/// prefix — the qualified twin of [`BARE_BUILTIN_CALLEES`], and the
+/// same obligation: the unresolvable-path rule must refuse nothing
+/// the build accepts.
+///
+/// These two are a legacy spelling from before the stdlib moved under
+/// `std::`, still lowered by `lower_path_call` (statement position)
+/// and `lower_path_call_expr` (`monotonic`) in `codegen.rs` and still
+/// written by the embedded test corpus. Every OTHER unprefixed
+/// stdlib-looking path is refused by codegen, which is why the rule
+/// reports it — with codegen's own "did you mean `std::…`" when the
+/// prefix would resolve it.
+pub const UNPREFIXED_STDLIB_PATHS: &[(&str, &str)] =
+    &[("time", "sleep"), ("time", "monotonic")];
+
 /// Nearest name by edit distance, for the "did you mean" hint; `None`
 /// when nothing is within a short distance.
 fn closest_bare_name<'a>(name: &str, candidates: &[&'a str]) -> Option<&'a str> {
@@ -16292,4 +16533,28 @@ fn closest_bare_name<'a>(name: &str, candidates: &[&'a str]) -> Option<&'a str> 
         .filter(|(d, _)| *d <= 3)
         .min_by_key(|(d, c)| (*d, c.to_string()))
         .map(|(_, c)| c)
+}
+
+/// GH #803: the name to suggest for one SEGMENT of a qualified path —
+/// a substring match first (`recv` for `recv_into`, which a plain
+/// edit distance misses), then a spelling within one or two edits.
+///
+/// Codegen's `unknown_qualified_name` (codegen.rs) chooses by these
+/// same two rules over the same rename table, so the check-time
+/// message and the build-time one suggest the same name for the same
+/// mistake. The looser `closest_bare_name` above is right for a BARE
+/// name, where the candidate set is the program's own vocabulary; a
+/// path segment is matched against a library's exports, where a
+/// three-edit "match" is noise (`nope` is three edits from `Mood`).
+fn nearest_qualified_segment(name: &str, candidates: &[&str]) -> Option<String> {
+    let lc = name.to_lowercase();
+    let substring_hit = candidates.iter().find(|c| {
+        let c_lc = c.to_lowercase();
+        (lc.len() >= 3 && c_lc.contains(&lc))
+            || (c_lc.len() >= 3 && lc.contains(&c_lc))
+    });
+    if let Some(hit) = substring_hit {
+        return Some((*hit).to_string());
+    }
+    crate::stdlib_surface::nearest_name(name, candidates.iter().copied())
 }
