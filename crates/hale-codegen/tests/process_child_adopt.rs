@@ -16,15 +16,15 @@
 //!     catches, and `.hl` cannot observe it: the observer has to
 //!     survive the program.
 //!
-//!   * **adopt adds no leak of its own.** Under `LOTUS_ASAN=1` the
-//!     program's only leak must be the pre-existing one: the arena of
-//!     each locus a factory RETURNS is never reclaimed (GH #383 —
-//!     "the leak is the safety mechanism", the ownership decision that
-//!     makes a factory result safe to hold at all), so `spawn` leaks
-//!     one ~216-byte arena per call and always has. What this test
-//!     pins is that nothing is attributable to `__std_process_adopt`,
-//!     and that no use-after-free, double-free or invalid free appears
-//!     anywhere — the double-close the hand-rolled handle copy risked.
+//!   * **adopt adds no leak of its own.** Under `LOTUS_ASAN=1`
+//!     nothing may be attributable to `__std_process_adopt`, and no
+//!     use-after-free, double-free or invalid free may appear
+//!     anywhere — the double-close the hand-rolled handle copy
+//!     risked. Until GH #793 there was also one pre-existing leak to
+//!     tolerate: the arena of each locus a factory RETURNS was never
+//!     reclaimed, so `spawn` leaked one ~216-byte arena per call.
+//!     That is now reclaimed by the binding that names it, so the
+//!     bounded allowance below should find nothing left to allow.
 //!
 //! `LOTUS_ASAN` is read by `build_executable` at codegen time, so the
 //! ASan arm sets it around its own build. Everything is one `#[test]`
@@ -159,13 +159,12 @@ fn an_adopted_child_is_owned_by_the_field_and_adds_no_leak() {
         "a leak is attributable to adopt itself:\n{}",
         report
     );
-    // The pre-existing factory-return leak, pinned so that the day
-    // GH #383's factory results get a real lifetime, this notices:
-    // ONE leak shape, a small arena allocated inside
-    // `__std_process_spawn`, and nothing else. (How many of the two
-    // returned Child arenas survive is a placement detail — one here
-    // today — so the count is bounded rather than exact; a per-adopt
-    // or per-spawn runaway blows the bound or adds a second shape.)
+    // The factory-return leak is gone (GH #793 — the binding that
+    // names a factory result reclaims it), so this branch should not
+    // be taken at all. It stays as the bound: if anything does leak
+    // here it must be that ONE shape, a small arena allocated inside
+    // `__std_process_spawn`, and nothing else — a per-adopt or
+    // per-spawn runaway blows the bound or adds a second shape.
     let direct = report.matches("Direct leak").count();
     if direct > 0 {
         assert_eq!(

@@ -189,27 +189,39 @@ let h = Locus { ... };
 // Then: drain() runs (cascades), dissolve() runs, region freed.
 ```
 
-That is the rule for a locus **literal**. A locus a free `fn`
-RETURNED is the documented exception:
+A locus a free `fn` RETURNED follows the same rule, in either
+spelling of the call:
 
 ```
-let h = make_locus();   // factory result
-// h is bound, but nothing reclaims it: the instance was routed to a
-// program-lifetime arena, so no drain/dissolve runs and the region is
-// never freed.
+let h = make_locus();                    // factory result
+let c = std::process::spawn(argv) or raise;   // fallible factory
+// Both are bound, and both live until the binding goes out of
+// scope. Then: drain() runs (cascades), dissolve() runs, region
+// freed — exactly as for a literal.
 ```
 
-The instance outliving every scope is what makes holding a factory
-result safe at all — see spec/semantics.md § "Reassigning a
-locus-typed field" (GH #383) for why the alternative produced
-use-after-frees, and why storing such a result into a locus-typed
-field is refused. The consequence a caller must plan for: a locus
-that holds an **external** resource (a file descriptor, a child
-process) releases it in `dissolve`, and a factory-returned instance's
-`dissolve` never runs — so the resource is not released until process
-exit. Such a module publishes a transfer that moves the handle's state
-into an instance an owner *does* reclaim (`std::process::adopt`), and
-that transfer, not scope exit, is what gives the resource a teardown.
+What makes that sound is that the binding is the only place such a
+result can come to rest: storing a locus VALUE into a locus-typed
+field is refused (see spec/semantics.md § "Reassigning a locus-typed
+field", GH #383), so no second owner can appear behind the frame's
+back. Two positions hand the handle on instead of consuming it, and
+there the frame contributes no teardown: a result written directly
+as a **field of a locus literal**, which that literal owns (F.17),
+and a binding the fn **returns**, which the caller owns.
+
+The consequence a caller can rely on: a locus that holds an
+**external** resource (a file descriptor, a child process) releases
+it in `dissolve`, so a `let`-bound `std::process::spawn` closes its
+pipes and reaps its child when the binding's scope exits (GH #793).
+Retaining such a handle *past* that scope still needs an owner that
+outlives it — a module that publishes a transfer moving the handle's
+state into an instance the owner reclaims (`std::process::adopt`) —
+because the resource's teardown follows the instance, and the
+instance follows its binding.
+
+Until GH #793 a factory-returned locus went to a program-lifetime
+arena and was never reclaimed at all. That leak is retired; a
+factory result is reclaimed by whatever consumes it.
 
 ### Unbound expressions
 
@@ -694,8 +706,10 @@ emits, guarded by the slot's NULL sentinel so the first pass is
 a no-op — and the flush still owns the last instance. A loop's
 residency is one instance, not one per iteration (GH #815). The
 same applies to a `let` bound to a locus-returning factory,
-whose binding alloca *is* its dissolve slot, except where the
-binding is returned or `=`-moved: those keep the leak rather
+whose binding alloca *is* its dissolve slot, and to the
+fallible spelling `let h = make(...) or raise;`, whose slot is
+written on the `or`'s ok branch only (GH #793) — except where
+the binding is returned or `=`-moved: those keep the leak rather
 than risk freeing a value another name still holds.
 
 The F.4 cascade still falls out structurally — children

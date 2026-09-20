@@ -435,6 +435,8 @@ crates/hale-codegen/tests/f22_cell_field_io.rs#1 6df4232a0f869f76
 crates/hale-codegen/tests/f22_cell_field_io.rs#2 f31e4db5e7bc38ec
 crates/hale-codegen/tests/f22_cell_field_io.rs#3 63ff43b1c8746faf
 crates/hale-codegen/tests/factory_locus_reclaim.rs#0 5bee09d4dbc4602d
+crates/hale-codegen/tests/factory_returned_binding.rs#0 967ae4cb6729fe31
+crates/hale-codegen/tests/factory_returned_binding.rs#1 b80a55cf498e1f4a
 crates/hale-codegen/tests/fallible_method_scratch_order.rs#0 10f9617e7cef3887
 crates/hale-codegen/tests/fallible_method_scratch_order.rs#1 04bacc10168e5f20
 crates/hale-codegen/tests/fallible_method_scratch_order.rs#2 53f6481685bfc133
@@ -942,7 +944,8 @@ crates/hale-codegen/tests/process_child.rs#0 53cadec6decfbc54
 crates/hale-codegen/tests/process_child.rs#1 55d9bfc2e7b9f127
 crates/hale-codegen/tests/process_child.rs#2 865d341109268295
 crates/hale-codegen/tests/process_child.rs#3 a636b56f03869150
-crates/hale-codegen/tests/process_child.rs#4 53cadec6decfbc54
+crates/hale-codegen/tests/process_child.rs#4 865d341109268295
+crates/hale-codegen/tests/process_child.rs#5 53cadec6decfbc54
 crates/hale-codegen/tests/process_child_adopt.rs#0 a636b56f03869150
 crates/hale-codegen/tests/process_run.rs#0 53cadec6decfbc54
 crates/hale-codegen/tests/process_run.rs#1 53cadec6decfbc54
