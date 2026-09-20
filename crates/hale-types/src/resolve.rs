@@ -30,6 +30,189 @@ impl TopScope {
     }
 }
 
+/// The name table every `TypeExpr → Ty` resolution consults: the
+/// span of each top-level type-like name in the bundle, plus —
+/// GH #759 — the fully expanded target of every `type Name = T;`
+/// ALIAS.
+///
+/// An alias is TRANSPARENT: a second spelling of its target, not
+/// a new nominal type. [`resolve_type_expr`] therefore never
+/// yields `Ty::Named(alias)`; it yields the target's `Ty`, so
+/// `type Thing = Int;` makes `Thing` and `Int` the same type for
+/// assignability, for method / field lookup, and for codegen.
+/// Nothing attaches to the alias name itself.
+///
+/// Derefs to the name → span map so every existing `contains_key`
+/// / `get` / `entry` use reads unchanged.
+#[derive(Debug, Default, Clone)]
+pub struct KnownNames {
+    names: BTreeMap<String, Span>,
+    aliases: BTreeMap<String, Ty>,
+}
+
+impl std::ops::Deref for KnownNames {
+    type Target = BTreeMap<String, Span>;
+    fn deref(&self) -> &Self::Target {
+        &self.names
+    }
+}
+
+impl std::ops::DerefMut for KnownNames {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.names
+    }
+}
+
+impl KnownNames {
+    /// The expanded target of `name` when it is a type alias.
+    pub fn alias_target(&self, name: &str) -> Option<&Ty> {
+        self.aliases.get(name)
+    }
+
+    /// Record `name` as an alias of `ty` (already expanded).
+    pub fn set_alias(&mut self, name: String, ty: Ty) {
+        self.aliases.insert(name, ty);
+    }
+}
+
+/// Resolve every `type Name = T;` alias in the bundle and record
+/// the EXPANDED target in `known`, so the register pass below and
+/// the type checker both see through the alias (GH #759).
+///
+/// Two steps, because an alias may name another alias declared
+/// later: resolve each target against the bare name table first
+/// (which yields `Ty::Named(other_alias)` for a chain link), then
+/// substitute until nothing is left to substitute. A cycle
+/// (`type A = B; type B = A;`) expands to `Ty::Unknown` rather
+/// than looping — the alias is unusable, but no pass that walks
+/// `TypeKind::Alias` recursively (field lookup, printability,
+/// flat-shapeability) can diverge on it.
+fn resolve_alias_targets(
+    bundle: &Bundle<'_>,
+    known: &mut KnownNames,
+    diags: &mut Vec<Diag>,
+) {
+    fn collect(
+        items: &[TopDecl],
+        out: &mut BTreeMap<String, (TypeExpr, Span)>,
+    ) {
+        for item in items {
+            match item {
+                TopDecl::Type(t) => {
+                    if let TypeDeclBody::Alias(te) = &t.body {
+                        // A generic alias template (`type A<T> = ...`)
+                        // has no single target — leave it nominal.
+                        if t.generics.is_empty() {
+                            out.entry(t.name.name.clone())
+                                .or_insert_with(|| (te.clone(), t.span));
+                        }
+                    }
+                }
+                TopDecl::Module(m) => collect(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+
+    let mut raw: BTreeMap<String, (TypeExpr, Span)> = BTreeMap::new();
+    for program in bundle.programs.values() {
+        collect(&program.items, &mut raw);
+    }
+    for it in stdlib_top_decls() {
+        collect(std::slice::from_ref(&it), &mut raw);
+    }
+    if raw.is_empty() {
+        return;
+    }
+
+    let names: Vec<String> = raw.keys().cloned().collect();
+    let mut resolved: BTreeMap<String, Ty> = BTreeMap::new();
+    for (name, (te, _)) in &raw {
+        resolved.insert(name.clone(), resolve_type_expr(te, known));
+    }
+    for name in &names {
+        let mut seen: Vec<String> = vec![name.clone()];
+        let mut cyclic = false;
+        let expanded = expand_alias_ty(
+            &resolved[name].clone(),
+            &resolved,
+            &mut seen,
+            &mut cyclic,
+        );
+        if cyclic {
+            // An alias must name a type that exists. A chain that
+            // comes back to its own name names nothing, and every
+            // pass that walks a type (field lookup, printability,
+            // codegen's lowering) would follow it forever.
+            diags.push(Diag::ty(
+                raw[name].1,
+                format!(
+                    "type alias `{}` is cyclic — an alias chain must \
+                     end at a declared type",
+                    name
+                ),
+            ));
+        }
+        known.set_alias(name.clone(), expanded);
+    }
+}
+
+/// Substitute alias names inside `ty` until none remain.
+/// `seen` is the chain already being expanded — re-entering it is
+/// a cycle, answered with `Ty::Unknown`.
+fn expand_alias_ty(
+    ty: &Ty,
+    aliases: &BTreeMap<String, Ty>,
+    seen: &mut Vec<String>,
+    cyclic: &mut bool,
+) -> Ty {
+    match ty {
+        Ty::Named(n) => match aliases.get(n) {
+            Some(target) => {
+                if seen.iter().any(|s| s == n) {
+                    *cyclic = true;
+                    return Ty::Unknown;
+                }
+                seen.push(n.clone());
+                let out = expand_alias_ty(target, aliases, seen, cyclic);
+                seen.pop();
+                out
+            }
+            None => ty.clone(),
+        },
+        Ty::Array(elem, n) => Ty::Array(
+            Box::new(expand_alias_ty(elem, aliases, seen, cyclic)),
+            *n,
+        ),
+        Ty::Bounded(elem, n) => Ty::Bounded(
+            Box::new(expand_alias_ty(elem, aliases, seen, cyclic)),
+            *n,
+        ),
+        Ty::Projection(c, inner) => Ty::Projection(
+            *c,
+            Box::new(expand_alias_ty(inner, aliases, seen, cyclic)),
+        ),
+        Ty::Tuple(parts) => Ty::Tuple(
+            parts
+                .iter()
+                .map(|p| expand_alias_ty(p, aliases, seen, cyclic))
+                .collect(),
+        ),
+        Ty::Function { params, ret } => Ty::Function {
+            params: params
+                .iter()
+                .map(|p| expand_alias_ty(p, aliases, seen, cyclic))
+                .collect(),
+            ret: Box::new(expand_alias_ty(ret, aliases, seen, cyclic)),
+        },
+        Ty::Fallible { success, payload } => Ty::Fallible {
+            success: Box::new(expand_alias_ty(success, aliases, seen, cyclic)),
+            payload: Box::new(expand_alias_ty(payload, aliases, seen, cyclic)),
+        },
+        Ty::Prim(_) | Ty::Unit | Ty::Unknown => ty.clone(),
+    }
+}
+
 pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     let mut scope = TopScope::default();
     let mut diags = Vec::new();
@@ -37,7 +220,7 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     // First pass: register every top-level *type-like* name
     // (locus, type, perspective) so type expressions in a
     // second pass can resolve cross-file references.
-    let mut known_names: BTreeMap<String, Span> = BTreeMap::new();
+    let mut known_names = KnownNames::default();
     for program in bundle.programs.values() {
         collect_type_names(&program.items, &mut known_names, &mut diags);
     }
@@ -103,6 +286,12 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
             _ => {}
         }
     }
+
+    // GH #759: expand every `type Name = T;` alias now, before
+    // anything resolves a type expression. From here on a use of
+    // an alias name resolves straight to its target — the alias is
+    // a spelling, not a type.
+    resolve_alias_targets(bundle, &mut known_names, &mut diags);
 
     // Pre-pass: build a name → ResolvedTopic table for every
     // declared topic, including parent chain + wire subject.
@@ -303,7 +492,7 @@ pub(crate) fn inject_bus_unmatched_key_type(scope: &mut TopScope) {
 
 fn collect_type_names(
     items: &[TopDecl],
-    known: &mut BTreeMap<String, Span>,
+    known: &mut KnownNames,
     diags: &mut Vec<Diag>,
 ) {
     for item in items {
@@ -321,7 +510,7 @@ fn collect_type_names(
 }
 
 fn insert_name(
-    known: &mut BTreeMap<String, Span>,
+    known: &mut KnownNames,
     ident: &Ident,
     diags: &mut Vec<Diag>,
 ) {
@@ -372,7 +561,7 @@ pub(crate) struct ResolvedTopic {
 /// only record what's syntactically present.
 fn collect_topic_decls(
     items: &[TopDecl],
-    known: &BTreeMap<String, Span>,
+    known: &KnownNames,
     topics: &mut BTreeMap<String, ResolvedTopic>,
     _diags: &mut Vec<Diag>,
 ) {
@@ -541,7 +730,7 @@ fn stdlib_top_decls() -> impl Iterator<Item = &'static TopDecl> {
 
 fn register_top_decls(
     items: &[TopDecl],
-    known: &BTreeMap<String, Span>,
+    known: &KnownNames,
     topics: &BTreeMap<String, ResolvedTopic>,
     scope: &mut TopScope,
     diags: &mut Vec<Diag>,
@@ -599,7 +788,7 @@ fn register_top_decls(
 fn resolve_bus_subject(
     subject: &BusSubject,
     ty: Option<&TypeExpr>,
-    known: &BTreeMap<String, Span>,
+    known: &KnownNames,
     topics: &BTreeMap<String, ResolvedTopic>,
     diags: &mut Vec<Diag>,
     ctx: &'static str,
@@ -731,7 +920,7 @@ fn register_ring_layout(
 
 fn register_interface(
     decl: &hale_syntax::ast::InterfaceDecl,
-    known: &BTreeMap<String, Span>,
+    known: &KnownNames,
     scope: &mut TopScope,
     diags: &mut Vec<Diag>,
 ) {
@@ -768,7 +957,7 @@ fn register_interface(
 
 fn register_locus(
     decl: &LocusDecl,
-    known: &BTreeMap<String, Span>,
+    known: &KnownNames,
     topics: &BTreeMap<String, ResolvedTopic>,
     scope: &mut TopScope,
     diags: &mut Vec<Diag>,
@@ -1092,7 +1281,7 @@ fn register_locus(
 
 fn register_type(
     decl: &TypeDecl,
-    known: &BTreeMap<String, Span>,
+    known: &KnownNames,
     scope: &mut TopScope,
     diags: &mut Vec<Diag>,
 ) {
@@ -1150,7 +1339,7 @@ fn bus_subject_key(subject: &BusSubject) -> String {
 
 fn register_perspective(
     decl: &PerspectiveDecl,
-    known: &BTreeMap<String, Span>,
+    known: &KnownNames,
     scope: &mut TopScope,
     diags: &mut Vec<Diag>,
 ) {
@@ -1252,7 +1441,7 @@ fn register_perspective(
 
 fn register_const(
     decl: &ConstDecl,
-    known: &BTreeMap<String, Span>,
+    known: &KnownNames,
     scope: &mut TopScope,
     diags: &mut Vec<Diag>,
 ) {
@@ -1267,7 +1456,7 @@ fn register_const(
 
 fn register_fn(
     decl: &FnDecl,
-    known: &BTreeMap<String, Span>,
+    known: &KnownNames,
     scope: &mut TopScope,
     diags: &mut Vec<Diag>,
 ) {
@@ -1332,7 +1521,7 @@ fn register_symbol(
 /// `type_expr_mangle_token` — one token per generic arg.
 fn type_expr_mangle_token(
     t: &TypeExpr,
-    known: &BTreeMap<String, Span>,
+    known: &KnownNames,
 ) -> Option<String> {
     match t {
         TypeExpr::Primitive(p, _) => match p {
@@ -1367,7 +1556,7 @@ fn type_expr_mangle_token(
     }
 }
 
-pub fn resolve_type_expr(te: &TypeExpr, known: &BTreeMap<String, Span>) -> Ty {
+pub fn resolve_type_expr(te: &TypeExpr, known: &KnownNames) -> Ty {
     match te {
         TypeExpr::Primitive(p, _) => Ty::Prim(*p),
         // Phase 2a: `perspective(P)` resolves to the contract name
@@ -1416,6 +1605,13 @@ pub fn resolve_type_expr(te: &TypeExpr, known: &BTreeMap<String, Span>) -> Ty {
                         toks.join("_")
                     ));
                 }
+                // GH #759: a `type Name = T;` alias is transparent —
+                // the use site resolves to the target, so `Thing`
+                // and `Int` are one type rather than two that never
+                // unify.
+                if let Some(target) = known.alias_target(name) {
+                    return target.clone();
+                }
                 if known.contains_key(name) {
                     Ty::Named(name.clone())
                 } else {
@@ -1442,6 +1638,11 @@ pub fn resolve_type_expr(te: &TypeExpr, known: &BTreeMap<String, Span>) -> Ty {
                     .find(|(p, _)| *p == segs.as_slice())
                     .map(|(_, m)| *m);
                 match renamed {
+                    // GH #759: transparent through a renamed
+                    // stdlib alias too.
+                    Some(m) if known.alias_target(m).is_some() => {
+                        known.alias_target(m).cloned().unwrap()
+                    }
                     Some(m) if known.contains_key(m) => {
                         Ty::Named(m.to_string())
                     }
@@ -1496,7 +1697,7 @@ pub fn resolve_type_expr(te: &TypeExpr, known: &BTreeMap<String, Span>) -> Ty {
 /// happens in `check.rs`; this function is best-effort and
 /// returns `Ty::Unknown` when the shape is malformed so
 /// downstream typechecks don't cascade.
-fn form_vec_cell_ty(decl: &LocusDecl, known: &BTreeMap<String, Span>) -> Ty {
+fn form_vec_cell_ty(decl: &LocusDecl, known: &KnownNames) -> Ty {
     for member in &decl.members {
         if let LocusMember::Capacity(cb) = member {
             if let Some(slot) = cb.slots.first() {
@@ -1516,7 +1717,7 @@ fn form_vec_cell_ty(decl: &LocusDecl, known: &BTreeMap<String, Span>) -> Ty {
 /// falls back to Unknown so downstream typechecks don't cascade.
 fn form_hashmap_value_and_key_ty(
     decl: &LocusDecl,
-    known: &BTreeMap<String, Span>,
+    known: &KnownNames,
     scope: &TopScope,
 ) -> (Ty, Ty) {
     let unknown = (Ty::Unknown, Ty::Unknown);
@@ -1800,7 +2001,7 @@ fn synthesize_form_hashmap_methods(
 /// the shape is invalid (shape diags already emitted).
 fn form_ring_buffer_cell_ty(
     decl: &LocusDecl,
-    known: &BTreeMap<String, Span>,
+    known: &KnownNames,
 ) -> Ty {
     for member in &decl.members {
         if let LocusMember::Capacity(cb) = member {

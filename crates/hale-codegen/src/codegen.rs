@@ -1400,6 +1400,7 @@ pub fn build_executable_with_options(
         elidable_methods: BTreeMap::new(),
         user_types: BTreeMap::new(),
         pending_type_names: BTreeSet::new(),
+        user_type_aliases: BTreeMap::new(),
         user_enums: BTreeMap::new(),
         user_interfaces: BTreeSet::new(),
         user_consts: BTreeMap::new(),
@@ -3566,6 +3567,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// type even when the stdlib type's full TypeInfo hasn't
     /// been registered yet.
     pub(crate) pending_type_names: BTreeSet<String>,
+    /// GH #759: `type Name = T;` — name → target type expression.
+    /// An alias is TRANSPARENT: it declares no LLVM type of its
+    /// own, and `type_expr_to_codegen_ty` resolves a use of the
+    /// name straight to the target's lowering. Populated in pass
+    /// A0 before any type decl is declared.
+    pub(crate) user_type_aliases: BTreeMap<String, TypeExpr>,
     /// m47: user-defined enum declarations indexed by name. Each
     /// entry carries the variant-name → tag-index map. m47-payloads
     /// added payload-bearing variants (`Trade(Decimal, Int)`): such
@@ -8830,6 +8837,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
 
+        // GH #759: record the alias targets before anything lowers
+        // a type expression. `type Thing = Int;` adds no LLVM type
+        // — a use of `Thing` lowers as `Int` — so the name must be
+        // resolvable from the first signature onwards.
+        for t in &type_decls {
+            if let TypeDeclBody::Alias(te) = &t.body {
+                if t.generics.is_empty() {
+                    self.user_type_aliases
+                        .insert(t.name.name.clone(), te.clone());
+                }
+            }
+        }
+        // Drop any alias whose chain comes back to its own name.
+        // `check` reports the cycle with a span; codegen only has
+        // to make sure the resolution below terminates — following
+        // `type A = B; type B = A;` would recurse until the stack
+        // ran out.
+        let cyclic: Vec<String> = self
+            .user_type_aliases
+            .keys()
+            .filter(|n| self.alias_chain_is_cyclic(n))
+            .cloned()
+            .collect();
+        for n in cyclic {
+            self.user_type_aliases.remove(&n);
+        }
+
         // Now declare concrete user-written non-generic decls.
         // The generic templates themselves are skipped inside
         // declare_user_type (m61: generic decls produce no LLVM
@@ -12680,7 +12714,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 }
                             }
                         }
-                        TypeDeclBody::Alias(_) => {}
+                        // GH #759: an alias may NAME a generic
+                        // instantiation (`type Names =
+                        // Vec<String>;`). Walk its target so the
+                        // monomorph is synthesized even when the
+                        // program only ever spells the alias.
+                        TypeDeclBody::Alias(te) => {
+                            Self::collect_generic_uses(
+                                te,
+                                generic_names,
+                                seen,
+                                requests,
+                            )?;
+                        }
                     }
                 }
                 TopDecl::Type(_) => {
@@ -12892,7 +12938,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             }
                         }
                     }
-                    TypeDeclBody::Alias(_) => {}
+                    // GH #759: see the top-level arm.
+                    TypeDeclBody::Alias(te) => {
+                        Self::collect_generic_uses(
+                            te,
+                            generic_names,
+                            seen,
+                            requests,
+                        )?;
+                    }
                 }
             }
             LocusMember::Contract(_)

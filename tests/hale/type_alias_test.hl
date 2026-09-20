@@ -1,0 +1,89 @@
+// GH #759 — `type Name = Type;` parses, and the alias is
+// TRANSPARENT: it is a second spelling of its target, not a new
+// nominal type. Everything below would have failed at the `;`
+// with "expected {, got Semi" before the parser fix, and then at
+// the checker ("expected `Thing`, got `Int`") and at codegen
+// ("codegen v0 only lowers struct types") after it.
+//
+// What this pins, case by case:
+//   1. alias of a primitive, in both directions across a fn
+//      boundary — `Thing` and `Int` unify;
+//   2. alias of a user type, as a struct field, a locus param,
+//      and a `capacity` cell;
+//   3. alias of a generic instantiation;
+//   4. alias of an alias;
+//   5. alias of an array and of a tuple;
+//   6. alias of a LOCUS — method dispatch goes to the target, so
+//      an alias is structural, never a dispatch target of its own.
+
+type Row { id: Int; label: String; }
+
+type Pair<T> { a: T; b: T; }
+
+type Thing = Int;
+type Thing2 = Thing;
+type Row2 = Row;
+type IntPair = Pair<Int>;
+type TwoRows = [Row2; 2];
+type Span = (Int, Int);
+
+// The alias in a struct field position.
+type Wrap { inner: Thing; row: Row2; }
+
+locus Holder {
+    params { seed: Row2; }
+    fn label() -> String { return self.seed.label; }
+}
+
+@form(hashmap)
+locus Store {
+    capacity { pool rows of Row2 indexed_by id; }
+}
+
+type Held = Holder;
+
+fn take_thing(t: Thing) -> Thing { return t + 1; }
+
+fn main() {
+    // 1 — primitive alias, transparent in both directions.
+    let t: Thing = 3;
+    let u: Int = take_thing(t);
+    std::test::assert_eq_int(u, 4, "Int and its alias unify both ways");
+
+    // 4 — alias of an alias.
+    let t2: Thing2 = 5;
+    std::test::assert_eq_int(t2 + t, 8, "alias of an alias is still Int");
+
+    // 2 — alias of a user type: annotation, field, locus param.
+    let r: Row2 = Row { id: 7, label: "seven" };
+    std::test::assert_eq_str(r.label, "seven", "alias annotates a user type");
+
+    let w = Wrap { inner: 11, row: r };
+    std::test::assert_eq_int(w.inner, 11, "alias as a struct field type");
+    std::test::assert_eq_str(w.row.label, "seven", "aliased field keeps its fields");
+
+    let h = Holder { seed: Row { id: 8, label: "eight" } };
+    std::test::assert_eq_str(h.label(), "eight", "alias as a locus param type");
+
+    // 2c — alias as a `capacity` cell type: the form's `indexed_by`
+    // resolves through the alias to the declaring struct.
+    let s = Store { };
+    s.set(Row { id: 9, label: "nine" });
+    let got = s.get(9) or Row { id: 0, label: "miss" };
+    std::test::assert_eq_str(got.label, "nine", "alias as a capacity cell type");
+
+    // 3 — alias of a generic instantiation.
+    let p: IntPair = Pair_Int { a: 1, b: 2 };
+    std::test::assert_eq_int(p.a + p.b, 3, "alias of Pair<Int>");
+
+    // 5 — alias of an array and of a tuple.
+    let rows: TwoRows = [Row { id: 1, label: "a" }, Row { id: 2, label: "b" }];
+    std::test::assert_eq_str(rows[1].label, "b", "alias of an array type");
+    let sp: Span = (4, 9);
+    std::test::assert_eq_int(sp.1 - sp.0, 5, "alias of a tuple type");
+
+    // 6 — alias of a locus: the method is the TARGET's, so an alias
+    // is structural. Nothing attaches to the alias name itself.
+    let held: Held = Holder { seed: Row { id: 3, label: "three" } };
+    std::test::assert_eq_str(held.label(), "three", "dispatch through a locus alias");
+}
