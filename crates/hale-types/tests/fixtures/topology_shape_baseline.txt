@@ -689,6 +689,7 @@ crates/hale-codegen/tests/framework_elision.rs#1 4bafd0e8a20a97ac
 crates/hale-codegen/tests/freefn_locus_rebind.rs#0 9dde50b6cca95f42
 crates/hale-codegen/tests/fresh_temp_attribution.rs#0 12260865f8ec0ae3
 crates/hale-codegen/tests/fresh_temp_attribution.rs#1 e5f900b38b413b00
+crates/hale-codegen/tests/fresh_temp_attribution.rs#2 e5f900b38b413b00
 crates/hale-codegen/tests/fs_index_and_status.rs#2 865d341109268295
 crates/hale-codegen/tests/fs_rename_unlink_mktemp.rs#0 f2c1228edb650960
 crates/hale-codegen/tests/fs_rename_unlink_mktemp.rs#1 49769baca1919beb

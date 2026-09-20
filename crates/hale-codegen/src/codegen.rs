@@ -241,6 +241,16 @@ pub(crate) struct LoopFrame<'ctx> {
 pub(crate) struct MatchExprCapture<'ctx> {
     arm_values: Vec<(BasicValueEnum<'ctx>, CodegenTy, BasicBlock<'ctx>)>,
     fallthrough_bb: Option<BasicBlock<'ctx>>,
+    /// GH #883: the `suppress_fresh_temp` decision the site armed
+    /// for the whole match, carried in so every arm body can take
+    /// it — exactly one arm runs, and on that path the arm's value
+    /// IS the value the site named. Lives here rather than in the
+    /// flag itself because the flag is one-shot: left set across
+    /// `lower_match_core` it was consumed by the first arm lowered
+    /// (or by a factory call in the SCRUTINEE), and every other
+    /// arm's result became a frame temporary this frame dissolved
+    /// while the site's owner still held it.
+    owner_decided_elsewhere: bool,
 }
 
 /// Bounds-check-elimination (BCE) support for `@form(vec)` `.get`
@@ -7232,10 +7242,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///     outermost node (GH #793 / PR #835), which is this same fix
     ///     for the one shape that had already bitten;
     ///   * `if` / `match` / a block in value position, which hand
-    ///     back a nested expression's value unchanged, and where the
-    ///     flag reaches the arms exactly as it did before this rule.
-    ///     Per-ARM attribution (every arm's tail is its own named
-    ///     node, and only one of them runs) is a separate seam.
+    ///     back a nested expression's value unchanged. These are
+    ///     carriers, not takers: `lower_if_expr`,
+    ///     `lower_match_expr` and `lower_block_as_expr` take the
+    ///     flag on the outer node and ask this question again for
+    ///     EVERY arm's tail (GH #883), because exactly one arm runs
+    ///     and on that path the arm's tail is the value the site
+    ///     named. Left to the one-shot flag, the first arm lowered
+    ///     took the decision and every other arm's result became a
+    ///     frame temporary dissolved here — a dead locus for the
+    ///     site's owner on those paths.
     ///
     /// Everything else — a call to a fn that is not a factory, a
     /// method call, a struct literal, an operator — leaves the flag
@@ -12487,6 +12503,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         block: &Block,
         scope: &mut Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy, BlockEnd), CodegenError> {
+        // GH #883: the ownership decision a `let` / `return` / `=`
+        // armed for THIS block is about the block's TAIL — the one
+        // expression whose value leaves it — and about nothing the
+        // statements do on the way. Left set across the statements,
+        // the one-shot flag was taken by whichever proven-fresh
+        // factory call lowering reached first, so
+        // `return { warm(make(1)); make(2) };` gave the caller's
+        // ownership to `make(1)` (a value the caller never sees, so
+        // nothing reclaimed it) and left `make(2)` — the value the
+        // `return` actually named — to the frame-temporary rules,
+        // dissolved on the way out while the caller still holds it.
+        let carried = std::mem::replace(&mut self.suppress_fresh_temp, false);
         for stmt in &block.stmts {
             match self.lower_stmt(stmt, scope)? {
                 BlockEnd::Open => continue,
@@ -12507,7 +12535,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         match &block.tail {
             Some(tail) => {
-                let (v, ty) = self.lower_expr(tail, scope)?;
+                // Re-armed for the tail, and only when the tail is a
+                // node the decision can land on — the same question
+                // the site asked about this block.
+                self.suppress_fresh_temp =
+                    carried && self.fresh_temp_decision_lands_on(tail);
+                let lowered = self.lower_expr(tail, scope);
+                self.suppress_fresh_temp = false;
+                let (v, ty) = lowered?;
                 Ok((v, ty, BlockEnd::Open))
             }
             None => Err(CodegenError::Unsupported(
@@ -17979,9 +18014,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // which left that result with no owner at all while
                 // the second argument took the frame temporary it was
                 // always going to take.
-                let rhs_is_or = matches!(value_to_lower, Expr::Or { .. });
+                //
+                // GH #883: an `if` / `match` / block RHS delegates
+                // the same way an `or` does. Its value comes out of
+                // an ARM, the registration (or the suppression of
+                // one) happens there, and THIS binding registers a
+                // scope-exit dissolve only for a direct factory call
+                // — so suppressing the arms would leave the result
+                // with no owner at all rather than moving ownership
+                // here. The one case where somebody else really does
+                // own it is a binding this fn hands back, which is
+                // the same carve-out `or` already has.
+                let rhs_delegates = matches!(
+                    value_to_lower,
+                    Expr::Or { .. }
+                        | Expr::If(_)
+                        | Expr::Match(_)
+                        | Expr::Block(_)
+                );
                 let prev_sft = self.suppress_fresh_temp;
-                self.suppress_fresh_temp = (!rhs_is_or
+                self.suppress_fresh_temp = (!rhs_delegates
                     || self.binding_escapes_this_frame(&name.name))
                     && self.fresh_temp_decision_lands_on(value_to_lower);
                 let lower_result =
@@ -21279,16 +21331,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // value. Record it with the block the value flows
                 // out of (body lowering may have opened nested
                 // blocks) for the wrapper's phi.
+                let carried = cap.owner_decided_elsewhere;
                 let (arm_v, arm_ty, arm_end) = match &arm.body {
                     MatchArmBody::Expr(e) => {
-                        let (v, ty) = self.lower_expr(e, scope)?;
+                        // GH #883: this arm's body IS the value the
+                        // site named, on the one path that runs it.
+                        self.suppress_fresh_temp =
+                            carried && self.fresh_temp_decision_lands_on(e);
+                        let lowered = self.lower_expr(e, scope);
+                        self.suppress_fresh_temp = false;
+                        let (v, ty) = lowered?;
                         (v, ty, BlockEnd::Open)
                     }
                     MatchArmBody::Block(b) => {
                         let mut arm_scope = Scope {
                             locals: scope.locals.clone(),
                         };
-                        self.lower_block_as_expr(b, &mut arm_scope)?
+                        // `lower_block_as_expr` narrows it to the
+                        // block's tail.
+                        self.suppress_fresh_temp = carried;
+                        let lowered =
+                            self.lower_block_as_expr(b, &mut arm_scope);
+                        self.suppress_fresh_temp = false;
+                        lowered?
                     }
                 };
                 if arm_end == BlockEnd::Open {
@@ -21381,9 +21446,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         m: &MatchStmt,
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        // GH #883: taken here, before the scrutinee lowers, and
+        // handed to every arm through the capture.
         let mut cap = MatchExprCapture {
             arm_values: Vec::new(),
             fallthrough_bb: None,
+            owner_decided_elsewhere: std::mem::replace(
+                &mut self.suppress_fresh_temp,
+                false,
+            ),
         };
         let mut inner = Scope {
             locals: scope.locals.clone(),
@@ -24950,6 +25021,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if parts.is_empty() {
                     return self.lower_expr(e, scope);
                 }
+                // GH #883: an ascribed composite descends into its
+                // elements without passing the outer node through
+                // `lower_expr`, so the GH #402 hook — the one place
+                // that takes `suppress_fresh_temp` — never sees the
+                // node the site named. An ARRAY is not any one of
+                // its elements: whatever owns it owns the storage,
+                // never an element in it. Take the decision here so
+                // each element factory gets the frame temporary an
+                // unowned result is supposed to get, instead of the
+                // first element silently taking the array's.
+                self.suppress_fresh_temp = false;
                 let mut elem_vals: Vec<BasicValueEnum<'ctx>> =
                     Vec::with_capacity(parts.len());
                 for p in parts {
@@ -25033,6 +25115,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             (Some(CodegenTy::Tuple(want_tys)), Expr::Tuple(parts, _))
                 if parts.len() == want_tys.len() && parts.len() >= 2 =>
             {
+                // GH #883, the tuple half of the same rule: a tuple
+                // is not any one of its elements, so the decision
+                // the site made about the tuple stops here and each
+                // element factory takes its own frame temporary.
+                self.suppress_fresh_temp = false;
                 let mut elem_vals: Vec<BasicValueEnum<'ctx>> =
                     Vec::with_capacity(parts.len());
                 let mut elem_tys: Vec<CodegenTy> =
@@ -25167,6 +25254,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         ifs: &IfStmt,
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        // GH #883: an `if` in value position hands back an ARM's
+        // value, and exactly one arm runs. The ownership decision a
+        // site armed for this node therefore belongs to every arm —
+        // each arm's tail is the value the site names on that path —
+        // and to none of the arms more than once. Taken here, before
+        // the condition lowers: the flag is one-shot, so left set it
+        // was consumed by the first proven-fresh factory call
+        // lowering reached, which is the first arm's (or a factory
+        // in the CONDITION, which is not the if-expression's value
+        // at all). The arm that took it was handed on correctly and
+        // every other arm's result became a GH #402 frame temporary
+        // dissolved here — a dead locus for whoever the site handed
+        // the value to.
+        let carried = std::mem::replace(&mut self.suppress_fresh_temp, false);
         let (cond_v, cond_ty) = self.lower_expr(&ifs.cond, scope)?;
         if cond_ty != CodegenTy::Bool {
             return Err(CodegenError::Unsupported(format!(
@@ -25190,8 +25291,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut then_scope = Scope {
             locals: scope.locals.clone(),
         };
-        let (then_v, then_ty, then_end) =
-            self.lower_block_as_expr(&ifs.then_block, &mut then_scope)?;
+        // Re-armed per arm (GH #883); `lower_block_as_expr` narrows
+        // it to the arm's tail.
+        self.suppress_fresh_temp = carried;
+        let then_lowered =
+            self.lower_block_as_expr(&ifs.then_block, &mut then_scope);
+        self.suppress_fresh_temp = false;
+        let (then_v, then_ty, then_end) = then_lowered?;
         let then_incoming = self.builder.get_insert_block().unwrap_or(then_bb);
         if then_end == BlockEnd::Open {
             self.builder
@@ -25207,9 +25313,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         let (else_v, else_ty, else_end) = match &ifs.else_block {
             Some(eb) => match eb.as_ref() {
-                ElseBranch::Else(b) => self.lower_block_as_expr(b, &mut else_scope)?,
+                ElseBranch::Else(b) => {
+                    self.suppress_fresh_temp = carried;
+                    let lowered = self.lower_block_as_expr(b, &mut else_scope);
+                    self.suppress_fresh_temp = false;
+                    lowered?
+                }
                 ElseBranch::ElseIf(nested) => {
-                    let (v, ty) = self.lower_if_expr(nested, &else_scope)?;
+                    // The nested `if` is this arm's whole value, so
+                    // it takes the decision and re-arms its own arms.
+                    self.suppress_fresh_temp = carried;
+                    let lowered = self.lower_if_expr(nested, &else_scope);
+                    self.suppress_fresh_temp = false;
+                    let (v, ty) = lowered?;
                     (v, ty, BlockEnd::Open)
                 }
             },
