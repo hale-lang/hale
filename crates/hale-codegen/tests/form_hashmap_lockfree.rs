@@ -644,16 +644,16 @@ fn lockfree_sustained_write_rss_bounded() {
         main locus App {
             params { reg: Registry = Registry { }; }
             run() {
-                let warmup = std::process::rss_bytes() / 1048576;
-                print("warmup_rss_mb="); println(warmup);
+                print("warmup_statm=");
+                println(std::io::fs::read_file("/proc/self/statm") or "");
                 let mut i = 0;
                 while i < 20000 {
                     self.reg.set(Counter { id: i, v: i });
                     i = i + 1;
                 }
                 print("len="); println(self.reg.len());
-                let after = std::process::rss_bytes() / 1048576;
-                print("after_rss_mb="); println(after);
+                print("after_statm=");
+                println(std::io::fs::read_file("/proc/self/statm") or "");
                 // Confirm a get still works (no use-after-free
                 // on the freed-OLD buffers).
                 let e = self.reg.get(15000) or raise;
@@ -671,29 +671,38 @@ fn lockfree_sustained_write_rss_bounded() {
     );
     assert!(stdout.contains("len=20000"), "got: {:?}", stdout);
     assert!(stdout.contains("v15000=15000"), "got: {:?}", stdout);
-    // Parse final RSS and bound it. Pre-eager-free design would
-    // peak in the GB range under this workload (each grow
-    // cycle's OLD held until the next grow); post-fix it should
-    // land at single-/double-digit MB.
-    let after = stdout
-        .lines()
-        .find(|l| l.starts_with("after_rss_mb="))
-        .and_then(|l| l.trim_start_matches("after_rss_mb=").trim().parse::<i64>().ok())
-        .unwrap_or_else(|| panic!("missing after_rss_mb in stdout: {:?}", stdout));
-    // 512 MB, not 128 (2026-07-03 de-flake): under the FULL
-    // parallel suite, allocator/page pressure from dozens of
-    // concurrent test binaries occasionally pushed RSS past the
-    // old 2.5x-margin bound (unreproducible in isolation, under
-    // synthetic CPU load, or 8x self-concurrency — all ~50 MB).
-    // The regression this guards (use-after-grow holding every
-    // OLD slots buffer) peaks in the GB range, so 512 MB still
-    // catches it with 10x margin while absorbing the noise.
+    // Bound the GROWTH the inserts caused, not the process total.
+    // Pre-eager-free every grow cycle's OLD slots buffer was held
+    // until the next grow, so the 20k-insert run carried the sum of
+    // all twelve tables instead of the current one.
+    let read = |key: &str| -> i64 {
+        let line = stdout
+            .lines()
+            .find_map(|l| l.strip_prefix(key))
+            .unwrap_or_else(|| panic!("missing {} in stdout: {:?}", key, stdout));
+        harness::statm_resident_bytes(line) / 1024
+    };
+    let warmup_kb = read("warmup_statm=");
+    let after_kb = read("after_statm=");
+    // 2026-09-20 (GH #772): was `after < 512` MB on
+    // `std::process::rss_bytes()`, which a spawned program inherits
+    // from its parent through fork+exec — so it read the libtest
+    // harness's footprint (the 2026-07-03 de-flake that raised the
+    // bound from 128 to 512 MB was buying headroom against the
+    // harness's own LLVM builds, "unreproducible in isolation" for
+    // exactly that reason). Measured against the program's own
+    // /proc/self/statm the whole 20k-insert run grows 4.3 MB over
+    // the pre-insert reading (4820 KB -> 9244 KB), which is the
+    // current 32768-slot table (~2 MB) plus chunk-pool churn. 64 MB
+    // keeps ~15x headroom over that and still catches a leak that
+    // holds every OLD buffer.
+    let growth_kb = after_kb - warmup_kb;
     assert!(
-        after < 512,
-        "20k-insert sustained-write workload exceeded 512 MB RSS \
-         ({}MB) — likely a use-after-grow leak (OLD slots buffer \
-         not being freed eagerly after migration). Pre-eager-free \
-         design peaked in the GB range under this workload.",
-        after
+        growth_kb < 64 * 1024,
+        "20k-insert sustained-write workload grew its own RSS by \
+         {} KB (warmup {} KB, after {} KB) — likely a use-after-grow \
+         leak (OLD slots buffer not being freed eagerly after \
+         migration). The live table at 32768 slots is ~2 MB.",
+        growth_kb, warmup_kb, after_kb,
     );
 }

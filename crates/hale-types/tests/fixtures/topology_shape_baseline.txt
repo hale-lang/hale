@@ -183,6 +183,18 @@ crates/hale-codegen/tests/array_repeat.rs#0 f2c1228edb650960
 crates/hale-codegen/tests/array_repeat.rs#1 f2c1228edb650960
 crates/hale-codegen/tests/array_repeat.rs#2 3b217f0f698a6100
 crates/hale-codegen/tests/array_repeat.rs#3 f2c1228edb650960
+crates/hale-codegen/tests/array_repeat_stack.rs#0 fdf732474ee4ec05
+crates/hale-codegen/tests/array_repeat_stack.rs#1 44a5efcc6a7cd24b
+crates/hale-codegen/tests/array_repeat_stack.rs#10 38bb07b2ab4a0217
+crates/hale-codegen/tests/array_repeat_stack.rs#11 2a4758e6e841bdd9
+crates/hale-codegen/tests/array_repeat_stack.rs#2 4a5761530b118659
+crates/hale-codegen/tests/array_repeat_stack.rs#3 0d2e8bdf2c3cc160
+crates/hale-codegen/tests/array_repeat_stack.rs#4 de17404bd8ac3dc6
+crates/hale-codegen/tests/array_repeat_stack.rs#5 de1c6596a3bf9084
+crates/hale-codegen/tests/array_repeat_stack.rs#6 dd13a0840dfefec9
+crates/hale-codegen/tests/array_repeat_stack.rs#7 ad97e1f4dff1b0b8
+crates/hale-codegen/tests/array_repeat_stack.rs#8 614c66505013ded8
+crates/hale-codegen/tests/array_repeat_stack.rs#9 a701085799faec91
 crates/hale-codegen/tests/async_io_recv_into_park.rs#1 f21a527aa7a90794
 crates/hale-codegen/tests/async_io_shutdown_parked.rs#0 6855d4dd6b01d60e
 crates/hale-codegen/tests/asyncio_sleep_park.rs#0 87d5e75e48363103
@@ -774,7 +786,7 @@ crates/hale-codegen/tests/json_range_helpers.rs#1 3b731ede5842c7dc
 crates/hale-codegen/tests/json_range_helpers.rs#2 3b731ede5842c7dc
 crates/hale-codegen/tests/json_range_helpers.rs#3 865d341109268295
 crates/hale-codegen/tests/json_range_helpers.rs#4 865d341109268295
-crates/hale-codegen/tests/json_range_helpers.rs#5 a6cceee031d6561b
+crates/hale-codegen/tests/json_range_helpers.rs#5 e84a1badfaeaf62f
 crates/hale-codegen/tests/json_span_iter.rs#0 865d341109268295
 crates/hale-codegen/tests/json_span_iter.rs#1 865d341109268295
 crates/hale-codegen/tests/json_span_iter.rs#2 865d341109268295
@@ -882,6 +894,8 @@ crates/hale-codegen/tests/method_scratch_reclaim.rs#2 c2cff0c1243acf8b
 crates/hale-codegen/tests/method_scratch_reclaim.rs#3 33327c917c4bec08
 crates/hale-codegen/tests/mirror_ring.rs#0 f21a527aa7a90794
 crates/hale-codegen/tests/mirror_ring.rs#1 f2c1228edb650960
+crates/hale-codegen/tests/missing_ts_shim.rs#0 865d341109268295
+crates/hale-codegen/tests/missing_ts_shim.rs#1 f2c1228edb650960
 crates/hale-codegen/tests/multi_file_build.rs#1 59b52d815a9785d5
 crates/hale-codegen/tests/multi_file_build.rs#3 0a8aacc95650aae4
 crates/hale-codegen/tests/nested_long_lived_child.rs#0 477865f8b91baeea

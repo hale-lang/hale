@@ -57,6 +57,20 @@ Going the other way loses information, so it's explicit:
 let n = Int(3.9);        // 3 — truncates toward zero
 ```
 
+`Float(x)` is the same cast in the widening direction, for the
+places the implicit rule doesn't reach — mid-expression, most
+often:
+
+```hale,fragment
+let hits = 3;
+let total = 8;
+let rate = Float(hits) / Float(total);   // 0.375, not 0
+```
+
+Those two are the only casts. `String`, `Bool`, `Bytes` and the
+rest are type names, not conversions: `String(x)` calls nothing
+and is refused.
+
 When you'd rather name the conversion — or need it mid-expression
 where the implicit widening doesn't reach — `std::math` has both
 directions as functions:

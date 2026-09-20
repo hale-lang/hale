@@ -7369,8 +7369,22 @@ fn run_build(target: &Path) -> ExitCode {
             // GH #241: span-carrying codegen errors render like
             // check diagnostics (file:line:col + source caret);
             // everything else keeps the bare line.
-            if let hale_codegen::CodegenError::UnsupportedAt(msg, span) = &e {
-                let d = hale_syntax::Diag::codegen(*span, msg.clone());
+            // GH #808: the missing-tree-sitter-shim refusal carries a
+            // span only when the program reached `std::ts::*` through
+            // a path call we could point at; otherwise it renders as
+            // a bare line like the rest.
+            let located = match &e {
+                hale_codegen::CodegenError::UnsupportedAt(msg, span) => {
+                    Some((msg.clone(), *span))
+                }
+                hale_codegen::CodegenError::MissingTsShim(
+                    msg,
+                    Some(span),
+                ) => Some((msg.clone(), *span)),
+                _ => None,
+            };
+            if let Some((msg, span)) = located {
+                let d = hale_syntax::Diag::codegen(span, msg);
                 eprintln!("{}", render_located(&d, &file_bases, &sources));
             } else {
                 eprintln!("codegen error: {}", e);

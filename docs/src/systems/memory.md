@@ -117,5 +117,12 @@ just adds another chunk; it doesn't panic. The load-bearing
 property is *lifetime*: wholesale free at dissolve. That's the
 contract every other guarantee leans on.
 
+One shape sits outside the arena entirely: a fixed-size array
+literal bound to a `let` and only ever indexed is a stack local
+in that function's frame, so a scratch table inside a helper
+costs the arena nothing. The details — and the uses that put it
+back on the arena — are in
+[Performance](./performance.md#a-fixed-scratch-table-is-free).
+
 Next: keeping a long-running program's memory flat —
 [Performance](./performance.md).

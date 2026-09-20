@@ -1,16 +1,17 @@
 //! The premises `@budget(stack_bytes)` rests on (#326).
 //!
 //! The estimator is 32 bytes of call overhead, 8 per parameter, 8 per
-//! local. Whether that is sound has nothing to do with the arithmetic
-//! and everything to do with a fact about Hale's memory model:
+//! local — except an array local, charged its declared extent.
+//! Whether that is sound has nothing to do with the arithmetic and
+//! everything to do with a fact about Hale's memory model:
 //!
 //!     ALMOST NOTHING IS ON THE STACK.
 //!
-//! Fixed arrays, structs and string/bytes buffers are arena-allocated,
-//! so a local is a pointer and 8 bytes is close to *correct* for the
-//! scalars that remain. The same estimator in C would be wrong by
-//! orders of magnitude — a `char buf[65536]` local is 8 bytes to this
-//! model and 64 KiB to the machine.
+//! Structs and string/bytes buffers are arena-allocated, so a local is
+//! a pointer and 8 bytes is close to *correct* for the scalars that
+//! remain. The same estimator in C would be wrong by orders of
+//! magnitude — a `char buf[65536]` local is 8 bytes to this model and
+//! 64 KiB to the machine.
 //!
 //! That premise is load-bearing and invisible. If a shape ever became
 //! stack-allocated — for performance, for a new backend, for wasm —
@@ -18,6 +19,13 @@
 //! and every `@budget(stack_bytes)` certificate in the tree would
 //! quietly become wrong. Nothing would fail; the numbers would just
 //! stop meaning anything.
+//!
+//! Which is exactly what GH #767 did to fixed arrays: a non-escaping
+//! `[c; N]` bound to a `let` is a frame slot now, up to 8 KiB per fn.
+//! The estimator was corrected in the same change to charge an array
+//! its declared extent, so the two halves are pinned together here —
+//! the shapes that are still NOT on the stack, and the one that is,
+//! with the estimate that has to cover it.
 //!
 //! So the premise is pinned here rather than assumed. These tests do
 //! not check the budget arithmetic (that has its own tests) — they
@@ -101,9 +109,10 @@ fn big_allocas(ir: &str, min_elems: usize) -> Vec<String> {
         .collect()
 }
 
-/// THE premise. A large fixed-size array local must not become a
-/// stack allocation, or the estimator's 8-bytes-per-local under-counts
-/// it by 32 KiB.
+/// THE premise, post-#767: a fixed-size array local past the 8 KiB
+/// per-fn stack cap must not become a stack allocation. `[Int; 4096]`
+/// is 32 KiB — it stays in the arena, and a coroutine stack
+/// (`LOTUS_CORO_STACK_BYTES`, 64 KiB) stays intact.
 #[test]
 fn a_large_array_local_is_not_on_the_stack() {
     let ir = ir_for(
@@ -120,11 +129,47 @@ fn a_large_array_local_is_not_on_the_stack() {
     let big = big_allocas(&ir, 1024);
     assert!(
         big.is_empty(),
-        "a [Int; 4096] local became a stack allocation. \
-         `@budget(stack_bytes)` estimates 8 bytes for it, so every \
-         such certificate now under-counts by ~32 KiB — see \
-         spec/verification.md § stack_bytes. Offending alloca(s):\n{}",
+        "a [Int; 4096] local became a stack allocation. That is 32 KiB \
+         of a 64 KiB coroutine stack for one local — see \
+         STACK_ARRAY_MAX_BYTES in hale-codegen and spec/memory.md \
+         § Non-escaping fixed arrays. Offending alloca(s):\n{}",
         big.join("\n")
+    );
+}
+
+/// The other half of the #767 premise: the array that IS on the frame
+/// has to be visible to the estimate, or a `@budget(stack_bytes)`
+/// certificate over it means nothing. `[Int; 1024]` is 8 KiB — a frame
+/// slot now — so a 64-byte budget must be REJECTED, not silently
+/// satisfied by charging the local 8 bytes.
+#[test]
+fn an_array_on_the_frame_is_charged_by_the_estimator() {
+    let src = "@budget(stack_bytes = 64)\n\
+               fn tbl(n: Int) -> Int {\n\
+                   let t: [Int; 1024] = [0; 1024];\n\
+                   return t[0] + n;\n\
+               }\n\
+               fn main() { println(tbl(3)); }";
+    // The premise: it really is on the frame.
+    let ir = ir_for("charged", src);
+    assert!(
+        ir.contains("alloca [1024 x i64]"),
+        "expected the 8 KiB table to be a frame slot (GH #767)"
+    );
+    // And the estimate covers it.
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let ds: Vec<String> = hale_types::check_program(&program)
+        .into_iter()
+        .map(|d| d.message)
+        .collect();
+    assert!(
+        ds.iter().any(|m| m.contains("budget exceeded")
+            && m.contains("stack_bytes")),
+        "an 8 KiB frame table under a 64-byte stack budget must be \
+         rejected — if the estimator still charges 8 bytes for an \
+         array local, every stack_bytes certificate over one is \
+         wrong: {:?}",
+        ds
     );
 }
 

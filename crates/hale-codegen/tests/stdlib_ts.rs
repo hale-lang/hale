@@ -7,14 +7,17 @@
 //! hale-ts-shim staticlib → run, with the tree-sitter Go
 //! grammar bundled.
 //!
-//! The shim staticlib must already be built (workspace
-//! `cargo build -p hale-ts-shim`); the codegen link step
+//! The shim staticlib must already be built (`cargo build
+//! --release`, or `-p hale-ts-shim`); the codegen link step
 //! locates `libhale_ts_shim.a` under the workspace target
 //! dir. CI builds the workspace before running tests, so the
-//! ordering is implicit there. For local `cargo test -p
-//! hale-codegen` runs without a prior workspace build, the
-//! `hale-ts-shim` direct dependency in this crate's Cargo
-//! ensures cargo materializes it before these tests run.
+//! ordering is implicit there. Nothing in the dependency graph
+//! enforces it: `hale-ts-shim` is `crate-type = ["staticlib"]`,
+//! which no crate can declare a Cargo dependency on, so a
+//! `cargo test -p hale-codegen` with no prior workspace build
+//! does NOT materialize it (GH #808) — these tests then fail
+//! with the located `MissingTsShim` refusal that
+//! `missing_ts_shim.rs` pins.
 
 use std::process::Command;
 

@@ -118,7 +118,7 @@ surface without touching the compiler.
 | `std::crypto` | `sha1(b) -> Bytes` (20-byte), `sha256(b) -> Bytes` (32-byte), `hmac_sha256(key, msg) -> Bytes` (32-byte), `sha512(b) -> Bytes` (64-byte) / `hmac_sha512(key, msg) -> Bytes` (64-byte) (the 64-bit-word SHA-2 sibling — FIPS 180-4 SHA-512 + RFC 2104 HMAC over a 128-byte block; same non-fallible shape as `hmac_sha256`, hand-rolled, no libcrypto; added 2026-06-25 for venue order-entry auth, which sign with HMAC-SHA512), `crc32(b) -> Int` (4-byte IEEE 802.3 checksum returned as Int; reversed polynomial `0xEDB88320`, init `0xFFFFFFFF`, final XOR `0xFFFFFFFF` — the zlib / Python `binascii.crc32` variant; added 2026-05-27). `ecdsa_p256_sign(key, message) -> Bytes` / `ecdsa_p256_verify(pubkey, message, sig) -> Bool` (ES256 — ECDSA over NIST P-256 + SHA-256; `key` is a PEM EC private key, SEC1 or PKCS#8; `pubkey` is PEM SPKI; signature is raw `r‖s`, 64 bytes, the JWS/COSE form JWT wants; added 2026-06-03 for venue/JWT auth). `ecdsa_p256_sign` has two forms: the bare call returns an empty Bytes on failure (the `base64::decode` convention — `len(sig) == 0` ⇒ failed), and in an `or` context it is `Bytes fallible(CryptoError)`, so `let sig = std::crypto::ecdsa_p256_sign(key, msg) or raise;` propagates a structured `CryptoError { kind: String, detail: String }` (`kind` = the op tag `"ecdsa_p256_sign"`; `detail` = the failure reason) — read it via `or handler(err)` / `or fail err` / `or <substitute>` exactly like `IoError` / `ParseError`. The hashes + crc32 are hand-rolled (no libcrypto); ECDSA is OpenSSL-backed (rides the libssl/libcrypto link TLS already pulls). | `lotus_crypto_*` (hashes in `runtime/lotus_arena.c`; ECDSA in `runtime/lotus_tls.c`) |
 | `std::os` | `getrandom(n: Int) -> Bytes fallible(IoError)` (CSPRNG; `getrandom(2)` with `/dev/urandom` fallback) | `lotus_os_getrandom` C primitive |
 | `std::rand` | `next_int(max: Int) -> Int` — a uniform-ish integer in `[0, max)` drawn from a shared xorshift64\* generator; `seed_from_time()` re-seeds that generator from the wall clock. **Not cryptographic** (deterministic PRNG, process-shared state) — for security-sensitive randomness use `std::os::getrandom`. | `lotus_rand_*` C runtime |
-| `std::ts` | Tree-sitter parse substrate (m96 — the `std::ts::*` routes back the higher-level `Lang` locus). `parse_go(src: String) -> Int` parses Go source and returns an opaque **tree handle** (`Int`); `root_node(tree) -> Int` returns the root **node handle**. Node navigation (all handles are `Int`): `node_child_count(node)` / `node_named_child_count(node)`, `node_child(parent, i)` / `node_named_child(parent, i)`, `node_is_named(node) -> Int` (`0`/`1`). Kind, text, spans: `node_kind(node) -> String`, `node_text(node) -> String`, `node_start_byte(node) -> Int` / `node_end_byte(node) -> Int`. Go is the only bundled grammar at v1; the tree-sitter shim staticlib is linked into the build (gating the link on actual `std::ts` use is future work). | `lotus_ts_*` + tree-sitter shim |
+| `std::ts` | Tree-sitter parse substrate (m96 — the `std::ts::*` routes back the higher-level `Lang` locus). `parse_go(src: String) -> Int` parses Go source and returns an opaque **tree handle** (`Int`); `root_node(tree) -> Int` returns the root **node handle**. Node navigation (all handles are `Int`): `node_child_count(node)` / `node_named_child_count(node)`, `node_child(parent, i)` / `node_named_child(parent, i)`, `node_is_named(node) -> Int` (`0`/`1`). Kind, text, spans: `node_kind(node) -> String`, `node_text(node) -> String`, `node_start_byte(node) -> Int` / `node_end_byte(node) -> Int`. Go is the only bundled grammar at v1; the tree-sitter shim staticlib is linked into the build (gating the link on actual `std::ts` use is future work). **The shim is a build requirement, and a missing one is a build error, not a link error** (GH #808): `std::ts` is the one stdlib namespace whose implementation ships as a separate artifact (`libhale_ts_shim.a`, from the `hale-ts-shim` crate), and a toolchain built without it refuses any program that reaches `std::ts::*` with a located diagnostic naming the artifact and `cargo build --release`. Programs that don't reach `std::ts` — including those that merely merge the stdlib loci that use it — build normally against a toolchain that lacks the shim. | `lotus_ts_*` + tree-sitter shim |
 | `std::bus` | `__StdBusAdapter` interface (contract for user-supplied bus transports — a single `fn send(subject: String, bytes: Bytes)` method); `__local_dispatch(subject, bytes)` primitive lets an adapter relay received wire-bytes into the local handler set. **Substrate transport URL schemes** (resolved at runtime by `lotus_bus_load_config` from `LOTUS_BUS_CONFIG=<file>`): `unix://<path>` (AF_UNIX SEQPACKET; m58); `udp://<host>:<port>` (2026-05-26 — IPv4 UDP, single scheme covers unicast and multicast: addresses in `224.0.0.0/4` trigger `IP_ADD_MEMBERSHIP` on the subscribe side, everything else takes the plain unicast bind/sendto path; lossy delivery — publishers get "sendto returned" durability, subscribers best-effort; gap recovery is a deployment concern via app-layer repeaters, MoldUDP-style). Each LOTUS_BUS_CONFIG line: `subject = <url>:<role>` where role is `listen` or `connect`. A well-formed route that cannot be *opened* fails the boot via `lotus_bus_binding_fail` (the publish contract, spec/semantics.md — no requested route may silently not exist); malformed lines warn-and-skip. Other protocol-layer transports (NATS, MQTT, raw-TCP-with-framing) come in via user adapters (the `__StdBusAdapter` route above). **Payload size**: the substrate handles bus payloads up to ~64 KB (`LOTUS_PAYLOAD_MAX`, sized to UDP datagram max). Mailbox cells inline payloads ≤ 512 B (`LOTUS_PAYLOAD_INLINE` — zero malloc on the hot path); larger payloads route through a per-cell `malloc` that the drain path frees after the handler returns. The UDP transport's wire buffer is sized at LOTUS_PAYLOAD_MAX; the kernel-side socket receive buffer takes its size from `SO_RCVBUF` (default ~208 KB on Linux, raise via `LOTUS_BUS_UDP_RCVBUF=<bytes>` env). UDP `sendto` failures log once per errno class to stderr (`EMSGSIZE` typically means path-MTU mismatch; see `std::io::sockopt::IP_MTU_DISCOVER` for the DF-bit knob). | `runtime/stdlib/bus.hl` + `lotus_bus_*` C runtime |
 
 Hale doesn't use parametric stdlib collection types (`Map<K,
@@ -347,6 +347,13 @@ becomes "a closure asserting state is possible." "Bail from this
 function" is a category error in Hale — functions return
 values; failure lives at the locus level.
 
+Writing `panic("…")` anyway is an ordinary unbound callee: `hale
+check <directory>` reports ``call to `panic`: no free fn, generic
+fn or fn-pointer binding with that name is in scope`` at the call.
+Until GH #800 the name sat in the checker's bare-builtin exemption
+table, so `check` accepted it and only `hale build` objected, at
+lowering, without a source location.
+
 ## Form-synthesized error types
 
 Beyond the explicit `std::*` namespace, the resolver injects
@@ -472,10 +479,26 @@ let bytes = std::process::rss_bytes();
 println("rss=", to_string(bytes));
 ```
 
-For the *current* RSS, parse `/proc/self/statm`'s line one
-field two via `read_file` (size-tolerant for synthesized
-files). Both surfaces ship; pick by use case (peak for
-alarms, current for heartbeat gauges).
+**A spawned process inherits its parent's peak.** `execve` does
+not reset `ru_maxrss`: `fork` hands the child a copy-on-write
+duplicate of the parent's address space, so the pre-exec child's
+RSS high-water mark *is* the parent's RSS, and the exec folds that
+mark into the new image's `ru_maxrss` for the life of the process.
+A program started by a large parent therefore reports at least
+that parent's RSS forever after — measured, one unmodified binary
+reads 4.7 MB standalone and 411 MB when spawned from a parent
+holding 400 MB. `rss_bytes()` is a peak for a process that owns
+its own history (a service started by an init system, a CLI run
+from a shell); it is not a way to measure a child you spawned, and
+a supervised worker's reading carries its supervisor's footprint.
+
+For the *current* RSS — and for any measurement that must be the
+program's own — parse `/proc/self/statm`'s line one field two via
+`read_file` (size-tolerant for synthesized files); that file is
+read from the post-exec address space and carries none of the
+inherited history. Both surfaces ship; pick by use case (peak for
+alarms on a top-level process, current for heartbeat gauges and
+for anything spawned).
 
 ## `Server.shutdown()` — interruptible accept loop
 

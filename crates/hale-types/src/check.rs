@@ -14686,25 +14686,35 @@ fn locus_has_unsynchronized_state(
 /// fn. A call to any other unbound bare name is refused by `hale
 /// build`, so the checker refuses it first (dna/FRICTION.md F.18).
 ///
-/// **This list must cover every bare name codegen dispatches.** A name
-/// codegen answers but this table lacks makes the admission gate
-/// refuse a program `hale run` executes — GH #779, where
+/// **The table is a contract in both directions, and both are
+/// tested rather than trusted.**
+///
+/// A name codegen answers that this table LACKS makes the admission
+/// gate refuse a program `hale run` executes — GH #779, where
 /// `starts_with` / `contains` / `eprint` / `check_closures` / `mean`
 /// were all missing and four corpus fixtures were red under `hale
-/// check <dir>` while building and running fine. The enforcement is
+/// check <dir>` while building and running fine. Enforced by
 /// `corpus_check_build_agreement`'s
-/// `strict_check_refuses_nothing_the_build_accepts`: it runs the
+/// `strict_check_refuses_nothing_the_build_accepts`, which runs the
 /// strict-callee rule over the whole corpus and builds anything the
-/// rule refuses, so a new codegen builtin without an entry here is a
-/// failing test rather than a downstream mystery.
+/// rule refuses.
+///
+/// A name this table LISTS that codegen cannot lower is the mirror
+/// defect: `hale check` accepts a call `hale build` refuses, late,
+/// from another layer and without a span — GH #800, where `hex`,
+/// `panic`, `exit` and five of the six primitive-type spellings had
+/// no arm anywhere in codegen. Enforced by the same file's
+/// `every_bare_builtin_callee_lowers`, which compiles a program
+/// calling every name below.
 ///
 /// Grouped by the codegen dispatch site that answers each name.
-/// Entries marked "no arm today" are over-broad in the safe
-/// direction: `check` lets them through and `hale build` still
-/// refuses them, which is the pre-F.18 behavior, not a regression.
-pub(crate) const BARE_BUILTIN_CALLEES: &[&str] = &[
+pub const BARE_BUILTIN_CALLEES: &[&str] = &[
     // lower_expr's `Expr::Call` arms (hale-codegen `codegen.rs`).
-    "len", "to_string", "Int", "abs", "min", "max",
+    // `Int` and `Float` are the two numeric casts of
+    // spec/types.md § "Explicit numeric conversions"; the other
+    // primitive type names are types, not conversions, and a call
+    // to one is an ordinary unbound callee.
+    "len", "to_string", "Int", "Float", "abs", "min", "max",
     // lower_str_predicate_builtin.
     "starts_with", "contains",
     // Statement position: lower_print_call's four printers, and the
@@ -14712,15 +14722,17 @@ pub(crate) const BARE_BUILTIN_CALLEES: &[&str] = &[
     "println", "print", "eprintln", "eprint", "check_closures",
     // Accumulator vocabulary inside a closure assertion
     // (`collect_sum_calls`). `count()` and `mean(x)` arrive here as
-    // calls; `sum(x)` / `prod(x)` get dedicated AST nodes from the
-    // parser and never reach this rule — listed for the reader.
-    "count", "mean", "sum", "prod",
+    // calls. `sum(x)` and `prod(x)` do NOT: the parser gives them
+    // dedicated AST nodes (`Expr::Sum` / `Expr::Prod`), so they are
+    // never a bare callee and this rule never consults the table
+    // for them. #779 listed them for the reader; that made the
+    // table claim codegen answers `prod`, which it does not — there
+    // is no `Expr::Prod` arm in `lower_expr` at all.
+    "count", "mean",
     // bounded[T; N] intrinsics — `clear`/`truncate` direct,
     // `push`/`at`/`set` through the fallible (`or`) path.
     "clear", "truncate", "push", "at", "set",
-    // No arm today; kept so `check` stays no stricter than it was.
-    "hex", "panic", "exit",
-    "Float", "String", "Bool", "Bytes", "Decimal", "Duration",
+    // lower_fmt_builtin: the parser's desugaring of `f"{x:spec}"`.
     hale_syntax::parser::FMT_BUILTIN,
 ];
 

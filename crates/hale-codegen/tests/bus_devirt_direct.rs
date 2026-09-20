@@ -66,6 +66,25 @@ fn calls_deferred_static(ir: &str) -> bool {
     ir.contains("call void @lotus_bus_dispatch_static(")
 }
 
+/// The instruction lines of one labelled basic block, label line
+/// excluded. Panics when the block is absent — a lowering that
+/// renamed or dropped the block must fail here, not silently pass
+/// with an empty body.
+fn basic_block<'a>(ir: &'a str, label: &str) -> Vec<&'a str> {
+    let head = format!("{}:", label);
+    let mut lines = ir.lines().skip_while(|l| !l.starts_with(&head));
+    assert!(
+        lines.next().is_some(),
+        "no `{}` basic block in the IR — the direct-dispatch \
+         lowering changed shape",
+        label
+    );
+    lines
+        .take_while(|l| !l.trim().is_empty())
+        .map(|l| l.trim())
+        .collect()
+}
+
 /// QUIET handler (self-field accumulation + pure-cond if), FLAT Int
 /// payload, same-thread → MUST direct-call, NOT deferred-enqueue.
 const QUIET_FLAT: &str = r#"
@@ -188,6 +207,71 @@ fn quiet_flat_same_thread_lowers_to_inline_direct_call() {
         !calls_deferred_static(&ir),
         "the quiet subject must NOT also take the deferred static \
          enqueue path"
+    );
+}
+
+/// GH #782 — the baked direct loop records its publish's payload,
+/// and does it behind the gate that was already there.
+///
+/// The inline flavor is the one publish path with no C dispatch fn
+/// to host the recorder call, so it recorded nothing: a fully
+/// direct-dispatched workload produced a recording with zero payload
+/// blobs and `hale replay --diff` compared none of them. Three
+/// claims are pinned here, and the third is the performance one:
+///
+///  1. the recorder call is emitted at the direct publish site,
+///  2. it runs BEFORE the publish probe — the recorder PEEKS the
+///     ingress redispatch mark that `lotus_obs_bus_publish`
+///     CONSUMES, so the order is semantic, not cosmetic, and
+///  3. it is emitted ONLY inside `bus.direct.obs.pub` — the block
+///     the pre-existing `lotus_obs_live` branch guards. Direct
+///     dispatch exists for speed; a recorder call on the
+///     unconditional path would be a per-publish tax on every
+///     unobserved run. Counting module-wide and comparing against
+///     the in-block count is what makes that check non-vacuous: a
+///     call that escaped the gate would raise the module count
+///     without touching the block's.
+#[test]
+fn direct_dispatch_records_its_payload_inside_the_obs_gate() {
+    let ir = build_ir("recpay", QUIET_FLAT);
+    assert!(
+        calls_inline_direct(&ir),
+        "this test pins the INLINE direct lowering; without it the \
+         assertions below describe nothing"
+    );
+    const REC: &str = "call i64 @lotus_obs_record_publish_payload(";
+    const PUB: &str = "call i64 @lotus_obs_bus_publish(";
+
+    let blk = basic_block(&ir, "bus.direct.obs.pub");
+    let rec_at = blk.iter().position(|l| l.contains(REC));
+    let pub_at = blk.iter().position(|l| l.contains(PUB));
+    let (rec_at, pub_at) = match (rec_at, pub_at) {
+        (Some(r), Some(p)) => (r, p),
+        _ => panic!(
+            "the direct publish site must record its payload AND \
+             fire the publish probe:\n{}",
+            blk.join("\n")
+        ),
+    };
+    assert!(
+        rec_at < pub_at,
+        "the payload record must precede the publish probe (it peeks \
+         the ingress mark the probe consumes):\n{}",
+        blk.join("\n")
+    );
+    assert!(
+        blk[rec_at].contains(", i32 1)"),
+        "raw_struct must be 1 — the same framing the queued flat \
+         path writes, so the replay reader learns no second format: \
+         `{}`",
+        blk[rec_at]
+    );
+    assert_eq!(
+        ir.matches(REC).count(),
+        1,
+        "the recorder call must appear ONCE, inside the \
+         obs-gated block — an unobserved publish pays for it \
+         otherwise"
     );
 }
 
