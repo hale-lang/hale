@@ -138,6 +138,22 @@ fn trim_nl(s: String) -> String {
     return s[0..e];
 }
 
+// ---- how long a fixture waits for the organism (GH #795) -------------
+
+// Every bounded wait in a fixture is a base sized for a quiet machine
+// times this multiplier (`HALE_DNA_WAIT_SCALE`, default 1, never below
+// 1). A loaded runner — the whole workspace's tests beside one organism
+// and its bodies — widens every wait from one place, instead of each
+// fixture growing its own number after each flake.
+fn wait_scale() -> Int {
+    let given = trim_nl(std::env::var("HALE_DNA_WAIT_SCALE"));
+    let s = std::str::parse_int(given) or 1;
+    return if s < 1 { 1 } else { s };
+}
+
+// `secs` seconds on a quiet machine, widened by `wait_scale()`.
+fn wait_secs(secs: Int) -> Int { return secs * wait_scale(); }
+
 // ---- workspaces ------------------------------------------------------
 
 type Worktree {

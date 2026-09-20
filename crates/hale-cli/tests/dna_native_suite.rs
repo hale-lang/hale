@@ -50,6 +50,21 @@ fn run_fixture_slice(slice: usize) {
         if let Ok(dsn) = std::env::var("HALE_DNA_KNOWLEDGE_DSN") {
             cmd.env("HALE_DNA_KNOWLEDGE_DSN", dsn);
         }
+        // GH #795: a fixture's bounded waits are written for a quiet
+        // machine, and here they are not on one — the slices run beside
+        // the rest of the workspace's tests, with an organism, its
+        // bodies and their builds inside each fixture. `dna::wait_scale`
+        // widens every wait at once, and the suite asks for double by
+        // default; a slower runner can ask for more from the
+        // environment. Two, not more: the widest wait in a fixture is
+        // 300s, and the slice's own `terminate-after` allowance is 15
+        // minutes for every fixture in it, so one stuck wait must not
+        // be able to eat the whole slice. Running a fixture by hand
+        // keeps the quiet-machine bounds, so a real hang is still
+        // reported in seconds rather than minutes.
+        if std::env::var_os("HALE_DNA_WAIT_SCALE").is_none() {
+            cmd.env("HALE_DNA_WAIT_SCALE", "2");
+        }
         let out = cmd.output().expect("invoke hale test on a DNA fixture");
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
