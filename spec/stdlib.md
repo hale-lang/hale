@@ -24,6 +24,19 @@ path-call names validated against the stdlib surface registry.
 The codegen layer resolves `std::*` paths against a hardcoded
 namespace dispatcher.
 
+Some operations are bare **builtins** rather than stdlib
+functions (`len`, `to_string`, `abs`, `min`, `max`, the printers —
+grammar intrinsics, see [`types.md`](./types.md)). A path that is
+a conventional spelling of one of those — `std::str::len`,
+`std::string::length`, `std::math::abs`, `std::cmp::min`,
+`std::io::println` and their siblings — is answered with that
+builtin's call shape (``the length of a String is the builtin
+`len(s)` ``) rather than an edit-distance guess, as is the member
+spelling `s.len()` / `s.length` / `s.size` on a `String` or
+`Bytes` (GH #722). Every other unknown name keeps the plain
+unknown-function or unknown-namespace diagnostic: an operation
+with no builtin equivalent is never pointed anywhere.
+
 There is **no general module system** at v1 — no `use`
 statements, no user-defined modules, no multi-file `.hl`
 packages via the std-style mechanism. `std::*` is the only

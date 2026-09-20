@@ -12574,12 +12574,25 @@ impl<'a> Checker<'a> {
                             // now, so the hint was unreachable —
                             // dead advice about a limitation that no
                             // longer exists is worse than none.)
-                            let hint = crate::stdlib_surface::nearest_name(
+                            let mut hint = crate::stdlib_surface::nearest_name(
                                 &name.name,
                                 candidates.iter().map(|s| s.as_str()),
                             )
                             .map(|s| format!(" — did you mean `{}`?", s))
                             .unwrap_or_default();
+                            // GH #722: `s.len()` / `s.length` on a
+                            // String or Bytes is the member spelling
+                            // of a builtin; no candidate name can
+                            // bridge it, so point at the builtin.
+                            if hint.is_empty() {
+                                if let Some(advice) =
+                                    crate::stdlib_surface::builtin_member_advice(
+                                        &rt, &name.name,
+                                    )
+                                {
+                                    hint = format!(" — {}", advice);
+                                }
+                            }
                             self.diags.push(Diag::ty(
                                 *span,
                                 format!(

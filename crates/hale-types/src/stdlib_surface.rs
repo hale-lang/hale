@@ -789,12 +789,106 @@ fn edit_distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
+// GH #722: the advice strings. One per operation, shared by every
+// spelling of it, so a new row cannot invent a call shape — the
+// tests pin this set and typecheck each shape.
+const LEN_OF_STRING: &str =
+    "the length of a String is the builtin `len(s)`";
+const LEN_OF_BYTES: &str = "the length of a Bytes is the builtin `len(b)`";
+const LEN_OF_ARRAY: &str = "the length of an array is the builtin `len(a)`";
+const ABS_OF: &str = "the absolute value of a number is the builtin `abs(x)`";
+const MIN_OF: &str = "the smaller of two numbers is the builtin `min(a, b)`";
+const MAX_OF: &str = "the larger of two numbers is the builtin `max(a, b)`";
+const PRINT_TO: &str = "writing to stdout is the builtin `print(x)`";
+const PRINTLN_TO: &str =
+    "writing a line to stdout is the builtin `println(x)`";
+const RENDER_AS: &str =
+    "rendering a value as a String is the builtin `to_string(x)`";
+
+/// GH #722: the conventional spellings — the `std::` path an author
+/// arriving from Rust / Go / Python / Java reaches for — of
+/// operations Hale answers with a BARE BUILTIN rather than a stdlib
+/// fn. Edit distance cannot bridge a namespace→builtin move, and
+/// left to itself it actively misleads: `std::string::len` drew
+/// "did you mean `std::ring`?" and `std::math::min` drew "did you
+/// mean `std::math::sin`?".
+///
+/// Every row's advice is a real builtin call shape at the arity the
+/// codegen dispatch enforces (`lower_len_builtin`,
+/// `lower_to_string_builtin` and `lower_math_builtin`: one arg for
+/// `len`/`to_string`/`abs`, two for `min`/`max`; the printers are
+/// variadic). Operations with NO builtin equivalent are deliberately
+/// absent — `std::json::parse`, `std::str::concat` and
+/// `std::str::to_lower` keep the plain unknown-fn diagnostic rather
+/// than gain a suggestion that is not a valid call.
+pub const BUILTIN_SPELLINGS: &[(&[&str], &str)] = &[
+    (&["std", "bytes", "len"], LEN_OF_BYTES),
+    (&["std", "cmp", "max"], MAX_OF),
+    (&["std", "cmp", "min"], MIN_OF),
+    (&["std", "fmt", "print"], PRINT_TO),
+    (&["std", "fmt", "println"], PRINTLN_TO),
+    (&["std", "io", "print"], PRINT_TO),
+    (&["std", "io", "println"], PRINTLN_TO),
+    (&["std", "io", "stdout", "print"], PRINT_TO),
+    (&["std", "io", "stdout", "println"], PRINTLN_TO),
+    (&["std", "math", "abs"], ABS_OF),
+    (&["std", "math", "max"], MAX_OF),
+    (&["std", "math", "min"], MIN_OF),
+    (&["std", "str", "from_int"], RENDER_AS),
+    (&["std", "str", "len"], LEN_OF_STRING),
+    (&["std", "str", "length"], LEN_OF_STRING),
+    (&["std", "str", "to_string"], RENDER_AS),
+    (&["std", "string", "len"], LEN_OF_STRING),
+    (&["std", "string", "length"], LEN_OF_STRING),
+    (&["std", "vec", "len"], LEN_OF_ARRAY),
+];
+
+/// GH #722: the table lookup, consulted before either did-you-mean.
+/// `None` for every path that is not a tabled spelling, so unrelated
+/// unknown functions keep their existing diagnostic.
+fn builtin_spelling_error(segs: &[&str]) -> Option<String> {
+    let advice = BUILTIN_SPELLINGS
+        .iter()
+        .find(|(path, _)| *path == segs)
+        .map(|(_, advice)| *advice)?;
+    Some(format!(
+        "`{}` is not a stdlib function; {}",
+        segs.join("::"),
+        advice
+    ))
+}
+
+/// GH #722, member half: `s.len()` / `s.length` is the same
+/// namespace→builtin move in member spelling. Returns the advice to
+/// append to an existing "no field" error, for the primitives whose
+/// length the `len` builtin actually answers — a `@form` collection
+/// has a real `.len()` method and never reaches the error site.
+pub fn builtin_member_advice(recv: &Ty, field: &str) -> Option<&'static str> {
+    if !matches!(field, "len" | "length" | "size") {
+        return None;
+    }
+    match recv {
+        Ty::Prim(PrimType::String) | Ty::Prim(PrimType::StringView) => {
+            Some(LEN_OF_STRING)
+        }
+        Ty::Prim(PrimType::Bytes) | Ty::Prim(PrimType::BytesView) => {
+            Some(LEN_OF_BYTES)
+        }
+        _ => None,
+    }
+}
+
 /// The stage-1 check: for a call whose callee is a `std::` path,
 /// return an error message when the namespace is tabled and the fn
 /// name is unknown. `None` means "fine or not our business".
 pub fn unknown_fn_error(segs: &[&str]) -> Option<String> {
     if is_locus_path(segs) {
         return None;
+    }
+    // GH #722: a conventional spelling of a builtin is answered by
+    // the explicit table, before either generic did-you-mean.
+    if let Some(msg) = builtin_spelling_error(segs) {
+        return Some(msg);
     }
     // #353 item 9: an UNTABLED namespace used to short-circuit here —
     // `lookup` returned None and the call was waved through as "not our
