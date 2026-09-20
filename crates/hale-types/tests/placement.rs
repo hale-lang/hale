@@ -933,6 +933,179 @@ fn main() { App { }; }
     );
 }
 
+// ---------------------------------------------------------------
+// GH #830: the lint's leaf set is the effects registry's `block`
+// classification, not a hand list. It used to be a hand list of 11
+// paths, so a `run()` that blocked through `io::stdin::read_line`,
+// `io::file::read_line`, `udp::recv`, `std::http::get`,
+// `tcp::connect` or `process::read_stdout` warned only if it ALSO
+// touched one of the 11.
+// ---------------------------------------------------------------
+
+/// The 11 paths the hand list named, kept as a pin: every one must
+/// still be a blocking leaf under the derived set. Seven of them
+/// (`tcp::{recv_into, recv_stamped_into, __recv, __recv_bytes,
+/// __accept_one}`, `tls::{recv_into, recv_stamped_into}`) are also
+/// in `ASYNC_IO_PARKING` — which is exactly why this lint does NOT
+/// subtract the park list: it never looks at an async_io placement
+/// (the walk `continue`s on the `where async_io` constraint), and on
+/// a classic pool those leaves take their blocking path.
+#[test]
+fn the_eleven_hand_listed_paths_are_still_blocking_leaves() {
+    use hale_types::stdlib_surface::holds_cooperative_worker;
+    for p in [
+        vec!["std", "io", "tcp", "recv_into"],
+        vec!["std", "io", "tcp", "recv_stamped_into"],
+        vec!["std", "io", "tcp", "__recv"],
+        vec!["std", "io", "tcp", "__recv_bytes"],
+        vec!["std", "io", "tcp", "__accept_one"],
+        vec!["std", "io", "tls", "recv_into"],
+        vec!["std", "io", "tls", "recv_stamped_into"],
+        vec!["std", "io", "tls", "recv_bytes"],
+        vec!["std", "process", "run"],
+        vec!["std", "process", "wait"],
+        vec!["std", "process", "__wait_pid"],
+    ] {
+        assert!(
+            holds_cooperative_worker(&p),
+            "{} was a blocking leaf before the registry derivation and must \
+             stay one",
+            p.join("::")
+        );
+    }
+}
+
+/// The omissions GH #830 names, now covered by the same derivation.
+#[test]
+fn the_registry_block_rows_the_hand_list_omitted_are_leaves_now() {
+    use hale_types::stdlib_surface::holds_cooperative_worker;
+    for p in [
+        vec!["std", "io", "stdin", "read_line"],
+        vec!["std", "io", "stdin", "read_byte"],
+        vec!["std", "io", "stdin", "read_line_status"],
+        vec!["std", "io", "file", "read_line"],
+        vec!["std", "io", "udp", "recv"],
+        vec!["std", "io", "udp", "recv_into"],
+        vec!["std", "io", "udp", "recv_with_source"],
+        vec!["std", "http", "get"],
+        vec!["std", "http", "post"],
+        vec!["std", "http", "request"],
+        vec!["std", "io", "tcp", "connect"],
+        vec!["std", "io", "tcp", "accept_one"],
+        vec!["std", "io", "tls", "upgrade"],
+        vec!["std", "process", "read_stdout"],
+        vec!["std", "process", "read_stderr"],
+    ] {
+        assert!(
+            holds_cooperative_worker(&p),
+            "{} carries `block` in the registry and must be a blocking leaf",
+            p.join("::")
+        );
+    }
+}
+
+/// A pure / non-blocking row is not a leaf, and neither is the one
+/// deliberate exclusion.
+#[test]
+fn non_blocking_rows_and_the_sleep_carve_out_are_not_leaves() {
+    use hale_types::stdlib_surface::holds_cooperative_worker;
+    for p in [
+        // `sleep` carries `block` but a cooperative pool slices it
+        // into ≤100ms chunks and drains the bus between them.
+        vec!["std", "time", "sleep"],
+        vec!["std", "time", "monotonic"],
+        vec!["std", "io", "tcp", "send"],
+        vec!["std", "str", "len"],
+        vec!["println"],
+        vec!["std", "io", "udp", "send"],
+    ] {
+        assert!(
+            !holds_cooperative_worker(&p),
+            "{} must not be a blocking leaf",
+            p.join("::")
+        );
+    }
+}
+
+#[test]
+fn cooperative_stdin_read_warns() {
+    // The regression GH #830 asks for: a classic-pool `run()` that
+    // blocks ONLY through stdin. Under the hand list this was silent.
+    let msgs = check(&blocking_src(
+        "cooperative(pool = io)",
+        "while true { let line = std::io::stdin::read_line(); }",
+    ));
+    assert!(
+        msgs.iter().any(|m| m.contains(BLOCKS_WARN)
+            && m.contains("std::io::stdin::read_line")),
+        "a classic-pool run() reading stdin must warn; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn cooperative_udp_recv_warns() {
+    let msgs = check(&blocking_src(
+        "cooperative(pool = net)",
+        "while true { let b = std::io::udp::recv(0, 64); }",
+    ));
+    assert!(
+        msgs.iter().any(|m| m.contains(BLOCKS_WARN)
+            && m.contains("std::io::udp::recv")),
+        "a classic-pool run() on udp::recv must warn; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn async_io_udp_recv_not_warned() {
+    // #828's park list: `udp::recv` parks on an async_io pool. Here
+    // the silence comes from the placement walk skipping `where
+    // async_io` outright — which is why this lint must not subtract
+    // the park list a second time.
+    let msgs = check(&blocking_src(
+        "cooperative(pool = net) where async_io",
+        "while true { let b = std::io::udp::recv(0, 64); }",
+    ));
+    assert!(
+        !msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
+        "udp::recv parks on async_io; must not warn: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn cooperative_http_get_warns() {
+    let msgs = check(&blocking_src(
+        "cooperative(pool = api)",
+        "while true { let r = std::http::get(\"http://h/\"); }",
+    ));
+    assert!(
+        msgs.iter()
+            .any(|m| m.contains(BLOCKS_WARN) && m.contains("std::http::get")),
+        "a classic-pool run() making an http request must warn; got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn cooperative_sleep_loop_not_warned() {
+    // The prescribed event-driven shape, and the fix BOTH blocking
+    // diagnostics name. `sleep` carries `block` in the registry, so
+    // a naive "every block row" leaf set would have the lint flag
+    // its own advice.
+    let msgs = check(&blocking_src(
+        "cooperative(pool = ws)",
+        "while true { std::time::sleep(50ms); }",
+    ));
+    assert!(
+        !msgs.iter().any(|m| m.contains(BLOCKS_WARN)),
+        "a sliced `time::sleep` loop keeps the pool's bus drain \
+         serviced; must not warn: {:?}",
+        msgs
+    );
+}
+
 // === Topology Phase 1a (2026-07-04): pinned(cores = ...) ======
 
 #[test]

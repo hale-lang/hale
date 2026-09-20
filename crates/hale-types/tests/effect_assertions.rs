@@ -676,6 +676,39 @@ fn every_parking_path_is_a_classified_blocking_row() {
     }
 }
 
+/// GH #830: same guard for the other subtraction. The classic-pool
+/// blocking lint takes the registry's `block` rows minus
+/// `COOPERATIVE_YIELDING_BLOCK_LEAVES`; an entry there that is not a
+/// classified `block` row subtracts nothing and is dead weight,
+/// silently.
+#[test]
+fn every_cooperative_yielding_leaf_is_a_classified_blocking_row() {
+    use hale_types::stdlib_surface::{
+        effects_for, holds_cooperative_worker, EffectSet,
+        COOPERATIVE_YIELDING_BLOCK_LEAVES,
+    };
+    for path in COOPERATIVE_YIELDING_BLOCK_LEAVES {
+        let eff = effects_for(path).unwrap_or_else(|| {
+            panic!(
+                "{} is carved out of the blocking lint but has no registry \
+                 row",
+                path.join("::")
+            )
+        });
+        assert!(
+            eff.contains(EffectSet::BLOCK),
+            "{} is carved out of the blocking lint but no longer carries \
+             `block`",
+            path.join("::")
+        );
+        assert!(
+            !holds_cooperative_worker(path),
+            "{} is carved out but still reports as a blocking leaf",
+            path.join("::")
+        );
+    }
+}
+
 // ---- @no_panic: disposition coverage, not leaf reachability ----
 
 #[test]

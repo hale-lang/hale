@@ -1091,9 +1091,9 @@ fn run_statically_nonreturning(run_body: &Block, decl: &LocusDecl) -> Option<Spa
     }
 }
 
-/// Stdlib path calls that block the calling OS thread until the I/O
-/// completes. A cooperative (non-`async_io`) locus that runs one in
-/// its `run()` loop holds the pool's thread for the call's whole
+/// A stdlib path call that blocks the calling OS thread until the
+/// I/O completes. A cooperative (non-`async_io`) locus that runs one
+/// in its `run()` loop holds the pool's thread for the call's whole
 /// duration — stalling every other locus scheduled on that pool and
 /// the pool's bus drain. (`async_io` parks instead of blocking;
 /// `pinned` owns its own thread.) The warning path follows the call
@@ -1103,25 +1103,19 @@ fn run_statically_nonreturning(run_body: &Block, decl: &LocusDecl) -> Option<Spa
 /// via a method on a stdlib *handle* (`stream.recv(...)`) or across a
 /// cross-locus `self.field.method()` hop isn't traced — this is a
 /// warning, so the residual incompleteness is acceptable.
-const BLOCKING_STDLIB_PATHS: &[&[&str]] = &[
-    &["std", "io", "tcp", "recv_into"],
-    &["std", "io", "tcp", "recv_stamped_into"],
-    &["std", "io", "tcp", "__recv"],
-    &["std", "io", "tcp", "__recv_bytes"],
-    &["std", "io", "tcp", "__accept_one"],
-    &["std", "io", "tls", "recv_into"],
-    &["std", "io", "tls", "recv_stamped_into"],
-    &["std", "io", "tls", "recv_bytes"],
-    &["std", "process", "run"],
-    &["std", "process", "wait"],
-    &["std", "process", "__wait_pid"],
-];
-
+///
+/// GH #830: the leaf set is the effects registry's `block`
+/// classification (minus the leaves that yield a cooperative worker
+/// while they wait), not a second hand list. The hand list this
+/// replaces named 11 paths and so had no opinion at all about
+/// `io::stdin::*`, `io::file::read_line`, `udp::recv*`,
+/// `std::http::*`, `tcp::connect`/`accept_one`,
+/// `tls::connect`/`upgrade` or `process::read_std*` — a `run()` that
+/// blocked through one of those warned only if it *also* touched one
+/// of the 11. See `stdlib_surface::holds_cooperative_worker`.
 fn blocking_path_match(segs: &[&str]) -> Option<String> {
-    BLOCKING_STDLIB_PATHS
-        .iter()
-        .find(|p| **p == segs)
-        .map(|p| p.join("::"))
+    crate::stdlib_surface::holds_cooperative_worker(segs)
+        .then(|| segs.join("::"))
 }
 
 fn find_blocking_in_block(block: &Block) -> Option<(String, Span)> {

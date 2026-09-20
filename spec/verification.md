@@ -27,7 +27,7 @@ program's placement coherent with how the runtime dispatches.
 |---|---|---|---|
 | **Single-threaded-method invariant** | a *direct* cross-pool method call (`self.field.method()` where `field` is placed on a different pool) — it would run the callee's method on the wrong thread | error | `check_placement_single_thread` |
 | **Dead bus receiver** | a non-`main` cooperative locus that subscribes to the bus *and* makes a blocking call in `run()` — the blocking call monopolizes the pool thread so the dispatch never delivers and its handlers never fire | error | `check_cooperative_pool_blocking` |
-| **Blocking call on a cooperative pool** | a blocking `run()` (`recv`/`accept`, `process::run`) on a pool that isn't `where async_io` — it holds the pool's OS thread and stalls co-scheduled loci. Follows the call graph: blocking reached through a helper fn or `self.method` is flagged too | warning | `check_cooperative_pool_blocking` |
+| **Blocking call on a cooperative pool** | a blocking `run()` (`recv`/`accept`, a stdin or file read, an `http` request, `process::run`) on a pool that isn't `where async_io` — it holds the pool's OS thread and stalls co-scheduled loci. Follows the call graph: blocking reached through a helper fn or `self.method` is flagged too | warning | `check_cooperative_pool_blocking` |
 | **Cooperative pool starvation** | two or more loci on one cooperative pool (not `where async_io`) whose `run()` bodies statically never return (terminal `while` with no exit — `while true`, `while !self.draining`, or a never-assigned Bool flag) — the pool runs each `run()` to completion in birth order, so the later `run()` bodies never start. Covers fields with no placement entry (they default to pool `main`) and the main locus's own `run()`, which begins only after params-init | warning | `check_cooperative_pool_blocking` |
 | **Nested long-running child** | a non-`main` locus holding a params field of a locus type whose `run()` doesn't return — the canonical fix is hoisting it to a `main` sibling with its own placement | error | `check_nested_long_running_child` |
 | **Unowned subscriber locus** | a bus-subscribing locus instantiated *non-owned* inside another locus's method/handler body — it dissolves at that scope's exit, so its subscription can never fire (overridable with `--allow-unowned-subscriber`) | error | `check_unowned_subscriber_locus` |
@@ -37,6 +37,33 @@ call-graph surface is not widened), while the blocking *warning* is
 interprocedural — the high-stakes diagnostic stays precise. See
 `spec/semantics.md` type-check rules 7–8 and
 `docs/src/services/concurrency.md`.
+
+**What counts as "blocking" for both** is the effects registry's
+`block` classification — the same rows the effect assertions and the
+`.hale.effects` manifest read (`stdlib_surface::SURFACES`) — and not a
+list kept beside it. So `io::stdin::*`, `io::file::read_line`,
+`io::udp::recv*`, `std::http::*`, `tcp::connect` / `accept_one`,
+`tls::connect` / `upgrade` and `process::read_stdout` /
+`read_stderr` are blocking leaves here because they are `block` rows
+there; classifying a new stdlib leaf `block` puts it in this lint the
+same day.
+
+One `block` row is carved out, because on a cooperative pool it does
+not hold the worker for the wait: **`std::time::sleep`**, which the
+lowering chunks into ≤100 ms slices and drains the pool's bus queue
+between them. That slicing is what makes "handlers plus a
+`time::sleep` loop" the prescribed event-driven shape — the shape
+both diagnostics above name as the fix — so counting it would have
+the lint flag its own advice.
+
+This is a *different* subtraction from the async_io park exemption
+below (`ASYNC_IO_PARKING`, GH #791). That one is the async_io-pool
+rule: those leaves swap the coro out, which needs the pool's event
+loop. `check_cooperative_pool_blocking` never looks at an async_io
+placement — it skips the entry on the `where async_io` constraint
+before reading a single call — so on every placement it does look at,
+a park-capable leaf takes its blocking path and really does hold the
+thread.
 
 ## Bus-graph property checks
 
@@ -48,7 +75,7 @@ it. (GitHub issue #18 item 4.)
 | **Orphan topic / subject** | a declared `topic` or literal subject wired to only one end — published with no subscriber, subscribed with no publisher, or used by neither | warning | `check_bus_graph` |
 | **Cross-locus bus cycle** | a publish→subscribe→publish loop spanning ≥2 loci — the cell hops via the cooperative queue and can spin / livelock | warning | `check_bus_cycles` |
 | **Intra-locus re-entrant cycle** | an *unconditional* self-republish loop within one locus — intra-locus self-dispatch is a direct synchronous call, so it recurses on one thread without bound (stack overflow) | error | `check_bus_cycles` |
-| **Bus backpressure** | a publish inside an unbounded `while true` loop with no flow-control or exit point (`yield` / `sleep`/`tick` / input-pacing `recv` / `break`/`return`) — floods the bus without bound | warning | `check_bus_backpressure` |
+| **Bus backpressure** | a publish inside an unbounded `while true` loop with no flow-control or exit point (`yield` / `sleep`/`tick` / an input-pacing blocking call / `break`/`return`) — floods the bus without bound | warning | `check_bus_backpressure` |
 | **Subject type-mismatch** | two sites on the same literal subject string declaring different `of type` payloads — a subscriber would decode the wrong type | error | `check_bus_subject_types` |
 | **Routing-key fallback rules** | an `on_unmatched: fallback` topic with no `where key == _` subscriber, or a `where key == _` filter on a non-fallback topic | error | `check_phase3_fallback_subscribers` |
 | **Topic parent-chain cycle** | a topic hierarchy that loops (`topic A : B; topic B : A`) | error | `finalize_topic_chain` (resolve) |
@@ -61,6 +88,14 @@ intra-locus cycle error counts only *unconditional* sends as edges: a
 self-republish guarded by `if`/`match`/loop is a terminating state
 machine, not unbounded recursion, and is left alone. See
 `spec/semantics.md` type-check rules 9–10.
+
+The backpressure check's "input-pacing blocking call" is the *same*
+leaf set as the pool-blocking lint above — the registry's `block`
+rows minus `std::time::sleep`, which it counts separately as a
+throttle along with `std::time::tick`. So a `while true { let line =
+std::io::stdin::read_line(); … <- … }` loop is paced by its input and
+is not flagged, on the same footing as a loop driven by a blocking
+`recv`.
 
 ## Claims — domain requirements as checked sentences (GH #382, phase 1)
 
