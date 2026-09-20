@@ -1203,10 +1203,60 @@ unattempted and reachable, until it is fenced. Nothing
 here orders steps, spawns child workflows or survives a restart; those
 are later cards.
 
+## Workflow execution: ordered steps
+
+One admitted execution is a `WorkflowRun`, resident like its steps: it
+holds every leaf of the execution (copied at birth), births step 0, and
+births step i+1 only from the handler that hears step i has drained —
+`StepDrained`, keyed by the task, which a `StepRun` publishes as it
+leaves, once every member it admitted has settled or retired — behind
+that step's committed completion. No ordering lives in the workflow
+that the record does not enforce: the projection refuses a step's
+activation while the step before has not completed, and the
+activation's own identity (`<step>@activated`) is one row at the
+committer, so a duplicate completion cannot start the next step twice;
+a drain message for a step the workflow has advanced past, or for none
+it has active, changes nothing. When the last step drained completed
+the workflow proposes `workflow.settled` done; a failed step drains
+first, then the workflow proposes `workflow.settled` failed, and later
+steps are never born. Both are proposals like any other: decided at one
+reading, held when the record refuses them, proposed again on
+`RecordResumed`.
+
+A cancellation is asked of a workflow by task (`WorkflowCancelRequested`)
+and is a proposal too: `workflow.settled` cancelled, which the state
+takes at any point before the execution settled and refuses after.
+Once it landed the workflow says so (`WorkflowSettled`, keyed by the
+task) and births nothing further; its active step hears it and fences
+what it dispatched (`StepFenced`, keyed by the step) — a step with no
+outcome yet is `cancelled` (no row of its own; the task's row is its
+basis), and a step that had failed and is draining keeps its failure:
+the fence is not a second outcome. The fence is the one message a Work
+acts on for a cancellation (a cancelled step settlement is for the
+owner; a Work ignores it), so a Work that retires or settles on it
+acts, and ends, exactly once. Its Works hear the fence: an
+admitted attempt still awaiting its reply settles cancelled (the
+projection allows that settlement only under a cancelled task); a first
+admission the record refused is proposed again and, refused by the
+state, retires; one the state had refused retires. The fence itself is
+in the record, not in a notification: the executor reads the
+execution's durable cancellation — the task's `workflow.settled`, or an
+ancestor's, walked through the admissions — at the same reading its
+execution claim is exact at, and an attempt not yet claimed under a
+cancelled execution does not run, however the notification lagged,
+while one claimed before the cancellation still records its outcome.
+Nothing external is undone — a reply that comes later is recorded as
+the attempt's outcome and reopens nothing. The workflow leaves once the
+fenced step has drained. An activation the record
+refuses dispatches nothing: the step holds it, no leaf is born, and the
+record's resumption lands it once. Nothing here spawns child workflows
+or survives a restart; those are later cards.
+
 Nothing yet runs a workflow end to end; these are the durable shapes it
 is written in, the state they add up to, the door it is admitted by,
-the one attempt it takes at a time, and the one step that keeps its
-members alive across delayed replies.
+the one attempt it takes at a time, the one step that keeps its
+members alive across delayed replies, and the steps that follow one
+another only behind a committed completion.
 
 ## Storage interfaces
 
