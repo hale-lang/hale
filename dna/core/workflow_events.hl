@@ -40,7 +40,9 @@ fn transition_conflict(committed: TransitionProposal, again: TransitionProposal)
 }
 
 // The id of one transition: what it does, never a counter or a clock, so
-// the same transition proposed again is the same id.
+// the same transition proposed again is the same id. Built per proposal
+// in the residents' handlers: bounded by the transitions a run makes.
+@unbounded
 fn transition_id(entity: String, what: String) -> String {
     return entity + "@" + what;
 }
