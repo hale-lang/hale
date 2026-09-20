@@ -2110,6 +2110,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .deployment.main_placement_node
                     .get(fname.as_str())
                     .copied();
+                // GH #890 backstop. All three overrides above are
+                // consumed by the next locus LITERAL lowered — and by
+                // nothing else. A field initialised any other way (a
+                // factory call is the shape that bites) leaves them
+                // untaken, and the next field's turn through this loop
+                // resets them: no thread, no pool, no diagnostic.
+                // `check_placement_entry_consumed` refuses the shape
+                // with a located diagnostic, so nothing that runs the
+                // checker reaches this. `build_executable` does NOT
+                // run the checker, and neither does a direct codegen
+                // embedder — refuse there rather than drop the
+                // placement the author wrote.
+                if self
+                    .deployment
+                    .main_placement_map
+                    .contains_key(fname.as_str())
+                {
+                    let init =
+                        overrides.get(fname.as_str()).copied().or(
+                            match default {
+                                DefaultInit::Expr(e) => Some(e),
+                                _ => None,
+                            },
+                        );
+                    if let Some(e) = init {
+                        if !matches!(e, Expr::Struct { .. }) {
+                            return Err(CodegenError::Unsupported(format!(
+                                "locus `{}` field `{}` carries a `placement \
+                                 {{ }}` entry but is initialised by an \
+                                 expression that is not a locus literal; a \
+                                 placement is carried by the literal lowered \
+                                 for the field, so this entry would be \
+                                 silently dropped. Write the literal in the \
+                                 field (`{}: T = T {{ }};`) — see \
+                                 spec/semantics.md § Placement block rule 18",
+                                locus_name, fname, fname
+                            )));
+                        }
+                    }
+                }
             }
             // Topology Phase 1c: fan out the extra replicas. For a
             // `pinned(..., replicas = K)` field (K > 1) we emit K-1
@@ -2357,6 +2397,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // GH #383 fixpoint) qualifies — a call that
                     // hands back a locus somebody else holds leaves
                     // the bit clear, as it always did.
+                    //
+                    // GH #853: `make_f(5) or make2()` is the same
+                    // field and the same bit once BOTH branches
+                    // transfer into it — the field holds one of two
+                    // values and owns whichever one was built.
+                    // `or_field_owner_locus` carries that decision
+                    // into `lower_or_expr`, which is where the
+                    // substitute would otherwise take the GH #402
+                    // frame temporary this bit must not double-own.
+                    let mut or_substitute_owned = None;
                     let factory_owned_by_field = match info
                         .fields
                         .get(fname.as_str())
@@ -2364,7 +2414,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     {
                         Some(CodegenTy::LocusRef(l)) => {
                             let l = l.clone();
-                            self.field_init_is_fresh_factory(expr, &l)
+                            let or_sub = self
+                                .or_substitute_transfers_into_field(expr, &l);
+                            if or_sub {
+                                or_substitute_owned = Some(l.clone());
+                            }
+                            or_sub || self.field_init_is_fresh_factory(expr, &l)
                         }
                         _ => false,
                     };
@@ -2372,7 +2427,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     if field_owns_locus_rhs {
                         self.suppress_fresh_temp = true;
                     }
+                    let prev_ofo = self.or_field_owner_locus.take();
+                    self.or_field_owner_locus = or_substitute_owned;
                     let r = self.lower_expr(expr, scope);
+                    self.or_field_owner_locus = prev_ofo;
                     self.suppress_fresh_temp = prev_sft;
                     let r = r?;
                     self.params_init_initialized = inner_init;
@@ -2425,6 +2483,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // whose DEFAULT is a factory call is the
                             // same transfer into the same field, so
                             // it takes the same ownership bit.
+                            // GH #853, likewise: a DEFAULT that is an
+                            // `or <substitute>` transfers into the
+                            // same field on both branches.
+                            let mut or_substitute_owned = None;
                             let factory_owned_by_field = match info
                                 .fields
                                 .get(fname.as_str())
@@ -2432,7 +2494,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             {
                                 Some(CodegenTy::LocusRef(l)) => {
                                     let l = l.clone();
-                                    self.field_init_is_fresh_factory(e, &l)
+                                    let or_sub = self
+                                        .or_substitute_transfers_into_field(
+                                            e, &l,
+                                        );
+                                    if or_sub {
+                                        or_substitute_owned = Some(l.clone());
+                                    }
+                                    or_sub
+                                        || self
+                                            .field_init_is_fresh_factory(e, &l)
                                 }
                                 _ => false,
                             };
@@ -2440,7 +2511,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             if field_owns_locus_rhs {
                                 self.suppress_fresh_temp = true;
                             }
+                            let prev_ofo = self.or_field_owner_locus.take();
+                            self.or_field_owner_locus = or_substitute_owned;
                             let r = self.lower_expr(e, scope);
+                            self.or_field_owner_locus = prev_ofo;
                             self.suppress_fresh_temp = prev_sft;
                             let r = r?;
                             self.in_params_default = saved_ipd;
@@ -2582,6 +2656,52 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     locus_name, fname, declared_ty, val_ty
                 )));
             }
+            // GH #895: the last field init a fresh factory could
+            // transfer into and be owned by nobody.
+            //
+            // `Queries { j: make_churner() }`, with `j: Counter` an
+            // interface and `make_churner()` declared `-> Churner`,
+            // is the GH #836 shape written against a CONTRACT-typed
+            // field. Both halves of that decision were already in
+            // place for it and neither could fire: the F.17 gate
+            // keeps the enclosing frame out of an `Interface` field's
+            // initialiser (`field_owns_locus_rhs`, above), and the
+            // GH #871 cascade tears down what
+            // `__owned_child_reclaim_<f>` names — but the bit between
+            // them is set by `field_init_is_fresh_factory`, which
+            // compares the factory's declared locus against the
+            // FIELD's, and an interface field has none. So the frame
+            // stood back, the owner had no bit, and the child's arena
+            // (plus every `@form` buffer under it) outlived the
+            // program.
+            //
+            // The impl's name is what closes it, and it is known
+            // twice over at this point: the factory DECLARES it, and
+            // the coercion above recorded what actually reached the
+            // slot. Claiming the field only when the two agree is
+            // what keeps the bit and the reclaim pointer inseparable
+            // — the store below is the same one a literal init makes,
+            // so the cascade gets `__reclaim_<Impl>` for exactly the
+            // impl this instantiation built, ctor-override included.
+            //
+            // A `perspective(P)` field is deliberately NOT here. The
+            // F.17 gate does not cover it, so a factory's result in
+            // that position already takes the GH #402 frame temporary
+            // and is already reclaimed once; claiming it for the
+            // owner as well would dissolve it twice.
+            let owned_via_literal = owned_via_literal
+                || (matches!(declared_ty, CodegenTy::Interface(_))
+                    && owned_child_impl.is_some()
+                    && owned_child_impl
+                        == match overrides.get(fname.as_str()) {
+                            Some(e) => self.field_init_fresh_factory_impl(e),
+                            None => match default {
+                                DefaultInit::Expr(e) => {
+                                    self.field_init_fresh_factory_impl(e)
+                                }
+                                _ => None,
+                            },
+                        });
             // Bus-arena reclaim follow-up (2026-05-21): when this
             // instantiation runs inside a method body, the
             // field-init expression's value may live in the

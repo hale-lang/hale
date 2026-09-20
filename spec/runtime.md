@@ -1181,6 +1181,21 @@ control plane; the data plane stays in C:
   parked accept/recv, joins the serve thread, destroys the
   transport. The husk entry stays in the remote table for
   `lotus_bus_remote_destroy_all` to free uniformly.
+- **When that dissolve runs (GH #893).** The transport's struct
+  is allocated for the program's lifetime (the payload arena, so
+  it outlives `fn main`'s subregion) but it is OWNED by `fn
+  main`: the prelude registers it on main's deferred-dissolve
+  frame, before any user statement, so it is that frame's first
+  entry and the reverse-order flush tears it down LAST — after
+  every user locus has dissolved (a `dissolve()`-body publish
+  still reaches the wire), after the main-exit ingress quiesce
+  and cooperative-pool join the exit path sequences ahead of the
+  flush, and before the global arena destroy and
+  `lotus_bus_queue_destroy`. `lotus_bus_remote_destroy_all` then
+  finds the entry already reclaimed — transport NULL, serve
+  thread joined — and frees only the husk. Program-lifetime
+  ALLOCATION and no OWNER are separate questions; a transport
+  answers the first without the second.
 
 Publish fanout is untouched — realized entries land in the same
 `g_bus_remote_entries` table the fanout walks.

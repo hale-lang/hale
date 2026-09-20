@@ -38,14 +38,107 @@ fn fixture_files() -> Vec<PathBuf> {
     files
 }
 
+/// The environment variable a slice stamps on every process its own
+/// fixtures start (GH #872). `hale test` runs a fixture as a child of
+/// this process, and the fixture spawns its organism, bodies and
+/// services with `execvp`, which carries the environment through every
+/// generation — so anything one of THIS slice's fixtures leaves running
+/// still holds THIS slice's value, while the slice running beside it in
+/// the same `cargo test` process (the slices run in parallel by
+/// default) and another checkout's DNA run on the same box hold a
+/// different value or none at all.
+const SLICE_TAG: &str = "HALE_DNA_SUITE_TAG";
+
+/// A value no other slice and no other run on this box can hold: this
+/// process, this slice, this moment.
+fn slice_tag(slice: usize) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}-slice{}-{}", std::process::id(), slice, now)
+}
+
+/// The DNA scratch root a command line or a working directory names, if
+/// it names one: the fixtures build their roots as
+/// `/tmp/dna-<what>-<pid>` and run their organisms from inside them, so
+/// the root is what attributes a leaked process to a fixture.
+fn dna_scratch_root(text: &str) -> Option<String> {
+    let at = text.find("/tmp/dna-")?;
+    let rest = &text[at..];
+    let after_tmp = "/tmp/".len();
+    let end = rest[after_tmp..].find('/').map_or(rest.len(), |i| after_tmp + i);
+    // A command line arrives here as one string, and a removed
+    // directory reads back from `cwd` as `<path> (deleted)`: either
+    // way the root ends at the first blank.
+    Some(rest[..end].split_whitespace().next()?.to_string())
+}
+
+/// The processes THIS slice's fixtures started that are still running,
+/// one line each, named by the scratch root that owns them so a real
+/// leak is attributable to the fixture that leaked it.
+///
+/// A process is this slice's when it carries this slice's stamp; it is
+/// a leaked organism when a DNA scratch root is in its command line or
+/// is its working directory. Both conditions, so that the slice's own
+/// `hale test` children on their way out are not blamed, and so that
+/// the scope is exactly what it was before #872 minus the neighbours.
+fn leftover_processes(tag: &str) -> Vec<String> {
+    let Ok(procfs) = std::fs::read_dir("/proc") else {
+        return unscoped_leftover_processes();
+    };
+    let stamp = format!("{SLICE_TAG}={tag}");
+    let mut left = Vec::new();
+    for entry in procfs.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) else {
+            continue;
+        };
+        let dir = entry.path();
+        // Unreadable is not this slice's: either another user's
+        // process, or one that ended between the listing and here.
+        let Ok(environ) = std::fs::read(dir.join("environ")) else { continue };
+        if !environ.split(|b| *b == 0).any(|v| v == stamp.as_bytes()) {
+            continue;
+        }
+        let cmdline = std::fs::read(dir.join("cmdline")).unwrap_or_default();
+        let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ").trim().to_string();
+        let cwd = std::fs::read_link(dir.join("cwd")).map(|p| p.display().to_string()).unwrap_or_default();
+        let Some(root) = dna_scratch_root(&cmdline).or_else(|| dna_scratch_root(&cwd)) else { continue };
+        left.push(format!("  {root}: pid {pid}: {cmdline}"));
+    }
+    left.sort();
+    left
+}
+
+/// The pre-#872 filter, for a platform with no procfs to read a
+/// process's environment from (macOS; CI runs this suite on Linux).
+/// Nothing there can tell one runner's processes from another's, so
+/// this keeps the unscoped filter rather than no guard at all — it
+/// over-blames where it cannot attribute, which is the failure mode a
+/// developer can see and diagnose.
+fn unscoped_leftover_processes() -> Vec<String> {
+    let ps = Command::new("ps").args(["-eo", "pid=,args="]).output().expect("ps");
+    let me = std::process::id().to_string();
+    let mut left: Vec<String> = String::from_utf8_lossy(&ps.stdout)
+        .lines()
+        .filter(|l| l.contains("/tmp/dna-") && l.split_whitespace().next() != Some(me.as_str()))
+        .map(|l| format!("  {}", l.trim()))
+        .collect();
+    left.sort();
+    left
+}
+
 fn run_fixture_slice(slice: usize) {
     let files = fixture_files();
     assert!(!files.is_empty(), "no DNA fixtures under dna/tests");
     let mine: Vec<&PathBuf> = files.iter().enumerate().filter(|(i, _)| i % SLICES == slice).map(|(_, f)| f).collect();
+    let tag = slice_tag(slice);
     for f in &mine {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_hale"));
         cmd.arg("test").arg(f).env("HALE_BIN", env!("CARGO_BIN_EXE_hale"));
         cmd.env("HALE_DNA_SOURCE", repo_root());
+        cmd.env(SLICE_TAG, &tag);
         cmd.current_dir(std::env::temp_dir());
         if let Ok(dsn) = std::env::var("HALE_DNA_KNOWLEDGE_DSN") {
             cmd.env("HALE_DNA_KNOWLEDGE_DSN", dsn);
@@ -80,17 +173,18 @@ fn run_fixture_slice(slice: usize) {
     // Every process a fixture started must be gone once the fixture is:
     // a host, a body or a service left running is a leak the fixture
     // did not reclaim. The wait is for a child still tearing down; the
-    // `/tmp/dna-` filter names the fixtures' own roots, so a stranger's
-    // process is not blamed.
+    // filter is scoped to the processes THIS slice started (GH #872),
+    // because the slices of one `cargo test` run in parallel by default
+    // and other checkouts run their own DNA fixtures on the same box —
+    // unscoped, the slice that finished first was blamed for a
+    // neighbour's live organism.
     std::thread::sleep(std::time::Duration::from_secs(5));
-    let ps = Command::new("ps").args(["-eo", "pid=,args="]).output().expect("ps");
-    let me = std::process::id().to_string();
-    let left: Vec<String> = String::from_utf8_lossy(&ps.stdout)
-        .lines()
-        .filter(|l| l.contains("/tmp/dna-") && l.split_whitespace().next() != Some(me.as_str()))
-        .map(str::to_string)
-        .collect();
-    assert!(left.is_empty(), "processes a DNA fixture started are still running:\n{}", left.join("\n"));
+    let left = leftover_processes(&tag);
+    assert!(
+        left.is_empty(),
+        "processes this slice's DNA fixtures started are still running ({SLICE_TAG}={tag}), by the scratch root that owns them:\n{}",
+        left.join("\n")
+    );
 }
 
 macro_rules! fixture_slices {
@@ -109,6 +203,83 @@ fn the_slices_cover_every_fixture_once() {
         covered += files.iter().enumerate().filter(|(i, _)| i % SLICES == slice).count();
     }
     assert_eq!(covered, files.len(), "every fixture belongs to exactly one slice");
+}
+
+/// GH #872: the leftover-process guard blames only what its own slice
+/// started. Two slice bodies' guards run here at the same moment in one
+/// process: slice A has a process still running under its own scratch
+/// root, slice B has left nothing, and a third process under a DNA root
+/// of its own stands in for another checkout's run on the same box.
+/// Only A is blamed, its message names A's root, and B passes.
+///
+/// Before the scoping every guard saw every `/tmp/dna-` process on the
+/// box, so B failed for A's leak and both failed for the stranger's.
+/// Cheap by construction: no fixture runs, the leak is a `sleep`.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_leftover_guard_blames_only_its_own_slice() {
+    let pid = std::process::id();
+    let tag_a = slice_tag(0);
+    let tag_b = slice_tag(1);
+    let tag_stranger = format!("another-checkouts-slice-{pid}");
+    let root_a = format!("/tmp/dna-guard872-a-{pid}");
+    let root_stranger = format!("/tmp/dna-guard872-stranger-{pid}");
+    let mut running = Vec::new();
+    for (root, tag) in [(&root_a, tag_a.as_str()), (&root_stranger, tag_stranger.as_str())] {
+        std::fs::create_dir_all(root).expect("a scratch root for the guard's regression");
+        running.push(
+            Command::new("sleep")
+                .arg("120")
+                .current_dir(root)
+                .env(SLICE_TAG, tag)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("leave a process running under a DNA scratch root"),
+        );
+    }
+    let leaked_pid = running[0].id();
+    // The stamp reaches a process at exec, not at fork: wait for BOTH
+    // to be visible before either guard looks, so what this pins is the
+    // scoping and not a race — a stranger who had not exec'd yet would
+    // pass the guard for having no environment rather than for holding
+    // someone else's stamp.
+    for tag in [tag_a.as_str(), tag_stranger.as_str()] {
+        for _ in 0..100 {
+            if !leftover_processes(tag).is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    let (a, b) = (tag_a.clone(), tag_b.clone());
+    let guard_a = std::thread::spawn(move || leftover_processes(&a));
+    let guard_b = std::thread::spawn(move || leftover_processes(&b));
+    let left_a = guard_a.join().expect("slice A's guard");
+    let left_b = guard_b.join().expect("slice B's guard");
+
+    // Reclaim before asserting: this test must not itself leave a
+    // process under a DNA root for the next slice to trip over.
+    for mut child in running {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let _ = std::fs::remove_dir_all(&root_a);
+    let _ = std::fs::remove_dir_all(&root_stranger);
+
+    assert_eq!(left_a.len(), 1, "slice A is blamed for its own leak and for nothing else, got:\n{}", left_a.join("\n"));
+    assert!(left_a[0].contains(&root_a), "slice A's message names the scratch root that owns the leak, got:\n{}", left_a[0]);
+    assert!(
+        left_a[0].contains(&format!("pid {leaked_pid}")),
+        "slice A's message names the process that leaked, got:\n{}",
+        left_a[0]
+    );
+    assert!(
+        left_b.is_empty(),
+        "slice B left nothing running: neither slice A's leak nor a stranger's process may fail it, got:\n{}",
+        left_b.join("\n")
+    );
 }
 
 #[test]

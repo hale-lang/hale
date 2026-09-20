@@ -1,8 +1,5 @@
-crates/hale-cli/tests/fixtures/hale-test-mixed/notes.hl
 crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl
 crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl
-crates/hale-cli/tests/fixtures/xseed-claims/lib/delta/d.hl
-crates/hale-cli/tests/fixtures/xseed-claims/lib/gamma/g.hl
 crates/hale-cli/tests/replay_cli.rs#5
 crates/hale-cli/tests/replay_cli.rs#6
 crates/hale-cli/tests/replay_cli.rs#7
@@ -40,6 +37,5 @@ crates/hale-types/tests/generic_call_check.rs#5
 crates/hale-types/tests/model_builder.rs#12
 crates/hale-types/tests/model_builder.rs#15
 crates/hale-types/tests/model_builder.rs#22
-crates/hale-types/tests/model_builder.rs#24
 crates/hale-types/tests/model_costs.rs#3
 crates/hale-types/tests/ownership_graph.rs#7

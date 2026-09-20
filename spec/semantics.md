@@ -403,7 +403,23 @@ position by GH #711 / #812):
   caller is the owner — the binding (or the caller) owns
   `combine`'s result, and `make`'s is a result nothing names,
   owned by the enclosing fn's scope and reclaimed at its exit
-  (GH #837). This
+  (GH #837). An `if`, a `match` or a block written **as a value**
+  is not the value either: it hands back one arm's, and exactly
+  one arm runs — so the rule applies **per path**, to each arm's
+  tail expression, which is what is written at that position on
+  the path that produces it. `return if c { make(1) } else {
+  make(2) };` hands the caller whichever arm ran, and the frame
+  that built it reclaims neither; `let x = if c { make(1) } else
+  { make(2) };` reclaims whichever arm ran exactly once, at the
+  enclosing fn's scope exit. A factory call anywhere else inside
+  such a carrier — in the condition, in the scrutinee, in a
+  statement before a block's tail — is a result nothing names,
+  reclaimed at that scope's exit like any other. An **ascribed
+  array or tuple** literal is likewise what the site names, never
+  one of its elements: `let xs: [Thing; 2] = [make(1),
+  make(2)];` names the array, and each element's result is one
+  nothing names, reclaimed at the enclosing fn's scope exit
+  (GH #883). This
   is the same rule in the **fallible** spelling, where the call
   is reached through `or` — `let c = std::process::spawn(argv)
   or raise;` is reclaimed exactly as `let h = make(argv);` is,
@@ -422,12 +438,20 @@ position by GH #711 / #812):
   the call site or as the param's **default**, and whether the
   call is bare or reached through a *diverging* `or` (`or raise`,
   `or fail`), where the factory's result is the only value the
-  field can hold (GH #836). Two calls in that position transfer
-  nothing and are excluded exactly as an external handle is: one
-  that returns a locus it did *not* build (one of its arguments, a
-  handle it was given), and one under `or <substitute>`, where the
-  field holds whichever branch ran and the substitute carries its
-  own owner.
+  field can hold (GH #836). `or <substitute>` transfers on **both
+  branches**: the field holds whichever branch ran and owns that
+  value, so `Router { quick: make_f(5) or make2() }` reclaims
+  exactly the locus that was built, once, from the owner's cascade
+  — the substitute is not *also* a temporary of the frame that
+  built the owner, which would flush it at that frame's exit with
+  the field still pointing at it (GH #853). The claim needs every
+  branch to transfer: a proven-fresh factory call of the field's
+  own locus, a locus literal, or a nested `or` of those. A call in
+  that position that transfers nothing is excluded exactly as an
+  external handle is — one that returns a locus it did *not* build
+  (one of its arguments, a handle it was given), and an `or` whose
+  ok value or substitute is such a call — and the value is left to
+  its real owner.
 - **Long-lived** (locus has `bus subscribe`): always deferred,
   irrespective of binding shape — the locus must stay alive to
   receive published events between birth and the enclosing
@@ -469,7 +493,13 @@ reaches it and everything under it. Which locus satisfies the
 contract is a per-instantiation choice: a designation written
 at the literal (`Gateway { router: RouterV2 { } }`) overrides
 one written as the param's default, and the child torn down is
-the one that was actually constructed. A `reperspective` swap
+the one that was actually constructed. Both spellings of
+construction reach an `interface`-typed param: `Queries { j:
+make_churner() }` — in the diverging-`or` spelling too — is the
+same transfer as `Queries { j: Churner { } }`, because the
+factory's declared return names the impl, and the child
+reclaimed is the impl the factory built rather than the one the
+param's default names (GH #895). A `reperspective` swap
 does not change it either — the swap replaces code and keeps
 state, so the holder still owns the impl its designation built.
 
@@ -2570,6 +2600,51 @@ main locus App {
     the rule is positional on that literal, so it is not a rule
     about the whole call graph. Codegen keeps a matching refusal for
     embedders that bypass the checker. (GH #826, 2026-09-20.)
+18. **Every entry is consumed by exactly one instantiation
+    (error).** A placement entry is carried by the locus LITERAL
+    lowered for its field, and by nothing else: the thread class,
+    the cooperative pool and the NUMA node all ride an override that
+    the next `T { }` takes. So a placed field whose value arrives
+    any other way — a factory call, a fallible call, a conditional,
+    a reference to an instance somebody else built — leaves the
+    entry untaken, and the next field's turn through the params-init
+    loop resets it. Nothing is placed and nothing is said. That
+    shape is rejected at the initialiser, with the literal form
+    spelled out. The entry's value is the init written at the
+    instantiation site when the literal supplies one, and the
+    `params` default otherwise, so both spellings are checked — and
+    a default every site overrides is dead text, not a dropped
+    placement. The entry is not applied after the fact because there
+    is nothing left to place: the pinned path does not mark an
+    instance, it spawns a thread that runs the locus's whole
+    lifecycle — birth, `run()`, the mailbox loop, drain, dissolve —
+    and a factory's literal has already run birth and `run()` (and
+    registered its subscriptions against the global queue) before
+    the value returns. Scope matches rule 17's: an imported seed's
+    main locus is renamed `__lib_*`, is not the deployment root, and
+    its entries never reach the plan. Codegen keeps a matching
+    refusal for embedders that bypass the checker. (GH #890,
+    2026-09-20.)
+
+19. **Uncarriable bus payload (error).** An `of type T` clause on a
+    `publish` / `subscribe` must name a type the bus can carry — a
+    user `type`, an enum with a payload variant, or `BytesView`
+    (§ *Bus subscription dispatch* → *Payload type*, below, has the
+    full statement of what the wire carries). A primitive, a tuple,
+    an array, `bounded[T; N]` or a no-payload enum is rejected at
+    the clause's own span. Before this rule `of type Int` checked
+    clean and
+    could not be lowered: codegen refused the publish
+    (`bus send payload must be a user-type or has-payload enum
+    value`) and the subscribe (`m60 requires a TypeRef, has-payload
+    Enum, or BytesView`), unlocated and from another layer. A
+    payload type the bundle cannot *resolve* — a qualified path into
+    a seed it does not hold, a generic instantiation, a name nothing
+    declares — is left alone: the rule is about what the bus
+    carries, not about which names are in scope. A `topic`'s
+    `payload:` is under the same contract, but the checker does not
+    desugar topics (lowering does), so that half is still diagnosed
+    during lowering. (GH #876, 2026-09-20.)
 
 ### Single-threaded-method invariant
 
@@ -2834,17 +2909,34 @@ If HANDLER panics:
 - The subscription itself is *not* removed; future messages
   continue to dispatch.
 
-### Payload type — primitives + nested structs + String
+### Payload type — what a subject may carry
 
-The wire format supports primitives (`Int`, `Float`, `Bool`,
-`Decimal`, `Duration`, `Time`, `String`), `Bytes`, and
-**nested user struct types** (`type T { ... }`) recursively
-composed. A bus payload may carry a struct whose fields are
-primitives, Strings, Bytes, or other nested structs, at any
-depth. Serialize walks the field tree in declaration order;
-deserialize allocates each nested struct in the lazy global
-payload arena and recurses. Arrays, tuples, and enums as bus
-payload fields are post-v1 polish.
+A subject's payload type — `T` in `of type T`, or a `topic`'s
+`payload:` — must be one of exactly three things:
+
+- a user `type` (`type T { ... }`);
+- an `enum` with at least one variant that carries a payload,
+  which travels as that enum's storage struct;
+- `BytesView` (`std::bytes::BytesView`), the raw-frame path: the
+  payload is not typed at all, and the handler receives a bounded
+  view over each record. This is how a foreign writer's ring is
+  consumed.
+
+A delivery is a *serialized struct*, so the payload needs a field
+layout: `of type Int` has none, and neither does a tuple, an
+array, or a no-payload enum. An `of type` clause naming one is
+rejected at typecheck, at the clause (rule 18 above); a `topic`
+whose `payload:` names one is refused during lowering.
+
+**Within** a payload, the wire format supports primitives (`Int`,
+`Float`, `Bool`, `Decimal`, `Duration`, `Time`, `String`),
+`Bytes`, and **nested user struct types** recursively composed. A
+bus payload may carry a struct whose fields are primitives,
+Strings, Bytes, or other nested structs, at any depth. Serialize
+walks the field tree in declaration order; deserialize allocates
+each nested struct in the lazy global payload arena and recurses.
+Arrays, tuples, and enums as bus payload *fields* are post-v1
+polish.
 
 ## Closure-test evaluation
 

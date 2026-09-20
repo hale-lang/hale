@@ -200,6 +200,21 @@ because it's how Hale frees resources without a `defer` or a
   which the router owns and reclaims with itself, exactly as it
   would a `Quick { }` written there) and `return`ed to your caller
   (who owns it).
+- **A locus an `if`, a `match` or a block hands back** (`return if
+  hot { fast_path() } else { make_ticker() };`): those forms have
+  no value of their own — they pass along one arm's, and exactly
+  one arm runs — so ownership is decided **per path**. Each arm's
+  last expression is what is written "in that position" on the
+  path that produces it, and the rule above applies to it
+  unchanged: returned, it is the caller's on every path; bound
+  with `let`, it is released at the enclosing function's scope
+  exit on every path. A factory called somewhere else inside the
+  form — in the condition, in the scrutinee, in a statement
+  before a block's last expression — is a handle of its own, and
+  the enclosing function releases it. An **ascribed array or
+  tuple** is the same story one level out: `let ts: [Ticker; 2] =
+  [make_ticker(), make_ticker()];` names the array, and each
+  element is a handle the enclosing function releases.
 - **Long-lived** (the locus subscribes to the bus, or its `run()`
   hasn't returned): it stays alive until its scope exits,
   regardless of binding — it has to, to keep receiving messages.
@@ -216,7 +231,11 @@ is the one *it* holds, all the way down. That holds however you
 wrote it: a nested literal (`Mid { leaf: Leaf { } }`), a factory
 call (`Mid { leaf: make_leaf() }`, including `make_leaf() or
 raise`), and a param whose **default** is one, are the same
-program. When the
+program. An `or` with a **substitute** is too, on both branches:
+`Mid { leaf: make_leaf_f() or backup_leaf() }` reclaims whichever
+leaf was actually built, once, with the owner — the substitute is
+the field's, not a leftover of the function that built the owner,
+which is what let a `Mid` you `return` outlive its own leaf. When the
 owner goes, every level's `drain()` has run (deepest first), every
 level's `dissolve()` body has run (outermost first) and every
 level's arena is gone. The exception is a handle you pass *in* —
@@ -243,6 +262,12 @@ locus Gateway {
 Both children go when their holder goes, and so does whatever they
 hold. Designating a different impl at the literal (`Gateway { router:
 RouterV2 { } }`) reclaims the one you actually built.
+
+A factory reads the same way in an interface slot — `Queries { j:
+make_churner() }`, `make_churner() or raise` included. The
+function's declared return names the impl, so the holder reclaims
+exactly what the factory built, whether or not that is the impl the
+param's default names.
 
 One shape that is *not* a transfer: a locus written inside the
 initializer of a param that can't hold a locus. In `Lonely { n:

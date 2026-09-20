@@ -211,11 +211,12 @@ and a binding the fn **returns**, which the caller owns. "That
 literal owns it" is a transfer the owner honours: the field's value
 goes with the owner's teardown cascade, exactly as a nested literal
 does, at the param's default site as well as the call site, and
-under a diverging `or` as well as bare (GH #836). A call that hands
-back a locus it did not build — one of its arguments, a handle it
-was given — transfers nothing, and neither does one under `or
-<substitute>`, where the field holds whichever branch ran; both are
-left to the value's real owner.
+under a diverging `or` as well as bare (GH #836), and under `or
+<substitute>` on both branches, where the field holds whichever
+branch ran and owns it (GH #853). A call that hands back a locus it
+did not build — one of its arguments, a handle it was given —
+transfers nothing, in that position or on either branch of an `or`,
+and is left to the value's real owner.
 
 The consequence a caller can rely on: a locus that holds an
 **external** resource (a file descriptor, a child process) releases

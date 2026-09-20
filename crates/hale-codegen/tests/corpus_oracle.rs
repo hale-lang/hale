@@ -178,12 +178,17 @@ const KNOWN_CLOSURE_LEAKS: &[&str] = &[];
 /// QUARANTINED FOR LEAKS ONLY. A `heap-use-after-free`, an
 /// overflow, a crash or a hang in one of these is still a hard
 /// failure — a name on this list must not become a hole in the gate
-/// #816 exists to sharpen. GH #871 (PR #894) fixed eight of the nine
-/// by making the cascade reach contract-typed param fields; the one
-/// left is the `bindings { }` transport's program-lifetime arena,
-/// GH #893. Shrink it to empty as that lands; a fixture that stops
-/// leaking just stops being reported.
-const LEAKS_UNMASKED_BY_NO_CHUNK_POOL: &[&str] = &["85-bindings-unix"];
+/// #816 exists to sharpen.
+///
+/// Empty == the goal reached for this class too. GH #871 (PR #894)
+/// fixed eight of the nine by making the teardown cascade reach
+/// contract-typed param fields; GH #893 fixed the ninth,
+/// `85-bindings-unix`, by giving the `bindings { }` transport an
+/// owner on `fn main`'s deferred-dissolve frame instead of leaving
+/// it on the m90 `returns_this_locus` path, which allocates for the
+/// program's lifetime and then owns nothing. The list stays as the
+/// seat for the next one.
+const LEAKS_UNMASKED_BY_NO_CHUNK_POOL: &[&str] = &[];
 
 /// Per-fixture wall-clock budget. Demos finish in well under a
 /// second; the budget is generous so a slow CI box doesn't flake,
