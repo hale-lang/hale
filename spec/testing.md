@@ -232,6 +232,20 @@ it, the commands with no `--json` channel rendered the bundle offset
 against the file's own text, so the file name and the message were
 right and the line and column were not).
 
+Nor is the **path**. A diagnostic names its file by the file's
+canonical path — absolute, symlinks resolved, with no `.` or `..`
+component — in the text rendering, in a `note:` secondary location,
+and in the `file` field of a `--json` record (the positionless
+`io error` record above included), from every command, for the
+target's own files and for every file reached through an `import`
+alike. That is one string per file rather than
+one per channel, which is what a consumer joining the two needs:
+`check` used to print the canonical path an imported file was
+recorded under while `build`, `run` and `test` printed it as the
+resolver reached it (`/abs/app/../lib/second.hl`), and the target's
+own files were named exactly as the command line spelled them, `..`
+and all (2026-09-20, GH #822).
+
 ## `hale bench` — the Layer-3 runner
 
 `hale bench [file | dir]` discovers `*_bench.hl` files (dir walk,

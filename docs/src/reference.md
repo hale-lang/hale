@@ -75,6 +75,11 @@ under it, positioned in the file that holds the mistake — so the
 line number you read is the line number you open, whichever command
 found it.
 
+The `path` is the file's canonical one: absolute, symlinks resolved,
+never a `../` form, however you reached the file or spelled the
+target. One file has one name, so a script can compare what two
+commands said about it.
+
 With `--json` a parse error is reported exactly like a type error: one
 NDJSON record on stdout carrying the file, line, column and message,
 with `"kind":"parse error"`. Whatever fails, the machine-readable
