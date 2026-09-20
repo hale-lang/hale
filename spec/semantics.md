@@ -3726,6 +3726,26 @@ name lookup:
 - **Scoping of locals.** Ordinary lexical scope is unchanged; a
   module is not a scope.
 
+One declaration is not admissible inside a module at all:
+
+- **`target NAME { }`** is a program-level build directive, not a
+  declaration a namespace can hold, and the **parser** refuses it
+  at depth:
+
+  ```text
+  main.hl:2:5: parse error: `target` is a program-level declaration; move it to the top level
+  ```
+
+  Every consumer of a target reads `program.items` — the checker's
+  capability gate, the wasm-entry detection in `desugar`, the
+  stdlib gating — so one declared inside a module used to be
+  silently INERT: the same program that was gated at the top level
+  reported `ok` one brace deeper. Honouring it at any depth instead
+  would have changed what the build does rather than what a
+  diagnostic says, which is why the refusal was taken (2026-09-20,
+  GH #901). The grammar's `module_decl` excludes `target_decl` for
+  the same reason.
+
 **Analysis is on the same line, one check at a time.** The rule
 above is about resolution and lowering, and it holds without
 exception. The bundle-level *checks* are being brought to it

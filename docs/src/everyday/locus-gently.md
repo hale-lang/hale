@@ -164,8 +164,16 @@ is reported on identically — the hot-path lint reaches into it,
 a bus topic declared in it routes, a library's module-nested type
 is reachable across an `import` as `lib::Point`, and two modules
 declaring the same name is the same duplicate-name error as two
-top-level ones. The one thing a module does *not* hold is the
-program's entry point: `fn main` has to be at the top level.
+top-level ones.
+
+Two things a module does *not* hold:
+
+- The program's **entry point**: `fn main` has to be at the top
+  level.
+- A **`target wasm { }`** block, which is a build directive for the
+  whole program rather than a declaration. One inside a module is
+  an error — *`target` is a program-level declaration; move it to
+  the top level* — rather than a line that quietly does nothing.
 
 If you want a namespace, the namespace locus above is the tool.
 

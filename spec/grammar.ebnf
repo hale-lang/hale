@@ -72,7 +72,14 @@ group_decl        = "group" , IDENTIFIER , "=" , "{" ,
                     "}" , [ "may_be_empty" ] , ";" ;
 group_member      = IDENTIFIER , { "::" , IDENTIFIER } , [ "::" , "*" ] ;
 
-module_decl       = "module" , IDENTIFIER , "{" , { top_decl } , "}" ;
+(* GH #901 — `target_decl` is the one `top_decl` a module body may
+   NOT hold: it is a program-level build directive, and every
+   consumer of it reads the program's own item list. The parser
+   refuses one at any depth ("`target` is a program-level
+   declaration; move it to the top level"). See spec/semantics.md
+   § "Declarations inside `module { }`". *)
+module_decl       = "module" , IDENTIFIER , "{" ,
+                    { top_decl - target_decl } , "}" ;
 
 (* GH #409 — a named, composable claimset, declared outside any main
    and adopted by entrypoints. `extends` composes by UNION: a derived
