@@ -162,9 +162,9 @@ Claim [137..153] claim `iso`: the crossing publish happens here
 Claim [237..257] claim `iso`: delivered at this subscription
 Claim [180..181] claim `iso`: the forbidden destination `B` is declared here
 --- crates/hale-types/tests/claims_edges.rs#10 ---
-Claim [463..467] claim `gate` violated: un-granted edge `A::go` -(publishes "log.app")-> `B::on_log`. Granted: none. If this edge is intended, name it in the grant list — a grant is a reviewable line
-Claim [98..113] claim `gate`: the un-granted publish happens here
-Claim [197..238] claim `gate`: received here. Grant this edge with `publish log.app;` if it is intended
+Claim [504..508] claim `gate` violated: un-granted edge `A::go` -(publishes "log.app")-> `B::on_log`. Granted: none. If this edge is intended, name it in the grant list — a grant is a reviewable line
+Claim [129..154] claim `gate`: the un-granted publish happens here
+Claim [238..278] claim `gate`: received here. Grant this edge with `publish log.app;` if it is intended
 --- crates/hale-types/tests/claims_edges.rs#11 ---
 Claim [673..676] claim `one` violated: heaviest path from `planners` carries 2 `llm` sites, limit 1 — path: `Planner::kick` -> `Worker::on_plan` -> `model_call`
 --- crates/hale-types/tests/claims_edges.rs#14 ---

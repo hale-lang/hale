@@ -1,10 +1,16 @@
 // The delta wing: handles tasks, publishes shared metrics — the
 // boundary-crossing temptation.
+//
+// The payload is a user `type` because that is what the bus carries
+// (GH #876): a delivery is a serialized struct, so `of type Int`
+// typechecked and could not be lowered.
+type Metric { n: Int = 0; }
+
 locus Triage {
     params { seen: Int = 0; }
-    bus { publish "org.metrics" of type Int; }
+    bus { publish "org.metrics" of type Metric; }
     fn on_task(n: Int) {
         self.seen = self.seen + 1;
-        "org.metrics" <- n;
+        "org.metrics" <- Metric { n: n };
     }
 }
