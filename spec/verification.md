@@ -2092,6 +2092,15 @@ assume the others in a build:
   parent dissolves, so a parent whose `run()` loops forever (literal
   `while true` — the deliberately narrow daemon signal) grows
   O(accepted children). Run-to-exit accept examples stay silent.
+
+  **The lint reaches inside `module { … }`** (GH #764, 2026-09-20). A
+  module is a NAMESPACE, not an analysis boundary: the resolver
+  registers a module's declarations under their bare names, so a fn or
+  a locus method one brace deeper is an ordinary member of the bundle.
+  Its bodies are walked, and its findings carry the same severity, as
+  if it had been written at the top level — including the `@hot`
+  promotion to a hard error. (Before #764 the lint stopped at the top
+  level, so wrapping a program in a module silenced it.)
 - **`@hot` — hot-path certification** (Gap D, 2026-07-17). The layered
   escalation between the default advisory and `@budget`'s counted
   ceiling: `@hot fn` certifies "this is a 10k/s-class path" and (a)
