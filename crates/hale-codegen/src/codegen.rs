@@ -7150,6 +7150,48 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.import_renames.get(&key).cloned()
     }
 
+    /// GH #895: which locus does this param-field initialiser BUILD,
+    /// when it is a proven-fresh factory call?
+    ///
+    /// Its twin below asks the yes/no form of the same question —
+    /// "is the value this initialiser produces the field's alone?" —
+    /// by comparing the factory's declared return against the field's
+    /// declared locus. An INTERFACE-typed field has no such locus to
+    /// compare with: `Queries { j: make_churner() }` declares `j:
+    /// Counter` and `make_churner()` declares `Churner`. The
+    /// ownership answer is the same (the result is a locus nobody
+    /// else names), but the owner needs the impl's NAME rather than a
+    /// bit, because that is what picks the `__reclaim_<Impl>` its
+    /// cascade calls through `__owned_child_reclaim_<f>` (GH #871).
+    ///
+    /// Both spellings, for the reason spelled out below: a DIVERGING
+    /// `or` leaves the factory's result as the only value the field
+    /// can hold, while `or <substitute>` is a separate question this
+    /// rule stays out of.
+    pub(crate) fn field_init_fresh_factory_impl(
+        &self,
+        e: &Expr,
+    ) -> Option<String> {
+        let call = match e {
+            Expr::Call { .. } => e,
+            Expr::Or { inner, disposition, .. }
+                if matches!(
+                    disposition,
+                    OrDisposition::Raise(_) | OrDisposition::Fail(..)
+                ) =>
+            {
+                inner.as_ref()
+            }
+            _ => return None,
+        };
+        let Expr::Call { callee, .. } = call else {
+            return None;
+        };
+        self.callee_fn_name(callee)
+            .and_then(|f| self.fresh_locus_factories.get(&f))
+            .map(|(l, _)| l.clone())
+    }
+
     /// GH #836: does this param-field initialiser hand the field a
     /// locus the enclosing literal is the SOLE owner of?
     ///

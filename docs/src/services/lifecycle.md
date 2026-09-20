@@ -263,6 +263,12 @@ Both children go when their holder goes, and so does whatever they
 hold. Designating a different impl at the literal (`Gateway { router:
 RouterV2 { } }`) reclaims the one you actually built.
 
+A factory reads the same way in an interface slot — `Queries { j:
+make_churner() }`, `make_churner() or raise` included. The
+function's declared return names the impl, so the holder reclaims
+exactly what the factory built, whether or not that is the impl the
+param's default names.
+
 One shape that is *not* a transfer: a locus written inside the
 initializer of a param that can't hold a locus. In `Lonely { n:
 Queries { }.total() }` the `Queries` is just an expression — it has

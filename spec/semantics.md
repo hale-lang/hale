@@ -493,7 +493,13 @@ reaches it and everything under it. Which locus satisfies the
 contract is a per-instantiation choice: a designation written
 at the literal (`Gateway { router: RouterV2 { } }`) overrides
 one written as the param's default, and the child torn down is
-the one that was actually constructed. A `reperspective` swap
+the one that was actually constructed. Both spellings of
+construction reach an `interface`-typed param: `Queries { j:
+make_churner() }` — in the diverging-`or` spelling too — is the
+same transfer as `Queries { j: Churner { } }`, because the
+factory's declared return names the impl, and the child
+reclaimed is the impl the factory built rather than the one the
+param's default names (GH #895). A `reperspective` swap
 does not change it either — the swap replaces code and keeps
 state, so the holder still owns the impl its designation built.
 

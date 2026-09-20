@@ -57,7 +57,7 @@ crates/hale-cli/tests/fixtures/unbounded-alloc-opt-in/app.hl c90bc96e9e961826
 crates/hale-cli/tests/fixtures/ws33-lib-hb/topics.hl a7db3ea340a6c86c
 crates/hale-cli/tests/fixtures/ws33-run-dir-app/main.hl 6b252d43f7af41c8
 crates/hale-cli/tests/fixtures/xseed-claims-cover-ok/lib/topics/t.hl c41c55b5767cfd40
-crates/hale-cli/tests/fixtures/xseed-claims/lib/delta/d.hl c288aee3f49c70ca
+crates/hale-cli/tests/fixtures/xseed-claims/lib/delta/d.hl b89b65ecd60971a3
 crates/hale-cli/tests/fixtures/xseed-claims/lib/gamma/g.hl 0e15724545744a1a
 crates/hale-cli/tests/fixtures/xseed-cqrs/app/main.hl 0dcc2f399e4e2cc9
 crates/hale-cli/tests/fixtures/xseed-cqrs/lib/mat/m.hl bf060e593f77f631
@@ -464,7 +464,8 @@ crates/hale-codegen/tests/factory_field_ownership.rs#0 509309ce670b439c
 crates/hale-codegen/tests/factory_field_ownership.rs#1 dd20069ee61e746e
 crates/hale-codegen/tests/factory_field_ownership.rs#2 57e71d9ac7bf4fd2
 crates/hale-codegen/tests/factory_field_ownership.rs#3 3d81d0f4d8450a29
-crates/hale-codegen/tests/factory_field_ownership.rs#4 f24113b45434ab5a
+crates/hale-codegen/tests/factory_field_ownership.rs#4 7d14dad571a55ad9
+crates/hale-codegen/tests/factory_field_ownership.rs#5 d5aa2c0aad4d9767
 crates/hale-codegen/tests/factory_locus_reclaim.rs#0 5bee09d4dbc4602d
 crates/hale-codegen/tests/factory_returned_binding.rs#0 967ae4cb6729fe31
 crates/hale-codegen/tests/factory_returned_binding.rs#1 b80a55cf498e1f4a
@@ -689,7 +690,6 @@ crates/hale-codegen/tests/framework_elision.rs#1 4bafd0e8a20a97ac
 crates/hale-codegen/tests/freefn_locus_rebind.rs#0 9dde50b6cca95f42
 crates/hale-codegen/tests/fresh_temp_attribution.rs#0 12260865f8ec0ae3
 crates/hale-codegen/tests/fresh_temp_attribution.rs#1 e5f900b38b413b00
-crates/hale-codegen/tests/fresh_temp_attribution.rs#2 e5f900b38b413b00
 crates/hale-codegen/tests/fs_index_and_status.rs#2 865d341109268295
 crates/hale-codegen/tests/fs_rename_unlink_mktemp.rs#0 f2c1228edb650960
 crates/hale-codegen/tests/fs_rename_unlink_mktemp.rs#1 49769baca1919beb
@@ -944,6 +944,7 @@ crates/hale-codegen/tests/os_getrandom.rs#3 06171a026a661ad4
 crates/hale-codegen/tests/os_getrandom.rs#4 8b96bb75fff4a698
 crates/hale-codegen/tests/owned_child_arena_reclaim.rs#0 f33c497096dc5dbf
 crates/hale-codegen/tests/owned_child_arena_reclaim.rs#5 3b0e8370f1acd561
+crates/hale-codegen/tests/owned_child_arena_reclaim.rs#8 a02b92823a26a9c5
 crates/hale-codegen/tests/ownership_bubble.rs#0 3408913d71b2bff6
 crates/hale-codegen/tests/ownership_bubble.rs#1 ef3055b186950d67
 crates/hale-codegen/tests/ownership_bubble.rs#2 f81faba0af524049
@@ -1476,6 +1477,7 @@ crates/hale-types/tests/model_builder.rs#13 2327a382bb6673fa
 crates/hale-types/tests/model_builder.rs#15 37db42879cb43bd9
 crates/hale-types/tests/model_builder.rs#18 f7bc90fa5e60e4b6
 crates/hale-types/tests/model_builder.rs#22 37db42879cb43bd9
+crates/hale-types/tests/model_builder.rs#24 3f3520e7c184bc9f
 crates/hale-types/tests/model_builder.rs#25 16638d003fd75bff
 crates/hale-types/tests/model_builder.rs#3 13c7bdc059e6600b
 crates/hale-types/tests/model_builder.rs#5 052aed15dd1f7840
