@@ -20931,6 +20931,37 @@ const char *lotus_str_substring(const char *s, int64_t lo, int64_t hi) {
 }
 
 /*
+ * GH #720 — range copy with the length already known. Same result
+ * as lotus_str_substring(s, start, end_exclusive) but WITHOUT the
+ * strlen: the caller passes `n` (the byte length it already holds)
+ * and the clamp happens against that. This is the materializing
+ * sibling of the lotus_str_range_* family, and it carries the same
+ * contract: the caller owns the bounds. `n` must be the real byte
+ * length of `s` (std::str::bytes_view computes it once with one
+ * strlen); `start` / `end_exclusive` are clamped into [0, n] here,
+ * so a scanner's own off-by-one yields a short or empty String
+ * rather than a read past the end.
+ *
+ * Why it exists: lotus_str_substring's per-call strlen makes a
+ * token-extracting parser O(input) per token — quadratic over the
+ * whole input — which is exactly the cost profile #720 reported.
+ * Result lives in the payload arena, like substring's.
+ */
+const char *lotus_str_range_copy(const char *s, int64_t n, int64_t start,
+                                 int64_t end_exclusive) {
+    if (!s || n <= 0) return "";
+    if (start < 0) start = 0;
+    if (end_exclusive > n) end_exclusive = n;
+    if (start >= end_exclusive) return "";
+    size_t out_len = (size_t)(end_exclusive - start);
+    char *out = (char *)lotus_bus_payload_arena_alloc(out_len + 1, 1);
+    if (!out) return "";
+    memcpy(out, s + start, out_len);
+    out[out_len] = '\0';
+    return out;
+}
+
+/*
  * Replace every occurrence of `needle` with `replacement` in `s`.
  * Naive O(n*m) scan. Empty needle returns `s` unchanged (replacing
  * "" infinitely is undefined). Overlap is greedy-forward — each

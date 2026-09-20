@@ -298,6 +298,7 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
     &["std", "process", "Child"],
     &["std", "process", "ProcessOutput"],
     &["std", "source", "Walk"],
+    &["std", "str", "ByteView"],
     &["std", "str", "ParseError"],
     &["std", "tagged", "Accumulator"],
     &["std", "term", "RawMode"],
@@ -633,6 +634,11 @@ pub const SURFACES: &[NsSurface] = &[
         fns: &[
             e("builder_append", EffectSet::PURE), e("builder_finish", EffectSet::PURE), e("builder_len", EffectSet::PURE),
             e("builder_new", EffectSet::PURE), e("byte_at_unchecked", EffectSet::PURE),             e("can_parse_float", EffectSet::PURE), e("can_parse_int", EffectSet::PURE), e("clone", EffectSet::PURE), e("from_bytes", EffectSet::PURE),
+            // GH #720 — ByteView byte scanning. All three are pure:
+            // `bytes_view` is one strlen, `byte_at` a bounds-checked
+            // load, `slice` / `range_copy` an arena copy of a range
+            // the caller already bounded.
+            e("byte_at", EffectSet::PURE), e("bytes_view", EffectSet::PURE), e("range_copy", EffectSet::PURE), e("slice", EffectSet::PURE),
             e("index_of", EffectSet::PURE), e("contains", EffectSet::PURE), e("split_into", EffectSet::PURE), e("join", EffectSet::PURE), e("cp_count", EffectSet::PURE), e("cp_at", EffectSet::PURE), e("cp_size", EffectSet::PURE), e("starts_with", EffectSet::PURE), e("ends_with", EffectSet::PURE), e("lower", EffectSet::PURE), e("pad_left", EffectSet::PURE), e("pad_right", EffectSet::PURE), e("parse_decimal", EffectSet::PURE),
             e("parse_float", EffectSet::PURE), e("parse_int", EffectSet::PURE), e("range_eq", EffectSet::PURE), e("range_parse_decimal", EffectSet::PURE),
             e("range_parse_int", EffectSet::PURE), e("repeat", EffectSet::PURE), e("replace", EffectSet::PURE), e("substring", EffectSet::PURE), e("trim", EffectSet::PURE),
@@ -961,6 +967,37 @@ pub const SIGS: &[FnSig] = &[
     ),
     sig!(NS_STR, "range_eq", [Str, Int, Int, Str], Bool),
     sig!(NS_STR, "byte_at_unchecked", [Str, Int], Int),
+    // GH #720 — the ByteView surface. The view is the struct
+    // `str_view.hl` declares, named here by the mangled name
+    // PATH_RENAMES maps `std::str::ByteView` onto, so a view built
+    // by `bytes_view` and a view annotated by hand are the same
+    // type to the checker. `range_copy` is the strlen-free
+    // substring `slice` is built on — public because a scanner
+    // that already tracks its own bounds (the JSON range walkers)
+    // wants it directly, and named `range_*` because it carries
+    // that family's caller-owns-the-bounds contract.
+    FnSig {
+        ns: NS_STR,
+        name: "bytes_view",
+        params: &[SigTy::Str],
+        ret: SigTy::Named("__StrByteView"),
+        fallible: None,
+    },
+    FnSig {
+        ns: NS_STR,
+        name: "byte_at",
+        params: &[SigTy::Named("__StrByteView"), SigTy::Int],
+        ret: SigTy::Int,
+        fallible: None,
+    },
+    FnSig {
+        ns: NS_STR,
+        name: "slice",
+        params: &[SigTy::Named("__StrByteView"), SigTy::Int, SigTy::Int],
+        ret: SigTy::Str,
+        fallible: None,
+    },
+    sig!(NS_STR, "range_copy", [Str, Int, Int, Int], Str),
     // GH #535 (DNA F.8): the flat-object json readers are Hale-source
     // stdlib fns with no rename entry, so a call typed Unknown and an
     // `or` on one slid through the checker to fail at build. Tabled,

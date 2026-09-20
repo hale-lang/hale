@@ -5099,6 +5099,33 @@ fn stmt_definitely_non_allocating(
     }
 }
 
+/// GH #720 — stdlib path calls the FORM-3 classifier may treat as
+/// non-allocating. Deliberately a hand-verified allowlist rather
+/// than "anything PURE": `std::str::substring` is pure and
+/// allocates, so purity is the wrong predicate. Each entry below
+/// returns a numeric scalar and touches no arena, which is what
+/// the subregion exists to manage:
+///
+///   - `byte_at_unchecked` lowers to a GEP + load;
+///   - `byte_at` is `__str_byte_at` — a compare against the view's
+///     `n` plus that same load.
+///
+/// A wrong entry does not dangle — an elided body's allocations
+/// route to the caller's arena rather than being freed at return —
+/// but they then live as long as the CALLER's arena instead of the
+/// call, so a hot loop would grow instead of reusing. Add only
+/// scalar-returning, arena-free calls.
+const NONALLOC_STDLIB_PATHS: &[&[&str]] = &[
+    &["std", "str", "byte_at_unchecked"],
+    &["std", "str", "byte_at"],
+];
+
+fn path_call_is_nonalloc(q: &hale_syntax::ast::QualifiedName) -> bool {
+    let segs: Vec<&str> =
+        q.segments.iter().map(|s| s.name.as_str()).collect();
+    NONALLOC_STDLIB_PATHS.iter().any(|p| *p == segs.as_slice())
+}
+
 fn expr_definitely_non_allocating(
     e: &Expr,
     ctx: &AllocCtx,
@@ -5178,6 +5205,14 @@ fn expr_definitely_non_allocating(
                         // fnptr_numeric_ret.
                         || ctx.fnptr_numeric_ret.contains(&id.name)
                 }
+                // GH #720: a stdlib path call from the
+                // non-allocating allowlist. Without this, ANY helper
+                // fn that inspects a byte — the shape every parser
+                // has — was classified allocating, so each call paid
+                // a subregion create/destroy that the inlined body
+                // then never used (measured: ~15ns per call, 24ms vs
+                // 2ms over a 1 MiB scan).
+                Expr::Path(q) => path_call_is_nonalloc(q),
                 Expr::Field { receiver, name, .. }
                     if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
                 {
@@ -25062,6 +25097,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_str_byte_at_unchecked(args, scope)?;
                 Ok(())
             }
+            ["std", "str", "range_copy"] => {
+                let _ = self.lower_std_str_range_copy(args, scope)?;
+                Ok(())
+            }
             ["std", "json", "next_struct_or_quote"] => {
                 let _ = self.lower_json_scan("lotus_json_next_struct_or_quote", args, scope)?;
                 Ok(())
@@ -26233,6 +26272,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "str", "byte_at_unchecked"] => {
                 self.lower_std_str_byte_at_unchecked(args, scope)
+            }
+            ["std", "str", "range_copy"] => {
+                self.lower_std_str_range_copy(args, scope)
             }
             ["std", "json", "next_struct_or_quote"] => {
                 self.lower_json_scan("lotus_json_next_struct_or_quote", args, scope)

@@ -28,6 +28,11 @@ pub(crate) trait StrStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_str_range_copy(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
     fn lower_json_scan(
         &mut self,
         fn_name: &str,
@@ -415,6 +420,69 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
             .build_int_z_extend(byte, self.context.i64_type(), "byte_at.zext")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok((v.into(), CodegenTy::Int))
+    }
+
+    /// GH #720 — `std::str::range_copy(s: String, n: Int, start: Int,
+    /// end_exclusive: Int) -> String`. The materializing member of the
+    /// `range_*` family: `s[start..end_exclusive)` copied out, with the
+    /// byte length `n` supplied by the caller instead of re-derived by
+    /// a per-call `strlen`. `std::str::slice` on a `ByteView` is this
+    /// call with the view's `n`; extracting k tokens from an n-byte
+    /// input costs O(n) total rather than `substring`'s O(k*n).
+    ///
+    /// Bounds are clamped into `[0, n]` by the runtime, so a scanner's
+    /// off-by-one yields a short or empty String — but `n` itself is
+    /// the caller's promise (the family's standing contract), which is
+    /// why the safe surface is `slice` on a view whose `n` came from
+    /// `bytes_view`.
+    fn lower_std_str_range_copy(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 4 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::range_copy takes 4 args (s, n, start, \
+                 end_exclusive), got {}",
+                args.len()
+            )));
+        }
+        let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::range_copy: s must be String, got {:?}",
+                s_ty
+            )));
+        }
+        let s_val = self.unpack_view_if_needed(s_val, &s_ty)?;
+        let mut ints: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+            Vec::with_capacity(3);
+        for (idx, name) in
+            [(1usize, "n"), (2, "start"), (3, "end_exclusive")]
+        {
+            let (v, ty) = self.lower_expr(&args[idx], scope)?;
+            if ty != CodegenTy::Int {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::str::range_copy: {} must be Int, got {:?}",
+                    name, ty
+                )));
+            }
+            ints.push(v.into());
+        }
+        let f = self
+            .module
+            .get_function("lotus_str_range_copy")
+            .expect("lotus_str_range_copy declared");
+        self.emit_set_caller_arena()?;
+        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+            vec![s_val.into()];
+        call_args.extend(ints);
+        let call = self
+            .builder
+            .build_call(f, &call_args, "str.range_copy.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let v = call.try_as_basic_value().left().expect("returns ptr");
+        Ok((v, CodegenTy::String))
     }
 
     /// JSON Tier-3 Level-A scan primitive: `(json: String, from: Int) ->

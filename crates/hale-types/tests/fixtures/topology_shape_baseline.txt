@@ -1027,6 +1027,7 @@ crates/hale-codegen/tests/stdlib_stdin.rs#1 53cadec6decfbc54
 crates/hale-codegen/tests/stdlib_stdin.rs#2 53cadec6decfbc54
 crates/hale-codegen/tests/stdlib_stdin.rs#4 53cadec6decfbc54
 crates/hale-codegen/tests/stdlib_str.rs#0 824246644df0eb58
+crates/hale-codegen/tests/stdlib_str.rs#2 e6819d81ec71071b
 crates/hale-codegen/tests/stdlib_stream.rs#0 3456734f503ef706
 crates/hale-codegen/tests/stdlib_stream.rs#1 0692e2ab30e8d2cc
 crates/hale-codegen/tests/stdlib_stream.rs#5 f2c1228edb650960
@@ -1205,6 +1206,7 @@ crates/hale-stdlib/hl/name.hl 303db68fd4e3b23b
 crates/hale-stdlib/hl/process.hl d40c7428cf5b63dd
 crates/hale-stdlib/hl/secret.hl 93d154f363e62c85
 crates/hale-stdlib/hl/source.hl 5dee20cb0f0c4164
+crates/hale-stdlib/hl/str_view.hl b618b984ded1ff8b
 crates/hale-stdlib/hl/tagged.hl 7b514c1ecd3e9de5
 crates/hale-stdlib/hl/term.hl f643d32e6ab5d1e6
 crates/hale-stdlib/hl/text.hl 191eff77c1d03506
