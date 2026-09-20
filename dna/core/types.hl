@@ -57,6 +57,27 @@ type WorkRequest {
     attempt_no: Int = 0;
 }
 
+// The request for one attempt of a Work: the same request, only its
+// `attempt_no` replaced. A retry is a new attempt of the same Work, so
+// every other field — the context, the capabilities, the target, the
+// data class — carries over unchanged.
+fn request_for_attempt(req: WorkRequest, attempt_no: Int) -> WorkRequest {
+    return WorkRequest {
+        work_id: req.work_id,
+        task_id: req.task_id,
+        step_id: req.step_id,
+        objective: req.objective,
+        context_digest: req.context_digest,
+        knowledge_bindings: req.knowledge_bindings,
+        output_contract: req.output_contract,
+        data_class: req.data_class,
+        requires: req.requires,
+        target: req.target,
+        cost_ceiling: req.cost_ceiling,
+        attempt_no: attempt_no
+    };
+}
+
 type WorkResult {
     disposition: String = ""; // "done" | "failed" | "declined" | "timeout"
     result: String = ""; // structured result (JSON or a value)

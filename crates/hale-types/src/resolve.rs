@@ -1375,7 +1375,23 @@ pub fn resolve_type_expr(te: &TypeExpr, known: &BTreeMap<String, Span>) -> Ty {
         // through the `TopSymbol::Perspective` branch, exactly the
         // way an interface-typed value resolves through
         // `TopSymbol::Interface`.
-        TypeExpr::Perspective { name, .. } => Ty::Named(name.name.clone()),
+        // GH #724: a name that still carries `::` is an UNRESOLVED
+        // cross-seed reference. A resolvable `perspective(lib::Routing)`
+        // was collapsed to the imported declaration's single mangled
+        // name by the import-rename pass before anything reaches here,
+        // so what is left is a path this bundle cannot see — type it
+        // `Unknown`, exactly as a multi-segment named type resolves.
+        // That keeps a tool holding one seed WITHOUT its imports (the
+        // LSP bundles a directory's own files) tolerant of the path
+        // instead of reporting a missing method on every use of the
+        // slot, the same way it already tolerates `lib::Grid`.
+        TypeExpr::Perspective { name, .. } => {
+            if name.name.contains("::") {
+                Ty::Unknown
+            } else {
+                Ty::Named(name.name.clone())
+            }
+        }
         TypeExpr::Named { path, generic_args, .. } => {
             if path.segments.len() == 1 {
                 let name = &path.segments[0].name;

@@ -1,0 +1,9 @@
+// Importing the violating application: the imported main's inline
+// claim must still fire, so the fix cannot be "resolve the groups to
+// nothing and pass".
+import "../seed-bad" as chat;
+
+fn main() {
+    let r = chat::Room { room: 3 };
+    println("lines ", r.lines);
+}

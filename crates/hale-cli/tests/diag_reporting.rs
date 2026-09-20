@@ -191,3 +191,86 @@ fn payload_mismatch_refuses_to_build() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// GH #725: a reserved word used as a name, in a multi-FILE seed.
+///
+/// Two defects met here. The parser abandoned the whole declaration,
+/// so the author's first line was the wreckage downstream rather than
+/// the word they wrote. And `parse_source_at` shifted a parse
+/// diagnostic's span by the file's virtual base a SECOND time (the
+/// spans already came from base-shifted tokens), so in every file but
+/// the first of a seed the error rendered `base` bytes too far — for
+/// this fixture line 15 of a 14-line file, past EOF, which also cost
+/// it the source snippet and caret. `check` bails before typechecking
+/// a seed with a parse hole, so the historical "missing type
+/// WorkResult" reports were what a mislocated parse error looked
+/// like, not a separate diagnostic. The assertion pins both halves:
+/// one parse error, at the word, inside the file that holds it.
+#[test]
+fn reserved_word_in_a_sibling_file_is_located_at_the_word() {
+    let d = seed_dir("reserved");
+    // Sorted first, so `work.hl` below is parsed at a NON-ZERO base.
+    std::fs::write(
+        d.join("app.hl"),
+        "main locus App {\n\
+         \x20   run {\n\
+         \x20       let w = Worker { };\n\
+         \x20       let r: WorkResult = w.produce();\n\
+         \x20       println(\"{}\", r.tally);\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("work.hl"),
+        "type WorkResult {\n\
+         \x20   ok: Bool;\n\
+         \x20   tally: Int;\n\
+         }\n\
+         \n\
+         locus Worker {\n\
+         \x20   params {\n\
+         \x20       epoch: Int = 0;\n\
+         \x20   }\n\
+         \n\
+         \x20   fn produce() -> WorkResult {\n\
+         \x20       return WorkResult { ok: true, tally: 1 };\n\
+         \x20   }\n\
+         }\n",
+    )
+    .unwrap();
+
+    let (_, stderr, code) = hale_check(&[], &d);
+    assert_eq!(code, 1, "the seed must not check: {}", stderr);
+    let errs: Vec<&str> =
+        stderr.lines().filter(|l| l.contains("error:")).collect();
+    assert_eq!(
+        errs.len(),
+        1,
+        "one diagnostic for one mistake; got:\n{}",
+        stderr
+    );
+    assert!(
+        errs[0].contains("work.hl:8:9:")
+            && errs[0].contains(
+                "`epoch` is a reserved word and cannot name a params field"
+            ),
+        "the error is at the reserved word in work.hl; got: {}",
+        errs[0]
+    );
+    // The snippet + caret only render when the span really is inside
+    // the file — the double-shifted span pointed past EOF and lost
+    // them silently.
+    assert!(
+        stderr.contains("epoch: Int = 0;") && stderr.contains("^^^^^"),
+        "the caret underlines the word: {}",
+        stderr
+    );
+    // And nothing about the type the sibling file reads from it.
+    assert!(
+        !stderr.contains("WorkResult") && !stderr.contains("unknown"),
+        "no follow-on about the sibling's view of the seed: {}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}

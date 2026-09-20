@@ -1,4 +1,9 @@
 crates/hale-cli/tests/check_arg_parsing.rs#0 f428caff9d863411
+crates/hale-cli/tests/cross_seed_qualified_serves.rs#0 b8c97b016886b822
+crates/hale-cli/tests/cross_seed_qualified_serves.rs#1 cb403528917b1d2f
+crates/hale-cli/tests/cross_seed_qualified_serves.rs#2 cb403528917b1d2f
+crates/hale-cli/tests/cross_seed_qualified_serves.rs#3 cb403528917b1d2f
+crates/hale-cli/tests/cross_seed_qualified_serves.rs#4 cb403528917b1d2f
 crates/hale-cli/tests/debug_info.rs#0 a8a553c534907f76
 crates/hale-cli/tests/dispatch_plan_cli.rs#0 e9ff5fe335d31b65
 crates/hale-cli/tests/dna_apply.rs#0 f2c1228edb650960
@@ -29,6 +34,13 @@ crates/hale-cli/tests/fixtures/hale-test-pass/strings_test.hl 7ba49c53bd84fd5d
 crates/hale-cli/tests/fixtures/hot-factory-ambig/plain.hl 5fbea6e08b712dbc
 crates/hale-cli/tests/fixtures/hot-factory-app/main.hl 865d341109268295
 crates/hale-cli/tests/fixtures/hot-factory-lib/matrix.hl f58a9d028a76a94b
+crates/hale-cli/tests/fixtures/imported-main-claims/app-adopt/main.hl f2c1228edb650960
+crates/hale-cli/tests/fixtures/imported-main-claims/app-bad-collision/main.hl c4d04e0410a37ec1
+crates/hale-cli/tests/fixtures/imported-main-claims/app-bad/main.hl f2c1228edb650960
+crates/hale-cli/tests/fixtures/imported-main-claims/app-missing/main.hl f2c1228edb650960
+crates/hale-cli/tests/fixtures/imported-main-claims/app/main.hl f2c1228edb650960
+crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl 653102d16139102d
+crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl 653102d16139102d
 crates/hale-cli/tests/fixtures/p3-namespace-method-app/main.hl b6eaa051f60dcfff
 crates/hale-cli/tests/fixtures/p3-namespace-method-lib/grid.hl 83dd3572f7c59f69
 crates/hale-cli/tests/fixtures/qualified-type-fwd-app/main.hl 6f6553a1d6df5be4
@@ -71,6 +83,12 @@ crates/hale-cli/tests/fleet_model_soundness.rs#2 096bf948a953c55c
 crates/hale-cli/tests/fleet_model_soundness.rs#3 0307e1dae8efcf77
 crates/hale-cli/tests/fleet_seed_instances.rs#0 bc7076df25d5111b
 crates/hale-cli/tests/fleet_sign.rs#0 c4804249b5a05260
+crates/hale-cli/tests/import_parse_error_gates.rs#0 7d5cf57defcf548e
+crates/hale-cli/tests/import_parse_error_gates.rs#2 7d5cf57defcf548e
+crates/hale-cli/tests/imported_literal_fields.rs#1 f2c1228edb650960
+crates/hale-cli/tests/imported_literal_fields.rs#2 f2c1228edb650960
+crates/hale-cli/tests/imported_literal_fields.rs#3 f2c1228edb650960
+crates/hale-cli/tests/imported_literal_fields.rs#4 f2c1228edb650960
 crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#2 eee350907cf202be
 crates/hale-cli/tests/lsp.rs#0 3533bcfd7c9f71d5
 crates/hale-cli/tests/lsp.rs#1 68987e25a83ab8b0
@@ -503,6 +521,7 @@ crates/hale-codegen/tests/fixtures/examples/73-bounded-bus/main.hl f1b5037e9ab0a
 crates/hale-codegen/tests/fixtures/examples/74-effect-contracts/main.hl 48dfa96aea975339
 crates/hale-codegen/tests/fixtures/examples/85-bindings-unix/main.hl c610fbb420c5d496
 crates/hale-codegen/tests/fixtures/examples/86-formatting/main.hl f2c1228edb650960
+crates/hale-codegen/tests/fixtures/examples/87-temp-locus-receiver/main.hl 16381b7a9428a375
 crates/hale-codegen/tests/fixtures/examples/claim-forms.hl fc7429933db197c9
 crates/hale-codegen/tests/fixtures/examples/constitutions.hl 3e28431eef6c20e2
 crates/hale-codegen/tests/fixtures/examples/docs-server/main.hl 1c46881b16096baf
@@ -996,6 +1015,8 @@ crates/hale-codegen/tests/stdlib_json.rs#1 f2c1228edb650960
 crates/hale-codegen/tests/stdlib_json.rs#12 f2c1228edb650960
 crates/hale-codegen/tests/stdlib_json.rs#14 865d341109268295
 crates/hale-codegen/tests/stdlib_json.rs#15 865d341109268295
+crates/hale-codegen/tests/stdlib_json.rs#16 f2c1228edb650960
+crates/hale-codegen/tests/stdlib_json.rs#18 f2c1228edb650960
 crates/hale-codegen/tests/stdlib_json.rs#4 f2c1228edb650960
 crates/hale-codegen/tests/stdlib_json.rs#7 f2c1228edb650960
 crates/hale-codegen/tests/stdlib_list_dir.rs#2 865d341109268295
@@ -1021,6 +1042,7 @@ crates/hale-codegen/tests/stdlib_stdin.rs#1 53cadec6decfbc54
 crates/hale-codegen/tests/stdlib_stdin.rs#2 53cadec6decfbc54
 crates/hale-codegen/tests/stdlib_stdin.rs#4 53cadec6decfbc54
 crates/hale-codegen/tests/stdlib_str.rs#0 824246644df0eb58
+crates/hale-codegen/tests/stdlib_str.rs#2 e6819d81ec71071b
 crates/hale-codegen/tests/stdlib_stream.rs#0 3456734f503ef706
 crates/hale-codegen/tests/stdlib_stream.rs#1 0692e2ab30e8d2cc
 crates/hale-codegen/tests/stdlib_stream.rs#5 f2c1228edb650960
@@ -1190,7 +1212,7 @@ crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8
 crates/hale-stdlib/hl/http_client.hl fccb52d86a539447
 crates/hale-stdlib/hl/io_tcp.hl 170732f0b5edc9ab
 crates/hale-stdlib/hl/iter.hl 907139175ae346a1
-crates/hale-stdlib/hl/json.hl a94fb4d1c641dbf7
+crates/hale-stdlib/hl/json.hl ebc4c7fe0e41748e
 crates/hale-stdlib/hl/lang.hl 2a31148c08652a87
 crates/hale-stdlib/hl/log.hl 8f96d39abe5b312b
 crates/hale-stdlib/hl/metrics.hl b9dee86669b92506
@@ -1199,6 +1221,7 @@ crates/hale-stdlib/hl/name.hl 303db68fd4e3b23b
 crates/hale-stdlib/hl/process.hl d40c7428cf5b63dd
 crates/hale-stdlib/hl/secret.hl 93d154f363e62c85
 crates/hale-stdlib/hl/source.hl 5dee20cb0f0c4164
+crates/hale-stdlib/hl/str_view.hl b618b984ded1ff8b
 crates/hale-stdlib/hl/tagged.hl 7b514c1ecd3e9de5
 crates/hale-stdlib/hl/term.hl f643d32e6ab5d1e6
 crates/hale-stdlib/hl/text.hl 191eff77c1d03506
@@ -1286,6 +1309,7 @@ crates/hale-types/tests/effect_assertions.rs#11 adb66e587e257061
 crates/hale-types/tests/effect_assertions.rs#12 81a9956f48f92449
 crates/hale-types/tests/effect_assertions.rs#18 20ec55af39f1046a
 crates/hale-types/tests/effect_assertions.rs#22 d8579c59299960f3
+crates/hale-types/tests/effect_assertions.rs#27 3144a66fa473a5a5
 crates/hale-types/tests/effect_assertions.rs#3 18ffc12740f4b203
 crates/hale-types/tests/effect_assertions.rs#5 6c25d1df6a64820f
 crates/hale-types/tests/effect_assertions.rs#8 52f5c2d227dbb8b5
@@ -1367,6 +1391,9 @@ crates/hale-types/tests/library_claims.rs#2 ec2370ca8357a69a
 crates/hale-types/tests/locus_field_store.rs#2 0820f11648b08ee7
 crates/hale-types/tests/locus_field_store.rs#3 ed0f729bfde57d33
 crates/hale-types/tests/locus_field_store.rs#4 fb576285cf6c267e
+crates/hale-types/tests/locus_member_const.rs#3 36c5f94439f06042
+crates/hale-types/tests/locus_member_const.rs#4 36c5f94439f06042
+crates/hale-types/tests/locus_member_type.rs#2 7c7d6de5bd37c6a5
 crates/hale-types/tests/model_builder.rs#1 3393c58563b7e1ad
 crates/hale-types/tests/model_builder.rs#10 93de17504f35f3b9
 crates/hale-types/tests/model_builder.rs#11 199146dcdfc4cd48
@@ -1419,6 +1446,7 @@ crates/hale-types/tests/ownership_graph.rs#9 13d329996d7ce475
 crates/hale-types/tests/perspective_serves.rs#0 f21b62040e0c874a
 crates/hale-types/tests/perspective_serves.rs#11 6d6475d19d1277c1
 crates/hale-types/tests/perspective_serves.rs#12 ae46862519d0c480
+crates/hale-types/tests/perspective_serves.rs#17 cb403528917b1d2f
 crates/hale-types/tests/perspective_serves.rs#6 9d87f878c811fca5
 crates/hale-types/tests/perspective_serves.rs#9 346f6dea45e5833a
 crates/hale-types/tests/phase_effects.rs#5 3feb2df4ea2f1631
@@ -1460,8 +1488,11 @@ crates/hale-types/tests/receiver_shapes.rs#0 e34b4a850e44781a
 crates/hale-types/tests/receiver_shapes.rs#1 5f5f7027648831de
 crates/hale-types/tests/recognition_submodes.rs#0 e44ab1fd789cfdef
 crates/hale-types/tests/recognition_submodes.rs#1 e44ab1fd789cfdef
+crates/hale-types/tests/reserved_locus_members.rs#2 87609b63a5d1f959
+crates/hale-types/tests/reserved_locus_members.rs#3 f2c1228edb650960
 crates/hale-types/tests/sealability_survey.rs#0 f4d56c805acf3eb3
 crates/hale-types/tests/stdlib_name_check.rs#3 7ba49c53bd84fd5d
+crates/hale-types/tests/stdlib_name_check.rs#4 f2c1228edb650960
 crates/hale-types/tests/stdlib_or_on_infallible.rs#1 865d341109268295
 crates/hale-types/tests/stdlib_or_on_infallible.rs#4 f7d36b63d0259ddf
 crates/hale-types/tests/stdlib_sig_check.rs#4 90900b8058a0b246
