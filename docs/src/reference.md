@@ -61,3 +61,9 @@ diagnostic's meaning, go there.
 in the import graph — a library you import, or one it imports — fails
 them both, reported at that file's own line and column. Neither ever
 reports success on a tree `hale build` would refuse.
+
+With `--json` a parse error is reported exactly like a type error: one
+NDJSON record on stdout carrying the file, line, column and message,
+with `"kind":"parse error"`. Whatever fails, the machine-readable
+stream says why — so for a gate reading it, an empty stream means the
+seed is clean and nothing else does.

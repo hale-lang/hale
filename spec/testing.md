@@ -202,7 +202,12 @@ offending file's own line and column, with the same exit status and
 on: `check` never reports success on a tree `build` would refuse
 (2026-09-19, GH #765; before it, an imported seed that failed to parse
 left its declarations silently absent and both commands answered
-clean).
+clean). The `--json` half of that contract reached the target's OWN
+files on the same day (GH #777): the parse path predated the JSON
+reporting path and printed text to stderr, so a syntactic failure in
+the seed being checked exited non-zero with an empty stream — a gate
+saw a failure with nothing explaining it. Every parse diagnostic is
+now a record like any other.
 
 ## `hale bench` — the Layer-3 runner
 

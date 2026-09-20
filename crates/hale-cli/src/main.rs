@@ -3078,7 +3078,7 @@ fn locate_span(
 ) -> Option<(String, usize, usize)> {
     let off = span.start.as_usize() as u32;
     for (base, path, len) in file_bases {
-        if off >= *base && off < base.saturating_add(*len) {
+        if file_owns_offset(*base, *len, off) {
             let src = sources.get(path)?;
             let (l, c) = span.shifted(base.wrapping_neg()).line_col(src);
             return Some((path.display().to_string(), l, c));
@@ -3094,7 +3094,7 @@ fn render_located(
 ) -> String {
     let off = d.span.start.as_usize() as u32;
     for (base, path, len) in file_bases {
-        if off >= *base && off < base.saturating_add(*len) {
+        if file_owns_offset(*base, *len, off) {
             if let Some(src) = sources.get(path) {
                 let mut out =
                     d.render_located(&path.display().to_string(), src, *base);
@@ -3119,6 +3119,62 @@ fn render_located(
     d.render(any)
 }
 
+/// Does the file parsed at `base`, `len` bytes long, own merged
+/// offset `off`? The window both renderers above and
+/// `render_diag_json` below test a span against.
+///
+/// It is INCLUSIVE of `base + len`, the one-past-the-last-byte
+/// position the `Eof` token carries (`Span::new(pos, pos)` at the end
+/// of the source). A parse error that cites EOF — `expected }, got
+/// Eof`, the missing closing brace, the commonest syntactic mistake
+/// there is — sits exactly there, and a half-open window put it in no
+/// file at all: it rendered with no filename and, once parse errors
+/// reached `render_diag_json`, as `"file":"","line":0,"col":0`
+/// (GH #777). Files are parsed at bases spaced `len + 1` apart
+/// (`parse_files`, `resolve_imports`), so that byte belongs to no
+/// other file; `file_of_span` has always read the window this way.
+fn file_owns_offset(base: u32, len: u32, off: u32) -> bool {
+    off >= base && off <= base.saturating_add(len)
+}
+
+/// GH #777: a file the target itself OWNS did not parse.
+///
+/// `parse_files` predates the JSON reporting path: it rendered each
+/// parse diagnostic straight to stderr as text and handed its caller a
+/// bare exit code, so `hale check --json` answered a syntactically
+/// broken seed with a non-zero exit and an EMPTY NDJSON stream — a CI
+/// gate, an admission step or an LSP client saw a real failure with
+/// nothing explaining it, for a whole error class. That is the same
+/// defect [`CheckableFailure`] closed for IMPORTED files (GH #765) and
+/// the one `diag_reporting.rs` records for the old sync-inference
+/// pre-pass. The diagnostics now travel to the caller, which renders
+/// them through the two helpers every other finding goes through. The
+/// file map travels with them because the spans are bundle-global
+/// offsets, and the source map carries the files that did NOT parse
+/// too — they have no program, but their text is what a span resolves
+/// against.
+struct ParseFailure {
+    diags: Vec<hale_syntax::Diag>,
+    file_bases: Vec<(u32, PathBuf, u32)>,
+    sources: BTreeMap<PathBuf, String>,
+}
+
+impl ParseFailure {
+    /// Render as located text on stderr — what `build` and `run` have
+    /// always printed, neither of which has a machine-readable channel
+    /// — and hand back the exit status. `check` and `verify` take the
+    /// other road, through [`CheckableFailure::report`].
+    fn report_text(&self) -> ExitCode {
+        for d in &self.diags {
+            eprintln!(
+                "{}",
+                render_located(d, &self.file_bases, &self.sources)
+            );
+        }
+        ExitCode::from(1)
+    }
+}
+
 fn parse_files(
     files: &[PathBuf],
 ) -> Result<
@@ -3127,7 +3183,7 @@ fn parse_files(
         BTreeMap<PathBuf, String>,
         Vec<(u32, PathBuf, u32)>,
     ),
-    ExitCode,
+    ParseFailure,
 > {
     let mut programs: BTreeMap<PathBuf, Program> = BTreeMap::new();
     let mut sources: BTreeMap<PathBuf, String> = BTreeMap::new();
@@ -3135,6 +3191,9 @@ fn parse_files(
     // merged spans demultiplex back to their file (see parse_source_at).
     let mut file_bases: Vec<(u32, PathBuf, u32)> = Vec::new();
     let mut had_error = false;
+    // GH #777: carried to the caller instead of printed here, so the
+    // reporting path that honours `--json` sees them.
+    let mut parse_diags: Vec<hale_syntax::Diag> = Vec::new();
     for f in files {
         let source = match fs::read_to_string(f) {
             Ok(s) => s,
@@ -3146,21 +3205,27 @@ fn parse_files(
         };
         let base = file_bases.last().map(|(b, _, l)| b + l + 1).unwrap_or(0);
         file_bases.push((base, f.clone(), source.len() as u32));
-        match hale_syntax::parse_source_at(&source, base) {
+        let parsed = hale_syntax::parse_source_at(&source, base);
+        // A file that did not parse still contributes its text: the
+        // renderers resolve a span against the source of the file whose
+        // base window holds it, and that file is this one.
+        sources.insert(f.clone(), source);
+        match parsed {
             Ok(p) => {
                 programs.insert(f.clone(), p);
-                sources.insert(f.clone(), source);
             }
             Err(diags) => {
-                for d in &diags {
-                    eprintln!("{}", d.render_located(&f.display().to_string(), &source, base));
-                }
+                parse_diags.extend(diags);
                 had_error = true;
             }
         }
     }
     if had_error {
-        return Err(ExitCode::from(1));
+        return Err(ParseFailure {
+            diags: parse_diags,
+            file_bases,
+            sources,
+        });
     }
     Ok((programs, sources, file_bases))
 }
@@ -3168,15 +3233,16 @@ fn parse_files(
 /// GH #765: how [`collect_checkable`] failed.
 ///
 /// A bare `code` means the reason was already printed — a bad target,
-/// or a file the target itself OWNS that did not parse (`parse_files`
-/// reports those). `diags` carries findings the CALLER must render:
-/// something in the IMPORT GRAPH that did not parse, or an import that
-/// could not be resolved at all. Those have to reach the same
-/// reporting path every other check diagnostic takes, or `--json`
-/// emits nothing and the position comes out against the wrong file —
-/// the trap the pre-pass resolver comment in `run_check_impl_labelled`
-/// records. The file map travels with them because the spans are
-/// bundle-global offsets into files the caller never saw.
+/// or a file that could not be read at all. `diags` carries findings
+/// the CALLER must render: something in the IMPORT GRAPH that did not
+/// parse, an import that could not be resolved at all, or (GH #777) a
+/// file the target itself owns that did not parse. Those have to reach
+/// the same reporting path every other check diagnostic takes, or
+/// `--json` emits nothing and the position comes out against the wrong
+/// file — the trap the pre-pass resolver comment in
+/// `run_check_impl_labelled` records. The file map travels with them
+/// because the spans are bundle-global offsets into files the caller
+/// never saw.
 struct CheckableFailure {
     code: u8,
     diags: Vec<hale_syntax::Diag>,
@@ -3192,6 +3258,19 @@ impl CheckableFailure {
             diags: Vec::new(),
             file_bases: Vec::new(),
             sources: BTreeMap::new(),
+        }
+    }
+
+    /// GH #777: a parse failure in the target's OWN files, carried
+    /// here rather than printed by `parse_files`, so `check --json`
+    /// and `verify --json` report a syntactic failure as records like
+    /// every other finding instead of as an empty stream.
+    fn from_parse(f: ParseFailure) -> Self {
+        Self {
+            code: 1,
+            diags: f.diags,
+            file_bases: f.file_bases,
+            sources: f.sources,
         }
     }
 
@@ -3246,10 +3325,11 @@ fn collect_checkable(
             return Err(CheckableFailure::code(1));
         }
     };
-    // `parse_files` still reports an `ExitCode` (its other two
-    // callers hand one straight back); it only ever fails with 1.
+    // GH #777: a parse failure in the target's own files travels the
+    // same road an imported file's does — the diagnostics reach the
+    // one reporting site, which honours `--json`.
     let (programs, sources, file_bases) =
-        parse_files(&files).map_err(|_| CheckableFailure::code(1))?;
+        parse_files(&files).map_err(CheckableFailure::from_parse)?;
 
     // The files the target itself owns — everything else reached
     // from here arrived through an `import`.
@@ -5396,7 +5476,7 @@ fn render_diag_json(
     let mut line = 0usize;
     let mut col = 0usize;
     for (base, path, len) in file_bases {
-        if off >= *base && off < base.saturating_add(*len) {
+        if file_owns_offset(*base, *len, off) {
             if let Some(src) = sources.get(path) {
                 let (l, c) = d
                     .span
@@ -6612,7 +6692,9 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     };
     let (programs, sources, mut file_bases) = match parse_files(&files) {
         Ok(x) => x,
-        Err(code) => return code,
+        // `run` has no machine-readable channel: the same located
+        // text it always printed (GH #777 moved the printing here).
+        Err(f) => return f.report_text(),
     };
 
     // WS3.3 (2026-06-11): a directory `hale run` now resolves
@@ -6808,7 +6890,8 @@ fn run_build(target: &Path) -> ExitCode {
         };
         let (programs, sources, mut dir_file_bases) = match parse_files(&files) {
             Ok(x) => x,
-            Err(code) => return code,
+            // As for `run`: located text, unchanged (GH #777).
+            Err(f) => return f.report_text(),
         };
         // Collect the union of all imports across the bundle's
         // files. Multiple files in one seed may share an import
