@@ -1,0 +1,160 @@
+// dna/api/project_service/registry.hl — the head's project registry
+// (GH #965): `<state>/projects.jsonl`, append-only, one JSON object per
+// line. A project is the fold of its lines — the `registered` line
+// names its root and name, the last event says whether it is known,
+// active or forgotten — and at most one project is `activated`. The
+// last `activated` line is what a restarting head re-attaches.
+
+import "../../core" as dna;
+import "../../operations" as ops;
+
+const PROJECTS_FILE: String = "projects.jsonl";
+
+locus Registry {
+    params { state_dir: String = ""; }
+    fn path() -> String { return self.state_dir + "/" + PROJECTS_FILE; }
+    fn lines() -> String { return whole_lines(self.path(), PROJECTS_FILE); }
+
+    fn append(event: String, application_id: String, root: String, name: String, command_id: String) {
+        let codec = ops::GovernanceCommandCodec { };
+        repair_tail(self.path());
+        let seq = last_seq(self.lines()) + 1;
+        let mut line = "{\"seq\":" + to_string(seq) + ",\"at\":" + to_string(std::time::now()) + ",\"event\":" + codec.quote(event) + ",\"application_id\":" + codec.quote(application_id);
+        if event == "registered" { line = line + ",\"root\":" + codec.quote(root) + ",\"name\":" + codec.quote(name); }
+        line = line + ",\"command_id\":" + codec.quote(command_id) + "}\n";
+        std::io::fs::write_file_append(self.path(), line) or discard;
+    }
+
+    // The fold for one project; `ok` false when no line names it.
+    fn find(application_id: String) -> Registered {
+        let mut r = Registered { application_id: application_id };
+        if len(application_id) == 0 { return r; }
+        let needle = "\"application_id\":\"" + application_id + "\"";
+        let mut rest = self.lines();
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if !std::str::contains(line, needle) || std::json::find_string_field(line, "application_id") != application_id { continue; }
+            let event = std::json::find_string_field(line, "event");
+            let at = std::json::find_int_field(line, "at");
+            r.ok = true;
+            r.seq = std::json::find_int_field(line, "seq");
+            r.last_event = event;
+            r.command_id = std::json::find_string_field(line, "command_id");
+            if event == "registered" {
+                r.root = std::json::find_string_field(line, "root");
+                r.name = std::json::find_string_field(line, "name");
+                r.registered_at = at;
+                r.active = false;
+                r.forgotten = false;
+            } else if event == "activated" {
+                r.active = true;
+                r.activated_at = at;
+                r.forgotten = false;
+            } else if event == "deactivated" {
+                r.active = false;
+            } else if event == "forgotten" {
+                r.active = false;
+                r.forgotten = true;
+            }
+        }
+        return r;
+    }
+
+    // Every known project's id, newline-separated, in registration order.
+    fn ids() -> String {
+        let mut out = "";
+        let mut rest = self.lines();
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if std::json::find_string_field(line, "event") != "registered" { continue; }
+            let id = std::json::find_string_field(line, "application_id");
+            if std::str::contains("\n" + out, "\n" + id + "\n") { continue; }
+            let r = self.find(id);
+            if !r.ok || r.forgotten { continue; }
+            out = out + id + "\n";
+        }
+        return dna::trim_nl(out);
+    }
+
+    // The one active project, or `ok` false.
+    fn active() -> Registered {
+        let mut rest = self.ids();
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let id = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            let r = self.find(id);
+            if r.active { return r; }
+        }
+        return Registered { };
+    }
+
+    // A `registered` line, only when the project is not already known
+    // (a finalize that runs twice writes once).
+    fn register(application_id: String, root: String, name: String, command_id: String) -> Bool {
+        let known = self.find(application_id);
+        if known.ok && !known.forgotten { return false; }
+        self.append("registered", application_id, root, name, command_id);
+        return true;
+    }
+
+    // Activates one project; whichever other project was active is
+    // `deactivated` first, so the fold never holds two.
+    fn activate(application_id: String, command_id: String) -> Bool {
+        let known = self.find(application_id);
+        if !known.ok || known.forgotten { return false; }
+        let current = self.active();
+        if current.ok && current.application_id != application_id { self.append("deactivated", current.application_id, "", "", command_id); }
+        if !known.active { self.append("activated", application_id, "", "", command_id); }
+        return true;
+    }
+
+    fn deactivate(application_id: String, command_id: String) -> Bool {
+        let known = self.find(application_id);
+        if !known.ok || !known.active { return false; }
+        self.append("deactivated", application_id, "", "", command_id);
+        return true;
+    }
+
+    fn forget(application_id: String, command_id: String) -> Bool {
+        let known = self.find(application_id);
+        if !known.ok || known.forgotten { return false; }
+        self.append("forgotten", application_id, "", "", command_id);
+        return true;
+    }
+
+    // What a restarting head re-attaches: the project of the last
+    // `activated` line, provided its fold still says so.
+    fn restore() -> Registered {
+        let mut last = "";
+        let mut rest = self.lines();
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if std::json::find_string_field(line, "event") == "activated" { last = std::json::find_string_field(line, "application_id"); }
+        }
+        if len(last) == 0 { return Registered { }; }
+        let r = self.find(last);
+        if !r.active || r.forgotten { return Registered { }; }
+        return r;
+    }
+
+    // One registry item as the wire lists it, without the fields the
+    // head composes from the Record and the children.
+    fn json(r: Registered) -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("application_id", r.application_id);
+        b.string_field("name", r.name);
+        b.string_field("root", r.root);
+        b.int_field("attached_at", if r.activated_at > 0 { r.activated_at } else { r.registered_at });
+        b.bool_field("active", r.active);
+        b.end_object();
+        return b.result();
+    }
+}

@@ -1,0 +1,36 @@
+// dna/api/project_service/main.hl — the cockpit head's entrypoint
+// (GH #965). This commit lays the framework the head is built on
+// (types, children, journal, registry, the S3 seam); the server, the
+// routes and the proxy land in the next. What is here already is the
+// argv shape and the exit codes of §2.1 of the contract:
+//
+//   project_service <port 1..65535> <webroot> <api-binary> [<api-port> = 8793] [<project-root>]
+//
+// Build: hale build dna/api/project_service
+import ".." as api;
+import "../../core" as dna;
+import "../../operations" as ops;
+
+const USAGE: String = "hale iris head: expected <port 1..65535> <webroot> <api-binary> [<api-port> = 8793] [<project-root>], with HALE_BIN naming the compiler by an absolute path";
+
+fn path_ok(p: String) -> Bool {
+    return len(p) > 0 && !std::str::contains(p, "\n") && !std::str::contains(p, "\r");
+}
+
+fn main() {
+    let http = api::Http { };
+    let count = std::env::args_count();
+    let port = http.integer(std::env::arg_or(1, ""), 65535);
+    let webroot = std::env::arg_or(2, "");
+    let api_binary = std::env::arg_or(3, "");
+    let api_port = if count > 4 { http.integer(std::env::arg_or(4, ""), 65535) } else { 8793 };
+    let project_root = std::env::arg_or(5, "");
+    let hale = std::env::var("HALE_BIN");
+    let executable = dna::run_tool("test\n-x\n" + api_binary).code == 0 && dna::run_tool("test\n-f\n" + api_binary).code == 0;
+    if count < 4 || count > 6 || port < 1 || api_port < 1 || !path_ok(webroot) || !path_ok(api_binary) || (count > 5 && !path_ok(project_root)) || !executable || !std::str::starts_with(hale, "/") {
+        eprintln(USAGE);
+        std::process::exit(2);
+    }
+    eprintln("hale iris head: the framework is in place; the server is not in this build yet");
+    std::process::exit(2);
+}
