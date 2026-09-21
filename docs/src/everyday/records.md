@@ -173,4 +173,68 @@ and it pairs naturally with the typed bus at the next level.
 > [`fallible`](../basics/fallible.md) channel — it's the
 > purpose-built tool and the compiler enforces handling.
 
+## Records with a type parameter
+
+A record can leave one of its field types open:
+
+```hale
+type Box<T> {
+    value: T = 0;
+}
+```
+
+`Box` on its own is a *template*, not a type — there is no `Box`
+to build. `Box<Int>` is the type, and the compiler makes one real
+record per set of arguments you use.
+
+The literal still spells the template name, and takes the
+arguments from whatever declares the type at that spot:
+
+```hale
+fn main() {
+    let b: Box<Int> = Box { value: 1 };   // the annotation says Int
+    println(b.value);
+}
+```
+
+A declared return type does the same job (`fn make() -> Box<Int> {
+return Box { value: 4 }; }`), as does a declared field — both at
+its default and at a literal that fills it (`Outer { inner: Box {
+value: 9 } }`).
+
+What does *not* work is leaving it to the compiler to guess:
+
+```hale,fragment
+let b = Box { value: 1 };     // error: `Box` is a generic type
+```
+
+The field value being an `Int` is not enough — nothing says `T` is
+`Int` rather than something an `Int` could become, so Hale asks you
+to write it. Getting the count wrong is an error too: `Box<Int,
+String>` reports *generic type `Box` takes 1 type argument, not 2*
+at the annotation.
+
+A **locus** can take type parameters the same way, and its
+`params` are substituted just like a record's fields:
+
+```hale
+locus Cache<K, V> {
+    params {
+        cap: Int = 1;
+    }
+}
+
+fn main() {
+    let c: Cache<Int, String> = Cache { cap: 2 };
+    println(c.cap);
+}
+```
+
+Behind the scenes the compiler calls that instance's type
+`Cache_Int_String`, and you will see the name in a diagnostic. For
+a record you may write that name yourself — `Box_Int { value: 1 }`
+is the same type as `Box<Int>` — but for a locus it is the
+compiler's name only: build one through `Cache` with the arguments
+on the binding.
+
 Next: reading and writing the world — [Files](./files.md).

@@ -659,11 +659,45 @@ declarations and literals unify, and a `Box_String` literal in a
 validate against the template with the type args substituted, and
 field reads on monomorph values type as the substituted field.
 
+**Generic loci monomorphize the same way.** `locus Cache<K, V>` is
+a template; `Cache<Int, String>` names the monomorph
+`Cache_Int_String`, whose `params` are the template's with the
+arguments substituted. A field read on a monomorph locus value
+(`c.cap`) types as the substituted param, exactly as a monomorph
+struct's field read does.
+
+**Where the arguments come from.** A struct / locus literal spelled
+with the template name (`Box { value: 1 }`, `Cache { cap: 2 }`)
+carries no type arguments of its own; it takes them from the
+declared type at the site. The sites that declare one are:
+
+- a `let` ascription — `let c: Cache<Int, String> = Cache { cap: 2 };`
+- a declared return type — `fn make() -> Box<Int> { return Box { value: 4 }; }`
+- a declared field or param, at its DEFAULT — `params { b: Box<Int> = Box { value: 0 }; }`
+- a declared field of a data type, at a literal's init — `Outer { inner: Box { value: 9 } }`
+
+Anywhere else — an un-annotated `let`, a literal in statement
+position — the arguments cannot be recovered, and the literal is a
+type error naming the template and the annotation to write. There
+is no inference from a literal's field values back to the
+parameters.
+
+A generic instantiation's argument COUNT must equal the template's
+parameter count: `Box<Int, String>` on `type Box<T>` is a type
+error at the annotation.
+
+The mangled monomorph name is spellable for a generic TYPE
+(`Box_Int { value: 1 }`, and through an alias — `type IntBox =
+Box<Int>; IntBox { ... }`). It is **not** spellable for a generic
+LOCUS: `Cache_Int_String { cap: 2 }` is a type error pointing at
+the template spelling.
+
 Generic params are declared with angle brackets:
 
 ```
 fn map<T, U>(xs: [T], f: fn(T) -> U) -> [U] { ... }
 type Stack<T> { items: [T]; }
+locus Cache<K, V> { params { cap: Int = 1; } }
 ```
 
 The constraint syntax `<T: Constraint>` admits:
