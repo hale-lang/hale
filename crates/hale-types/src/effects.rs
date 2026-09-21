@@ -281,7 +281,12 @@ impl DiagSink {
     }
 
     fn push_flagged(&mut self, d: Diag, foreign: bool) {
-        self.diags.push(d);
+        // GH #856: the flag also rides ON the diagnostic, so the
+        // renderers downstream of `hale check` — which see the flat
+        // stream and never the sink — can refuse to resolve a
+        // stdlib offset against a seed file's window. The parallel
+        // vector stays because the evidence pipeline keys on it.
+        self.diags.push(if foreign { d.in_stdlib() } else { d });
         self.foreign.push(foreign);
     }
 }

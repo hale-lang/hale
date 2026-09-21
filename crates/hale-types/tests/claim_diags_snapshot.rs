@@ -45,9 +45,9 @@ fn render(d: &hale_syntax::Diag) -> String {
     for r in &d.related {
         s.push_str(&format!(
             " || related [{}..{}] {}",
-            r.0.start.as_usize(),
-            r.0.end.as_usize(),
-            r.1
+            r.span.start.as_usize(),
+            r.span.end.as_usize(),
+            r.label
         ));
     }
     s

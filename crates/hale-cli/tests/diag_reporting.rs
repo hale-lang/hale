@@ -1537,3 +1537,142 @@ fn build_run_and_test_report_a_bare_unknown_name_as_check_does() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// A seed whose witness leaf lands in the embedded stdlib, padded
+/// past the stdlib offset of that leaf.
+///
+/// `ship` forbids `alloc` and reaches `std::io::tcp::Stream::send`,
+/// whose `fail IoError { … }` is the allocation. That struct literal
+/// sits ~13 KB into `hale_stdlib::AP_SOURCE` (`io_tcp.hl`, which the
+/// concatenation puts third), so the padding — one filler fn per
+/// line, ~40 KB of them — makes the file's own window swallow that
+/// offset. Without it the collision does not happen and the defect
+/// hides behind "placed nowhere".
+fn stdlib_witness_seed(tag: &str) -> PathBuf {
+    let d = seed_dir(tag);
+    let mut src = String::from(
+        "@effects(none: {alloc})\n\
+         fn ship(s: std::io::tcp::Stream) {\n\
+         \x20   s.send(\"tick\") or discard;\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let s = std::io::tcp::Stream { conn_fd: 1, owns_fd: false };\n\
+         \x20   ship(s);\n\
+         }\n",
+    );
+    for i in 0..1_100 {
+        src.push_str(&format!("fn filler_{i}() -> Int {{ return {i}; }}\n"));
+    }
+    assert!(
+        src.len() > 20_000,
+        "the seed must be larger than the witness leaf's stdlib \
+         offset for the windows to collide: {} bytes",
+        src.len()
+    );
+    std::fs::write(d.join("main.hl"), &src).unwrap();
+    d
+}
+
+/// GH #856: a diagnostic raised inside a STDLIB body carries an
+/// offset into `hale_stdlib::AP_SOURCE`, which parses at base 0 in a
+/// coordinate space of its own. Every renderer places a span by
+/// testing it against the seed's file windows, and that test can
+/// only compare numbers: past the seed's end the span was placed
+/// nowhere (rendered against whatever source came first, at a line
+/// belonging to nothing), and INSIDE a seed file's window it was
+/// reported as that file, at a position the reader never wrote.
+///
+/// The span's ORIGIN now travels with the diagnostic, so no channel
+/// resolves a stdlib offset against a seed file: the location is a
+/// note naming the stdlib file and line instead.
+#[test]
+fn a_stdlib_origin_span_never_renders_as_a_seed_location() {
+    let d = stdlib_witness_seed("stdlib856");
+    let main = d.join("main.hl");
+    let name = main.display().to_string();
+
+    let (_, stderr, code) = hale_check(&[], &d);
+    assert_eq!(code, 1, "the effect assertion is violated:\n{stderr}");
+    // The finding itself is located in the user's file, as always.
+    assert!(
+        stderr.contains(&format!("{name}:2:4: type error: effect assertion")),
+        "the violation is reported at the asserting fn:\n{stderr}"
+    );
+    // The witness leaf is a note naming the stdlib, not a line of
+    // the seed. A filler line is what it used to be attributed to.
+    let leaf = stderr
+        .lines()
+        .find(|l| l.contains("the `alloc` effect happens here"))
+        .unwrap_or_else(|| panic!("the leaf is still reported:\n{stderr}"));
+    assert!(
+        leaf.trim_start().starts_with("note: "),
+        "the leaf reads as a note:\n{stderr}"
+    );
+    assert!(
+        leaf.contains("in the standard library, io_tcp.hl:"),
+        "and names where in the stdlib it is:\n{stderr}"
+    );
+    assert!(
+        !leaf.contains(&name),
+        "it must never be attributed to a file of the seed:\n{stderr}"
+    );
+    assert!(
+        !leaf.contains("filler_"),
+        "nor to a line of one:\n{stderr}"
+    );
+
+    // The machine-readable channel says the same thing: no `file`,
+    // no position — the shape an unplaceable finding has had since
+    // GH #806 — with the stdlib location in the message.
+    let (stdout, _, json_code) = hale_check(&["--json"], &d);
+    assert_eq!(json_code, 1, "--json refuses it too:\n{stdout}");
+    let record = stdout
+        .lines()
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l)
+                .unwrap_or_else(|e| panic!("stdout is NDJSON ({e}): {l}"))
+        })
+        .find(|v| {
+            v["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("the `alloc` effect happens here"))
+        })
+        .unwrap_or_else(|| panic!("one record per finding:\n{stdout}"));
+    assert_eq!(record["file"], "", "no seed file: {record}");
+    assert_eq!(record["line"], 0, "no seed line: {record}");
+    assert_eq!(record["col"], 0, "no seed column: {record}");
+    assert!(
+        record["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("in the standard library, io_tcp.hl:"),
+        "the location a reader can act on is in the message: {record}"
+    );
+
+    // And the commands with no machine-readable channel, which
+    // render through `render_located`, print the same note — the
+    // drift guard one field over.
+    for (what, target) in [
+        ("check <dir>", d.as_path()),
+        ("build <dir>", d.as_path()),
+        ("run <dir>", d.as_path()),
+        ("build <file>", main.as_path()),
+    ] {
+        let cmd = what.split_whitespace().next().unwrap();
+        let (out, err, code) = hale_cmd(cmd, &[], target);
+        let all = format!("{out}{err}");
+        assert_eq!(code, 1, "{what} refuses it:\n{all}");
+        let leaf = all
+            .lines()
+            .find(|l| l.contains("the `alloc` effect happens here"))
+            .unwrap_or_else(|| panic!("{what} reports the leaf:\n{all}"));
+        assert!(
+            leaf.contains("in the standard library, io_tcp.hl:")
+                && !leaf.contains("filler_"),
+            "{what} must print the stdlib note, not a seed line:\n{all}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&d);
+}

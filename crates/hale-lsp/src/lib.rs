@@ -486,6 +486,18 @@ fn place_checker_diags(
     per_file: &mut BTreeMap<PathBuf, Vec<Value>>,
 ) {
     for d in diags {
+        // GH #856: a diagnostic raised INSIDE a stdlib body has no
+        // seed range at all — its offset measures the embedded
+        // stdlib's own parse space. The window test cannot tell, so
+        // such a span landed in whichever seed file it numerically
+        // collided with, squiggling a line the reader never wrote.
+        // There is nothing in the document to point at, so it is
+        // not published as a document diagnostic; the finding it
+        // belongs to carries its own witness path, and the CLI
+        // prints the stdlib location as a note.
+        if d.origin == hale_syntax::SpanOrigin::Stdlib {
+            continue;
+        }
         let off = d.span.start.as_usize() as u32;
         for (base, path, len) in file_bases {
             if !hale_syntax::file_owns_offset(*base, *len, off) {
@@ -502,18 +514,47 @@ fn place_checker_diags(
                 let rel: Vec<Value> = d
                     .related
                     .iter()
-                    .filter_map(|(rspan, label)| {
-                        related_to_lsp(*rspan, label, file_bases, sources)
-                    })
+                    .filter_map(|r| related_to_lsp(r, file_bases, sources))
                     .collect();
                 if !rel.is_empty() {
                     v["relatedInformation"] = json!(rel);
+                }
+                // A secondary location in the stdlib cannot be a
+                // `DiagnosticRelatedInformation` — that carries a
+                // range, and there is no seed range to give it. It
+                // becomes a note on the message instead, so the
+                // reader still learns where the effect happens
+                // without the editor jumping into a wrong file.
+                let notes = stdlib_related_notes(d);
+                if !notes.is_empty() {
+                    v["message"] = json!(format!(
+                        "{}\n{}",
+                        d.message,
+                        notes.join("\n")
+                    ));
                 }
                 per_file.entry(path.clone()).or_default().push(v);
             }
             break;
         }
     }
+}
+
+/// The `note:` lines a diagnostic's STDLIB-origin related locations
+/// render as (GH #856). Empty for the ordinary diagnostic, whose
+/// secondary locations are all seed spans and all clickable.
+fn stdlib_related_notes(d: &hale_syntax::Diag) -> Vec<String> {
+    d.related
+        .iter()
+        .filter(|r| r.origin == hale_syntax::SpanOrigin::Stdlib)
+        .map(|r| {
+            format!(
+                "note: {} ({})",
+                r.label,
+                hale_types::stdlib_bodies::stdlib_span_note(r.span)
+            )
+        })
+        .collect()
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {
@@ -542,12 +583,19 @@ fn overlay_or_disk(
 
 /// A merged-coordinate related span → LSP `DiagnosticRelatedInformation`,
 /// resolved to its own file through the file-base table.
+///
+/// `None` for a STDLIB-origin entry: it has no seed range, and
+/// `relatedInformation` is nothing but a range. It is published as a
+/// note on the message instead — see [`stdlib_related_notes`].
 fn related_to_lsp(
-    rspan: hale_syntax::Span,
-    label: &str,
+    r: &hale_syntax::Related,
     file_bases: &[(u32, PathBuf, u32)],
     sources: &BTreeMap<PathBuf, String>,
 ) -> Option<Value> {
+    if r.origin == hale_syntax::SpanOrigin::Stdlib {
+        return None;
+    }
+    let (rspan, label) = (r.span, r.label.as_str());
     let off = rspan.start.as_usize() as u32;
     let (base, path, _) = file_bases.iter().find(|(base, _, len)| {
         hale_syntax::file_owns_offset(*base, *len, off)
@@ -2320,8 +2368,11 @@ mod tests {
         let (bases, sources) = seed();
         let eof = A_SRC.len();
         let rel = related_to_lsp(
-            hale_syntax::Span::new(eof, eof),
-            "declared here",
+            &hale_syntax::Related {
+                span: hale_syntax::Span::new(eof, eof),
+                label: "declared here".to_string(),
+                origin: hale_syntax::SpanOrigin::Seed,
+            },
             &bases,
             &sources,
         )
@@ -2335,5 +2386,77 @@ mod tests {
             rel
         );
         assert_eq!(rel["location"]["range"]["start"]["line"], 3);
+    }
+
+    /// GH #856: a STDLIB-origin span numerically inside a seed
+    /// file's window is not that file's. The embedded stdlib parses
+    /// at base 0 in its own space, so offset 5 means byte 5 of
+    /// `core.hl` — and the window test, which can only compare
+    /// numbers, published it against `a.hl` at a position the
+    /// reader never wrote. Origin is the only thing that can tell
+    /// them apart, and it travels with the diagnostic.
+    #[test]
+    fn a_stdlib_origin_diagnostic_is_not_published_against_a_seed_file() {
+        let (bases, sources) = seed();
+        let inside = 5usize;
+        assert!(
+            hale_syntax::file_owns_offset(0, A_SRC.len() as u32, inside as u32),
+            "the offset must COLLIDE with a.hl's window — that is \
+             the case the window test cannot decide"
+        );
+        let d = hale_syntax::Diag::ty(
+            hale_syntax::Span::new(inside, inside + 4),
+            "the `alloc` effect happens here",
+        )
+        .in_stdlib();
+        let mut per_file = empty_publish(&bases);
+        place_checker_diags(&[d], &bases, &sources, &mut per_file);
+        assert!(
+            per_file.values().all(|v| v.is_empty()),
+            "a stdlib span has no seed range to publish: {:?}",
+            per_file
+        );
+    }
+
+    /// …and a stdlib-origin SECONDARY location is published as a
+    /// note on the message instead of a `relatedInformation` entry:
+    /// that carries a range, and a range in the seed is exactly what
+    /// this location does not have. The primary keeps its own range,
+    /// so the finding still lands on the line the reader must change.
+    #[test]
+    fn a_stdlib_origin_related_location_becomes_a_note() {
+        let (bases, sources) = seed();
+        let d = hale_syntax::Diag::ty(
+            hale_syntax::Span::new(0, 5),
+            "effect assertion violated",
+        )
+        .with_related(hale_syntax::Span::new(10, 16), "declared here")
+        .with_stdlib_related(
+            hale_syntax::Span::new(5, 9),
+            "the `alloc` effect happens here",
+        );
+        let mut per_file = empty_publish(&bases);
+        place_checker_diags(&[d], &bases, &sources, &mut per_file);
+
+        let published = &per_file[&PathBuf::from("/seed/a.hl")];
+        assert_eq!(published.len(), 1, "{:?}", per_file);
+        let v = &published[0];
+        assert_eq!(v["range"]["start"]["line"], 0, "{}", v);
+        // The seed-origin secondary is still clickable; the stdlib
+        // one is NOT among them.
+        let rel = v["relatedInformation"].as_array().expect("related");
+        assert_eq!(rel.len(), 1, "only the seed location is a location: {}", v);
+        assert_eq!(rel[0]["message"], "declared here", "{}", v);
+        let msg = v["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("note: the `alloc` effect happens here"),
+            "the stdlib location rides as a note: {}",
+            v
+        );
+        assert!(
+            msg.contains("core.hl"),
+            "and the note names the stdlib file the offset is in: {}",
+            v
+        );
     }
 }

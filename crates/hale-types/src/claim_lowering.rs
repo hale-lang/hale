@@ -135,9 +135,7 @@ pub fn lower_claims(
     let loc = move |pos: u32| -> (i64, u32) {
         match sources
             .iter()
-            .filter(|f| {
-                pos >= f.base && pos < f.base.saturating_add(f.len + 1)
-            })
+            .filter(|f| hale_syntax::file_owns_offset(f.base, f.len, pos))
             .max_by_key(|f| f.base)
         {
             Some(f) => (f.id as i64, pos - f.base),
