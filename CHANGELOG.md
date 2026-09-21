@@ -8,6 +8,24 @@ behavior.
 
 ## Unreleased
 
+### `--target` refuses another host's triple instead of building the host (GH #969)
+
+`hale build --target aarch64-unknown-linux-gnu` on a Mac printed
+`built:` and wrote a Mach-O binary. Every native triple the target model
+named was turned into `CompileTarget::Native`, which is the host, so a
+foreign one was silently dropped; `hale --list-targets` listed it as
+`supported: builds and links` besides.
+
+- A native triple that is not the host's is now refused at argument
+  parsing, naming both triples: `` --target: `aarch64-unknown-linux-gnu`
+  is not buildable from this host (aarch64-apple-darwin) ``, pointing at
+  GH #970, which tracks real cross-compilation.
+- `--list-targets` answers from the host: a foreign native triple reads
+  `not buildable from this host`. `TargetSpec::support_from(host)` /
+  `describe_from(host)` carry the host-relative tier;
+  `TargetSpec::support()` still answers for the target alone.
+- `native`, the host's own triple, and `wasm32` build exactly as before.
+
 ### DNA: the public admission runs in the one engine (workflow card 18)
 
 - **Hard cutover, by ruling** (no backwards compatibility; no old records to care about): `Dna.ask(Intent)` admits a workflow for the intent (`workflow.admitted` under the intent's id as the admission's identity — offered again, the same execution) and runs it in the engine the assembly now owns for its scope (`runtime`, `executions`, born with it under `org_id`; `runs_engine: false` for a program that assembles them itself). Where the organism plans, the leader's word comes first and is bound into the admission's inputs — the objective, the kind, the class applied, the target, whom and under what obligation — so a person's job is admitted under `ask-person` (one human leaf, handed to whom the leader named with no second word asked) and anything else under `ask-edit` (one edit leaf, performed by the assembly's editor under the bound class and target); class `organization` for a child that is not the organism is refused before admission. Without a leader the ask is an application change. `Dna.run_workflow(WorkflowAsk)` is the authored-definition API: the admission (card 07) followed by the start.

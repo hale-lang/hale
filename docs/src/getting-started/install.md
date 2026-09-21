@@ -123,9 +123,16 @@ plus Intel macOS. Needs LLVM 18 dev libraries and `clang`; see
 [building from source](#building-from-source).
 
 **3. What a build can emit** — `hale --list-targets` is the
-authority. Native binaries for Linux and macOS; `wasm32` objects for
-the browser; `x86_64-pc-windows-msvc` is named and refused with a
-precise error rather than a link failure.
+authority. Native binaries for the platform `hale` itself runs on — a
+Linux `hale` builds Linux programs, a macOS `hale` builds macOS ones;
+`wasm32` objects for the browser from either. Every other native
+triple is named and refused with a precise error rather than a wrong
+or broken binary: `x86_64-pc-windows-msvc` because Windows codegen does
+not exist yet ([GH #445](https://github.com/hale-lang/hale/issues/445)),
+and another host's triple — say `--target x86_64-unknown-linux-gnu` on
+a Mac — because cross-compilation does not exist yet
+([GH #970](https://github.com/hale-lang/hale/issues/970)). To produce
+Linux binaries from a Mac today, build inside a Linux container.
 
 The rest of this section is about the *host* — where `hale` itself
 runs, and what changes about a program compiled there.

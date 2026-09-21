@@ -84,6 +84,12 @@ pub enum TargetSupport {
     ObjectOnly,
     /// Named and described, but no codegen path exists yet.
     Planned,
+    /// A native target the compiler builds, but only on a host of that
+    /// target. Codegen stamps the module with the host triple and links
+    /// with the host `clang`, so accepting a foreign triple would emit a
+    /// host binary under the requested name (GH #969). Cross-compilation
+    /// is GH #970.
+    ForeignHost,
 }
 
 /// The file-naming conventions of a platform.
@@ -327,14 +333,39 @@ impl TargetSpec {
         }
     }
 
-    /// A one-line human description, used by `--target ... --describe-target`
-    /// and by the error raised when a target parses but cannot be built.
+    /// How far a compiler running on `host` can take this target.
+    ///
+    /// [`TargetSpec::support`] answers for the target alone; this is the
+    /// answer a build acts on. The two differ for exactly one case: a
+    /// native target that is not the host, which the target model can
+    /// name and the codegen cannot yet reach (GH #969).
+    pub fn support_from(&self, host: &TargetSpec) -> TargetSupport {
+        match self.support() {
+            TargetSupport::Supported if self.triple != host.triple => {
+                TargetSupport::ForeignHost
+            }
+            s => s,
+        }
+    }
+
+    /// A one-line human description as seen from this host, used by
+    /// `--list-targets` and by the error raised when a target parses
+    /// but cannot be built.
     pub fn describe(&self) -> String {
+        self.describe_from(&Self::host())
+    }
+
+    /// [`TargetSpec::describe`] for an explicit host.
+    pub fn describe_from(&self, host: &TargetSpec) -> String {
         let f = self.filenames();
-        let support = match self.support() {
+        let support = match self.support_from(host) {
             TargetSupport::Supported => "supported: builds and links",
             TargetSupport::ObjectOnly => "object-only: emits a relocatable object, no link",
             TargetSupport::Planned => "planned: named and described, no codegen yet (GH #445)",
+            TargetSupport::ForeignHost => {
+                "not buildable from this host: builds only on a host of this target; \
+                 cross-compilation is GH #970"
+            }
         };
         format!(
             "{}\n  arch: {}   os: {:?}   env: {:?}\n  object: .{}   executable: {}   \
@@ -431,6 +462,56 @@ mod tests {
         assert_eq!(linux.filenames().executable, "");
         assert_eq!(mac.filenames().dynamic_lib, "dylib");
         assert_eq!(linux.filenames().dynamic_lib, "so");
+    }
+
+    /// GH #969: a native triple that is not the host used to report
+    /// `Supported`, and the build then emitted a host binary under it.
+    #[test]
+    fn a_foreign_native_triple_is_not_buildable_from_this_host() {
+        let mac = TargetSpec::parse("aarch64-apple-darwin").unwrap();
+        let linux = TargetSpec::parse("x86_64-unknown-linux-gnu").unwrap();
+        let linux_arm = TargetSpec::parse("aarch64-unknown-linux-gnu").unwrap();
+        let mac_intel = TargetSpec::parse("x86_64-apple-darwin").unwrap();
+
+        // Each host builds itself and nothing else native — not even
+        // the other architecture of its own OS.
+        assert_eq!(mac.support_from(&mac), TargetSupport::Supported);
+        assert_eq!(linux.support_from(&mac), TargetSupport::ForeignHost);
+        assert_eq!(linux_arm.support_from(&mac), TargetSupport::ForeignHost);
+        assert_eq!(mac_intel.support_from(&mac), TargetSupport::ForeignHost);
+        assert_eq!(linux.support_from(&linux), TargetSupport::Supported);
+        assert_eq!(mac.support_from(&linux), TargetSupport::ForeignHost);
+
+        // The target-intrinsic tier is unchanged.
+        assert_eq!(linux.support(), TargetSupport::Supported);
+
+        let d = linux.describe_from(&mac);
+        assert!(d.contains("not buildable from this host"), "{d}");
+        assert!(d.contains("#970"), "{d}");
+        assert!(!d.contains("supported: builds and links"), "{d}");
+    }
+
+    /// Wasm is built the same way from every host, and a planned target
+    /// stays planned rather than becoming merely "foreign".
+    #[test]
+    fn host_independent_tiers_ignore_the_host() {
+        let wasm = TargetSpec::parse("wasm32").unwrap();
+        let win = TargetSpec::parse("x86_64-pc-windows-msvc").unwrap();
+        for host in ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"] {
+            let host = TargetSpec::parse(host).unwrap();
+            assert_eq!(wasm.support_from(&host), TargetSupport::ObjectOnly);
+            assert_eq!(win.support_from(&host), TargetSupport::Planned);
+        }
+    }
+
+    #[test]
+    fn the_host_is_always_buildable_from_itself() {
+        let h = TargetSpec::host();
+        assert_eq!(h.support_from(&h), TargetSupport::Supported);
+        assert_eq!(
+            TargetSpec::parse("native").unwrap().support_from(&h),
+            TargetSupport::Supported
+        );
     }
 
     #[test]
