@@ -350,6 +350,14 @@ jobs:
           # scope that goes stale every time a directory is added.
           ./target/release/hale fmt --check .
 
+      - name: Warm the DNA toolchain cache
+        # The first host verb of this binary builds the host and the membrane
+        # client into the cache: paid once here, not inside a test's own
+        # deadline beside the partition's other organisms on a loaded runner.
+        env:
+          HALE_DNA_DISCOVER: "off"
+        run: ./target/release/hale dna new "$RUNNER_TEMP/warm-cache"
+
       - name: cargo nextest run (cli part ${{ matrix.part }}/3)
         # Everything the other families do not own: hale-cli's 111
         # binaries less the DNA fixture suite, plus hale-lsp,
