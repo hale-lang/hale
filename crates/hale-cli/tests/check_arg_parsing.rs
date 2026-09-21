@@ -379,24 +379,98 @@ fn build_takes_flags_on_either_side_of_the_target() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// `hale run`'s own flags go before the target, because everything
-/// after it is the program's argv. A flag `run` does not have is
-/// named rather than taken for the target — `run` builds with the
-/// default options, so silently accepting a `hale build` flag here
-/// would be a flag that reads as honored and is not.
+/// GH #904: `hale run`'s own flags go before the target, because
+/// everything after it is the program's argv — and the flags it
+/// takes are `hale build`'s, parsed by `hale build`'s parser. `run`
+/// used to compile with `BuildOptions::default()` whatever was
+/// passed, so a build flag was first read as the target and then
+/// (GH #861/#900) named and refused: the documented spot-check
+/// could exercise neither a dev build nor an FFI program.
 #[test]
-fn run_names_a_flag_it_does_not_have() {
+fn run_takes_the_build_options_and_names_the_rest() {
     let path = write_tmp("runflag", OK_SRC);
     let (out, code) =
         hale(&["run".as_ref(), "--dev".as_ref(), path.as_os_str()]);
-    let _ = std::fs::remove_file(&path);
-    assert_eq!(code, 2, "an unknown `run` flag is a usage error: {}", out);
-    assert!(out.contains("--dev"), "name the offender: {}", out);
+    assert_eq!(code, 0, "`hale run --dev` must build and run: {}", out);
     assert!(
         !out.contains("not a file or directory"),
-        "and not as a path: {}",
+        "the flag was read as the target: {}",
         out
     );
+
+    // A flag no command has is still named, against `run`.
+    let (out, code) =
+        hale(&["run".as_ref(), "--bogus".as_ref(), path.as_os_str()]);
+    assert_eq!(code, 2, "an unknown flag is a usage error: {}", out);
+    assert!(
+        out.contains("unknown `hale run` flag: --bogus"),
+        "name the offender, against the command typed: {}",
+        out
+    );
+
+    // A `hale build` flag that reports ON a build rather than
+    // changing it: refused by name, not accepted and dropped.
+    let (out, code) =
+        hale(&["run".as_ref(), "--strict".as_ref(), path.as_os_str()]);
+    assert_eq!(code, 2, "a build-only flag is a usage error: {}", out);
+    assert!(
+        out.contains("--strict") && out.contains("`hale build` flag"),
+        "say whose flag it is: {}",
+        out
+    );
+
+    // `run` execs what it builds, so a target it cannot exec is a
+    // refusal rather than an artifact it then fails to run.
+    let (out, code) = hale(&[
+        "run".as_ref(),
+        "--target".as_ref(),
+        "wasm32".as_ref(),
+        path.as_os_str(),
+    ]);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(code, 2, "wasm32 is not executable here: {}", out);
+    assert!(
+        out.contains("cannot execute"),
+        "say why, and what to run instead: {}",
+        out
+    );
+}
+
+/// The option has to reach CODEGEN, not just the parser: `--csrc`
+/// compiles and links a C source, so a program calling an `@ffi`
+/// symbol links under `hale run --csrc` and fails to link without
+/// it. Under the old `BuildOptions::default()` no `hale run`
+/// invocation could link one at all.
+#[test]
+fn run_honors_a_build_option_that_changes_the_binary() {
+    let c = std::env::temp_dir().join(format!(
+        "hale_argparse_{}_ffi.c",
+        std::process::id()
+    ));
+    std::fs::write(
+        &c,
+        "long long shim_add(long long a, long long b) { return a + b; }\n",
+    )
+    .expect("write the C source");
+    let path = write_tmp(
+        "ffi",
+        "@ffi(\"c\") fn shim_add(a: Int, b: Int) -> Int;\n\
+         fn main() { println(\"sum=\", shim_add(40, 2)); }\n",
+    );
+
+    let (out, code) = hale(&["run".as_ref(), path.as_os_str()]);
+    assert_ne!(code, 0, "the symbol is undefined without --csrc: {}", out);
+
+    let (out, code) = hale(&[
+        "run".as_ref(),
+        "--csrc".as_ref(),
+        c.as_os_str(),
+        path.as_os_str(),
+    ]);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&c);
+    assert_eq!(code, 0, "`hale run --csrc` must link and run: {}", out);
+    assert!(out.contains("sum=42"), "the C symbol ran: {}", out);
 }
 
 /// The subcommands `fn main` dispatches, read out of the dispatch
