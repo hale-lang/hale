@@ -2427,9 +2427,10 @@ locus Dna {
             i = i + 1;
         }
     }
-    // Whether every Work of a root's tree — its own workflow's and every
-    // child's, found by their admissions' `parent_task` — that admitted
-    // an attempt has settled. Bounded by the record.
+    // Whether every responsibility of a root's tree has settled: every
+    // Work — its own workflow's and every child's, found by their
+    // admissions' `parent_task` — that admitted an attempt, and every
+    // admitted child itself. Bounded by the record.
     @unbounded
     fn drained(root: String) -> Bool {
         let n = self.journal.revision();
@@ -2455,6 +2456,9 @@ locus Dna {
                 let a = decode_attempt(e.body);
                 if a.ok && std::str::contains(tasks, " " + a.value.task_id + " ") && !self.has_row("work.settled", a.value.work_id) { return false; }
             }
+            // an admitted descendant is a responsibility of its own until it
+            // settles — before its first attempt, or after its last Work did
+            if e.kind == "workflow.admitted" && e.entity != root && std::str::contains(tasks, " " + e.entity + " ") && !self.has_row("workflow.settled", e.entity) { return false; }
             i = i + 1;
         }
         return true;

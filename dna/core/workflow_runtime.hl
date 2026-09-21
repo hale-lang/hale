@@ -343,7 +343,8 @@ locus WorkflowRuntime {
         let t = self.p.task(q.task_id);
         ExecutionStateAnswered <- ExecutionState {
             task_id: q.task_id, admitted: len(t.task_id) > 0, disposition: t.disposition, reason: t.reason,
-            outstanding: self.p.outstanding_in_tree(q.task_id), current_step: self.p.current_step(q.task_id)
+            outstanding: self.p.outstanding_in_tree(q.task_id), current_step: self.p.current_step(q.task_id),
+            cancelled_above: if len(t.parent_task) > 0 { recorded_fence(self.journal, t.parent_task, self.journal.revision()) } else { "" }
         };
     }
     // An attempt's outcome reported by the adapter that did its work
@@ -1120,6 +1121,12 @@ locus WorkflowRun {
             terminate;
         }
         self.stage = "running";
+        // card 18 (review): an ancestor the record has cancelled cancels
+        // this execution too — read from the record here, at its own
+        // state question, since a fence published before this resident
+        // existed reached nobody; its cancellation is proposed, lands,
+        // and it drains like any cancelled execution
+        if len(s.cancelled_above) > 0 { self.cancel_asked = true; self.cancel_reason = std::str::clone(s.cancelled_above); }
         if self.cancel_asked { self.propose_outcome("cancelled", self.cancel_reason); return; }
         self.start_step(if s.current_step < self.step_count { s.current_step } else { 0 });
     }

@@ -157,6 +157,18 @@ fn row_with(text: String, needle: String) -> String {
 
 // How many lines of `text` carry `needle`.
 @unbounded
+// The history line of one kind about one exact id (card 18: the case's
+// history holds its root's birth too).
+fn history_row(text: String, kind: String, id: String) -> String {
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::contains(line, kind) && (std::str::contains(line, " " + id + " ") || std::str::ends_with(line, " " + id)) { return line; }
+    }
+    return "";
+}
 fn count_rows(text: String, needle: String) -> Int {
     let mut n = 0;
     let mut rest = text;
@@ -390,7 +402,11 @@ main locus App {
         let requested = wait_row(service, "\"kind\": \"intent.requested\"", 240);
         std::test::assert(std::str::contains(requested, "\"author\": \"alice\"") && std::str::contains(row_body(requested), "chase the late invoice"), "the ask is a row of the ledger in alice's name before anything acts on it: " + ledger(service));
         let offered = wait_row(service, "\"kind\": \"intent.offered\"", 240);
-        std::test::assert(std::str::contains(offered, "chase the late invoice"), "and the organism admitted it: " + ledger(service));
+        std::test::assert(std::str::contains(offered, "chase the late invoice"), "and the organism took it: " + ledger(service));
+        // card 18: the admission follows the leader's word, later than the
+        // offer; it is waited for, and there is one of it
+        let admitted_row = wait_row(service, "\"kind\": \"workflow.admitted\"", 240);
+        std::test::assert(len(admitted_row) > 0, "the organism admitted it as a workflow: " + ledger(service));
         std::test::assert_eq_int(count_rows(ledger(service), "\"kind\": \"workflow.admitted\""), 1, "once, though the head both wrote and published it (card 18: the ask is an admitted workflow)");
         std::test::assert(std::str::contains(offered, "chase the late invoice (from alice)"), "and it names who asked, the person head A identified, not the form's `as`: " + offered);
         std::test::assert(!std::str::contains(record(app), "chase the late invoice"), "and not of the record: the day's work is the ledger's");
@@ -418,7 +434,7 @@ main locus App {
         std::test::assert(len(line_a) > 0 && std::str::contains(line_a, "[done]"), "the founder's clone reads the task done: " + st_a.stdout + st_a.stderr);
         std::test::assert_eq_str(line_b, line_a, "and the second clone reads the same task, in the same state");
         let history = through(other, service, toolchain() + "\ndna\nhistory\n" + tid).stdout;
-        std::test::assert(std::str::contains(row_with(history, "task.born"), tid) && std::str::contains(row_with(history, "task.handed"), tid) && std::str::contains(row_with(history, "task.done"), tid), "born, handed, done — one history, from bob's clone: " + history);
+        std::test::assert(len(history_row(history, "task.born", tid)) > 0 && len(history_row(history, "task.handed", tid)) > 0 && len(history_row(history, "task.done", tid)) > 0, "born, handed, done — one history, from bob's clone: " + history);
 
         // ---- 7. a practice bob proposes, and the authority alice has
         let proposed = through(other, service, toolchain() + "\ndna\npractice\npropose\ncollections/late\n--text\nChase an invoice at seven days.\n--as\nbob");

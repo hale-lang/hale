@@ -336,11 +336,12 @@ locus WorkflowProjection {
         }
         return n;
     }
-    // The Works still owed a settlement anywhere in a task's tree — its
-    // own and every descendant task's (card 18, review: a cancelled
-    // parent whose step holds only a child member owes the child's
-    // Works, and drains them through that step, born fenced, which asks
-    // the child again). Bounded by the tree.
+    // The responsibilities still owed a settlement anywhere in a task's
+    // tree: its own Works and every descendant task's, and every admitted
+    // descendant task itself (card 18, review: a cancelled parent whose
+    // step holds only a child member owes the child, admitted attempt or
+    // none, and drains it through that step, born fenced, which asks the
+    // child again). Bounded by the tree.
     @unbounded
     fn outstanding_in_tree(task_id: String) -> Int {
         let mut tasks = " " + task_id + " ";
@@ -362,6 +363,14 @@ locus WorkflowProjection {
         while i < self.works.len() {
             let w = self.works.get(i) or WorkView { };
             if std::str::contains(tasks, " " + w.task_id + " ") && len(w.disposition) == 0 { n = n + 1; }
+            i = i + 1;
+        }
+        // an admitted descendant Task is a responsibility of its own until
+        // it settles, whether or not it admitted an attempt yet
+        i = 0;
+        while i < self.tasks.len() {
+            let t = self.tasks.get(i) or TaskView { };
+            if t.task_id != task_id && std::str::contains(tasks, " " + t.task_id + " ") && len(t.disposition) == 0 { n = n + 1; }
             i = i + 1;
         }
         return n;

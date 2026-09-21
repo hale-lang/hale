@@ -201,8 +201,9 @@ type ExecutionState {
     admitted: Bool = false;
     disposition: String = "";
     reason: String = "";
-    outstanding: Int = 0; // Works with an admitted attempt and no settlement: a cancelled execution's undrained responsibilities
+    outstanding: Int = 0; // the responsibilities of a cancelled execution still undrained: Works with an admitted attempt and no settlement, and admitted descendant Tasks not yet settled
     current_step: Int = 0; // the first step the record has not completed
+    cancelled_above: String = ""; // the durable fence over the execution's ancestry (card 18, review: a restored child reads it from the record, not from a fence published before it existed)
 }
 topic ExecutionStateAnswered { payload: ExecutionState; subject: "dna.execution.state.answered"; keyed_by task_id; }
 // The record is writable again: a resident holding a transition the

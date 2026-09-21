@@ -2424,11 +2424,16 @@ authority.
   every admitted root of its own that is not finished — settled AND
   drained: a cancellation settles the root before its admitted Works
   have settled, and a root whose tree (its own workflow's Works and
-  every child's, by their admissions' `parent_task`) still owes a
-  settlement is asked for again, so the engine's own recovery drains
-  it (cards 12a, 13: the Works still owed anywhere in the tree are
-  counted, and a cancelled parent whose step holds only a child
-  member drains the child through that step, born fenced); a drained
+  every child's, by their admissions' `parent_task`, and every
+  admitted child itself, before its first attempt or after its last
+  Work settled) still owes a settlement is asked for again, so the
+  engine's own recovery drains it (cards 12a, 13: the responsibilities
+  still owed anywhere in the tree are counted, and a cancelled parent
+  whose step holds only a child member drains the child through that
+  step, born fenced). A child reborn under a cancelled ancestor reads
+  that cancellation from the record at its own state question — a
+  fence published before it existed reached nobody — proposes its own
+  cancellation, and drains like any cancelled execution; a drained
   record is asked for nothing and written nothing. The engine restores
   each from its admission and the record's facts — under the word
   bound at admission, never replanned;
