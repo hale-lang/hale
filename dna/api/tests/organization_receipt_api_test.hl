@@ -107,12 +107,12 @@ locus SourceReceiptCases {
         let missing = wire.organization_capability_json(available.review, "", true);
         std::test::assert_eq_str(wire.raw(missing, "available"), "false", "missing trusted origin disables source writes");
         let absent = envelope.capabilities(context().source, "local", "alice", false, false, false, false, api::CommandCapability { }, false, api::CommandCapability { }, ORIGIN, false);
-        std::test::assert_eq_str(absent, "{\"application_id\": \"source-app\", \"read_only\": true, \"principal\": {\"mode\": \"local\", \"name\": \"alice\"}, \"reads\": {\"practices\": true, \"reviews\": true, \"organization\": false, \"definitions\": false, \"knowledge\": false, \"workflows\": true}, \"writes\": {\"practice_propose\": false, \"review_verdict\": false}, \"runtime_observation\": false, \"recursive_workflows\": false, \"receipt_text\": \"record_visibility_only\"}", "legacy capability bytes unchanged when optional source profile absent");
+        std::test::assert_eq_str(absent, "{\"application_id\": \"source-app\", \"read_only\": true, \"principal\": {\"mode\": \"local\", \"name\": \"alice\"}, \"reads\": {\"practices\": true, \"reviews\": true, \"organization\": false, \"definitions\": false, \"knowledge\": false, \"workflows\": true, \"tasks\": true}, \"writes\": {\"practice_propose\": false, \"review_verdict\": false}, \"runtime_observation\": false, \"recursive_workflows\": false, \"receipt_text\": \"record_visibility_only\"}", "legacy capability bytes unchanged when optional source profile absent");
         std::test::assert_eq_str(wire.raw(absent, "organization_commands"), "", "default profile absent");
     }
 }
 fn main() {
     let cases = SourceReceiptCases { };
     cases.stage("recorded"); cases.stage("created"); cases.stage("applied"); cases.stage("refused"); cases.stage("declined"); cases.stage("failed"); cases.stage("unknown"); cases.stage("uncertain"); cases.stage("verification");
-    cases.invalid(); cases.old_receipt_bytes(); cases.profiles(); println("PASS Organization receipt/profile adapter conformance");
+    cases.invalid(); cases.old_receipt_bytes(); cases.profiles(); eprintln("PASS Organization receipt/profile adapter conformance");
 }

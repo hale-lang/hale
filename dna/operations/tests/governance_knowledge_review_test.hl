@@ -67,7 +67,7 @@ fn changed_review(repo: String) {
     std::test::assert_eq_str(service.submit(context, command(context.application_id, digest, "mismatched-review")).code, "stale_subject", "conflicting Review request metadata cannot reinterpret the canonical candidate");
 }
 fn main() {
-    let base = std::env::arg(1); std::test::assert(len(base) > 0, "pass isolated fixture directory");
+    let given = std::env::arg(1); let base = if len(given) > 0 { given } else { dna::scratch_root("ops-governance-knowledge-review") };
     let names = "idea concept practice task_concept retirement unknown self weak lateral changed"; let mut i = 0;
     while i < 10 { std::io::fs::mkdir(base + "/" + dna::nth_word(names, i)) or raise; i = i + 1; }
     generic(base + "/idea", "idea"); generic(base + "/concept", "concept"); generic(base + "/practice", "practice"); generic(base + "/task_concept", "task_concept"); generic(base + "/retirement", "retirement");

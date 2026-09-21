@@ -108,4 +108,8 @@ locus TaskApiCases {
         println("PASS Task API: actual native handoffs and reassignment, exact lifecycle/read basis, original acceptance, Unicode/CRLF, pagination/snapshot, protected-support privacy and labelled terminal/split read probes");
     }
 }
-fn main() { let cases = TaskApiCases { }; cases.run_cases(std::env::arg(1), std::env::arg(2)); }
+// This program consumes a retained fixture (a root, its metadata and its evidence) the harness produced; under `hale test` there is none, and it says so.
+fn main() {
+    if len(std::env::arg(1)) == 0 { eprintln("skipped: needs a retained fixture root as its first argument"); return; }
+    let cases = TaskApiCases { }; cases.run_cases(std::env::arg(1), std::env::arg(2));
+}

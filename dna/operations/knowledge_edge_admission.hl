@@ -8,10 +8,10 @@ locus KnowledgeEdgeAdmission {
         let codec = KnowledgeEdgeCommandCodec { }; let common = KnowledgeCommandCodec { }; let native = dna::KnowledgeEdgeCodec { };
         if !codec.known(c.operation) || !common.valid(context, c) { return KnowledgeEdgePreparation { code: "invalid_command" }; }
         if !common.grant_valid(grant) || grant.mode != "review" { return KnowledgeEdgePreparation { code: "forbidden" }; }
-        let commands = KnowledgeCommands { }; commands.record = record;
+        let commands = if len(record.location()) > 0 { KnowledgeCommands { record: dna::GitRecord { repo: record.location() } } } else { KnowledgeCommands { record: record } };
         let active = c.operation == "dna.knowledge.edge.link";
         if !commands.endpoint(j, c.from_id, active) || !commands.endpoint(j, c.to_id, active) { return KnowledgeEdgePreparation { }; }
-        let receipts = KnowledgeBindingReceipts { }; receipts.record = record;
+        let receipts = if len(record.location()) > 0 { KnowledgeBindingReceipts { record: dna::GitRecord { repo: record.location() } } } else { KnowledgeBindingReceipts { record: record } };
         let direct = StrictKnowledgeDirectEdgeFacts { };
         let mut request = dna::KnowledgeEdgeRequest {
             application_id: context.application_id, request_id: common.identity(context, c.request_id), command_fingerprint: common.fingerprint(context, c),

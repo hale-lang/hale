@@ -469,8 +469,10 @@ fn task_accept_admit(root: String, seed: String, id: String, who_flag: String, n
 // successor is named: pending work is accounted for, never dropped.
 @unbounded
 fn retire_verb(root: String, seed: String, who: String, to: String, by_flag: String) -> Answer {
-    let batch = dna::GitRecord { repo: root };
-    return retire_admit(root, seed, who, to, by_flag, batch);
+    if len(who) == 0 { return fail("retire: `hale dna retire <who> [--to <successor>] [--as <by>]`"); }
+    let synced = sync_record(root);
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    return retire_rows(root, seed, who, to, by_flag);
 }
 
 // GH #604 rule 5, row by row: admission of new work to the person stops,

@@ -3,6 +3,9 @@
 import "../core" as dna;
 
 interface GovernanceRecord {
+    // where the record lives, as configured: a reader that must not
+    // share this locus opens a record of its own over it (GH #967)
+    fn location() -> String;
     fn identity() -> String;
     fn head(chain: String) -> String;
     fn count(chain: String) -> Int;
@@ -70,6 +73,10 @@ locus GovernanceJournal {
     fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return dna::AppendResult { error: "read_only" }; }
     fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return dna::AppendResult { error: "read_only" }; }
 }
+// A receipts adapter over a record handed in by parameter: an
+// interface-typed field cannot be written into another locus's
+// interface-typed field directly (dna/FRICTION.md F.3, GH #730).
+fn receipts_over(record: GovernanceRecord) -> GovernanceReceipts { return GovernanceReceipts { record: record }; }
 locus GovernanceReceipts {
     params { record: GovernanceRecord = dna::MemRecord { }; }
     fn bind(record: GovernanceRecord) { self.record = record; }
@@ -359,7 +366,7 @@ locus GovernanceCommands {
     }
     fn eligibility(j: GovernanceJournal, command: GovernanceCommand, context: GovernanceContext, grant: GovernanceGrant) -> String {
         if !self.source_supported(j) { return "commands_unsupported"; }
-        let receipts = GovernanceReceipts { }; receipts.bind(self.record); let queries = Queries { j: j, receipts: receipts };
+        let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::GitRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: j, receipts: receipts };
         if command.operation == "dna.review.verdict" {
             if self.source_review(j, command.target_id) {
                 if !self.organization_reviews_enabled { return "commands_unsupported"; }
@@ -444,7 +451,7 @@ locus GovernanceCommands {
             return GovernanceResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision, receipt: person.project(admission) };
         }
         if admission.command.operation == "dna.task.reassign" {
-            let receipts = GovernanceReceipts { }; receipts.bind(self.record); let queries = Queries { j: j, receipts: receipts };
+            let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::GitRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: j, receipts: receipts };
             let view = TaskProjection { j: j, visibility: queries };
             if !view.load() { return GovernanceResult { code: "command_history_invalid" }; }
             if view.task_of(admission.command.target_id).id == "" || (admission.event_id != "" && queries.receipt_status(admission.event_id) != "available") { return GovernanceResult { code: "forbidden" }; }
@@ -514,7 +521,7 @@ locus GovernanceCommands {
             }
             if command.operation == "dna.task.reassign" {
                 if !self.source_supported(j) { return GovernanceResult { code: "commands_unsupported" }; }
-                let receipts = GovernanceReceipts { }; receipts.bind(self.record); let queries = Queries { j: j, receipts: receipts };
+                let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::GitRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: j, receipts: receipts };
                 let view = TaskProjection { j: j, visibility: queries };
                 if !view.load() { return GovernanceResult { code: "command_history_invalid" }; }
                 let subject = view.task_of(command.target_id);
@@ -556,7 +563,7 @@ locus GovernanceCommands {
             }
             let eligible = self.eligibility(j, command, context, grant);
             if len(eligible) > 0 { if !self.unchanged(s) { continue; } return GovernanceResult { code: eligible }; }
-            let receipts = GovernanceReceipts { }; receipts.bind(self.record); let queries = Queries { j: j, receipts: receipts };
+            let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::GitRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: j, receipts: receipts };
             let name = if command.operation == "dna.practice.propose" { queries.practice_metadata(command.subject_digest).name } else { "" };
             let fact = if profile == source_review.profile() { source_review.fact(context, command, grant, s.head) } else { self.fact(context, command, name, grant, s.head) };
             let kind = if command.operation == "dna.practice.propose" { "practice.requested" } else { "review.verdict" };

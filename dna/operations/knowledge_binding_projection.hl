@@ -27,7 +27,7 @@ locus KnowledgeBindingProjection {
             review_state: review.state, review_outcome: review.outcome,
             effect_state: if review.state == "settled" { "pending" } else { "unknown" }
         };
-        let receipts = KnowledgeBindingReceipts { }; receipts.record = record;
+        let receipts = if len(record.location()) > 0 { KnowledgeBindingReceipts { record: dna::GitRecord { repo: record.location() } } } else { KnowledgeBindingReceipts { record: record } };
         let mut terminal = ""; let mut i = 0;
         while i < j.revision() {
             let e = j.read(i);

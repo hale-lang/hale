@@ -32,6 +32,7 @@ locus SourceInputs {
 }
 locus FaultRecord {
     params { inner: dna::GitRecord = dna::GitRecord { }; fault: String = ""; appends: Int = 0; }
+    fn location() -> String { return ""; }
     fn identity() -> String { return self.inner.identity(); }
     fn head(chain: String) -> String { return self.inner.head(chain); }
     fn count(chain: String) -> Int { return self.inner.count(chain); }
@@ -177,12 +178,12 @@ fn test_policy() {
     std::test::assert(!org_codec.decode(duplicate, "application", "local").valid, "duplicate authority fields are rejected");
 }
 fn main() {
-    let base = std::env::arg(1); std::test::assert(base != "", "isolated fixture path required");
+    let given = std::env::arg(1); let base = if len(given) > 0 { given } else { dna::scratch_root("ops-organization-admission") };
     std::io::fs::mkdir(base + "/recovery") or discard; test_recovery(base + "/recovery");
     std::io::fs::mkdir(base + "/races") or discard; test_races(base + "/races");
     std::io::fs::mkdir(base + "/preparation") or discard; test_preparation(base + "/preparation");
     std::io::fs::mkdir(base + "/legacy") or discard; test_legacy_occupation(base + "/legacy");
     std::io::fs::mkdir(base + "/author") or discard; test_wrong_author(base + "/author");
     test_policy();
-    println("organization-admission: recovery, races, exact enrichment, identity, author and explicit authority passed");
+    eprintln("organization-admission: recovery, races, exact enrichment, identity, author and explicit authority passed");
 }

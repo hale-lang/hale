@@ -282,6 +282,7 @@ locus MemRecord {
     fn why() -> String { return self.last_error; }
     fn is_repository() -> Bool { return true; }
     fn root() -> String { return "."; }
+    fn location() -> String { return ""; }
     fn identity() -> String { return self.first_id("journal"); }
     @unbounded
     fn first_id(chain: String) -> String {
@@ -614,6 +615,11 @@ locus GitRecord {
     }
     fn is_repository() -> Bool { return self.git_ok("rev-parse\n--git-dir"); }
     fn root() -> String { return self.git_out("rev-parse\n--show-toplevel"); }
+    // The repository this record was opened over, as configured: what a
+    // reader that must not share this locus opens a record of its own on
+    // (GH #967). Never a git query, which is empty for a missing
+    // repository and would send such a reader to the working directory.
+    fn location() -> String { return self.repo; }
     fn identity() -> String { return self.git_out("rev-list\n--max-parents=0\n" + self.ref_of("journal")); }
     // ---- chains
     fn head(chain: String) -> String { return self.git_out("rev-parse\n-q\n--verify\n" + self.ref_of(chain)); }

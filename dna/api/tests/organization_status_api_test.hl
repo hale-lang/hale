@@ -83,4 +83,8 @@ locus OrganizationStatusCases {
         println("PASS Organization source status: actual native history, recovery-only grant, staged evidence, privacy, typed runtime identity and final fence");
     }
 }
-fn main() { let cases = OrganizationStatusCases { }; cases.run_cases(std::env::arg(1), std::env::arg(2), std::env::arg_or(3, "")); }
+// This program consumes a retained fixture (a root, its metadata and its evidence) the harness produced; under `hale test` there is none, and it says so.
+fn main() {
+    if len(std::env::arg(1)) == 0 { eprintln("skipped: needs a retained fixture root as its first argument"); return; }
+    let cases = OrganizationStatusCases { }; cases.run_cases(std::env::arg(1), std::env::arg(2), std::env::arg_or(3, ""));
+}

@@ -15,6 +15,7 @@ locus Authority {
 }
 locus UnknownRecord {
     params { inner: dna::GitRecord = dna::GitRecord { }; review: String = ""; fault: Bool = false; attempts: Int = 0; }
+    fn location() -> String { return ""; }
     fn identity() -> String { return self.inner.identity(); }
     fn head(chain: String) -> String { return self.inner.head(chain); }
     fn count(chain: String) -> Int { return self.inner.count(chain); }
@@ -118,7 +119,7 @@ fn exercise(repo: String, mode: String) {
         let result = uncertain.submit(bob, verdict(bob, candidate, "uncertain"));
         std::test::assert_eq_str(result.code, "forbidden", "uncertain source Review cannot switch to legacy recovery after marker changes");
         std::test::assert_eq_int(faults.attempts, 1, "unknown source Review is never redispatched");
-        println("PASS source-review-unknown-profile"); return;
+        eprintln("PASS source-review-unknown-profile"); return;
     }
     let mut decision = verdict(bob, candidate, "review");
     if mode == "reject" || mode == "revise" { decision.verdict = mode; }
@@ -173,7 +174,7 @@ fn exercise(repo: String, mode: String) {
             std::test::assert_eq_str(observed.receipt.organization.application_state, "declined", "native reject/revise produces declined source application");
             std::test::assert_eq_str(record.git_out("rev-parse\nHEAD"), basis.source_head, "declined candidate never changes destination source");
         }
-        println("PASS source-application-projection-" + mode); return;
+        eprintln("PASS source-application-projection-" + mode); return;
     }
     // A malformed cross-kind reuse must also invalidate the original source
     // receipt's quorum evidence, not only direct lookup of the colliding key.
@@ -183,9 +184,9 @@ fn exercise(repo: String, mode: String) {
     std::test::assert_eq_str(service.lookup(bob, "review").code, "command_history_invalid", "direct command lookup rejects shared-key collision");
     let original = service.lookup(alice, "source");
     std::test::assert(original.ok && original.receipt.review_state == "unavailable", "original source receipt cannot count conflicting command key toward quorum");
-    println("PASS source-candidate-projection-and-review-admission");
+    eprintln("PASS source-candidate-projection-and-review-admission");
 }
 fn main() {
-    let repo = std::env::arg(1); std::test::assert(repo != "", "isolated source fixture required");
+    let given = std::env::arg(1); let repo = if len(given) > 0 { given } else { dna::scratch_root("ops-organization-projection") };
     exercise(repo, std::env::arg_or(2, ""));
 }

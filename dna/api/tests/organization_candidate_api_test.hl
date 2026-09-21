@@ -144,10 +144,18 @@ locus SourceCandidateCases {
         std::test::assert(record.append("journal", record.head("journal"), dna::Row { kind: "review.requested", entity: "review:" + candidate.mutation_id, author: "malformed", body: "{\"question\":\"private duplicate question\"}" }, false, "").ok, "malformed duplicate input");
         let hidden_duplicate = head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews?id=" + dna::url_encode(candidate.mutation_id) + "&snapshot=" + record.head("journal") });
         self.hidden(self.first(hidden_duplicate)); std::test::assert(!std::str::contains(hidden_duplicate.body, "private duplicate"), "untagged later duplicate cannot remove source masking");
-        println("PASS immutable Organization candidate: real admission/Body, recovery grant, pinned objects, history, masking and races");
+        eprintln("PASS immutable Organization candidate: real admission/Body, recovery grant, pinned objects, history, masking and races");
     }
 }
 fn main() {
-    let root = std::env::arg(1); std::test::assert(root != "", "explicit isolated fixture path required");
-    let cases = SourceCandidateCases { ownership: std::env::arg(2) == "ownership" }; cases.run_cases(root);
+    let given = std::env::arg(1);
+    if len(given) > 0 { let cases = SourceCandidateCases { ownership: std::env::arg(2) == "ownership" }; cases.run_cases(given); return; }
+    // under `hale test`: the main-module profile over a scratch root of its
+    // own; the ownership profile is the unfinished increment of the
+    // checkpoint (its runtime cases never ran) and stays by hand
+    let made = dna::run_tool("mktemp\n-d\n/tmp/hale-dna-candidate.XXXXXX");
+    std::test::assert_eq_int(made.code, 0, "candidate fixture scratch: " + made.stderr);
+    let root = dna::trim_nl(made.stdout);
+    let cases = SourceCandidateCases { }; cases.run_cases(root);
+    let removed = dna::run_tool("rm\n-rf\n" + root);
 }

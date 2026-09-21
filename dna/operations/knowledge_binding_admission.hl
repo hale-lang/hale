@@ -22,9 +22,9 @@ locus KnowledgeBindingAdmission {
         if !codec.valid(context, c) { return KnowledgeBindingPreparation { code: "invalid_command" }; }
         let scope = KnowledgeNodeAdmission { };
         if !scope.scope(grant, c.author, c.target) { return KnowledgeBindingPreparation { code: "forbidden" }; }
-        let commands = KnowledgeCommands { }; commands.record = record;
+        let commands = if len(record.location()) > 0 { KnowledgeCommands { record: dna::GitRecord { repo: record.location() } } } else { KnowledgeCommands { record: record } };
         if !commands.endpoint(j, c.idea_id, c.operation == "dna.knowledge.binding.bind") { return KnowledgeBindingPreparation { }; }
-        let receipts = KnowledgeBindingReceipts { }; receipts.record = record;
+        let receipts = if len(record.location()) > 0 { KnowledgeBindingReceipts { record: dna::GitRecord { repo: record.location() } } } else { KnowledgeBindingReceipts { record: record } };
         let subject = native.subject(j, receipts, c.idea_id);
         if !subject.ok || !subject.ratified || (c.operation == "dna.knowledge.binding.bind" && !subject.active) { return KnowledgeBindingPreparation { }; }
         let mut request = dna::KnowledgeBindingRequest {

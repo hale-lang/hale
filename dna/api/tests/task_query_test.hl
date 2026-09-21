@@ -24,7 +24,7 @@ locus TaskQueryCases {
         std::test::assert(files.assignee_parameter(parameter, true).ok, "Task OpenAPI filter declared");
         std::test::assert(!files.assignee_parameter(parameter, false).ok, "filter cannot be advertised on other reads");
         std::test::assert(!files.assignee_parameter("{\"parameters\":[]}", true).ok, "Task filter contract cannot silently disappear");
-        println("PASS exact Task-only assignee query grammar");
+        eprintln("PASS exact Task-only assignee query grammar");
     }
 }
 fn main() { let cases = TaskQueryCases { }; cases.check(); }

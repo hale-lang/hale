@@ -371,7 +371,7 @@ locus Api {
         let record = dna::GitRecord { repo: self.root }; let capture = ops::GovernanceCommands { record: record }; let source = capture.capture();
         if !source.ok { return http.error(503, "record_unavailable", "the canonical candidate source is unavailable", true); }
         if source.application_id != context.source.identity || source.head != context.source.head || source.revision != context.source.revision { return http.error(409, "snapshot_changed", "the Record changed while capturing the candidate", true); }
-        let journal = ops::GovernanceJournal { snapshot: source }; let receipts = ops::GovernanceReceipts { }; receipts.bind(record);
+        let journal = ops::GovernanceJournal { snapshot: source }; let receipts = ops::GovernanceReceipts { record: dna::GitRecord { repo: self.root } };
         if !journal.valid { return http.error(503, "record_malformed", "the candidate source is invalid", false); }
         let row = ops::review_row(journal, query.id);
         if self.organization_candidates.source_review(row) { return self.organization_candidates.read(context, source, journal, query.id); }

@@ -109,4 +109,8 @@ locus OrganizationImpactApiCases {
         println("PASS source-impact API: exact retained candidate/Review, default-denied grant, snapshot/query guards, intact baseline, real native handed-task counts, partial/private suppression and hidden candidate support");
     }
 }
-fn main() { let cases = OrganizationImpactApiCases { }; cases.run_cases(std::env::arg(1), std::env::arg(2), std::env::arg_or(3, "")); }
+// This program consumes a retained fixture (a root, its metadata and its evidence) the harness produced; under `hale test` there is none, and it says so.
+fn main() {
+    if len(std::env::arg(1)) == 0 { eprintln("skipped: needs a retained fixture root as its first argument"); return; }
+    let cases = OrganizationImpactApiCases { }; cases.run_cases(std::env::arg(1), std::env::arg(2), std::env::arg_or(3, ""));
+}

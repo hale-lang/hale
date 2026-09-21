@@ -12,6 +12,8 @@ locus NoKnowledgeAuthority {
 }
 type KnowledgeFound { ok: Bool = false; code: String = "command_not_found"; fact: KnowledgeFact = KnowledgeFact { }; event: dna::Event = dna::Event { }; }
 
+// A snapshot reader over a record handed in by parameter (F.3, GH #730).
+fn reader_over(record: GovernanceRecord, limits: GovernanceReadLimits) -> GovernanceCommands { return GovernanceCommands { record: record, limits: limits }; }
 locus KnowledgeCommands {
     params {
         record: GovernanceRecord = dna::MemRecord { };
@@ -20,8 +22,9 @@ locus KnowledgeCommands {
         sign: Bool = false;
     }
     fn capture() -> GovernanceSnapshot {
-        let reader = GovernanceCommands { };
-        reader.record = self.record; reader.limits = self.limits;
+        // A holder reclaims the record in its field when it dies (GH #967):
+        // the reader opens a record of its own over the same repository.
+        let reader = if len(self.record.location()) > 0 { GovernanceCommands { record: dna::GitRecord { repo: self.record.location() }, limits: self.limits } } else { reader_over(self.record, self.limits) };
         return reader.capture();
     }
     fn unchanged(s: GovernanceSnapshot) -> Bool { return self.record.identity() == s.application_id && self.record.head("journal") == s.head; }

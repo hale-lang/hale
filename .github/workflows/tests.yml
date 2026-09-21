@@ -514,11 +514,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       HALE_DNA_DISCOVER: "off"
-      GIT_CONFIG_COUNT: "2"
-      GIT_CONFIG_KEY_0: gc.auto
-      GIT_CONFIG_VALUE_0: "0"
-      GIT_CONFIG_KEY_1: receive.autogc
-      GIT_CONFIG_VALUE_1: "false"
     steps:
       - uses: actions/checkout@v4
 
@@ -546,6 +541,11 @@ jobs:
         run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
       - name: DNA read API contract and integration
+        # The fixtures own their Git environment: no GIT_CONFIG_* here, and
+        # the system config disabled, which definition_drafts_api_test asserts.
+        env:
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
         run: |
           export HALE_API_CONTRACT_ROOT="$PWD/dna/api/contract/v1"
           export HALE_BIN="$PWD/target/release/hale"

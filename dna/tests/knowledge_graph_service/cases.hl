@@ -42,7 +42,12 @@ locus GraphCases {
     params { f: fixture::Fixture; json: fixture::Json = fixture::Json { }; http: svc::GraphHttp = svc::GraphHttp { }; }
     fn query() -> svc::GraphRequest {
         let moved = self.f.journal.refresh();
-        return svc::GraphRequest { ok: true, record_id: self.f.identity, record_head: self.f.journal.head(), record_revision: to_string(self.f.journal.revision()), reader: "alice" };
+        // The interrupted-projection case rewinds its owned Record to model
+        // a fence the Record no longer shows. A journal that already holds
+        // rows refuses a shorter read (GH #748) and keeps the longer head,
+        // so the request names what a reader opened now would see.
+        let fresh = dna::GitJournal { repo: self.f.root };
+        return svc::GraphRequest { ok: true, record_id: self.f.identity, record_head: fresh.head(), record_revision: to_string(fresh.revision()), reader: "alice" };
     }
     fn raw(service: svc::Service, body: String, key: String) -> std::http::Response {
         return service.handle(std::http::Request { method: "POST", path: "/graph/read", headers: "Authorization: Bearer " + key, body: body });

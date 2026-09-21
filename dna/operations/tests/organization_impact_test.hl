@@ -152,7 +152,7 @@ locus ImpactCases {
         while i < dna::word_count(diagnostics) { self.diagnostic(dna::nth_word(diagnostics, i)); i = i + 1; }
         let transfers = "accepted handed done owner from assignee legacy_to"; i = 0;
         while i < dna::word_count(transfers) { self.transfer(dna::nth_word(transfers, i)); i = i + 1; }
-        println("PASS bounded Organization operational impact assessment");
+        eprintln("PASS bounded Organization operational impact assessment");
     }
 }
 fn main() { let cases = ImpactCases { }; cases.run_cases(); }

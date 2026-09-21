@@ -68,7 +68,7 @@ locus RetirementCases {
         else if mode == "other" { std::test::assert(after.subject_digest == before.subject_digest, "unrelated responsibilities do not force a new plan"); }
         else { std::test::assert(after.ok && after.subject_digest != before.subject_digest, "exact affected lifecycle changes plan " + mode); }
         std::test::assert(service.plan(j, "alice", "different policy").subject_digest != before.subject_digest, "authority basis participates");
-        println("plan " + mode + " passed");
+        eprintln("plan " + mode + " passed");
     }
     fn policy_case() {
         let j = dna::MemJournal { }; self.append(j, "application.observed", "app", "{}"); let context = self.context("app");
@@ -79,7 +79,7 @@ locus RetirementCases {
         std::test::assert(!self.policy("app", ",\"retire\":\"true\"").valid && !self.policy("app", ",\"retire\":true,\"retire\":false").valid, "retirement grant strict type and duplicate fields");
         let service = ops::PersonRetirement { }; let plan = service.plan(j, "alice", "policy"); let c = self.command(context, plan, "key", ""); let codec = ops::PersonRetirementCodec { };
         std::test::assert(codec.valid(context, c) && codec.canonical(context, codec.decode(context, codec.canonical(context, c))) == codec.canonical(context, c), "zero-held no-successor exact variant roundtrip");
-        println("policy and codec passed");
+        eprintln("policy and codec passed");
     }
     fn native(repo: String, mode: String) {
         let record = dna::GitRecord { repo: repo }; std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git"); let j = dna::GitJournal { repo: repo };
@@ -89,14 +89,14 @@ locus RetirementCases {
         let plan = service.plan(j, "alice", policy.basis); std::test::assert(plan.ok, "plan available"); let command = self.command(context, plan, "retirement-key", if mode == "empty" || mode == "no-successor" { "" } else { "bob" });
         let batch = RetirementFaultBatch { inner: record, mode: mode }; let provider = ops::GovernanceCommands { record: record, tasks_enabled: true, task_authority: authority, retirement_enabled: true, retirement_record: batch };
         let before = record.head("journal"); let revision = record.count("journal"); let result = provider.submit(context, command);
-        if mode == "wrong-manifest" || mode == "wrong-author" { std::test::assert(!result.ok && result.code == "command_history_invalid" && batch.swaps == 1, "corrupt exact batch evidence never claims success " + mode); println("native " + mode + " passed"); return; }
-        if mode == "partial" { std::test::assert(!result.ok && record.head("journal") == before && record.count("journal") == revision && batch.swaps == 0, "off-ref partial build publishes nothing"); println("native partial passed"); return; }
-        if mode == "no-successor" { std::test::assert(!result.ok && result.code == "forbidden" && record.head("journal") == before && batch.builds == 0, "held work cannot be dropped"); println("native no-successor passed"); return; }
+        if mode == "wrong-manifest" || mode == "wrong-author" { std::test::assert(!result.ok && result.code == "command_history_invalid" && batch.swaps == 1, "corrupt exact batch evidence never claims success " + mode); eprintln("native " + mode + " passed"); return; }
+        if mode == "partial" { std::test::assert(!result.ok && record.head("journal") == before && record.count("journal") == revision && batch.swaps == 0, "off-ref partial build publishes nothing"); eprintln("native partial passed"); return; }
+        if mode == "no-successor" { std::test::assert(!result.ok && result.code == "forbidden" && record.head("journal") == before && batch.builds == 0, "held work cannot be dropped"); eprintln("native no-successor passed"); return; }
         if mode == "unknown" || mode == "arrival" || mode == "successor" {
             std::test::assert(result.ok && result.receipt.state == "outcome_unknown" && result.receipt.person.transferred == -1 && batch.swaps == 1, "uncertain CAS never repeats " + result.code);
             if mode == "unknown" { std::test::assert(record.head("journal") == before, "no effect invented"); }
             let fresh = dna::GitJournal { repo: repo }; std::test::assert(service.active(fresh, "alice"), "failed CAS leaves target active"); let q = ops::Queries { j: fresh }; let view = ops::TaskProjection { j: fresh, visibility: q };
-            std::test::assert(view.load() && view.task_of("task / one é").assignee == "alice", "failed CAS publishes no earlier move"); println("native " + mode + " passed"); return;
+            std::test::assert(view.load() && view.task_of("task / one é").assignee == "alice", "failed CAS publishes no earlier move"); eprintln("native " + mode + " passed"); return;
         }
         std::test::assert(result.ok && result.receipt.state == "succeeded" && result.receipt.person.state == "applied" && result.receipt.person.transferred == plan.transferred && result.receipt.person.event_id != "", "exact native final retirement recovered " + result.code);
         std::test::assert(record.count("journal") == revision + plan.transferred + 1 && batch.swaps == 1, "one published atomic chain");
@@ -119,14 +119,14 @@ locus RetirementCases {
             }
             self.append(current, "receipt.withheld", "retained acceptance", "{}"); std::test::assert(fresh_provider.lookup(context, "retirement-key").code == "forbidden", "recovery suppresses private affected evidence");
         }
-        println("native " + mode + " passed");
+        eprintln("native " + mode + " passed");
     }
 }
 @unbounded
 fn main() {
     let cases = RetirementCases { }; cases.policy_case();
     cases.plan_case("hidden"); cases.plan_case("hidden-terminal"); cases.plan_case("reference"); cases.plan_case("transfer"); cases.plan_case("unsupported"); cases.plan_case("ledger"); cases.plan_case("done"); cases.plan_case("arrival"); cases.plan_case("other"); cases.plan_case("aba"); cases.plan_case("limit");
-    let base = std::env::arg(1); std::test::assert(base != "", "owned fixture path"); let modes = "normal lost partial unknown arrival successor empty no-successor wrong-manifest wrong-author retired-actor"; let mut i = 0;
+    let given = std::env::arg(1); let base = if len(given) > 0 { given } else { dna::scratch_root("ops-person-retirement") }; let modes = "normal lost partial unknown arrival successor empty no-successor wrong-manifest wrong-author retired-actor"; let mut i = 0;
     while i < dna::word_count(modes) { let mode = dna::nth_word(modes, i); std::io::fs::mkdir(base + "/" + mode) or discard; cases.native(base + "/" + mode, mode); i = i + 1; }
-    println("person retirement native cases passed");
+    eprintln("person retirement native cases passed");
 }

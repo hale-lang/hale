@@ -11,6 +11,7 @@ locus Authority {
 }
 locus FaultRecord {
     params { inner: dna::GitRecord = dna::GitRecord { }; fault: String = ""; subject: String = ""; appends: Int = 0; }
+    fn location() -> String { return ""; }
     fn identity() -> String { return self.inner.identity(); }
     fn head(chain: String) -> String { return self.inner.head(chain); }
     fn count(chain: String) -> Int { return self.inner.count(chain); }
@@ -139,7 +140,7 @@ fn test_payload_bound(repo: String, byte: Int) {
     std::test::assert(found.ok && found.receipt.fingerprint == result.receipt.fingerprint, "maximum payload recovers exactly");
 }
 fn main() {
-    let base = std::env::arg(1); std::test::assert(len(base) > 0, "pass an isolated fixture directory");
+    let given = std::env::arg(1); let base = if len(given) > 0 { given } else { dna::scratch_root("ops-governance-admission") };
     std::io::fs::mkdir(base + "/recovery") or discard; test_recovery(base + "/recovery");
     std::io::fs::mkdir(base + "/races") or discard; test_races(base + "/races");
     std::io::fs::mkdir(base + "/verdict") or discard; test_verdict(base + "/verdict");

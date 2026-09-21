@@ -69,7 +69,7 @@ locus PracticeProvenanceCases {
         let names = "valid invalid started missing ack foreign conflict private support legacy receipt"; let mut i = 0;
         while i < dna::word_count(names) { self.check(dna::nth_word(names, i)); i = i + 1; }
         self.legacy_kind("valid"); self.legacy_kind("retirement"); self.legacy_kind("hash"); self.legacy_kind("explicit"); self.legacy_kind("empty");
-        println("PASS Practice recorded provenance and legacy in-force kind boundaries");
+        eprintln("PASS Practice recorded provenance and legacy in-force kind boundaries");
     }
 }
 fn main() { let cases = PracticeProvenanceCases { }; cases.run_cases(); }

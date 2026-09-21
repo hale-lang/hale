@@ -13,6 +13,7 @@ locus BindingAuthority {
 }
 locus BindingFaultRecord {
     params { inner: dna::GitRecord = dna::GitRecord { }; fault: String = ""; appends: Int = 0; }
+    fn location() -> String { return ""; }
     fn identity() -> String { return self.inner.identity(); }
     fn head(chain: String) -> String { return self.inner.head(chain); }
     fn count(chain: String) -> Int { return self.inner.count(chain); }
