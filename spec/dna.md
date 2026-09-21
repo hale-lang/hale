@@ -778,7 +778,7 @@ record's.
 | `task.born` | ledger | the work an intent or a settled review made |
 | `task.planned` | ledger | the plan the Task will be worked under; with the `binding` of the Work and attempt that asked, and their request as asked (card 14) |
 | `task.handed` | ledger | handed to a person: assignee, obligation, acceptance |
-| `case.admitted` | ledger | a human Work's case, its own handed Task (card 16): parent Task, Work and attempt, objective, assignee, obligation, acceptance, required evidence, its origin (`owner`) and disposition (`to`) — before its `task.born` / `task.handed`, which say what it recorded |
+| `case.admitted` | ledger | a human Work's case, its own handed Task (card 16): parent Task, Work and attempt, objective, assignee, obligation, acceptance, required evidence, its origin (`owner`), disposition (`to`) and performer (version 2, card 17) — before its `task.born` / `task.handed`, which say what it recorded; its completion (`task.done`, `decision.reported`) is the attempt's outcome (card 17) |
 | `task.reassigned` | ledger | the assignment moved to someone else |
 | `task.resumed` | ledger | re-entered after a restart, under the plan already recorded |
 | `task.<state>` | ledger | every other state a Task passes through, to `done` or `failed` |
@@ -1620,6 +1620,58 @@ the offer. An admission the record refuses holds the attempt for
 `redrive`; a compatibility row the record refuses holds the case,
 completed when the record resumes or on `redrive` without a restart,
 and the hand-off is announced only once it is durable.
+
+## Workflow execution: human completion
+
+A case is completed by its person through the tooling of the day —
+`hale dna task done <case> --as <who>`, with the evidence its bound
+acceptance condition wants (`completion.linked`) or an exception
+someone else authorized (`completion.excepted`), or a decision
+someone else made, reported by the assignee and accepted under the
+bound practice (`decision.reported`, GH #616) — and that accepted
+fact is the outcome of the attempt the case was admitted for (card
+17). The assembly reads the completion from the record
+(`case_completion`, `completion.hl`) and reports it to the runtime of
+its scope as it reports an edit leaf's outcome: judged, recorded as
+`attempt.outcome` and answered to its Work by the runtime's own
+barrier, so the Work settles done, the step counts it, and a
+completion the record already holds an outcome for changes nothing.
+The report is kept until the record is seen to hold the outcome, as
+an edit's is.
+
+The completion is judged against what the admission bound — the
+assignee (moved by `task.reassigned`), whether evidence is required,
+which practice — never against a practice in force later: a practice
+relaxed after the hand-off relaxes nothing, while a case handed after
+the relaxation closes under the new one; evidence linked under
+another practice is none, and a decision accepted under another
+policy than the bound one, or under none, or naming another case or
+none as its scope, is none. An exception
+applies to the person on the completion row: recorded in their name
+and authorized by someone other than them — a case reassigned to its
+exception's authorizer does not close under their own authorization.
+A completion the bound condition refuses — not the assignee's, no
+evidence linked under the bound practice where it is required, an
+exception that is not the closer's or that the closer authorized, a
+decision reported by someone other than the assignee — connects
+nothing and is noted once; a later valid one connects. The first
+valid completion is the outcome; a second is a duplicate and settles
+nothing twice. One case's completion advances nothing of another's.
+
+It is observed wherever the assembly reads the record: live, at the
+organism's tick, which examines the cases whenever the record has
+rows past the revision they were last examined at — by that
+revision, never by whether the tick's own refresh moved, since
+another handler (a redelivery's) reads the record without examining
+every case; when the record resumes; on `redrive`; at a restart of
+the assembly (which reads what the record holds); and at a restart
+of the execution, whose redelivery asks for the attempt again and is
+answered with the outcome the record holds.
+A case keeps its parent step waiting through a restart of the
+execution: nothing settles it but its completion. Only the recorded
+owner connects a completion — the Work runs in the origin's
+execution. The tooling's own gate (`hale dna task done`, evidence,
+exceptions, reported decisions) is unchanged.
 
 ## Storage interfaces
 

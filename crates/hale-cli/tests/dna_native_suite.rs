@@ -741,6 +741,7 @@ fn dna_fixture_set_is_complete() {
             "workflow_admission_contention_test.hl",
             "workflow_admission_test.hl",
             "workflow_attempt_test.hl",
+            "workflow_case_completion_test.hl",
             "workflow_children_test.hl",
             "workflow_definition_test.hl",
             "workflow_edit_outcomes_test.hl",
