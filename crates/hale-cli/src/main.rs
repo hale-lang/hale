@@ -23,6 +23,7 @@ use std::fs;
 use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use hale_syntax::ast::Program;
 
@@ -37,6 +38,23 @@ mod sign;
 mod topology_graph;
 mod fleet_model;
 mod topology_law;
+
+/// GH #476 Change 2: did `hale model dump` ask for the canonical
+/// model? The command is a shim into the check pipeline, and the
+/// pipeline's dump section reads PROCESS argv (it is a
+/// top-level-command scope), so the demand cannot ride the rest-args
+/// the shim forwards.
+///
+/// GH #887: it used to travel as `HALE_DUMP_MODEL` in the
+/// environment. `std::env::set_var` is undefined behaviour in a
+/// process that has threads — the environment is one table with no
+/// lock, and every `getenv` in flight races it — and this CLI starts
+/// them (the LSP, the observation reader, a child's pipes). The
+/// demand is one process-global bit read by one in-process consumer,
+/// so it is one process-global bit: set by the shim before anything
+/// else runs, read where the flag is read, and (unlike the env var)
+/// not inherited by any child.
+static MODEL_DUMP_DEMANDED: AtomicBool = AtomicBool::new(false);
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
@@ -225,8 +243,9 @@ fn main() -> ExitCode {
         }
         // The check pipeline's dump section reads PROCESS argv (it
         // is a top-level-command scope), so the flag cannot ride the
-        // rest-args; the shim marks the demand via env instead.
-        std::env::set_var("HALE_DUMP_MODEL", "1");
+        // rest-args the shim forwards; the shim marks the demand on
+        // the process instead.
+        MODEL_DUMP_DEMANDED.store(true, Ordering::Relaxed);
         let shim: Vec<String> = rest[1..].to_vec();
         return run_check_cli(&shim, false);
     }
@@ -334,16 +353,22 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
         if observe {
-            std::env::set_var("LOTUS_OBS", "1");
+            // GH #887: `LOTUS_OBS=1` is for the PROGRAM, and it used
+            // to be planted in this process's environment for the
+            // child to inherit. `set_var` is undefined behaviour once
+            // a process has threads, and `iris::spawn_session()` on
+            // the next line starts one — so it travels on the child's
+            // own `Command` instead, which is where it was always
+            // meant to arrive. Nothing in this process reads it.
             let session = iris::spawn_session();
-            let code = run_program(&target, &user_args);
+            let code = run_program(&target, &user_args, true);
             if let Some(mut s) = session {
                 let _ = s.kill();
                 let _ = s.wait();
             }
             return code;
         }
-        return run_program(&target, &user_args);
+        return run_program(&target, &user_args, false);
     }
 
     if args.len() < 3 {
@@ -6168,7 +6193,7 @@ fn run_check_impl_labelled(
     // refusal rule as the artifact — a model of a program that does
     // not typecheck describes nothing.
     if argv.iter().any(|a| a == "--dump-model")
-        || std::env::var("HALE_DUMP_MODEL").as_deref() == Ok("1")
+        || MODEL_DUMP_DEMANDED.load(Ordering::Relaxed)
     {
         if let Some(d) = checked.iter().find(|d| {
             d.is_error()
@@ -6614,6 +6639,8 @@ fn compile_and_exec(
     program: &Program,
     renames: &[(Vec<String>, String)],
     user_args: &[String],
+    // `LOTUS_OBS=1` on the child: `hale run --observe` (GH #527 B3).
+    observe: bool,
     model_hash: u64,
     exec_digest: [u64; 4],
     obs_entity_ids: Vec<hale_model::obs_ids::ObsEntityId>,
@@ -6640,7 +6667,12 @@ fn compile_and_exec(
         eprintln!("{}", render_codegen_error(&e, file_bases, sources));
         return ExitCode::from(1);
     }
-    let status = std::process::Command::new(&bin).args(user_args).status();
+    let mut child = std::process::Command::new(&bin);
+    child.args(user_args);
+    if observe {
+        child.env("LOTUS_OBS", "1");
+    }
+    let status = child.status();
     let _ = std::fs::remove_file(&bin);
     match status {
         Ok(s) => {
@@ -7717,7 +7749,15 @@ fn run_replay(args: &[String]) -> ExitCode {
     ExitCode::from(code)
 }
 
-fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
+fn run_program(
+    target: &Path,
+    user_args: &[String],
+    // GH #527 B3 / GH #887: `--observe` publishes the program's
+    // observation segment. It is the CHILD's setting, so it rides
+    // down to the `Command` that starts the child rather than being
+    // planted in this process's environment for it to inherit.
+    observe: bool,
+) -> ExitCode {
     // Both single-file and directory targets resolve cross-seed
     // imports and thread the per-build path-rename table into
     // codegen — `run` and `build` agree (WS3.3). A single file
@@ -7767,6 +7807,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
             &program,
             &renames,
             user_args,
+            observe,
             model_hash,
             digest,
             obs_ids,
@@ -7939,6 +7980,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         &program,
         &renames,
         user_args,
+        observe,
         model_hash,
         digest,
         obs_ids,
