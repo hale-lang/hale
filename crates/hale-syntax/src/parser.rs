@@ -2603,7 +2603,7 @@ impl Parser {
                                 _ => {
                                     return Err(Diag::parse(
                                         seg.span,
-                                        "expected a name after `::` in an                                          `@effects` set",
+                                        "expected a name after `::` in an `@effects` set",
                                     ))
                                 }
                             }
@@ -5984,7 +5984,8 @@ impl Parser {
                     _ => {
                         return Err(Diag::parse(
                             cap_tok_span,
-                            "bounded[T; N]: capacity must be a                              positive integer literal"
+                            "bounded[T; N]: capacity must be a positive \
+                             integer literal"
                                 .to_string(),
                         ));
                     }

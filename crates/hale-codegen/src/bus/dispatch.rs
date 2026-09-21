@@ -1045,7 +1045,7 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                     // fail-policy topics; defensive here.
                     Some(OrDisposition::Wait(_)) => {
                         return Err(CodegenError::Unsupported(
-                            "`or wait` is not an unmatched-key                              disposition"
+                            "`or wait` is not an unmatched-key disposition"
                                 .to_string(),
                         ));
                     }

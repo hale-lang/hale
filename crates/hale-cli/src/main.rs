@@ -6175,7 +6175,9 @@ fn run_check_impl_labelled(
                 && d.kind != hale_syntax::error::DiagKind::Claim
         }) {
             eprintln!(
-                "refusing to derive a model: `{}` does not typecheck,                  so its model is not a truthful description of any                  program. Fix the {} first.",
+                "refusing to derive a model: `{}` does not typecheck, \
+                 so its model is not a truthful description of \
+                 any program. Fix the {} first.",
                 target.display(),
                 d.kind_str()
             );
@@ -6188,7 +6190,8 @@ fn run_check_impl_labelled(
             // produced a value that is not a model. Loud, named, and
             // fatal — an invalid model must not print as one.
             eprintln!(
-                "internal error: derived model violates a model law:                  {:?} (this is a hale bug — please report it)",
+                "internal error: derived model violates a model law: \
+                 {:?} (this is a hale bug — please report it)",
                 e
             );
             return 2;
@@ -7159,7 +7162,7 @@ fn run_replay(args: &[String]) -> ExitCode {
                 }
                 _ => {
                     eprintln!(
-                        "hale replay: --at takes N or consumer:N                          (positive)"
+                        "hale replay: --at takes N or consumer:N (positive)"
                     );
                     return ExitCode::from(2);
                 }
