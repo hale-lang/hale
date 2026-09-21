@@ -594,6 +594,7 @@ pub fn check_bundle_scoped(
             fallible_ctx: None,
             return_ctx: None,
             wasm_target,
+            target_has_async_io: bundle.target_has_async_io,
             strict_callees,
             strict_idents,
             or_value_discarded: false,
@@ -7738,6 +7739,9 @@ struct Checker<'a> {
     /// `target browser_js`. Gates the POSIX-only stdlib (no syscalls in
     /// the browser sandbox) at typecheck — see `wasm_unavailable_stdlib`.
     wasm_target: bool,
+    /// The build target has the `async_io` pool backend — the bundle's
+    /// [`Bundle::target_has_async_io`], never the host's (GH #970).
+    target_has_async_io: bool,
     strict_callees: bool, // F.18: on for a whole seed (`hale check <dir>`), off for a partial program
     /// GH #721: on for a whole program — every import resolved, so a
     /// bare identifier nothing binds is a typo rather than a name a
@@ -9473,14 +9477,16 @@ impl<'a> Checker<'a> {
                     PlacementConstraint::AsyncIo => {
                         // Phase-1 macOS portability: the async_io pool
                         // backend is epoll/eventfd/ucontext-based and
-                        // Linux-only. When the compiler is running on
-                        // macOS, reject `where async_io` at compile time
-                        // with actionable guidance — mirroring the
+                        // Linux-only. When the build TARGETS macOS,
+                        // reject `where async_io` at compile time with
+                        // actionable guidance — mirroring the
                         // wasm-target stdlib gating. The C runtime's
                         // async_io functions are inert stubs on macOS
                         // (LOTUS_HAVE_ASYNC_IO == 0), so this diagnostic
                         // is the clean-failure path (vs a link error).
-                        if cfg!(target_os = "macos") {
+                        // The target, not the host: this asked
+                        // `cfg!(target_os = "macos")` until GH #970.
+                        if !self.target_has_async_io {
                             self.diags.push(Diag::ty(
                                 c.span,
                                 format!(

@@ -8,6 +8,34 @@ behavior.
 
 ## Unreleased
 
+### A foreign native triple is a cross target, emitted as an object (GH #970, first step)
+
+The refusal below was the stopgap; this is the target model doing what
+it was built for. `--target x86_64-unknown-linux-gnu` on a Mac now takes
+the path `wasm32` took first: codegen initializes the target's own LLVM
+backend, stamps the module with the target's triple, tunes for a generic
+CPU (never the host's — a different machine, possibly a different
+architecture), and emits a relocatable object for the target's format.
+The build ends there, at `<stem>.o`, with a note: linking needs the lotus
+runtime and system libraries built for the target, the open half of
+GH #970.
+
+- `CompileTarget::Foreign(TargetSpec)` beside `Native` and `Wasm32`.
+  `Native` keeps LLVM's exact host triple; `Foreign` carries the
+  canonical one. `--list-targets` reads `cross, object-only from this
+  host` for such a triple.
+- `hale run` / `hale test` refuse a foreign target, as they refuse
+  `wasm32`: nothing it builds can run here.
+- `where async_io` is judged against the TARGET. The check asked
+  `cfg!(target_os = "macos")` — the host — so a Mac refused an `async_io`
+  pool bound for Linux, and a Linux host accepted one bound for macOS,
+  whose runtime has no such backend. `Bundle::target_has_async_io`
+  carries the target's answer (`TargetSpec::has_async_io`); `hale build`
+  parses its options before the check so the check knows the target.
+  A build that names no target is unchanged: the host is the target.
+- `--target-cpu baseline` asks the target's architecture, not the
+  host's, whether `x86-64-v3` applies.
+
 ### `--target` refuses another host's triple instead of building the host (GH #969)
 
 `hale build --target aarch64-unknown-linux-gnu` on a Mac printed
