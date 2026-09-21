@@ -55,7 +55,7 @@ main locus App {
         let receipts = dna::GitReceipts { repo: repo }; let codec = dna::KnowledgeNodeRequestCodec { };
         std::test::assert_eq_str(receipts.read(first.candidate_digest[7..len(first.candidate_digest)]), codec.document(first), "original immutable Practice remains readable");
         std::test::assert_eq_str(receipts.read(revised.candidate_digest[7..len(revised.candidate_digest)]), codec.document(revised), "retired successor remains readable");
-        println("PASS actual Practice creation, nonpractice same-name exclusion, revision and reviewed retirement");
+        eprintln("PASS actual Practice creation, nonpractice same-name exclusion, revision and reviewed retirement");
         let removed = dna::run_tool("rm\n-rf\n" + repo);
     }
     run { self.check(); }

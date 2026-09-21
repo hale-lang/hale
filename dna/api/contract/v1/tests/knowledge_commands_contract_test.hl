@@ -43,11 +43,11 @@ locus KnowledgeCommandContractCases {
         std::test::assert(!files.knowledge_capability_parameters(self.field(capability_get, "parameters", "[" + parameter + "," + parameter + "]")).ok, "capability query cannot duplicate operation");
         let candidate_name = "/api/hale/v1/applications/{application_id}/dna/reviews/candidate";
         let candidate = std::json::find_field_raw(paths, candidate_name); let candidate_get = std::json::find_field_raw(candidate, "get");
-        std::test::assert(!files.candidate_parameters(self.field(candidate_get, "parameters", "[]")).ok, "binding candidate read requires exact Review identity and snapshot");
+        std::test::assert(!files.candidate_parameters(self.field(candidate_get, "parameters", "[]"), true).ok, "binding candidate read requires exact Review identity and snapshot");
         let candidate_id = std::json::array_first(std::json::find_field_raw(candidate_get, "parameters")).element;
-        std::test::assert(!files.candidate_parameters(self.field(candidate_get, "parameters", "[" + candidate_id + "," + candidate_id + "]")).ok, "binding candidate read cannot substitute duplicate id for snapshot");
+        std::test::assert(!files.candidate_parameters(self.field(candidate_get, "parameters", "[" + candidate_id + "," + candidate_id + "]"), true).ok, "binding candidate read cannot substitute duplicate id for snapshot");
         std::test::assert(!files.openapi(self.field(spec, "paths", self.field(paths, candidate_name, "")), schema).ok, "exact binding candidate read cannot be omitted");
-        println("Knowledge command contract: fixtures and focused OpenAPI checks passed");
+        eprintln("Knowledge command contract: fixtures and focused OpenAPI checks passed");
     }
 }
 

@@ -51,7 +51,7 @@ fn maximum() {
     if child.code != 0 { eprintln("maximum relay probe: ", child.stdout, child.stderr); }
     std::test::assert_eq_int(child.code, 0, "production relay sends the maximum typed request without argv rejection");
     std::test::assert_eq_str(std::io::fs::read_file(root + "/node-transport.json") or "", compact, "actual process argv preserves all eleven fields and candidate digest exactly");
-    println("maximum native payload bytes=", len(compact));
+    eprintln("maximum native payload bytes=", len(compact));
     let removed = dna::run_tool("rm\n-rf\n" + root);
 }
 fn relay_max(root: String) {

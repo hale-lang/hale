@@ -1548,8 +1548,23 @@ locus Dna {
         // the request as asked — the Task-level row, with its binding
         b.field("binding", encode_binding(binding_of(req)));
         b.end_object();
-        let j = self.journal.append(self.journal.revision(), "task.planned", req.task_id, b.result());
-        if !j.ok {
+        let document = b.result();
+        let j = self.journal.append(self.journal.revision(), "task.planned", req.task_id, document);
+        // A person's plan whose acknowledgment was lost is resolved by
+        // bytes: the exact row is either in the record or it is not, and
+        // a handoff is never acknowledged on a plan that cannot be resumed
+        // from the record (GH #690, person_handoff_arrival_test).
+        let mut recorded = false;
+        if !j.ok && p.kind == "person" {
+            let moved = self.journal.refresh();
+            let mut k = 0;
+            while k < self.journal.revision() {
+                let e = self.journal.read(k);
+                if e.kind == "task.planned" && e.entity == req.task_id && e.body == document { recorded = true; }
+                k = k + 1;
+            }
+        }
+        if !j.ok && !recorded {
             // the binding is not durable: nothing proceeds on it. The
             // request keeps its place and the plan is held with it, for
             // `redrive`; a restart plans the Task again, since no plan landed

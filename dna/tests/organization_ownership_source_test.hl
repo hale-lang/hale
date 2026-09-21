@@ -152,7 +152,7 @@ main locus App {
         let pinned = inputs.ownership_quorum(r, candidate);
         std::test::assert(pinned.ok && pinned.approvers == "north=bob south=dora", "later live map never changes retained quorum");
         std::test::assert(!inputs.current(r).ok, "dirty live owners blocks further source progress");
-        println(if recovery { "PASS recovery" } else { "PASS proposal" });
+        eprintln(if recovery { "PASS recovery" } else { "PASS proposal" });
     }
     fn profile() {
         let repo = self.repo("profile"); let c = self.command(repo, "codec"); let record = dna::GitRecord { repo: repo };
@@ -174,7 +174,7 @@ main locus App {
         std::test::assert(syntax.source_error(AFTER) == "" && syntax.source_error("org = acme\norg/ = north\n") != "", "ownership syntax preserves normalized identity checks");
         std::test::assert_eq_str(dna::ownership_approvers("org = acme\nacme: old\n", "org = acme\nacme: new\n"), "acme=new", "candidate membership remains the native policy");
         std::test::assert_eq_str(dna::ownership_approvers("org = acme\n", "org = other\n"), "acme= other=", "missing members retain unsatisfiable owner quorum");
-        println("PASS profile");
+        eprintln("PASS profile");
     }
     run {
         let selected = std::env::arg_or(2, "profile");
@@ -184,4 +184,15 @@ main locus App {
         else { std::test::assert(false, "known ownership scenario"); }
     }
 }
-fn main() { App { root: std::env::arg(1) }; }
+// Under `hale test` no root is given: the fixture makes its own scratch
+// and removes it; by hand, `<root> [profile|proposal|recovery]` as before.
+fn main() {
+    let given = std::env::arg(1);
+    if len(given) > 0 { App { root: given }; return; }
+    let made = dna::run_tool("mktemp\n-d\n/tmp/hale-dna-ownership.XXXXXX");
+    std::test::assert_eq_int(made.code, 0, "ownership fixture scratch: " + made.stderr);
+    let root = dna::trim_nl(made.stdout);
+    App { root: root };
+    let removed = dna::run_tool("rm\n-rf\n" + root);
+    std::test::assert_eq_int(removed.code, 0, "ownership fixture removed its scratch");
+}

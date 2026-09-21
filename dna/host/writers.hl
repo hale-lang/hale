@@ -473,6 +473,57 @@ fn retire_verb(root: String, seed: String, who: String, to: String, by_flag: Str
     return retire_admit(root, seed, who, to, by_flag, batch);
 }
 
+// GH #604 rule 5, row by row: admission of new work to the person stops,
+// what they hold is transferred to a named successor (`task.reassigned`
+// each), and the retirement is a row in the retiring or retiring-them
+// person's name. Refused while they hold work and no successor is named.
+@unbounded
+fn retire_rows(root: String, seed: String, who: String, to: String, by_flag: String) -> Answer {
+    let p = open_projection(root, seed, "");
+    let by = if len(by_flag) > 0 { by_flag } else { who_am_i() };
+    let mut held = "";
+    let mut n = 0;
+    let mut i = 0;
+    while i < p.rows() {
+        let e = p.row(i);
+        if e.kind == "task.born" {
+            let t = p.task_of(e.entity);
+            if t.state == "handed" && t.assignee == who { held = held + e.entity + " "; n = n + 1; }
+        }
+        i = i + 1;
+    }
+    if n > 0 && len(to) == 0 { return fail(who + " holds " + to_string(n) + " handed task(s): " + dna::trim_nl(held) + "; name a successor: `hale dna retire " + who + " --to <who>`"); }
+    // a successor is someone who works here: not the person retiring, and
+    // not a person who retired before
+    if len(to) > 0 {
+        if to == who { return fail("retire: " + who + " cannot succeed themselves"); }
+        let mut k = 0;
+        while k < p.rows() {
+            let e = p.row(k);
+            if e.kind == "person.retired" && e.entity == to { return fail("retire: " + to + " retired; name a successor who works here"); }
+            k = k + 1;
+        }
+    }
+    let mut rest = held;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let id = if sp < 0 { rest } else { rest[0..sp] };
+        rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+        if len(id) == 0 { continue; }
+        let one = task_reassign_verb(root, seed, id, to, by);
+        if !one.ok { return one; }
+    }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("by", by);
+    b.string_field("to", to);
+    b.int_field("transferred", n);
+    b.end_object();
+    if !append_as(root, "person.retired", who, b.result(), by) { return fail("the record refused the append"); }
+    let s2 = sync_record(root);
+    return answer(who + " retired by " + by + "; " + to_string(n) + " task(s) transferred" + (if n > 0 { " to " + to } else { "" }) + "\n");
+}
+
 // Trusted-local CLI attribution is its existing authority model. The HTTP
 // provider independently requires its explicit application policy grant.
 @unbounded
@@ -482,8 +533,12 @@ fn retire_admit(root: String, seed: String, who: String, to: String, by_flag: St
     let record = dna::GitRecord { repo: root };
     if len(record.head(JOURNAL)) == 0 { return fail(no_record(root)); }
     let principal = record.setting("principal");
+    // The atomic batch below is the trusted-local Record's. A record with
+    // Ledger routing or a hosted principal retires the way it did before
+    // the batch existed: each transfer a row, then the retirement, in the
+    // named person's name (the two-heads fixture retires under both).
     if trust_mode(root) != "local" || (principal != "" && principal != "local") || routing_here(root) != 0 {
-        return fail("retire: atomic retirement requires a trusted-local Record without Ledger routing; no Tasks or person state were changed");
+        return retire_rows(root, seed, who, to, by_flag);
     }
     let by = if len(by_flag) > 0 { by_flag } else { who_am_i() };
     let context = ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: by };

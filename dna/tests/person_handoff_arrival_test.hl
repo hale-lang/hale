@@ -112,10 +112,20 @@ main locus App {
                 std::test::assert_eq_int(event_count(j, "task.planned"), 1, "durable person plan survives uncertainty");
                 // A fresh Body rehydrates the original recorded plan; it
                 // has no Leader and cannot regenerate a replacement plan.
+                // It lives through the assertions: an assembly literal
+                // owns the journal it is given and reclaims it when it
+                // dies, so it must not die before `j` is read again.
                 let fresh = dna::Dna { journal: j, membrane: notifications };
+                std::time::sleep(20ms);
+                self.finish(mode, j, ack, resumed, notifications, body);
+                return;
             }
             std::time::sleep(20ms);
         }
+        self.finish(mode, j, ack, resumed, notifications, body);
+    }
+    // What every person case asserts once the handoff had its chance.
+    fn finish(mode: String, j: ArrivalJournal, ack: HandoffAcks, resumed: HandoffAcks, notifications: HandoffNotifications, body: dna::Dna) {
         let kind = if mode == "route" { "task.transfer_requested" } else { "task.handed" };
         let e = last_event(j, kind);
         std::test::assert_eq_int(event_count(j, kind), 1, "one durable native handoff or transfer");
@@ -175,17 +185,36 @@ main locus App {
         let d = body.journal.append(body.journal.revision(), "person.retired", "nobody", "{\"to\":\"\"}");
         std::test::assert_eq_str(body.admissible("nobody"), "", "no successor remains unassigned");
     }
+    // One case in a repository of its own: `<root>/<mode>`, git-initialised here.
+    fn one(mode: String, root: String) {
+        let repo = root + "/" + mode;
+        std::io::fs::mkdir(repo) or discard;
+        let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        std::test::assert_eq_int(init.code, 0, "owned Git fixture");
+        if std::str::starts_with(mode, "transfer-") { self.transfer(mode, repo); } else { self.person(mode, repo); }
+        eprintln("PASS ", mode);
+    }
     run {
         let mode = std::env::arg(1);
-        if mode == "identities" { self.identities(); }
-        else {
-            let repo = std::env::var("HALE_ARRIVAL_ROOT") + "/" + mode;
-            std::io::fs::mkdir(repo) or discard;
-            let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
-            std::test::assert_eq_int(init.code, 0, "owned Git fixture");
-            if std::str::starts_with(mode, "transfer-") { self.transfer(mode, repo); } else { self.person(mode, repo); }
+        if mode == "identities" { self.identities(); eprintln("PASS identities"); return; }
+        // by hand: `<mode>` with HALE_ARRIVAL_ROOT naming the root
+        if len(mode) > 0 { self.one(mode, std::env::var("HALE_ARRIVAL_ROOT")); return; }
+        // under `hale test`: every case, over a scratch root this run owns
+        self.identities();
+        let made = dna::run_tool("mktemp\n-d\n/tmp/hale-dna-arrival.XXXXXX");
+        std::test::assert_eq_int(made.code, 0, "arrival fixture scratch: " + made.stderr);
+        let root = dna::trim_nl(made.stdout);
+        // each case in a process of its own, as the harness runs them
+        let modes = "retire successor route blocked plan-blocked plan-lost stale lost transfer-retire transfer-blocked transfer-lost transfer-replaced";
+        let mut i = 0;
+        while i < 12 {
+            let mode = dna::nth_word(modes, i);
+            let r = dna::run_tool("env\nHALE_ARRIVAL_ROOT=" + root + "\n" + std::env::arg(0) + "\n" + mode);
+            std::test::assert_eq_int(r.code, 0, "case " + mode + ": " + r.stdout + r.stderr);
+            i = i + 1;
         }
-        println("PASS ", mode);
+        let removed = dna::run_tool("rm\n-rf\n" + root);
+        std::test::assert_eq_int(removed.code, 0, "arrival fixture removed its scratch");
     }
 }
 fn main() { App { }; }

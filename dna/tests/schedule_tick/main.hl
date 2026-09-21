@@ -68,7 +68,7 @@ locus ReloadingJournal {
 
 locus ClaimObserver {
     params {
-        journal: dna::RoutedJournal = dna::RoutedJournal { };
+        journal: dna::Journal = dna::MemJournal { };
         record: ReloadingJournal = ReloadingJournal { };
         calls: Int = 0;
         first_fresh: Bool = false;
@@ -103,14 +103,23 @@ locus Publisher {
     }
 }
 
+// The observer takes the owner's journal through a parameter: an
+// interface-typed field cannot be written into another locus's
+// interface-typed field directly (dna/FRICTION.md F.3, GH #730).
+fn observer_over(journal: dna::Journal, record: ReloadingJournal) -> ClaimObserver {
+    return ClaimObserver { journal: journal, record: record };
+}
+
 fn check(root: String) {
     let record = ReloadingJournal { root: root };
-    let journal = dna::RoutedJournal { record: record };
-    let observer = ClaimObserver { journal: journal, record: record };
     let other_record = ReloadingJournal { };
     // Planned, so neither fixture can accidentally edit the suite's checkout
     // if an unrelated WorkRequested exists beside the schedule cases.
-    let owner = dna::Dna { journal: journal, org_id: "tick-owner", planned: true };
+    // The routed journal is written inline: a let-bound RoutedJournal handed
+    // to `journal:` is reclaimed twice under the 0.21.0 ownership pass
+    // (crash at `__reclaim_MemJournal` from this frame; GH #921 follow-up).
+    let owner = dna::Dna { journal: dna::RoutedJournal { record: record }, org_id: "tick-owner", planned: true };
+    let observer = observer_over(owner.journal, record);
     let other = dna::Dna { journal: other_record, org_id: "tick-bystander", planned: true };
     let moved = record.authority.append(record.authority.revision(), "external", "external", "a second writer advanced the Record");
     record.armed = true;
@@ -132,12 +141,12 @@ fn check(root: String) {
     std::test::assert_eq_int(record.append_calls, 1, "the retry writes no second request");
     std::test::assert_eq_int(record.last_append_revision, 4, "the append reports its own coherent revision");
     std::test::assert_eq_int(record.authority.revision(), 4, "one durable claim follows the three original rows");
-    std::test::assert_eq_int(journal.revision(), 4, "the merged view includes the same four rows");
+    std::test::assert_eq_int(owner.journal.revision(), 4, "the merged view includes the same four rows");
     let mut i = 0;
     while i < 4 {
-        std::test::assert_eq_int(journal.read(i).seq, i, "merged sequence is coherent");
-        std::test::assert_eq_str(journal.read(i).digest, record.authority.read(i).digest, "merged row names the exact authoritative event");
+        std::test::assert_eq_int(owner.journal.read(i).seq, i, "merged sequence is coherent");
+        std::test::assert_eq_str(owner.journal.read(i).digest, record.authority.read(i).digest, "merged row names the exact authoritative event");
         i = i + 1;
     }
-    std::test::assert_eq_str(journal.read(3).kind, "effect.requested", "the final row is the one effect request");
+    std::test::assert_eq_str(owner.journal.read(3).kind, "effect.requested", "the final row is the one effect request");
 }
