@@ -524,6 +524,20 @@ fn retire_rows(root: String, seed: String, who: String, to: String, by_flag: Str
     return answer(who + " retired by " + by + "; " + to_string(n) + " task(s) transferred" + (if n > 0 { " to " + to } else { "" }) + "\n");
 }
 
+// The ids in a retirement plan's task array, space-separated, as the
+// refusal names them (`noor holds 1 handed task(s): t2`).
+@unbounded
+fn held_task_ids(tasks: String) -> String {
+    let mut out = "";
+    let mut entries = std::json::array_first(tasks);
+    while !entries.done {
+        let id = std::json::find_string_field(entries.element, "id");
+        if len(id) > 0 { out = if len(out) > 0 { out + " " + id } else { id }; }
+        entries = std::json::array_next(entries);
+    }
+    return out;
+}
+
 // Trusted-local CLI attribution is its existing authority model. The HTTP
 // provider independently requires its explicit application policy grant.
 @unbounded
@@ -558,7 +572,7 @@ fn retire_admit(root: String, seed: String, who: String, to: String, by_flag: St
         if !plan.ok { return fail("retire: " + plan.code + "; no partial transfers were published"); }
         if plan.state == "retired" { return fail("retire: " + who + " already retired" + (if plan.successor != "" { " to " + plan.successor } else { " without a successor" }) + "; inspect the existing retirement and Task history rather than publishing it again"); }
         if !retirement.active(journal, by) { return fail("retire: " + by + " retired; no new admission is made in their name"); }
-        if plan.transferred > 0 && to == "" { return fail(who + " holds " + to_string(plan.transferred) + " handed task(s); name a successor: `hale dna retire " + who + " --to <who>`"); }
+        if plan.transferred > 0 && to == "" { return fail(who + " holds " + to_string(plan.transferred) + " handed task(s): " + held_task_ids(plan.tasks) + "; name a successor: `hale dna retire " + who + " --to <who>`"); }
         let command = ops::GovernanceCommand { request_id: request_id, operation: "dna.person.retire", application_id: context.application_id, target_kind: "dna.person", target_id: who,
             subject_digest: plan.subject_digest, new_assignee: to };
         if !codec.valid(context, command) { return fail("retire: invalid exact retirement command"); }
