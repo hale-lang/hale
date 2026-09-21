@@ -1327,3 +1327,64 @@ textarea.kd-input { resize: vertical; min-height: 120px; line-height: 1.6; }
   .person-transfer-tasks li { grid-template-columns: 8px minmax(0, 1fr); }
   .person-transfer-tasks .detail-note { grid-column: 2; margin: 0; }
 }
+/* Projects: the operator machine's registry, its onboarding forms and one
+ * followed request. Textual states everywhere; identities may wrap anywhere. */
+.projects { min-width: 0; display: grid; gap: 20px; }
+.projects-heading { border: 1px solid var(--line); border-radius: 3px; }
+.projects-heading h2 { font-size: 18px; font-weight: 450; letter-spacing: -.3px; margin-top: 6px; }
+.projects-status { padding: 12px 15px; border-left: 2px solid var(--cyan); background: #182833; font: 11px/1.8 var(--mono); color: #d4e5f0; overflow-wrap: anywhere; }
+.projects-summary { padding: 18px 20px; border: 1px solid var(--line); border-radius: 3px; background: var(--panel); grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 14px 22px; }
+.projects-summary dd, .projects-receipt dd { overflow-wrap: anywhere; }
+.projects-registry .record-list li { padding: 17px 20px; }
+.projects-project .record-meta code { font-size: 9px; overflow-wrap: anywhere; }
+.projects-recent { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 4px; font: 10px/1.7 var(--mono); color: var(--muted); }
+.projects-recent code { color: #b7d0df; }
+.projects-inspect { font: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+.projects-project .intervention-actions { margin-top: 12px; }
+.projects-detail { padding: 18px 20px; border-top: 1px solid var(--line); }
+.projects-detail h3 { font: 10px/1.5 var(--mono); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 12px; color: #a8bac9; }
+.projects-empty { padding: 20px; margin: 0; }
+.projects-forms { display: grid; gap: 20px; }
+.projects-onboarding, .projects-operations { min-width: 0; }
+.projects-form { padding: 0 20px; border-top: 1px solid #292e39; }
+.projects-form:first-of-type { border-top: 0; }
+.projects-form fieldset { min-width: 0; margin: 0; padding: 16px 0 20px; border: 0; }
+.projects-form legend { padding: 0; font-size: 13px; font-weight: 550; color: #d9eef5; }
+.projects-form .detail-note { margin: 8px 0 0; max-width: 72ch; }
+.projects-field { display: block; margin-top: 14px; max-width: 560px; }
+.projects-field > label { display: block; color: #d6e5ee; font: 10px/1.7 var(--mono); margin-bottom: 6px; overflow-wrap: anywhere; }
+.projects-field input[type="text"], .projects-field select, .projects-field textarea { display: block; width: 100%; min-height: 38px; padding: 9px 12px; border: 1px solid #526978; border-radius: 2px; color: var(--ink); background: #0f1720; font: 12px/1.6 var(--sans); }
+.projects-field textarea { min-height: 72px; resize: vertical; }
+.projects-field [aria-invalid="true"] { border-color: var(--red); }
+.projects-check { display: flex; align-items: flex-start; gap: 10px; font-size: 11px; line-height: 1.8; color: #d4e1eb; }
+.projects-check input { flex: 0 0 auto; width: 16px; height: 16px; margin: 3px 0 0; accent-color: var(--cyan); }
+.projects-check label { display: inline; margin: 0; font: inherit; color: inherit; }
+.projects-problems { margin: 12px 0 0; padding-left: 18px; }
+.projects-request { margin: 0; }
+.projects-request .intervention-body { padding: 20px; }
+.projects-request .command-outcome-map { margin-top: 0; }
+.projects-request .intervention-actions { margin-top: 18px; }
+.projects-receipt { margin-top: 18px; }
+.projects-outcome { margin-top: 18px; }
+.projects-outcome h4 { margin: 14px 0 6px; font: 10px/1.6 var(--mono); color: #acbecb; }
+.projects-log { margin: 0; max-height: 360px; overflow: auto; padding: 12px 14px; border: 1px solid #3b5362; background: #0b1218; color: #d3dbe5; font: 10px/1.7 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.projects-reason-text { margin-top: 14px; }
+.projects-logs { padding-bottom: 18px; }
+.projects-logs .intervention-actions, .projects-logs .detail-note, .projects-logs .projects-log, .projects-logs .intervention-error, .projects-logs > .button { margin-left: 20px; margin-right: 20px; }
+.projects-logs .intervention-actions { margin-top: 16px; }
+.projects-logs > .button { margin-top: 12px; }
+.projects .button:disabled { cursor: not-allowed; }
+@media (max-width: 650px) {
+  .projects { gap: 14px; }
+  .projects-heading { flex-wrap: wrap; }
+  .projects-summary { grid-template-columns: minmax(0, 1fr); padding: 14px; }
+  .projects-form { padding: 0 14px; }
+  .projects-field { max-width: none; }
+  .projects-field input[type="text"], .projects-field select, .projects-field textarea { font-size: 16px; min-height: 44px; }
+  .projects .button { min-height: 42px; }
+  .projects-request .command-outcome-map .intervention-stage-list { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .projects-request .command-outcome-map .intervention-stage-list li::before { display: none; }
+  .projects-request .outcome-stage { flex-direction: row; min-height: 0; text-align: left; padding: 8px; }
+  .projects-request .command-outcome-map .outcome-marker { margin: 0; }
+  .projects-logs .intervention-actions, .projects-logs .detail-note, .projects-logs .projects-log, .projects-logs .intervention-error, .projects-logs > .button { margin-left: 14px; margin-right: 14px; }
+}

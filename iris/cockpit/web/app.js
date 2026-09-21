@@ -78,8 +78,10 @@
     }
   };
   const APPLICATION_HOST = document.documentElement.dataset.irisProfile === "application";
-  const VIEWS = new Set([...Object.keys(WORKSPACES), "application", "runtime"]);
-  const independentView = (view) => view === "runtime" || view === "application";
+  const VIEWS = new Set([...Object.keys(WORKSPACES), "application", "runtime", "projects"]);
+  const independentView = (view) => view === "runtime" || view === "application" || view === "projects";
+  // The operator-machine head answers this path; a plain Record API does not.
+  const HEAD_API = "/api/hale/v1/head";
   const OUTCOMES = { approve: "Approved", reject: "Rejected", revise: "Revision requested", abstain: "Abstained" };
   const PRACTICE_STATES = { pending: "Pending", ratified: "Ratified", declined: "Declined", retired: "Retired", refused: "Refused" };
   const STATUS_REASONS = {
@@ -99,6 +101,12 @@
   let applicationController = null;
   let runtimeApplication = null;
   let applicationReturn = null;
+  // The head is probed once per page, and only for views that read the
+  // Record or the Projects workspace; Runtime stays free of API requests.
+  let headState = null;
+  let headProbed = false;
+  let headRedirect = false;
+  let projectsController = null;
   let definitionDraftController = null;
   let definitionDraftHost = null;
   let organizationDraftController = null;
@@ -1632,7 +1640,7 @@
     return append(panel, body);
   }
   function blankState(route) {
-    return { route, phase: "loading", apps: [], app: null, capabilities: null, workingContext: null, source: null, collection: null, detail: null, detailError: null, organizationBranch: null, organizationBranchError: null, reviewCandidate: null, reviewCandidateError: "", organizationStatus: null, organizationStatusError: "", organizationImpact: null, organizationImpactError: "", practiceContext: null, person: null, personError: "", relationships: null, bindings: null, error: null, notice: "", inspectedAt: null };
+    return { route, phase: "loading", apps: [], app: null, capabilities: null, workingContext: null, source: null, collection: null, detail: null, detailError: null, organizationBranch: null, organizationBranchError: null, reviewCandidate: null, reviewCandidateError: "", organizationStatus: null, organizationStatusError: "", organizationImpact: null, organizationImpactError: "", practiceContext: null, person: null, personError: "", relationships: null, bindings: null, error: null, notice: "", inspectedAt: null, head: headState };
   }
   function node(tag, className, text) {
     const el = document.createElement(tag);
@@ -1702,6 +1710,7 @@
   }
   function routeHash(route) {
     if (route.view === "application") return "#/application";
+    if (route.view === "projects") return "#/projects";
     if (route.view === "runtime") {
       const query = new URLSearchParams();
       if (/^[a-f0-9]{64}$/.test(route.process || "")) {
@@ -2215,6 +2224,42 @@
     runtimeController = null;
     applicationController?.destroy();
     applicationController = null;
+    projectsController?.destroy();
+    projectsController = null;
+  }
+  function setHead(head) {
+    headState = head;
+    state.head = head;
+    const nav = $("nav-projects");
+    if (nav) nav.hidden = APPLICATION_HOST || !head;
+    if (state.route.view === "projects") renderConnection(true);
+  }
+  async function probeHead(signal) {
+    if (headProbed || APPLICATION_HOST) return;
+    const pending = new AbortController();
+    const cancelRead = () => pending.abort();
+    signal.addEventListener("abort", cancelRead, { once: true });
+    if (signal.aborted) cancelRead();
+    const timeout = setTimeout(cancelRead, READ_TIMEOUT_MS);
+    let head = null;
+    try {
+      const response = await fetch(HEAD_API, { signal: pending.signal, credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" } });
+      // Anything but a closed head envelope means no head stands behind this
+      // API: the shell continues unchanged rather than raising an error.
+      if (response.status === 200 && window.IrisProjects) {
+        const envelope = window.IrisProjects.validate(await response.json(), "head");
+        head = { principal: envelope.head.principal, data: envelope.data };
+      }
+    } catch (error) {
+      if (signal.aborted) throw new DOMException("Superseded read", "AbortError");
+      head = null;
+    } finally {
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", cancelRead);
+    }
+    headProbed = true;
+    headRedirect = head?.data.state === "detached";
+    setHead(head);
   }
   function destroyDefinitionDraft() {
     definitionDraftController?.destroy();
@@ -2257,6 +2302,20 @@
     lastStarted = Date.now();
     state = blankState(route);
     state.notice = initialNotice;
+    if (route.view === "projects" || !independentView(route.view)) {
+      render();
+      try { await probeHead(signal); }
+      catch (error) { if (error.name === "AbortError" || token !== generation || signal.aborted) return; }
+      if (token !== generation || signal.aborted) return;
+      // A detached head has no Record to read: land on Projects once.
+      if (headRedirect && route.view !== "projects") {
+        route = { ...route, view: "projects" };
+        replaceRoute(route);
+        state = blankState(route);
+        state.notice = initialNotice;
+      }
+      headRedirect = false;
+    }
     if (independentView(route.view)) {
       definitionJourney = null;
       state.phase = "ready";
@@ -2330,17 +2389,18 @@
     if (state.phase !== "ready" || state.route.view !== "knowledge" || state.error) destroyKnowledgeDraft();
     const runtime = state.route.view === "runtime";
     const application = state.route.view === "application";
-    const independent = runtime || application;
+    const projects = state.route.view === "projects";
+    const independent = runtime || application || projects;
     const practiceAdministration = state.route.view === "knowledge" && state.route.practice_action;
     const workspace = WORKSPACES[state.route.view];
-    const title = runtime ? "Runtime" : application ? "Application" : practiceAdministration ? "Practice administration" : workspace.title;
+    const title = runtime ? "Runtime" : application ? "Application" : projects ? "Projects" : practiceAdministration ? "Practice administration" : workspace.title;
     document.title = title + " · Iris";
     document.body.dataset.view = state.route.view;
     document.body.classList.toggle("practice-operating", ["practices", "reviews"].includes(state.route.view) && Boolean(state.detail));
     ui["workspace-title"].textContent = title;
     ui["breadcrumb-current"].textContent = title;
-    ui["workspace-kicker"].textContent = runtime ? "THE RUNNING SYSTEM" : application ? "APPLICATION CONTROL" : practiceAdministration ? "PRACTICES / SCOPE & LIFECYCLE" : workspace.kicker;
-    ui["workspace-description"].textContent = runtime ? "Inspect observed processes, containment, topics and routes independently of any application Record." : application ? "Understand current behavior, make a deliberate change, and follow the application's own result." : practiceAdministration ? "Shape a practice in context: its exact text, applicability, governing Review and retained history." : workspace.description;
+    ui["workspace-kicker"].textContent = runtime ? "THE RUNNING SYSTEM" : application ? "APPLICATION CONTROL" : projects ? "OPERATOR MACHINE" : practiceAdministration ? "PRACTICES / SCOPE & LIFECYCLE" : workspace.kicker;
+    ui["workspace-description"].textContent = runtime ? "Inspect observed processes, containment, topics and routes independently of any application Record." : application ? "Understand current behavior, make a deliberate change, and follow the application's own result." : projects ? "Create, attach and operate DNA projects on this machine through the project service. Every action is the CLI verb, recorded as a durable receipt and read back before it is shown." : practiceAdministration ? "Shape a practice in context: its exact text, applicability, governing Review and retained history." : workspace.description;
     ui.refresh.hidden = independent;
     ui.content.setAttribute("aria-busy", String(state.phase === "loading"));
     ui.notice.hidden = !state.notice;
@@ -2348,7 +2408,8 @@
     for (const view of VIEWS) {
       const nav = $("nav-" + view);
       if (!nav) continue;
-      nav.hidden = APPLICATION_HOST || application ? !independentView(view) : runtime ? view !== "runtime" : view === "application";
+      if (view === "projects") nav.hidden = APPLICATION_HOST || !state.head;
+      else nav.hidden = APPLICATION_HOST || application ? !independentView(view) : runtime ? view !== "runtime" : view === "application";
       if (view === (practiceAdministration ? "practices" : state.route.view === "tasks" ? "workflows" : state.route.view)) nav.setAttribute("aria-current", "page");
       else nav.removeAttribute("aria-current");
       nav.href = routeHash(workspaceRoute(view === "workflows" && (state.route.view === "tasks" || state.capabilities?.reads?.workflows !== true && state.capabilities?.reads?.tasks === true) ? "tasks" : view));
@@ -2387,7 +2448,7 @@
     renderStrata(independent);
     renderSource();
     renderWorkingContext();
-    ui["workspace-footer"].replaceChildren(node("span", "", runtime ? "Hale · runtime observer" : application ? "Hale · application service" : "Hale API · v1"), node("span", "", runtime ? "Runtime evidence and application state have separate sources." : application ? "The application owns its controls, authority, state, and command outcomes." : state.route.view === "organization" ? "Source, dependencies, and Record are pinned separately. Drafts require validation before export." : state.route.view === "definitions" ? "Definitions are code-authored. This workspace reads the host's loaded catalog." : state.route.view === "knowledge" ? "Knowledge, relationships, and bindings share one inspected snapshot." : state.route.view === "tasks" ? "Reassignment preserves each Task’s obligation and assignment history." : commandEnabled ? "Commands require explicit submission. Review settlement and adoption remain separate." : "State is read from the local Record. No changes are made here."));
+    ui["workspace-footer"].replaceChildren(node("span", "", runtime ? "Hale · runtime observer" : application ? "Hale · application service" : projects ? "Hale · project service" : "Hale API · v1"), node("span", "", runtime ? "Runtime evidence and application state have separate sources." : application ? "The application owns its controls, authority, state, and command outcomes." : projects ? "Every operation is the CLI verb, run by the head and journaled as a receipt. Effects are read back from the head before they are shown." : state.route.view === "organization" ? "Source, dependencies, and Record are pinned separately. Drafts require validation before export." : state.route.view === "definitions" ? "Definitions are code-authored. This workspace reads the host's loaded catalog." : state.route.view === "knowledge" ? "Knowledge, relationships, and bindings share one inspected snapshot." : state.route.view === "tasks" ? "Reassignment preserves each Task’s obligation and assignment history." : commandEnabled ? "Commands require explicit submission. Review settlement and adoption remain separate." : "State is read from the local Record. No changes are made here."));
     if (runtime) {
       const mount = node("div");
       ui.content.replaceChildren(mount);
@@ -2408,6 +2469,28 @@
         }
       });
       else mount.append(stateCard("Application controls unavailable", "The application browser module could not be loaded. Reload this page to try again."));
+    }
+    else if (projects) {
+      const mount = node("div");
+      ui.content.replaceChildren(mount);
+      if (state.phase === "loading") mount.append(stateCard("Reading the project service", "Checking whether an operator-machine head answers behind this API.", "◌"));
+      else if (window.IrisProjects) {
+        const token = generation;
+        projectsController = window.IrisProjects.mount(mount, {
+          head: state.head, principal: state.head?.principal || null,
+          onHead(head) { if (token === generation) setHead(head); },
+          onAttached(applicationId) { if (token === generation) navigate(workspaceRoute("practices", { app: applicationId, locus: "", target: "" })); },
+          onInvalidate(error) {
+            if (token !== generation) return;
+            const message = error?.message || "The project service principal or access changed.";
+            if (error?.status === 401 || error?.status === 403 || error?.code === "command_context_changed") {
+              const route = state.route; cancel();
+              state = { ...blankState(route), phase: "error", error: new ReadError(error.status || 409, error.code || "unauthenticated", message) }; render();
+            } else loadRoute(state.route, message);
+          }
+        });
+      }
+      else mount.append(stateCard("Projects instrument unavailable", "The project browser module could not be loaded. Reload this page to try again."));
     }
     else if (state.phase === "loading") ui.content.replaceChildren(stateCard(state.route.view === "organization" ? "Reading the organization source" : state.route.view === "definitions" ? "Reading the definition catalog" : state.route.view === "knowledge" ? "Reading the knowledge graph" : "Reading the Record", state.route.view === "organization" ? "Checking this page against its committed source, captured dependencies, and Record snapshot. Previously displayed content has been cleared." : state.route.view === "definitions" ? "Checking the loaded catalog and its source basis. Previously displayed content has been cleared." : state.route.view === "knowledge" ? "Checking the visible items and their connections against one snapshot. Previously displayed content has been cleared." : "Loading this page and its source snapshot. Previously displayed content has been cleared.", "◌"));
     else if (state.error) ui.content.replaceChildren(errorCard(state.error));
@@ -2508,6 +2591,8 @@
   }
   function renderConnection(runtime) {
     const select = ui.application;
+    const projects = state.route.view === "projects";
+    const head = state.head;
     select.replaceChildren();
     if (state.apps.length && !runtime) {
       for (const app of state.apps) {
@@ -2518,12 +2603,12 @@
       }
       select.disabled = false;
     } else {
-      select.append(node("option", "", runtime ? "Runtime connection" : state.phase === "loading" ? "Connecting…" : "No Record connected"));
+      select.append(node("option", "", projects ? "Project service" : runtime ? "Runtime connection" : state.phase === "loading" ? "Connecting…" : "No Record connected"));
       select.disabled = true;
     }
-    ui["connection-caption"].textContent = runtime ? "No DNA connection required" : state.app ? "DNA · local Record" : state.phase === "loading" ? "Reading the local service" : "Application data unavailable";
+    ui["connection-caption"].textContent = projects ? (head ? head.data.state === "attached" ? "Head · attached to " + head.data.active.name : "Head · no project attached" : "No project service behind this API") : runtime ? "No DNA connection required" : state.app ? "DNA · local Record" : state.phase === "loading" ? "Reading the local service" : "Application data unavailable";
     const principal = state.capabilities?.principal;
-    ui.principal.textContent = runtime ? "Independent observer" : principal ? (principal.mode === "oidc" ? "Signed in · " : "Local · ") + principal.name : state.error?.status === 401 ? "Sign in required" : state.phase === "loading" ? "Connecting" : "Not connected";
+    ui.principal.textContent = projects ? (head ? "Local · " + head.principal.name : "Not connected") : runtime ? "Independent observer" : principal ? (principal.mode === "oidc" ? "Signed in · " : "Local · ") + principal.name : state.error?.status === 401 ? "Sign in required" : state.phase === "loading" ? "Connecting" : "Not connected";
     ui["sign-out"].hidden = !principal || principal.mode !== "oidc";
   }
   function renderSource() {
@@ -3925,6 +4010,14 @@
       title = "Sign in to read this application";
       description = "Your session is missing or has expired. Application data has been cleared. Runtime observation remains available independently.";
       actions.push(link("Sign in", "/auth/login", "button"));
+    } else if (error.code === "head_detached") {
+      title = "No project is attached";
+      description = "The project service has no attached project, so there is no Record to read here. Attach or create one in Projects.";
+      actions.push(link("Open Projects", "#/projects", "button"));
+    } else if (error.code === "head_api_unavailable" || error.code === "upstream_timeout") {
+      title = "Project service unavailable";
+      description = (error.code === "upstream_timeout" ? "The attached project's API did not answer in time." : "The attached project's API could not be reached.") + " Inspect the attached project and its API child in Projects.";
+      actions.push(link("Open Projects", "#/projects", "button"));
     } else if (error.status === 404) {
       title = error.code === "application_not_found" ? "Application not found" : detail ? WORKSPACES[state.route.view].singular + " not found" : "Read endpoint not found";
       if (detail) description = state.route.view === "organization" ? "The exact instance in this link is absent from the inspected organization source. It has not been replaced with another instance." : state.route.view === "definitions" ? "The exact definition revision in this link is absent from the inspected catalog. It has not been replaced with a newer or different revision." : state.route.view === "knowledge" ? "This item is not available in the inspected knowledge view." : "The exact identifier in this link is absent from the inspected Record snapshot. It has not been replaced with another object.";

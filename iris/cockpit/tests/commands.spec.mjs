@@ -33,6 +33,9 @@ test('command browser contract: default provider remains read only', async ({ pa
 test('command browser contract: legacy write boolean alone cannot enable submission', async ({ page, service }) => {
   await scriptedCommands(page, service, { profile: false });
   await page.goto(service.url('practices', { id: service.practice }));
+  // Assert on the rendered practice, not on a page still reading: ending the
+  // test with the capabilities read in flight tears the API down under it.
+  await expect(page.getByRole('heading', { name: service.name, exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Submit proposal', exact: true })).toHaveCount(0);
   await expect(page.getByRole('textbox', { name: 'Proposed text', exact: true })).toHaveCount(0);
 });

@@ -770,6 +770,37 @@ process group. Retained evidence includes native Record facts, requests, binary
 hashes and process exits. This gate does not cover person retirement commands,
 cross-owner transfer, hosted or Ledger administration, or a source-ownership join.
 
+### Projects workspace
+
+`projects.spec.mjs` is the binary-free UI contract for `IrisProjects`. Its
+fixture server scripts the four head paths (`/api/hale/v1/head`, `/head/projects`,
+`/head/commands`, `/head/logs`): it covers the closed envelope validation (an
+extra key at any level, a Record envelope, a mismatched active project and an
+unknown receipt state all fail), the detached and attached form sets, browser
+side grammar checks that send nothing, the secret forms' NAME and SOURCE
+selects with no value field, the spend checkbox gating the models probe, the
+receipt lifecycle for `succeeded`, `refused`, `failed` and `outcome_unknown`
+(the last names the command, links the run log and offers no retry), the
+`data-observation` attribute set only after a fresh head read, the closed
+argument sets of the preview, forge and secret forms, the recovery slot
+restored as a GET-only lookup, a lost POST response followed by lookups until
+it settles, and a busy head. `projects-read.spec.mjs` runs the real plain
+`dna/api/api` through `harness.mjs`: the shell's single head probe answers 404,
+the page continues to Practices with the Projects entry hidden, the workspace
+opened by hand says no project service answers, Runtime never probes, no
+request other than GET is sent and the Record's refs are unchanged.
+
+```sh
+node node_modules/@playwright/test/cli.js test \
+  --config tests/playwright.config.mjs projects.spec.mjs
+HALE_BIN=/absolute/path/to/hale HALE_API_BIN=/absolute/path/to/hale-api \
+  npm test -- projects.spec.mjs projects-read.spec.mjs
+```
+
+Neither proves a verb ran on any machine. The real-receipt gate against the
+built project service is a separate native lane that skips without
+`HALE_NATIVE_HEAD_BIN` and `HALE_NATIVE_HEAD_API`.
+
 ### Declared members and recorded assignments
 
 `organization-ownership-people.spec.mjs` passed four standalone browser contracts

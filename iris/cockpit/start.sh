@@ -58,7 +58,7 @@ unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY G
 top=$(git -C "$project" rev-parse --show-toplevel 2>/dev/null) || fail 'project must be a Git worktree'
 [[ "$(cd -- "$top" && pwd -P)" == "$project" ]] || fail 'pass the DNA project root, not a subdirectory'
 git -C "$project" rev-parse --verify 'refs/dna/journal^{commit}' >/dev/null 2>&1 || fail 'project has no DNA Record; create or initialize it with hale dna first'
-for asset in index.html app.js runtime.js application.js definition-draft.js organization-draft.js knowledge-draft.js styles.css; do
+for asset in index.html app.js runtime.js application.js definition-draft.js organization-draft.js knowledge-draft.js task-administration.js projects.js styles.css; do
   [[ -r "$cockpit/web/$asset" && -s "$cockpit/web/$asset" ]] || fail "missing browser asset: $asset"
 done
 if [[ -n "${HALE_DNA_KNOWLEDGE_URL:-}" || -n "${HALE_DNA_KNOWLEDGE_READ_KEY:-}" ]]; then
