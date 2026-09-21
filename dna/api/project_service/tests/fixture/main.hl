@@ -1,0 +1,276 @@
+// dna/api/project_service/tests/fixture — the head under test (GH #965).
+// A private HOME, config and state directory under a scratch root, a
+// ten-file stub webroot, a fixture Record (the real writers; only the
+// event sequence is synthetic) with a `dna/` seed so the CLI accepts it
+// as a project, and the built head spawned over the plain `dna/api`
+// binary as its API child. Readiness is `GET /api/hale/v1/head`; stop
+// is TERM to the head, then TERM to every `children/*.pid`. Every
+// response a test reads goes through the contract validator. The
+// toolchain cache stays the real one (`XDG_CACHE_HOME` is pinned before
+// HOME moves), so a run that execs `hale dna` finds the host built.
+
+import "../../../../core" as dna;
+import "../../../contract/v1/validator" as wire_contract;
+
+const HEAD: String = "/api/hale/v1/head";
+const APPLICATIONS: String = "/api/hale/v1/applications";
+const SHELL_HTML: String = "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/styles.css\"></head><body><main>Static Iris head fixture</main><script src=\"/runtime.js\" defer></script><script src=\"/app.js\" defer></script></body></html>";
+const SHELL_JS: String = "document.querySelector('main').dataset.ready = 'yes';";
+const SHELL_CSS: String = "main { color: navy; }";
+
+type HttpResponse { status: Int = 0; headers: String = ""; body: String = ""; }
+
+locus Json {
+    params { }
+    fn raw(value: String, field: String) -> String { return std::json::find_field_raw(value, field); }
+    fn string(value: String, field: String) -> String { return std::json::find_string_field(value, field); }
+    fn integer(value: String, field: String) -> Int { return std::json::find_int_field(value, field); }
+    fn boolean(value: String, field: String) -> Bool { return self.raw(value, field) == "true"; }
+    fn data(value: String) -> String { return self.raw(value, "data"); }
+    fn eq(value: String, field: String, expected: String) {
+        std::test::assert_eq_str(self.string(value, field), expected, field + ": " + value);
+    }
+    fn is_int(value: String, field: String, expected: Int) {
+        std::test::assert_eq_int(self.integer(value, field), expected, field + ": " + value);
+    }
+    fn is_bool(value: String, field: String, expected: Bool) {
+        std::test::assert(self.boolean(value, field) == expected, field + ": " + value);
+    }
+    fn count(array: String) -> Int {
+        let mut it = std::json::array_first(array);
+        let mut n = 0;
+        while !it.done { n = n + 1; it = std::json::array_next(it); }
+        return n;
+    }
+}
+
+// `headers` are `Name: value` lines, newline-separated.
+fn curl(method: String, url: String, headers: String, body: String) -> HttpResponse {
+    let mut argv = "curl\n-q\n--noproxy\n*\n--silent\n--show-error\n--max-time\n30\n--include\n--path-as-is\n--request\n" + method;
+    let mut rest = headers;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(line) > 0 { argv = argv + "\n--header\n" + line; }
+    }
+    if len(body) > 0 { argv = argv + "\n--data-binary\n" + body; }
+    let result = dna::run_tool(argv + "\n" + url);
+    let split = std::str::index_of(result.stdout, "\r\n\r\n");
+    if split < 0 { return HttpResponse { body: result.stderr }; }
+    let head = result.stdout[0..split];
+    let space = std::str::index_of(head, " ");
+    let status = if space < 0 || len(head) < space + 4 { 0 } else { std::str::parse_int(head[(space + 1)..(space + 4)]) or 0 };
+    return HttpResponse { status: status, headers: head, body: result.stdout[(split + 4)..len(result.stdout)] };
+}
+
+// A command request of §2.5 under the fixture's principal.
+fn command(request_id: String, operation: String, application_id: String, arguments: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("request_id", request_id); b.string_field("operation", operation); b.string_field("operation_version", "1");
+    b.begin_object_field("context"); b.string_field("head", "local"); b.string_field("application_id", application_id); b.end_object();
+    b.begin_object_field("target"); b.string_field("kind", if len(application_id) > 0 { "dna.project" } else { "dna.head" }); b.string_field("id", if len(application_id) > 0 { application_id } else { "local" }); b.end_object();
+    b.begin_object_field("preconditions"); b.begin_object_field("principal"); b.string_field("mode", "local"); b.string_field("name", "tester"); b.end_object(); b.end_object();
+    b.field("arguments", arguments);
+    b.end_object();
+    return b.result();
+}
+
+locus HeadFixture {
+    params {
+        root: String = "";
+        state: String = "";
+        home: String = "";
+        webroot: String = "";
+        project: String = "";
+        port: Int = 0;
+        api_port: Int = 0;
+        identity: String = "";
+        head: std::process::Child = std::process::Child { };
+        journal: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/hale-head-fixture" };
+        json: Json = Json { };
+        validator: wire_contract::Validator = wire_contract::Validator { root: std::env::var("HALE_API_CONTRACT_ROOT") };
+    }
+    birth() {
+        std::test::assert(len(self.root) > 10 && std::str::starts_with(self.root, "/tmp/"), "owned fixture root required");
+        self.state = self.root + "/state";
+        self.home = self.root + "/home";
+        self.webroot = self.root + "/web";
+        self.project = self.root + "/project";
+        std::io::fs::mkdir(self.home) or discard;
+        std::io::fs::mkdir(self.home + "/.config") or discard;
+        std::io::fs::mkdir(self.webroot) or discard;
+        self.write_shell();
+        self.make_record();
+        if self.port == 0 { self.port = dna::free_port(1); }
+        if self.api_port == 0 { self.api_port = dna::free_port(2); }
+    }
+    dissolve() {
+        self.stop();
+        if !dna::keep_scratch() && len(self.root) > 10 && std::str::starts_with(self.root, "/tmp/") { let removed = dna::run_tool("rm\n-rf\n" + self.root); }
+    }
+    fn write_shell() {
+        std::io::fs::write_file(self.webroot + "/index.html", SHELL_HTML) or discard;
+        std::io::fs::write_file(self.webroot + "/app.js", SHELL_JS) or discard;
+        std::io::fs::write_file(self.webroot + "/styles.css", SHELL_CSS) or discard;
+        let mut rest = "runtime application definition-draft organization-draft knowledge-draft task-administration projects";
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            let name = if sp < 0 { rest } else { rest[0..sp] };
+            rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+            std::io::fs::write_file(self.webroot + "/" + name + ".js", "window.fixture_" + std::str::replace(name, "-", "_") + " = true;") or discard;
+        }
+    }
+    fn git(argv: String) -> String {
+        let result = dna::run_tool("env\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\ngit\n-C\n" + self.project + "\n" + argv);
+        std::test::assert_eq_int(result.code, 0, "git " + argv + ": " + result.stderr);
+        return dna::trim_nl(result.stdout);
+    }
+    // A Record with one row and a `dna/` seed, `.hale/` ignored as a
+    // generated project ignores it.
+    fn make_record() {
+        std::io::fs::mkdir(self.project) or discard;
+        self.git("init\n-q\n-b\nmain");
+        self.git("config\nuser.name\nhead-fixture");
+        self.git("config\nuser.email\nhead-fixture@example.invalid");
+        self.git("config\ncommit.gpgsign\nfalse");
+        self.git("config\ngc.auto\n0");
+        std::io::fs::mkdir(self.project + "/dna") or discard;
+        std::io::fs::mkdir(self.project + "/dna/org") or discard;
+        std::io::fs::write_file(self.project + "/dna/org/models.hl", "// fixture catalog\n// env_var: \"FIXTURE_MODEL_KEY\"\n") or discard;
+        std::io::fs::write_file(self.project + "/.gitignore", ".hale/\n") or discard;
+        std::io::fs::write_file(self.project + "/README.md", "# head fixture\n") or discard;
+        self.journal = dna::GitJournal { repo: self.project };
+        let refreshed = self.journal.refresh();
+        let result = self.journal.append(self.journal.revision(), "org.born", "org", "head fixture " + self.project);
+        std::test::assert(result.ok, "fixture append org.born: " + result.error);
+        let record = dna::GitRecord { repo: self.project };
+        self.identity = record.identity();
+        std::test::assert(len(self.identity) == 40, "the fixture Record has a genesis");
+    }
+    fn url() -> String { return "http://127.0.0.1:" + to_string(self.port); }
+    fn log() -> String { return std::io::fs::read_file(self.root + "/head.log") or ""; }
+    fn spawn(project_arg: String) {
+        let head_bin = std::env::var("HALE_HEAD_BIN");
+        let api_bin = std::env::var("HALE_API_BIN");
+        std::test::assert(len(head_bin) > 0 && std::io::fs::file_exists(head_bin), "build dna/api/project_service and set absolute HALE_HEAD_BIN");
+        std::test::assert(len(api_bin) > 0 && std::io::fs::file_exists(api_bin), "build dna/api and set absolute HALE_API_BIN");
+        let hale = std::env::var("HALE_BIN");
+        std::test::assert(std::str::starts_with(hale, "/"), "HALE_BIN must be absolute");
+        let script = "cd \"$1\" && export XDG_CACHE_HOME=\"${XDG_CACHE_HOME:-$HOME/.cache}\" && export HOME=\"$1/home\" XDG_CONFIG_HOME=\"$1/home/.config\" XDG_STATE_HOME=\"$1/home/.local/state\" HALE_IRIS_HEAD_STATE=\"$1/state\" USER=tester LOGNAME=tester HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 && unset HALE_IRIS_OBSERVER_ORIGIN LOTUS_OBS HALE_DNA_KNOWLEDGE_DSN HALE_DNA_KNOWLEDGE_URL HALE_DNA_KNOWLEDGE_READ_KEY HALE_DNA_KNOWLEDGE_COMMAND_KEY HALE_IRIS_ORG_DRAFTS && if [ -n \"$6\" ]; then exec \"$2\" \"$3\" \"$1/web\" \"$4\" \"$5\" \"$6\" >>\"$1/head.log\" 2>&1; else exec \"$2\" \"$3\" \"$1/web\" \"$4\" \"$5\" >>\"$1/head.log\" 2>&1; fi";
+        let argv = "sh\n-c\n" + script + "\nsh\n" + self.root + "\n" + head_bin + "\n" + to_string(self.port) + "\n" + api_bin + "\n" + to_string(self.api_port) + "\n" + project_arg;
+        let child = std::process::spawn(argv) or std::process::Child { };
+        // Child is structural: transfer its OS handles into a newly constructed
+        // field, then disarm the short-lived wrapper before its dissolve.
+        self.head = std::process::Child { argv: argv, pid: child.pid, stdin_fd: child.stdin_fd, stdout_fd: child.stdout_fd, stderr_fd: child.stderr_fd };
+        child.pid = -1; child.stdin_fd = -1; child.stdout_fd = -1; child.stderr_fd = -1;
+        std::test::assert(self.head.pid > 0, "head process spawned");
+    }
+    fn start() {
+        self.spawn("");
+        let deadline = std::time::now() + 30;
+        while std::time::now() < deadline {
+            let state = std::process::try_wait(self.head) or - 1;
+            std::test::assert_eq_int(state, -2, "the head exited before listening: " + self.log());
+            let response = self.http("GET", HEAD, "", "");
+            if response.status > 0 {
+                std::test::assert_eq_int(response.status, 200, "head readiness: " + response.body);
+                return;
+            }
+            std::time::sleep(50ms);
+        }
+        std::test::assert(false, "the head did not become reachable: " + self.log());
+    }
+    // Starts the head with `project_root` on argv; it must exit `code`
+    // (0 = it must instead come up).
+    fn start_with_project(project_root: String, code: Int) {
+        self.spawn(project_root);
+        let deadline = std::time::now() + 30;
+        while std::time::now() < deadline {
+            let state = std::process::try_wait(self.head) or - 1;
+            if code != 0 {
+                if state != -2 { std::test::assert_eq_int(state, code, "startup exit: " + self.log()); self.head.pid = -1; return; }
+            } else {
+                std::test::assert_eq_int(state, -2, "the head exited before listening: " + self.log());
+                let response = self.http("GET", HEAD, "", "");
+                if response.status == 200 { return; }
+            }
+            std::time::sleep(50ms);
+        }
+        std::test::assert(false, "the head neither listened nor exited: " + self.log());
+    }
+    fn child_pid(name: String) -> Int {
+        let text = dna::trim_nl(std::io::fs::read_file(self.state + "/children/" + name + ".pid") or "");
+        if len(text) == 0 { return -1; }
+        return std::str::parse_int(text) or - 1;
+    }
+    fn child_alive(name: String) -> Bool {
+        let pid = self.child_pid(name);
+        return pid > 0 && dna::run_tool("kill\n-0\n" + to_string(pid)).code == 0;
+    }
+    fn term(pid: Int) {
+        if pid <= 0 { return; }
+        let t = dna::run_tool("kill\n-TERM\n" + to_string(pid));
+        let mut waited = 0;
+        while waited < 100 && dna::run_tool("kill\n-0\n" + to_string(pid)).code == 0 { std::time::sleep(50ms); waited = waited + 1; }
+        let k = dna::run_tool("kill\n-KILL\n" + to_string(pid));
+    }
+    // The head alone: its children keep running, as they would for an
+    // operator who restarts the cockpit.
+    fn stop_head() {
+        if self.head.pid > 0 { self.term(self.head.pid); std::process::kill(self.head) or discard; }
+        self.head.pid = -1;
+        std::io::tcp::__close_fd(self.head.stdin_fd); self.head.stdin_fd = -1;
+        std::io::tcp::__close_fd(self.head.stdout_fd); self.head.stdout_fd = -1;
+        std::io::tcp::__close_fd(self.head.stderr_fd); self.head.stderr_fd = -1;
+    }
+    fn stop() {
+        self.stop_head();
+        self.term(self.child_pid("observer"));
+        self.term(self.child_pid("body"));
+        self.term(self.child_pid("api"));
+    }
+    fn http(method: String, path: String, headers: String, body: String) -> HttpResponse {
+        return curl(method, self.url() + path, headers, body);
+    }
+    fn command_headers() -> String {
+        return "Origin: " + self.url() + "\nContent-Type: application/json\nX-Hale-Command: 1";
+    }
+    fn post(body: String) -> HttpResponse {
+        return self.http("POST", HEAD + "/commands", self.command_headers(), body);
+    }
+    fn lookup(request_id: String) -> HttpResponse {
+        return self.http("GET", HEAD + "/commands?request_id=" + dna::url_encode(request_id), "", "");
+    }
+    fn validate(response: HttpResponse, schema: String, status: Int) -> String {
+        std::test::assert_eq_int(response.status, status, schema + ": " + response.body);
+        std::test::assert(std::str::contains(dna::response_header(response.headers, "Content-Type"), "application/json"), "JSON response content type");
+        let result = self.validator.validate(schema, response.body);
+        std::test::assert(result.ok, schema + ": " + result.error + "\n" + response.body);
+        return response.body;
+    }
+    fn error(method: String, path: String, headers: String, body: String, status: Int, code: String) {
+        let payload = self.validate(self.http(method, path, headers, body), "ErrorResponse", status);
+        self.json.eq(self.json.raw(payload, "error"), "code", code);
+    }
+    // Submits and returns the validated receipt (`data`) with its status checked.
+    fn submit(body: String, status: Int) -> String {
+        return self.json.data(self.validate(self.post(body), "HeadCommandResponse", status));
+    }
+    // Polls the receipt until it is terminal, at most `secs`.
+    fn settled(request_id: String, secs: Int) -> String {
+        let deadline = std::time::now() + secs;
+        while std::time::now() < deadline {
+            let receipt = self.json.data(self.validate(self.lookup(request_id), "HeadCommandResponse", 200));
+            let state = self.json.string(receipt, "state");
+            if state == "succeeded" || state == "failed" || state == "refused" || state == "outcome_unknown" { return receipt; }
+            std::time::sleep(250ms);
+        }
+        std::test::assert(false, "the receipt for " + request_id + " did not settle in " + to_string(secs) + " s");
+        return "";
+    }
+    fn head_state() -> String {
+        return self.json.data(self.validate(self.http("GET", HEAD, "", ""), "HeadResponse", 200));
+    }
+}

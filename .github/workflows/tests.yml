@@ -552,8 +552,17 @@ jobs:
           ./target/release/hale test dna/api/contract/v1/tests
           ./target/release/hale check dna/api
           ./target/release/hale build dna/api
+          ./target/release/hale check dna/api/practice_review
+          ./target/release/hale build dna/api/practice_review
+          ./target/release/hale check dna/api/project_service
+          ./target/release/hale build dna/api/project_service
           HALE_API_BIN="$PWD/dna/api/api" \
             ./target/release/hale test dna/api/tests
+          # The cockpit head (GH #965): its fixtures spawn the built head over
+          # the plain API and exec this compiler's `hale dna` verbs detached.
+          HALE_HEAD_BIN="$PWD/dna/api/project_service/project_service" \
+            HALE_API_BIN="$PWD/dna/api/api" \
+            ./target/release/hale test dna/api/project_service/tests
           # Domain fixtures own temporary Git roots and do not need a database.
           (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/target/release/hale" test "$GITHUB_WORKSPACE/dna/operations/tests")
 
@@ -576,7 +585,10 @@ jobs:
           npm ci
           npx playwright install --with-deps chromium --only-shell
           HALE_BIN="$GITHUB_WORKSPACE/target/release/hale" \
-            HALE_API_BIN="$GITHUB_WORKSPACE/dna/api/api" npm test
+            HALE_API_BIN="$GITHUB_WORKSPACE/dna/api/api" \
+            HALE_NATIVE_HEAD_BIN="$GITHUB_WORKSPACE/dna/api/project_service/project_service" \
+            HALE_NATIVE_HEAD_API="$GITHUB_WORKSPACE/dna/api/practice_review/practice_review" \
+            npm test
 
       - name: Preserve cockpit browser failure evidence
         if: failure()

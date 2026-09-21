@@ -1,0 +1,192 @@
+// dna/api/project_service/children.hl — the head's detached children
+// (GH #965). A child is started through `sh`, detached from the
+// request that started it, with its pid and its exit code as files
+// beside a log of what it printed; the head polls liveness with
+// `kill -0`, reads the code when it ends, and stops it with TERM then
+// KILL. Children outlive the head by design (#690: restarting the UI
+// must not interrupt organization execution), so a `.cmd` digest of
+// the argv line lets the next head re-adopt a child it did not start.
+//
+// `Proc`, `start`, `shq`, `env_words`, `argv_words`, `alive`,
+// `exit_code`, `descendants`, `kill_tree` and `stop_proc` are copied
+// from `dna/host/procs.hl` (GH #566 F8): the host is embedded in the
+// `hale` binary and importing it from here would pull the whole host
+// seed into a head that needs one file of it. Keep the two in step.
+
+import "../../core" as dna;
+
+type Proc {
+    pid: Int = -1;
+    dir: String = "";
+    name: String = "";
+}
+
+// `argv` newline-separated; `envs` as `NAME=value` lines; cwd = `cwd`.
+// The pid recorded is the program's own: the inner shell execs `env`,
+// which execs the program, so `/proc/<pid>/cmdline` is `argv`.
+fn start(dir: String, name: String, cwd: String, envs: String, argv: String) -> Proc {
+    std::io::fs::mkdir(dir) or discard;
+    std::io::fs::unlink(dir + "/" + name + ".exit") or discard;
+    std::io::fs::unlink(dir + "/" + name + ".pid") or discard;
+    // the inner shell: run the program, record its pid, wait, record its code
+    let script = "cd " + shq(cwd) + " && exec env " + env_words(envs) + " \"$@\" </dev/null >>" + shq(dir + "/" + name + ".log") + " 2>&1";
+    let outer = "( sh -c " + shq("\"$@\" & echo $! > " + shq(dir + "/" + name + ".pid") + "; wait $!; echo $? > " + shq(dir + "/" + name + ".exit")) + " sh sh -c " + shq(script) + " sh " + argv_words(argv) + " ) >/dev/null 2>&1 &";
+    let r = dna::run_tool("sh\n-c\n" + outer);
+    let mut waited = 0;
+    while waited < 50 {
+        let pid = std::io::fs::read_file(dir + "/" + name + ".pid") or "";
+        if len(dna::trim_nl(pid)) > 0 { return Proc { pid: std::str::parse_int(dna::trim_nl(pid)) or - 1, dir: dir, name: name }; }
+        std::time::sleep(20ms);
+        waited = waited + 1;
+    }
+    return Proc { pid: -1, dir: dir, name: name };
+}
+
+// single-quote for sh
+fn shq(s: String) -> String {
+    return "'" + std::str::replace(s, "'", "'\\''") + "'";
+}
+
+fn env_words(envs: String) -> String {
+    let mut out = "";
+    let mut rest = envs;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let w = if nl < 0 { rest } else { rest[0..nl] };
+        if len(w) > 0 { out = out + shq(w) + " "; }
+        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+    }
+    return out;
+}
+
+fn argv_words(argv: String) -> String {
+    return env_words(argv);
+}
+
+fn alive(p: Proc) -> Bool {
+    if p.pid <= 0 { return false; }
+    return dna::run_tool("kill\n-0\n" + to_string(p.pid)).code == 0;
+}
+
+// The exit code once the process ended; -2 while it runs.
+fn exit_code(p: Proc) -> Int {
+    if p.pid <= 0 { return -1; }
+    let text = std::io::fs::read_file(p.dir + "/" + p.name + ".exit") or "";
+    if len(dna::trim_nl(text)) == 0 { if alive(p) { return -2; } return -1; }
+    return std::str::parse_int(dna::trim_nl(text)) or - 1;
+}
+
+// Every process under `pid` — its children, theirs, and so on — with
+// `pid` itself, newline-separated, from `ps`. A tool a program started
+// through `run_tool` has a process group of its own, so killing the
+// program, or its group, misses it (the third review of #622).
+@unbounded
+fn descendants(pid: String) -> String {
+    let table = dna::run_tool("ps\n-eo\npid=,ppid=").stdout;
+    let mut found = "\n" + pid + "\n";
+    let mut grew = true;
+    while grew {
+        grew = false;
+        let mut rest = table;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = std::str::trim(if nl < 0 { rest } else { rest[0..nl] });
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            let sp = std::str::index_of(line, " ");
+            if sp < 0 { continue; }
+            let child = line[0..sp];
+            let parent = std::str::trim(line[(sp + 1)..len(line)]);
+            if std::str::contains(found, "\n" + parent + "\n") && !std::str::contains(found, "\n" + child + "\n") {
+                found = found + child + "\n";
+                grew = true;
+            }
+        }
+    }
+    return dna::trim_nl(found[1..len(found)]);
+}
+
+// A process and everything it started, at once: frozen first, so nothing
+// in the tree starts more, then the frozen tree read again and killed.
+fn kill_tree(pid: String) {
+    if len(pid) == 0 || pid == "0" || pid == "-1" { return; }
+    let first = descendants(pid);
+    let s = dna::run_tool("kill\n-STOP\n" + first);
+    let all = descendants(pid);
+    let k = dna::run_tool("kill\n-KILL\n" + first + "\n" + all);
+}
+
+// TERM, a grace period, then KILL.
+fn stop_proc(p: Proc) {
+    if p.pid <= 0 { return; }
+    let t = dna::run_tool("kill\n-TERM\n" + to_string(p.pid));
+    let mut waited = 0;
+    while waited < 100 {
+        if !alive(p) { return; }
+        std::time::sleep(50ms);
+        waited = waited + 1;
+    }
+    let k = dna::run_tool("kill\n-KILL\n" + to_string(p.pid));
+    std::time::sleep(50ms);
+}
+
+// ---- the head's own additions --------------------------------------
+
+// The digest `<name>.cmd` holds: sha256 over the argv line, trailing
+// newlines dropped. The same line read back from `/proc/<pid>/cmdline`
+// digests the same, which is how a head re-adopts a child a previous
+// head started (§2.3 of the head's contract).
+fn cmd_digest(argv: String) -> String {
+    return dna::hex_digest(dna::trim_nl(argv));
+}
+
+fn write_cmd(dir: String, name: String, argv: String) {
+    std::io::fs::write_file(dir + "/" + name + ".cmd", cmd_digest(argv) + "\n") or discard;
+}
+
+fn read_cmd(dir: String, name: String) -> String {
+    return dna::trim_nl(std::io::fs::read_file(dir + "/" + name + ".cmd") or "");
+}
+
+// Whether `pid` is alive and running the argv line recorded in
+// `<dir>/<name>.cmd`. Linux only: the argv comes from
+// `/proc/<pid>/cmdline`, NUL-separated, read through `tr` because a
+// NUL ends a String. A reused pid running an identical line would pass
+// (the contract's R6, theoretical).
+fn cmd_matches(dir: String, name: String, pid: Int) -> Bool {
+    if pid <= 0 { return false; }
+    let want = read_cmd(dir, name);
+    if len(want) == 0 { return false; }
+    let r = dna::run_tool("sh\n-c\ntr '\\0' '\\n' < /proc/\"$1\"/cmdline\nsh\n" + to_string(pid));
+    if r.code != 0 { return false; }
+    return cmd_digest(r.stdout) == want;
+}
+
+// `max` bytes of the file at `path` from `offset`; `complete` when the
+// page reached the end of the file as it is now.
+fn read_log(path: String, offset: Int, max: Int) -> LogPage {
+    let text = std::io::fs::read_file(path) or "";
+    let size = len(text);
+    let from = if offset < 0 { 0 } else if offset > size { size } else { offset };
+    let want = if max < 0 { 0 } else { max };
+    let to = if size - from > want { from + want } else { size };
+    return LogPage { text: text[from..to], offset: from, next_offset: to, complete: to == size };
+}
+
+// `text` into `path`, mode 0600: the file is created empty under
+// `umask 077` by the shell, then filled — `std::process::run` has no
+// stdin, and a path or a script is never an argv word of a `printf`.
+// An existing file goes first so the mode is the new one's.
+fn write_private(path: String, text: String) -> Bool {
+    std::io::fs::unlink(path) or discard;
+    let made = dna::run_tool("sh\n-c\numask 077 && : > \"$1\"\nsh\n" + path);
+    if made.code != 0 { return false; }
+    std::io::fs::write_file(path, text) or discard;
+    return (std::io::fs::file_size(path) or - 1) == len(text);
+}
+
+// The octal mode of `path` as `stat -c %a` prints it ("600"); "" when
+// the file is not there.
+fn mode_of(path: String) -> String {
+    let r = dna::run_tool("stat\n-c\n%a\n" + path);
+    return if r.code == 0 { dna::trim_nl(r.stdout) } else { "" };
+}

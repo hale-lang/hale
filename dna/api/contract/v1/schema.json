@@ -11474,6 +11474,1094 @@
         "data"
       ],
       "additionalProperties": false
+    },
+    "HeadOperationName": {
+      "enum": [
+        "dna.project.create",
+        "dna.project.init",
+        "dna.project.attach",
+        "dna.project.detach",
+        "dna.project.forget",
+        "dna.project.sync",
+        "dna.project.publish",
+        "dna.forge.configure",
+        "dna.forge.sync",
+        "dna.body.local.start",
+        "dna.body.local.stop",
+        "dna.body.provision",
+        "dna.body.start",
+        "dna.body.stop",
+        "dna.body.logs",
+        "dna.secret.set",
+        "dna.secret.rotate",
+        "dna.models.probe",
+        "dna.connection.propose",
+        "dna.connection.close",
+        "dna.handoff.publish",
+        "dna.handoff.accept",
+        "dna.handoff.sync",
+        "dna.observer.start",
+        "dna.observer.stop"
+      ],
+      "description": "The closed set of head operations; every one is version 1 and is the CLI verb, run detached by the head."
+    },
+    "HeadIdentity": {
+      "type": "object",
+      "properties": {
+        "profile": {
+          "const": "dna.head.v1"
+        },
+        "principal": {
+          "$ref": "#/$defs/CommandPrincipal"
+        },
+        "active": {
+          "type": "string",
+          "description": "The attached project's application_id, or empty when detached."
+        }
+      },
+      "required": [
+        "profile",
+        "principal",
+        "active"
+      ],
+      "additionalProperties": false,
+      "description": "Who answered: the head profile, the trusted-local principal every command runs as, and the active project. Not a Record source: head routes carry no record_id."
+    },
+    "HeadEnvelope": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": "hale.v1"
+        },
+        "head": {
+          "$ref": "#/$defs/HeadIdentity"
+        },
+        "data": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "api_version",
+        "head",
+        "data"
+      ],
+      "additionalProperties": false,
+      "description": "The envelope of the four head routes. A Record envelope's source object is not permitted here."
+    },
+    "HeadApi": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "state": {
+          "enum": [
+            "starting",
+            "ready",
+            "down"
+          ]
+        },
+        "pid": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "port",
+        "state",
+        "pid"
+      ],
+      "additionalProperties": false
+    },
+    "HeadActive": {
+      "type": "object",
+      "properties": {
+        "application_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "api": {
+          "$ref": "#/$defs/HeadApi"
+        }
+      },
+      "required": [
+        "application_id",
+        "root",
+        "name",
+        "api"
+      ],
+      "additionalProperties": false
+    },
+    "HeadBody": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "stopped",
+            "running",
+            "exited",
+            "external"
+          ]
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "since": {
+          "type": "integer"
+        },
+        "command_id": {
+          "type": "string"
+        },
+        "membrane_up": {
+          "type": "boolean"
+        },
+        "mode": {
+          "enum": [
+            "run",
+            "dev",
+            ""
+          ]
+        },
+        "exit_code": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "state",
+        "pid",
+        "since",
+        "command_id",
+        "membrane_up",
+        "mode",
+        "exit_code"
+      ],
+      "additionalProperties": false,
+      "description": "The local body as the head sees it: its own child, or `external` when `<root>/.hale/dna/org.pid` is alive and not a head child."
+    },
+    "HeadObserver": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "stopped",
+            "running",
+            "exited"
+          ]
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "since": {
+          "type": "integer"
+        },
+        "command_id": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "pid",
+        "since",
+        "command_id",
+        "origin"
+      ],
+      "additionalProperties": false
+    },
+    "HeadChildren": {
+      "type": "object",
+      "properties": {
+        "body": {
+          "$ref": "#/$defs/HeadBody"
+        },
+        "observer": {
+          "$ref": "#/$defs/HeadObserver"
+        }
+      },
+      "required": [
+        "body",
+        "observer"
+      ],
+      "additionalProperties": false
+    },
+    "HeadCredentials": {
+      "type": "object",
+      "properties": {
+        "needed": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "file_sources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "env_present": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "needed",
+        "file_sources",
+        "env_present"
+      ],
+      "additionalProperties": false,
+      "description": "Names only: the credentials the catalog names, the operator's file sources, and the needed names set in the head's environment. No value ever crosses this wire."
+    },
+    "HeadOperation": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/HeadOperationName"
+        },
+        "version": {
+          "const": "1"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "reason_code": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "available",
+        "reason_code"
+      ],
+      "additionalProperties": false
+    },
+    "HeadState": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "detached",
+            "attached"
+          ]
+        },
+        "active": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HeadActive"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sources_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "projects_dir": {
+          "type": "string"
+        },
+        "children": {
+          "$ref": "#/$defs/HeadChildren"
+        },
+        "credentials": {
+          "$ref": "#/$defs/HeadCredentials"
+        },
+        "busy": {
+          "type": "string",
+          "description": "The command_id of the running receipt, or empty."
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HeadOperation"
+          },
+          "minItems": 25,
+          "maxItems": 25
+        }
+      },
+      "required": [
+        "state",
+        "active",
+        "state_dir",
+        "sources_dir",
+        "projects_dir",
+        "children",
+        "credentials",
+        "busy",
+        "operations"
+      ],
+      "additionalProperties": false
+    },
+    "HeadResponse": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": "hale.v1"
+        },
+        "head": {
+          "$ref": "#/$defs/HeadIdentity"
+        },
+        "data": {
+          "$ref": "#/$defs/HeadState"
+        }
+      },
+      "required": [
+        "api_version",
+        "head",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "HeadRecord": {
+      "type": "object",
+      "properties": {
+        "head": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "head",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "HeadForge": {
+      "type": "object",
+      "properties": {
+        "github": {
+          "type": "string"
+        },
+        "board": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "github",
+        "board"
+      ],
+      "additionalProperties": false
+    },
+    "HeadCommandState": {
+      "enum": [
+        "recorded",
+        "admitted",
+        "refused",
+        "running",
+        "succeeded",
+        "failed",
+        "outcome_unknown"
+      ]
+    },
+    "HeadRecent": {
+      "type": "object",
+      "properties": {
+        "command_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "$ref": "#/$defs/HeadOperationName"
+        },
+        "state": {
+          "$ref": "#/$defs/HeadCommandState"
+        },
+        "updated_at": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command_id",
+        "request_id",
+        "operation",
+        "state",
+        "updated_at"
+      ],
+      "additionalProperties": false
+    },
+    "HeadAuthority": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "boolean"
+        },
+        "task": {
+          "type": "boolean"
+        },
+        "organization": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "command",
+        "task",
+        "organization"
+      ],
+      "additionalProperties": false,
+      "description": "Whether each per-project policy file is present and decodes for this identity under the Record's trust."
+    },
+    "HeadConnection": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "url": {
+          "type": "string"
+        },
+        "position": {
+          "type": "string"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "state": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "name",
+        "url",
+        "position",
+        "purpose",
+        "classes",
+        "state"
+      ],
+      "additionalProperties": false
+    },
+    "HeadHandoff": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "connection": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "task",
+            "receipt"
+          ]
+        },
+        "subject": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "id",
+        "connection",
+        "kind",
+        "subject",
+        "state"
+      ],
+      "additionalProperties": false
+    },
+    "HeadProject": {
+      "type": "object",
+      "properties": {
+        "application_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "attached_at": {
+          "type": "integer"
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "record": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HeadRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "body": {
+          "$ref": "#/$defs/HeadBody"
+        },
+        "forge": {
+          "$ref": "#/$defs/HeadForge"
+        },
+        "recent": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HeadRecent"
+          },
+          "maxItems": 10
+        },
+        "authority": {
+          "$ref": "#/$defs/HeadAuthority"
+        },
+        "connections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HeadConnection"
+          }
+        },
+        "handoffs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HeadHandoff"
+          }
+        },
+        "secrets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "receipts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HeadCommandReceipt"
+          },
+          "maxItems": 50
+        }
+      },
+      "required": [
+        "application_id",
+        "name",
+        "root",
+        "attached_at",
+        "active",
+        "record",
+        "body",
+        "forge",
+        "recent"
+      ],
+      "additionalProperties": false,
+      "description": "One registered project. The five detail fields (authority, connections, handoffs, secrets, receipts) are present only on the `?id=` read; the projections are read in-process from the Record and touch no network."
+    },
+    "HeadProjectsResponse": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": "hale.v1"
+        },
+        "head": {
+          "$ref": "#/$defs/HeadIdentity"
+        },
+        "data": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/HeadProject"
+              }
+            }
+          },
+          "required": [
+            "items"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "api_version",
+        "head",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "SecretSource": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "file",
+            "env"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "kind",
+        "name"
+      ],
+      "additionalProperties": false,
+      "description": "Where the run script reads a secret: a 0600 one-line file under the operator's sources directory, or an environment variable the shell reads. The head never reads the value."
+    },
+    "HeadCommandArguments": {
+      "type": "object",
+      "properties": {
+        "parent": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "profile": {
+          "enum": [
+            "local",
+            "remote-body",
+            ""
+          ]
+        },
+        "remote": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "body": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "discover": {
+          "type": "boolean"
+        },
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "github": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "board": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 39
+          },
+          "maxItems": 64
+        },
+        "application_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "mode": {
+          "enum": [
+            "run",
+            "dev"
+          ]
+        },
+        "owner": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "target": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "dsn": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "dir": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
+        "source": {
+          "$ref": "#/$defs/SecretSource"
+        },
+        "confirm_spend": {
+          "type": "boolean"
+        },
+        "record_url": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "position": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "purpose": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "classes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "maxItems": 64
+        },
+        "why": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "connection": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "kind": {
+          "enum": [
+            "task",
+            "receipt"
+          ]
+        },
+        "subject": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 256
+        }
+      },
+      "additionalProperties": false,
+      "description": "The closed superset of every operation's arguments; each operation admits only its own keys (the allowlists of the head README), and a `value` key is never one of them."
+    },
+    "HeadCommandContext": {
+      "type": "object",
+      "properties": {
+        "head": {
+          "const": "local"
+        },
+        "application_id": {
+          "type": "string",
+          "description": "The attached project's application_id; empty only for dna.project.create, init, attach and forget."
+        }
+      },
+      "required": [
+        "head",
+        "application_id"
+      ],
+      "additionalProperties": false
+    },
+    "HeadCommandTarget": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "dna.head",
+            "dna.project"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "HeadCommandRequest": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "operation": {
+          "$ref": "#/$defs/HeadOperationName"
+        },
+        "operation_version": {
+          "const": "1"
+        },
+        "context": {
+          "$ref": "#/$defs/HeadCommandContext"
+        },
+        "target": {
+          "$ref": "#/$defs/HeadCommandTarget"
+        },
+        "preconditions": {
+          "type": "object",
+          "properties": {
+            "principal": {
+              "$ref": "#/$defs/CommandPrincipal",
+              "description": "Untrusted expected identity, compared with the head's principal before anything is recorded; never grants authority."
+            }
+          },
+          "required": [
+            "principal"
+          ],
+          "additionalProperties": false
+        },
+        "arguments": {
+          "$ref": "#/$defs/HeadCommandArguments"
+        }
+      },
+      "required": [
+        "request_id",
+        "operation",
+        "operation_version",
+        "context",
+        "target",
+        "preconditions",
+        "arguments"
+      ],
+      "additionalProperties": false,
+      "description": "One head command (dna.head-command/1). The head validates the shape before recording; a shape error is 400 invalid_command, never a receipt."
+    },
+    "HeadRun": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "run",
+            "body",
+            "observer",
+            "inline"
+          ]
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "deadline": {
+          "type": "integer"
+        },
+        "external": {
+          "type": "boolean"
+        },
+        "exit_code": {
+          "type": "integer"
+        },
+        "log": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "pid",
+        "deadline",
+        "external",
+        "exit_code",
+        "log"
+      ],
+      "additionalProperties": false,
+      "description": "How the command executed: a detached run, a long-lived body or observer child, or inline in the POST. `external` says whether a deadline yields outcome_unknown (true) or failed."
+    },
+    "HeadCommandReceipt": {
+      "type": "object",
+      "properties": {
+        "command_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "$ref": "#/$defs/HeadOperationName"
+        },
+        "operation_version": {
+          "const": "1"
+        },
+        "principal": {
+          "$ref": "#/$defs/CommandPrincipal"
+        },
+        "context": {
+          "$ref": "#/$defs/HeadCommandContext"
+        },
+        "target": {
+          "$ref": "#/$defs/HeadCommandTarget"
+        },
+        "fingerprint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "$ref": "#/$defs/HeadCommandState"
+        },
+        "reason_code": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "submitted_at": {
+          "type": "integer"
+        },
+        "updated_at": {
+          "type": "integer"
+        },
+        "run": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HeadRun"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outcome": {
+          "type": "object",
+          "description": "Per operation; row-writing operations add record:{head_before,head_after,rows:[{seq,kind,entity,author}]}."
+        }
+      },
+      "required": [
+        "command_id",
+        "request_id",
+        "operation",
+        "operation_version",
+        "principal",
+        "context",
+        "target",
+        "fingerprint",
+        "state",
+        "reason_code",
+        "reason",
+        "submitted_at",
+        "updated_at",
+        "run",
+        "outcome"
+      ],
+      "additionalProperties": false,
+      "description": "The fold of the receipt journal for one command: recorded, then admitted or refused, then running, then succeeded, failed or outcome_unknown. A deadline on an external verb is outcome_unknown with evidence, never failed."
+    },
+    "HeadCommandResponse": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": "hale.v1"
+        },
+        "head": {
+          "$ref": "#/$defs/HeadIdentity"
+        },
+        "data": {
+          "$ref": "#/$defs/HeadCommandReceipt"
+        }
+      },
+      "required": [
+        "api_version",
+        "head",
+        "data"
+      ],
+      "additionalProperties": false
+    },
+    "HeadLogPage": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "next_offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "complete": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "offset",
+        "next_offset",
+        "text",
+        "complete"
+      ],
+      "additionalProperties": false
+    },
+    "HeadLogResponse": {
+      "type": "object",
+      "properties": {
+        "api_version": {
+          "const": "hale.v1"
+        },
+        "head": {
+          "$ref": "#/$defs/HeadIdentity"
+        },
+        "data": {
+          "$ref": "#/$defs/HeadLogPage"
+        }
+      },
+      "required": [
+        "api_version",
+        "head",
+        "data"
+      ],
+      "additionalProperties": false
     }
   }
 }

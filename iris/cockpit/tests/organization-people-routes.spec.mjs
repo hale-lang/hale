@@ -16,7 +16,7 @@ const error = (code, message) => ({ api_version: 'hale.v1', error: { code, messa
 const test = base.extend({
   page: async ({ page }, use) => { const errors = []; page.on('pageerror', value => errors.push(value.message)); await use(page); expect(errors).toEqual([]); },
   host: async ({}, use) => {
-    const names = ['index.html', 'app.js', 'styles.css', 'runtime.js', 'application.js', 'organization-draft.js', 'definition-draft.js', 'knowledge-draft.js', 'task-administration.js'];
+    const names = ['index.html', 'app.js', 'styles.css', 'runtime.js', 'application.js', 'organization-draft.js', 'definition-draft.js', 'knowledge-draft.js', 'task-administration.js', 'projects.js'];
     const assets = new Map(await Promise.all(names.map(async name => [name, await readFile(new URL('../web/' + name, import.meta.url))])));
     const host = await httpFixture((request, response) => { const name = request.url === '/' ? 'index.html' : request.url.slice(1);
       if (!assets.has(name)) { response.writeHead(404).end(); return; }

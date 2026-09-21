@@ -1,0 +1,526 @@
+// dna/api/project_service/tests/head_api_s3_test.hl — S3's operations
+// through the real head over HTTP (GH #965). A project `hale dna new`
+// made is attached; a secret request carrying a `value` key, at the top
+// or inside its source, is refused at the door (400) and never
+// recorded; a secret set from a 0600 file source runs detached, settles
+// on the next request with the verb's row as evidence, consumes the
+// source and leaves the value nowhere in the head's state; a connection
+// proposed to a peer record, put in force by the Board, and a receipt
+// handed across it are projected on the project's detail read; the
+// local body starts as a long-lived child (202), settles `succeeded`
+// once its membrane is up, shows `running` with `membrane_up` in the
+// head's children and blocks a second start, an attach of another
+// project and a detach; the observer starts over the membrane and
+// answers on its origin, then stops; the body stops through its host's
+// own teardown (`body.released`) and the head shows it `exited`. Every
+// response is validated against the contract's head definitions.
+//
+// Silent on stdout: a passing fixture prints nothing.
+
+import ".." as head;
+import "./fixture" as fixture;
+import "../../../core" as dna;
+
+const HEAD: String = "/api/hale/v1/head";
+// The value that must never reach the head's state.
+const FILE_SECRET: String = "head-file-source-value-4c1d9e72";
+// The head's observer port when `HALE_IRIS_OBSERVER_ORIGIN` is unset,
+// which the fixture leaves it.
+const OBSERVER_PORT: Int = 8787;
+
+fn toolchain() -> String { return std::env::var("HALE_BIN"); }
+
+// Run `argv` (newline-separated) in `dir`.
+fn in_dir(dir: String, argv: String) -> dna::RunResult {
+    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && exec \"$@\"\nsh\n" + dir + "\n" + argv);
+}
+
+fn dna_cli(root: String, args: String) -> dna::RunResult { return in_dir(root, toolchain() + "\ndna\n" + args); }
+
+fn git(repo: String, argv: String) -> String {
+    let r = in_dir(repo, "git\n" + argv);
+    std::test::assert_eq_int(r.code, 0, "git " + argv + ": " + r.stderr);
+    return dna::trim_nl(r.stdout);
+}
+
+// The fixture's curl with a longer deadline: an inline stop of the
+// local body waits for the host's own teardown, up to a minute.
+fn curl_slow(method: String, url: String, headers: String, body: String, max_time: Int) -> fixture::HttpResponse {
+    let mut argv = "curl\n-q\n--noproxy\n*\n--silent\n--show-error\n--max-time\n" + to_string(max_time) + "\n--include\n--path-as-is\n--request\n" + method;
+    let mut rest = headers;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(line) > 0 { argv = argv + "\n--header\n" + line; }
+    }
+    if len(body) > 0 { argv = argv + "\n--data-binary\n" + body; }
+    let result = dna::run_tool(argv + "\n" + url);
+    let split = std::str::index_of(result.stdout, "\r\n\r\n");
+    if split < 0 { return fixture::HttpResponse { body: result.stderr }; }
+    let top = result.stdout[0..split];
+    let space = std::str::index_of(top, " ");
+    let status = if space < 0 || len(top) < space + 4 { 0 } else { std::str::parse_int(top[(space + 1)..(space + 4)]) or 0 };
+    return fixture::HttpResponse { status: status, headers: top, body: result.stdout[(split + 4)..len(result.stdout)] };
+}
+
+// The rows of `kind` in a record's journal.
+fn count_rows(repo: String, kind: String) -> Int {
+    let text = in_dir(repo, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout + "\n";
+    let mut n = 0;
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::contains(line, "\"kind\": \"" + kind + "\"") { n = n + 1; }
+    }
+    return n;
+}
+
+// The text after `marker` up to the next space.
+fn word_after(text: String, marker: String) -> String {
+    let at = std::str::index_of(text, marker);
+    if at < 0 { return ""; }
+    let rest = text[(at + len(marker))..len(text)];
+    let sp = std::str::index_of(rest, " ");
+    return if sp < 0 { dna::trim_nl(rest) } else { rest[0..sp] };
+}
+
+// The object in a JSON array whose `key` is `value` ("" when none).
+fn item_where(array: String, key: String, value: String) -> String {
+    let t = std::str::trim(array);
+    if !std::str::starts_with(t, "[") { return ""; }
+    let mut it = std::json::array_first_span(t);
+    while !it.done {
+        let item = std::json::iter_substring(it, t);
+        if std::json::find_string_field(item, key) == value { return item; }
+        it = std::json::array_next_span(it, t);
+    }
+    return "";
+}
+
+// Whether `needle` is in any file under `dir` (grep's own walk).
+fn anywhere_under(dir: String, needle: String) -> Bool {
+    return dna::run_tool("grep\n-rFl\n--\n" + needle + "\n" + dir).code == 0;
+}
+
+// One entry of `GET /head`'s `operations`, as the head prints it.
+fn operation_entry(name: String, available: Bool, reason: String) -> String {
+    return "\"name\": \"" + name + "\", \"version\": \"1\", \"available\": " + (if available { "true" } else { "false" }) + ", \"reason_code\": \"" + reason + "\"";
+}
+
+// A project made with `hale dna new` under `parent`, its genome committed.
+fn project(parent: String, name: String) -> String {
+    let made = in_dir(parent, "timeout\n600\n" + toolchain() + "\ndna\nnew\n" + name);
+    std::test::assert_eq_int(made.code, 0, "hale dna new " + name + ": " + made.stdout + made.stderr);
+    let app = parent + "/" + name;
+    git(app, "config\nuser.name\nhead-s3");
+    git(app, "config\nuser.email\nhead-s3@example.invalid");
+    git(app, "config\ncommit.gpgsign\nfalse");
+    git(app, "add\n-A");
+    git(app, "commit\n-q\n-m\nthe genome");
+    return app;
+}
+
+// A bare remote under `scratch` as `app`'s origin, the genome pushed
+// and the record synced there (which publishes its identity for a peer).
+fn bare_remote(scratch: String, app: String, name: String) -> String {
+    let url = scratch + "/" + name + ".git";
+    let made = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + url);
+    std::test::assert_eq_int(made.code, 0, "bare " + name + ": " + made.stderr);
+    git(app, "remote\nadd\norigin\n" + url);
+    git(app, "push\n-q\norigin\nmain");
+    let synced = dna_cli(app, "sync");
+    std::test::assert_eq_int(synced.code, 0, "synced " + name + ": " + synced.stdout + synced.stderr);
+    return url;
+}
+
+locus S3HeadCases {
+    params {
+        f: fixture::HeadFixture = fixture::HeadFixture { };
+        alpha: String = "";
+        alpha_id: String = "";
+        beta: String = "";
+        beta_id: String = "";
+        beta_url: String = "";
+        body_id: String = "";
+        observer_ran: Bool = false;
+    }
+
+    fn sources() -> String { return self.f.home + "/.config/hale-dna/sources"; }
+
+    fn state_of(state: String, name: String, available: Bool, reason: String) {
+        std::test::assert(std::str::contains(self.f.json.raw(state, "operations"), operation_entry(name, available, reason)), name + " is " + (if available { "available" } else { "unavailable: " + reason }) + ": " + state);
+    }
+
+    fn submit(request_id: String, operation: String, arguments: String, status: Int) -> String {
+        return self.f.submit(fixture::command(request_id, operation, self.alpha_id, arguments), status);
+    }
+
+    // The project's detail read (`?id=`), validated.
+    fn detail() -> String {
+        let payload = self.f.json.data(self.f.validate(self.f.http("GET", HEAD + "/projects?id=" + self.alpha_id, "", ""), "HeadProjectsResponse", 200));
+        return std::json::array_first(self.f.json.raw(payload, "items")).element;
+    }
+
+    // Two projects the CLI makes: the one the head attaches, under the
+    // private HOME's dna/ as the body's own default, and a peer beside
+    // the scratch root; each with a bare remote its identity is
+    // published to (a peer's connection reads it there).
+    fn setup() {
+        self.alpha = project(self.f.home + "/dna", "alpha");
+        let a = dna::GitRecord { repo: self.alpha };
+        self.alpha_id = a.identity();
+        std::test::assert_eq_int(len(self.alpha_id), 40, "alpha's identity: " + self.alpha_id);
+        self.beta = project(self.f.root, "beta");
+        let b = dna::GitRecord { repo: self.beta };
+        self.beta_id = b.identity();
+        std::test::assert(len(self.beta_id) == 40 && self.beta_id != self.alpha_id, "two records");
+        let alpha_url = bare_remote(self.f.root, self.alpha, "alpha");
+        self.beta_url = bare_remote(self.f.root, self.beta, "beta");
+    }
+
+    fn attach() {
+        let receipt = self.f.submit(fixture::command("s3-attach", "dna.project.attach", "", "{\"root\":\"" + self.alpha + "\"}"), 200);
+        self.f.json.eq(receipt, "state", "succeeded");
+        self.f.json.eq(self.f.json.raw(receipt, "outcome"), "application_id", self.alpha_id);
+        std::test::assert(self.f.child_alive("api"), "the API child is alive");
+        let state = self.f.head_state();
+        self.f.json.eq(state, "state", "attached");
+        let children = self.f.json.raw(state, "children");
+        self.f.json.eq(self.f.json.raw(children, "body"), "state", "stopped");
+        self.f.json.is_bool(self.f.json.raw(children, "body"), "membrane_up", false);
+        self.f.json.eq(self.f.json.raw(children, "body"), "mode", "");
+        self.f.json.eq(self.f.json.raw(children, "observer"), "state", "stopped");
+        self.f.json.eq(self.f.json.raw(children, "observer"), "origin", "http://127.0.0.1:" + to_string(OBSERVER_PORT));
+        self.state_of(state, "dna.body.local.start", true, "");
+        self.state_of(state, "dna.body.local.stop", false, "body_not_running");
+        self.state_of(state, "dna.observer.start", false, "membrane_down");
+        self.state_of(state, "dna.observer.stop", true, "");
+        self.state_of(state, "dna.secret.set", false, "source_missing");
+        self.state_of(state, "dna.secret.rotate", false, "source_missing");
+        self.state_of(state, "dna.connection.propose", true, "");
+        self.state_of(state, "dna.models.probe", true, "");
+        let credentials = self.f.json.raw(state, "credentials");
+        std::test::assert(self.f.json.count(self.f.json.raw(credentials, "needed")) > 0, "the made project's catalog names credentials: " + credentials);
+        std::test::assert_eq_str(self.f.json.raw(credentials, "file_sources"), "[]", "no file source yet");
+        std::test::assert_eq_str(self.f.json.raw(credentials, "env_present"), "[]", "no catalog credential is set in the head's environment");
+    }
+
+    // A `value` key is refused at the door, top-level or inside the
+    // source, and nothing of it is recorded.
+    fn guards() {
+        let source = "{\"kind\":\"file\",\"name\":\"openai\"}";
+        self.f.error("POST", HEAD + "/commands", self.f.command_headers(), fixture::command("s3-value-top", "dna.secret.set", self.alpha_id, "{\"name\":\"OPENAI_API_KEY\",\"value\":\"never-on-the-wire\",\"source\":" + source + "}"), 400, "invalid_command");
+        self.f.error("POST", HEAD + "/commands", self.f.command_headers(), fixture::command("s3-value-in", "dna.secret.rotate", self.alpha_id, "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"file\",\"name\":\"openai\",\"value\":\"never-on-the-wire\"}}"), 400, "invalid_command");
+        self.f.error("POST", HEAD + "/commands", self.f.command_headers(), fixture::command("s3-value-only", "dna.secret.set", self.alpha_id, "{\"name\":\"OPENAI_API_KEY\",\"value\":\"never-on-the-wire\"}"), 400, "invalid_command");
+        self.f.error("POST", HEAD + "/commands", self.f.command_headers(), fixture::command("s3-source-kind", "dna.secret.set", self.alpha_id, "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"stdin\",\"name\":\"openai\"}}"), 400, "invalid_command");
+        self.f.error("POST", HEAD + "/commands", self.f.command_headers(), fixture::command("s3-mode", "dna.body.local.start", self.alpha_id, "{\"mode\":\"prod\"}"), 400, "invalid_command");
+        self.f.error("POST", HEAD + "/commands", self.f.command_headers(), fixture::command("s3-extra", "dna.observer.start", self.alpha_id, "{\"port\":1}"), 400, "invalid_command");
+        self.f.error("GET", HEAD + "/commands?request_id=s3-value-top", "", "", 404, "command_not_found");
+        let journal = std::io::fs::read_file(self.f.state + "/receipts.jsonl") or "";
+        std::test::assert(!std::str::contains(journal, "s3-value") && !std::str::contains(journal, "never-on-the-wire"), "a request refused at the door is not recorded: " + journal);
+    }
+
+    // A secret from a file source: the value never enters the head.
+    fn secret() {
+        let arguments = "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"file\",\"name\":\"openai\"}}";
+        let none = self.submit("s3-secret-none", "dna.secret.set", arguments, 200);
+        self.f.json.eq(none, "state", "refused");
+        self.f.json.eq(none, "reason_code", "source_missing");
+        std::test::assert_eq_str(self.f.json.raw(none, "run"), "null", "a refusal never ran");
+        let made = dna::run_tool("sh\n-c\numask 077 && mkdir -p \"$1\"\nsh\n" + self.sources());
+        std::test::assert_eq_int(made.code, 0, "sources dir: " + made.stderr);
+        std::test::assert(head::write_private(self.sources() + "/openai", FILE_SECRET + "\n"), "the source written");
+        let state = self.f.head_state();
+        std::test::assert_eq_str(self.f.json.raw(self.f.json.raw(state, "credentials"), "file_sources"), "[\"openai\"]", "the source is advertised by name: " + state);
+        self.state_of(state, "dna.secret.set", true, "");
+        let submitted = self.submit("s3-secret-1", "dna.secret.set", arguments, 202);
+        self.f.json.eq(submitted, "state", "running");
+        self.f.json.eq(self.f.json.raw(submitted, "run"), "kind", "run");
+        self.f.json.is_bool(self.f.json.raw(submitted, "run"), "external", false);
+        let id = self.f.json.string(submitted, "command_id");
+        let receipt = self.f.settled("s3-secret-1", dna::wait_secs(60));
+        self.f.json.eq(receipt, "state", "succeeded");
+        self.f.json.is_int(self.f.json.raw(receipt, "run"), "exit_code", 0);
+        let outcome = self.f.json.raw(receipt, "outcome");
+        self.f.json.eq(outcome, "name", "OPENAI_API_KEY");
+        self.f.json.eq(outcome, "where", "local");
+        self.f.json.is_bool(outcome, "source_consumed", true);
+        let record = self.f.json.raw(outcome, "record");
+        std::test::assert(len(self.f.json.string(record, "head_before")) == 40 && self.f.json.string(record, "head_before") != self.f.json.string(record, "head_after"), "the record moved: " + record);
+        let rows = self.f.json.raw(record, "rows");
+        std::test::assert_eq_int(self.f.json.count(rows), 1, "exactly the verb's row: " + rows);
+        let row = std::json::array_first(rows).element;
+        self.f.json.eq(row, "kind", "secret.rotated");
+        self.f.json.eq(row, "entity", "OPENAI_API_KEY");
+        let env_file = self.f.home + "/.config/hale-dna/alpha-" + self.alpha_id[0..12] + ".env";
+        std::test::assert_eq_str(std::io::fs::read_file(env_file) or "", "OPENAI_API_KEY=" + FILE_SECRET + "\n", "the verb wrote the body's env file");
+        std::test::assert_eq_str(head::mode_of(env_file), "600", "the env file is private");
+        std::test::assert(!std::io::fs::file_exists(self.sources() + "/openai"), "the file source is consumed");
+        std::test::assert_eq_str(self.f.json.raw(self.f.json.raw(self.f.head_state(), "credentials"), "file_sources"), "[]", "the consumed source is no longer advertised");
+        std::test::assert(!anywhere_under(self.f.state, FILE_SECRET), "the value is in no receipt, log or script of the head");
+        let log = self.f.json.data(self.f.validate(self.f.http("GET", HEAD + "/logs?run=" + id, "", ""), "HeadLogResponse", 200));
+        let text = self.f.json.string(log, "text");
+        std::test::assert(std::str::contains(text, "value for OPENAI_API_KEY") && !std::str::contains(text, FILE_SECRET), "the run log names the secret, never its value: " + text);
+        std::test::assert_eq_int(count_rows(self.alpha, "secret.rotated"), 1, "one secret.rotated row");
+        // an identical retry is the stored receipt; the source stays consumed and no second row lands
+        let again = self.submit("s3-secret-1", "dna.secret.set", arguments, 200);
+        self.f.json.eq(again, "command_id", id);
+        self.f.json.eq(again, "state", "succeeded");
+        std::test::assert_eq_int(count_rows(self.alpha, "secret.rotated"), 1, "an identical retry runs no verb");
+        // with the source consumed nothing is left to set from: unavailable again
+        let gone = self.submit("s3-secret-gone", "dna.secret.rotate", arguments, 200);
+        self.f.json.eq(gone, "state", "refused");
+        self.f.json.eq(gone, "reason_code", "source_missing");
+        // an env source names a catalog credential set in the head's
+        // environment, and none is — with another file source there, so
+        // it is the name that answers
+        std::test::assert(head::write_private(self.sources() + "/spare", "spare-value\n"), "another source written");
+        let unset = self.submit("s3-secret-env", "dna.secret.rotate", "{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"env\",\"name\":\"OPENAI_API_KEY\"}}", 200);
+        self.f.json.eq(unset, "state", "refused");
+        self.f.json.eq(unset, "reason_code", "name_not_env_var");
+        std::io::fs::unlink(self.sources() + "/spare") or discard;
+    }
+
+    // A connection to the peer, put in force by the Board, and a receipt
+    // handed across it — each visible on the detail read.
+    fn connection() {
+        let arguments = "{\"record_url\":\"" + self.beta_url + "\",\"name\":\"beta\",\"position\":\"client\",\"purpose\":\"the books\",\"classes\":[\"internal\"]}";
+        let bad = self.submit("s3-connect-bad", "dna.connection.propose", "{\"record_url\":\"" + self.beta_url + "\",\"name\":\"Beta\",\"position\":\"client\",\"purpose\":\"the books\",\"classes\":[\"internal\"]}", 200);
+        self.f.json.eq(bad, "state", "refused");
+        self.f.json.eq(bad, "reason_code", "name_invalid");
+        let submitted = self.submit("s3-connect", "dna.connection.propose", arguments, 202);
+        self.f.json.eq(submitted, "state", "running");
+        self.f.json.is_bool(self.f.json.raw(submitted, "run"), "external", true);
+        let receipt = self.f.settled("s3-connect", dna::wait_secs(120));
+        self.f.json.eq(receipt, "state", "succeeded");
+        let outcome = self.f.json.raw(receipt, "outcome");
+        self.f.json.eq(outcome, "name", "beta");
+        let text = self.f.json.string(outcome, "text");
+        std::test::assert(std::str::contains(text, "connection beta proposed: record " + self.beta_id[0..12]), "the verb's text: " + text);
+        let rows = self.f.json.raw(self.f.json.raw(outcome, "record"), "rows");
+        std::test::assert(std::str::contains(rows, "\"kind\": \"connection.proposed\"") && std::str::contains(rows, "\"kind\": \"review.requested\""), "the proposal's rows as evidence: " + rows);
+        let d1 = self.detail();
+        let conn = item_where(self.f.json.raw(d1, "connections"), "name", "beta");
+        std::test::assert(len(conn) > 0, "the connection is projected: " + d1);
+        self.f.json.eq(conn, "url", self.beta_url);
+        self.f.json.eq(conn, "position", "client");
+        self.f.json.eq(conn, "purpose", "the books");
+        std::test::assert_eq_str(self.f.json.raw(conn, "classes"), "[\"internal\"]", "classes as an array");
+        self.f.json.eq(conn, "state", "proposed");
+        std::test::assert_eq_str(self.f.json.raw(d1, "handoffs"), "[]", "no handoff yet");
+        std::test::assert_eq_str(self.f.json.raw(d1, "secrets"), "[\"OPENAI_API_KEY\"]", "the secret's name, never its value");
+        // the Board puts it in force: someone other than its proposer
+        let rid = word_after(text, "hale dna review ");
+        std::test::assert(std::str::starts_with(rid, "c-beta-"), "its Review: " + text);
+        let approved = dna_cli(self.alpha, "review\n" + rid + "\napprove\n--as\nana\n--authority\nboard\n--no-wait");
+        std::test::assert_eq_int(approved.code, 0, "approved by ana: " + approved.stdout + approved.stderr);
+        self.f.json.eq(item_where(self.f.json.raw(self.detail(), "connections"), "name", "beta"), "state", "in_force");
+        // a receipt filed here, handed across
+        std::io::fs::write_file(self.f.root + "/notes.txt", "ledger notes for the books\n") or discard;
+        let filed = dna_cli(self.alpha, "receipt\nfile\n" + self.f.root + "/notes.txt");
+        let at = std::str::index_of(filed.stdout, "sha256:");
+        std::test::assert(at >= 0, "a receipt filed: " + filed.stdout + filed.stderr);
+        let digest = filed.stdout[at..(at + 71)];
+        let handed = self.submit("s3-handoff", "dna.handoff.publish", "{\"connection\":\"beta\",\"kind\":\"receipt\",\"subject\":\"" + digest + "\",\"note\":\"for the books\"}", 202);
+        self.f.json.eq(handed, "state", "running");
+        let settled = self.f.settled("s3-handoff", dna::wait_secs(120));
+        self.f.json.eq(settled, "state", "succeeded");
+        let handed_text = self.f.json.string(self.f.json.raw(settled, "outcome"), "text");
+        std::test::assert(std::str::contains(handed_text, "written into record " + self.beta_id[0..12]), "handed across: " + handed_text);
+        let hid = dna::handoff_id(self.alpha_id, self.beta_id, "receipt", digest);
+        let d2 = self.detail();
+        let sent = item_where(self.f.json.raw(d2, "handoffs"), "id", hid);
+        std::test::assert(len(sent) > 0, "the handoff is projected: " + d2);
+        self.f.json.eq(sent, "connection", "beta");
+        self.f.json.eq(sent, "kind", "receipt");
+        self.f.json.eq(sent, "subject", digest);
+        self.f.json.eq(sent, "state", "published");
+    }
+
+    // The local body: a long-lived child, 202, `succeeded` once the
+    // membrane is up; the head's children show it running.
+    fn body() {
+        let submitted = self.submit("s3-body-start", "dna.body.local.start", "{\"mode\":\"run\"}", 202);
+        self.f.json.eq(submitted, "state", "running");
+        let started = self.f.json.raw(submitted, "run");
+        self.f.json.eq(started, "kind", "body");
+        self.f.json.is_bool(started, "external", false);
+        self.body_id = self.f.json.string(submitted, "command_id");
+        std::test::assert_eq_int(self.f.child_pid("body"), self.f.json.integer(started, "pid"), "the receipt's pid is the body child's");
+        let receipt = self.f.settled("s3-body-start", dna::wait_secs(600));
+        self.f.json.eq(receipt, "state", "succeeded");
+        let outcome = self.f.json.raw(receipt, "outcome");
+        let pid = self.f.json.integer(outcome, "pid");
+        std::test::assert(pid > 0 && pid == self.f.child_pid("body") && self.f.child_alive("body"), "the outcome's pid is the live child: " + outcome);
+        self.f.json.eq(outcome, "mode", "run");
+        std::test::assert(self.f.json.integer(outcome, "membrane_up_at") > 0, "membrane_up_at: " + outcome);
+        std::test::assert(std::str::contains(self.f.json.raw(self.f.json.raw(outcome, "record"), "rows"), "\"kind\": \"body.claimed\""), "the host's claim as evidence: " + outcome);
+        std::test::assert(std::io::fs::file_exists(self.alpha + "/.hale/dna/org.pid"), "the organization runs under the head's child");
+        let state = self.f.head_state();
+        let body = self.f.json.raw(self.f.json.raw(state, "children"), "body");
+        self.f.json.eq(body, "state", "running");
+        self.f.json.is_bool(body, "membrane_up", true);
+        self.f.json.eq(body, "mode", "run");
+        self.f.json.is_int(body, "pid", pid);
+        self.f.json.eq(body, "command_id", self.body_id);
+        self.f.json.eq(state, "busy", "");
+        self.state_of(state, "dna.body.local.start", false, "body_running");
+        self.state_of(state, "dna.body.local.stop", true, "");
+        self.state_of(state, "dna.observer.start", true, "");
+        let again = self.submit("s3-body-start-again", "dna.body.local.start", "{\"mode\":\"dev\"}", 200);
+        self.f.json.eq(again, "state", "refused");
+        self.f.json.eq(again, "reason_code", "body_running");
+        let log = self.f.json.data(self.f.validate(self.f.http("GET", HEAD + "/logs?child=body", "", ""), "HeadLogResponse", 200));
+        self.f.json.eq(log, "name", "body");
+        // S2's rules driven by S3's child: no other project while it runs, no detach
+        let other = self.f.submit(fixture::command("s3-attach-other", "dna.project.attach", "", "{\"root\":\"" + self.f.project + "\"}"), 200);
+        self.f.json.eq(other, "state", "refused");
+        self.f.json.eq(other, "reason_code", "body_running");
+        let detach = self.submit("s3-detach", "dna.project.detach", "{}", 200);
+        self.f.json.eq(detach, "state", "refused");
+        self.f.json.eq(detach, "reason_code", "body_running");
+        // the detail read shows the same body
+        self.f.json.eq(self.f.json.raw(self.detail(), "body"), "state", "running");
+    }
+
+    // The observer over the membrane: a child, 202, `succeeded` once
+    // `GET /` answers on its origin; stopped inline.
+    fn observer() {
+        let probe = std::io::tcp::connect("127.0.0.1", OBSERVER_PORT) or - 1;
+        if probe >= 0 {
+            std::io::tcp::__close_fd(probe);
+            eprintln("head S3 api: port ", OBSERVER_PORT, " is held by another listener; the observer case is skipped (the fixture leaves HALE_IRIS_OBSERVER_ORIGIN unset, so the head's observer port is its default)");
+            return;
+        }
+        // fuse-hl into the shared cache first, so the child's thirty
+        // seconds are the observer's boot and not a build
+        let warm = dna::run_tool("timeout\n600\n" + toolchain() + "\niris\n--build-only");
+        std::test::assert_eq_int(warm.code, 0, "hale iris --build-only: " + warm.stderr);
+        let submitted = self.submit("s3-observer-start", "dna.observer.start", "{}", 202);
+        self.f.json.eq(submitted, "state", "running");
+        self.f.json.eq(self.f.json.raw(submitted, "run"), "kind", "observer");
+        let id = self.f.json.string(submitted, "command_id");
+        let receipt = self.f.settled("s3-observer-start", dna::wait_secs(60));
+        self.f.json.eq(receipt, "state", "succeeded");
+        let outcome = self.f.json.raw(receipt, "outcome");
+        let pid = self.f.json.integer(outcome, "pid");
+        let origin = self.f.json.string(outcome, "origin");
+        std::test::assert(pid > 0 && pid == self.f.child_pid("observer") && self.f.child_alive("observer"), "the observer child: " + outcome);
+        std::test::assert_eq_str(origin, "http://127.0.0.1:" + to_string(OBSERVER_PORT), "its origin");
+        let page = fixture::curl("GET", origin + "/", "", "");
+        std::test::assert_eq_int(page.status, 200, "GET / on the observer: " + page.body);
+        let state = self.f.head_state();
+        let observer = self.f.json.raw(self.f.json.raw(state, "children"), "observer");
+        self.f.json.eq(observer, "state", "running");
+        self.f.json.is_int(observer, "pid", pid);
+        self.f.json.eq(observer, "origin", origin);
+        self.f.json.eq(observer, "command_id", id);
+        // started again, a running observer is the effect: inline, the same pid
+        let again = self.submit("s3-observer-again", "dna.observer.start", "{}", 200);
+        self.f.json.eq(again, "state", "succeeded");
+        self.f.json.eq(self.f.json.raw(again, "run"), "kind", "inline");
+        self.f.json.is_int(self.f.json.raw(again, "outcome"), "pid", pid);
+        let stopped = self.submit("s3-observer-stop", "dna.observer.stop", "{}", 200);
+        self.f.json.eq(stopped, "state", "succeeded");
+        self.f.json.eq(self.f.json.raw(stopped, "run"), "kind", "inline");
+        std::test::assert(!self.f.child_alive("observer"), "its process is gone");
+        std::test::assert((std::io::tcp::connect("127.0.0.1", OBSERVER_PORT) or - 1) < 0, "nothing listens on its port");
+        self.f.json.eq(self.f.json.raw(self.f.json.raw(self.f.head_state(), "children"), "observer"), "state", "exited");
+        self.observer_ran = true;
+    }
+
+    // The body stopped through its host's own teardown.
+    fn body_stop() {
+        let pid = self.f.child_pid("body");
+        std::test::assert(self.f.child_alive("body"), "the body runs before the stop");
+        let response = curl_slow("POST", self.f.url() + HEAD + "/commands", self.f.command_headers(), fixture::command("s3-body-stop", "dna.body.local.stop", self.alpha_id, "{}"), 150);
+        let receipt = self.f.json.data(self.f.validate(response, "HeadCommandResponse", 200));
+        self.f.json.eq(receipt, "state", "succeeded");
+        self.f.json.eq(self.f.json.raw(receipt, "run"), "kind", "inline");
+        let outcome = self.f.json.raw(receipt, "outcome");
+        self.f.json.eq(outcome, "released_by", "host");
+        self.f.json.is_int(outcome, "exit_code", 143);
+        std::test::assert(std::str::contains(self.f.json.raw(self.f.json.raw(outcome, "record"), "rows"), "\"kind\": \"body.released\""), "the host's release as evidence: " + outcome);
+        std::test::assert(!self.f.child_alive("body") && !std::io::fs::file_exists(self.alpha + "/.hale/dna/org.pid"), "the host and its organization are gone");
+        std::test::assert_eq_str(dna::trim_nl(std::io::fs::read_file(self.f.state + "/children/body.exit") or ""), "143", "the exit is recorded");
+        std::test::assert_eq_int(count_rows(self.alpha, "body.released"), 1, "the host appended body.released");
+        let state = self.f.head_state();
+        let body = self.f.json.raw(self.f.json.raw(state, "children"), "body");
+        self.f.json.eq(body, "state", "exited");
+        self.f.json.is_int(body, "exit_code", 143);
+        self.f.json.is_bool(body, "membrane_up", false);
+        self.f.json.eq(body, "mode", "run");
+        self.f.json.is_int(body, "pid", pid);
+        self.state_of(state, "dna.body.local.start", true, "");
+        self.state_of(state, "dna.body.local.stop", false, "body_not_running");
+        self.state_of(state, "dna.observer.start", false, "membrane_down");
+        let again = self.submit("s3-body-stop-again", "dna.body.local.stop", "{}", 200);
+        self.f.json.eq(again, "state", "refused");
+        self.f.json.eq(again, "reason_code", "body_not_running");
+        let down = self.submit("s3-observer-down", "dna.observer.start", "{}", 200);
+        self.f.json.eq(down, "state", "refused");
+        self.f.json.eq(down, "reason_code", "membrane_down");
+    }
+
+    // After the runs: the detail read carries every projection and the
+    // project's receipts; the list read carries none of it.
+    fn detail_after() {
+        let item = self.detail();
+        std::test::assert_eq_int(self.f.json.count(self.f.json.raw(item, "connections")), 1, "one connection");
+        self.f.json.eq(item_where(self.f.json.raw(item, "connections"), "name", "beta"), "state", "in_force");
+        std::test::assert_eq_int(self.f.json.count(self.f.json.raw(item, "handoffs")), 1, "one handoff");
+        std::test::assert_eq_str(self.f.json.raw(item, "secrets"), "[\"OPENAI_API_KEY\"]", "the secret names set here, once each");
+        self.f.json.eq(self.f.json.raw(item, "body"), "state", "exited");
+        let receipts = self.f.json.raw(item, "receipts");
+        std::test::assert(self.f.json.count(receipts) >= 10 && std::str::contains(receipts, "\"request_id\": \"s3-body-start\"") && std::str::contains(receipts, "\"request_id\": \"s3-secret-1\""), "the project's receipts: " + receipts);
+        std::test::assert(self.f.json.count(self.f.json.raw(item, "recent")) <= 10, "recent is bounded");
+        let list = self.f.json.data(self.f.validate(self.f.http("GET", HEAD + "/projects", "", ""), "HeadProjectsResponse", 200));
+        std::test::assert_eq_int(self.f.json.count(self.f.json.raw(list, "items")), 1, "one registered project");
+        let listed = std::json::array_first(self.f.json.raw(list, "items")).element;
+        std::test::assert(len(self.f.json.raw(listed, "connections")) == 0 && len(self.f.json.raw(listed, "secrets")) == 0, "the list carries no projection");
+        std::test::assert(!anywhere_under(self.f.state, FILE_SECRET), "the value is still nowhere in the head's state");
+    }
+}
+
+fn main() {
+    if std::env::var("HALE_HEAD_S3_TEST_CLEAN") != "1" {
+        // the fixture again, in a clean environment: a private HOME and
+        // config, the shared toolchain cache (the host build is paid once),
+        // no git of the caller's, and the local transport, so nothing ever
+        // reaches for ssh
+        let root = dna::scratch_root("head-api-s3");
+        let home = root + "/home";
+        std::io::fs::mkdir(home) or discard;
+        std::io::fs::mkdir(home + "/.config") or discard;
+        std::io::fs::mkdir(home + "/dna") or discard;
+        let cache = if std::env::var_exists("XDG_CACHE_HOME") { std::env::var("XDG_CACHE_HOME") } else { std::env::var("HOME") + "/.cache" };
+        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_IRIS_HEAD_STATE\n-u\nHALE_IRIS_OBSERVER_ORIGIN\n-u\nHALE_DNA_ONESHOT\n-u\nHALE_DNA_KNOWLEDGE_DSN\n-u\nHALE_DNA_KNOWLEDGE_URL\n-u\nHALE_DNA_COMMAND_POLICY\n-u\nHALE_DNA_TASK_POLICY\n-u\nLOTUS_OBS\n"
+                + "HOME=" + home + "\nXDG_CONFIG_HOME=" + home + "/.config\nXDG_CACHE_HOME=" + cache + "\nUSER=tester\nLOGNAME=tester"
+                + "\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_DNA_TRANSPORT=local\nHALE_DNA_TRANSPORT_HOME=" + home
+                + "\nHALE_HEAD_S3_TEST_CLEAN=1\nHALE_HEAD_S3_TEST_ROOT=" + root + "\n" + std::env::arg_or(0, ""));
+        print(clean.stdout);
+        if len(clean.stderr) > 0 { eprintln(clean.stderr); }
+        if clean.code == 0 { dna::scratch_done(root); } else { eprintln("head S3 api fixture kept for inspection: ", root); }
+        std::process::exit(if clean.code < 0 { 1 } else { clean.code });
+    }
+    let root = std::env::var("HALE_HEAD_S3_TEST_ROOT");
+    // whatever this fixture starts under its root stops when it does,
+    // whether it passes, fails an assertion or is killed
+    dna::reap_on_exit(root);
+    let cases = S3HeadCases { f: fixture::HeadFixture { root: root } };
+    cases.setup();
+    cases.f.start();
+    cases.attach();
+    cases.guards();
+    cases.secret();
+    cases.connection();
+    cases.body();
+    cases.observer();
+    cases.body_stop();
+    cases.detail_after();
+    cases.f.stop();
+    eprintln(if cases.observer_ran { "head S3 api cases passed" } else { "head S3 api cases passed (observer case skipped)" });
+}
