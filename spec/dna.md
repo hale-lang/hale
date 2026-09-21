@@ -1513,6 +1513,59 @@ stale, decided again and refused. The cell leases (`MemLeases`,
 operation they fence is not an append to this record. A runtime with no
 lease key is unfenced: a standalone runtime over a memory record.
 
+## Workflow execution: edit outcomes
+
+An edit leaf of a workflow execution is performed by the assembly —
+its editor, its gateway, its record — never by a router performer.
+The engine reaches it through a fifth performer kind, `edit`: the
+`EditRelay` publishes the attempt (`EditRequested`, keyed by the
+runtime's scope, which is the organism's id) and answers pending; the
+assembly performs or waits, and reports the outcome for that exact
+attempt (`AttemptReported`), which the runtime settles as it settles a
+late reply — judged, recorded, answered to its Work and only its Work;
+a report whose outcome names another attempt than the report does, or
+none, is nobody's and settles nothing.
+The Work settles as any Work does, its step counts it, and the
+workflow settles the root: no Work of an admitted execution settles
+its Task, and a Mutation's review outcome never settles it either —
+one root terminal writer. The legacy paths keep settling legacy Tasks.
+
+Two output contracts, never reinterpreted as each other. `Patch` — the
+default for an edit leaf — is a candidate prepared for review: the
+attempt is performed once, the Mutation it produces is bound to it
+(card 14), and the Work is done when the candidate is in review,
+escalated or released, failed when preparation failed before a
+candidate; a later verdict changes nothing about it. `Applied` (or
+`Approved`) is the candidate approved and applied: the Work performs
+nothing and waits on one exact candidate: the Work its request names
+in `target`, as `<step>/<key>` within the workflow (`s0/e`) or a
+whole Work id, resolved to the Mutation bound (card 14) to the attempt
+that Work's settlement accepted — a first attempt that failed to
+prepare and was retried is not it. A Work naming none fails at once,
+with why, since the dependency is explicit and never a Task-wide or
+Work-wide guess; one whose producer settled other than done fails,
+there being no candidate. The producer's settlement and its
+candidate's review and application are prerequisites that land in
+either order, and each landing is an occasion to look again: a
+waiting attempt is evaluated afresh — by the same resolution — when
+any Work of the engine ends (`RunLives`), when a review settles, when
+the record resumes, on `redrive`, and whenever the assembly is asked;
+it is answered once, when its state is an outcome. The same resolution
+serves an ask again after a restart, which waits once. It is answered from that candidate's durable state
+alone: rejected or sent back is failed; approved and applied (or
+retained) is done; approved and rolled back is failed; approved but
+not applied — the apply gate refused, an application pending or
+unresolved — is no outcome yet, and the Work keeps waiting, to be
+answered when the application lands, on a first approval or on an
+approval again. An attempt asked again — a redelivery after a restart
+— is answered from the Mutation bound to it and edits nothing twice,
+so the edit kind's reconciliation is a replay. A request row the
+record refuses starts nothing: the attempt is held, and `redrive` puts
+it again. A published report is not a durable one: the assembly keeps
+every report until the record is seen to hold the attempt's outcome,
+and puts a kept one again when the record resumes or on `redrive` —
+the validated outcome re-persisted, never the edit performed again.
+
 ## Storage interfaces
 
 `Journal` (ordered append with an expected revision, read by index,

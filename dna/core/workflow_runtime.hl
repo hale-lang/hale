@@ -58,6 +58,8 @@ locus WorkflowRuntime {
         lease_key: String = "";
         holder: String = "";
         token: Int = 0;
+        stray_reports: Int = 0; // reports whose outcome names another attempt than the report does (card 15)
+        reports_refused: Int = 0; // reports whose outcome the record would not take, or that a fence stopped (card 15)
         now: Int = 0;
         fenced_off: Int = 0; // what the fence refused
         cursor: Int = 0; // rows applied to the projection
@@ -76,6 +78,7 @@ locus WorkflowRuntime {
         subscribe ExecutionStateAsked as on_state where key == self.scope;
         subscribe AdmissionAsked as on_admission where key == self.scope;
         subscribe WorkStateAsked as on_work_state where key == self.scope;
+        subscribe AttemptReported as on_reported where key == self.scope;
         publish TransitionAnswered;
         publish AttemptReplied;
         publish ExecutionStateAnswered;
@@ -339,6 +342,23 @@ locus WorkflowRuntime {
             task_id: q.task_id, admitted: len(t.task_id) > 0, disposition: t.disposition, reason: t.reason,
             outstanding: self.p.outstanding_works(q.task_id), current_step: self.p.current_step(q.task_id)
         };
+    }
+    // An attempt's outcome reported by the adapter that did its work
+    // (card 15: the assembly, for an edit leaf) is settled for that
+    // attempt exactly as a late reply is: judged, recorded, answered to
+    // its Work — and only its Work.
+    fn on_reported(r: AttemptReport) {
+        // the report and the outcome it carries name one attempt, whole: a
+        // result echoing another attempt — or none — is nobody's report
+        if r.result.attempt_id != r.attempt_id {
+            self.stray_reports = self.stray_reports + 1;
+            return;
+        }
+        let x = self.settle(r.attempt_id, r.result);
+        // refused by the record — or fenced — the outcome is not recorded;
+        // the adapter keeps its report and puts it again when the record
+        // resumes (card 15)
+        if !x.ok { self.reports_refused = self.reports_refused + 1; }
     }
     // A reply that arrives later goes to its Work the same way.
     fn settle(attempt_id: String, r: WorkResult) -> Executed {

@@ -599,6 +599,7 @@ fn dna_fixture_set_is_complete() {
             "workflow_attempt_test.hl",
             "workflow_children_test.hl",
             "workflow_definition_test.hl",
+            "workflow_edit_outcomes_test.hl",
             "workflow_events_test.hl",
             "workflow_lifetime_dna_test.hl",
             "workflow_lifetime_test.hl",

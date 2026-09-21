@@ -1,0 +1,751 @@
+// dna/tests/workflow_edit_outcomes_test.hl — edit outcomes routed through
+// Work completion (DNA workflow card 15).
+//
+// An edit leaf of a workflow execution is performed by the assembly —
+// its editor, its gateway, its record — reached through the engine's
+// `edit` performer kind, and its outcome comes back for that exact
+// attempt: the Work settles as any Work does, its step counts it, and
+// the workflow settles the root — never a Work directly. Two output
+// contracts: `Patch`, a candidate prepared for review (done when the
+// candidate is in review, and a later verdict changes nothing about
+// it), and `Applied`, the candidate approved and applied (a separate
+// Work that waits for the review of its Task's candidate: approved is
+// done, rejected is failed; a verdict already settled when it is asked
+// answers it at once). Preparation failure maps to the Work that asked.
+// An attempt asked again — a redelivery — is answered from the Mutation
+// bound to it and edits nothing twice.
+
+import "../core" as dna;
+
+fn toolchain() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
+
+const APP: String = "fn main() { println(\"app\"); }\n";
+const DOCUMENTED: String = "// documented by the organism\nfn main() { println(\"app\"); }\n";
+const GREETED: String = "// greeted by the organism\nfn main() { println(\"hello\"); }\n";
+// the editor's scripted answers, by the ask: "again" greets, anything else documents
+const RULES: String = "edit|again|// greeted by the organism\\nfn main() { println(\"hello\"); }\\n\nedit||// documented by the organism\\nfn main() { println(\"app\"); }\\n";
+
+locus Delayed {
+    params { calls: Int = 0; }
+    fn kind() -> String { return "agent"; }
+    fn identity() -> String { return "delayed"; }
+    fn perform(req: dna::WorkRequest) -> dna::WorkResult {
+        self.calls = self.calls + 1;
+        return dna::WorkResult { disposition: "pending", performer: "delayed", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
+    }
+}
+
+// A record that refuses the first row of one kind: the outcome write
+// the review's probe refuses.
+locus Refusing {
+    params { inner: dna::Journal = dna::MemJournal { }; refuse_kind: String = ""; refused: Bool = false; }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if !self.refused && kind == self.refuse_kind {
+            self.refused = true;
+            return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() };
+        }
+        return self.inner.append(expected, kind, entity, body);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if !self.refused && kind == self.refuse_kind {
+            self.refused = true;
+            return dna::AppendResult { error: "io", expected: expected, actual: self.inner.revision() };
+        }
+        return self.inner.append_exact(expected, kind, entity, body);
+    }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
+}
+
+// A backend that refuses its first edit call and documents after: one
+// attempt that fails to prepare, then one that prepares — the retry the
+// re-review's probe needs.
+locus Flaky {
+    params { refused: Bool = false; calls: Int = 0; }
+    fn identity() -> String { return "flaky"; }
+    fn model_name() -> String { return "flaky-1"; }
+    fn allows(data_class: String) -> Bool { return true; }
+    fn capacity_bytes() -> Int { return 100000; }
+    fn works_in_place() -> Bool { return false; }
+    fn complete(req: dna::ModelRequest) -> dna::ModelResult {
+        self.calls = self.calls + 1;
+        if req.role == "edit" && !self.refused {
+            self.refused = true;
+            return dna::ModelResult { ok: false, backend: "flaky", model: "flaky-1", refused: "scripted: the first edit call is refused" };
+        }
+        return dna::ModelResult { ok: true, backend: "flaky", model: "flaky-1", output: DOCUMENTED, tokens: 16, cost_micros: 1 };
+    }
+}
+
+locus Boot {
+    params {
+        rt: dna::WorkflowRuntime = dna::WorkflowRuntime { };
+        owner: dna::Executions = dna::Executions { };
+    }
+}
+
+main locus App {
+    params {
+        cat: dna::WorkflowCatalog = dna::WorkflowCatalog { };
+        limits: dna::AdmissionLimits = dna::AdmissionLimits { };
+        boot: Boot = Boot { };
+        org: dna::Dna = dna::Dna { };
+        lives: String = "";
+        outcomes: String = "";
+    }
+    bus {
+        subscribe dna::RunLives as on_life;
+        subscribe dna::WorkflowSettled as on_outcome;
+        publish dna::ExecutionAsked;
+        publish dna::ReviewVerdict;
+        publish dna::EditRequested; // an attempt asked again, by the probe
+        publish dna::AttemptReported; // a report whose outcome names another attempt, by the probe
+        publish dna::RecordResumed; // the record resuming, by the probe
+    }
+    fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
+    fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
+    @unbounded
+    fn count(list: String, item: String) -> Int {
+        let mut n = 0;
+        let mut rest = list;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            if rest[0..sp] == item { n = n + 1; }
+            rest = rest[(sp + 1)..len(rest)];
+        }
+        return n;
+    }
+    @unbounded
+    fn rows(j: dna::Journal, kind: String, entity: String) -> Int {
+        let moved = j.refresh();
+        let mut n = 0;
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && (len(entity) == 0 || e.entity == entity) { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    @unbounded
+    fn body_of(j: dna::Journal, kind: String, entity: String) -> String {
+        let moved = j.refresh();
+        let mut out = "";
+        let mut i = 0;
+        while i < j.revision() {
+            let e = j.read(i);
+            if e.kind == kind && e.entity == entity { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    fn settle() {
+        let mut i = 0;
+        while i < 10 {
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    // Wait for the record to hold `n` rows of `kind` for `entity`.
+    @unbounded
+    fn until_rows(kind: String, entity: String, n: Int) {
+        let mut i = 0;
+        while i < 1500 {
+            if self.rows(self.boot.rt.journal, kind, entity) >= n { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    @unbounded
+    fn until(list_is_lives: Bool, item: String, n: Int) {
+        let mut i = 0;
+        while i < 1500 {
+            if self.count(if list_is_lives { self.lives } else { self.outcomes }, item) >= n { return; }
+            std::time::sleep(20ms);
+            i = i + 1;
+        }
+    }
+    // The canonical edit workflow: a step with an edit leaf `e` (a
+    // candidate prepared for review) beside a delayed leaf `s`, then a
+    // step with the leaf `w` that waits for the candidate's review.
+    fn define() {
+        std::test::assert_eq_str(self.cat.define("ship", 1, 2, "ship a change"), "", "ship");
+        std::test::assert_eq_str(self.cat.leaf("ship", 1, 0, "e", dna::WorkRequest { objective: "document main.hl", target: "main.hl", requires: "edit", output_contract: "Patch" }, 1), "", "e");
+        std::test::assert_eq_str(self.cat.leaf("ship", 1, 0, "s", dna::WorkRequest { objective: "wait for the sibling" }, 1), "", "s");
+        std::test::assert_eq_str(self.cat.leaf("ship", 1, 1, "w", dna::WorkRequest { objective: "the change applied", requires: "edit", output_contract: "Applied", target: "s0/e" }, 1), "", "w");
+        // the same, its edit asked under a data class the private backend
+        // answers with nonsense: preparation fails
+        std::test::assert_eq_str(self.cat.define("ship-secret", 1, 2, "ship a secret change"), "", "ship-secret");
+        std::test::assert_eq_str(self.cat.leaf("ship-secret", 1, 0, "e", dna::WorkRequest { objective: "document main.hl", target: "main.hl", requires: "edit", output_contract: "Patch", data_class: "confidential" }, 1), "", "secret e");
+        std::test::assert_eq_str(self.cat.leaf("ship-secret", 1, 0, "s", dna::WorkRequest { objective: "wait for the sibling" }, 1), "", "secret s");
+        std::test::assert_eq_str(self.cat.leaf("ship-secret", 1, 1, "w", dna::WorkRequest { objective: "the change applied", requires: "edit", output_contract: "Applied", target: "s0/e" }, 1), "", "secret w");
+        // two candidates in one Task, each with its own waiter naming it
+        std::test::assert_eq_str(self.cat.define("ship-two", 1, 4, "two changes, each applied"), "", "ship-two");
+        std::test::assert_eq_str(self.cat.leaf("ship-two", 1, 0, "e", dna::WorkRequest { objective: "document main.hl", target: "main.hl", requires: "edit", output_contract: "Patch" }, 1), "", "two e");
+        std::test::assert_eq_str(self.cat.leaf("ship-two", 1, 1, "w", dna::WorkRequest { objective: "the first change applied", requires: "edit", output_contract: "Applied", target: "s0/e" }, 1), "", "two w");
+        std::test::assert_eq_str(self.cat.leaf("ship-two", 1, 2, "e", dna::WorkRequest { objective: "greet in main.hl again", target: "main.hl", requires: "edit", output_contract: "Patch" }, 1), "", "two e2");
+        std::test::assert_eq_str(self.cat.leaf("ship-two", 1, 3, "w", dna::WorkRequest { objective: "the second change applied", requires: "edit", output_contract: "Applied", target: "s2/e" }, 1), "", "two w2");
+        // two candidates prepared one after the other, their two waiters
+        // waiting together in a third step (two edits in one step would be
+        // performed re-entrantly: the assembly's subprocess wait drains the
+        // bus, and the second attempt would arrive inside the first)
+        std::test::assert_eq_str(self.cat.define("ship-pair", 1, 3, "two changes, waited for together"), "", "ship-pair");
+        std::test::assert_eq_str(self.cat.leaf("ship-pair", 1, 0, "e1", dna::WorkRequest { objective: "document main.hl", target: "main.hl", requires: "edit", output_contract: "Patch" }, 1), "", "pair e1");
+        std::test::assert_eq_str(self.cat.leaf("ship-pair", 1, 1, "e2", dna::WorkRequest { objective: "greet in main.hl again", target: "main.hl", requires: "edit", output_contract: "Patch" }, 1), "", "pair e2");
+        std::test::assert_eq_str(self.cat.leaf("ship-pair", 1, 2, "w1", dna::WorkRequest { objective: "the first applied", requires: "edit", output_contract: "Applied", target: "s0/e1" }, 1), "", "pair w1");
+        std::test::assert_eq_str(self.cat.leaf("ship-pair", 1, 2, "w2", dna::WorkRequest { objective: "the second applied", requires: "edit", output_contract: "Applied", target: "s1/e2" }, 1), "", "pair w2");
+        // an edit whose first attempt fails and whose second prepares the candidate
+        std::test::assert_eq_str(self.cat.define("ship-retry", 1, 2, "a change prepared on the second attempt"), "", "ship-retry");
+        std::test::assert_eq_str(self.cat.leaf("ship-retry", 1, 0, "e", dna::WorkRequest { objective: "retry the docs in main.hl", target: "main.hl", requires: "edit", output_contract: "Patch" }, 2), "", "retry e");
+        std::test::assert_eq_str(self.cat.leaf("ship-retry", 1, 0, "s", dna::WorkRequest { objective: "wait for the sibling" }, 1), "", "retry s");
+        std::test::assert_eq_str(self.cat.leaf("ship-retry", 1, 1, "w", dna::WorkRequest { objective: "the change applied", requires: "edit", output_contract: "Applied", target: "s0/e" }, 1), "", "retry w");
+        // a producer and its waiter in ONE step: the waiter waits on the
+        // producer's settlement as much as on its candidate's review
+        std::test::assert_eq_str(self.cat.define("ship-same", 1, 1, "a change and its wait, side by side"), "", "ship-same");
+        std::test::assert_eq_str(self.cat.leaf("ship-same", 1, 0, "e", dna::WorkRequest { objective: "document main.hl", target: "main.hl", requires: "edit", output_contract: "Patch" }, 1), "", "same e");
+        std::test::assert_eq_str(self.cat.leaf("ship-same", 1, 0, "w", dna::WorkRequest { objective: "the change applied", requires: "edit", output_contract: "Applied", target: "s0/e" }, 1), "", "same w");
+        std::test::assert_eq_str(self.cat.define("ship-same-secret", 1, 1, "a change that fails, and its wait"), "", "ship-same-secret");
+        std::test::assert_eq_str(self.cat.leaf("ship-same-secret", 1, 0, "e", dna::WorkRequest { objective: "document main.hl", target: "main.hl", requires: "edit", output_contract: "Patch", data_class: "confidential" }, 1), "", "same secret e");
+        std::test::assert_eq_str(self.cat.leaf("ship-same-secret", 1, 0, "w", dna::WorkRequest { objective: "the change applied", requires: "edit", output_contract: "Applied", target: "s0/e" }, 1), "", "same secret w");
+        // a waiter that names no producer
+        std::test::assert_eq_str(self.cat.define("ship-blind", 1, 2, "a waiter naming nothing"), "", "ship-blind");
+        std::test::assert_eq_str(self.cat.leaf("ship-blind", 1, 0, "e", dna::WorkRequest { objective: "document main.hl", target: "main.hl", requires: "edit", output_contract: "Patch" }, 1), "", "blind e");
+        std::test::assert_eq_str(self.cat.leaf("ship-blind", 1, 1, "w", dna::WorkRequest { objective: "something applied", requires: "edit", output_contract: "Applied" }, 1), "", "blind w");
+    }
+    // A root admitted in the record as card 07 admits it.
+    fn admit(task_id: String, definition: String) {
+        let j = self.boot.rt.journal;
+        let x = self.cat.expand(task_id, definition, 1, self.limits);
+        std::test::assert(x.ok, task_id + " expands: " + x.why);
+        let r = j.append(j.revision(), "workflow.admitted", task_id, dna::encode_admission(dna::AdmittedWorkflow {
+            task_id: task_id, definition: definition, revision: 1, request: "ask-" + task_id,
+            recipe: self.cat.encode_bound(), limits: self.limits, works: x.works, tasks: x.tasks, steps: x.steps, depth: x.depth
+        }));
+        std::test::assert(r.ok, task_id + " is admitted in the record: " + r.error);
+    }
+    fn ask(task_id: String) {
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "edits", task_id: task_id, kinds: "e=edit s=agent w=edit" };
+    }
+    fn reply(attempt_id: String) -> dna::Executed {
+        return self.boot.rt.settle(attempt_id, dna::WorkResult { disposition: "done", result: "later", performer: "delayed", attempt_id: attempt_id });
+    }
+    fn verdict(mutation_id: String, what: String) {
+        let cand = self.body_of(self.boot.rt.journal, "mutation.candidate", mutation_id);
+        std::test::assert(len(cand) > 0, mutation_id + " has a candidate to judge");
+        dna::ReviewVerdict <- dna::Verdict { review_id: mutation_id, subject_digest: cand, verdict: what, reviewer: "riley", authority: "maintainer" };
+    }
+    // The attempts the assembly still holds waiting (its form keeps released slots).
+    @unbounded
+    fn held_waiters() -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.org.waiting_edits.len() {
+            let e = self.org.waiting_edits.get(i) or dna::EditAsk { };
+            if len(e.attempt_id) > 0 { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    // The reports the assembly still holds (its form keeps released slots).
+    @unbounded
+    fn held_reports() -> Int {
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.org.pending_reports.len() {
+            let r = self.org.pending_reports.get(i) or dna::AttemptReport { };
+            if len(r.attempt_id) > 0 { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+    // The Work's settlement, decoded: "<disposition>" or "" when none.
+    fn settled_as(work_id: String) -> String {
+        let o = dna::decode_work_outcome(self.body_of(self.boot.rt.journal, "work.settled", work_id));
+        return if o.ok { o.value.disposition } else { "" };
+    }
+    run() {
+        let repo = "/tmp/dna-edits-" + to_string(std::process::pid());
+        let mk = sh("sh\n-c\nrm -rf \"$1\" && mkdir -p \"$1/app\" \"$1/org\" \"$1/.hale/dna\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && printf '[deps]\\n' > hale.toml && printf '/.hale/\\n' > .gitignore\nsh\n" + repo);
+        std::test::assert(mk.code == 0, "a repository: " + mk.stderr);
+        std::io::fs::write_file(repo + "/app/main.hl", APP) or discard;
+        std::io::fs::write_file(repo + "/org/main.hl", "fn main() { }\n") or discard;
+        let c = sh("sh\n-c\ncd \"$1\" && git add -A && git commit -q -m genome\nsh\n" + repo);
+        std::test::assert(c.code == 0, "the genome: " + c.stderr);
+        self.define();
+
+        // the assembly that owns the editor, reached by the engine's edit
+        // performer under the scope that is this organism's id; the two
+        // read and write one record through two instances of its journal
+        self.org = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            editor: dna::SourceEditor {
+                models: dna::ModelRouter {
+                    quick: dna::FakeModel { name: "quick", rules: RULES },
+                    deep: dna::FakeModel { name: "deep", answer: "clarity +" },
+                    private: dna::LocalFakeModel { }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor application", max_magnitude: 8, review: "pre" } },
+            genome_seed: "app", org_seed: "org", org_id: "edits"
+        };
+        self.boot = Boot {
+            rt: dna::WorkflowRuntime {
+                scope: "edits", journal: dna::GitJournal { repo: repo },
+                work: dna::WorkSystem { agent: Delayed { }, edit: dna::EditRelay { scope: "edits", name: "editor" }, agent_reconciler: dna::IdempotentReplay { } }
+            },
+            owner: dna::Executions { scope: "edits" }
+        };
+        let j = self.boot.rt.journal;
+
+        // ---- t1: the edit Work completes under its contract while its
+        //      sibling keeps the root pending; the review-waiting Work
+        //      waits; a rejection settles that Work failed and reverses
+        //      nothing about the prepared candidate; the workflow settles
+        //      the root — no Work does
+        self.admit("t1", "ship");
+        self.ask("t1");
+        self.until_rows("work.settled", "t1/wf1/s0/e", 1);
+        self.settle();
+        std::test::assert_eq_str(self.settled_as("t1/wf1/s0/e"), "done", "e is done: its candidate is prepared for review");
+        std::test::assert_eq_int(self.rows(j, "review.requested", "review:m1"), 1, "the candidate m1 is in review");
+        std::test::assert_eq_str(dna::decode_binding(self.body_of(j, "mutation.requested", "m1")).attempt_id, "t1/wf1/s0/e/a0", "m1 is bound to e's attempt");
+        std::test::assert_eq_int(self.org.edits_reported, 1, "one outcome reported, for that attempt");
+        std::test::assert_eq_int(self.rows(j, "task.done", "t1") + self.rows(j, "task.failed", "t1"), 0, "no Work settled the root");
+        std::test::assert_eq_int(self.rows(j, "workflow.settled", "t1"), 0, "the root is pending on the delayed sibling");
+        std::test::assert_eq_str(self.settled_as("t1/wf1/s0/s"), "", "s is still out");
+        let r1 = self.reply("t1/wf1/s0/s/a0");
+        std::test::assert(r1.ok, "s answered: " + r1.why);
+        self.until(true, "t1/wf1/s1/w:born", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows(j, "step.completed", "t1/wf1/s0"), 1, "the first step completed on both members");
+        std::test::assert_eq_int(self.org.waiting_edits.len(), 1, "w waits for the candidate's review");
+        std::test::assert_eq_str(self.settled_as("t1/wf1/s1/w"), "", "and is not settled");
+        self.verdict("m1", "reject");
+        self.until(false, "t1:failed", 1);
+        self.settle();
+        std::test::assert(std::str::starts_with(self.body_of(j, "review.settled", "m1"), "reject by"), "the review settled reject");
+        std::test::assert_eq_int(self.rows(j, "mutation.rejected", "m1"), 1, "the candidate was rejected");
+        std::test::assert_eq_str(self.settled_as("t1/wf1/s1/w"), "failed", "the review-waiting Work settled failed on it");
+        std::test::assert_eq_int(self.rows(j, "work.settled", "t1/wf1/s0/e"), 1, "e's settlement stands: one row");
+        std::test::assert_eq_str(self.settled_as("t1/wf1/s0/e"), "done", "a later denial reverses nothing about the prepared candidate");
+        std::test::assert_eq_int(self.rows(j, "workflow.settled", "t1"), 1, "the workflow settled the root");
+        std::test::assert_eq_int(self.rows(j, "task.failed", "t1") + self.rows(j, "task.done", "t1"), 0, "and nothing else did: one root terminal writer");
+        std::test::assert_eq_int(self.org.edits_reported, 2, "two outcomes reported: e's and w's");
+
+        // ---- t2: approved: the candidate is applied and the waiting Work
+        //      is done; the workflow settles done
+        self.admit("t2", "ship");
+        self.ask("t2");
+        self.until_rows("work.settled", "t2/wf1/s0/e", 1);
+        let r2 = self.reply("t2/wf1/s0/s/a0");
+        self.until(true, "t2/wf1/s1/w:born", 1);
+        self.settle();
+        std::test::assert_eq_str(self.settled_as("t2/wf1/s1/w"), "", "w waits");
+        self.verdict("m2", "approve");
+        self.until(false, "t2:done", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows(j, "mutation.applied", "m2"), 1, "the candidate was applied");
+        std::test::assert_eq_str(self.settled_as("t2/wf1/s1/w"), "done", "the review-waiting Work is done");
+        std::test::assert_eq_int(self.rows(j, "task.done", "t2"), 0, "the root was settled by the workflow alone");
+
+        // ---- t3: the verdict lands before the waiting Work is asked: it
+        //      is answered at once, from the settled review
+        self.admit("t3", "ship");
+        self.ask("t3");
+        self.until_rows("work.settled", "t3/wf1/s0/e", 1);
+        self.settle();
+        self.verdict("m3", "approve");
+        self.until_rows("mutation.applied", "m3", 1);
+        self.settle();
+        let waiting_before = self.org.waiting_edits.len();
+        let r3 = self.reply("t3/wf1/s0/s/a0");
+        self.until(false, "t3:done", 1);
+        self.settle();
+        std::test::assert_eq_str(self.settled_as("t3/wf1/s1/w"), "done", "w, asked after the verdict, is done at once");
+        std::test::assert_eq_int(self.org.waiting_edits.len(), waiting_before, "it never waited");
+
+        // ---- t4: preparation fails: the failure maps to the Work that
+        //      asked, its step fails, the workflow settles failed; the
+        //      waiting Work is never born
+        self.admit("t4", "ship-secret");
+        self.ask("t4");
+        self.until_rows("work.settled", "t4/wf1/s0/e", 1);
+        self.settle();
+        std::test::assert_eq_str(self.settled_as("t4/wf1/s0/e"), "failed", "e failed: its preparation did");
+        std::test::assert_eq_int(self.rows(j, "mutation.failed", "m4"), 1, "on the Mutation bound to it");
+        let r4 = self.reply("t4/wf1/s0/s/a0");
+        self.until(false, "t4:failed", 1);
+        self.settle();
+        std::test::assert_eq_int(self.count(self.lives, "t4/wf1/s1/w:born"), 0, "the next step never started");
+        std::test::assert_eq_int(self.rows(j, "task.failed", "t4"), 0, "the root was settled by the workflow alone");
+
+        // ---- an attempt asked again — a redelivery — is answered from the
+        //      Mutation bound to it: nothing is edited twice
+        let minted = self.rows(j, "mutation.requested", "");
+        let outcomes = self.rows(j, "attempt.outcome", "");
+        let reported = self.org.edits_reported;
+        let rec = dna::decode_attempt(self.body_of(j, "attempt.admitted", "t2/wf1/s0/e/a0"));
+        std::test::assert(rec.ok, "e's admitted attempt reads back");
+        dna::EditRequested <- dna::EditAsk { scope: "edits", attempt_id: "t2/wf1/s0/e/a0", performer: "editor", request: rec.value.request };
+        self.settle();
+        std::test::assert_eq_int(self.org.edits_reported, reported + 1, "the attempt was answered again");
+        std::test::assert_eq_int(self.rows(j, "mutation.requested", ""), minted, "from the Mutation bound to it: nothing was minted");
+        std::test::assert_eq_int(self.rows(j, "attempt.outcome", ""), outcomes, "and the record holds no second outcome for it");
+        // a report is one attempt's, whole: one whose outcome names another
+        // attempt — or none — is nobody's, and settles nothing
+        dna::AttemptReported <- dna::AttemptReport { scope: "edits", attempt_id: "t1/wf1/s0/s/a0", result: dna::WorkResult { disposition: "failed", performer: "delayed", attempt_id: "t2/wf1/s0/s/a0" } };
+        dna::AttemptReported <- dna::AttemptReport { scope: "edits", attempt_id: "t1/wf1/s0/s/a0", result: dna::WorkResult { disposition: "failed", performer: "delayed" } };
+        self.settle();
+        std::test::assert_eq_int(self.boot.rt.stray_reports, 2, "a report naming two attempts, and one naming none inside, are strays");
+        std::test::assert_eq_int(self.rows(j, "attempt.outcome", ""), outcomes, "and the record is untouched by them");
+
+        // ---- a legacy routed edit request naming an admitted execution's
+        //      Task runs the legacy path — a Mutation of the Task's — but
+        //      settles nothing: the Task has a legacy pending row and an
+        //      admission, and its root is the workflow's alone
+        self.admit("t5", "ship");
+        let b5 = j.append(j.revision(), "task.born", "t5", "i5: document main.hl");
+        let p5 = j.append(j.revision(), "task.pending", "t5", "routed");
+        std::test::assert(b5.ok && p5.ok, "t5 has its legacy rows beside its admission");
+        let mutated = self.rows(j, "mutation.requested", "");
+        // (the request is handed to the assembly's handler directly, as a
+        // routed Work's would arrive: publishing the unkeyed `WorkRequested`
+        // struct from this fixture faults in the bus's payload arena — a
+        // substrate matter, not this card's)
+        self.org.on_work_requested(dna::WorkRequest { task_id: "t5", work_id: "t5/legacy/w0", objective: "document main.hl", target: "main.hl", requires: "edit" });
+        self.settle();
+        self.settle();
+        std::test::assert_eq_int(self.rows(j, "mutation.requested", ""), mutated + 1, "the legacy path mutated");
+        std::test::assert_eq_str(self.org.task_state("t5"), "pending", "and settled nothing: an admitted execution's root is its workflow's");
+        std::test::assert_eq_int(self.rows(j, "task.done", "t5") + self.rows(j, "task.failed", "t5"), 0, "no Task row was written for it");
+        // and a verdict on that Mutation settles the Task no more than the Work did
+        let m5 = self.org.mutation_of_work("t5/legacy/w0");
+        std::test::assert(len(m5) > 0, "the legacy request's Mutation is bound to its Work");
+        self.until_rows("review.requested", "review:" + m5, 1);
+        self.verdict(m5, "reject");
+        self.until_rows("mutation.rejected", m5, 1);
+        self.settle();
+        std::test::assert_eq_str(self.org.task_state("t5"), "pending", "a rejection settles an admitted execution's Task no more than its Work did");
+        std::test::assert_eq_int(self.rows(j, "task.failed", "t5"), 0, "no Task row was written for the verdict either");
+
+        // ---- (review) Applied needs the application, not the approval: an
+        //      approval whose apply the gate refuses — the destination is
+        //      dirty — leaves the waiter waiting; approved again once the
+        //      destination is clean, the apply lands and the waiter is done
+        self.admit("t6", "ship");
+        self.ask("t6");
+        self.until_rows("work.settled", "t6/wf1/s0/e", 1);
+        let r6 = self.reply("t6/wf1/s0/s/a0");
+        self.until(true, "t6/wf1/s1/w:born", 1);
+        self.settle();
+        let m6 = self.org.mutation_of_work("t6/wf1/s0/e");
+        std::test::assert(len(m6) > 0, "t6's candidate");
+        let current = std::io::fs::read_file(repo + "/app/main.hl") or "";
+        std::io::fs::write_file(repo + "/app/main.hl", "// a local, uncommitted change\n" + current) or discard;
+        self.verdict(m6, "approve");
+        self.until_rows("mutation.refused", m6, 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows(j, "mutation.applied", m6), 0, "the apply gate refused the dirty destination: nothing applied");
+        std::test::assert_eq_str(self.settled_as("t6/wf1/s1/w"), "", "and the waiter is not done on the approval alone");
+        std::test::assert_eq_int(self.rows(j, "workflow.settled", "t6"), 0, "nor is the workflow");
+        let clean = sh("git\n-C\n" + repo + "\ncheckout\n--\napp/main.hl");
+        std::test::assert_eq_int(clean.code, 0, "the destination is clean again: " + clean.stderr);
+        self.verdict(m6, "approve");
+        self.until(false, "t6:done", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows(j, "mutation.apply_retried", m6), 1, "approved again, the gate ran again");
+        std::test::assert_eq_int(self.rows(j, "mutation.applied", m6), 1, "and the candidate applied");
+        std::test::assert_eq_str(self.settled_as("t6/wf1/s1/w"), "done", "the waiter is done on the application");
+
+        // ---- (review) a waiter is bound to its exact candidate: two
+        //      candidates in one Task, each with its own waiter; the first
+        //      candidate's approval answers the first waiter only, and the
+        //      second waiter takes nothing from it while its own candidate's
+        //      review is open
+        self.admit("t7", "ship-two");
+        self.ask("t7");
+        self.until_rows("work.settled", "t7/wf1/s0/e", 1);
+        self.until(true, "t7/wf1/s1/w:born", 1);
+        self.settle();
+        let m7a = self.org.mutation_of_work("t7/wf1/s0/e");
+        self.verdict(m7a, "approve");
+        self.until_rows("work.settled", "t7/wf1/s2/e", 1);
+        self.until(true, "t7/wf1/s3/w:born", 1);
+        self.settle();
+        let m7b = self.org.mutation_of_work("t7/wf1/s2/e");
+        std::test::assert(len(m7b) > 0 && m7b != m7a, "the second candidate is its own Mutation");
+        std::test::assert_eq_int(self.rows(j, "mutation.applied", m7a), 1, "the first candidate applied");
+        std::test::assert_eq_str(self.settled_as("t7/wf1/s1/w"), "done", "and its waiter is done");
+        std::test::assert_eq_int(self.rows(j, "review.requested", "review:" + m7b), 1, "the second candidate awaits its review");
+        std::test::assert_eq_int(self.rows(j, "review.settled", m7b), 0, "with no verdict yet");
+        std::test::assert_eq_str(self.settled_as("t7/wf1/s3/w"), "", "the second waiter takes nothing from the first candidate's approval");
+        self.verdict(m7b, "approve");
+        self.until(false, "t7:done", 1);
+        self.settle();
+        std::test::assert_eq_str(self.settled_as("t7/wf1/s3/w"), "done", "it is done on its own candidate's application");
+        std::test::assert(std::str::contains(std::io::fs::read_file(repo + "/app/main.hl") or "", "greeted"), "which is the second change");
+
+        // ---- (review) a waiter that names no producer is answered at once,
+        //      failed, with why: the dependency is explicit, never a guess
+        self.admit("t9", "ship-blind");
+        self.ask("t9");
+        self.until_rows("work.settled", "t9/wf1/s0/e", 1);
+        self.until(false, "t9:failed", 1);
+        self.settle();
+        std::test::assert_eq_str(self.settled_as("t9/wf1/s1/w"), "failed", "a waiter naming no producing Work fails at once");
+        let o9 = dna::decode_attempt_outcome(self.body_of(j, "attempt.outcome", "t9/wf1/s1/w/a0"));
+        std::test::assert(o9.ok && std::str::contains(o9.value.narrative, "none is named"), "and says why: " + o9.value.narrative);
+
+        // ---- (review) a report the record refuses is retained until the
+        //      record holds the outcome: the runtime's record refuses the
+        //      first outcome row; when the record resumes the assembly puts
+        //      its report again, the edit is not performed again, and
+        //      `redrive` has nothing more to put
+        self.boot = Boot {
+            rt: dna::WorkflowRuntime {
+                scope: "edits", journal: Refusing { inner: dna::GitJournal { repo: repo }, refuse_kind: "attempt.outcome" },
+                work: dna::WorkSystem { agent: Delayed { }, edit: dna::EditRelay { scope: "edits", name: "editor" }, agent_reconciler: dna::IdempotentReplay { } }
+            },
+            owner: dna::Executions { scope: "edits" }
+        };
+        let j8 = self.boot.rt.journal;
+        self.admit("t8", "ship");
+        let minted8 = self.rows(j8, "mutation.requested", "");
+        let reported8 = self.org.edits_reported;
+        self.ask("t8");
+        self.until_rows("review.requested", "review:" + "m" + to_string(minted8 + 1), 1);
+        self.settle();
+        std::test::assert_eq_int(self.org.edits_reported, reported8 + 1, "the edit was performed and reported once");
+        std::test::assert_eq_int(self.rows(j8, "attempt.outcome", "t8/wf1/s0/e/a0"), 0, "and the record refused the outcome");
+        std::test::assert_eq_int(self.boot.rt.reports_refused, 1, "which the runtime counted");
+        std::test::assert_eq_int(self.held_reports(), 1, "the assembly keeps the report — and only that one: every other was seen to land");
+        dna::RecordResumed <- dna::RecordResume { scope: "edits", why: "the record is writable again" };
+        self.until_rows("attempt.outcome", "t8/wf1/s0/e/a0", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows(j8, "attempt.outcome", "t8/wf1/s0/e/a0"), 1, "put again when the record resumed, the outcome landed");
+        std::test::assert_eq_int(self.rows(j8, "mutation.requested", ""), minted8 + 1, "and the edit was not performed again");
+        std::test::assert_eq_str(self.settled_as("t8/wf1/s0/e"), "done", "e is done on it");
+        std::test::assert_eq_int(self.org.redrive(), 0, "nothing is held any more");
+        std::test::assert_eq_int(self.held_reports(), 0, "the report was released once the record held its outcome");
+        std::test::assert_eq_int(self.org.edits_reported, reported8 + 1, "one report");
+        std::test::assert_eq_int(self.org.reports_retried, 1, "put twice: once refused, once landed");
+
+        // (the journal handle taken at the start belongs to the first Boot,
+        // replaced above: these probes read the live runtime's)
+        // ---- (review) two waiters waiting together: one verdict answers
+        //      exactly the waiter of its candidate; the other keeps waiting
+        //      — and, its own candidate's apply refused since the genome
+        //      moved, keeps waiting still
+        self.admit("t10", "ship-pair");
+        // its members are e1, e2, w1, w2: asked under their own kinds
+        dna::ExecutionAsked <- dna::ExecutionAsk { scope: "edits", task_id: "t10", kinds: "e1=edit e2=edit w1=edit w2=edit" };
+        self.until_rows("work.settled", "t10/wf1/s0/e1", 1);
+        self.until_rows("work.settled", "t10/wf1/s1/e2", 1);
+        self.until(true, "t10/wf1/s2/w2:born", 1);
+        self.settle();
+        let m10a = self.org.mutation_of_work("t10/wf1/s0/e1");
+        let m10b = self.org.mutation_of_work("t10/wf1/s1/e2");
+        std::test::assert(len(m10a) > 0 && len(m10b) > 0 && m10a != m10b, "two candidates, each its own Mutation");
+        std::test::assert_eq_int(self.held_waiters(), 2, "both waiters wait");
+        self.verdict(m10a, "approve");
+        self.until_rows("mutation.applied", m10a, 1);
+        self.settle();
+        std::test::assert_eq_str(self.settled_as("t10/wf1/s2/w1"), "done", "the first candidate's verdict answered its waiter");
+        std::test::assert_eq_str(self.settled_as("t10/wf1/s2/w2"), "", "and not the other, waiting on the second candidate");
+        std::test::assert_eq_int(self.held_waiters(), 1, "which still waits");
+        self.verdict(m10b, "approve");
+        self.until_rows("review.settled", m10b, 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "mutation.applied", m10b), 0, "the second candidate's apply was refused: the genome moved since its review");
+        std::test::assert_eq_str(self.settled_as("t10/wf1/s2/w2"), "", "so its waiter keeps waiting: approved is not applied");
+
+        // ---- (review) approved and applied, then rolled back — the row
+        //      the expression path writes when the restarted expression is
+        //      observed unhealthy — before the waiter asks: the waiter is
+        //      answered failed from that state, never done
+        self.admit("t11", "ship");
+        self.ask("t11");
+        self.until_rows("work.settled", "t11/wf1/s0/e", 1);
+        self.settle();
+        let m11 = self.org.mutation_of_work("t11/wf1/s0/e");
+        self.verdict(m11, "approve");
+        self.until_rows("mutation.applied", m11, 1);
+        let rb = self.boot.rt.journal.append(self.boot.rt.journal.revision(), "mutation.rolled_back", m11, "the restarted expression was observed unhealthy; rolled back to base");
+        std::test::assert(rb.ok, "the rollback is in the record: " + rb.error);
+        let r11 = self.reply("t11/wf1/s0/s/a0");
+        self.until(false, "t11:failed", 1);
+        self.settle();
+        std::test::assert_eq_str(self.settled_as("t11/wf1/s1/w"), "failed", "a waiter asking after the rollback is failed");
+        let o11 = dna::decode_attempt_outcome(self.body_of(self.boot.rt.journal, "attempt.outcome", "t11/wf1/s1/w/a0"));
+        std::test::assert(o11.ok && std::str::contains(o11.value.narrative, "rolled back"), "and says why: " + o11.value.narrative);
+
+        // ---- (re-review) the candidate is the producer's accepted attempt's:
+        //      a first attempt fails to prepare, the second prepares; the
+        //      waiter follows the second's Mutation, not the first's — here
+        //      answered at once, the verdict having landed before it asked
+        // (the organism's editor is replaced by one whose first edit call is
+        // refused: its in-memory waiters — the pair's second — are let go)
+        self.org = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            editor: dna::SourceEditor {
+                models: dna::ModelRouter {
+                    quick: Flaky { },
+                    deep: dna::FakeModel { name: "deep", answer: "clarity +" },
+                    private: dna::LocalFakeModel { }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor application", max_magnitude: 8, review: "pre" } },
+            genome_seed: "app", org_seed: "org", org_id: "edits"
+        };
+        self.admit("t12", "ship-retry");
+        self.ask("t12");
+        self.until_rows("work.settled", "t12/wf1/s0/e", 1);
+        self.settle();
+        let ma = self.org.mutation_of_attempt("t12/wf1/s0/e/a0");
+        let mb = self.org.mutation_of_attempt("t12/wf1/s0/e/a1");
+        std::test::assert(len(ma) > 0 && len(mb) > 0 && ma != mb, "two attempts, each its own Mutation: " + ma + " / " + mb);
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "mutation.failed", ma), 1, "the first attempt's preparation failed");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "review.requested", "review:" + mb), 1, "the second's candidate is in review");
+        std::test::assert_eq_str(self.settled_as("t12/wf1/s0/e"), "done", "the producer settled done");
+        let fresh = self.org.journal.refresh(); // the settlement is the runtime's row; the adapter refreshes at its own entry points
+        std::test::assert_eq_str(self.org.candidate_of("t12/wf1/s0/e"), mb, "on its accepted attempt's candidate");
+        self.verdict(mb, "approve");
+        self.until_rows("mutation.applied", mb, 1);
+        self.settle();
+        let waiting12 = self.held_waiters(); // none: the replaced organism started with no waiters
+        let r12 = self.reply("t12/wf1/s0/s/a0");
+        self.until(false, "t12:done", 1);
+        self.settle();
+        std::test::assert_eq_str(self.settled_as("t12/wf1/s1/w"), "done", "asked after the verdict, the waiter is done at once on the accepted attempt's candidate");
+        std::test::assert_eq_int(self.held_waiters(), waiting12, "it never waited");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "mutation.applied", ma) + self.rows(self.boot.rt.journal, "review.requested", "review:" + ma), 0, "the failed first attempt's Mutation was never a candidate");
+
+        // ---- (re-review) the same, the waiter asking before the verdict:
+        //      it waits on the second candidate; a fresh runtime over the
+        //      record asks it again — the same candidate, waiting once; the
+        //      verdict answers it
+        self.org = dna::Dna {
+            journal: dna::GitJournal { repo: repo },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            editor: dna::SourceEditor {
+                models: dna::ModelRouter {
+                    quick: Flaky { },
+                    deep: dna::FakeModel { name: "deep", answer: "clarity +" },
+                    private: dna::LocalFakeModel { }
+                },
+                tools: dna::WorktreeTools { hale_bin: toolchain() }
+            },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor application", max_magnitude: 8, review: "pre" } },
+            genome_seed: "app", org_seed: "org", org_id: "edits"
+        };
+        self.admit("t13", "ship-retry");
+        self.ask("t13");
+        self.until_rows("work.settled", "t13/wf1/s0/e", 1);
+        self.settle();
+        let mc = self.org.mutation_of_attempt("t13/wf1/s0/e/a0");
+        let md = self.org.mutation_of_attempt("t13/wf1/s0/e/a1");
+        std::test::assert(len(mc) > 0 && len(md) > 0 && mc != md, "two attempts again: " + mc + " / " + md);
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "mutation.failed", mc), 1, "the first failed");
+        let r13 = self.reply("t13/wf1/s0/s/a0");
+        self.until(true, "t13/wf1/s1/w:born", 1);
+        self.settle();
+        std::test::assert_eq_str(self.settled_as("t13/wf1/s1/w"), "", "the waiter waits on the second candidate's review");
+        std::test::assert_eq_int(self.held_waiters(), waiting12 + 1, "it waits");
+        self.boot = Boot {
+            rt: dna::WorkflowRuntime {
+                scope: "edits", journal: dna::GitJournal { repo: repo },
+                work: dna::WorkSystem { agent: Delayed { }, edit: dna::EditRelay { scope: "edits", name: "editor" }, agent_reconciler: dna::IdempotentReplay { } }
+            },
+            owner: dna::Executions { scope: "edits" }
+        };
+        let reported13 = self.org.edits_reported;
+        self.ask("t13");
+        self.until(true, "t13/wf1/s1/w:born", 2);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "effect.redelivered", "attempt:t13/wf1/s1/w/a0"), 1, "the waiter's attempt was redelivered");
+        std::test::assert_eq_int(self.held_waiters(), waiting12 + 1, "and waits once");
+        std::test::assert_eq_int(self.org.edits_reported, reported13, "nothing was reported for it yet");
+        self.verdict(md, "approve");
+        self.until(false, "t13:done", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "mutation.applied", md), 1, "the second candidate applied");
+        std::test::assert_eq_str(self.settled_as("t13/wf1/s1/w"), "done", "and the waiter followed the producing Work's successful attempt");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "mutation.applied", mc) + self.rows(self.boot.rt.journal, "review.requested", "review:" + mc), 0, "the failed first attempt's Mutation was never a candidate");
+
+        // ---- (re-review) the producer's settlement and its candidate's
+        //      application are prerequisites that land in either order: the
+        //      record refuses the producer's first settlement row, the
+        //      candidate is approved and applied meanwhile, and the waiter
+        //      — beside the producer in one step — stays; the record resumes,
+        //      the settlement lands, the producer's end announces it, and
+        //      the waiter is done without anyone asking again
+        self.boot = Boot {
+            rt: dna::WorkflowRuntime {
+                scope: "edits", journal: Refusing { inner: dna::GitJournal { repo: repo }, refuse_kind: "work.settled" },
+                work: dna::WorkSystem { agent: Delayed { }, edit: dna::EditRelay { scope: "edits", name: "editor" }, agent_reconciler: dna::IdempotentReplay { } }
+            },
+            owner: dna::Executions { scope: "edits" }
+        };
+        self.admit("t14", "ship-same");
+        self.ask("t14");
+        self.until_rows("attempt.outcome", "t14/wf1/s0/e/a0", 1);
+        self.settle();
+        let m14 = self.org.mutation_of_work("t14/wf1/s0/e");
+        std::test::assert(len(m14) > 0, "the candidate is prepared");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "review.requested", "review:" + m14), 1, "and in review");
+        std::test::assert_eq_str(self.settled_as("t14/wf1/s0/e"), "", "the producer's settlement was refused by the record: held");
+        std::test::assert_eq_int(self.held_waiters(), 1, "its waiter waits");
+        self.verdict(m14, "approve");
+        self.until_rows("mutation.applied", m14, 1);
+        self.settle();
+        std::test::assert_eq_str(self.settled_as("t14/wf1/s0/w"), "", "applied, the waiter still waits: its producer has not settled");
+        dna::RecordResumed <- dna::RecordResume { scope: "edits", why: "the record is writable again" };
+        self.until_rows("work.settled", "t14/wf1/s0/e", 1);
+        self.until(false, "t14:done", 1);
+        self.settle();
+        std::test::assert_eq_str(self.settled_as("t14/wf1/s0/e"), "done", "the producer's held settlement landed");
+        std::test::assert_eq_str(self.settled_as("t14/wf1/s0/w"), "done", "and the waiter was done on it, nobody asking again");
+        std::test::assert_eq_int(self.org.redrive(), 0, "nothing was left for redrive");
+        std::test::assert_eq_int(self.rows(self.boot.rt.journal, "workflow.settled", "t14"), 1, "the workflow settled");
+
+        // ---- (re-review) a producer settling other than done fails its
+        //      waiter through the same path: there is no candidate
+        self.admit("t15", "ship-same-secret");
+        self.ask("t15");
+        self.until(false, "t15:failed", 1);
+        self.settle();
+        std::test::assert_eq_str(self.settled_as("t15/wf1/s0/e"), "failed", "the producer failed to prepare");
+        std::test::assert_eq_str(self.settled_as("t15/wf1/s0/w"), "failed", "and its waiter failed on that settlement");
+        let o15 = dna::decode_attempt_outcome(self.body_of(self.boot.rt.journal, "attempt.outcome", "t15/wf1/s0/w/a0"));
+        std::test::assert(o15.ok && std::str::contains(o15.value.narrative, "settled failed"), "with why: " + o15.value.narrative);
+
+        std::test::assert(self.boot.rt.journal.verify_chain(), "the record's chain holds");
+        let rm = sh("rm\n-rf\n" + repo);
+    }
+}
+
+fn main() { App { }; }
