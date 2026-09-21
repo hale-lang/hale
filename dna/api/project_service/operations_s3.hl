@@ -1,34 +1,1024 @@
-// dna/api/project_service/operations_s3.hl — STUB (GH #965, §2.9 of
-// the head's contract). Lane S3 replaces this file wholesale with the
-// sixteen operations it owns (body start/stop/logs/provision, secrets,
-// models probe, connections, handoffs, observer). Until then every
-// function is present with the agreed signature and every operation
-// is unknown, so the dispatcher's `if s3_known(op) { … } else { own
-// table }` compiles and falls through. Nothing else under
-// `dna/api/project_service/` is S3's to edit.
+// dna/api/project_service/operations_s3.hl — the sixteen operations lane
+// S3 owns in the cockpit head (GH #965, §2.7 of the head's contract):
+// the supervised local body (start, stop), the body on a server
+// (provision, start, stop, logs), secrets by source name, the models
+// probe, connections and handoffs, and the observer.
+//
+// Every verb is the CLI verb. A `run` plan is a `sh -e` script the head
+// writes 0600 and wraps in `timeout`; a `body` or `observer` plan is a
+// long-lived child's argv; the two inline operations (the local body's
+// stop, the observer's stop) act here, through `children.hl`. The head
+// appends nothing to any Record: the verbs write their own rows under
+// `--as` / `--by <principal>`.
+//
+// A run reports the facts its outcome needs on its own last log line,
+// `hale-head-outcome: {…}` — never a secret's value — so a settled run's
+// outcome is read from the run's record: the dispatcher hands
+// `s3_outcome` only the operation, the exit code and the log tail.
+//
+// Every helper here is `s3_`-prefixed: this file is the one S3 edits,
+// and the rest of the seed is S2's.
 
-// The sixteen S3 operation names; none yet.
-fn s3_known(operation: String) -> Bool { return false; }
+import "../../core" as dna;
+import "../../operations" as ops;
+
+const S3_OPERATIONS: String = " dna.body.local.start dna.body.local.stop dna.body.provision dna.body.start dna.body.stop dna.body.logs dna.secret.set dna.secret.rotate dna.models.probe dna.connection.propose dna.connection.close dna.handoff.publish dna.handoff.accept dna.handoff.sync dna.observer.start dna.observer.stop ";
+// The last line a run prints for its outcome (see the file comment).
+const S3_TRAILER: String = "hale-head-outcome: ";
+// The membrane's two sockets (`dna/host/record.hl`): both present, and
+// the organization alive = up.
+const S3_VERDICT_SOCK: String = "hale-dna.review.verdict.sock";
+const S3_INTENT_SOCK: String = "hale-dna.intent.offered.sock";
+const S3_TEXT_MAX: Int = 256;
+const S3_LONG_MAX: Int = 512;
+const S3_SOURCE_MAX: Int = 4096;
+const S3_WORD_CHARS: String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-";
+const S3_ID_CHARS: String = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-";
+
+// ---- the table ----------------------------------------------------------
+
+// The sixteen S3 operation names.
+fn s3_known(operation: String) -> Bool { return std::str::contains(S3_OPERATIONS, " " + operation + " "); }
 
 // The closed argument allowlist, space-separated, in fingerprint order.
-fn s3_arguments(operation: String) -> String { return ""; }
+fn s3_arguments(operation: String) -> String {
+    if operation == "dna.body.local.start" { return "mode owner"; }
+    if operation == "dna.body.provision" { return "target dsn dir dry_run"; }
+    if operation == "dna.body.start" || operation == "dna.body.stop" || operation == "dna.body.logs" { return "body"; }
+    if operation == "dna.secret.set" || operation == "dna.secret.rotate" { return "name source body"; }
+    if operation == "dna.models.probe" { return "confirm_spend"; }
+    if operation == "dna.connection.propose" { return "record_url name position purpose classes"; }
+    if operation == "dna.connection.close" { return "name why"; }
+    if operation == "dna.handoff.publish" { return "connection kind subject note"; }
+    if operation == "dna.handoff.accept" { return "id note"; }
+    return "";
+}
+
+// ---- the project's files and processes -----------------------------------
+
+fn s3_dna_dir(root: String) -> String { return root + "/.hale/dna"; }
+
+// The pid a file holds, -1 for none.
+fn s3_pid_in(path: String) -> Int { return std::str::parse_int(dna::trim_nl(std::io::fs::read_file(path) or "")) or - 1; }
+
+fn s3_pid_alive(pid: Int) -> Bool { return pid > 0 && dna::run_tool("kill\n-0\n" + to_string(pid)).code == 0; }
+
+// The head's child of `name` as its files say (pid -1 when none).
+fn s3_child(ctx: HeadContext, name: String) -> Proc { return Proc { pid: s3_pid_in(ctx.children_dir + "/" + name + ".pid"), dir: ctx.children_dir, name: name }; }
+
+fn s3_org_pid(root: String) -> Int { return s3_pid_in(s3_dna_dir(root) + "/org.pid"); }
+
+// The organism's socket files outlive it (nothing unlinks them when it
+// is stopped), so the membrane is up only while the organization that
+// bound them is alive.
+fn s3_membrane_up(root: String) -> Bool {
+    let d = s3_dna_dir(root) + "/";
+    return std::io::fs::file_exists(d + S3_VERDICT_SOCK) && std::io::fs::file_exists(d + S3_INTENT_SOCK) && s3_pid_alive(s3_org_pid(root));
+}
+
+fn s3_body_alive(ctx: HeadContext) -> Bool { return alive(s3_child(ctx, "body")); }
+
+// A body this head did not start: the organization's pid is alive and
+// the head's body child is not.
+fn s3_external(ctx: HeadContext) -> Bool { return s3_pid_alive(s3_org_pid(ctx.active_root)) && !s3_body_alive(ctx); }
+
+// `hale dna run|dev <root> --no-iris`: what the host itself is (the
+// CLI execs it in place, so the child's pid is the host's).
+fn s3_body_argv(ctx: HeadContext, mode: String) -> String { return ctx.hale + "\ndna\n" + mode + "\n" + ctx.active_root + "\n--no-iris"; }
+
+// What the host launches for its own observer (`dna/host/host.hl`).
+fn s3_observer_argv(ctx: HeadContext) -> String {
+    let d = s3_dna_dir(ctx.active_root);
+    return ctx.hale + "\niris\n" + to_string(ctx.observer_port) + "\n" + d + "/current.topology\n--membrane\n" + d + "\n--organism\n" + d + "/status.json";
+}
+
+fn s3_observer_origin(ctx: HeadContext) -> String { return "http://127.0.0.1:" + to_string(ctx.observer_port); }
+
+// The mode the head's body child was started in, from the argv digest
+// its `.cmd` records: run | dev | "" (no child, or not a body argv).
+fn s3_body_mode(ctx: HeadContext) -> String {
+    let want = read_cmd(ctx.children_dir, "body");
+    if len(want) == 0 { return ""; }
+    if cmd_digest(s3_body_argv(ctx, "run")) == want { return "run"; }
+    if cmd_digest(s3_body_argv(ctx, "dev")) == want { return "dev"; }
+    return "";
+}
+
+// The project's name as the host keys its files: the last segment of
+// the root's physical path (`dna/host/verbs.hl`).
+fn s3_project_name(root: String) -> String {
+    let abs = dna::run_tool("sh\n-c\ncd \"$1\" && pwd -P\nsh\n" + root);
+    let p = if abs.code == 0 { dna::trim_nl(abs.stdout) } else { root };
+    return p[(dna::last_slash(p) + 1)..len(p)];
+}
+
+// `<name>-<id[0..12]>`: the body's env file and unit are keyed by it.
+fn s3_body_key(ctx: HeadContext) -> String {
+    let id = ctx.active_id;
+    return s3_project_name(ctx.active_root) + (if len(id) >= 12 { "-" + id[0..12] } else { "" });
+}
+
+// The model credentials the catalog names (`env_var: "X"` in
+// dna/org/models.hl), space-separated — the host's own scan.
+@unbounded
+fn s3_catalog_credentials(root: String) -> String {
+    let catalog = std::io::fs::read_file(root + "/dna/org/models.hl") or "";
+    let mut out = "";
+    let mut rest = catalog;
+    while true {
+        let at = std::str::index_of(rest, "env_var: \"");
+        if at < 0 { break; }
+        let after = rest[(at + 10)..len(rest)];
+        let q = std::str::index_of(after, "\"");
+        if q < 0 { break; }
+        let name = after[0..q];
+        if len(name) > 0 && !std::str::contains(" " + out + " ", " " + name + " ") { out = if len(out) == 0 { name } else { out + " " + name }; }
+        rest = after[(q + 1)..len(after)];
+    }
+    return out;
+}
+
+// The catalog's credentials that are set in the head's environment: the
+// names an `env` secret source may name. Names only, never values.
+@unbounded
+fn s3_env_present(root: String) -> String {
+    let mut out = "";
+    let mut rest = s3_catalog_credentials(root);
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let name = if sp < 0 { rest } else { rest[0..sp] };
+        rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+        if len(name) > 0 && std::env::var_exists(name) { out = if len(out) == 0 { name } else { out + " " + name }; }
+    }
+    return out;
+}
+
+// How many regular files the sources directory holds.
+fn s3_file_sources(dir: String) -> Int {
+    let n = std::io::fs::list_dir_count(dir) or 0;
+    let mut i = 0;
+    let mut files = 0;
+    while i < n {
+        let name = std::io::fs::list_dir_at(dir, i) or "";
+        if len(name) > 0 && name != "." && name != ".." && dna::run_tool("test\n-f\n" + dir + "/" + name).code == 0 { files = files + 1; }
+        i = i + 1;
+    }
+    return files;
+}
+
+// ---- text rules -------------------------------------------------------------
+
+// 1..max bytes, no C0 control or DEL, no leading `-` (never an option).
+fn s3_plain(s: String, max: Int) -> Bool {
+    if len(s) == 0 || len(s) > max || std::str::starts_with(s, "-") { return false; }
+    let mut i = 0;
+    while i < len(s) {
+        let b = std::str::byte_at_unchecked(s, i);
+        if b < 32 || b == 127 { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn s3_chars_ok(s: String, allowed: String) -> Bool {
+    let mut i = 0;
+    while i < len(s) {
+        if !std::str::contains(allowed, s[i..(i + 1)]) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// `user@host`: the body's address for ssh, or the local transport's name.
+fn s3_target_ok(t: String) -> Bool {
+    let at = std::str::index_of(t, "@");
+    if len(t) > 128 || at <= 0 || at == len(t) - 1 { return false; }
+    let user = t[0..at];
+    let host = t[(at + 1)..len(t)];
+    return !std::str::contains(host, "@") && s3_chars_ok(user, S3_WORD_CHARS) && s3_chars_ok(host, S3_WORD_CHARS) && !std::str::starts_with(user, "-") && !std::str::starts_with(host, "-");
+}
+
+// `^[A-Z_][A-Z0-9_]*$`: what `hale dna secret` itself admits.
+fn s3_env_name_ok(name: String) -> Bool {
+    if len(name) == 0 || len(name) > 64 { return false; }
+    let mut i = 0;
+    while i < len(name) {
+        let b = std::str::byte_at_unchecked(name, i);
+        let ok = (b >= 65 && b <= 90) || (b >= 48 && b <= 57 && i > 0) || b == 95;
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// A file source's name: one path segment under the sources directory.
+fn s3_source_name_ok(name: String) -> Bool {
+    return len(name) > 0 && len(name) <= 128 && !std::str::starts_with(name, ".") && !std::str::starts_with(name, "-") && s3_chars_ok(name, S3_WORD_CHARS);
+}
+
+fn s3_id_ok(id: String) -> Bool { return len(id) > 0 && len(id) <= 64 && !std::str::starts_with(id, "-") && s3_chars_ok(id, S3_ID_CHARS); }
+
+// ---- the arguments object ---------------------------------------------------
+
+// The arguments are an object whose keys are all in `allowlist` ("" and
+// "{}" are the empty object). A key that is not — `value` on a secret,
+// anything unexpected — makes the request invalid.
+fn s3_args_ok(arguments: String, allowlist: String) -> Bool {
+    let t = std::str::trim(arguments);
+    if len(t) == 0 || t == "{}" { return true; }
+    if !std::json::valid_object(t) { return false; }
+    let mut it = std::json::object_first(t);
+    while !it.done {
+        let key = std::json::obj_key_string(it, t);
+        if !std::str::contains(" " + allowlist + " ", " " + key + " ") { return false; }
+        it = std::json::object_next(it, t);
+    }
+    return true;
+}
+
+// Why a text argument is refused ("" when it is absent and optional, or
+// a string within the rules).
+fn s3_text_refusal(arguments: String, key: String, required: Bool, max: Int) -> String {
+    let raw = std::str::trim(json_raw(arguments, key));
+    if len(raw) == 0 { return if required { "`" + key + "` is required" } else { "" }; }
+    if !json_is_text(raw) { return "`" + key + "` must be a string"; }
+    if !s3_plain(json_text(arguments, key), max) { return "`" + key + "` is 1.." + to_string(max) + " bytes, no control characters, no leading `-`"; }
+    return "";
+}
+
+// A boolean argument: 1 true, 0 false or absent, -1 not a boolean.
+fn s3_bool_of(arguments: String, key: String) -> Int {
+    let raw = std::str::trim(json_raw(arguments, key));
+    if len(raw) == 0 || raw == "false" { return 0; }
+    if raw == "true" { return 1; }
+    return -1;
+}
+
+// The `classes` array joined by commas ("" when absent).
+@unbounded
+fn s3_classes_of(arguments: String) -> String {
+    let raw = std::str::trim(json_raw(arguments, "classes"));
+    if !std::str::starts_with(raw, "[") { return ""; }
+    let mut out = "";
+    let mut it = std::json::array_first_span(raw);
+    while !it.done {
+        let item = std::str::trim(std::json::iter_substring(it, raw));
+        if json_is_text(item) {
+            let syntax = ops::OrganizationJson { };
+            let c = std::str::trim(syntax.decode(item));
+            out = if len(out) == 0 { c } else { out + "," + c };
+        }
+        it = std::json::array_next_span(it, raw);
+    }
+    return out;
+}
+
+// Why `classes` is refused: not an array of plain strings, or, joined,
+// not a class list the core admits.
+fn s3_classes_refusal(arguments: String) -> String {
+    let raw = std::str::trim(json_raw(arguments, "classes"));
+    if len(raw) == 0 { return "`classes` is required"; }
+    if !std::str::starts_with(raw, "[") { return "`classes` must be an array of strings"; }
+    let mut it = std::json::array_first_span(raw);
+    while !it.done {
+        let item = std::str::trim(std::json::iter_substring(it, raw));
+        if !json_is_text(item) { return "`classes` must be an array of strings"; }
+        let syntax = ops::OrganizationJson { };
+        if !s3_plain(syntax.decode(item), 32) { return "`classes` holds a class name that is not plain text"; }
+        it = std::json::array_next_span(it, raw);
+    }
+    return dna::classes_refusal(s3_classes_of(arguments));
+}
+
+// The `source` object of a secret: `{"kind":"file"|"env","name":…}` and
+// nothing else. Returns "" when well-formed, else why.
+fn s3_source_refusal(arguments: String) -> String {
+    let raw = std::str::trim(json_raw(arguments, "source"));
+    if len(raw) == 0 { return "`source` is required"; }
+    if !std::json::valid_object(raw) { return "`source` must be an object"; }
+    let mut it = std::json::object_first(raw);
+    while !it.done {
+        let key = std::json::obj_key_string(it, raw);
+        if key != "kind" && key != "name" { return "`source` has only `kind` and `name`"; }
+        it = std::json::object_next(it, raw);
+    }
+    let kind = json_text(raw, "kind");
+    if kind != "file" && kind != "env" { return "`source.kind` is file or env"; }
+    if !s3_plain(json_text(raw, "name"), 128) { return "`source.name` is 1..128 bytes of plain text"; }
+    return "";
+}
+
+// ---- plans -------------------------------------------------------------------
+
+fn s3_refuse(code: String, reason: String) -> Plan { return Plan { refused: code, reason: reason }; }
+
+fn s3_invalid(reason: String) -> Plan { return s3_refuse("invalid_command", reason); }
+
+fn s3_run(script: String, cwd: String, deadline: Int, external: Bool) -> Plan {
+    return Plan { ok: true, kind: "run", script: script, cwd: cwd, deadline_secs: deadline, external: external };
+}
+
+fn s3_inline(outcome: String) -> Plan { return Plan { ok: true, kind: "inline", outcome: outcome, deadline_secs: 10 }; }
+
+// single-quote for sh (`dna/host/verbs.hl`'s `sq`)
+fn s3_sq(s: String) -> String { return shq(s); }
+
+// The run's last line: the facts its outcome is built from.
+fn s3_trailer(json: String) -> String { return "printf '%s\\n' " + s3_sq(S3_TRAILER + json) + "\n"; }
+
+fn s3_quote(s: String) -> String { let codec = ops::GovernanceCommandCodec { }; return codec.quote(s); }
+
+// The text the reason carries for a refusal decided from the head's state.
+fn s3_reason(code: String) -> String {
+    if code == "detached" { return "no project is attached"; }
+    if code == "body_running" { return "a local body already runs for this project (its organization holds .hale/dna/org.pid)"; }
+    if code == "body_not_running" { return "no local body runs for this project"; }
+    if code == "no_seed" { return "the project has no dna/org/main.hl to run"; }
+    if code == "membrane_down" { return "the organism's membrane is not up (no body runs, or it has not bound its sockets and cut .hale/dna/current.topology)"; }
+    if code == "source_missing" { return "no secret source exists: write a file under the sources directory (mode 0600, one line) or export a catalog credential in the head's environment"; }
+    return code;
+}
 
 // "" = available; else the reason_code (detached, body_running, …).
-fn s3_available(ctx: HeadContext, operation: String) -> String { return ""; }
+fn s3_available(ctx: HeadContext, operation: String) -> String {
+    if !s3_known(operation) { return ""; }
+    if len(ctx.active_id) == 0 { return "detached"; }
+    let root = ctx.active_root;
+    if operation == "dna.body.local.start" {
+        if !std::io::fs::file_exists(root + "/dna/org/main.hl") { return "no_seed"; }
+        if s3_body_alive(ctx) || s3_pid_alive(s3_org_pid(root)) { return "body_running"; }
+        return "";
+    }
+    if operation == "dna.body.local.stop" {
+        return if s3_body_alive(ctx) || s3_pid_alive(s3_org_pid(root)) { "" } else { "body_not_running" };
+    }
+    if operation == "dna.observer.start" {
+        return if s3_membrane_up(root) && std::io::fs::file_exists(s3_dna_dir(root) + "/current.topology") { "" } else { "membrane_down" };
+    }
+    if operation == "dna.secret.set" || operation == "dna.secret.rotate" {
+        return if s3_file_sources(ctx.sources_dir) > 0 || len(s3_env_present(root)) > 0 { "" } else { "source_missing" };
+    }
+    return "";
+}
 
 // Validates the raw arguments JSON; inline operations perform the
 // effect here.
-fn s3_plan(ctx: HeadContext, operation: String, arguments: String) -> Plan { return Plan { refused: "invalid_command", reason: "no such operation" }; }
+fn s3_plan(ctx: HeadContext, operation: String, arguments: String) -> Plan {
+    if !s3_known(operation) { return s3_invalid("no such operation"); }
+    if !s3_args_ok(arguments, s3_arguments(operation)) {
+        let allow = s3_arguments(operation);
+        return s3_invalid("`arguments` is an object with " + (if len(allow) == 0 { "no keys" } else { "only: " + allow }));
+    }
+    let unavailable = s3_available(ctx, operation);
+    if len(unavailable) > 0 { return s3_refuse(unavailable, s3_reason(unavailable)); }
+    if operation == "dna.body.local.start" { return s3_plan_body_start(ctx, arguments); }
+    if operation == "dna.body.local.stop" { return s3_stop_local_body(ctx); }
+    if operation == "dna.body.provision" { return s3_plan_provision(ctx, arguments); }
+    if operation == "dna.body.start" || operation == "dna.body.stop" || operation == "dna.body.logs" { return s3_plan_body_ctl(ctx, operation, arguments); }
+    if operation == "dna.secret.set" || operation == "dna.secret.rotate" { return s3_plan_secret(ctx, operation, arguments); }
+    if operation == "dna.models.probe" { return s3_plan_models(ctx, arguments); }
+    if operation == "dna.connection.propose" { return s3_plan_connect(ctx, arguments); }
+    if operation == "dna.connection.close" { return s3_plan_disconnect(ctx, arguments); }
+    if operation == "dna.handoff.publish" { return s3_plan_handoff_publish(ctx, arguments); }
+    if operation == "dna.handoff.accept" { return s3_plan_handoff_accept(ctx, arguments); }
+    if operation == "dna.handoff.sync" { return s3_run("\"$HALE_BIN\" dna handoff sync\n" + s3_trailer("{}"), ctx.active_root, 120, true); }
+    if operation == "dna.observer.start" { return s3_plan_observer_start(ctx); }
+    return s3_stop_observer(ctx);
+}
 
-// The outcome JSON for a settled run or child.
-fn s3_outcome(ctx: HeadContext, operation: String, exit_code: Int, log_tail: String) -> String { return "{}"; }
+// `dna.body.local.start`: `git config dna.owner` when given, then the
+// host as a detached child; ready when the membrane's sockets exist.
+fn s3_plan_body_start(ctx: HeadContext, arguments: String) -> Plan {
+    let mode = json_text(arguments, "mode");
+    if mode != "run" && mode != "dev" { return s3_invalid("`mode` is run or dev"); }
+    let owner_refusal = s3_text_refusal(arguments, "owner", false, 64);
+    if len(owner_refusal) > 0 { return s3_invalid(owner_refusal); }
+    let owner = json_text(arguments, "owner");
+    if len(owner) > 0 && !s3_chars_ok(owner, S3_WORD_CHARS) { return s3_invalid("`owner` is letters, digits, `.`, `_` and `-`"); }
+    if len(owner) > 0 {
+        let r = dna::GitRecord { repo: ctx.active_root };
+        if !r.set_setting("owner", owner) { return s3_invalid("git config dna.owner could not be written: " + r.why()); }
+    }
+    // the knowledge store's DSN reaches the body only (§2.6)
+    let envs = if std::env::var_exists("HALE_DNA_KNOWLEDGE_DSN") { "HALE_DNA_KNOWLEDGE_DSN=" + std::env::var("HALE_DNA_KNOWLEDGE_DSN") } else { "" };
+    return Plan { ok: true, kind: "body", argv: s3_body_argv(ctx, mode), cwd: ctx.active_root, envs: envs, deadline_secs: 600, external: false };
+}
+
+// Waits up to `max_ms` for `pid` to end.
+fn s3_wait_gone(pid: Int, max_ms: Int) -> Bool {
+    let mut waited = 0;
+    while waited < max_ms {
+        if !s3_pid_alive(pid) { return true; }
+        std::time::sleep(100ms);
+        waited = waited + 100;
+    }
+    return !s3_pid_alive(pid);
+}
+
+// `dna.body.local.stop`, inline: TERM to the organization reaches the
+// host's own teardown (it stops what it started, unlinks the pids,
+// appends `body.released` and syncs); the head waits ≤ 60 s for the
+// host to end. Past that, the fallback ladder: TERM the body child, ten
+// seconds, KILL, the organization's and application's trees, then
+// `hale dna body release` for the lease. The host has no signal
+// handler, so nothing but this path writes `body.released`.
+//
+// The effect happens here, so the outcome carries its own `record`
+// evidence (the journal's head before the TERM, and the rows past it
+// once the host has ended): the dispatcher's evidence hook runs on
+// settled runs and children, not on an inline outcome.
+fn s3_stop_local_body(ctx: HeadContext) -> Plan {
+    let root = ctx.active_root;
+    let d = s3_dna_dir(root);
+    let body = s3_child(ctx, "body");
+    let body_alive = alive(body);
+    let org = s3_org_pid(root);
+    let org_alive = s3_pid_alive(org);
+    if !body_alive && !org_alive { return s3_refuse("body_not_running", s3_reason("body_not_running")); }
+    let record = dna::GitRecord { repo: root };
+    let head_before = record.head("journal");
+    // the host's pid: the first line of the fence mandate it wrote
+    let mandate = std::io::fs::read_file(d + "/body.fence") or "";
+    let nl = std::str::index_of(mandate, "\n");
+    let host = std::str::parse_int(dna::trim_nl(if nl < 0 { mandate } else { mandate[0..nl] })) or - 1;
+    // what ends when the teardown is done: the head's child, or, for a
+    // body the head did not start, the host itself (else its organization)
+    let waited_pid = if body_alive { body.pid } else if s3_pid_alive(host) { host } else { org };
+    if org_alive { let t = dna::run_tool("kill\n-TERM\n" + to_string(org)); }
+    let mut released_by = "host";
+    let mut released_text = "";
+    if !s3_wait_gone(waited_pid, 60000) {
+        released_by = "head";
+        if body_alive {
+            let t2 = dna::run_tool("kill\n-TERM\n" + to_string(body.pid));
+            if !s3_wait_gone(body.pid, 10000) { let k = dna::run_tool("kill\n-KILL\n" + to_string(body.pid)); }
+        }
+        if s3_pid_alive(host) { kill_tree(to_string(host)); }
+        kill_tree(dna::trim_nl(std::io::fs::read_file(d + "/org.pid") or ""));
+        kill_tree(dna::trim_nl(std::io::fs::read_file(d + "/app.pid") or ""));
+        std::io::fs::unlink(d + "/org.pid") or discard;
+        std::io::fs::unlink(d + "/app.pid") or discard;
+        let r = dna::run_tool("sh\n-c\ncd \"$1\" && exec \"$2\" dna body release --as \"$3\"\nsh\n" + root + "\n" + ctx.hale + "\n" + ctx.principal_name);
+        released_text = dna::trim_nl(r.stdout + r.stderr);
+    }
+    // the exit the wrapper recorded for the head's child; it lands a
+    // moment after the process ends
+    let mut code = -1;
+    if body_alive {
+        let mut tries = 0;
+        while tries < 40 {
+            code = exit_code(body);
+            if code >= 0 { break; }
+            std::time::sleep(50ms);
+            tries = tries + 1;
+        }
+    }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("released_by", released_by);
+    b.int_field("exit_code", code);
+    if len(released_text) > 0 { b.string_field("release", released_text); }
+    b.field("record", record_evidence(root, head_before));
+    b.end_object();
+    return s3_inline(b.result());
+}
+
+// `dna.body.provision`: the verb over the transport; a dry run prints
+// the script and writes nothing.
+fn s3_plan_provision(ctx: HeadContext, arguments: String) -> Plan {
+    let target_refusal = s3_text_refusal(arguments, "target", true, 128);
+    if len(target_refusal) > 0 { return s3_invalid(target_refusal); }
+    let target = json_text(arguments, "target");
+    if !s3_target_ok(target) { return s3_refuse("target_invalid", "`target` is `user@host`: " + target); }
+    let dsn_refusal = s3_text_refusal(arguments, "dsn", false, S3_LONG_MAX);
+    if len(dsn_refusal) > 0 { return s3_invalid(dsn_refusal); }
+    let dir_refusal = s3_text_refusal(arguments, "dir", false, S3_TEXT_MAX);
+    if len(dir_refusal) > 0 { return s3_invalid(dir_refusal); }
+    let dir = json_text(arguments, "dir");
+    if len(dir) > 0 && !std::str::starts_with(dir, "/") && !std::str::starts_with(dir, "$HOME/") { return s3_refuse("path_invalid", "`dir` is absolute, or under the body's `$HOME/`"); }
+    let dry = s3_bool_of(arguments, "dry_run");
+    if dry < 0 { return s3_invalid("`dry_run` is a boolean"); }
+    let r = dna::GitRecord { repo: ctx.active_root };
+    if len(r.remote()) == 0 { return s3_refuse("no_remote", "the record has no remote; the body clones the record from one (`hale dna publish` with a remote first)"); }
+    let dsn = json_text(arguments, "dsn");
+    let script = "\"$HALE_BIN\" dna body provision " + s3_sq(target)
+        + (if len(dsn) > 0 { " --dsn " + s3_sq(dsn) } else { "" })
+        + (if len(dir) > 0 { " --dir " + s3_sq(dir) } else { "" })
+        + (if dry == 1 { " --dry-run" } else { "" })
+        + " --as " + s3_sq(ctx.principal_name) + "\n"
+        + s3_trailer("{\"target\":" + s3_quote(target) + ",\"dry_run\":" + (if dry == 1 { "true" } else { "false" }) + "}");
+    return s3_run(script, ctx.active_root, if dry == 1 { 120 } else { 900 }, dry == 0);
+}
+
+// `dna.body.start|stop|logs`: the provisioned body's unit over the transport.
+fn s3_plan_body_ctl(ctx: HeadContext, operation: String, arguments: String) -> Plan {
+    let sub = operation[9..len(operation)];
+    let body_refusal = s3_text_refusal(arguments, "body", false, 128);
+    if len(body_refusal) > 0 { return s3_invalid(body_refusal); }
+    let body = json_text(arguments, "body");
+    if len(body) > 0 && !s3_target_ok(body) { return s3_refuse("target_invalid", "`body` is `user@host`: " + body); }
+    let script = "\"$HALE_BIN\" dna body " + sub + (if len(body) > 0 { " --body " + s3_sq(body) } else { "" }) + "\n"
+        + s3_trailer("{\"body\":" + s3_quote(body) + "}");
+    return s3_run(script, ctx.active_root, 60, sub != "logs");
+}
+
+// `dna.secret.set|rotate`: the value never enters the head. A file
+// source is redirected into the verb's stdin and unlinked once the verb
+// succeeded (`source_consumed`); an env source is a variable the run's
+// shell reads and pipes, named only from the catalog credentials set in
+// the head's environment.
+fn s3_plan_secret(ctx: HeadContext, operation: String, arguments: String) -> Plan {
+    let sub = if operation == "dna.secret.set" { "set" } else { "rotate" };
+    let name_refusal = s3_text_refusal(arguments, "name", true, 64);
+    if len(name_refusal) > 0 { return s3_invalid(name_refusal); }
+    let name = json_text(arguments, "name");
+    if !s3_env_name_ok(name) { return s3_refuse("name_invalid", "`" + name + "` is not an environment variable name (A-Z, 0-9, _; not starting with a digit)"); }
+    let body_refusal = s3_text_refusal(arguments, "body", false, 128);
+    if len(body_refusal) > 0 { return s3_invalid(body_refusal); }
+    let body = json_text(arguments, "body");
+    if len(body) > 0 && !s3_target_ok(body) { return s3_refuse("target_invalid", "`body` is `user@host`: " + body); }
+    let source_refusal = s3_source_refusal(arguments);
+    if len(source_refusal) > 0 { return s3_invalid(source_refusal); }
+    let source = std::str::trim(json_raw(arguments, "source"));
+    let kind = json_text(source, "kind");
+    let sname = json_text(source, "name");
+    let place = if len(body) > 0 { body } else { "local" };
+    let verb = "\"$HALE_BIN\" dna secret " + sub + " " + s3_sq(name) + (if len(body) > 0 { " --body " + s3_sq(body) } else { "" }) + " --as " + s3_sq(ctx.principal_name);
+    let facts = "{\"name\":" + s3_quote(name) + ",\"where\":" + s3_quote(place) + ",\"source_kind\":" + s3_quote(kind) + ",\"source_consumed\":" + (if kind == "file" { "true" } else { "false" }) + "}";
+    if kind == "env" {
+        if !s3_env_name_ok(sname) || !dna::word_in(sname, s3_env_present(ctx.active_root)) {
+            return s3_refuse("name_not_env_var", "`" + sname + "` is not a catalog credential set in the head's environment (" + (if len(s3_env_present(ctx.active_root)) == 0 { "none is" } else { s3_env_present(ctx.active_root) }) + ")");
+        }
+        return s3_run("printf '%s\\n' \"$" + sname + "\" | " + verb + "\n" + s3_trailer(facts), ctx.active_root, 60, len(body) > 0);
+    }
+    if !s3_source_name_ok(sname) { return s3_refuse("source_unsafe", "a source name is one path segment: letters, digits, `.`, `_` and `-`, not starting with `.` or `-`"); }
+    let path = ctx.sources_dir + "/" + sname;
+    if !std::io::fs::file_exists(path) || dna::run_tool("test\n-f\n" + path).code != 0 { return s3_refuse("source_missing", "no source file at " + path); }
+    let mode = mode_of(path);
+    if mode != "600" { return s3_refuse("source_unsafe", path + " is mode " + mode + "; a source is mode 0600"); }
+    let text = std::io::fs::read_file(path) or "";
+    let nl = std::str::index_of(text, "\n");
+    if len(text) == 0 || len(text) > S3_SOURCE_MAX || len(dna::trim_nl(text)) == 0 || (nl >= 0 && nl != len(text) - 1) {
+        return s3_refuse("source_unsafe", path + " is not exactly one non-empty line of at most " + to_string(S3_SOURCE_MAX) + " bytes");
+    }
+    return s3_run(verb + " < " + s3_sq(path) + "\nrm -f -- " + s3_sq(path) + "\n" + s3_trailer(facts), ctx.active_root, 60, len(body) > 0);
+}
+
+// `dna.models.probe`: the catalog probed with the body's env file
+// sourced, one live request per backend — confirmed spend only.
+fn s3_plan_models(ctx: HeadContext, arguments: String) -> Plan {
+    let confirm = s3_bool_of(arguments, "confirm_spend");
+    if confirm < 0 { return s3_invalid("`confirm_spend` is a boolean"); }
+    if confirm != 1 { return s3_refuse("spend_unconfirmed", "the probe makes one live request per backend; confirm the spend (`confirm_spend: true`)"); }
+    let script = "set -a\nf=\"$HOME/.config/hale-dna/" + s3_body_key(ctx) + ".env\"\nif [ -f \"$f\" ]; then . \"$f\"; fi\nset +a\n\"$HALE_BIN\" dna models " + s3_sq(ctx.active_root) + "\n" + s3_trailer("{}");
+    return s3_run(script, ctx.active_root, 300, true);
+}
+
+// `dna.connection.propose`: `--as` is the POSITION this record acts as
+// there, `--by` the person.
+fn s3_plan_connect(ctx: HeadContext, arguments: String) -> Plan {
+    let url_refusal = s3_text_refusal(arguments, "record_url", true, S3_TEXT_MAX);
+    if len(url_refusal) > 0 { return s3_invalid(url_refusal); }
+    let name_refusal = s3_text_refusal(arguments, "name", true, 64);
+    if len(name_refusal) > 0 { return s3_invalid(name_refusal); }
+    let name = json_text(arguments, "name");
+    let bad_name = dna::connection_name_refusal(name);
+    if len(bad_name) > 0 { return s3_refuse("name_invalid", bad_name); }
+    let position_refusal = s3_text_refusal(arguments, "position", true, S3_TEXT_MAX);
+    if len(position_refusal) > 0 { return s3_invalid(position_refusal); }
+    let purpose_refusal = s3_text_refusal(arguments, "purpose", true, S3_TEXT_MAX);
+    if len(purpose_refusal) > 0 { return s3_invalid(purpose_refusal); }
+    let classes_refusal = s3_classes_refusal(arguments);
+    if len(classes_refusal) > 0 { return s3_invalid(classes_refusal); }
+    let script = "\"$HALE_BIN\" dna connect " + s3_sq(json_text(arguments, "record_url")) + " --name " + s3_sq(name)
+        + " --as " + s3_sq(json_text(arguments, "position")) + " --purpose " + s3_sq(json_text(arguments, "purpose"))
+        + " --classes " + s3_sq(dna::classes_normal(s3_classes_of(arguments))) + " --by " + s3_sq(ctx.principal_name) + "\n"
+        + s3_trailer("{\"name\":" + s3_quote(name) + "}");
+    return s3_run(script, ctx.active_root, 120, true);
+}
+
+fn s3_plan_disconnect(ctx: HeadContext, arguments: String) -> Plan {
+    let name_refusal = s3_text_refusal(arguments, "name", true, 64);
+    if len(name_refusal) > 0 { return s3_invalid(name_refusal); }
+    let name = json_text(arguments, "name");
+    let bad_name = dna::connection_name_refusal(name);
+    if len(bad_name) > 0 { return s3_refuse("name_invalid", bad_name); }
+    let why_refusal = s3_text_refusal(arguments, "why", true, S3_LONG_MAX);
+    if len(why_refusal) > 0 { return s3_invalid(why_refusal); }
+    let script = "\"$HALE_BIN\" dna disconnect " + s3_sq(name) + " --why " + s3_sq(json_text(arguments, "why")) + " --by " + s3_sq(ctx.principal_name) + "\n"
+        + s3_trailer("{\"name\":" + s3_quote(name) + "}");
+    return s3_run(script, ctx.active_root, 120, true);
+}
+
+fn s3_plan_handoff_publish(ctx: HeadContext, arguments: String) -> Plan {
+    let conn_refusal = s3_text_refusal(arguments, "connection", true, 64);
+    if len(conn_refusal) > 0 { return s3_invalid(conn_refusal); }
+    let connection = json_text(arguments, "connection");
+    let bad_name = dna::connection_name_refusal(connection);
+    if len(bad_name) > 0 { return s3_refuse("name_invalid", bad_name); }
+    let kind = json_text(arguments, "kind");
+    if kind != "task" && kind != "receipt" { return s3_invalid("`kind` is task or receipt"); }
+    let subject_refusal = s3_text_refusal(arguments, "subject", true, S3_TEXT_MAX);
+    if len(subject_refusal) > 0 { return s3_invalid(subject_refusal); }
+    let note_refusal = s3_text_refusal(arguments, "note", false, S3_LONG_MAX);
+    if len(note_refusal) > 0 { return s3_invalid(note_refusal); }
+    let note = json_text(arguments, "note");
+    let script = "\"$HALE_BIN\" dna handoff " + s3_sq(connection) + " " + kind + " " + s3_sq(json_text(arguments, "subject"))
+        + (if len(note) > 0 { " --note " + s3_sq(note) } else { "" }) + " --as " + s3_sq(ctx.principal_name) + "\n" + s3_trailer("{}");
+    return s3_run(script, ctx.active_root, 120, true);
+}
+
+fn s3_plan_handoff_accept(ctx: HeadContext, arguments: String) -> Plan {
+    let id_refusal = s3_text_refusal(arguments, "id", true, 64);
+    if len(id_refusal) > 0 { return s3_invalid(id_refusal); }
+    let id = json_text(arguments, "id");
+    if !s3_id_ok(id) { return s3_invalid("`id` is a handoff id"); }
+    let note_refusal = s3_text_refusal(arguments, "note", false, S3_LONG_MAX);
+    if len(note_refusal) > 0 { return s3_invalid(note_refusal); }
+    let note = json_text(arguments, "note");
+    let script = "\"$HALE_BIN\" dna handoff accept " + s3_sq(id) + (if len(note) > 0 { " --note " + s3_sq(note) } else { "" }) + " --as " + s3_sq(ctx.principal_name) + "\n" + s3_trailer("{}");
+    return s3_run(script, ctx.active_root, 120, true);
+}
+
+// `dna.observer.start`: `hale iris` over the membrane as the host itself
+// launches it; an observer already running is the effect, not a refusal.
+fn s3_plan_observer_start(ctx: HeadContext) -> Plan {
+    let observer = s3_child(ctx, "observer");
+    if alive(observer) { return s3_inline("{\"pid\":" + to_string(observer.pid) + ",\"origin\":" + s3_quote(s3_observer_origin(ctx)) + "}"); }
+    return Plan { ok: true, kind: "observer", argv: s3_observer_argv(ctx), cwd: ctx.active_root, deadline_secs: 30 };
+}
+
+// `dna.observer.stop`, inline: TERM, five seconds, KILL; nothing running
+// is already stopped.
+fn s3_stop_observer(ctx: HeadContext) -> Plan {
+    let observer = s3_child(ctx, "observer");
+    if alive(observer) { stop_proc(observer); }
+    return s3_inline("{}");
+}
+
+// ---- settled runs and children ------------------------------------------
+
+// The JSON of the run's last trailer line ("{}" when it printed none —
+// it failed, or was cut off).
+fn s3_trailer_json(log: String) -> String {
+    let mut found = "{}";
+    let mut rest = log;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::starts_with(line, S3_TRAILER) {
+            let json = std::str::trim(line[len(S3_TRAILER)..len(line)]);
+            if std::json::valid_object(json) { found = json; }
+        }
+    }
+    return found;
+}
+
+// The log without its trailer lines: the verb's own text.
+fn s3_without_trailer(log: String) -> String {
+    let mut out = "";
+    let mut rest = log;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if !std::str::starts_with(line, S3_TRAILER) { out = out + line + "\n"; }
+    }
+    return dna::trim_nl(out);
+}
+
+// The outcome JSON for a settled run or child. The dispatcher adds the
+// `record` evidence to row-writing operations.
+fn s3_outcome(ctx: HeadContext, operation: String, exit_code: Int, log_tail: String) -> String {
+    let facts = s3_trailer_json(log_tail);
+    let text = s3_without_trailer(log_tail);
+    let b = std::json::Builder { };
+    b.begin_object();
+    if operation == "dna.body.local.start" {
+        let body = s3_child(ctx, "body");
+        b.int_field("pid", body.pid);
+        b.string_field("mode", s3_body_mode(ctx));
+        b.int_field("membrane_up_at", if exit_code == 0 && s3_membrane_up(ctx.active_root) { std::time::now() } else { 0 });
+    } else if operation == "dna.observer.start" {
+        b.int_field("pid", s3_child(ctx, "observer").pid);
+        b.string_field("origin", s3_observer_origin(ctx));
+    } else if operation == "dna.body.provision" {
+        let dry = std::json::find_bool_field(facts, "dry_run");
+        b.string_field("target", json_text(facts, "target"));
+        b.bool_field("dry_run", dry);
+        b.string_field(if dry { "preview" } else { "text" }, text);
+    } else if operation == "dna.secret.set" || operation == "dna.secret.rotate" {
+        b.string_field("name", json_text(facts, "name"));
+        b.string_field("where", json_text(facts, "where"));
+        b.bool_field("source_consumed", exit_code == 0 && std::json::find_bool_field(facts, "source_consumed"));
+    } else if operation == "dna.models.probe" {
+        b.string_field("table", text);
+    } else if operation == "dna.connection.propose" {
+        b.string_field("name", json_text(facts, "name"));
+        b.string_field("text", text);
+    } else if operation == "dna.connection.close" {
+        b.string_field("name", json_text(facts, "name"));
+    } else {
+        b.string_field("text", text);
+    }
+    b.end_object();
+    return b.result();
+}
+
+// Whether `GET /` on the loopback port answers within two seconds: the
+// §2.9 exchange, one request, the read bounded by the socket's timeout.
+fn s3_http_answers(port: Int) -> Bool {
+    let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
+    if fd < 0 { return false; }
+    std::io::tcp::__set_recv_timeout_ns(fd, 2000000000);
+    let s = std::io::tcp::Stream { conn_fd: fd };
+    s.send("GET / HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n") or discard;
+    let got = s.recv(8192) or "";
+    return std::str::starts_with(got, "HTTP/1.");
+}
 
 // body: the membrane sockets exist; observer: GET / answers.
-fn s3_child_ready(ctx: HeadContext, name: String) -> Bool { return false; }
+fn s3_child_ready(ctx: HeadContext, name: String) -> Bool {
+    if name == "body" { return s3_membrane_up(ctx.active_root); }
+    if name == "observer" { return s3_http_answers(ctx.observer_port); }
+    return false;
+}
 
 // The GET /head "children" object (adds membrane_up, mode, external).
-fn s3_children_json(ctx: HeadContext, body: ChildView, observer: ChildView) -> String { return "{}"; }
+fn s3_children_json(ctx: HeadContext, body: ChildView, observer: ChildView) -> String {
+    let attached = len(ctx.active_id) > 0;
+    let external = attached && s3_external(ctx) && !body.alive;
+    let body_state = if external { "external" } else if body.alive { "running" } else if body.pid > 0 && body.exit_code != -2 { "exited" } else { "stopped" };
+    let observer_state = if observer.alive { "running" } else if observer.pid > 0 && observer.exit_code != -2 { "exited" } else { "stopped" };
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.begin_object_field("body");
+    b.string_field("state", body_state);
+    b.int_field("pid", if external { s3_org_pid(ctx.active_root) } else { body.pid });
+    b.int_field("since", body.since);
+    b.string_field("command_id", body.command_id);
+    b.bool_field("membrane_up", attached && s3_membrane_up(ctx.active_root));
+    b.string_field("mode", if body.pid > 0 && !external { s3_body_mode(ctx) } else { "" });
+    b.int_field("exit_code", body.exit_code);
+    b.end_object();
+    b.begin_object_field("observer");
+    b.string_field("state", observer_state);
+    b.int_field("pid", observer.pid);
+    b.int_field("since", observer.since);
+    b.string_field("command_id", observer.command_id);
+    b.string_field("origin", s3_observer_origin(ctx));
+    b.end_object();
+    b.end_object();
+    return b.result();
+}
+
+// ---- the project detail: rows projected in-process ----------------------
+
+type S3Connection {
+    present: Bool = false;
+    name: String = "";
+    url: String = "";
+    peer: String = "";
+    position: String = "";
+    purpose: String = "";
+    classes: String = "";
+    by: String = "";
+    review_id: String = "";
+    approved_by: String = "";
+    closed: String = "";
+}
+
+// Whether `journal` holds a row of `kind` about `entity`.
+fn s3_has_row(journal: String, kind: String, entity: String) -> Bool {
+    let mut rest = journal;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(line) == 0 { continue; }
+        let e = dna::parse_row(line, "");
+        if e.kind == kind && e.entity == entity { return true; }
+    }
+    return false;
+}
+
+// The connection names the record holds, first-proposed first.
+fn s3_connection_names(journal: String) -> String {
+    let mut names = "\n";
+    let mut rest = journal;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(line) == 0 { continue; }
+        let e = dna::parse_row(line, "");
+        if e.kind == "connection.proposed" && std::str::starts_with(e.entity, "connection:") {
+            let name = e.entity[11..len(e.entity)];
+            if !std::str::contains(names, "\n" + name + "\n") { names = names + name + "\n"; }
+        }
+    }
+    return dna::trim_nl(names[1..len(names)]);
+}
+
+// A connection as the record has it — the fold `dna/host/connections.hl`
+// makes: its latest `connection.proposed` body (name, url, peer,
+// position, purpose, classes, by, review_id, exchange), an approving
+// `review.verdict` on its Review by a board member other than its
+// proposer — the row's entity is the bare review id (`c-<name>-<n>`,
+// as `hale dna review` writes it; the host's `review_id_of` strips a
+// `review:` prefix only when one is there), its body `review_id`,
+// `verdict`, `reviewer`, `authority` — and its `connection.closed`
+// (body: by, why). Rows are read as admitted: the head attaches
+// local-trust projects.
+@unbounded
+fn s3_connection_of(journal: String, name: String) -> S3Connection {
+    let ent = "connection:" + name;
+    let mut c = S3Connection { };
+    let mut rest = journal;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(line) == 0 { continue; }
+        let e = dna::parse_row(line, "");
+        if e.kind == "connection.proposed" && e.entity == ent {
+            c = S3Connection {
+                present: true, name: name,
+                url: std::json::find_string_field(e.body, "url"),
+                peer: std::json::find_string_field(e.body, "peer"),
+                position: std::json::find_string_field(e.body, "position"),
+                purpose: std::json::find_string_field(e.body, "purpose"),
+                classes: std::json::find_string_field(e.body, "classes"),
+                by: std::json::find_string_field(e.body, "by"),
+                review_id: std::json::find_string_field(e.body, "review_id")
+            };
+        } else if c.present && e.kind == "review.verdict" && (e.entity == c.review_id || e.entity == "review:" + c.review_id) && len(c.approved_by) == 0 && len(c.closed) == 0 {
+            let reviewer = std::json::find_string_field(e.body, "reviewer");
+            if std::json::find_string_field(e.body, "verdict") == "approve" && std::json::find_string_field(e.body, "authority") == "board" && reviewer != c.by { c.approved_by = reviewer; }
+        } else if c.present && e.kind == "connection.closed" && e.entity == ent {
+            c.closed = std::json::find_string_field(e.body, "why");
+        }
+    }
+    return c;
+}
+
+fn s3_connection_state(c: S3Connection) -> String {
+    if len(c.closed) > 0 { return "closed"; }
+    if len(c.approved_by) > 0 { return "in_force"; }
+    return "proposed";
+}
+
+// The name of the connection in force to record `peer` ("" when none).
+fn s3_connection_to(journal: String, peer: String) -> String {
+    let mut rest = s3_connection_names(journal);
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let name = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(name) == 0 { continue; }
+        let c = s3_connection_of(journal, name);
+        if c.present && len(c.approved_by) > 0 && len(c.closed) == 0 && c.peer == peer { return name; }
+    }
+    return "";
+}
+
+// The classes a row holds comma-joined (as the verb takes them), as
+// the array of names the wire carries — the shape a propose request
+// sends them in.
+fn s3_classes_json(joined: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_array();
+    let mut rest = joined;
+    while len(rest) > 0 {
+        let comma = std::str::index_of(rest, ",");
+        let c = std::str::trim(if comma < 0 { rest } else { rest[0..comma] });
+        rest = if comma < 0 { "" } else { rest[(comma + 1)..len(rest)] };
+        if len(c) > 0 { b.string_value(c); }
+    }
+    b.end_array();
+    return b.result();
+}
+
+fn s3_connections_json(journal: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_array();
+    let mut rest = s3_connection_names(journal);
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let name = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(name) == 0 { continue; }
+        let c = s3_connection_of(journal, name);
+        b.begin_object();
+        b.string_field("name", c.name);
+        b.string_field("url", c.url);
+        b.string_field("position", c.position);
+        b.string_field("purpose", c.purpose);
+        b.field("classes", s3_classes_json(c.classes));
+        b.string_field("state", s3_connection_state(c));
+        b.end_object();
+    }
+    b.end_array();
+    return b.result();
+}
+
+// One handoff item; `entity` is `handoff:<id>`.
+fn s3_handoff_item(entity: String, connection: String, kind: String, subject: String, state: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("id", if std::str::starts_with(entity, "handoff:") { entity[8..len(entity)] } else { entity });
+    b.string_field("connection", connection);
+    b.string_field("kind", kind);
+    b.string_field("subject", subject);
+    b.string_field("state", state);
+    b.end_object();
+    return b.result();
+}
+
+// The handoffs as `hale dna handoff` lists them, from this clone alone:
+// handed across (`handoff.published`, body: connection, kind, subject;
+// `accepted_by_peer` once that row follows), admitted here
+// (`handoff.accepted`, same fields), refused at the edge
+// (`handoff.refused`), and received but not yet accepted — the
+// `handoff.received` envelopes in this clone's mailboxes
+// (`refs/dna/exchange/<sender>`, body: origin_record, kind, subject),
+// which its sync fetched. A service mailbox needs the network and is
+// not read.
+fn s3_handoffs_json(root: String, journal: String) -> String {
+    let mut items = "";
+    let mut seen = "\n";
+    let mut rest = journal;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(line) == 0 { continue; }
+        let e = dna::parse_row(line, "");
+        if e.kind != "handoff.published" && e.kind != "handoff.accepted" && e.kind != "handoff.refused" { continue; }
+        let key = "\n" + e.kind + " " + e.entity + "\n";
+        if std::str::contains(seen, key) { continue; }
+        seen = seen + e.kind + " " + e.entity + "\n";
+        let state = if e.kind == "handoff.accepted" { "accepted" } else if e.kind == "handoff.refused" { "refused" } else if s3_has_row(journal, "handoff.accepted_by_peer", e.entity) { "accepted_by_peer" } else { "published" };
+        items = items + (if len(items) > 0 { "," } else { "" }) + s3_handoff_item(e.entity, std::json::find_string_field(e.body, "connection"), std::json::find_string_field(e.body, "kind"), std::json::find_string_field(e.body, "subject"), state);
+    }
+    let r = dna::GitRecord { repo: root };
+    let mut refs = r.pointers("exchange");
+    while len(refs) > 0 {
+        let nl = std::str::index_of(refs, "\n");
+        let ref = if nl < 0 { refs } else { refs[0..nl] };
+        refs = if nl < 0 { "" } else { refs[(nl + 1)..len(refs)] };
+        if !std::str::starts_with(ref, "exchange/") { continue; }
+        let sender = ref[9..len(ref)];
+        let mut lines = r.text_at(r.head(ref));
+        while len(lines) > 0 {
+            let lnl = std::str::index_of(lines, "\n");
+            let line = if lnl < 0 { lines } else { lines[0..lnl] };
+            lines = if lnl < 0 { "" } else { lines[(lnl + 1)..len(lines)] };
+            if len(line) == 0 { continue; }
+            let e = dna::parse_row(line, "");
+            if e.kind != "handoff.received" || std::json::find_string_field(e.body, "origin_record") != sender { continue; }
+            if s3_has_row(journal, "handoff.accepted", e.entity) { continue; }
+            let key = "\nreceived " + e.entity + "\n";
+            if std::str::contains(seen, key) { continue; }
+            seen = seen + "received " + e.entity + "\n";
+            items = items + (if len(items) > 0 { "," } else { "" }) + s3_handoff_item(e.entity, s3_connection_to(journal, sender), std::json::find_string_field(e.body, "kind"), std::json::find_string_field(e.body, "subject"), "received");
+        }
+    }
+    return "[" + items + "]";
+}
+
+// The names of `secret.rotated` rows, once each, first-set first.
+fn s3_secrets_json(journal: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_array();
+    let mut seen = "\n";
+    let mut rest = journal;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(line) == 0 { continue; }
+        let e = dna::parse_row(line, "");
+        if e.kind != "secret.rotated" || std::str::contains(seen, "\n" + e.entity + "\n") { continue; }
+        seen = seen + e.entity + "\n";
+        b.string_value(e.entity);
+    }
+    b.end_array();
+    return b.result();
+}
 
 // {"connections":[…],"handoffs":[…],"secrets":[…]} projected from the
-// project's journal rows.
-fn s3_project_detail_json(ctx: HeadContext, root: String) -> String { return "{}"; }
+// project's journal rows (`git show refs/dna/journal:journal.jsonl`
+// through the core's GitRecord); nothing here touches the network.
+fn s3_project_detail_json(ctx: HeadContext, root: String) -> String {
+    let r = dna::GitRecord { repo: root };
+    let journal = r.text_at(r.head("journal"));
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.field("connections", s3_connections_json(journal));
+    b.field("handoffs", s3_handoffs_json(root, journal));
+    b.field("secrets", s3_secrets_json(journal));
+    b.end_object();
+    return b.result();
+}
