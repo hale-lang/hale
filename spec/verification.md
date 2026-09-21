@@ -1750,6 +1750,29 @@ assume the others in a build:
 
   plus a second diagnostic at the leaf itself.
 
+  **A leaf inside the stdlib is a note, never a line of your
+  source** (2026-09-20, GH #856). The analyzer walks into the
+  Hale-source stdlib, so the offending leaf is often a stdlib body —
+  and that body parses in a coordinate space of its own, starting at
+  offset 0, which is also where your first file starts. The leaf
+  therefore carries no position in your seed, and no channel invents
+  one: `hale check` prints it as
+
+  ```
+      note: the `alloc` effect happens here (in the standard library, io_tcp.hl:118:18)
+  ```
+
+  under the finding, `--json` emits it with `"file":""`,
+  `"line":0`, `"col":0` and the stdlib location in its `message`,
+  and the language server does not publish it as a document
+  diagnostic at all — there is no range in the open file to give it.
+  The witness path in the finding's own message is what names the
+  route. Before this, the leaf's offset was tested against the seed's
+  file windows like any other: past the seed's end it landed nowhere,
+  and in a seed large enough to contain the number it was reported at
+  that line of that file — a squiggle on code with nothing wrong
+  with it.
+
   **Boundaries:** opaque callees outside the classified frontier are
   not seen (the same soundness boundary the escape analysis and
   `@budget` draw); `@ffi` labels are trusted, not verified; a computed

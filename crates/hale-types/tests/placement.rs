@@ -2119,11 +2119,12 @@ fn pinned_loop_diagnostic_points_at_the_placement_entry() {
         .into_iter()
         .find(|d| d.is_error() && d.message.contains(PINNED_LOOP))
         .expect("GH #826 rejection");
-    let (rspan, label) = diag
+    let entry = diag
         .related
         .first()
         .cloned()
         .expect("the rejection carries the placement entry");
+    let (rspan, label) = (entry.span, entry.label);
     assert!(
         label.contains("pinned") && label.contains("`w`"),
         "related label names the placed field: {:?}",
@@ -2361,11 +2362,12 @@ fn main() { App { }; }
         primary, "make_worker()",
         "the primary span covers the initialiser that drops the entry"
     );
-    let (rspan, label) = diag
+    let entry = diag
         .related
         .first()
         .cloned()
         .expect("the rejection carries the placement entry");
+    let (rspan, label) = (entry.span, entry.label);
     assert!(
         label.contains("`a`") && label.contains("placed"),
         "related label names the placed field: {:?}",

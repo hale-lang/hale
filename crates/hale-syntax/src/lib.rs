@@ -21,7 +21,7 @@ pub mod parser;
 pub mod span;
 pub mod time_literal;
 
-pub use crate::error::{Diag, DiagKind};
+pub use crate::error::{Diag, DiagKind, Related, SpanOrigin};
 pub use crate::lexer::{lex, Token, TokenKind};
 pub use crate::parser::parse;
 pub use crate::span::{file_owns_offset, Pos, Span};

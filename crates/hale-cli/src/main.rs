@@ -4039,11 +4039,33 @@ fn locate_span(
     None
 }
 
+/// GH #856: the note a stdlib-origin span renders as, in place of a
+/// `file:line:col` it has no right to. The embedded stdlib parses at
+/// base 0 in its own space, so its offsets collide with the seed's:
+/// past the seed's end the window test placed such a span nowhere,
+/// and INSIDE a seed file's window it named that file at a position
+/// belonging to neither. A stdlib span is never a seed location, and
+/// the renderers say where it really is instead.
+fn stdlib_note(span: hale_syntax::Span) -> String {
+    hale_types::stdlib_bodies::stdlib_span_note(span)
+}
+
 fn render_located(
     d: &hale_syntax::Diag,
     file_bases: &[(u32, PathBuf, u32)],
     sources: &BTreeMap<PathBuf, String>,
 ) -> String {
+    // A stdlib-origin primary has no seed file to be rendered in —
+    // the witness leaf of a violated effect assertion is the usual
+    // one. It reads as a note beside the finding it belongs to,
+    // which the emitter pushed immediately before it.
+    if d.origin == hale_syntax::SpanOrigin::Stdlib {
+        return format!(
+            "    note: {} ({})",
+            d.message,
+            stdlib_note(d.span)
+        );
+    }
     let off = d.span.start.as_usize() as u32;
     for (base, path, len) in file_bases {
         if hale_syntax::file_owns_offset(*base, *len, off) {
@@ -4052,14 +4074,23 @@ fn render_located(
                     d.render_located(&diag_file_name(path), src, *base);
                 // Secondary locations, each resolved through the
                 // file table — a related span may live in a
-                // DIFFERENT file than the primary.
-                for (rspan, label) in &d.related {
+                // DIFFERENT file than the primary, or (GH #856) in
+                // no file of the seed at all.
+                for r in &d.related {
+                    if r.origin == hale_syntax::SpanOrigin::Stdlib {
+                        out.push_str(&format!(
+                            "\n    note: {} ({})",
+                            r.label,
+                            stdlib_note(r.span)
+                        ));
+                        continue;
+                    }
                     if let Some((rf, rl, rc)) =
-                        locate_span(*rspan, file_bases, sources)
+                        locate_span(r.span, file_bases, sources)
                     {
                         out.push_str(&format!(
                             "\n    note: {} at {}:{}:{}",
-                            label, rf, rl, rc
+                            r.label, rf, rl, rc
                         ));
                     }
                 }
@@ -6536,23 +6567,36 @@ fn render_diag_json(
     let mut file = String::new();
     let mut line = 0usize;
     let mut col = 0usize;
-    for (base, path, len) in file_bases {
-        if hale_syntax::file_owns_offset(*base, *len, off) {
-            if let Some(src) = sources.get(path) {
-                let (l, c) = d
-                    .span
-                    .shifted(base.wrapping_neg())
-                    .line_col(src);
-                // GH #822: the `file` field is the join key
-                // downstream tooling matches on, so it is the same
-                // string the text renderer prints.
-                file = diag_file_name(path);
-                line = l;
-                col = c;
+    // GH #856: a stdlib-origin span is not an offset into any file
+    // of this seed, so the windows are not consulted for it at all.
+    // The record keeps the positionless shape (`""`, 0, 0) an
+    // unplaceable finding has always had, and the stdlib file and
+    // line ride in the message as a note.
+    let in_stdlib = d.origin == hale_syntax::SpanOrigin::Stdlib;
+    if !in_stdlib {
+        for (base, path, len) in file_bases {
+            if hale_syntax::file_owns_offset(*base, *len, off) {
+                if let Some(src) = sources.get(path) {
+                    let (l, c) = d
+                        .span
+                        .shifted(base.wrapping_neg())
+                        .line_col(src);
+                    // GH #822: the `file` field is the join key
+                    // downstream tooling matches on, so it is the
+                    // same string the text renderer prints.
+                    file = diag_file_name(path);
+                    line = l;
+                    col = c;
+                }
+                break;
             }
-            break;
         }
     }
+    let message = if in_stdlib {
+        format!("{} ({})", d.message, stdlib_note(d.span))
+    } else {
+        d.message.clone()
+    };
     let severity = if d.is_error() { "error" } else { "warning" };
     // Secondary locations ride along as a `related` array (absent
     // when empty, so existing consumers see an unchanged shape).
@@ -6562,15 +6606,30 @@ fn render_diag_json(
         let entries: Vec<String> = d
             .related
             .iter()
-            .filter_map(|(rspan, label)| {
+            .filter_map(|r| {
+                // A stdlib-origin secondary has no seed position to
+                // put in `file`/`line`/`col`, and a consumer joining
+                // on those fields must not be handed a seed file
+                // that has nothing to do with it (GH #856): the
+                // entry carries the note and no location.
+                if r.origin == hale_syntax::SpanOrigin::Stdlib {
+                    return Some(format!(
+                        "{{\"file\":\"\",\"line\":0,\"col\":0,\"note\":\"{}\"}}",
+                        esc(&format!(
+                            "{} ({})",
+                            r.label,
+                            stdlib_note(r.span)
+                        ))
+                    ));
+                }
                 let (rf, rl, rc) =
-                    locate_span(*rspan, file_bases, sources)?;
+                    locate_span(r.span, file_bases, sources)?;
                 Some(format!(
                     "{{\"file\":\"{}\",\"line\":{},\"col\":{},\"note\":\"{}\"}}",
                     esc(&rf),
                     rl,
                     rc,
-                    esc(label)
+                    esc(&r.label)
                 ))
             })
             .collect();
@@ -6586,7 +6645,7 @@ fn render_diag_json(
         col,
         severity,
         d.kind_str(),
-        &d.message,
+        &message,
         &related,
     )
 }
