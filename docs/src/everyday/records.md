@@ -122,6 +122,22 @@ Three small rules:
   not supported*; name a concrete instantiation instead (`type
   IntPair = Pair<Int>;`), which is allowed and stays transparent.
 
+A word on what may stand in those angle brackets. A generic record
+is compiled once per instantiation, under a name built from the
+arguments — `Pair<Int>` becomes `Pair_Int` — so each argument has
+to be something that can be spelled in a name. Any record of your
+own can, and so can every primitive but one:
+
+```text
+Int  Float  Bool  String  Duration  Decimal  Time
+Bytes  BytesView  BytesMut  StringView
+```
+
+`Uint` is the exception, because it has no representation of its
+own yet (it is recognised and lowered nowhere), so `Pair<Uint>` is
+refused at the argument with the supported list named — where you
+wrote it, not later from the backend. Use `Int`.
+
 ## Enums — one of several shapes
 
 An enum is a value that is exactly one of a set of named

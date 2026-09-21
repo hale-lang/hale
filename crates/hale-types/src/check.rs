@@ -13457,6 +13457,11 @@ impl<'a> Checker<'a> {
     /// from a `const` there. `hale check <dir>` and every build path
     /// hold the whole program and hold the rule.
     fn check_type_annotation(&mut self, te: &TypeExpr) {
+        // GH #911 B3 (#907): the generic-argument vocabulary is a
+        // property of the type expression, not of how much of the
+        // program this bundle holds, so it is decided before the
+        // strict-identifier gate below — see the function's own doc.
+        self.check_generic_arg_vocabulary(te);
         if !self.strict_idents {
             return;
         }
@@ -13510,6 +13515,73 @@ impl<'a> Checker<'a> {
             // A primitive is resolved by the parser. `perspective(P)`
             // names a contract, not a type expression's bare name —
             // its own resolution rules are #724's, unchanged.
+            TypeExpr::Primitive(_, _) | TypeExpr::Perspective { .. } => {}
+        }
+    }
+
+    /// GH #911 B3 (#907): a generic argument must be something
+    /// codegen can name a monomorph for.
+    ///
+    /// `type Holder { b: Box<Bytes>; }` passed `hale check` and died
+    /// at build, because minting `Box_Bytes` is codegen's business
+    /// and the checker had no opinion about which arguments it can
+    /// mint. Four of the five missing primitives got tokens
+    /// ([`crate::ty::GENERIC_ARG_PRIMS`]); `Uint` has no storage
+    /// representation to name at all, so it is refused HERE, at the
+    /// instantiation's span, with the supported set named.
+    ///
+    /// Deliberately NOT gated on `strict_idents`, unlike its caller:
+    /// this asks what a `PrimType` is, which the parser has already
+    /// decided and no absent sibling seed can change. A tool holding
+    /// one file of a multi-file seed is as entitled to the answer as
+    /// the build is.
+    ///
+    /// Deliberately narrow, too — only a PRIMITIVE argument. Codegen
+    /// also refuses an array / tuple / `bounded` / fn-type argument
+    /// and a qualified path, but a qualified path is single-segment by
+    /// the time the mangler sees it (the import renames collapse it),
+    /// so a checker that refused what the mangler refuses would
+    /// refuse programs `hale build` accepts — the GH #779 direction,
+    /// which is the worse one. Those forms stay codegen's to report.
+    fn check_generic_arg_vocabulary(&mut self, te: &TypeExpr) {
+        match te {
+            TypeExpr::Named { generic_args, .. } => {
+                for arg in generic_args {
+                    if let TypeExpr::Primitive(p, span) = arg {
+                        if crate::ty::generic_arg_mangle_token(*p).is_none() {
+                            self.diags.push(Diag::ty(
+                                *span,
+                                crate::ty::generic_arg_refusal(*p),
+                            ));
+                        }
+                    }
+                    // A nested instantiation carries its own
+                    // arguments: `Box<Box<Uint>>` is the same refusal.
+                    self.check_generic_arg_vocabulary(arg);
+                }
+            }
+            TypeExpr::Projection { inner, .. } => {
+                self.check_generic_arg_vocabulary(inner);
+            }
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => {
+                self.check_generic_arg_vocabulary(elem);
+            }
+            TypeExpr::Tuple(parts, _) => {
+                for p in parts {
+                    self.check_generic_arg_vocabulary(p);
+                }
+            }
+            TypeExpr::Function { params, ret, .. } => {
+                for p in params {
+                    self.check_generic_arg_vocabulary(p);
+                }
+                if let Some(r) = ret {
+                    self.check_generic_arg_vocabulary(r);
+                }
+            }
+            // A primitive that is not itself a generic argument is
+            // whatever its own position allows; `perspective(P)` names
+            // a contract and takes no type arguments.
             TypeExpr::Primitive(_, _) | TypeExpr::Perspective { .. } => {}
         }
     }

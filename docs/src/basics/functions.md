@@ -145,6 +145,13 @@ anything: `len`, `to_string`, the two numeric casts `Int` /
 memorise — you'll meet each one where it's useful — but they are
 why `len(s)` needs no import.
 
+A builtin call is the same call wherever you write it. `len(s)` in
+the middle of an expression and `len(s);` on a line of its own are
+one name with one meaning: the second evaluates it and throws the
+answer away. Discarding the answer is rarely what you meant, but
+it is not a different vocabulary, and the compiler no longer treats
+it as one.
+
 The list is short on purpose, and it is exact: a name that is not
 on it and not declared is refused here, at the call, rather than
 somewhere in the backend. A capitalised name that *looks* like a

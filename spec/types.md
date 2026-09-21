@@ -681,6 +681,39 @@ per concrete generic instantiation (per F.1 commitment to
 runtime perf over compile-time perf). Compile times grow with
 generic surface; runtime is full-speed.
 
+### What may be a generic argument
+
+A monomorph has to be NAMED before it can be declared — `Box<Int>`
+is lowered as `Box_Int` — so each argument must contribute a token
+to that name. The primitive vocabulary is:
+
+```
+Int  Float  Bool  String  Duration  Decimal  Time
+Bytes  BytesView  BytesMut  StringView
+```
+
+`Uint` is the one primitive that may NOT be a generic argument: it
+is parser-recognized with no codegen representation in any storage
+position (see the table at the top of this document), so there is
+no monomorph to name. `hale check` refuses the instantiation at the
+argument's span and names the supported set:
+
+```
+main.hl:6:12: type error: `Uint` cannot be a generic argument: no
+monomorph name exists for it (supported: Int / Float / Bool /
+String / Duration / Decimal / Time / Bytes / BytesView / BytesMut
+/ StringView)
+```
+
+A non-primitive argument is a single-segment named type (a user
+`type`, or another generic instantiation, which mangles
+recursively). An array, tuple, `bounded[T; N]` or function type as
+an argument is refused at lowering; a qualified path is rewritten
+to a single segment by the import renames before the mangler sees
+it, which is why the checker's rule above is confined to
+primitives — the only argument form whose answer is the same in
+both layers.
+
 ## Type inference
 
 ### `let` bindings
