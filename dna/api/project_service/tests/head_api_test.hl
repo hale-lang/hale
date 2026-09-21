@@ -1,0 +1,354 @@
+// dna/api/project_service/tests/head_api_test.hl — the head over HTTP
+// (GH #965): a detached head refuses Record reads with 503 and guards
+// its command route exactly as the API guards its own; an attach of the
+// fixture Record answers a terminal receipt, writes the registry and the
+// two synthesized policies, and starts an API child the head proxies
+// to (`/app.js` is the head's, the child has no webroot; a proxied POST
+// reaches the child's own guard, a foreign Origin is refused here); a
+// sync runs detached and settles on the next request, an identical
+// retry replays, a changed argument conflicts; forge settings land in
+// git config; a publish commits and pushes to a bare remote; a head
+// restarted over the same state answers every earlier request with the
+// same terminal receipt and still proxies. Every response is validated
+// against the contract's head definitions.
+//
+// Silent on stdout: a passing fixture prints nothing.
+
+import ".." as head;
+import "./fixture" as fixture;
+import "../../../core" as dna;
+import "../../../operations" as ops;
+
+const HEAD: String = "/api/hale/v1/head";
+const APPLICATIONS: String = "/api/hale/v1/applications";
+
+// The entries under `dir`, as a count.
+fn entries(dir: String) -> Int {
+    return std::io::fs::list_dir_count(dir) or 0;
+}
+
+locus HeadCases {
+    params { f: fixture::HeadFixture = fixture::HeadFixture { }; }
+
+    fn detached() {
+        self.f.error("GET", APPLICATIONS, "", "", 503, "head_detached");
+        self.f.error("GET", APPLICATIONS + "/" + self.f.identity + "/dna/practices", "", "", 503, "head_detached");
+        let state = self.f.head_state();
+        self.f.json.eq(state, "state", "detached");
+        std::test::assert_eq_str(self.f.json.raw(state, "active"), "null", "no active project");
+        std::test::assert_eq_int(self.f.json.count(self.f.json.raw(state, "operations")), 25, "every operation is listed");
+        std::test::assert(std::str::contains(self.f.json.raw(state, "operations"), "\"name\": \"dna.project.sync\", \"version\": \"1\", \"available\": false, \"reason_code\": \"detached\""), "a project operation is unavailable while detached: " + state);
+        std::test::assert(std::str::contains(self.f.json.raw(state, "operations"), "\"name\": \"dna.project.attach\", \"version\": \"1\", \"available\": true"), "attach is available while detached");
+        self.f.json.eq(state, "state_dir", self.f.state);
+        self.f.json.eq(state, "sources_dir", self.f.home + "/.config/hale-dna/sources");
+        self.f.json.eq(state, "busy", "");
+        self.f.error("GET", HEAD + "?x=1", "", "", 400, "invalid_query");
+        self.f.error("PUT", HEAD, "", "", 405, "method_not_allowed");
+        self.f.error("POST", HEAD, "", "", 405, "method_not_allowed");
+        self.f.error("GET", "/nowhere", "", "", 404, "not_found");
+        let list = self.f.json.data(self.f.validate(self.f.http("GET", HEAD + "/projects", "", ""), "HeadProjectsResponse", 200));
+        std::test::assert_eq_int(self.f.json.count(self.f.json.raw(list, "items")), 0, "no registered project");
+        self.f.error("GET", HEAD + "/logs", "", "", 400, "invalid_query");
+        self.f.error("GET", HEAD + "/logs?run=command-none", "", "", 404, "command_not_found");
+        self.f.error("GET", HEAD + "/logs?child=other", "", "", 400, "invalid_query");
+        self.f.error("GET", HEAD + "/logs?run=x&child=api", "", "", 400, "invalid_query");
+    }
+
+    fn guards() {
+        let sync = fixture::command("head-guard", "dna.project.sync", self.f.identity, "{}");
+        self.f.error("POST", HEAD + "/commands", "Content-Type: application/json\nX-Hale-Command: 1", sync, 403, "invalid_origin");
+        self.f.error("POST", HEAD + "/commands", "Origin: http://evil.invalid\nContent-Type: application/json\nX-Hale-Command: 1", sync, 403, "invalid_origin");
+        self.f.error("POST", HEAD + "/commands", "Origin: " + self.f.url() + "\nContent-Type: text/plain\nX-Hale-Command: 1", sync, 415, "unsupported_media_type");
+        self.f.error("POST", HEAD + "/commands", "Origin: " + self.f.url() + "\nContent-Type: application/json", sync, 400, "invalid_command");
+        self.f.error("POST", HEAD + "/commands", self.f.command_headers(), fixture::command("head-guard", "dna.project.delete", self.f.identity, "{}"), 400, "invalid_command");
+        self.f.error("POST", HEAD + "/commands", self.f.command_headers(), "{\"request_id\":\"x\"}", 400, "invalid_command");
+        self.f.error("POST", HEAD + "/commands", self.f.command_headers(), "not json", 400, "invalid_command");
+        self.f.error("POST", HEAD + "/commands", self.f.command_headers(), fixture::command("head-guard", "dna.project.attach", "", "{\"root\":\"relative/path\"}"), 400, "invalid_command");
+        self.f.error("POST", HEAD + "/commands", self.f.command_headers(), fixture::command("head-guard", "dna.project.attach", "", "{\"root\":\"/tmp\",\"value\":\"x\"}"), 400, "invalid_command");
+        self.f.error("POST", HEAD + "/commands", self.f.command_headers(), fixture::command("head-guard", "dna.project.sync", self.f.identity, "{}"), 409, "detached");
+        let big = fixture::command("head-guard", "dna.project.attach", "", "{\"root\":\"/" + std::str::repeat("a", 33000) + "\"}");
+        self.f.error("POST", HEAD + "/commands", self.f.command_headers(), big, 413, "command_too_large");
+        let other = "{\"request_id\":\"head-guard\",\"operation\":\"dna.project.attach\",\"operation_version\":\"1\",\"context\":{\"head\":\"local\",\"application_id\":\"\"},\"target\":{\"kind\":\"dna.head\",\"id\":\"local\"},\"preconditions\":{\"principal\":{\"mode\":\"local\",\"name\":\"someone-else\"}},\"arguments\":{\"root\":\"/tmp\"}}";
+        self.f.error("POST", HEAD + "/commands", self.f.command_headers(), other, 409, "command_context_changed");
+        self.f.error("GET", HEAD + "/commands?request_id=head-never", "", "", 404, "command_not_found");
+        self.f.error("GET", HEAD + "/commands", "", "", 400, "invalid_query");
+        self.f.error("GET", HEAD + "/commands?request_id=a&request_id=b", "", "", 400, "invalid_query");
+        std::test::assert(!std::io::fs::file_exists(self.f.state + "/receipts.jsonl"), "nothing refused at the door is recorded");
+    }
+
+    fn attach() -> String {
+        let refused = self.f.submit(fixture::command("head-attach-none", "dna.project.attach", "", "{\"root\":\"" + self.f.root + "/home\"}"), 200);
+        self.f.json.eq(refused, "state", "refused");
+        self.f.json.eq(refused, "reason_code", "not_a_toplevel");
+        std::test::assert_eq_str(self.f.json.raw(refused, "run"), "null", "a refusal never ran");
+        let receipt = self.f.submit(fixture::command("head-attach-1", "dna.project.attach", "", "{\"root\":\"" + self.f.project + "\"}"), 200);
+        self.f.json.eq(receipt, "state", "succeeded");
+        self.f.json.eq(receipt, "request_id", "head-attach-1");
+        self.f.json.eq(self.f.json.raw(receipt, "target"), "kind", "dna.head");
+        self.f.json.eq(self.f.json.raw(receipt, "run"), "kind", "inline");
+        let outcome = self.f.json.raw(receipt, "outcome");
+        self.f.json.eq(outcome, "application_id", self.f.identity);
+        self.f.json.eq(outcome, "root", self.f.project);
+        self.f.json.eq(outcome, "name", "project");
+        self.f.json.is_int(outcome, "api_port", self.f.api_port);
+        self.f.json.is_bool(outcome, "authority_written", true);
+        let registry = std::io::fs::read_file(self.f.state + "/projects.jsonl") or "";
+        std::test::assert(std::str::contains(registry, "\"event\":\"registered\"") && std::str::contains(registry, "\"event\":\"activated\"") && std::str::contains(registry, self.f.identity), "registry lines: " + registry);
+        let authority = std::io::fs::read_file(self.f.project + "/.hale/dna/iris/authority.json") or "";
+        let task = std::io::fs::read_file(self.f.project + "/.hale/dna/iris/task-policy.json") or "";
+        let authority_codec = ops::AuthorityPolicyCodec { };
+        let task_codec = ops::TaskAuthorityPolicyCodec { };
+        std::test::assert(authority_codec.decode(authority, self.f.identity, "local").valid, "authority.json decodes for this identity: " + authority);
+        std::test::assert(task_codec.decode(task, self.f.identity, "local").valid, "task-policy.json decodes for this identity: " + task);
+        std::test::assert(std::str::contains(authority, "\"name\": \"tester\"") && std::str::contains(task, "\"owner\": \"tester\""), "the policies grant the head's principal");
+        std::test::assert(self.f.child_alive("api"), "the API child is alive");
+        let state = self.f.head_state();
+        self.f.json.eq(state, "state", "attached");
+        let active = self.f.json.raw(state, "active");
+        self.f.json.eq(active, "application_id", self.f.identity);
+        self.f.json.eq(self.f.json.raw(active, "api"), "state", "ready");
+        self.f.json.is_int(self.f.json.raw(active, "api"), "port", self.f.api_port);
+        std::test::assert(std::str::contains(self.f.json.raw(state, "operations"), "\"name\": \"dna.project.sync\", \"version\": \"1\", \"available\": true"), "sync is available once attached");
+        std::test::assert(std::str::contains(self.f.json.raw(self.f.json.raw(state, "credentials"), "needed"), "FIXTURE_MODEL_KEY"), "the catalog's credential names are advertised: " + state);
+        // attaching the active project again is idempotent: nothing rewritten, the child kept
+        let pid = self.f.child_pid("api");
+        let again = self.f.submit(fixture::command("head-attach-2", "dna.project.attach", "", "{\"root\":\"" + self.f.project + "/\"}"), 200);
+        self.f.json.eq(again, "state", "succeeded");
+        self.f.json.is_bool(self.f.json.raw(again, "outcome"), "authority_written", false);
+        std::test::assert_eq_int(self.f.child_pid("api"), pid, "the ready child is kept");
+        return self.f.json.string(receipt, "command_id");
+    }
+
+    fn proxied() {
+        let payload = self.f.validate(self.f.http("GET", APPLICATIONS, "", ""), "ApplicationsResponse", 200);
+        self.f.json.eq(self.f.json.raw(payload, "source"), "record_id", self.f.identity);
+        let practices = self.f.validate(self.f.http("GET", APPLICATIONS + "/" + self.f.identity + "/dna/practices", "", ""), "PracticesResponse", 200);
+        self.f.json.eq(self.f.json.raw(practices, "source"), "record_id", self.f.identity);
+        let asset = self.f.http("GET", "/app.js", "", "");
+        std::test::assert_eq_int(asset.status, 200, "the head serves the shell");
+        std::test::assert_eq_str(asset.body, fixture::SHELL_JS, "the head's own app.js");
+        std::test::assert(std::str::contains(dna::response_header(asset.headers, "Content-Security-Policy"), "script-src 'self'"), "the shell's CSP");
+        let child_asset = fixture::curl("GET", "http://127.0.0.1:" + to_string(self.f.api_port) + "/app.js", "", "");
+        std::test::assert_eq_int(child_asset.status, 404, "the child has no webroot");
+        // a proxied POST with the head's Origin reaches the child's own guard: the plain API answers 405
+        let commands = APPLICATIONS + "/" + self.f.identity + "/commands";
+        self.f.error("POST", commands, self.f.command_headers(), "{}", 405, "method_not_allowed");
+        self.f.error("POST", commands, "Origin: http://evil.invalid\nContent-Type: application/json\nX-Hale-Command: 1", "{}", 403, "invalid_origin");
+        let missing = self.f.http("GET", APPLICATIONS + "/nope/dna/practices", "", "");
+        std::test::assert_eq_int(missing.status, 404, "the child's own 404 passes through: " + missing.body);
+        std::test::assert(std::str::contains(dna::response_header(missing.headers, "Cache-Control"), "no-store"), "the child's cache header passes through");
+    }
+
+    fn sync() -> String {
+        let runs_before = entries(self.f.state + "/runs");
+        let submitted = self.f.submit(fixture::command("head-sync-1", "dna.project.sync", self.f.identity, "{}"), 202);
+        self.f.json.eq(submitted, "state", "running");
+        self.f.json.eq(self.f.json.raw(submitted, "run"), "kind", "run");
+        self.f.json.is_bool(self.f.json.raw(submitted, "run"), "external", true);
+        let id = self.f.json.string(submitted, "command_id");
+        let receipt = self.f.settled("head-sync-1", 120);
+        self.f.json.eq(receipt, "state", "succeeded");
+        self.f.json.is_int(self.f.json.raw(receipt, "run"), "exit_code", 0);
+        let outcome = self.f.json.raw(receipt, "outcome");
+        std::test::assert(std::str::contains(self.f.json.string(outcome, "summary"), "no remote: the record is local"), "sync summary: " + outcome);
+        let record = self.f.json.raw(outcome, "record");
+        std::test::assert(len(self.f.json.string(record, "head_before")) == 40 && self.f.json.string(record, "head_before") == self.f.json.string(record, "head_after"), "a local sync moves nothing: " + record);
+        std::test::assert_eq_int(self.f.json.count(self.f.json.raw(record, "rows")), 0, "no new rows");
+        std::test::assert_eq_int(entries(self.f.state + "/runs"), runs_before + 1, "one run directory");
+        let log = self.f.json.data(self.f.validate(self.f.http("GET", HEAD + "/logs?run=" + id, "", ""), "HeadLogResponse", 200));
+        std::test::assert(std::str::contains(self.f.json.string(log, "text"), "record refs/dna/journal:"), "the run log page: " + log);
+        self.f.json.is_bool(log, "complete", true);
+        let page = self.f.json.data(self.f.validate(self.f.http("GET", HEAD + "/logs?run=" + id + "&offset=7", "", ""), "HeadLogResponse", 200));
+        self.f.json.is_int(page, "offset", 7);
+        let api_log = self.f.json.data(self.f.validate(self.f.http("GET", HEAD + "/logs?child=api", "", ""), "HeadLogResponse", 200));
+        self.f.json.eq(api_log, "name", "api");
+        // identical retry: the stored receipt, no new run
+        let again = self.f.submit(fixture::command("head-sync-1", "dna.project.sync", self.f.identity, "{}"), 200);
+        self.f.json.eq(again, "command_id", id);
+        self.f.json.eq(again, "state", "succeeded");
+        std::test::assert_eq_int(entries(self.f.state + "/runs"), runs_before + 1, "an identical retry starts no run");
+        // a changed argument under the same request_id conflicts
+        self.f.error("POST", HEAD + "/commands", self.f.command_headers(), fixture::command("head-sync-1", "dna.project.publish", self.f.identity, "{\"message\":\"x\"}"), 409, "request_conflict");
+        self.f.json.eq(self.f.head_state(), "busy", "");
+        return id;
+    }
+
+    // One running receipt blocks the next submission (`head_busy`) and
+    // names itself in `GET /head`; it settles from its run files on the
+    // next request. Planted through the journal with this process's own
+    // pid, since a warm `hale dna sync` settles before anyone can look.
+    fn busy() {
+        let j = head::HeadJournal { state_dir: self.f.state };
+        let s = j.submit("local", "tester", fixture::command("head-busy-1", "dna.project.sync", self.f.identity, "{}"), "", "");
+        std::test::assert(s.code == "" && !s.replayed, "planted receipt recorded");
+        let id = s.receipt.command_id;
+        j.admit(id);
+        j.running(id, "run", std::process::pid(), "", std::time::now() + 600, true);
+        self.f.json.eq(self.f.head_state(), "busy", id);
+        self.f.error("POST", HEAD + "/commands", self.f.command_headers(), fixture::command("head-sync-blocked", "dna.project.sync", self.f.identity, "{}"), 409, "head_busy");
+        let replay = self.f.submit(fixture::command("head-busy-1", "dna.project.sync", self.f.identity, "{}"), 202);
+        self.f.json.eq(replay, "state", "running");
+        std::test::assert_eq_int(self.f.json.integer(self.f.json.raw(replay, "run"), "pid"), std::process::pid(), "the replay is the planted receipt");
+        std::io::fs::mkdir(j.run_dir(id)) or discard;
+        std::io::fs::write_file(j.run_dir(id) + "/run.log", "record refs/dna/journal: up to date; 1 event(s)\n") or discard;
+        std::io::fs::write_file(j.run_dir(id) + "/run.exit", "0\n") or discard;
+        let settled = self.f.settled("head-busy-1", 10);
+        self.f.json.eq(settled, "state", "succeeded");
+        self.f.json.eq(self.f.json.raw(settled, "outcome"), "summary", "record refs/dna/journal: up to date; 1 event(s)");
+        self.f.json.eq(self.f.head_state(), "busy", "");
+    }
+
+    fn forge() {
+        let bad = self.f.submit(fixture::command("head-forge-bad", "dna.forge.configure", self.f.identity, "{\"github\":\"not a repo\",\"board\":[]}"), 200);
+        self.f.json.eq(bad, "state", "refused");
+        self.f.json.eq(bad, "reason_code", "name_invalid");
+        let receipt = self.f.submit(fixture::command("head-forge-1", "dna.forge.configure", self.f.identity, "{\"github\":\"example/repo\",\"board\":[\"riley\",\"mara\"]}"), 200);
+        self.f.json.eq(receipt, "state", "succeeded");
+        self.f.json.eq(self.f.json.raw(receipt, "outcome"), "github", "example/repo");
+        std::test::assert_eq_str(self.f.git("config\ndna.github"), "example/repo", "dna.github read back");
+        std::test::assert_eq_str(self.f.git("config\ndna.github.board"), "riley,mara", "dna.github.board read back");
+        let detail = self.f.json.data(self.f.validate(self.f.http("GET", HEAD + "/projects?id=" + self.f.identity, "", ""), "HeadProjectsResponse", 200));
+        let item = std::json::array_first(self.f.json.raw(detail, "items")).element;
+        self.f.json.eq(self.f.json.raw(item, "forge"), "github", "example/repo");
+        std::test::assert_eq_int(self.f.json.count(self.f.json.raw(self.f.json.raw(item, "forge"), "board")), 2, "two board logins");
+        let cleared = self.f.submit(fixture::command("head-forge-2", "dna.forge.configure", self.f.identity, "{\"github\":\"\",\"board\":[]}"), 200);
+        self.f.json.eq(cleared, "state", "succeeded");
+        let gone = dna::run_tool("git\n-C\n" + self.f.project + "\nconfig\ndna.github");
+        std::test::assert(gone.code != 0, "dna.github unset");
+    }
+
+    fn publish_case() {
+        let no_remote = self.f.submit(fixture::command("head-publish-none", "dna.project.publish", self.f.identity, "{\"message\":\"nothing\"}"), 200);
+        self.f.json.eq(no_remote, "state", "refused");
+        self.f.json.eq(no_remote, "reason_code", "no_remote");
+        let remote = self.f.root + "/remote.git";
+        let made = dna::run_tool("git\ninit\n-q\n--bare\n" + remote);
+        std::test::assert_eq_int(made.code, 0, "bare remote: " + made.stderr);
+        let submitted = self.f.submit(fixture::command("head-publish-1", "dna.project.publish", self.f.identity, "{\"remote\":\"" + remote + "\",\"message\":\"first commit from the head\"}"), 202);
+        self.f.json.eq(submitted, "state", "running");
+        let receipt = self.f.settled("head-publish-1", 120);
+        self.f.json.eq(receipt, "state", "succeeded");
+        let outcome = self.f.json.raw(receipt, "outcome");
+        self.f.json.is_bool(outcome, "committed", true);
+        self.f.json.eq(outcome, "pushed_ref", "refs/heads/main");
+        std::test::assert(std::str::contains(self.f.json.string(outcome, "sync_summary"), "record refs/dna/journal:"), "publish ends in a sync: " + outcome);
+        std::test::assert(len(self.f.json.raw(outcome, "record")) > 0, "record evidence on publish");
+        let pushed = dna::run_tool("git\n-C\n" + remote + "\nlog\n--oneline\nrefs/heads/main");
+        std::test::assert(pushed.code == 0 && std::str::contains(pushed.stdout, "first commit from the head"), "the remote has the commit: " + pushed.stderr);
+        std::test::assert_eq_str(self.f.git("remote\nget-url\norigin"), remote, "origin was added");
+        let mismatch = self.f.submit(fixture::command("head-publish-2", "dna.project.publish", self.f.identity, "{\"remote\":\"" + self.f.root + "/other.git\",\"message\":\"again\"}"), 200);
+        self.f.json.eq(mismatch, "state", "refused");
+        self.f.json.eq(mismatch, "reason_code", "remote_mismatch");
+        let tracked = self.f.git("ls-tree\n--name-only\nHEAD");
+        std::test::assert(!std::str::contains(tracked, ".hale"), "the policies are not committed: " + tracked);
+    }
+
+    fn projects() {
+        let list = self.f.json.data(self.f.validate(self.f.http("GET", HEAD + "/projects", "", ""), "HeadProjectsResponse", 200));
+        std::test::assert_eq_int(self.f.json.count(self.f.json.raw(list, "items")), 1, "one registered project");
+        let item = std::json::array_first(self.f.json.raw(list, "items")).element;
+        self.f.json.eq(item, "application_id", self.f.identity);
+        self.f.json.is_bool(item, "active", true);
+        self.f.json.eq(self.f.json.raw(item, "record"), "head", self.f.journal.head());
+        std::test::assert(len(self.f.json.raw(item, "authority")) == 0, "the list carries no detail");
+        std::test::assert(self.f.json.count(self.f.json.raw(item, "recent")) >= 3 && self.f.json.count(self.f.json.raw(item, "recent")) <= 10, "recent receipts");
+        let detail = self.f.json.data(self.f.validate(self.f.http("GET", HEAD + "/projects?id=" + self.f.identity, "", ""), "HeadProjectsResponse", 200));
+        let one = std::json::array_first(self.f.json.raw(detail, "items")).element;
+        let authority = self.f.json.raw(one, "authority");
+        self.f.json.is_bool(authority, "command", true);
+        self.f.json.is_bool(authority, "task", true);
+        self.f.json.is_bool(authority, "organization", false);
+        std::test::assert_eq_str(self.f.json.raw(one, "connections"), "[]", "no connections projected by the stub");
+        std::test::assert(self.f.json.count(self.f.json.raw(one, "receipts")) >= 3, "the project's receipts");
+        self.f.error("GET", HEAD + "/projects?id=unknown", "", "", 404, "project_not_found");
+        self.f.error("GET", HEAD + "/projects?id=", "", "", 400, "invalid_query");
+        self.f.error("GET", HEAD + "/projects?name=x", "", "", 400, "invalid_query");
+        let active_forget = self.f.submit(fixture::command("head-forget-active", "dna.project.forget", "", "{\"application_id\":\"" + self.f.identity + "\"}"), 200);
+        self.f.json.eq(active_forget, "state", "refused");
+        self.f.json.eq(active_forget, "reason_code", "project_active");
+    }
+
+    fn restart_case() {
+        let pid = self.f.child_pid("api");
+        self.f.stop_head();
+        std::test::assert(self.f.child_alive("api"), "the API child outlives the head");
+        self.f.start();
+        std::test::assert(std::str::contains(self.f.log(), "re-adopted api"), "the child was re-adopted: " + self.f.log());
+        std::test::assert_eq_int(self.f.child_pid("api"), pid, "the same child serves");
+        let state = self.f.head_state();
+        self.f.json.eq(state, "state", "attached");
+        let mut rest = "head-attach-1 head-sync-1 head-busy-1 head-forge-1 head-publish-1 head-publish-none";
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            let request_id = if sp < 0 { rest } else { rest[0..sp] };
+            rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+            let receipt = self.f.json.data(self.f.validate(self.f.lookup(request_id), "HeadCommandResponse", 200));
+            let state_now = self.f.json.string(receipt, "state");
+            std::test::assert(state_now == "succeeded" || state_now == "refused", request_id + " is terminal after the restart: " + receipt);
+            self.f.json.eq(receipt, "request_id", request_id);
+        }
+        let payload = self.f.validate(self.f.http("GET", APPLICATIONS, "", ""), "ApplicationsResponse", 200);
+        self.f.json.eq(self.f.json.raw(payload, "source"), "record_id", self.f.identity);
+        let restarted = self.f.json.data(self.f.validate(self.f.lookup("restart-" + to_string(self.f.head.pid)), "HeadCommandResponse", 200));
+        self.f.json.eq(restarted, "state", "succeeded");
+        self.f.json.eq(restarted, "operation", "dna.project.attach");
+    }
+
+    fn detach_and_forget() {
+        let detached = self.f.submit(fixture::command("head-detach-1", "dna.project.detach", self.f.identity, "{}"), 200);
+        self.f.json.eq(detached, "state", "succeeded");
+        std::test::assert(!self.f.child_alive("api"), "the API child was stopped");
+        self.f.json.eq(self.f.head_state(), "state", "detached");
+        self.f.error("GET", APPLICATIONS, "", "", 503, "head_detached");
+        let forgotten = self.f.submit(fixture::command("head-forget-1", "dna.project.forget", "", "{\"application_id\":\"" + self.f.identity + "\"}"), 200);
+        self.f.json.eq(forgotten, "state", "succeeded");
+        let list = self.f.json.data(self.f.validate(self.f.http("GET", HEAD + "/projects", "", ""), "HeadProjectsResponse", 200));
+        std::test::assert_eq_int(self.f.json.count(self.f.json.raw(list, "items")), 0, "a forgotten project is not listed");
+        let unknown = self.f.submit(fixture::command("head-forget-2", "dna.project.forget", "", "{\"application_id\":\"" + self.f.identity + "\"}"), 200);
+        self.f.json.eq(unknown, "state", "refused");
+        self.f.json.eq(unknown, "reason_code", "project_unknown");
+        // a restart over a registry without an activated project starts detached
+        self.f.stop_head();
+        self.f.start();
+        self.f.json.eq(self.f.head_state(), "state", "detached");
+    }
+
+    fn startup_project() {
+        self.f.stop_head();
+        self.f.start_with_project(self.f.root + "/home", 2);
+        std::test::assert(std::str::contains(self.f.log(), "cannot attach"), "a refused startup attach is fatal: " + self.f.log());
+        self.f.start_with_project(self.f.project, 0);
+        let state = self.f.head_state();
+        self.f.json.eq(state, "state", "attached");
+        let startup = self.f.json.data(self.f.validate(self.f.lookup("startup-" + to_string(self.f.head.pid)), "HeadCommandResponse", 200));
+        self.f.json.eq(startup, "state", "succeeded");
+        std::test::assert(std::str::contains(self.f.log(), "1 project(s), active: project"), "the banner names the project: " + self.f.log());
+    }
+}
+
+fn main() {
+    if std::env::var("HALE_HEAD_API_TEST_CLEAN") != "1" {
+        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_IRIS_HEAD_STATE\n-u\nHALE_IRIS_OBSERVER_ORIGIN\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_HEAD_API_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
+        print(clean.stdout);
+        if len(clean.stderr) > 0 { eprintln(clean.stderr); }
+        std::process::exit(if clean.code < 0 { 1 } else { clean.code });
+    }
+    let root = dna::scratch_root("head-api");
+    let cases = HeadCases { f: fixture::HeadFixture { root: root } };
+    cases.f.start();
+    cases.detached();
+    cases.guards();
+    let attach_id = cases.attach();
+    cases.proxied();
+    let sync_id = cases.sync();
+    cases.busy();
+    cases.forge();
+    cases.publish_case();
+    cases.projects();
+    cases.restart_case();
+    cases.detach_and_forget();
+    cases.startup_project();
+    cases.f.stop();
+    dna::scratch_done(root);
+    eprintln("head api cases passed");
+}

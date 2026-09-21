@@ -8,6 +8,34 @@ behavior.
 
 ## Unreleased
 
+### Iris: the project service, onboarding from the browser (GH #965)
+
+- A new head, `dna/api/project_service`, is the one process the cockpit talks
+  to: it serves the shell, keeps a registry of projects and a receipt journal
+  under a state directory, and proxies the Record routes to a per-project API
+  child (`dna/api/practice_review`) it starts under policies it synthesizes
+  when the operator wrote none. `iris/cockpit/start.sh` now takes an optional
+  project and builds both seeds; a detached head begins in the Projects
+  workspace, where a project is created, initialized or attached.
+- Every operation is the CLI verb run detached with pid, exit and log files —
+  create/init, attach/detach/forget, sync, publish (commit and push the genome),
+  forge configure/sync, the local and remote body, secrets by source name, the
+  model probe, connections, handoffs and the observer — each answering a
+  receipt (`recorded → admitted|refused → running → succeeded|failed|outcome_unknown`)
+  under a `command-<digest>` identity with identical-retry replay and
+  `request_conflict`. A deadline on a verb that reaches beyond the machine is
+  `outcome_unknown` with evidence, never a fabricated failure; row-writing
+  operations carry the rows the Record gained. Restarting the head interrupts
+  nothing: children are re-adopted and every earlier request answers the same
+  receipt. Secrets never cross the wire (a `value` key is refused; a 0600
+  source file is consumed once). Driver: a downstream handoff asking for
+  first commit, push and sync from the browser.
+- The contract gains the four head paths and their definitions (26 paths);
+  `dna/api/project_service/tests` runs the journal over a fake runner, the
+  operations without HTTP, and the head over HTTP with a restart. The book's
+  run chapter and reference, `spec/dna.md` and the API README describe the
+  head, its state directory and the sources directory.
+
 ### Iris: inspect the declared organization (GH #690)
 
 - The Organization workspace browses exact static instances from a checked

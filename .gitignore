@@ -102,5 +102,6 @@ dna/api/api
 dna/api/contract/v1/check/check
 dna/api/tests/read_api_test
 # The cockpit head and its fixtures build beside their sources too.
+dna/api/practice_review/practice_review
 dna/api/project_service/project_service
 dna/api/project_service/tests/*_test

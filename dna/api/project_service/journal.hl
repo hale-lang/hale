@@ -280,6 +280,22 @@ locus HeadJournal {
         return dna::trim_nl(out);
     }
 
+    // The command id of the last `running` line whose child is `kind`
+    // (the receipt that started the child the head sees now), "" for none.
+    fn last_child(kind: String) -> String {
+        let mut last = "";
+        let needle = "\"child\":\"" + kind + "\"";
+        let mut rest = self.lines();
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if !std::str::contains(line, needle) || std::json::find_string_field(line, "state") != "running" || json_text(line, "child") != kind { continue; }
+            last = std::json::find_string_field(line, "command_id");
+        }
+        return last;
+    }
+
     // Every command id recorded for `application_id` ("" = every
     // project and the head's own), newline-separated, in submission order.
     fn ids(application_id: String) -> String {
@@ -397,6 +413,8 @@ locus HeadJournal {
 
     // Every `running` run-kind receipt that ended, died or passed its
     // deadline is finalized, its outcome from `outcomes`. The count.
+    // Unbounded by design: as many receipts as ran since the last request.
+    @unbounded
     fn settle(now: Int, outcomes: Outcomes) -> Int {
         let mut n = 0;
         let mut rest = self.running_ids("run");
