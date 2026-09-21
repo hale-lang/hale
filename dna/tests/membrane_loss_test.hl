@@ -95,7 +95,16 @@ main locus App {
         let seen = std::io::fs::read_file(calls) or "";
         std::test::assert(std::io::fs::file_exists(scratch + "/dropped"), "the first relay was lost: " + seen);
         std::test::assert(offered, "the host relayed the unanswered intent again and the organism admitted it: calls " + seen + "\n" + (std::io::fs::read_file(a + "/host.log") or ""));
-        std::test::assert(rows(a, "intent.offered", "i-lost-once") == 1 && rows(a, "task.born", "i-lost-once: ") == 1, "admitted once");
+        // card 18: the admission follows the leader's word; it names the
+        // intent as its request, and there is one of it
+        let mut admitted = false;
+        tries = 0;
+        while !admitted && tries < 240 {
+            if rows(a, "workflow.admitted", "\"request\": \"i-lost-once\"") > 0 { admitted = true; } else { std::time::sleep(500ms); }
+            tries = tries + 1;
+        }
+        std::test::assert(admitted, "the organism admitted the relayed intent as a workflow: " + (std::io::fs::read_file(a + "/host.log") or ""));
+        std::test::assert(rows(a, "intent.offered", "i-lost-once") == 1 && rows(a, "workflow.admitted", "\"request\": \"i-lost-once\"") == 1, "admitted once");
         std::time::sleep(1500ms);
         std::test::assert_eq_int(rows(a, "task.born", "i-lost-once: "), 1, "and not again once answered");
 

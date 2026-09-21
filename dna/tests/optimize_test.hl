@@ -99,13 +99,13 @@ main locus App {
         std::time::sleep(600ms);
         let r2 = self.last(self.two.journal, "org.reviewed");
         std::test::assert(std::str::contains(r2, "\"outcome\": \"proposed\"") && std::str::contains(r2, "\"proposal\": \"add a secretary position that triages asks before the leader plans them\"") && std::str::contains(r2, "\"by\": \"leader\""), "the proposal is recorded: " + r2);
-        std::test::assert_eq_int(self.count(self.two.journal, "task.born"), 1, "and became one ask");
-        std::test::assert(std::str::contains(self.last(self.two.journal, "task.born"), "add a secretary position"), "the ask is the proposal: " + self.last(self.two.journal, "task.born"));
+        std::test::assert_eq_int(self.count(self.two.journal, "workflow.admitted"), 1, "and became one ask (card 18: admitted as a workflow)");
+        std::test::assert(std::str::contains(self.last(self.two.journal, "workflow.admitted"), "add a secretary position"), "the ask is the proposal: " + self.last(self.two.journal, "workflow.admitted"));
         std::test::assert(std::str::contains(self.last(self.two.journal, "intent.offered"), "add a secretary position"), "offered as intent");
         // the ask took the road every ask takes: planned by the leader —
         // here as a person's job, so it was handed rather than mutated
-        std::test::assert(std::str::contains(self.last(self.two.journal, "task.planned"), "\"kind\": \"person\""), "planned: " + self.last(self.two.journal, "task.planned"));
-        std::test::assert(std::str::contains(self.last(self.two.journal, "task.handed"), "handed: not a software change"), "handed: " + self.last(self.two.journal, "task.handed"));
+        std::test::assert_eq_str(self.two.ask_plan_of("t1").kind, "person", "planned as a person's job, the word bound in the admission");
+        std::test::assert(std::str::contains(self.last(self.two.journal, "task.handed"), "\"case\": \"t1.s0.p\""), "handed as its case: " + self.last(self.two.journal, "task.handed"));
         std::test::assert_eq_int(self.count(self.one.journal, "task.born"), 0, "the clean organism stayed clean");
     }
 }

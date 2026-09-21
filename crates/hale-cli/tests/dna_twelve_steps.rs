@@ -204,7 +204,8 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     let proposed = rows.iter().find(|(k, e, _)| k == "mutation.proposed" && e == "m1").expect("6: proposed");
     // the class is the leader's plan (GH #596 L): `application` when no model answered, else what it named
     assert!(proposed.2.starts_with("task t1 ") && proposed.2.contains(": document the chat server in main.hl"), "6: the Mutation names its Task: {}", proposed.2);
-    assert!(has(&rows, "task.planned", "t1"), "6: the ask was planned before it became a Mutation:\n{dump}");
+    // card 18: the leader's word is bound into the admission of the ask
+    assert!(has(&rows, "workflow.admitted", "t1"), "6: the ask was admitted as a workflow, the plan bound in it:\n{dump}");
     assert!(rows.iter().any(|(k, e, b)| k == "mutation.located" && e == "m1" && b.contains("main.hl under read edit fmt check @")), "5: the Attempt inspects under its grant:\n{dump}");
     assert!(has(&rows, "mutation.worktree", "m1"), "6: {dump}");
     let cand = rows.iter().find(|(k, e, _)| k == "mutation.candidate" && e == "m1").map(|r| r.2.clone()).expect("6: candidate");
@@ -227,8 +228,8 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     assert!(has(&rows, "mutation.retained", "m1"), "12: {dump}");
     // behind the organism's off-thread bus the Task settled `pending` in
     // its live pass and the assembly settled it in the Journal (F.15)
-    assert!(rows.iter().any(|(k, e, b)| k == "task.pending" && e == "t1" && b.contains("routed:in-flight")), "4/5: the Task's live pass, pending:\n{dump}");
-    assert!(rows.iter().any(|(k, e, b)| k == "task.done" && e == "t1" && b.contains("by editor: m1: review")), "the Task settled through the Journal:\n{dump}");
+    assert!(rows.iter().any(|(k, e, _)| k == "attempt.admitted" && e == "t1/wf1/s0/e/a0"), "4/5: the ask's edit leaf, admitted in the engine:\n{dump}");
+    assert!(rows.iter().any(|(k, e, b)| k == "workflow.settled" && e == "t1" && b.contains("\"disposition\": \"done\"")), "the root settled through the engine:\n{dump}");
     // rejection: intact
     assert!(ok5 && ask2.contains("task t2 born"), "{ask2}");
     assert!(requested2, "m2 requested:\n{dump}");
@@ -238,7 +239,7 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
     assert_ne!(head, base);
     assert_eq!(count, "3", "the chat server, the DNA, one applied Mutation");
     assert!(ok7 && status.contains("m1 [retained]") && status.contains("m2 [rejected]") && status.contains("t1 [done]"), "status:\n{status}");
-    assert!(ok8 && hist_t1.contains("intent.offered") && hist_t1.contains("task.born") && hist_t1.contains("mutation.proposed") && hist_t1.contains("task.done"), "history t1:\n{hist_t1}");
+    assert!(ok8 && hist_t1.contains("intent.offered") && hist_t1.contains("task.born") && hist_t1.contains("mutation.proposed") && hist_t1.contains("workflow.settled"), "history t1:\n{hist_t1}");
     for needle in ["mutation.worktree", "evidence.check", "review.requested", "review.settled", "mutation.applied", "expression.restart_requested", "expression.restarted", "expression.observed", "pressure.remeasured", "mutation.retained"] {
         assert!(ok9 && hist_m1.contains(needle), "history m1 lacks {needle}:\n{hist_m1}");
     }

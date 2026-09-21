@@ -135,7 +135,7 @@ fn attempt_admission_gap(v: AdmittedAttempt, a: AdmittedAttempt) -> String {
 // kind selects if it names one. Judged before anything else is made of
 // the reply — a reply that is not this attempt's is not this attempt's
 // pending answer either.
-fn reply_identity_gap(work: WorkSystem, v: AdmittedAttempt, r: WorkResult) -> String {
+fn reply_identity_gap(work: Performing, v: AdmittedAttempt, r: WorkResult) -> String {
     if len(r.attempt_id) > 0 && r.attempt_id != v.attempt_id {
         return "the reply is for attempt " + r.attempt_id + ", not " + v.attempt_id + "; not this attempt's";
     }
@@ -211,7 +211,7 @@ fn recorded_fence(j: Journal, task_id: String, rev: Int) -> String {
 }
 
 @unbounded
-fn execute_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAttempt, f: Fence) -> Executed {
+fn execute_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAttempt, f: Fence) -> Executed {
     let id = a.attempt_id;
     if id != attempt_id_of(a.work_id, a.attempt_no) {
         return Executed { why: "attempt " + id + " is not attempt " + to_string(a.attempt_no) + " of " + a.work_id };
@@ -268,7 +268,7 @@ fn execute_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAttem
 // The admitted performer runs, and its reply is judged and recorded as
 // card 08 has it. `redelivered` marks a dispatch issued again for a claim
 // an earlier incarnation took and never answered (card 12a).
-fn perform_attempt(j: Journal, work: WorkSystem, scope: String, v: AdmittedAttempt, redelivered: Bool, f: Fence) -> Executed {
+fn perform_attempt(j: Journal, work: Performing, scope: String, v: AdmittedAttempt, redelivered: Bool, f: Fence) -> Executed {
     let id = v.attempt_id;
     let req = attempt_request(v);
     let r = work.perform_as(v.performer_kind, req);
@@ -333,7 +333,7 @@ fn close_refused(attempt_id: String) -> Executed {
 // that revision, and an outcome or a cancellation landing meanwhile
 // makes it stale and the decision is taken again.
 @unbounded
-fn dispatch_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAttempt, claimed_here: Bool, redelivered_here: Bool, f: Fence) -> Executed {
+fn dispatch_attempt(j: Journal, work: Performing, scope: String, a: AdmittedAttempt, claimed_here: Bool, redelivered_here: Bool, f: Fence) -> Executed {
     let id = a.attempt_id;
     if id != attempt_id_of(a.work_id, a.attempt_no) {
         return Executed { why: "attempt " + id + " is not attempt " + to_string(a.attempt_no) + " of " + a.work_id };
@@ -436,7 +436,7 @@ fn dispatch_attempt(j: Journal, work: WorkSystem, scope: String, a: AdmittedAtte
 // outstanding: checked by the same rules and persisted the same way. A
 // reply for an attempt whose outcome is recorded changes nothing.
 @unbounded
-fn settle_attempt(j: Journal, work: WorkSystem, scope: String, attempt_id: String, r: WorkResult, f: Fence) -> Executed {
+fn settle_attempt(j: Journal, work: Performing, scope: String, attempt_id: String, r: WorkResult, f: Fence) -> Executed {
     let moved = j.refresh();
     let rev = j.revision();
     let admitted = recorded_attempt_admission(j, attempt_id, rev);
@@ -505,7 +505,7 @@ fn record_attempt(j: Journal, scope: String, v: AdmittedAttempt, r: WorkResult, 
 locus AttemptExecutor {
     params {
         journal: Journal = MemJournal { };
-        work: WorkSystem = WorkSystem { };
+        work: Performing = NoPerformers { };
         scope: String = "org";
     }
     fn execute(a: AdmittedAttempt) -> Executed { return execute_attempt(self.journal, self.work, self.scope, a, Fence { }); }

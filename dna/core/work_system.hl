@@ -1,12 +1,15 @@
 // dna/core/work_system.hl — Work routed to performers (#521 comment 2).
 //
 // The assembly owns this locus and hands it the performers it wants
-// (interface-typed params, substitutable at construction). Work asks
-// over the bus (WorkRequested), the WorkSystem selects a performer per
-// attempt, performs, births one Attempt per assignment (its own
-// lifetime, its own id), and settles the Work over WorkDone keyed by
-// work id. Reassignment is a new Attempt; a completed result is never
-// re-attributed. Selection compares capability, capacity, trust,
+// (interface-typed params, substitutable at construction). The workflow
+// engine (card 18: the one engine) admits each attempt of a Work under
+// its bound allowance and asks this system to perform it as the kind the
+// admission names (`perform_as`); the reply is judged and recorded by
+// the engine, and a retry is the engine's next admitted attempt — this
+// system retries nothing of its own. Reassignment is a new attempt; a
+// completed result is never re-attributed. Selection (the routing
+// policy, `select`) names the kind an ask's leaf runs as when the
+// assembly admits it. Selection compares capability, capacity, trust,
 // independence and cost — AUTHORITY is not among them: a performer
 // never gains the right to settle a decision by being selected
 // (that lives with the Review/AutonomyBoundary).
@@ -198,14 +201,23 @@ locus ServicePerformer {
 
 locus WorkSystem {
     params {
-        human: Performer = HumanWorkGateway { };
+        // card 18: a person's and the editor's kinds are the assembly's —
+        // relayed to it under this system's scope (the organism's id, bound
+        // at the assembly's birth): a human leaf is a case the assembly
+        // admits and hands (card 16), an edit leaf a Mutation bound to the
+        // attempt (card 15), so a redelivery is reconciled by the assembly
+        // itself (it answers from that Mutation, never editing twice)
+        scope: String = "";
+        human_relay: HumanRelay = HumanRelay { };
+        edit_relay: EditRelay = EditRelay { };
+        // a program that assembles the engine itself hands performers of
+        // its own for every kind (a scripted person, a relay under its own
+        // scope); under an assembly the person's and the editor's kinds go
+        // to the assembly's relays above, whatever stands here
+        human: Performer = HumanRelay { };
         agent: Performer = AgentPerformer { };
         software: Performer = ScriptedPerformer { name: "software" };
         service: Performer = ServicePerformer { };
-        // card 15: the fifth kind — an edit leaf's attempt goes to the
-        // assembly through the relay; its effect is the Mutation bound to
-        // the attempt, so a redelivery is reconciled by the assembly itself
-        // (it answers from that Mutation, never editing twice): replay is safe
         edit: Performer = EditRelay { };
         // the effect adapters that say, after a restart, whether an
         // attempt acted (card 12c), one per performer kind as the
@@ -217,19 +229,15 @@ locus WorkSystem {
         software_reconciler: Reconciler = NoEvidence { };
         edit_reconciler: Reconciler = IdempotentReplay { };
         selection: perspective(WorkRouting) = CapabilityFirstSelection { };
-        max_attempts: Int = 3;
-        requests: Int = 0;
-        attempts_made: Int = 0;
-        last_history: String = "";
     }
-    bus {
-        subscribe WorkRequested as on_request;
-        publish WorkDone;
+    // The scope the relays answer under: the assembly's id, bound once at
+    // its birth; a relay a program gave its own scope keeps it.
+    fn bind_scope(scope: String) {
+        self.scope = scope;
+        self.human_relay.scope = scope;
+        self.edit_relay.scope = scope;
     }
-    accept(a: Attempt) { }
-    release (a: Attempt) {
-        self.attempts_made = self.attempts_made + 1;
-    }
+    fn relayed() -> Bool { return len(self.scope) > 0; }
     fn policy() -> String { return self.selection.policy_name(); }
     // A routing-policy mutation: re-point the program's WorkRouting
     // slot. Only the slot's owner may (the ownership tree is the
@@ -239,8 +247,8 @@ locus WorkSystem {
     // The identity of the performer a kind selects: what its reply must
     // say it is (card 08).
     fn identity_of(kind: String) -> String {
-        if kind == "edit" { return self.edit.identity(); }
-        if kind == "human" { return self.human.identity(); }
+        if kind == "edit" { return if self.relayed() { self.edit_relay.identity() } else { self.edit.identity() }; }
+        if kind == "human" { return if self.relayed() { self.human_relay.identity() } else { self.human.identity() }; }
         if kind == "agent" { return self.agent.identity(); }
         if kind == "service" { return self.service.identity(); }
         return self.software.identity();
@@ -256,55 +264,10 @@ locus WorkSystem {
         return self.software_reconciler.reconcile(kind, identity, req);
     }
     fn perform_as(kind: String, req: WorkRequest) -> WorkResult {
-        if kind == "edit" { return self.edit.perform(req); }
-        if kind == "human" { return self.human.perform(req); }
+        if kind == "edit" { return if self.relayed() { self.edit_relay.perform(req) } else { self.edit.perform(req) }; }
+        if kind == "human" { return if self.relayed() { self.human_relay.perform(req) } else { self.human.perform(req) }; }
         if kind == "agent" { return self.agent.perform(req); }
         if kind == "service" { return self.service.perform(req); }
         return self.software.perform(req);
-    }
-    // Bounded by max_attempts; one Attempt literal per try.
-    @unbounded
-    fn on_request(req: WorkRequest) {
-        // Work that changes source is the assembly's own (its editor,
-        // its gateway, its Journal — GH #529 D7); the router's
-        // performers never touch the genome.
-        if std::str::contains(req.requires, "edit") { return; }
-        self.requests = self.requests + 1;
-        let mut n = 0;
-        let mut last = "";
-        let mut history = "";
-        let mut result = "";
-        while n < self.max_attempts && last != "done" {
-            // One attempt, one number: the performer, the Attempt, its
-            // model evidence and the history all name the same attempt
-            // (DNA workflow card 01). Numbering continues from the
-            // request's own attempt; the selection policy still sees the
-            // try index it always has.
-            let no = req.attempt_no + n;
-            let attempt = request_for_attempt(req, no);
-            let kind = self.selection.select(attempt, n, last);
-            let r = self.perform_as(kind, attempt);
-            let aid = req.work_id + "/a" + to_string(no);
-            Attempt {
-                attempt_id: aid,
-                work_id: req.work_id,
-                attempt_no: no,
-                performer_kind: kind,
-                req: attempt,
-                outcome: r
-            };
-            history = history + "a" + to_string(no) + ":" + kind + ":" + r.disposition + " ";
-            last = r.disposition;
-            result = r.result;
-            n = n + 1;
-        }
-        self.last_history = history;
-        WorkDone <- WorkSettlement {
-            work_id: req.work_id,
-            disposition: if last == "done" { "done" } else { "failed" },
-            result: result,
-            attempts: n,
-            history: history
-        };
     }
 }

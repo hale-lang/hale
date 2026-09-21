@@ -269,16 +269,16 @@ main locus App {
         drop_bill(fixture, app, "b0999.bill");
         std::test::assert(wait_rows(app, "receipt.filed", "", "b0999.bill", 1, PHASE), "a bill from last month, captured with its receipt");
         drop_bill(fixture, app, "b1001.bill");
-        std::test::assert(wait_rows(app, "task.handed", "t1", "", 1, PHASE), "B-1001 handed on: " + journal(app));
+        std::test::assert(wait_rows(app, "task.handed", "t1.s0.p", "", 1, PHASE), "B-1001 handed on (card 18: the case of the ask): " + journal(app));
         drop_bill(fixture, app, "b1002.bill");
         std::test::assert(wait_rows(app, "receipt.filed", "", "b1002.bill", 1, PHASE), "B-1002 captured");
         drop_bill(fixture, app, "b1003.bill");
-        std::test::assert(wait_rows(app, "task.handed", "t2", "", 1, PHASE), "B-1003 handed on");
+        std::test::assert(wait_rows(app, "task.handed", "t2.s0.p", "", 1, PHASE), "B-1003 handed on");
         drop_bill(fixture, app, "b1004.bill");
-        std::test::assert(wait_rows(app, "task.handed", "t3", "", 1, PHASE), "B-1004 handed on");
+        std::test::assert(wait_rows(app, "task.handed", "t3.s0.p", "", 1, PHASE), "B-1004 handed on");
         std::test::assert(wait_rows(app, "concern.raised", "org/books/intake", "", 3, PHASE), "three bills arrived without their receipts, and the intake said so");
 
-        let born1 = body(app, "task.born", "t1");
+        let born1 = body(app, "task.born", "t1.s0.p");
         let bill1 = digest_in(born1);
         // the filing is its own row: waited for before it is counted
         std::test::assert(wait_rows(app, "receipt.filed", bill1, "b1001.bill", 1, PHASE), "B-1001's bill is filed as evidence: " + born1);
@@ -290,14 +290,14 @@ main locus App {
         std::test::assert_eq_int(count(app, "receipt.filed", bill1, ""), 1, "filed once");
         std::test::assert_eq_int(count(app, "task.born", "", "B-1001"), 1, "followed up once");
         std::test::assert_eq_int(count(app, "concern.raised", "org/books/intake", ""), 3, "and no second concern");
-        let handed1 = body(app, "task.handed", "t1");
+        let handed1 = body(app, "task.handed", "t1.s0.p");
         std::test::assert(std::json::find_string_field(handed1, "assignee") == "mara" && std::json::find_string_field(handed1, "obligation") == "expense-receipt" && std::json::find_string_field(handed1, "acceptance") == v1 && std::str::contains(handed1, "\"evidence_required\": true"), "handed to the payer under the books practice: " + handed1);
 
         // ---- 3. the organism stops while the Tasks wait
         stop_dev(app, dev);
         let r1001 = digest_in(dna_cli(app, "receipt\nfile\n" + fixture + "/receipts/r1001.txt\n--as\nmara"));
-        let offline = dna_cli(app, "task\ndone\nt1\n--as\nmara\n--evidence\n" + r1001 + "\n--note\nthe rail receipt came by post");
-        std::test::assert(std::str::contains(offline, "task t1 done by mara: the rail receipt came by post — evidence " + r1001 + " linked"), "completed while the organism is stopped: " + offline);
+        let offline = dna_cli(app, "task\ndone\nt1.s0.p\n--as\nmara\n--evidence\n" + r1001 + "\n--note\nthe rail receipt came by post");
+        std::test::assert(std::str::contains(offline, "task t1.s0.p done by mara: the rail receipt came by post — evidence " + r1001 + " linked"), "completed while the organism is stopped: " + offline);
         // the Board sets the optimize cadence while it is down: a reviewed commit to the Genome
         let org2 = std::io::fs::read_file(org_path) or "";
         std::io::fs::write_file(org_path, std::str::replace(org2, "optimize_every_ms: 0", "optimize_every_ms: 3000")) or discard;
@@ -313,18 +313,18 @@ main locus App {
         std::test::assert(membrane_up(app, ADOPT), "back up: " + (std::io::fs::read_file(app + "/.hale/dev.log") or ""));
         std::test::assert(wait_rows(app, "org.reviewed", "", "", reviewed_before + 1, ADOPT), "the restarted organism replayed the record and took up the cadence the Board set: " + journal(app));
         let status = dna_cli(app, "status");
-        std::test::assert(std::str::contains(status, "t1 [done] i") && std::str::contains(status, "— evidence " + r1001), "the offline completion is honoured: " + status);
-        std::test::assert(std::str::contains(status, "t2 [handed]") && std::str::contains(status, "t3 [handed]"), "the others still wait on their person: " + status);
-        std::test::assert(count(app, "task.planned", "t1", "") == 1 && count(app, "task.planned", "t2", "") == 1 && count(app, "task.planned", "t3", "") == 1, "nothing was replanned");
-        std::test::assert(count(app, "task.handed", "t1", "") == 1 && count(app, "task.handed", "t2", "") == 1, "nothing was handed twice");
+        std::test::assert(std::str::contains(status, "t1.s0.p [done]") && std::str::contains(status, "— evidence " + r1001), "the offline completion is honoured: " + status);
+        std::test::assert(std::str::contains(status, "t2.s0.p [handed]") && std::str::contains(status, "t3.s0.p [handed]"), "the others still wait on their person: " + status);
+        std::test::assert(count(app, "workflow.admitted", "t1", "") == 1 && count(app, "workflow.admitted", "t2", "") == 1 && count(app, "workflow.admitted", "t3", "") == 1, "nothing was admitted or planned twice (card 18: the plan is bound in the admission)");
+        std::test::assert(count(app, "task.handed", "t1.s0.p", "") == 1 && count(app, "task.handed", "t2.s0.p", "") == 1, "nothing was handed twice");
 
         // ---- 4. evidence, or an authorized exception
-        let note_only = dna_cli(app, "task\ndone\nt2\n--as\nmara\n--note\npaid cash");
+        let note_only = dna_cli(app, "task\ndone\nt2.s0.p\n--as\nmara\n--note\npaid cash");
         std::test::assert(std::str::contains(note_only, "closes only with its evidence"), "a note does not verify a missing receipt: " + note_only);
-        let authorized = dna_cli(app, "task\nauthorize\nt2\n--exception\nthe taxi driver gave no receipt\n--as\ndana");
+        let authorized = dna_cli(app, "task\nauthorize\nt2.s0.p\n--exception\nthe taxi driver gave no receipt\n--as\ndana");
         std::test::assert(std::str::contains(authorized, "exception authorized by dana"), "dana authorizes the exception in her own name: " + authorized);
-        let excepted = dna_cli(app, "task\ndone\nt2\n--as\nmara\n--exception\nthe taxi driver gave no receipt\n--authorized-by\ndana");
-        std::test::assert(std::str::contains(excepted, "task t2 done by mara — exception authorized by dana: the taxi driver gave no receipt"), "an authorized exception: " + excepted);
+        let excepted = dna_cli(app, "task\ndone\nt2.s0.p\n--as\nmara\n--exception\nthe taxi driver gave no receipt\n--authorized-by\ndana");
+        std::test::assert(std::str::contains(excepted, "task t2.s0.p done by mara — exception authorized by dana: the taxi driver gave no receipt"), "an authorized exception: " + excepted);
 
         // ---- 5. the omissions motivate a reviewed change to the intake software
         std::test::assert(wait_rows(app, "review.requested", "review:m1", "", 1, ADOPT), "the optimize pass proposed a change and it became a Review: " + journal(app));
@@ -351,20 +351,20 @@ main locus App {
 
         // ---- 5. the next bill uses both
         drop_bill(fixture, app, "b1005.bill");
-        std::test::assert(wait_rows(app, "task.handed", "t5", "", 1, ADOPT), "B-1005 handed on: " + journal(app));
-        std::test::assert(std::str::contains(body(app, "task.born", "t5"), "receipt requested from Contoso Print at capture (books intake 2)"), "captured by the adopted intake: " + body(app, "task.born", "t5"));
+        std::test::assert(wait_rows(app, "task.handed", "t5.s0.p", "", 1, ADOPT), "B-1005 handed on: " + journal(app));
+        std::test::assert(std::str::contains(body(app, "task.born", "t5.s0.p"), "receipt requested from Contoso Print at capture (books intake 2)"), "captured by the adopted intake: " + body(app, "task.born", "t5.s0.p"));
         std::test::assert(wait_file(app + "/outbox/receipt-request-B-1005.txt", PHASE), "which asked the supplier");
-        let handed5 = body(app, "task.handed", "t5");
+        let handed5 = body(app, "task.handed", "t5.s0.p");
         std::test::assert(std::json::find_string_field(handed5, "acceptance") == v2 && std::str::contains(handed5, "\"evidence_required\": true"), "handed under the adopted practice: " + handed5);
 
         // ---- 6. the older case keeps its contract
-        std::test::assert(std::json::find_string_field(body(app, "task.handed", "t3"), "acceptance") == v1 && std::str::contains(dna_cli(app, "status"), "t3 [handed]"), "B-1004 still waits on mara, under the first version (v1 " + v1 + "):\n" + rows_about(app, "t3") + dna_cli(app, "status"));
+        std::test::assert(std::json::find_string_field(body(app, "task.handed", "t3.s0.p"), "acceptance") == v1 && std::str::contains(dna_cli(app, "status"), "t3.s0.p [handed]"), "B-1004 still waits on mara, under the first version (v1 " + v1 + "):\n" + rows_about(app, "t3") + dna_cli(app, "status"));
         let r1004 = digest_in(dna_cli(app, "receipt\nfile\n" + fixture + "/receipts/r1004.txt\n--as\nmara"));
-        let closed3 = dna_cli(app, "task\ndone\nt3\n--as\nmara\n--evidence\n" + r1004);
-        std::test::assert(std::str::contains(closed3, "task t3 done by mara — evidence " + r1004 + " linked") && std::json::find_string_field(body(app, "completion.linked", "t3"), "practice") == v1, "closed under the contract it was handed with: " + closed3);
+        let closed3 = dna_cli(app, "task\ndone\nt3.s0.p\n--as\nmara\n--evidence\n" + r1004);
+        std::test::assert(std::str::contains(closed3, "task t3.s0.p done by mara — evidence " + r1004 + " linked") && std::json::find_string_field(body(app, "completion.linked", "t3.s0.p"), "practice") == v1, "closed under the contract it was handed with: " + closed3);
         let r1005 = digest_in(dna_cli(app, "receipt\nfile\n" + fixture + "/receipts/r1005.txt\n--as\nmara"));
-        let closed5 = dna_cli(app, "task\ndone\nt5\n--as\nmara\n--evidence\n" + r1005);
-        std::test::assert(std::str::contains(closed5, "— evidence " + r1005 + " linked") && std::json::find_string_field(body(app, "completion.linked", "t5"), "practice") == v2, "the new case under the new version: " + closed5);
+        let closed5 = dna_cli(app, "task\ndone\nt5.s0.p\n--as\nmara\n--evidence\n" + r1005);
+        std::test::assert(std::str::contains(closed5, "— evidence " + r1005 + " linked") && std::json::find_string_field(body(app, "completion.linked", "t5.s0.p"), "practice") == v2, "the new case under the new version: " + closed5);
 
         // ---- 7. a week, from the record alone
         let export_argv = "sh\n-c\nBOOKS_MODE=export BOOKS_FROM=2026-09-07 BOOKS_TO=2026-09-13 exec \"$1\" run .\nsh\n" + toolchain();
@@ -376,10 +376,10 @@ main locus App {
         std::test::assert(len(head) == 40 && at_record.code == 0, "the export names a head of the record: " + head);
         std::test::assert(std::str::starts_with(week, "bill,supplier,payer,purpose,date,amount,currency,treatment,evidence,task,assignee,state,completion,practice\n"), "an open CSV: " + week);
         std::test::assert(!std::str::contains(week, "B-0999"), "last month's bill is outside the week");
-        std::test::assert(std::str::contains(week, "B-1001,Northwind Rail,mara,travel to the client,2026-09-07,120.00,CU,pending," + bill1 + ",t1,mara,done,evidence " + r1001 + "," + v1), "B-1001 with its evidence: " + week);
+        std::test::assert(std::str::contains(week, "B-1001,Northwind Rail,mara,travel to the client,2026-09-07,120.00,CU,pending," + bill1 + ",t1.s0.p,mara,done,evidence " + r1001 + "," + v1), "B-1001 with its evidence: " + week);
         std::test::assert(std::str::contains(week, "B-1002,Paper Mill,mara,printer paper,2026-09-08,35.50,CU,pending,") && std::str::contains(week, ",,,captured,receipt attached,"), "B-1002 captured with its receipt, no obligation");
-        std::test::assert(std::str::contains(week, ",t2,mara,done,exception: the taxi driver gave no receipt (authorized by dana)," + v1), "B-1003 closed by an exception");
-        std::test::assert(std::str::contains(week, ",t5,mara,done,evidence " + r1005 + "," + v2), "B-1005 under the adopted practice");
+        std::test::assert(std::str::contains(week, ",t2.s0.p,mara,done,exception: the taxi driver gave no receipt (authorized by dana)," + v1), "B-1003 closed by an exception");
+        std::test::assert(std::str::contains(week, ",t5.s0.p,mara,done,evidence " + r1005 + "," + v2), "B-1005 under the adopted practice");
         std::test::assert(std::str::contains(week, "total CU 470") && std::str::contains(week, "bills: 5; open obligations: 0") && std::str::contains(week, "from the record at " + head), "control totals, and the record they came from: " + week);
         // The same record gives the same export — and "the same record" is
         // one that has stopped moving, so the organism goes down first and

@@ -70,7 +70,6 @@ pub const FILES: &[EmbeddedFile] = core![
     "ownership",
     "performers",
     "principal",
-    "process",
     "record",
     "review",
     "routing",

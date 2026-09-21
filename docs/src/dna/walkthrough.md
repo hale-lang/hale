@@ -38,11 +38,11 @@ $ hale dna ask document the chat server in main.hl
 task t1 born for intent i1a08c0786c5 [pending]
 ```
 
-The Board admitted the intent (`intent.offered`), the Metabolism
-birthed a durable Task (`task.born`), and its Workflow made a Step
-whose Work is routed back to the substrate as source-editing Work.
-That Work takes seconds, so the Task's live pass settles `pending`
-and the substrate settles it in the record when the Work is done.
+The Board admitted the intent (`intent.offered`) as a workflow
+(`workflow.admitted`, with `task.born` as the summary the tooling
+lists), and the substrate's engine ran its one edit leaf: the
+substrate's editor performed it, and the root settled
+(`workflow.settled`) once the candidate was in review.
 In the session below the change was proposed directly, so the
 lineage starts at step 5.
 

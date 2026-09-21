@@ -27,19 +27,6 @@ type Intent {
     to: String = ""; // the position it is for ("" = the organization, `org`); its owner admits it (GH #664)
 }
 
-// What a settled child hands its owner through `release(c)`.
-// `disposition`: "done" | "failed" | "cancelled" | "declined" |
-// "timeout" | "escalated".
-type Settled {
-    id: String = "";
-    kind: String = ""; // "task" | "workflow" | "step" | "work" | "attempt"
-    parent: String = "";
-    disposition: String = "";
-    detail: String = "";
-    attempts: Int = 0;
-    revision: Int = 0; // the Workflow definition revision a Task was born with
-}
-
 // Executor-neutral unit of work: the METHOD is open, the envelope is
 // typed (#521 comment 2).
 type WorkRequest {

@@ -9,7 +9,7 @@
 // publish on those sockets; nothing crosses through the observation
 // segment. The owning locus decides: a verdict goes through the
 // Review's own admission (digest pin, authority, independence), an
-// intent through the membrane gate and the Metabolism. The edge is a
+// intent through the membrane gate and the engine. The edge is a
 // declared route in the fleet model, so `hale fleet check` sees it.
 //
 //   hale build dna/organism && ./dna/organism/organism

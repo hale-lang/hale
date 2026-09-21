@@ -90,10 +90,11 @@ main locus App {
         };
 
         // ---- a planned ask: the plan's prompt and context are receipts
-        let t = self.core.ask(dna::Intent { id: "i1", outcome: "get the supplier's invoice approved", from: "riley" }, dna::Knobs { routed: true, requires: "edit" });
+        let asked = self.core.ask(dna::Intent { id: "i1", outcome: "get the supplier's invoice approved", from: "riley" });
         std::time::sleep(400ms);
-        std::test::assert(std::str::starts_with(t, "t"), "the Task was born: " + t);
-        let attempt = t + "/plan";
+        std::test::assert_eq_str(asked, "planning", "the leader's word comes first (card 18)");
+        // the plan is the ask's: its model call is named by the intent
+        let attempt = "i1/plan";
         let row = self.row_body(attempt);
         std::test::assert(len(row) > 0, "the plan call is in the record as " + attempt);
         let pd = std::json::find_string_field(row, "prompt_digest");

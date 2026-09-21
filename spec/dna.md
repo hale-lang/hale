@@ -773,15 +773,13 @@ record's.
 | `law.deferred` | record | a clause `init` could not certify |
 | `intent.requested` | ledger | an ask from a clone with no organization running |
 | `intent.offered` / `intent.refused` | ledger | the outcome an ask was admitted for, or the refusal |
-| `intent.unrecovered` | ledger | an intent offered before a restart that no Task was born for; never re-offered |
+| `intent.unrecovered` | ledger | an intent offered before a restart that no admission names; never re-offered |
 | `review.verdict` | record | a verdict appended in the reviewer's name, from a clone or a forge |
 | `task.born` | ledger | the work an intent or a settled review made |
-| `task.planned` | ledger | the plan the Task will be worked under; with the `binding` of the Work and attempt that asked, and their request as asked (card 14) |
 | `task.handed` | ledger | handed to a person: assignee, obligation, acceptance |
 | `case.admitted` | ledger | a human Work's case, its own handed Task (card 16): parent Task, Work and attempt, objective, assignee, obligation, acceptance, required evidence, its origin (`owner`), disposition (`to`) and performer (version 2, card 17) — before its `task.born` / `task.handed`, which say what it recorded; its completion (`task.done`, `decision.reported`) is the attempt's outcome (card 17) |
 | `task.reassigned` | ledger | the assignment moved to someone else |
-| `task.resumed` | ledger | re-entered after a restart, under the plan already recorded |
-| `task.<state>` | ledger | every other state a Task passes through, to `done` or `failed` |
+| `task.<state>` | ledger | a case's states, to `done` or `failed`; an admitted execution's root is settled by `workflow.settled`, its workflow's row (card 18) |
 | `mutation.requested` | record | which exact Work and attempt asked for the Mutation, with the request as asked; written before `mutation.proposed` (card 14) |
 | `mutation.proposed` | record | a change proposed for a Task: class, objective, target, base |
 | `mutation.worktree` | record | the sandbox opened for it, and removed |
@@ -1027,8 +1025,8 @@ ask's identity — appended with exact compare-and-append before anything
 could run; only then the legacy `task.born` summary, so the tooling of
 the day lists the Task. A refusal, by the catalog or by the record, is a
 `workflow.refused` row under the id it minted and nothing else: no
-summary, no child, no work request. Nothing dispatches here; later cards
-execute.
+summary, no child, no work request. `Dna.run_workflow(WorkflowAsk)` is
+the admission followed by the execution's start (card 18, below).
 
 The ask's id is the admission's identity. Asked again — relayed after a
 lost answer, retried — it is one execution, found in the record by that
@@ -1116,8 +1114,8 @@ The executor retries nothing (one retry owner: the Work's lifecycle) and
 advances nothing (the Work settles on the outcome in a later card). It
 makes no claim that external effects happen once: a performer that
 acted and died before its outcome was saved is a later card's. The
-legacy `WorkSystem` request loop, which retries internally, stays for
-legacy callers.
+`WorkSystem` retries nothing of its own (card 18): it routes each
+admitted attempt to the performer of the kind the admission names.
 
 ## Workflow execution: one step
 
@@ -1529,7 +1527,7 @@ none, is nobody's and settles nothing.
 The Work settles as any Work does, its step counts it, and the
 workflow settles the root: no Work of an admitted execution settles
 its Task, and a Mutation's review outcome never settles it either —
-one root terminal writer. The legacy paths keep settling legacy Tasks.
+one root terminal writer.
 
 Two output contracts, never reinterpreted as each other. `Patch` — the
 default for an edit leaf — is a candidate prepared for review: the
@@ -2379,81 +2377,79 @@ authority.
   machine makes the organization CI makes: one whose leader has no
   model that answers, whose plans take the defaults, and which spends
   nothing. The CLI fixtures set it.
-- **An ask is planned before it becomes a Mutation.** With `planned:
-  true` on the substrate (the generated org chart says so), routed
-  edit Work is not a Mutation of class `application` at once: the
-  substrate publishes `PlanRequested`, the leader answers
-  `TaskPlanned`, and the substrate journals `task.planned <task>`
-  (kind — `organism`, `appendage`, `product` or `person` —
-  `change_class`, `target`, `count`, the model's narrative, the
-  package read, `parsed`, and `class_applied` — and, from card 14, a
-  `binding`: the Work and attempt that asked, `work_id`, `attempt_id`,
-  `attempt_no`, with their `request` as asked — every field of it:
-  objective, target, capability words, data class, context digest,
-  knowledge bindings, output contract, cost ceiling) and proceeds under
-  the class and target the plan names. A plan row the record refuses
-  starts nothing: the request keeps its place, the plan is held with
-  it, and `redrive` puts it again (a restart plans the Task again, since
-  no plan landed). A Mutation's request row (`mutation.requested`) the
-  record refuses ends that Mutation before it began: no summary row, no
-  worktree, no effect under that id, and the request is held the same
-  way — a refused write is no outcome, and the Work and Task do not
-  settle on it. The summary row (`mutation.proposed`) after the request
-  row is compatibility: refused, it is counted and said, and the
-  Mutation proceeds on its request row. **The kind decides whose change
-  it is.** A plan of kind `organism` is a change to the organism
-  itself, and that is class `organization` whatever the plan called
-  it: it is expressed from the organism's seed and assessed under the
-  organism's policy, so it is the Board's to decide. Class
-  `organization` for a child that is not the organism is a
-  contradiction and is refused before any editor is placed
-  (`task.refused`, the Work fails, no Mutation). **A plan only splits
-  and classifies; it never widens what was asked.** An answer that names no kind and no class leaves
-  the defaults standing — an appendage, class `application`, the
-  ask's own target — and the record says it did not parse, so an
-  organization with no model that answers behaves as before. A plan
-  of kind `person` settles the Work as handed rather than mutating
-  anything. A `task.planned` row is not a settlement: the task's state
-  is its last other `task.*` row.
-- **Work survives a restart (GH #604).** The record holds a Task's
-  birth before anything runs: the id is minted, `task.born` is
-  appended, and only then is the Task born — a birth the record
-  refuses stops there (`intent.refused`), and nothing has run. On
-  restart, a Task born and not settled re-enters the tower from its
-  last durable state (`task.resumed <task>`): under the plan in the
-  record when there is one, never replanned; planned for the first
-  time when there is none. Each Work the record planned for the Task
-  resumes under its own plan — the last plan row bound to that Work —
-  and with the request it was asked with, its capability words, data
-  class and attempt number as recorded, never a default; not when the
-  Work's own Mutation is in the record (`mutation.requested` binding
-  it), whose outcome settles it (card 14). A plan from before card 14
-  binds no Work: it is the Task's one Work, resumed as `<task>/resumed`.
-  A Mutation naming only its Task, from before card 14, is the Task's
-  alone: nothing of the Task resumes past it. A Mutation with only its
-  request row was in flight — the stop fell between the two rows — and
-  fails like one only proposed; its id is counted at the restart and
-  never minted again. A Mutation's recovery is derived from every row
-  it has, from its first — its request row, or its proposal when no
-  request names it: one whose last word is the request, the proposal,
-  an open worktree or a located file was in flight and fails, once;
-  one with a candidate, a Review or an outcome after them is left to
-  that, whether or not its summary row landed. `task.resumed` is an event of a restart,
-  never a state: a resumed Task not yet settled is still pending, it
-  settles like any other, and a restart that stopped between its
-  `task.resumed` and the dispatch leaves it to be resumed again at the
-  next one. A Task whose Mutation was in flight settles
-  `failed` with the Mutation; one whose Mutation is beyond proposal
-  waits on that Mutation's outcome, and settles from it when the Work
-  that would have settled it is gone. A Task's Mutation is found by the
-  Task it names (`mutation.proposed … task <id> …`) anywhere in the
-  journal, never by position: read as record + ledger, the record's
-  Mutation rows precede the ledger's births. A Work's Mutation is found
-  the same way, by the Work its request row names (`mutation.requested`,
-  card 14). A handed Task is a person's and
-  waits. An `intent.offered` with no `task.born` naming it — the shape
-  from before this rule — is noted (`intent.unrecovered`) and never
-  re-offered: work may already have run.
+- **An ask is admitted as a workflow, in the one engine (card 18).**
+  `Dna.ask(Intent)` — intent through the membrane, a schedule's, an
+  optimizer's — passes the membrane's gate, the owner's (GH #664) and
+  the budget's, journals `intent.offered`, and admits a workflow for
+  it (`workflow.admitted`, the one positive discriminator, under the
+  intent's id as the admission's identity — offered again it is the
+  same execution) which the engine the substrate owns for its scope
+  runs. With `planned: true` on the substrate (the generated org chart
+  says so) the leader's word comes first: the substrate publishes
+  `PlanRequested` for the ask, the leader answers `TaskPlanned`, and
+  the admission binds that word in its inputs — the objective, the
+  kind (`organism`, `appendage`, `product` or `person`), the class
+  applied (an `organism` change is class `organization` whatever the
+  plan called it: the Board's), the target, whom and under what
+  obligation, the narrative, `planned`. A person's job is admitted
+  under the `ask-person` definition (one human leaf, a case the
+  substrate hands to whom the leader named, with no second word asked
+  — cards 16 and 17 complete it); anything else under `ask-edit` (one
+  edit leaf under the `Patch` contract, performed by the substrate's
+  editor as class and target the word names — the target only when it
+  names a file the genome has under the seed the class edits; a
+  model's prose is not a path — else class `application` at the ask's
+  own target; card 15 reports its outcome). Class `organization` for a
+  child that is not the organism is a contradiction and is refused
+  before anything is admitted (`intent.refused`). The execution is
+  asked of the engine with the performer kind of every leaf of the
+  whole bound tree, named for the exact Work — its bound id, never its
+  key, which two Works of different steps or workflows may share — the
+  editor's for an edit leaf, the human kind for a person's, else the
+  routing policy's choice for the Work's own request under the Task
+  that owns it. The tooling's answer to an ask (`hale dna ask`) is the
+  execution whose admission names that ask as its request, never the
+  next birth in the record, which may be another ask's. An answer that names
+  no kind and no class leaves the defaults standing — class
+  `application`, the ask's own target — and the admission says it did
+  not parse. Without a leader the ask is an application change. An
+  ask whose leader has not answered yet is in planning, and asked
+  again meanwhile is not asked of the leader twice. No `task.planned`,
+  `task.pending` or `task.resumed` row is written: the admission is
+  the plan, and the execution's facts are the engine's rows.
+- **Work survives a restart (GH #604, card 18).** The record holds an
+  execution's admission before anything runs; a birth the record
+  refuses stops there (`intent.refused`, `workflow.refused`), and
+  nothing has run. On restart the substrate asks its engine again for
+  every admitted root of its own that is not finished — settled AND
+  drained: a cancellation settles the root before its admitted Works
+  have settled, and a root whose tree (its own workflow's Works and
+  every child's, by their admissions' `parent_task`, and every
+  admitted child itself, before its first attempt or after its last
+  Work settled) still owes a settlement is asked for again, so the
+  engine's own recovery drains it (cards 12a, 13: the responsibilities
+  still owed anywhere in the tree are counted, and a cancelled parent
+  whose step holds only a child member drains the child through that
+  step, born fenced). A child reborn under a cancelled ancestor reads
+  that cancellation from the record at its own state question — a
+  fence published before it existed reached nobody — proposes its own
+  cancellation, and drains like any cancelled execution; a drained
+  record is asked for nothing and written nothing. The engine restores
+  each from its admission and the record's facts — under the word
+  bound at admission, never replanned;
+  an attempt whose outcome is recorded is answered from it and never
+  runs again; a case handed stays a person's and waits. A Mutation's
+  recovery is derived from every row it has, from its first — its
+  request row, or its proposal when no request names it: one whose
+  last word is the request, the proposal, an open worktree or a
+  located file was in flight and fails, once (`mutation.failed`); one
+  with a candidate, a Review or an outcome after them is left to that.
+  Its id is counted at the restart and never minted again. A Task with
+  no admission — a row of the shape from before card 18 — is left
+  where it is: nothing resumes it, plans it or settles it. An
+  `intent.offered` with no admission naming it is noted
+  (`intent.unrecovered`) and never re-offered: work may already have
+  run.
 - **Dev relies on docker compose.** `init` writes `dna/compose.yaml`
   (the `knowledge-db` service, `pgvector/pgvector:pg16`, a named
   volume `hale-dna-<project>-knowledge`, a host port in 54xx from the

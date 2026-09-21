@@ -498,6 +498,23 @@ locus WorkflowCatalog {
         return me;
     }
 
+    // ---- binding inputs (card 18) ----------------------------------------
+    // After an expansion: every bound leaf whose definition bound no
+    // objective takes `objective` — the ask's, from the admission's
+    // inputs — so the recipe the admission carries is whole.
+    @unbounded
+    fn bind_objective(objective: String) {
+        let mut i = 0;
+        while i < self.bound.len() {
+            let n = self.bound.get(i) or BoundNode { };
+            if n.kind == "work" && len(n.objective) == 0 {
+                let mut m = n;
+                m.objective = objective;
+                self.bound.set(i, m) or discard;
+            }
+            i = i + 1;
+        }
+    }
     // ---- expansion -----------------------------------------------------
 
     // Bind one execution of definition `id`@`revision` under root Task
