@@ -13,6 +13,14 @@
 // compatibility row completes them, and never plans or resumes a case
 // as edit work. The leader says who and under what obligation where one
 // plans; without one the case is unassigned.
+//
+// Review round 1: a later attempt of the Work is the same case, found
+// before the leader is asked again; the terms bind from the reading the
+// admission is exact at (a retirement landing between sends the case to
+// the successor); a refused compatibility row is held and completed on
+// `RecordResumed` / `redrive` without a restart; the rows say what the
+// admission recorded — a transfer to another owner stays theirs to hand
+// once accepted, and another owner's restart never hands it.
 
 import "../core" as dna;
 
@@ -25,6 +33,9 @@ fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
 
 const APP: String = "fn main() { println(\"app\"); }\n";
 const PLAN: String = "kind: person\nclass: docs\ntarget: none\ncount: 1\nassignee: mara\nobligation: expense-approval\nmara handles it";
+// for the asks of the shared root (`north: ...`), the leader names bob, north's
+const RULES: String = "plan|Ask: north: |kind: person\\nclass: docs\\ntarget: none\\ncount: 1\\nassignee: bob\\nobligation: expense-approval\\nbob handles it";
+const OWNERS: String = "org = acme\norg/collections = north\nacme: alice\nnorth: bob\n";
 
 locus Delayed {
     params { calls: Int = 0; }
@@ -34,6 +45,28 @@ locus Delayed {
         self.calls = self.calls + 1;
         return dna::WorkResult { disposition: "pending", performer: "delayed", attempt_id: req.work_id + "/a" + to_string(req.attempt_no) };
     }
+}
+
+// A record where a retirement lands between the reading and the exact
+// append of the first case admitted: the append is stale, and the
+// decision must be made again from the new reading.
+locus Retiring {
+    params { inner: dna::Journal = dna::MemJournal { }; landed: Bool = false; }
+    fn refresh() -> Bool { return self.inner.refresh(); }
+    fn revision() -> Int { return self.inner.revision(); }
+    fn head() -> String { return self.inner.head(); }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        return self.inner.append(expected, kind, entity, body);
+    }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if kind == "case.admitted" && !self.landed {
+            self.landed = true;
+            let r = self.inner.append(self.inner.revision(), "person.retired", "mara", "{\"by\": \"riley\", \"to\": \"dev\", \"transferred\": 0}");
+        }
+        return self.inner.append_exact(expected, kind, entity, body);
+    }
+    fn read(i: Int) -> dna::Event { return self.inner.read(i); }
+    fn verify_chain() -> Bool { return self.inner.verify_chain(); }
 }
 
 // A record that refuses the first row of one kind: a compatibility row
@@ -78,8 +111,8 @@ main locus App {
         lead: dna::Leader = dna::Leader {
             name: "leader", org: "cases", charter: "You are the architect.",
             models: dna::ModelRouter {
-                quick: dna::FakeModel { name: "quick", answer: PLAN },
-                deep: dna::FakeModel { name: "deep", answer: PLAN }
+                quick: dna::FakeModel { name: "quick", answer: PLAN, rules: RULES },
+                deep: dna::FakeModel { name: "deep", answer: PLAN, rules: RULES }
             }
         };
         lives: String = "";
@@ -90,6 +123,7 @@ main locus App {
         subscribe dna::WorkflowSettled as on_outcome;
         publish dna::ExecutionAsked;
         publish dna::CaseRequested; // an attempt asked again, by the probe
+        publish dna::RecordResumed; // the record writable again, by the probe
     }
     fn on_life(l: dna::RunLife) { self.lives = self.lives + l.key + ":" + l.what + " "; }
     fn on_outcome(o: dna::WorkflowSettlement) { self.outcomes = self.outcomes + o.task_id + ":" + o.disposition + " "; }
@@ -161,13 +195,18 @@ main locus App {
         std::test::assert_eq_str(self.cat.leaf("staff", 1, 0, "h1", dna::WorkRequest { objective: "file the receipts" }, 1), "", "h1");
         std::test::assert_eq_str(self.cat.leaf("staff", 1, 0, "h2", dna::WorkRequest { objective: "call the supplier" }, 1), "", "h2");
         std::test::assert_eq_str(self.cat.leaf("staff", 1, 0, "s", dna::WorkRequest { objective: "wait for the sibling" }, 1), "", "s");
+        std::test::assert_eq_str(self.cat.define("shared", 1, 1, "two jobs for another owner's person, and a wait"), "", "shared");
+        std::test::assert_eq_str(self.cat.leaf("shared", 1, 0, "h1", dna::WorkRequest { objective: "north: file the receipts" }, 1), "", "shared h1");
+        std::test::assert_eq_str(self.cat.leaf("shared", 1, 0, "h2", dna::WorkRequest { objective: "north: call the supplier" }, 1), "", "shared h2");
+        std::test::assert_eq_str(self.cat.leaf("shared", 1, 0, "s", dna::WorkRequest { objective: "wait for the sibling" }, 1), "", "shared s");
     }
-    fn admit(task_id: String) {
+    fn admit(task_id: String) { self.admit_of(task_id, "staff"); }
+    fn admit_of(task_id: String, definition: String) {
         let j = self.boot.rt.journal;
-        let x = self.cat.expand(task_id, "staff", 1, self.limits);
+        let x = self.cat.expand(task_id, definition, 1, self.limits);
         std::test::assert(x.ok, task_id + " expands: " + x.why);
         let r = j.append(j.revision(), "workflow.admitted", task_id, dna::encode_admission(dna::AdmittedWorkflow {
-            task_id: task_id, definition: "staff", revision: 1, request: "ask-" + task_id,
+            task_id: task_id, definition: definition, revision: 1, request: "ask-" + task_id,
             recipe: self.cat.encode_bound(), limits: self.limits, works: x.works, tasks: x.tasks, steps: x.steps, depth: x.depth
         }));
         std::test::assert(r.ok, task_id + " is admitted in the record: " + r.error);
@@ -200,6 +239,36 @@ main locus App {
             verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
             genome_seed: "app", org_seed: "org", planned: false, org_id: "cases"
+        };
+    }
+    // The same, planned, over a record where a retirement lands inside
+    // the first admission's exact append.
+    fn boot_retiring_org(repo: String) {
+        self.org = dna::Dna {
+            journal: Retiring { inner: dna::GitJournal { repo: repo } },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
+            genome_seed: "app", org_seed: "org", planned: true, org_id: "cases"
+        };
+    }
+    // An owner's assembly over the shared ledger (acme: alice; north:
+    // bob), planned by the leader, refusing the first row of one kind
+    // ("" refuses nothing).
+    fn boot_owner_org(repo: String, me: String, org_id: String, refuse_kind: String) {
+        self.org = dna::Dna {
+            journal: Refusing { inner: dna::GitJournal { repo: repo }, refuse_kind: refuse_kind, refused: len(refuse_kind) == 0 },
+            ownership: dna::Ownership { me: me, me_env: "", text: OWNERS },
+            gateway: dna::MutationGateway {
+                workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
+                repo: dna::LocalGit { repo: repo }
+            },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
+            genome_seed: "app", org_seed: "org", planned: true, org_id: org_id
         };
     }
     // A case's rows, in order: admission, born, handed — or where they are.
@@ -271,6 +340,7 @@ main locus App {
         std::test::assert_eq_int(self.rows(j, "case.admitted", ""), 2, "a later attempt of the Work is the same case: no second admission");
         std::test::assert_eq_int(self.rows(j, "case.admitted", "t1.s0.h1"), 1, "one admission row for it");
         std::test::assert_eq_int(self.rows(j, "task.handed", "t1.s0.h1"), 1, "and no second hand-off");
+        std::test::assert_eq_int(self.org.plans, 2, "a later attempt reuses the case without asking the leader again");
         // each case completes on its own, as the CLI reports it: the other
         // stays handed, the root stays open
         let done = j.append(j.revision(), "task.done", "t1.s0.h1", "{\"by\": \"mara\", \"note\": \"filed\"}");
@@ -326,7 +396,108 @@ main locus App {
         std::test::assert_eq_int(self.rows(j, "task.handed", "t4.s0.h1") + self.rows(j, "task.handed", "t4.s0.h2"), 2, "the restart completed the missing handed row");
         std::test::assert(self.well_ordered("t4.s0.h1") && self.well_ordered("t4.s0.h2"), "in order: " + self.order_of("t4.s0.h1") + " / " + self.order_of("t4.s0.h2"));
         std::test::assert_eq_int(self.rows(j, "task.resumed", "") + self.rows(j, "task.planned", ""), 0, "nothing resumed or planned");
-        std::test::assert_eq_int(self.rows(j, "case.admitted", ""), 8, "eight cases in all, one per human Work");
+        std::test::assert_eq_int(self.rows(j, "case.admitted", ""), 8, "eight cases so far, one per human Work");
+
+        // ---- t5: a refused handed row is held, not forgotten: the record
+        //      writable again (`RecordResumed`), the same assembly completes
+        //      it — no restart
+        self.boot_refusing_org(repo, "task.handed");
+        self.admit("t5");
+        self.ask("t5");
+        self.until_rows("case.admitted", "t5.s0.h2", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows(j, "task.handed", "t5.s0.h1") + self.rows(j, "task.handed", "t5.s0.h2"), 1, "one handed row was refused");
+        std::test::assert_eq_int(self.org.held_rows.len(), 1, "the case is held for the record's return");
+        dna::RecordResumed <- dna::RecordResume { scope: "cases" };
+        self.settle();
+        std::test::assert_eq_int(self.rows(j, "task.handed", "t5.s0.h1") + self.rows(j, "task.handed", "t5.s0.h2"), 2, "the record's return completed the held hand-off");
+        std::test::assert(self.well_ordered("t5.s0.h1") && self.well_ordered("t5.s0.h2"), "in order: " + self.order_of("t5.s0.h1") + " / " + self.order_of("t5.s0.h2"));
+        std::test::assert_eq_int(self.rows(j, "case.admitted", "t5.s0.h1") + self.rows(j, "case.admitted", "t5.s0.h2"), 2, "and admitted no second time");
+        // ---- t6: the same, driven by `redrive`
+        self.boot_refusing_org(repo, "task.handed");
+        self.admit("t6");
+        self.ask("t6");
+        self.until_rows("case.admitted", "t6.s0.h2", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows(j, "task.handed", "t6.s0.h1") + self.rows(j, "task.handed", "t6.s0.h2"), 1, "one handed row was refused");
+        let driven = self.org.redrive();
+        self.settle();
+        std::test::assert_eq_int(driven, 1, "one held hand-off was driven");
+        std::test::assert_eq_int(self.rows(j, "task.handed", "t6.s0.h1") + self.rows(j, "task.handed", "t6.s0.h2"), 2, "redrive completed the held hand-off without a restart");
+        std::test::assert_eq_int(self.org.redrive(), 0, "and nothing is held after");
+        // ---- t7: the terms bind from the reading the admission is exact
+        //      at: a retirement landing between the reading and the append
+        //      makes the append stale, and the case goes to the successor,
+        //      never to the person retired
+        self.boot_retiring_org(repo);
+        self.admit("t7");
+        self.ask("t7");
+        self.until_rows("task.handed", "t7.s0.h1", 1);
+        self.until_rows("task.handed", "t7.s0.h2", 1);
+        self.settle();
+        std::test::assert(self.at(j, "person.retired", "mara") < self.at(j, "case.admitted", "t7.s0.h1") && self.at(j, "person.retired", "mara") < self.at(j, "case.admitted", "t7.s0.h2"), "the retirement precedes both admissions");
+        let adm7 = self.body_of(j, "case.admitted", "t7.s0.h1");
+        std::test::assert_eq_str(std::json::find_string_field(adm7, "assignee") + "|" + std::json::find_string_field(adm7, "retired_assignee"), "dev|mara", "the stale admission decided again: the successor, for whom it was planned");
+        let adm7b = self.body_of(j, "case.admitted", "t7.s0.h2");
+        std::test::assert_eq_str(std::json::find_string_field(adm7b, "assignee") + "|" + std::json::find_string_field(adm7b, "retired_assignee"), "dev|mara", "the other case likewise");
+        std::test::assert(std::str::contains(self.body_of(j, "task.handed", "t7.s0.h1"), "\"assignee\": \"dev\""), "and the handed row names the successor");
+        std::test::assert_eq_int(self.rows(j, "case.admitted", "t7.s0.h1"), 1, "one admission, exact at the new reading");
+        // ---- t8: the rows say what the admission recorded. A case
+        //      planned for another owner's person is a transfer: its
+        //      `task.transfer_requested` refused, that owner's restart never
+        //      hands it, the origin's restart completes the offer, and it
+        //      is handed by the receiving owner once a member accepts
+        self.boot_owner_org(repo, "acme", "cases", "task.transfer_requested");
+        self.admit_of("acme:t8", "shared");
+        self.ask("acme:t8");
+        self.until_rows("case.admitted", "acme:t8.s0.h2", 1);
+        self.settle();
+        let adm8 = self.body_of(j, "case.admitted", "acme:t8.s0.h1");
+        std::test::assert_eq_str(std::json::find_string_field(adm8, "owner") + "|" + std::json::find_string_field(adm8, "to") + "|" + std::json::find_string_field(adm8, "assignee"), "acme|north|bob", "acme's admission, bound as a transfer to north for bob");
+        std::test::assert_eq_int(self.rows(j, "task.transfer_requested", "acme:t8.s0.h1"), 0, "the first offer was refused");
+        std::test::assert_eq_int(self.rows(j, "task.transfer_requested", "acme:t8.s0.h2"), 1, "the second landed");
+        std::test::assert_eq_int(self.rows(j, "task.handed", "acme:t8.s0.h1") + self.rows(j, "task.handed", "acme:t8.s0.h2"), 0, "nothing handed: a transfer is the receiving owner's to hand");
+        self.boot_owner_org(repo, "north", "north", "");
+        self.settle();
+        let n0 = self.org.admit_transfers();
+        self.settle();
+        std::test::assert_eq_int(n0, 0, "north has nothing accepted to hand");
+        std::test::assert_eq_int(self.rows(j, "task.handed", "acme:t8.s0.h1") + self.rows(j, "task.handed", "acme:t8.s0.h2"), 0, "another owner's restart must not hand a transfer before acceptance");
+        std::test::assert_eq_int(self.rows(j, "task.transfer_requested", "acme:t8.s0.h1"), 0, "nor complete the origin's offer");
+        self.boot_owner_org(repo, "acme", "cases", "");
+        self.settle();
+        std::test::assert_eq_int(self.rows(j, "task.transfer_requested", "acme:t8.s0.h1"), 1, "the origin's restart completed the offer");
+        let tr = self.body_of(j, "task.transfer_requested", "acme:t8.s0.h1");
+        std::test::assert_eq_str(std::json::find_string_field(tr, "owner") + "|" + std::json::find_string_field(tr, "to"), "acme|north", "as the admission recorded it");
+        std::test::assert_eq_int(self.rows(j, "task.handed", "acme:t8.s0.h1"), 0, "and still handed nothing");
+        let acc = j.append(j.revision(), "task.transfer_accepted", "acme:t8.s0.h1", "{\"owner\": \"north\", \"from\": \"acme\", \"by\": \"bob\", \"assignee\": \"bob\", \"note\": \"\"}");
+        std::test::assert(acc.ok, "bob accepts for north: " + acc.error);
+        self.boot_owner_org(repo, "north", "north", "");
+        self.settle();
+        let n1 = self.org.admit_transfers();
+        self.settle();
+        std::test::assert_eq_int(n1, 1, "north hands the accepted transfer");
+        let h8 = self.body_of(j, "task.handed", "acme:t8.s0.h1");
+        std::test::assert_eq_str(std::json::find_string_field(h8, "by") + "|" + std::json::find_string_field(h8, "transferred_from") + "|" + std::json::find_string_field(h8, "assignee"), "north|acme|bob", "in north's name, from acme, to bob");
+        self.boot_owner_org(repo, "acme", "cases", "");
+        self.settle();
+        std::test::assert_eq_int(self.rows(j, "task.handed", "acme:t8.s0.h1"), 1, "the origin's restart repeats nothing");
+        // ---- t9: a case awaiting the leader's word is not asked for
+        //      twice: the same attempt relayed again while the plan is
+        //      outstanding neither plans nor admits a second time
+        self.boot_org(repo, true);
+        self.admit("t9");
+        self.settle();
+        let plans9 = self.org.plans;
+        let req9 = dna::WorkRequest { task_id: "t9", work_id: "t9/wf1/s0/h1", step_id: "t9/wf1/s0", attempt_no: 0, objective: "file the receipts" };
+        dna::CaseRequested <- dna::CaseAsk { scope: "cases", attempt_id: "t9/wf1/s0/h1/a0", performer: "cases", request: req9 };
+        dna::CaseRequested <- dna::CaseAsk { scope: "cases", attempt_id: "t9/wf1/s0/h1/a0", performer: "cases", request: req9 };
+        self.until_rows("task.handed", "t9.s0.h1", 1);
+        self.settle();
+        std::test::assert_eq_int(self.rows(j, "case.admitted", "t9.s0.h1"), 1, "one case");
+        std::test::assert_eq_int(self.org.plans, plans9 + 1, "the leader was asked once while the plan was outstanding");
+        std::test::assert_eq_int(self.rows(j, "task.handed", "t9.s0.h1"), 1, "handed once");
+        std::test::assert_eq_int(self.rows(j, "case.admitted", ""), 17, "seventeen cases in all, one per human Work");
 
         std::test::assert(self.boot.rt.journal.verify_chain(), "the record's chain holds");
         let rm = sh("rm\n-rf\n" + repo);

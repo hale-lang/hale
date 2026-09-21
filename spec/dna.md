@@ -778,7 +778,7 @@ record's.
 | `task.born` | ledger | the work an intent or a settled review made |
 | `task.planned` | ledger | the plan the Task will be worked under; with the `binding` of the Work and attempt that asked, and their request as asked (card 14) |
 | `task.handed` | ledger | handed to a person: assignee, obligation, acceptance |
-| `case.admitted` | ledger | a human Work's case, its own handed Task (card 16): parent Task, Work and attempt, objective, assignee, obligation, acceptance, required evidence — before its `task.born` / `task.handed` |
+| `case.admitted` | ledger | a human Work's case, its own handed Task (card 16): parent Task, Work and attempt, objective, assignee, obligation, acceptance, required evidence, its origin (`owner`) and disposition (`to`) — before its `task.born` / `task.handed`, which say what it recorded |
 | `task.reassigned` | ledger | the assignment moved to someone else |
 | `task.resumed` | ledger | re-entered after a restart, under the plan already recorded |
 | `task.<state>` | ledger | every other state a Task passes through, to `done` or `failed` |
@@ -1591,15 +1591,35 @@ who and under what obligation; without one the case is unassigned. A
 retired assignee's successor, a transfer to another owner, and
 reassignment keep their semantics.
 
+What the leader proposed — whom, under what obligation — is one
+thing; what binds is decided from the reading the admission is exact
+at: who is admissible now (a retired person's successor), which
+acceptance practice is in force now, whose the assignee is. A reading
+gone stale under the append repeats the decision, not only the
+write, so a retirement that landed between sends the case to the
+successor, never to the person retired. The admission names its
+origin (`owner`) and its disposition (`to`: the owner whose person
+takes it, empty for the origin's own), and the compatibility rows say
+what the admission recorded, never what the body writing them is.
+
 The hand-off settles nothing: the parent Work stays pending, and the
 root is neither closed nor marked by it. Two human Works in one step
 are two cases, each completable on its own. An attempt asked again —
-a redelivery after a restart — finds the case admitted for it and
-admits no second. A restart that fell between the admission and
-either compatibility row completes them from the admission, in that
-order, and never plans, resumes or pends a case as edit work: a case
-is a person's, never an executable root, never legacy edit work. An
-admission the record refuses holds the attempt for `redrive`.
+a redelivery after a restart, a later attempt of the same Work —
+finds the case by its stable identity and admits no second, and asks
+the leader nothing: the terms bound at admission stand, and a case
+already awaiting the leader's word is not asked for twice. A restart
+that fell between the admission and either compatibility row
+completes them from the admission, in that order, and never plans,
+resumes or pends a case as edit work: a case is a person's, never an
+executable root, never legacy edit work. Only the recorded owner
+completes them: a transfer to another owner is theirs to hand once a
+member of theirs accepts it (`task.transfer_accepted`, as a job's
+today), and another owner's restart neither hands it nor completes
+the offer. An admission the record refuses holds the attempt for
+`redrive`; a compatibility row the record refuses holds the case,
+completed when the record resumes or on `redrive` without a restart,
+and the hand-off is announced only once it is durable.
 
 ## Storage interfaces
 
