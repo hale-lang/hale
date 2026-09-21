@@ -1675,9 +1675,10 @@ exceptions, reported decisions) is unchanged.
 
 What the sections above promise is held, as one oracle, by
 `dna/tests/workflow_conformance_test.hl` over the canonical three-level
-example (`dna/WORKFLOW-CONTRACT.md` §6), in every supported mode. A
-review traces each promise to it; what it does not cover is not
-promised.
+example (`dna/WORKFLOW-CONTRACT.md` §6), in every supported mode, with
+a unix listen binding declared so every publish is queued as in a
+bound organism. A review traces each promise to it; what it does not
+cover is not promised.
 
 **Delivery.** A leaf's attempt is admitted, claimed and delivered to
 its performer once per claim. A performer answers at once or later;

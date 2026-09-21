@@ -87,6 +87,9 @@ main locus App {
     params {
         one: dna::Dna = dna::Dna { runs_engine: false };
     }
+    // the bound organism's bus configuration: a listen binding makes
+    // every publish queued (F.15)
+    bindings { dna::IntentOffered: unix("/tmp/hale-dna.conformance-runner.intent.sock", role: listen); }
     @unbounded
     fn root_settled() -> String {
         let mut i = 0;
