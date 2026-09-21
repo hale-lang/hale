@@ -669,15 +669,22 @@ pub struct DebugSourceFile {
 /// The compilation backend. `Native` is the host ELF/Mach-O path
 /// (LLVM host triple + clang link against the POSIX lotus runtime).
 /// `Wasm32` targets `wasm32-unknown-unknown` for the browser/full-stack
-/// web initiative (WASM plan). At this stage the wasm path emits the
-/// relocatable wasm OBJECT and stops before linking — the runtime core
-/// is ported under `#ifdef __wasm__` in a following step, after which
-/// the link is completed by `wasm-ld`.
+/// web initiative (WASM plan); it compiles its own freestanding runtime
+/// and links with `wasm-ld`, so it builds the same from every host.
+///
+/// `Foreign` is a native triple that is not the host (GH #970). It takes
+/// the path wasm took first: the target's own LLVM backend and triple, a
+/// generic CPU, and a relocatable object — the build stops before the
+/// link, which needs the lotus runtime and the target's system libraries
+/// built for that target. Only a `TargetSpec` whose `support_from(host)`
+/// is `ForeignHost` belongs here; the host itself is `Native`, whose
+/// module keeps LLVM's exact host triple.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompileTarget {
     #[default]
     Native,
     Wasm32,
+    Foreign(crate::target::TargetSpec),
 }
 
 impl CompileTarget {
@@ -685,9 +692,8 @@ impl CompileTarget {
     ///
     /// `Native` means "the host", which is why every platform question
     /// used to be answerable with `cfg!(target_os = ...)`. Routing those
-    /// questions through a [`TargetSpec`] is behaviour-preserving today
-    /// precisely because of that equivalence — and stops being a lie the
-    /// moment a target that is not the host exists (GH #445).
+    /// questions through a [`TargetSpec`] is what keeps them right for
+    /// `Foreign`, where the two stop agreeing (GH #445, #970).
     pub fn spec(self) -> crate::target::TargetSpec {
         match self {
             CompileTarget::Native => crate::target::TargetSpec::host(),
@@ -695,7 +701,14 @@ impl CompileTarget {
                 "wasm32-unknown-unknown",
             )
             .expect("wasm32 is a known triple"),
+            CompileTarget::Foreign(spec) => spec,
         }
+    }
+
+    /// Whether the build ends at a relocatable object for a native
+    /// target this host cannot link for.
+    pub fn is_foreign(self) -> bool {
+        matches!(self, CompileTarget::Foreign(_))
     }
 }
 
@@ -847,12 +860,35 @@ fn compile_cached_runtime_object(
     stem: &str,
     cflags: &[String],
 ) -> Result<PathBuf, CodegenError> {
+    compile_cached_runtime_object_with(&["clang".to_string()], "", source, stem, cflags)
+}
+
+/// [`compile_cached_runtime_object`] with the C compiler spelled out:
+/// `cc[0]` is the program and the rest its leading arguments (`zig cc
+/// -target aarch64-linux-gnu.2.31` for a cross build, GH #970), and
+/// `cc_version` what it reports itself as. Both are part of the cache
+/// key — the same source and flags through a different compiler, or a
+/// different release of one, is a different object, and one for a
+/// different machine when the compiler targets one.
+fn compile_cached_runtime_object_with(
+    cc: &[String],
+    cc_version: &str,
+    source: &str,
+    stem: &str,
+    cflags: &[String],
+) -> Result<PathBuf, CodegenError> {
     use std::hash::{Hash, Hasher};
     // Bump to invalidate every cached object (e.g. if the compile
     // invocation shape changes in a way the flags don't capture).
     const RT_CACHE_VERSION: u64 = 1;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RT_CACHE_VERSION.hash(&mut h);
+    // The host `clang` hashes as it always has, so every cached object
+    // on disk stays valid; only another compiler changes the key.
+    if cc.len() != 1 || cc[0] != "clang" {
+        cc.hash(&mut h);
+        cc_version.hash(&mut h);
+    }
     source.hash(&mut h);
     for f in cflags {
         f.hash(&mut h);
@@ -885,7 +921,8 @@ fn compile_cached_runtime_object(
         CodegenError::Link(format!("write runtime {stem} C: {e}"))
     })?;
     let obj_tmp = dir.join(format!("lotus-rt-{stem}-{key:016x}.{pid}.{nonce}.o"));
-    let status = Command::new("clang")
+    let status = Command::new(&cc[0])
+        .args(&cc[1..])
         .arg("-c")
         .args(cflags)
         .arg(&src_tmp)
@@ -893,13 +930,14 @@ fn compile_cached_runtime_object(
         .arg(&obj_tmp)
         .status()
         .map_err(|e| {
-            CodegenError::Link(format!("clang -c runtime {stem}: {e}"))
+            CodegenError::Link(format!("{} -c runtime {stem}: {e}", cc[0]))
         })?;
     let _ = std::fs::remove_file(&src_tmp);
     if !status.success() {
         let _ = std::fs::remove_file(&obj_tmp);
         return Err(CodegenError::Link(format!(
-            "clang failed compiling runtime {stem}: {status}"
+            "{} failed compiling runtime {stem}: {status}",
+            cc.join(" ")
         )));
     }
     // Rename is atomic within one filesystem; if a concurrent build
@@ -1013,10 +1051,21 @@ pub fn build_executable_with_options(
     // agree today (Native == host) and the answers are unchanged; the
     // point is that they stop agreeing safely. See GH #445.
     let target_spec = options.target.spec();
+    // GH #970: a foreign native target has no business with the
+    // host's backend — initialize the target's own architecture, as
+    // wasm always has.
+    let is_foreign = options.target.is_foreign();
     if is_wasm {
         // Register the WebAssembly backend (the native path only
         // initializes the host target).
         Target::initialize_webassembly(&InitializationConfig::default());
+    } else if is_foreign {
+        let cfg = InitializationConfig::default();
+        match target_spec.arch {
+            crate::target::TargetArch::X86_64 => Target::initialize_x86(&cfg),
+            crate::target::TargetArch::Aarch64 => Target::initialize_aarch64(&cfg),
+            crate::target::TargetArch::Wasm32 => Target::initialize_webassembly(&cfg),
+        }
     } else {
         Target::initialize_native(&InitializationConfig::default())
             .map_err(|e| CodegenError::LlvmInit(e.to_string()))?;
@@ -1354,8 +1403,13 @@ pub fn build_executable_with_options(
     // offset 32 (i128 aligned to 16). Writes to the third field
     // landed past the allocation. Set the layout now so every
     // sizeof / GEP downstream agrees.
+    // `Native` keeps LLVM's exact host triple (on Darwin it carries the
+    // OS version, which sets the object's minimum deployment target);
+    // every other target is stamped with its own canonical triple.
     let triple = if is_wasm {
         TargetTriple::create("wasm32-unknown-unknown")
+    } else if is_foreign {
+        TargetTriple::create(target_spec.triple)
     } else {
         TargetMachine::get_default_triple()
     };
@@ -1366,16 +1420,22 @@ pub fn build_executable_with_options(
     // by default (best perf) or pins a portable x86-64-v3 baseline, and
     // runs the aggressive (O3) codegen pipeline. The host-CPU LLVMStrings
     // are bound to owned Strings first so they outlive the FFI call.
+    // A foreign target never takes the host's CPU (GH #970): the host's
+    // name and features describe a different machine, possibly a
+    // different architecture. It is generic unless x86-64-v3 is pinned.
     let (cpu, features): (String, String) = if is_wasm {
         ("generic".to_string(), String::new())
     } else {
         match options.target_cpu {
+            TargetCpu::Native if is_foreign => {
+                ("generic".to_string(), String::new())
+            }
             TargetCpu::Native => (
                 TargetMachine::get_host_cpu_name().to_string(),
                 TargetMachine::get_host_cpu_features().to_string(),
             ),
             TargetCpu::X86_64V3 => {
-                if cfg!(target_arch = "x86_64") {
+                if target_spec.arch == crate::target::TargetArch::X86_64 {
                     ("x86-64-v3".to_string(), String::new())
                 } else {
                     ("generic".to_string(), String::new())
@@ -1797,7 +1857,19 @@ pub fn build_executable_with_options(
     // 20-pinned-core, is nondeterministic against itself).
     let requested_lto = options.lto.unwrap_or_else(lto_mode);
     let sanitized = lotus_tsan || lotus_ubsan || lotus_asan;
-    let lto_kind = if is_wasm || sanitized {
+    // A sanitizer runtime is the host's; the Hale module above was
+    // already instrumented for one, so a cross build under a sanitizer
+    // is refused rather than linked against nothing.
+    if sanitized && is_foreign {
+        return Err(CodegenError::Link(format!(
+            "sanitizers (LOTUS_ASAN / LOTUS_TSAN / LOTUS_UBSAN) are \
+             host-only: `{}` is not this host's platform",
+            target_spec.triple
+        )));
+    }
+    // A foreign target stops at its object; there is no link for LTO to
+    // run in.
+    let lto_kind = if is_wasm || is_foreign || sanitized {
         LtoMode::Off
     } else {
         requested_lto
@@ -1982,6 +2054,44 @@ pub fn build_executable_with_options(
         obj_path.clone()
     };
 
+    let prefetch_disabled = env_flag("LOTUS_DISABLE_PREFETCH");
+    // GH #970: a foreign native target ends here, at a relocatable
+    // object for its own triple — the stage wasm stood at before its
+    // runtime was ported. Everything below compiles the lotus runtime
+    // with the host's `clang` and links against the host's system
+    // libraries, which would yield a host binary under the target's name
+    // (GH #969). Linking for the target is the next step of #970.
+    if is_foreign {
+        let host = crate::target::TargetSpec::host();
+        if target_spec.links_from(&host) {
+            // GH #970: a Linux gnu target is linked here, through zig
+            // and a target sysroot.
+            let linked = link_cross(
+                &target_spec,
+                &obj_path,
+                output_path,
+                &cx.module,
+                cx.ts_call_span,
+                options,
+                prefetch_disabled,
+            );
+            phase("emit+link", &mut t_last);
+            // The object is the build's own intermediate either way —
+            // a failed link must not leave it looking like a result.
+            let _ = std::fs::remove_file(&obj_path);
+            return linked;
+        }
+        if obj_path != output_path {
+            std::fs::rename(&obj_path, output_path).map_err(|e| {
+                CodegenError::LlvmEmit(format!(
+                    "move object to {}: {e}",
+                    output_path.display()
+                ))
+            })?;
+        }
+        return Ok(());
+    }
+
     if is_wasm {
         // Compile the self-contained wasm runtime (arena core + bundled
         // libc) and link it into the user object with wasm-ld, producing
@@ -2005,7 +2115,6 @@ pub fn build_executable_with_options(
     // prefetch / source change yields a fresh object.
     // lotus_tsan / lotus_asan / lotus_ubsan / lotus_lto were read above
     // (they gate the Hale-module emit format).
-    let prefetch_disabled = env_flag("LOTUS_DISABLE_PREFETCH");
     let mut rt_cflags: Vec<String> = Vec::new();
     // 2026-07-01 debug story stage 1: the runtime TUs always carry
     // DWARF (-g). It costs zero runtime speed (debug sections aren't
@@ -2113,7 +2222,7 @@ pub fn build_executable_with_options(
             match options.target_cpu {
                 TargetCpu::Native => rt_cflags.push("-march=native".into()),
                 TargetCpu::X86_64V3 => {
-                    if cfg!(target_arch = "x86_64") {
+                    if target_spec.arch == crate::target::TargetArch::X86_64 {
                         rt_cflags.push("-march=x86-64-v3".into());
                     }
                 }
@@ -2461,6 +2570,240 @@ const RUNTIME_WASM_POSIX_H: &str =
 /// install only the versioned binaries — e.g. `wasm-ld-18` with no bare
 /// `wasm-ld` — so the fallback keeps the wasm build working wherever
 /// LLVM 18 is present, regardless of naming.
+/// The C compiler a cross build compiles and links with (GH #970):
+/// `zig cc -target <zig triple>.<glibc>`. zig ships a libc for every
+/// Linux target, so no sysroot has to carry one, and its own lld links
+/// ELF from any host. `HALE_ZIG` names the binary when it is not on
+/// PATH; `HALE_TARGET_GLIBC` picks the glibc the emitted binary asks
+/// for, default 2.31 — old enough for the LTS distributions in service,
+/// and the same pin `scripts/target-sysroot.sh` uses.
+fn cross_cc(
+    target: &crate::target::TargetSpec,
+) -> Result<(Vec<String>, String), CodegenError> {
+    let zig_target = target.zig_target().ok_or_else(|| {
+        CodegenError::Link(format!(
+            "no cross toolchain for `{}` here",
+            target.triple
+        ))
+    })?;
+    let zig = std::env::var("HALE_ZIG")
+        .ok()
+        .filter(|z| !z.is_empty())
+        .unwrap_or_else(|| "zig".to_string());
+    let version = Command::new(&zig)
+        .arg("version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let Some(version) = version else {
+        return Err(CodegenError::Link(format!(
+            "building for `{}` from this host links with `zig cc`, and \
+             `{}` is not on PATH — install zig (brew install zig, or \
+             https://ziglang.org/download) or set HALE_ZIG to it",
+            target.triple, zig
+        )));
+    };
+    let glibc = std::env::var("HALE_TARGET_GLIBC")
+        .ok()
+        .filter(|g| !g.is_empty())
+        .unwrap_or_else(|| "2.31".to_string());
+    Ok((
+        vec![
+            zig,
+            "cc".to_string(),
+            "-target".to_string(),
+            format!("{zig_target}.{glibc}"),
+        ],
+        version,
+    ))
+}
+
+/// Where a cross build finds what lies beyond libc for its target:
+/// OpenSSL and zlib headers and static archives, and the tree-sitter
+/// shim, as `scripts/target-sysroot.sh` lays them out. `HALE_TARGET_SYSROOT`
+/// names one explicitly; otherwise `<cache>/hale/sysroot/<triple>`,
+/// beside the runtime object cache.
+fn target_sysroot(target: &crate::target::TargetSpec) -> Result<PathBuf, CodegenError> {
+    let explicit = std::env::var("HALE_TARGET_SYSROOT")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from);
+    let dir = explicit.clone().unwrap_or_else(|| {
+        runtime_cache_dir()
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("sysroot")
+            .join(target.triple)
+    });
+    let ssl_h = dir.join("include").join("openssl").join("ssl.h");
+    let ssl_a = dir.join("lib").join("libssl.a");
+    if ssl_h.exists() && ssl_a.exists() {
+        return Ok(dir);
+    }
+    Err(CodegenError::Link(format!(
+        "building for `{}` needs a target sysroot with OpenSSL and zlib \
+         built for it, and {} has none ({}).\n  Make one with \
+         `scripts/target-sysroot.sh {}` (builds both with zig), or point \
+         HALE_TARGET_SYSROOT at a directory holding include/openssl, \
+         include/zlib.h and lib/{{libssl,libcrypto,libz}}.a",
+        target.triple,
+        dir.display(),
+        if explicit.is_some() {
+            "HALE_TARGET_SYSROOT"
+        } else {
+            "the default location; set HALE_TARGET_SYSROOT for another"
+        },
+        target.triple,
+    )))
+}
+
+/// The tree-sitter shim built for `target`, if any: `HALE_TS_SHIM_A`,
+/// the sysroot's `lib/`, or the workspace's `target/<triple>/release`
+/// where `cargo build --target` leaves it.
+fn locate_cross_ts_shim(
+    target: &crate::target::TargetSpec,
+    sysroot: &Path,
+) -> Option<PathBuf> {
+    if env_flag("HALE_NO_TS_SHIM") {
+        return None;
+    }
+    if let Ok(p) = std::env::var("HALE_TS_SHIM_A") {
+        let pb = PathBuf::from(p);
+        if pb.exists() {
+            return Some(pb);
+        }
+    }
+    let in_sysroot = sysroot.join("lib").join("libhale_ts_shim.a");
+    if in_sysroot.exists() {
+        return Some(in_sysroot);
+    }
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest.parent()?.parent()?;
+    for profile in ["release", "debug"] {
+        let p = workspace
+            .join("target")
+            .join(target.triple)
+            .join(profile)
+            .join("libhale_ts_shim.a");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// GH #970: link `user_obj` — already emitted for `target` — into an
+/// executable for `target`, from a host that is not it.
+///
+/// The shape is the native link's with the host taken out: the same
+/// five runtime translation units, compiled by `zig cc -target` instead
+/// of the host `clang` (content-addressed under that compiler, so a
+/// second build for the same target just links); OpenSSL and zlib as
+/// the sysroot's static archives, so the emitted binary depends on
+/// nothing but the target's glibc; the tree-sitter shim when one built
+/// for the target is at hand. What the native link does for the host's
+/// sake is left out: `-march`, the `--wrap` shims and `-rdynamic`
+/// (glibc-only diagnostics; inert without them), lld detection (zig's
+/// linker IS lld), LTO and sanitizers (refused earlier).
+fn link_cross(
+    target: &crate::target::TargetSpec,
+    user_obj: &Path,
+    output: &Path,
+    module: &inkwell::module::Module<'_>,
+    ts_call_span: Option<hale_syntax::Span>,
+    options: &BuildOptions,
+    prefetch_disabled: bool,
+) -> Result<(), CodegenError> {
+    let (cc, cc_version) = cross_cc(target)?;
+    let sysroot = target_sysroot(target)?;
+
+    let mut rt_cflags: Vec<String> = vec!["-g".into()];
+    if !env_flag("HALE_CC_WARNINGS") {
+        rt_cflags.push("-w".into());
+    }
+    rt_cflags.push("-O2".into());
+    if options.target_cpu == TargetCpu::X86_64V3
+        && target.arch == crate::target::TargetArch::X86_64
+    {
+        rt_cflags.push("-march=x86-64-v3".into());
+    }
+    rt_cflags.push(format!("-I{}", sysroot.join("include").display()));
+    if prefetch_disabled {
+        rt_cflags.push("-DLOTUS_DISABLE_PREFETCH=1".into());
+    }
+    let mut rt_objs = Vec::new();
+    for (source, stem) in [
+        (RUNTIME_C_SOURCE, "arena"),
+        (RUNTIME_TLS_C_SOURCE, "tls"),
+        (RUNTIME_SHM_RING_C_SOURCE, "shm_ring"),
+        (RUNTIME_COMPRESS_C_SOURCE, "compress"),
+        (RUNTIME_OBS_C_SOURCE, "obs"),
+    ] {
+        rt_objs.push(compile_cached_runtime_object_with(
+            &cc, &cc_version, source, stem, &rt_cflags,
+        )?);
+    }
+
+    let ts_shim = locate_cross_ts_shim(target, &sysroot);
+    if ts_shim.is_none() && module_references_ts_shim(module) {
+        return Err(CodegenError::MissingTsShim(
+            format!(
+                "this program uses `std::ts::*`, which needs the \
+                 tree-sitter shim staticlib `libhale_ts_shim.a` built \
+                 for {}; none was found under `HALE_TS_SHIM_A`, in the \
+                 target sysroot ({}) or under the workspace's \
+                 target/{}/. `scripts/target-sysroot.sh {}` builds it \
+                 from a checkout once `rustup target add {}` is done",
+                target.triple,
+                sysroot.join("lib").display(),
+                target.triple,
+                target.triple,
+                target.triple,
+            ),
+            ts_call_span,
+        ));
+    }
+
+    let mut cmd = Command::new(&cc[0]);
+    cmd.args(&cc[1..]).arg(user_obj).args(&rt_objs);
+    if target.needs_librt() {
+        cmd.arg("-lrt");
+    }
+    cmd.arg("-lpthread");
+    let lib = sysroot.join("lib");
+    cmd.arg(lib.join("libssl.a"))
+        .arg(lib.join("libcrypto.a"))
+        .arg(lib.join("libz.a"));
+    if let Some(p) = ts_shim.as_ref() {
+        cmd.arg(p);
+        // Rust's std unwinds through libunwind; zig builds its own.
+        cmd.arg("-lunwind");
+    }
+    cmd.arg("-ldl").arg("-lm");
+    for csrc in &options.csrc_files {
+        cmd.arg(csrc);
+    }
+    for l in &options.link_libs {
+        cmd.arg(format!("-l{l}"));
+    }
+    cmd.arg(format!("-L{}", lib.display()));
+    let status = cmd
+        .arg("-o")
+        .arg(output)
+        .status()
+        .map_err(|e| CodegenError::Link(format!("{} invocation: {e}", cc[0])))?;
+    if !status.success() {
+        return Err(CodegenError::Link(format!(
+            "{} exited with {status} linking for {}",
+            cc.join(" "),
+            target.triple
+        )));
+    }
+    Ok(())
+}
+
 fn resolve_tool(base: &str) -> String {
     for cand in [base.to_string(), format!("{base}-18")] {
         if Command::new(&cand).arg("--version").output().is_ok() {

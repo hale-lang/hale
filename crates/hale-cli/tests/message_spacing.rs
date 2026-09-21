@@ -113,7 +113,7 @@ const ALIGNED: &[(&str, &str, &str)] = &[
     ),
     (
         "crates/hale-codegen/src/target.rs",
-        "describe",
+        "describe_from",
         "the target description's aligned `arch: … os: …` columns",
     ),
     (

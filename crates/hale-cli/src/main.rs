@@ -123,7 +123,7 @@ fn main() -> ExitCode {
             } else {
                 ""
             };
-            println!("{}{}\n", t.describe(), marker);
+            println!("{}{}\n", t.describe_from(&host), marker);
         }
         return ExitCode::SUCCESS;
     }
@@ -8436,8 +8436,18 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // ships — a downstream fleet gates on `build` across 109 binaries,
     // and "it built" must not be weaker than "it checked" on a
     // contract the compiler already knows how to evaluate.
+    // Options first: the check answers target questions (GH #970), so
+    // it has to know the target.
+    let mut options = match parse_build_options("build", flags) {
+        Ok(o) => o,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            return ExitCode::from(2);
+        }
+    };
     let mut bundle = hale_types::Bundle::new(bundle_programs);
     bundle.import_renames = renames.clone();
+    bundle.target_has_async_io = options.target.spec().has_async_io();
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
     let diags = hale_types::check_bundle_opts_whole_program(&bundle, allow_unowned);
@@ -8450,13 +8460,6 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     }
-    let mut options = match parse_build_options("build", flags) {
-        Ok(o) => o,
-        Err(msg) => {
-            eprintln!("{}", msg);
-            return ExitCode::from(2);
-        }
-    };
     // P26: stamp the model identity of the bundle just checked into
     // the binary, for the observation segment header.
     options.model_hash =
@@ -8473,7 +8476,15 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     // Output naming is a property of the target, not a special case
     // spelled at this one call site (GH #445).
     let output = {
-        let ext = options.target.spec().filenames().executable;
+        // A foreign native target with no cross toolchain here ends at
+        // its relocatable object (GH #970), so it is named as one.
+        let spec = options.target.spec();
+        let names = spec.filenames();
+        let ext = if spec.links_from(&hale_codegen::target::TargetSpec::host()) {
+            names.executable
+        } else {
+            names.object
+        };
         if ext.is_empty() {
             output
         } else {
@@ -8642,6 +8653,16 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     ) {
         Ok(()) => {
             eprintln!("built: {}", output.display());
+            if let hale_codegen::CompileTarget::Foreign(spec) = options.target {
+                if !spec.links_from(&hale_codegen::target::TargetSpec::host()) {
+                    eprintln!(
+                        "note: a relocatable object for {}, not an executable — \
+                         this host has no toolchain to link for that platform \
+                         (GH #970)",
+                        spec.triple
+                    );
+                }
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -8860,19 +8881,31 @@ fn parse_build_options(
                 // failing later inside the linker (GH #445).
                 let spec = hale_codegen::target::TargetSpec::parse(v)
                     .map_err(|e| format!("--target: {}", e))?;
-                if spec.support()
-                    == hale_codegen::target::TargetSupport::Planned
-                {
-                    return Err(format!(
-                        "--target: `{}` is not buildable yet\n\n{}\n\n\
-                         The target model knows this platform; the codegen \
-                         and runtime for it do not exist yet. Track GH #445.",
-                        spec.triple,
-                        spec.describe(),
-                    ));
+                let host = hale_codegen::target::TargetSpec::host();
+                match spec.support_from(&host) {
+                    hale_codegen::target::TargetSupport::Planned => {
+                        return Err(format!(
+                            "--target: `{}` is not buildable yet\n\n{}\n\n\
+                             The target model knows this platform; the codegen \
+                             and runtime for it do not exist yet. Track GH #445.",
+                            spec.triple,
+                            spec.describe_from(&host),
+                        ));
+                    }
+                    hale_codegen::target::TargetSupport::Cross
+                    | hale_codegen::target::TargetSupport::ForeignHost
+                    | hale_codegen::target::TargetSupport::Supported
+                    | hale_codegen::target::TargetSupport::ObjectOnly => {}
                 }
+                // GH #969: a native triple that is not the host must not
+                // become `Native`, which IS the host — that built a host
+                // binary under the target's name. It is its own target
+                // (GH #970): linked through zig where the target has a
+                // cross toolchain here, emitted as an object otherwise.
                 opts.target = if spec.is_wasm() {
                     hale_codegen::CompileTarget::Wasm32
+                } else if spec.triple != host.triple {
+                    hale_codegen::CompileTarget::Foreign(spec)
                 } else {
                     hale_codegen::CompileTarget::Native
                 };
@@ -8960,6 +8993,14 @@ fn parse_exec_build_options(
             "hale {cmd}: --target wasm32 emits an artifact this host \
              cannot execute — build it with `hale build --target \
              wasm32` and run it in a host that can"
+        ));
+    }
+    if let hale_codegen::CompileTarget::Foreign(spec) = opts.target {
+        return Err(format!(
+            "hale {cmd}: --target {} is not this host's platform, so \
+             nothing it builds can run here — build it with `hale build \
+             --target {}` and run it where it belongs",
+            spec.triple, spec.triple,
         ));
     }
     Ok(opts)

@@ -59,6 +59,105 @@ behavior.
   Git/HTTP/OIDC tests written in Hale cover the boundary. Commands, Compose
   packaging and the browser cockpit remain subsequent work; see
   [`dna/api/README.md`](dna/api/README.md).
+### Cross-compile for Linux from a Mac: `--target <linux triple>` links (GH #970, second step)
+
+A Linux gnu triple from any other host — `--target x86_64-unknown-linux-gnu`
+or `aarch64-unknown-linux-gnu` on a Mac, the other architecture on Linux —
+now builds an executable, not an object. The shape is the native link's
+with the host taken out.
+
+- **`zig cc` is the cross C toolchain.** It carries a libc for every Linux
+  target, and its linker is lld, so the runtime is compiled and the program
+  linked with `zig cc -target <arch>-linux-gnu.2.31` from wherever the
+  compiler runs. zig on PATH or `HALE_ZIG`; the glibc floor is 2.31
+  (`HALE_TARGET_GLIBC` overrides) — old enough for the LTS distributions in
+  service. `TargetSupport::Cross` names this tier; `--list-targets` reads
+  `cross from this host: builds and links with zig and a target sysroot`.
+- **A target sysroot supplies what lies beyond libc**: OpenSSL and zlib as
+  static archives, and the tree-sitter shim. `scripts/target-sysroot.sh
+  <triple>` builds one under `<cache>/hale/sysroot/<triple>` from pinned
+  source tarballs (OpenSSL 3.5 LTS, zlib 1.3), compiled with zig against
+  the same glibc floor, and cross-builds `libhale_ts_shim.a` from a
+  checkout; `HALE_TARGET_SYSROOT` names one kept elsewhere. From source
+  because a distribution's archives are compiled against its own glibc —
+  Ubuntu 24.04's libcrypto reaches for `__isoc23_strtol`, which 2.31 has
+  not got — so they either fail to link at the floor or drag it up to a
+  glibc the deployment machines lack. Static, so the emitted binary depends
+  on the target's glibc alone — a Mac cannot install a Linux libssl, and the
+  program has to run on a machine that never saw the sysroot.
+- **The runtime's AVX2 dispatch asks CPUID and XGETBV directly** instead
+  of `__builtin_cpu_supports`: the builtin reaches for libgcc's
+  `__cpu_model`, which zig's compiler-rt does not carry, and an x86-64
+  Linux binary linked from a Mac failed on that one symbol. Same tiers,
+  no support library.
+- **The runtime object cache is keyed by the compiler and its version**,
+  so an object `zig cc -target aarch64-linux-gnu` produced never serves a
+  build for another machine; the host `clang` keys as it always did, so
+  no cached object on disk is invalidated.
+- **CI runs a cross binary.** A `cross` job builds the sysroot the way a
+  user would (cached on its inputs), cross-compiles a cooperative-pool +
+  bus program for aarch64 on the x86_64 runner and runs it under
+  qemu-user-static; the macOS workflow does the Mac→Linux half up to the
+  ELF header.
+- **What is missing is named before the link.** No zig: the error says
+  so and how to install it. No sysroot: the error names the script and the
+  layout it expects. `std::ts` with no shim for the target: the GH #808
+  error, for the target. Sanitizers are host-only and refused for a cross
+  build; LTO is off for one.
+- A Darwin triple from anywhere else stays object-only: there is no Apple
+  SDK to link against off a Mac.
+
+Measured on an Apple Silicon Mac: 4.3 s for the first
+`aarch64-unknown-linux-gnu` build (the runtime compiles once per target),
+0.13 s after; the binary runs on arm64 Ubuntu 22.04 with `ldd` showing
+libc, libpthread, libdl and librt.
+
+### A foreign native triple is a cross target, emitted as an object (GH #970, first step)
+
+The refusal below was the stopgap; this is the target model doing what
+it was built for. `--target x86_64-unknown-linux-gnu` on a Mac now takes
+the path `wasm32` took first: codegen initializes the target's own LLVM
+backend, stamps the module with the target's triple, tunes for a generic
+CPU (never the host's — a different machine, possibly a different
+architecture), and emits a relocatable object for the target's format.
+The build ends there, at `<stem>.o`, with a note: linking needs the lotus
+runtime and system libraries built for the target, the open half of
+GH #970.
+
+- `CompileTarget::Foreign(TargetSpec)` beside `Native` and `Wasm32`.
+  `Native` keeps LLVM's exact host triple; `Foreign` carries the
+  canonical one. `--list-targets` reads `cross, object-only from this
+  host` for such a triple.
+- `hale run` / `hale test` refuse a foreign target, as they refuse
+  `wasm32`: nothing it builds can run here.
+- `where async_io` is judged against the TARGET. The check asked
+  `cfg!(target_os = "macos")` — the host — so a Mac refused an `async_io`
+  pool bound for Linux, and a Linux host accepted one bound for macOS,
+  whose runtime has no such backend. `Bundle::target_has_async_io`
+  carries the target's answer (`TargetSpec::has_async_io`); `hale build`
+  parses its options before the check so the check knows the target.
+  A build that names no target is unchanged: the host is the target.
+- `--target-cpu baseline` asks the target's architecture, not the
+  host's, whether `x86-64-v3` applies.
+
+### `--target` refuses another host's triple instead of building the host (GH #969)
+
+`hale build --target aarch64-unknown-linux-gnu` on a Mac printed
+`built:` and wrote a Mach-O binary. Every native triple the target model
+named was turned into `CompileTarget::Native`, which is the host, so a
+foreign one was silently dropped; `hale --list-targets` listed it as
+`supported: builds and links` besides.
+
+- A native triple that is not the host's is now refused at argument
+  parsing, naming both triples: `` --target: `aarch64-unknown-linux-gnu`
+  is not buildable from this host (aarch64-apple-darwin) ``, pointing at
+  GH #970, which tracks real cross-compilation.
+- `--list-targets` answers from the host: a foreign native triple reads
+  `not buildable from this host`. `TargetSpec::support_from(host)` /
+  `describe_from(host)` carry the host-relative tier;
+  `TargetSpec::support()` still answers for the target alone.
+- `native`, the host's own triple, and `wasm32` build exactly as before.
+
 ### DNA: the public admission runs in the one engine (workflow card 18)
 
 - **Hard cutover, by ruling** (no backwards compatibility; no old records to care about): `Dna.ask(Intent)` admits a workflow for the intent (`workflow.admitted` under the intent's id as the admission's identity — offered again, the same execution) and runs it in the engine the assembly now owns for its scope (`runtime`, `executions`, born with it under `org_id`; `runs_engine: false` for a program that assembles them itself). Where the organism plans, the leader's word comes first and is bound into the admission's inputs — the objective, the kind, the class applied, the target, whom and under what obligation — so a person's job is admitted under `ask-person` (one human leaf, handed to whom the leader named with no second word asked) and anything else under `ask-edit` (one edit leaf, performed by the assembly's editor under the bound class and target); class `organization` for a child that is not the organism is refused before admission. Without a leader the ask is an application change. `Dna.run_workflow(WorkflowAsk)` is the authored-definition API: the admission (card 07) followed by the start.

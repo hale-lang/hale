@@ -137,6 +137,7 @@ crates/hale-cli/tests/replay_cli.rs#9 e4c2a028e4502903
 crates/hale-cli/tests/run_reports_signal.rs#0 14adc3b285b22ece
 crates/hale-cli/tests/source_map.rs#0 183856ff8794bd36
 crates/hale-cli/tests/source_map.rs#1 049ab7929fcc5890
+crates/hale-cli/tests/target_model.rs#0 db2eab2d602c2ba9
 crates/hale-cli/tests/test_ffi_pickup.rs#1 865d341109268295
 crates/hale-cli/tests/topology_artifact_contract.rs#0 ceb97d5adb719c07
 crates/hale-cli/tests/topology_graph_cli.rs#10 ec82aec13abd9d9b

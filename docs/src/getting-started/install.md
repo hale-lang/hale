@@ -123,9 +123,55 @@ plus Intel macOS. Needs LLVM 18 dev libraries and `clang`; see
 [building from source](#building-from-source).
 
 **3. What a build can emit** — `hale --list-targets` is the
-authority. Native binaries for Linux and macOS; `wasm32` objects for
-the browser; `x86_64-pc-windows-msvc` is named and refused with a
-precise error rather than a link failure.
+authority. Native binaries for the platform `hale` itself runs on — a
+Linux `hale` builds Linux programs, a macOS `hale` builds macOS ones;
+`wasm32` objects for the browser from either. A **Linux** triple from
+any other host — `--target x86_64-unknown-linux-gnu` or
+`aarch64-unknown-linux-gnu` on a Mac, or the other architecture on
+Linux — is cross-compiled and linked here; see
+[Cross-compiling for Linux](#cross-compiling-for-linux) below. A macOS
+triple from anywhere else gets as far as a relocatable object for that
+platform (`app.o`) and stops with a note — there is no Apple SDK to
+link against off a Mac. `x86_64-pc-windows-msvc` is named and refused
+with a precise error, because Windows codegen does not exist yet
+([GH #445](https://github.com/hale-lang/hale/issues/445)).
+
+### Cross-compiling for Linux
+
+The everyday case: develop on a Mac, deploy to Linux servers. A Hale
+program always links the lotus C runtime, OpenSSL, zlib and (for
+`std::ts`) a tree-sitter staticlib, so unlike a pure-Go binary it needs
+a C toolchain and those libraries *for the target*. Two pieces supply
+them ([GH #970](https://github.com/hale-lang/hale/issues/970)):
+
+1. **zig**, as the C compiler and linker. `zig cc -target
+   x86_64-linux-gnu.2.31` carries its own glibc headers and stubs for
+   every Linux target, so nothing has to be installed for the target's
+   libc. `brew install zig` (or a release from ziglang.org); `HALE_ZIG`
+   names the binary if it is not on `PATH`.
+2. **A target sysroot**: OpenSSL and zlib for the target, as static
+   archives, plus the tree-sitter shim. `scripts/target-sysroot.sh
+   <triple>` builds one into `~/.cache/hale/sysroot/<triple>/` — both
+   libraries from pinned source tarballs, compiled with zig against the
+   same glibc floor (a minute or two, once per target) — and cross-builds
+   `libhale_ts_shim.a` when run from a checkout with `rustup target add
+   <triple>` done. Needs `curl`, `perl` and `make` besides zig.
+   `HALE_TARGET_SYSROOT` points at one kept elsewhere.
+
+Then:
+
+```sh
+scripts/target-sysroot.sh x86_64-unknown-linux-gnu     # once
+hale build --target x86_64-unknown-linux-gnu app.hl    # ELF x86-64, runs on any glibc ≥ 2.31
+```
+
+The emitted binary depends on the target's glibc and nothing else —
+OpenSSL and zlib are linked in. `hale run` and `hale test` refuse a
+foreign target (nothing it builds runs here); `LOTUS_ASAN` and the
+other sanitizers are host-only. Without zig or the sysroot the build
+fails before linking and says which one is missing. `HALE_TARGET_GLIBC`
+picks a different glibc floor (the script and the compiler read the
+same variable).
 
 The rest of this section is about the *host* — where `hale` itself
 runs, and what changes about a program compiled there.
@@ -134,7 +180,7 @@ runs, and what changes about a program compiled there.
 |---|---|
 | **Linux x86_64** (glibc) | First-class — hosts the compiler and runs compiled programs, all features. |
 | **Linux ARM64** (glibc) | Supported, prebuilt — the release matrix builds it on a native aarch64 runner (AWS Graviton, EKS arm64 nodes, Ampere). Same feature set as x86_64. |
-| **macOS** (Apple Silicon) | Supported — hosts the compiler and targets itself, with two carve-outs. **`async_io` pools** fail at compile time with a clear diagnostic (use a cooperative pool, or build on Linux). **Cross-process `unix(...)` bindings** use a framed byte-stream transport on macOS (Darwin has no `SOCK_SEQPACKET`) — same semantics, message boundaries preserved by a per-message header rather than the kernel; both ends of a socket must be Hale binaries on the same wire format (always true on one host). The prebuilt toolchain currently links Homebrew `llvm@18`'s libunwind and emitted binaries link Homebrew OpenSSL — machines without those Homebrew packages need them installed (`brew install llvm@18 openssl@3`); self-contained binaries are tracked upstream. Intel Macs run the arm64 build via Rosetta 2. |
+| **macOS** (Apple Silicon) | Supported — hosts the compiler and targets itself, with two carve-outs. **`async_io` pools** fail at compile time with a clear diagnostic when the build *targets* macOS (use a cooperative pool, or build for Linux — a Mac building `--target x86_64-unknown-linux-gnu` may place one). **Cross-process `unix(...)` bindings** use a framed byte-stream transport on macOS (Darwin has no `SOCK_SEQPACKET`) — same semantics, message boundaries preserved by a per-message header rather than the kernel; both ends of a socket must be Hale binaries on the same wire format (always true on one host). The prebuilt toolchain currently links Homebrew `llvm@18`'s libunwind and emitted binaries link Homebrew OpenSSL — machines without those Homebrew packages need them installed (`brew install llvm@18 openssl@3`); self-contained binaries are tracked upstream. Intel Macs run the arm64 build via Rosetta 2. |
 | **Windows** | No native support yet — the runtime is POSIX. Use **WSL2** (Ubuntu) and follow the Linux instructions. The compiler now *names* `x86_64-pc-windows-msvc` (`hale --list-targets`) and refuses it with a precise error rather than a link failure; the codegen and runtime work is tracked in [GH #445](https://github.com/hale-lang/hale/issues/445). |
 | **wasm32** | `hale build --target wasm32` for the browser. |
 

@@ -47,6 +47,16 @@ pub struct Bundle<'a> {
     /// would make the artifact differ per machine, and the artifact
     /// is supposed to be comparable.
     pub sources: Vec<SourceFile>,
+    /// Whether the build target's lotus runtime has the `async_io` pool
+    /// backend (epoll/eventfd/ucontext: Linux, and wasm's POSIX shim).
+    /// `where async_io` is refused where it is false.
+    ///
+    /// A property of the TARGET. [`Bundle::new`] defaults it to the
+    /// host's answer, which is the target for every build that does not
+    /// name another; `hale build --target <triple>` sets the named
+    /// target's (GH #970) — a Mac building for Linux may place an
+    /// `async_io` pool, and a Linux host building for macOS may not.
+    pub target_has_async_io: bool,
 }
 
 /// One file's slice of the bundle-global offset space.
@@ -75,6 +85,8 @@ impl<'a> Bundle<'a> {
             programs,
             import_renames: Vec::new(),
             sources: Vec::new(),
+            // The host is the target unless a build says otherwise.
+            target_has_async_io: !cfg!(target_os = "macos"),
         }
     }
 }

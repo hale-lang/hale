@@ -19649,11 +19649,33 @@ int64_t lotus_bytes_find_byte_raw(const void *base, int64_t len, int64_t off,
  */
 
 #if defined(__x86_64__)
-/* Cached runtime AVX2 check (set once). */
+/* Cached runtime AVX2 check (set once).
+ *
+ * Asked of the CPU directly — CPUID leaf 7 for the AVX2 bit, leaf 1
+ * for OSXSAVE and XGETBV for the OS having enabled the YMM state —
+ * rather than through `__builtin_cpu_supports("avx2")`. The builtin
+ * reaches for libgcc's `__cpu_model`, which a cross toolchain need not
+ * carry: zig's compiler-rt does not, so a Linux x86-64 binary linked
+ * from a Mac failed on that one symbol (GH #970). `<cpuid.h>` is
+ * header-only on both clang and gcc. */
+#include <cpuid.h>
 static int lotus_have_avx2(void) {
     static int cached = -1;
     if (cached < 0) {
-        cached = __builtin_cpu_supports("avx2") ? 1 : 0;
+        unsigned a = 0, b = 0, c = 0, d = 0;
+        int avx2 = 0;
+        if (__get_cpuid(1, &a, &b, &c, &d)
+            && (c & bit_OSXSAVE) && (c & bit_AVX)) {
+            unsigned xcr0_lo = 0, xcr0_hi = 0;
+            __asm__ volatile("xgetbv" : "=a"(xcr0_lo), "=d"(xcr0_hi) : "c"(0));
+            /* XMM (bit 1) and YMM (bit 2) state both enabled by the OS. */
+            if ((xcr0_lo & 6u) == 6u
+                && __get_cpuid_count(7, 0, &a, &b, &c, &d)
+                && (b & bit_AVX2)) {
+                avx2 = 1;
+            }
+        }
+        cached = avx2;
     }
     return cached;
 }
