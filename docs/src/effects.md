@@ -359,6 +359,15 @@ through a **handle** (`reader.slurp()`) — including into the part of the
 standard library that is itself written in Hale, whose effects are
 inferred from its implementation rather than declared in a table.
 
+A second line under the finding points at the leaf — the exact site
+that performs the effect. When that site is inside the library, it is
+named rather than located, because it is a position in a file of the
+compiler's, not one of yours:
+
+```
+    note: the `alloc` effect happens here (in the standard library, io_tcp.hl:118:18)
+```
+
 Read the suggestion precisely. Moving an effect behind a locus your
 function *still calls* does not remove it; the checker follows the
 handle. What works is a locus your function does not reach — a

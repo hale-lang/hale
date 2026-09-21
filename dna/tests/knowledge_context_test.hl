@@ -113,8 +113,7 @@ main locus App {
         std::test::assert_eq_str(dna::url_encode("org/app main&x=1.0"), "org%2Fapp%20main%26x%3D1.0", "encoded for a query string");
 
         // ---- the genome and its organization, with the client
-        let repo = "/tmp/dna-ctx-" + to_string(std::process::pid());
-        std::io::fs::mkdir(repo) or discard;
+        let repo = dna::scratch_root("ctx");
         std::io::fs::mkdir(repo + "/.hale") or discard;
         std::io::fs::mkdir(repo + "/.hale/dna") or discard;
         std::io::fs::write_file(repo + "/main.hl", BASE) or discard;
@@ -205,7 +204,7 @@ main locus App {
         std::test::assert(std::str::contains(self.last("mutation.proposed", ""), "docs"), "the Mutation carries the planned class: " + self.last("mutation.proposed", ""));
         let pev = self.last("model.called", t2 + "/plan");
         std::test::assert(std::str::contains(pev, "\"knowledge_bindings\": \"package:sha256:pkgorg sha256:design1\""), "the plan's evidence names the package: " + pev);
-        let rm = sh("rm\n-rf\n" + repo);
+        dna::scratch_done(repo);
     }
 }
 

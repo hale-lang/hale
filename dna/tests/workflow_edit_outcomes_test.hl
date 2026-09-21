@@ -272,7 +272,7 @@ main locus App {
         return if o.ok { o.value.disposition } else { "" };
     }
     run() {
-        let repo = "/tmp/dna-edits-" + to_string(std::process::pid());
+        let repo = dna::scratch_root("edits");
         let mk = sh("sh\n-c\nrm -rf \"$1\" && mkdir -p \"$1/app\" \"$1/org\" \"$1/.hale/dna\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && printf '[deps]\\n' > hale.toml && printf '/.hale/\\n' > .gitignore\nsh\n" + repo);
         std::test::assert(mk.code == 0, "a repository: " + mk.stderr);
         std::io::fs::write_file(repo + "/app/main.hl", APP) or discard;
@@ -744,7 +744,7 @@ main locus App {
         std::test::assert(o15.ok && std::str::contains(o15.value.narrative, "settled failed"), "with why: " + o15.value.narrative);
 
         std::test::assert(self.boot.rt.journal.verify_chain(), "the record's chain holds");
-        let rm = sh("rm\n-rf\n" + repo);
+        dna::scratch_done(repo);
     }
 }
 

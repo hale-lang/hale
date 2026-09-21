@@ -78,8 +78,7 @@ main locus App {
         std::test::assert(self.mem.verify_chain(), "the journal never changed");
 
         // ---- the record: a git branch ---------------------------------
-        let repo = "/tmp/dna-record-" + to_string(std::process::pid());
-        std::io::fs::mkdir(repo) or discard;
+        let repo = dna::scratch_root("record");
         let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
         std::test::assert_eq_int(init.code, 0, "git init: " + init.stderr);
         let g1 = dna::GitJournal { repo: repo };
@@ -129,6 +128,7 @@ main locus App {
         std::test::assert(dna::lease_fences(gl, "mutation:m1", m3.token, 210), "the live token fences");
         std::test::assert(gl2.complete("mutation:m1", m3.token, 210), "the live token completes");
         std::test::assert_eq_str(gl.holder_of("mutation:m1"), "", "released");
+        dna::scratch_done(repo);
     }
 }
 

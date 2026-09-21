@@ -46,4 +46,24 @@ fn consumer_of_enum_and_perspective_library_checks_builds_and_runs() {
     for needle in ["first=red", "green=true", "which=second", "after=second", "label=b", "picked=g"] {
         assert!(stdout.contains(needle), "missing {needle}: {stdout:?}");
     }
+    // GH #885: an imported enum value prints under the DECLARATION's
+    // own name. `println(lib::Color::Red)` rendered
+    // `__lib_lib_lib_Color::Red` — the mangled symbol the import
+    // renamed the declaration to, which appears nowhere in the
+    // author's program. `spec/semantics.md` § "Rendering values as
+    // text" specifies `Enum::Variant`, which is also what the same
+    // enum renders as inside its own seed; the alias is not part of
+    // it, because an alias is per-importing-file and the rendering
+    // is a property of the value.
+    //
+    // Both codegen sites that spell the name are here: a no-payload
+    // enum (the names-array lookup) and a payload one (the
+    // per-variant switch).
+    for needle in ["printed=Color::Red", "payload=Reading::Value(7)"] {
+        assert!(stdout.contains(needle), "missing {needle}: {stdout:?}");
+    }
+    assert!(
+        !stdout.contains("__lib_"),
+        "a mangled name reached the program's output: {stdout:?}"
+    );
 }

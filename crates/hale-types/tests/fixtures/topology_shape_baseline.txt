@@ -117,6 +117,8 @@ crates/hale-cli/tests/model_diff.rs#2 e5bd68b9bb8e2d01
 crates/hale-cli/tests/obs_entity_ids.rs#0 fb20557a8843b5e0
 crates/hale-cli/tests/obs_entity_ids.rs#1 de47d9bc0131dfb8
 crates/hale-cli/tests/obs_model_hash.rs#0 ce2333a3a11cb8ee
+crates/hale-cli/tests/observe_session_lifetime.rs#0 68bf0d220803c902
+crates/hale-cli/tests/observe_session_lifetime.rs#1 7d5cf57defcf548e
 crates/hale-cli/tests/replay_cli.rs#0 868440e9810ac96c
 crates/hale-cli/tests/replay_cli.rs#1 91ab379642ff7593
 crates/hale-cli/tests/replay_cli.rs#10 8d95b6ed57982b91

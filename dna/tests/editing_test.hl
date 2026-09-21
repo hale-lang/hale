@@ -28,8 +28,7 @@ main locus App {
         bounded: dna::SourceEditor = dna::SourceEditor { };
     }
     run() {
-        let root = "/tmp/dna-edit-" + to_string(std::process::pid());
-        std::io::fs::mkdir(root) or discard;
+        let root = dna::scratch_root("edit");
         std::io::fs::write_file(root + "/main.hl", "fn main() { println(\"v1\"); }\n") or discard;
         self.editor = dna::SourceEditor {
             name: "editor",
@@ -94,8 +93,7 @@ main locus App {
         std::test::assert_eq_int(self.editor.attempts, 3, "three attempts on the first editor");
 
         // ---- several files from one ask (GH #566 F3) -----------------------
-        let root2 = "/tmp/dna-edit2-" + to_string(std::process::pid());
-        std::io::fs::mkdir(root2) or discard;
+        let root2 = dna::scratch_root("edit2");
         std::io::fs::mkdir(root2 + "/answers") or discard;
         std::io::fs::write_file(root2 + "/main.hl", "fn main() { println(add(1, 2)); }\n") or discard;
         std::io::fs::write_file(root2 + "/util.hl", "fn add(a: Int, b: Int) -> Int { return a + b; }\n") or discard;
@@ -118,8 +116,7 @@ main locus App {
         std::test::assert_eq_int(self.multi.tools.edits, 2, "two edits");
 
         // ---- a proposal that fails check twice and passes on the third try
-        let root3 = "/tmp/dna-edit3-" + to_string(std::process::pid());
-        std::io::fs::mkdir(root3) or discard;
+        let root3 = dna::scratch_root("edit3");
         std::io::fs::mkdir(root3 + "/answers") or discard;
         std::io::fs::write_file(root3 + "/main.hl", "fn main() { println(\"v1\"); }\n") or discard;
         std::io::fs::write_file(root3 + "/answers/main.hl@a0", "fn main() { let x: Int = \"no\"; }\n") or discard;
@@ -169,6 +166,9 @@ main locus App {
         std::io::fs::write_file(root3 + "/gone.hl", "fn gone() { }\n") or discard;
         std::test::assert(tools.remove("gone.hl"), "a file that can go, goes");
         std::test::assert(!std::io::fs::file_exists(root3 + "/gone.hl"), "and is gone");
+        dna::scratch_done(root);
+        dna::scratch_done(root2);
+        dna::scratch_done(root3);
     }
 }
 fn main() { App { }; }

@@ -553,9 +553,12 @@ sentinel for non-Cargo trees.
 
 ## `hale run` interaction
 
-`hale run` and `hale build` share the same codegen path, and as
-of WS3.3 they also share the same *import* path: both
-the single-file form and the directory form (`hale run ./dir`)
+`hale run` and `hale build` share the same codegen path and, as
+of GH #904, the same build OPTIONS: one parser, one
+`BuildOptions`, and `run` fingerprints what it built with rather
+than the defaults (see *Build flags + environment* above). As of
+WS3.3 they also share the same *import* path: both the
+single-file form and the directory form (`hale run ./dir`)
 resolve `import "..." as ...;` directives, build the per-build
 path-rename table, and rewrite qualified `alias::Name` references
 identically. A directory `hale run` now produces the same
@@ -574,6 +577,31 @@ file and subscribed from a sibling reported "unknown topic" under
 `check` while `build` and `run` resolved it. Closed 2026-08-11: a
 multi-file seed merges before checking, exactly like the
 import-bearing path.)
+
+### What `hale run` starts, `hale run` ends
+
+`hale run` is a foreground wrapper, and everything it starts is
+bounded by it: the compiled program, and under `--observe` the iris
+session beside it and the `hale build` that materializes the
+observer. On Linux each of them is spawned with a parent-death
+signal (`PR_SET_PDEATHSIG`, SIGTERM) and stays in `hale`'s process
+group, so killing `hale` alone — `timeout`, a CI cancel, a SIGKILL
+— ends them too, and a group-directed signal (a shell's Ctrl-C,
+`timeout` without `--foreground`) still reaches them as it always
+did. Nothing is left running that only a human knows to kill.
+
+The observed session also gets its OWN stdout and stderr, which
+`hale` relays to its stderr. The program's stdout is the command's
+output: an observer must not interleave its chatter into it, and —
+the reason this is a rule rather than a preference — a caller
+reading that stdout through a pipe must see EOF when `hale` exits.
+Until 2026-09-20 (GH #905) it did not: the session inherited the
+descriptor, so `hale run --observe prog.hl | cat` never returned.
+`hale` reaps the `hale iris` it started, but fuse-hl UNDER that
+`hale iris` was left running with the pipe's write end and nothing
+was left to close it — the program ending was enough to hang the
+caller, and a `hale` killed before it could reap anything left the
+whole session behind.
 
 ## Git-based dependency fetching (`hale fetch`)
 
@@ -656,10 +684,26 @@ same rule up to the target and then stops: everything after the
 target is the PROGRAM's argv, which is why `run`'s own `--observe`
 goes in front of it.
 
+`run` takes the same build options `build` does, from the same
+parser (2026-09-20, GH #904; before it, `run` compiled with
+`BuildOptions::default()` no matter what it was given, so every
+build option was first read as the target and then — GH #900 —
+named and refused, and the documented spot-check `hale run
+prog.hl` could exercise neither a dev build nor an FFI program).
+So does `hale replay`, which recompiles the program it admits a
+recording against. Both refuse, by name, the flags that report ON
+a build rather than change it — `--locality-report`,
+`--target-cache`, `--strict`, `--wrap-main` — and `run` refuses a
+target it cannot exec (`--target wasm32`), since it compiles in
+order to execute. The options are part of the execution identity
+(runtime.md § *Replay*): a recording made under `hale run --dev`
+is admitted by `hale replay --dev` and refused by a default
+`hale replay`, with the identity message.
+
 | Surface | Effect |
 |---|---|
-| `hale build --dev` / `HALE_DEV=1` | Latency mode: LLVM O1 pipeline + Less machine codegen instead of the O3/`target-cpu=native` release default. For edit-build-run loops. |
-| `hale check --json` | NDJSON diagnostics on stdout, one object per line (`file`/`line`/`col`/`severity`/`kind`/`message`, plus `related`: an array of `{file, line, col, note}` secondary locations, present only when a diagnostic has them — e.g. a duplicate name's previous declaration; 2026-08-11) — editor/LSP consumption. EVERY finding that fails the command is a record, including a lexical or syntactic one: a file that does not parse — the target's own or any file reached through an `import` — emits one record per diagnostic, `"kind":"parse error"` (or `"lex error"`), at that file's own line and column (2026-09-19, GH #777; before it the parse path printed text to stderr and left `--json` empty, so a gate saw a non-zero exit with nothing explaining it). An input that could not be READ is a record too, `"kind":"io error"`, `"file"` the path it is about and `"message"` the OS error, at `"line":0,"col":0` — no position, because there is no text to have a position in: a target that does not exist, a `.hl` file of the seed that will not open, a file of the import graph that will not open (2026-09-20, GH #806; these printed a sentence on stderr and left the stream empty, an environment failure wearing the same shape as a crash). An `import` that resolves to NOTHING is a located record like any other finding, `"kind":"type error"` at the line and column of the path literal that names nothing, with the three search paths tried in its `message` (2026-09-20, GH #860; it was the last failure on this path still reported only as a sentence on stderr). An empty stream therefore means a clean seed, and nothing else does. `hale verify --json` is the same stream under the stricter gate. `hale check` runs in ~10 ms on the largest apps. |
+| `hale build --dev` / `hale run --dev` / `hale replay --dev` / `HALE_DEV=1` | Latency mode: LLVM O1 pipeline + Less machine codegen instead of the O3/`target-cpu=native` release default. For edit-build-run loops. |
+| `hale check --json` | NDJSON diagnostics on stdout, one object per line (`file`/`line`/`col`/`severity`/`kind`/`message`, plus `related`: an array of `{file, line, col, note}` secondary locations, present only when a diagnostic has them — e.g. a duplicate name's previous declaration; 2026-08-11) — editor/LSP consumption. EVERY finding that fails the command is a record, including a lexical or syntactic one: a file that does not parse — the target's own or any file reached through an `import` — emits one record per diagnostic, `"kind":"parse error"` (or `"lex error"`), at that file's own line and column (2026-09-19, GH #777; before it the parse path printed text to stderr and left `--json` empty, so a gate saw a non-zero exit with nothing explaining it). An input that could not be READ is a record too, `"kind":"io error"`, `"file"` the path it is about and `"message"` the OS error, at `"line":0,"col":0` — no position, because there is no text to have a position in: a target that does not exist, a `.hl` file of the seed that will not open, a file of the import graph that will not open (2026-09-20, GH #806; these printed a sentence on stderr and left the stream empty, an environment failure wearing the same shape as a crash). An `import` that resolves to NOTHING is a located record like any other finding, `"kind":"type error"` at the line and column of the path literal that names nothing, with the three search paths tried in its `message` (2026-09-20, GH #860; it was the last failure on this path still reported only as a sentence on stderr). A finding whose position is inside the **embedded stdlib** — the witness leaf of a violated effect assertion, which the analyzer reached by walking into a Hale-source stdlib body — is a positionless record too, `"file":""` at `"line":0,"col":0`, with the stdlib file and line in its `message` (`in the standard library, io_tcp.hl:118:18`); the same holds for a `related` entry raised there (2026-09-20, GH #856). The stdlib parses at base 0 in its own coordinate space, so such an offset is not a position in any file of the seed, and a `file` field is a join key: before this it named whichever seed file the number happened to fall inside. An empty stream therefore means a clean seed, and nothing else does. `hale verify --json` is the same stream under the stricter gate. `hale check` runs in ~10 ms on the largest apps. |
 | `HALE_TIME=1` | Per-phase build wall times on stderr (front-end+codegen, llvm-passes, obj-emit, emit+link). |
 | `--no-warn-unbounded-alloc` | Opts a run out of the default-on memory-bound survey (see verification.md). |
 | `hale check --sealable` | Reports which loci could take `@sealed` and what it would cost: per locus, the sites outside it that read or write its `params`. Empty means sealing is a no-op. The survey reruns the real check against an all-sealed clone rather than approximating the rule, so it cannot disagree with the checker. |

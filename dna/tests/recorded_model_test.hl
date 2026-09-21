@@ -45,7 +45,7 @@ main locus App {
         core: dna::Dna = dna::Dna { };
     }
     run() {
-        let base = "/tmp/dna-tape-" + to_string(std::process::pid());
+        let base = dna::scratch_root("tape");
         let tape = base + "/tape";
         std::io::fs::mkdir(base) or discard;
         std::io::fs::write_file(base + "/claude", harness_script()) or discard;
@@ -174,7 +174,7 @@ main locus App {
         let r3 = self.play2.complete(q);
         std::test::assert(!r3.ok && std::str::contains(r3.refused, "occurrence 2 of an identical request was never recorded"), "a third was never recorded, and the miss says so: " + r3.refused);
 
-        let rm = sh("rm\n-rf\n" + base);
+        dna::scratch_done(base);
     }
 }
 

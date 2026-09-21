@@ -65,8 +65,7 @@ main locus App {
         std::test::assert(!dna::protected_class("internal") && !dna::protected_class("public"), "internal and public are not");
         std::test::assert(!self.hosted.allows("confidential"), "a hosted model refuses confidential data as it refuses customer data");
 
-        let scratch = "/tmp/dna-vault-" + to_string(std::process::pid());
-        std::io::fs::mkdir(scratch) or discard;
+        let scratch = dna::scratch_root("vault");
         // whatever this fixture starts under its scratch stops when it does (#637)
         dna::reap_on_exit(scratch);
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\nvaulted");
@@ -96,7 +95,7 @@ main locus App {
         std::test::assert(len(git_receipts.read(hex_of(internal))) > 0, "an internal body is an ordinary git receipt");
 
         // ---- the service keeps it, and only there
-        let port = 30000 + std::process::pid() % 20000;
+        let port = dna::free_port(0);
         let url = "http://127.0.0.1:" + to_string(port);
         let started = in_dir(app, "sh\n-c\nHALE_DNA_KNOWLEDGE_DSN=memory nohup \"$1\" dna knowledge . --port \"$2\" >.hale/vault-service.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + to_string(port));
         let pid = dna::trim_nl(started.stdout);
@@ -179,7 +178,7 @@ main locus App {
         } else {
             eprintln("receipt_vault_test: no postgres HALE_DNA_KNOWLEDGE_DSN; encryption at rest was not exercised here");
         }
-        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+        dna::scratch_done(scratch);
     }
 }
 

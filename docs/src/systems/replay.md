@@ -111,7 +111,11 @@ hale replay run.halerec app.hl --at 65:12 # ...at consumer 65's 12th consume
 - **Executable identity.** The recording carries a framed SHA-256
   over the full compiler/runtime/stdlib source tree, the compiler
   version, build options, and every application source's path,
-  length, and contents. A structurally compatible model with a
+  length, and contents. The build options are the ones the
+  compiling command was given — `hale run` and `hale replay` take
+  `hale build`'s option flags — so a run recorded under `hale run
+  --dev` replays under `hale replay --dev`, and a default replay
+  refuses it. A structurally compatible model with a
   changed function body is *not* the same executable — it is
   rejected, with `--allow-unverified-model` as the explicit
   override for unstamped or divergent-build recordings.

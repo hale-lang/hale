@@ -71,8 +71,7 @@ fn journal_text(j: dna::GitJournal) -> String {
 
 main locus App {
     run() {
-        let scratch = "/tmp/dna-relayrepeat-" + to_string(std::process::pid());
-        std::io::fs::mkdir(scratch) or discard;
+        let scratch = dna::scratch_root("relayrepeat");
         // whatever this fixture starts under its scratch stops when it does (#637)
         dna::reap_on_exit(scratch);
         let cache = scratch + "/cache";
@@ -158,7 +157,7 @@ main locus App {
 
         let k1 = dna::run_tool("kill\n" + host_pid);
         let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; done; true\nsh\n" + a);
-        let rm = dna::run_tool("rm\n-rf\n" + scratch);
+        dna::scratch_done(scratch);
     }
 }
 

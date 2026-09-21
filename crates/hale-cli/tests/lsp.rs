@@ -833,6 +833,104 @@ fn lsp_duplicate_name_carries_related_information() {
     let _ = std::fs::remove_dir_all(&seed);
 }
 
+/// GH #856: an effect assertion whose witness leaf lands in a
+/// STDLIB body raises a second diagnostic positioned in the embedded
+/// stdlib's own parse space. That space starts at base 0, so in a
+/// seed large enough to contain the offset — ~40 KB here, against a
+/// leaf ~13 KB into `AP_SOURCE` — the window test could only see a
+/// number inside `main.hl` and published a squiggle on a line of
+/// filler the author never wrote. A stdlib span is not a seed range,
+/// so the editor is not handed one.
+#[test]
+fn lsp_never_squiggles_a_stdlib_span_in_a_seed_file() {
+    let seed = std::env::temp_dir().join(format!(
+        "hale_lsp_stdlib_origin_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&seed);
+    std::fs::create_dir_all(&seed).expect("mkdir");
+    let file = seed.join("main.hl");
+    let uri = format!("file://{}", file.display());
+    let mut text = String::from(
+        "@effects(none: {alloc})\n\
+         fn ship(s: std::io::tcp::Stream) {\n\
+         \x20   s.send(\"tick\") or discard;\n\
+         }\n\
+         \n\
+         fn main() {\n\
+         \x20   let s = std::io::tcp::Stream { conn_fd: 1, owns_fd: false };\n\
+         \x20   ship(s);\n\
+         }\n",
+    );
+    for i in 0..1_100 {
+        text.push_str(&format!("fn filler_{i}() -> Int {{ return {i}; }}\n"));
+    }
+    std::fs::write(&file, &text).expect("write seed file");
+
+    let mut lsp = Lsp::start();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "initialized", "params": {}
+    }));
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri, "languageId": "hale", "version": 1, "text": text
+        }}
+    }));
+    let open = lsp.recv();
+    let diags =
+        open.pointer("/params/diagnostics").unwrap().as_array().unwrap();
+
+    // The finding is published, on the asserting fn's own line.
+    let violation = diags
+        .iter()
+        .find(|d| {
+            d["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("effect assertion violated"))
+        })
+        .unwrap_or_else(|| panic!("the violation is published: {}", open));
+    assert_eq!(violation["range"]["start"]["line"], 1, "{}", violation);
+
+    // …and nothing else is. The witness leaf has no range in this
+    // document, so the editor is given none rather than one pointing
+    // into the filler.
+    for d in diags {
+        let line = d["range"]["start"]["line"].as_u64().unwrap_or(0);
+        assert!(
+            line < 9,
+            "a diagnostic on line {} is in the filler — no line past \
+             the program has anything wrong with it: {}",
+            line,
+            d
+        );
+        assert!(
+            !d["message"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("the `alloc` effect happens here"),
+            "the stdlib-positioned leaf must not be published as a \
+             document diagnostic: {}",
+            d
+        );
+    }
+
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 9, "method": "shutdown", "params": {}
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "exit", "params": {}
+    }));
+    let _ = lsp.child.wait();
+    let _ = std::fs::remove_dir_all(&seed);
+}
+
 /// Downstream handoff (2026-08-11): `textDocument/definition` on a
 /// `std::` path jumps INTO the embedded stdlib source. The rename
 /// table maps the path to the mangled declaration in AP_SOURCE, and

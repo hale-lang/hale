@@ -1898,6 +1898,12 @@ SHA-256 over the toolchain source hash (compiler + runtime +
 stdlib implementation, via the stale-CLI build hash), the CLI
 version, build options, and every source file's full path,
 length, and contents — must match the recompiled program exactly;
+the build options are the ones the compiling command was GIVEN
+(`hale run` and `hale replay` take `hale build`'s option flags —
+2026-09-20, GH #904; `run` compiled with the defaults and
+fingerprinted the defaults), so a recording made under `hale run
+--dev` is admitted by `hale replay --dev` and by no default
+replay;
 `shape_hash` is structural compatibility only, the secondary
 check. An unstamped recording is refused without
 `--allow-unverified-model`. Stated residue: the digest cannot see

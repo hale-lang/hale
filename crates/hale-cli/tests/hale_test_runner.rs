@@ -163,6 +163,78 @@ fn json_output_is_well_formed() {
     assert_eq!(out.status.code(), Some(1));
 }
 
+/// GH #867: the row's `file` is the fixture's CANONICAL path, not
+/// the spelling the command line used.
+///
+/// Every located diagnostic has named its file canonically since
+/// GH #822 — absolute, symlinks resolved, no `..` — while this row
+/// echoed argv, so a tool joining `test --json` rows to `check
+/// --json` records on `file` saw two strings for one file. Both
+/// spellings below reach the same fixture, and both must produce the
+/// same `file`.
+#[test]
+fn json_rows_name_the_file_canonically() {
+    let dir = fixtures_dir().join("hale-test-pass");
+    let canonical = dir
+        .join("arith_test.hl")
+        .canonicalize()
+        .expect("canonicalize the fixture");
+
+    // A `..` in the middle, and a relative spelling from the fixture
+    // directory itself — neither is how the file is recorded.
+    let dotted = dir.join("..").join("hale-test-pass").join("arith_test.hl");
+    let file_of = |args: &[&str], cwd: &Path| -> String {
+        let out = Command::new(hale_bin())
+            .arg("test")
+            .args(args)
+            .arg("--json")
+            .current_dir(cwd)
+            .output()
+            .expect("invoke hale test --json");
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let v: serde_json::Value = serde_json::from_str(stdout.trim())
+            .unwrap_or_else(|e| panic!("--json is an array ({}): {}", e, stdout));
+        v[0]["file"]
+            .as_str()
+            .unwrap_or_else(|| panic!("row has a file: {}", stdout))
+            .to_string()
+    };
+
+    let dotted_spelling = file_of(&[&dotted.to_string_lossy()], &dir);
+    assert_eq!(
+        dotted_spelling,
+        canonical.display().to_string(),
+        "a `..` spelling must still be recorded canonically"
+    );
+    let relative_spelling = file_of(&["arith_test.hl"], &dir);
+    assert_eq!(
+        relative_spelling,
+        canonical.display().to_string(),
+        "a relative spelling must be recorded absolutely"
+    );
+    assert!(
+        Path::new(&relative_spelling).is_absolute()
+            && !relative_spelling.contains("/.."),
+        "the row's file is absolute and `..`-free: {:?}",
+        relative_spelling
+    );
+
+    // The human-readable channel is the control: it still shows the
+    // path as the command line spelled it.
+    let out = Command::new(hale_bin())
+        .arg("test")
+        .arg("arith_test.hl")
+        .current_dir(&dir)
+        .output()
+        .expect("invoke hale test");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ok   arith_test.hl"),
+        "the text line keeps the spelling the user typed; stdout={:?}",
+        stdout
+    );
+}
+
 #[test]
 fn single_file_target_runs_that_file() {
     let file = fixtures_dir()

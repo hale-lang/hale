@@ -37,8 +37,7 @@ main locus App {
         return out;
     }
     run() {
-        let scratch = "/tmp/dna-owners-" + to_string(std::process::pid());
-        std::io::fs::mkdir(scratch) or discard;
+        let scratch = dna::scratch_root("owners");
         dna::reap_on_exit(scratch);
         let bare = scratch + "/origin.git";
         let b0 = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
@@ -99,6 +98,7 @@ main locus App {
         let c6 = in_dir(other, "git\nconfig\nuser.email\nbob@n");
         let asked2 = in_dir(other, toolchain() + "\ndna\nask\n--no-wait\n--to\norg/books\n--as\nbob\nclose the books");
         std::test::assert(asked2.code == 0 && std::str::contains(asked2.stdout, "owned by acme, not north"), "from north's clone, acme's position is acme's to admit: " + asked2.stdout + asked2.stderr);
+        dna::scratch_done(scratch);
     }
 }
 fn main() { App { }; }

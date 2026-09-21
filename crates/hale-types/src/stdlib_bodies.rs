@@ -156,3 +156,37 @@ pub(crate) fn demangle_str(
     }
     out
 }
+
+/// Where a STDLIB-origin span sits, as `<file>:<line>:<col>` in the
+/// embedded stdlib source (GH #856).
+///
+/// A span raised from a stdlib body is an offset into
+/// `hale_stdlib::AP_SOURCE`, which parses at base 0 in a space of
+/// its own. It is not a bundle offset, so no seed file's window may
+/// be asked about it — but it IS a real position in a real file, and
+/// the renderers name it instead of inventing a seed location: the
+/// language server materializes those files to a read-only cache for
+/// exactly this reason, so `io_tcp.hl:118` is something a reader can
+/// open.
+///
+/// `None` when the offset falls outside the concatenation (a
+/// synthetic span, or the separator byte between two files).
+pub fn stdlib_span_location(span: hale_syntax::Span) -> Option<String> {
+    let off = span.start.as_usize();
+    let (name, content, local) = hale_stdlib::ap_file_at(off)?;
+    let (line, col) =
+        hale_syntax::Span::new(local, local).line_col(content);
+    Some(format!("{}:{}:{}", name, line, col))
+}
+
+/// The note a renderer prints in place of a position for a
+/// stdlib-origin span: the sentence every channel says, plus the
+/// stdlib file and line when the offset resolves to one.
+pub fn stdlib_span_note(span: hale_syntax::Span) -> String {
+    match stdlib_span_location(span) {
+        Some(at) => {
+            format!("{}, {}", hale_syntax::Diag::STDLIB_NOTE, at)
+        }
+        None => hale_syntax::Diag::STDLIB_NOTE.to_string(),
+    }
+}

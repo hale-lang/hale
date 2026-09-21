@@ -14377,7 +14377,8 @@ impl<'a> Checker<'a> {
                                         self.diags.push(Diag::ty(
                                             a.span(),
                                             format!(
-                                                "`{}` takes numeric operands                                                  (Int / Float / Duration /                                                  Decimal), got `{}`",
+                                                "`{}` takes numeric operands (Int / Float / \
+                                                 Duration / Decimal), got `{}`",
                                                 id.name,
                                                 at.display()
                                             ),

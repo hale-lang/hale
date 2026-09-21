@@ -142,8 +142,7 @@ main locus App {
         std::test::assert_eq_int(dna::window_start_of("none", 1789351200), 0, "no window is one window");
 
         // ---- two children under one ceiling, over one record
-        let repo = "/tmp/dna-grants-" + to_string(std::process::pid());
-        std::io::fs::mkdir(repo) or discard;
+        let repo = dna::scratch_root("grants");
         let init = sh("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
         let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n--allow-empty\n-m\nbase");
         std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
@@ -338,7 +337,7 @@ main locus App {
         }
         std::test::assert_eq_int(released, 1, "one settlement in the record");
 
-        let rm = sh("rm\n-rf\n" + repo);
+        dna::scratch_done(repo);
     }
 }
 

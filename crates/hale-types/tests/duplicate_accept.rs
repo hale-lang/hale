@@ -49,14 +49,14 @@ fn a_second_accept_clause_is_an_error_naming_both() {
     assert!(
         hit.related
             .iter()
-            .any(|(_, label)| label.contains("first `accept` declared here")),
+            .any(|r| r.label.contains("first `accept` declared here")),
         "carries the first clause as related: {:?}",
         hit.related
     );
     // The FIRST clause is the one that survives: `Work` is still
     // accepted, so the `Work { }` literal inside `run()` resolves
     // an owner and raises nothing of its own.
-    let (first_span, _) = hit.related[0];
+    let first_span = hit.related[0].span;
     assert!(
         first_span.start < hit.span.start,
         "related span points at the earlier clause: {:?} vs {:?}",

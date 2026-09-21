@@ -115,10 +115,8 @@ main locus App {
     }
     run() {
         // ---- the genome: a repository whose seed is `app/`
-        let repo = "/tmp/dna-harness-" + to_string(std::process::pid());
-        let scratch = repo + "-bin";
-        std::io::fs::mkdir(repo) or discard;
-        std::io::fs::mkdir(scratch) or discard;
+        let repo = dna::scratch_root("harness");
+        let scratch = dna::scratch_root("harness-bin");
         std::io::fs::mkdir(repo + "/app") or discard;
         std::io::fs::mkdir(repo + "/.hale") or discard;
         std::io::fs::mkdir(repo + "/.hale/dna") or discard;
@@ -315,12 +313,10 @@ main locus App {
         //         become a candidate. Here the worktree has a DIRECTORY
         //         where the export has a file, so the write fails for
         //         any user, root included.
-        let wt = repo + "-wt";
-        let exp = repo + "-exp";
-        std::io::fs::mkdir(wt) or discard;
+        let wt = dna::scratch_root("harness-wt");
+        let exp = dna::scratch_root("harness-exp");
         std::io::fs::mkdir(wt + "/app") or discard;
         std::io::fs::mkdir(wt + "/app/main.hl") or discard;
-        std::io::fs::mkdir(exp) or discard;
         std::io::fs::mkdir(exp + "/app") or discard;
         std::io::fs::write_file(exp + "/app/main.hl", BASE) or discard;
         self.stuck = dna::SourceEditor { name: "editor", tools: dna::WorktreeTools { hale_bin: toolchain() } };
@@ -329,6 +325,10 @@ main locus App {
         std::test::assert_eq_str(brought, "", "nothing was brought back");
         std::test::assert(std::str::contains(self.stuck.import_error, "could not import main.hl"), "and the failure is named: " + self.stuck.import_error);
         std::test::assert_eq_int(self.stuck.imported, 0, "no file counted as imported");
+        dna::scratch_done(repo);
+        dna::scratch_done(scratch);
+        dna::scratch_done(wt);
+        dna::scratch_done(exp);
     }
 }
 

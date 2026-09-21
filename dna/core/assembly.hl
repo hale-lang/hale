@@ -2239,14 +2239,23 @@ locus Dna {
         // can tell which of one source's concerns has been heard
         let x = self.journal.append(self.journal.revision(), "concern.raised", c.source, concern_body(c.what, c.severity, seen, c.request));
         if seen < self.concern_threshold || proposed { return; }
-        let parent = parent_path(c.source);
+        self.propose_concern(c.source, c.what, seen);
+    }
+    // A concern that persists: proposed as knowledge by its source,
+    // bound to its parent (a concern by the tower rule), for the Board
+    // to ratify. A source with no parent has nothing to bind to and is
+    // refused, saying so. The raise that crosses the threshold takes
+    // this path, and so does a restart that finds a source already over
+    // it with no proposal (GH #748) — one rule, one place.
+    fn propose_concern(source: String, what: String, seen: Int) {
+        let parent = parent_path(source);
         if len(parent) == 0 {
-            let r = self.journal.append(self.journal.revision(), "knowledge.refused", "concern:" + c.source, "a concern binds to its source's parent, and `" + c.source + "` has none: name the source as a path under org");
+            let r = self.journal.append(self.journal.revision(), "knowledge.refused", "concern:" + source, "a concern binds to its source's parent, and `" + source + "` has none: name the source as a path under org");
             return;
         }
-        let digest = self.propose_knowledge(Idea { id: "concern:" + c.source, kind: "concern", text: c.what, author: c.source }, parent);
-        let y = self.journal.append(self.journal.revision(), "concern.proposed", c.source, (if len(digest) > 0 { digest } else { "refused" }) + " after " + to_string(seen) + " raise(s)");
-        self.membrane.notify("concern", c.source + ": `" + c.what + "` persists; proposed as knowledge for " + parent + ", the Board's to ratify");
+        let digest = self.propose_knowledge(Idea { id: "concern:" + source, kind: "concern", text: what, author: source }, parent);
+        let y = self.journal.append(self.journal.revision(), "concern.proposed", source, (if len(digest) > 0 { digest } else { "refused" }) + " after " + to_string(seen) + " raise(s)");
+        self.membrane.notify("concern", source + ": `" + what + "` persists; proposed as knowledge for " + parent + ", the Board's to ratify");
     }
     // A person proposes a practice for the whole organization (GH #602).
     // The proposal is the organization's — author `org`, an initiative the
@@ -3332,6 +3341,52 @@ locus Dna {
         self.fail_in_flight();
         self.note_unrecovered_intents();
         self.resume_work();
+        self.propose_persistent_concerns();
+    }
+    // GH #748: the raise that crosses the concern threshold is also the
+    // raise that proposes, so an organism that stopped between the two
+    // left a source whose concerns are in the record, persistent, and
+    // owed a proposal that nothing but another concern would now make —
+    // and a source that has said its piece three times may never say it
+    // a fourth. The count is the record's, so it is still there to be
+    // read: every source over the threshold with no `concern.proposed`
+    // of its own is proposed once, here, by the rule that would have
+    // proposed it. A source with no parent was already refused where it
+    // was raised and is left alone, so a restart does not write that
+    // refusal again.
+    @unbounded
+    fn propose_persistent_concerns() {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind != "concern.raised" || len(parent_path(e.entity)) == 0 { i = i + 1; continue; }
+            // once per source: the first row it raised is where it is counted
+            let mut first = true;
+            let mut b = 0;
+            while b < i {
+                let o = self.journal.read(b);
+                if o.kind == "concern.raised" && o.entity == e.entity { first = false; }
+                b = b + 1;
+            }
+            if !first { i = i + 1; continue; }
+            let mut seen = 0;
+            let mut proposed = false;
+            let mut what = "";
+            let mut k = 0;
+            while k < n {
+                let o = self.journal.read(k);
+                if o.kind == "concern.raised" && o.entity == e.entity {
+                    seen = seen + 1;
+                    let said = concern_what(o.body);
+                    what = if len(said) > 0 { said } else { std::str::clone(o.body) };
+                }
+                if o.kind == "concern.proposed" && o.entity == e.entity { proposed = true; }
+                k = k + 1;
+            }
+            if seen >= self.concern_threshold && !proposed { self.propose_concern(e.entity, what, seen); }
+            i = i + 1;
+        }
     }
     // GH #604 rule 3: an effect requested and never resulted was in
     // dispatch when the organism stopped, and the outside may have
