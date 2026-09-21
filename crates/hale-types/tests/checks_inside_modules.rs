@@ -701,3 +701,84 @@ fn a_module_nested_advisory_stays_a_warning() {
     assert!(!flat[0].0, "the control is a warning: {:?}", flat);
     assert!(!nested[0].0, "so is the nested one: {:?}", nested);
 }
+
+// ---- check_entry_point_placement -----------------------------------
+//
+// The one check here whose finding exists ONLY at depth, which is why
+// it does not go through `control_and_nested`: the ENTRY POINT is the
+// exception to everything above. `spec/semantics.md` § "Declarations
+// inside `module { }`" has always said a seed's entry point is its
+// top-level `fn main`, and codegen looks for it in `program.items`
+// and nowhere else — so a seed whose only `fn main` is one brace
+// deeper checked clean and then failed to build with codegen's
+// spanless "program has no `fn main()`". The ruling on GH #911
+// (2026-09-20): check says so, where the declaration is.
+
+const ENTRY_MSG: &str = "the entry point must be top-level";
+
+#[test]
+fn a_module_nested_main_is_refused() {
+    let ds = diags("module inner {\n    fn main() { }\n}\n");
+    let found: Vec<&(bool, String)> =
+        ds.iter().filter(|(_, m)| m.contains(ENTRY_MSG)).collect();
+    assert_eq!(
+        found.len(),
+        1,
+        "expected exactly one entry-point finding, got: {:?}",
+        ds
+    );
+    assert!(found[0].0, "it is a hard error, as the build is: {:?}", found);
+    assert!(
+        found[0].1.contains("module inner"),
+        "it names the module the entry point has to leave: {:?}",
+        found
+    );
+}
+
+#[test]
+fn a_main_two_modules_deep_is_refused() {
+    let ds = diags(
+        "module outer {\n    module inner {\n        fn main() { }\n    }\n}\n",
+    );
+    let found: Vec<&(bool, String)> =
+        ds.iter().filter(|(_, m)| m.contains(ENTRY_MSG)).collect();
+    assert_eq!(found.len(), 1, "got: {:?}", ds);
+    assert!(
+        found[0].1.contains("module inner"),
+        "the innermost module is the one it is written in: {:?}",
+        found
+    );
+}
+
+/// The control: a top-level `fn main` beside a module full of
+/// declarations is the ordinary shape of every other test in this
+/// file, and it stays silent.
+#[test]
+fn a_top_level_main_beside_a_module_is_accepted() {
+    let src = format!(
+        "{}{}",
+        in_module("type Point { x: Int = 0; }\nfn bare() -> Int { return 1; }"),
+        "fn main() { println(bare()); }\n"
+    );
+    let ds = diags(&src);
+    assert!(
+        !ds.iter().any(|(_, m)| m.contains(ENTRY_MSG)),
+        "a module is a namespace, not a reason to move `fn main`: {:?}",
+        ds
+    );
+}
+
+/// A free fn inside a module that is NOT the entry point is exactly
+/// what the rest of this file is about: first class, and silent.
+#[test]
+fn a_module_nested_fn_of_another_name_is_accepted() {
+    let ds = diags(
+        "module inner {\n    fn mainish() -> Int { return 1; }\n}\n\
+         fn main() { println(mainish()); }\n",
+    );
+    assert!(
+        !ds.iter().any(|(_, m)| m.contains(ENTRY_MSG)),
+        "only `main` is the entry point: {:?}",
+        ds
+    );
+}

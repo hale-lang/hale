@@ -2657,6 +2657,12 @@ impl ImportDiag {
 /// GH #860: the `import` that names nothing, as a LOCATED
 /// diagnostic under its path literal.
 ///
+/// GH #820's refusal — a single file of a library another import
+/// already took as a directory — is raised the same way: it is a
+/// finding about an `import` statement, positioned under the path
+/// literal that has to change, and this is the one road from a
+/// merged-bundle span to the file that owns it.
+///
 /// The resolver printed `could not resolve import "..."` and
 /// returned a bare `Err(())`, which left the `errors` vector empty:
 /// after GH #806 it was the last failure on the check path still
@@ -2725,11 +2731,163 @@ fn report_import_diags(errors: &[ImportDiag]) -> ExitCode {
     ExitCode::from(1)
 }
 
+/// GH #820: which library a file of the build belongs to, and the
+/// `import` that put it there.
+#[derive(Clone)]
+struct FileClaim {
+    /// The library's identity, as `seed_cache` keys it: the
+    /// canonical directory for a directory import, the canonical
+    /// file for a single-file one.
+    lib_key: PathBuf,
+    /// The alias the claiming import bound.
+    alias: String,
+    /// The path as WRITTEN in the claiming import, which is what the
+    /// author has to change.
+    import_path: String,
+    /// The claiming import's path literal, for a located message.
+    path_span: hale_syntax::Span,
+    /// Did the claim come from the single-FILE spelling (resolution
+    /// rule 1) rather than from a directory?
+    single_file: bool,
+}
+
+/// Canonical file path -> the library that claimed it.
+type FileClaims = BTreeMap<PathBuf, FileClaim>;
+
+/// GH #820: `<file>:<line>` for an import's path literal.
+///
+/// The position of the OTHER import in a two-import conflict, quoted
+/// inside the message so every channel carries it — a `related`
+/// location would be dropped by [`ImportDiag::render`], which is what
+/// `build`, `run` and `test` print.
+///
+/// `sources` alone is not enough: a library file's text is inserted
+/// only AFTER its own imports are followed, so an `import` written
+/// inside a library is not in it yet when a conflict is found. The
+/// file is then read from disk, for the same reason
+/// [`unresolved_import_diag`] reads it.
+fn import_site(
+    path_span: hale_syntax::Span,
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &BTreeMap<PathBuf, String>,
+) -> Option<String> {
+    let off = path_span.start.as_usize() as u32;
+    for (base, path, len) in file_bases {
+        if !hale_syntax::file_owns_offset(*base, *len, off) {
+            continue;
+        }
+        let text = match sources.get(path) {
+            Some(s) => s.clone(),
+            None => fs::read_to_string(path).ok()?,
+        };
+        let (line, _) =
+            path_span.shifted(base.wrapping_neg()).line_col(&text);
+        return Some(format!("{}:{}", diag_file_name(path), line));
+    }
+    None
+}
+
+/// GH #820: a file of the build belongs to exactly ONE library.
+///
+/// `visited` is global across the build and holds canonical paths, so
+/// whichever identity resolves second finds the files the first
+/// already took and parses none of them. For the two spellings of one
+/// library that is right — GH #763 made them the same `lib_key`, and
+/// the second alias registers against the first's mangled names out
+/// of `seed_cache`. For a non-entry single file of a
+/// directory-imported library it is not: `import "../lib/helper" as h`
+/// and `import "../lib" as a` are genuinely DIFFERENT libraries (one
+/// file against the whole seed), and merge-once has no way to give
+/// `helper.hl` two manglings. So whichever resolved second got only
+/// the files the other did not take, and `a::helper_name` — or
+/// `h::helper_name`, depending on the order — silently resolved to
+/// nothing (GH #820).
+///
+/// The ruling (2026-09-20, GH #911): refuse the FILE spelling, at the
+/// import that has to change, naming the library that already holds
+/// the file and where that import is written. The message is located
+/// at the single-file import in BOTH resolution orders — it is the
+/// spelling being refused, so pointing at the directory import
+/// instead would name a line there is nothing wrong with.
+///
+/// Two DIRECTORY identities can only meet over one file through a
+/// symlink (a file's parent directory is otherwise unique). There is
+/// no file spelling to refuse there, so the second import is refused
+/// and the message says which file is claimed twice.
+fn claim_library_files(
+    files: &[PathBuf],
+    lib_key: &Path,
+    alias: &str,
+    imp: &hale_syntax::ast::Import,
+    single_file: bool,
+    claims: &mut FileClaims,
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &mut BTreeMap<PathBuf, String>,
+) -> Option<ImportDiag> {
+    for file in files {
+        let canon = file.canonicalize().unwrap_or_else(|_| file.clone());
+        let fresh = FileClaim {
+            lib_key: lib_key.to_path_buf(),
+            alias: alias.to_string(),
+            import_path: imp.path.clone(),
+            path_span: imp.path_span,
+            single_file,
+        };
+        let Some(prev) = claims.get(&canon).cloned() else {
+            claims.insert(canon, fresh);
+            continue;
+        };
+        if prev.lib_key == lib_key {
+            continue;
+        }
+        let (refused, other) = if prev.single_file {
+            (&prev, &fresh)
+        } else {
+            (&fresh, &prev)
+        };
+        let at = match import_site(other.path_span, file_bases, sources) {
+            Some(s) => format!(" at {}", s),
+            None => String::new(),
+        };
+        let message = if refused.single_file {
+            format!(
+                "`{}` is already part of the library imported as `{}`{}; \
+                 a single file of a directory-imported library is not a \
+                 library of its own — reach its declarations as \
+                 `{}::<name>` and drop this import",
+                refused.import_path, other.alias, at, other.alias,
+            )
+        } else {
+            format!(
+                "{} is already part of the library imported as `{}`{}; \
+                 a file belongs to one library, so these two imports \
+                 cannot both hold it",
+                diag_file_name(&canon),
+                other.alias,
+                at,
+            )
+        };
+        return Some(unresolved_import_diag(
+            refused.path_span,
+            message.clone(),
+            IoDiag::target(&canon, message),
+            file_bases,
+            sources,
+        ));
+    }
+    None
+}
+
 fn resolve_imports(
     imports: &[hale_syntax::ast::Import],
     importer_dir: &Path,
     workspace_root: Option<&Path>,
     visited: &mut std::collections::BTreeSet<PathBuf>,
+    // GH #820: which library each file of the build belongs to. The
+    // companion of `visited`: that set says a file has been taken,
+    // this map says by WHOM, which is what makes a second claim on
+    // one file reportable instead of silent.
+    claims: &mut FileClaims,
     sources: &mut BTreeMap<PathBuf, String>,
     // Per-file (virtual base offset, canonical path, byte length). Each
     // file is parsed at a distinct base so merged spans are globally
@@ -2879,6 +3037,23 @@ fn resolve_imports(
             }
         };
         alias_scopes.record_binding(scope_key, &alias, &lib_key);
+        // GH #820: before anything is parsed, check that no file of
+        // this target already belongs to another library — the
+        // `visited` skip below would otherwise hand this alias a
+        // partial file set with no diagnostic anywhere.
+        if let Some(conflict) = claim_library_files(
+            &files,
+            &lib_key,
+            &alias,
+            imp,
+            matches!(target, ImportTarget::SingleFile(_)),
+            claims,
+            file_bases,
+            sources,
+        ) {
+            errors.push(conflict);
+            return Err(());
+        }
         // Parse every file in the import target into a parallel
         // (file_path, stem, source, Program) list, recording the
         // canon path in `visited` so we don't double-parse.
@@ -3090,6 +3265,7 @@ fn resolve_imports(
                 &lib_dir,
                 workspace_root,
                 visited,
+                claims,
                 sources,
                 file_bases,
                 errors,
@@ -3160,6 +3336,9 @@ fn parse_with_imports(
     let mut errors: Vec<ImportDiag> = Vec::new();
     let mut visited: std::collections::BTreeSet<PathBuf> =
         std::collections::BTreeSet::new();
+    // GH #820: the entry seed's own files are not claimed — a library
+    // is what an `import` names, and the entry is not imported.
+    let mut claims: FileClaims = FileClaims::new();
 
     let workspace_root = find_workspace_root(entry);
     let entry_dir = entry
@@ -3217,6 +3396,7 @@ fn parse_with_imports(
         &entry_dir,
         workspace_root.as_deref(),
         &mut visited,
+        &mut claims,
         &mut sources,
         &mut file_bases,
         &mut errors,
@@ -4219,6 +4399,9 @@ fn collect_checkable(
         sources.clone().into_iter().collect();
     let mut visited: std::collections::BTreeSet<PathBuf> =
         files.iter().filter_map(|f| f.canonicalize().ok()).collect();
+    // GH #820: as on the entry path — the seed being checked is not
+    // one of the libraries its imports name.
+    let mut claims: FileClaims = FileClaims::new();
     let mut file_bases = file_bases;
     let mut errors: Vec<ImportDiag> = Vec::new();
     let importer_dir = if target.is_dir() {
@@ -4237,6 +4420,7 @@ fn collect_checkable(
         &importer_dir,
         workspace_root.as_deref(),
         &mut visited,
+        &mut claims,
         &mut path_sources,
         &mut file_bases,
         &mut errors,
@@ -7621,6 +7805,9 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
             Err(_) => visited.insert(f.clone()),
         };
     }
+    // GH #820: as on the entry path — the seed being built is not one
+    // of the libraries its imports name.
+    let mut claims: FileClaims = FileClaims::new();
     let mut import_errors: Vec<ImportDiag> = Vec::new();
     // GH #746: the directory is one seed; its aliases are scoped to it.
     let target_scope =
@@ -7638,6 +7825,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         target,
         workspace_root.as_deref(),
         &mut visited,
+        &mut claims,
         &mut path_sources,
         &mut file_bases,
         &mut import_errors,
@@ -7815,6 +8003,9 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
                 visited.insert(f.clone());
             }
         }
+        // GH #820: as on the entry path — the seed being run is not
+        // one of the libraries its imports name.
+        let mut claims: FileClaims = FileClaims::new();
         let mut import_errors: Vec<ImportDiag> = Vec::new();
         // GH #746: the directory is one seed; its aliases are scoped
         // to it.
@@ -7833,6 +8024,7 @@ fn run_build(target: &Path, flags: &[String]) -> ExitCode {
             target,
             workspace_root.as_deref(),
             &mut visited,
+            &mut claims,
             &mut path_sources,
             &mut dir_file_bases,
             &mut import_errors,

@@ -148,6 +148,16 @@ struct Parser {
     /// declaration, in ordinary source order — is reported; later
     /// occurrences of the SAME word recover silently.
     reserved_as_name: Vec<&'static str>,
+    /// GH #901: how many `module { }` bodies enclose the declaration
+    /// being parsed. Every top-level declaration is admissible at any
+    /// depth (a module is a namespace, not an analysis boundary) with
+    /// ONE exception: `target NAME { }` is a program-level build
+    /// directive, not a declaration a namespace can hold. Honouring
+    /// it at depth would be a behaviour change to the build — the
+    /// wasm gate in `check.rs`, `desugar`'s entry detection and the
+    /// stdlib gating all read `program.items` — so the parser refuses
+    /// it where it is written instead of letting it sit there inert.
+    module_depth: u32,
     /// GH #863: built-in call forms ([`BUILTIN_CALL_FORMS`]) this
     /// parse has already reported as a free `fn` name. Same ledger
     /// idea as `reserved_as_name`, one layer out: the mistake is the
@@ -170,6 +180,7 @@ impl Parser {
             effect_defs: Vec::new(),
             domains: Vec::new(),
             in_fallible_body: false,
+            module_depth: 0,
             reserved_as_name: Vec::new(),
             builtin_named_as_fn: Vec::new(),
         }
@@ -1198,6 +1209,15 @@ impl Parser {
             // Contextual keyword recognized only at top-level decl
             // position.
             TokenKind::Ident(s) if s == "target" => {
+                // GH #901: and only at the PROGRAM's top level. See
+                // `Parser::module_depth`.
+                if self.module_depth > 0 {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "`target` is a program-level declaration; move \
+                         it to the top level",
+                    ));
+                }
                 self.parse_target_decl().map(TopDecl::Target)
             }
             // GH #382 phase 1: `group NAME = { member, ... };` —
@@ -5828,16 +5848,34 @@ impl Parser {
         let kw = self.expect(TokenKind::Module, "module")?;
         let name = self.expect_ident("module name")?;
         self.expect(TokenKind::LBrace, "{")?;
-        let mut items = Vec::new();
-        while !self.at(&TokenKind::RBrace) && !matches!(self.peek(), TokenKind::Eof) {
-            items.push(self.parse_top_decl()?);
-        }
+        // GH #901: the body is parsed at depth, and the depth is
+        // restored whether the body parsed or not — an item that
+        // fails here is recovered from at the top level
+        // (`recover_to_top_level`), so leaving the counter raised
+        // would refuse a later top-level `target`.
+        self.module_depth += 1;
+        let body = self.parse_module_items();
+        self.module_depth -= 1;
+        let items = body?;
         let close = self.expect(TokenKind::RBrace, "}")?;
         Ok(ModuleDecl {
             name,
             items,
             span: kw.span.merge(close.span),
         })
+    }
+
+    /// A module body's declarations, up to (not including) its `}`.
+    /// Split out of [`Parser::parse_module_decl`] so the depth
+    /// counter is restored on the error path too.
+    fn parse_module_items(&mut self) -> Result<Vec<TopDecl>, Diag> {
+        let mut items = Vec::new();
+        while !self.at(&TokenKind::RBrace)
+            && !matches!(self.peek(), TokenKind::Eof)
+        {
+            items.push(self.parse_top_decl()?);
+        }
+        Ok(items)
     }
 
     // === type expressions ================================
