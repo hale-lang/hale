@@ -422,6 +422,11 @@ fn s3_wait_gone(pid: Int, max_ms: Int) -> Bool {
 // seconds, KILL, the organization's and application's trees, then
 // `hale dna body release` for the lease. The host has no signal
 // handler, so nothing but this path writes `body.released`.
+//
+// The effect happens here, so the outcome carries its own `record`
+// evidence (the journal's head before the TERM, and the rows past it
+// once the host has ended): the dispatcher's evidence hook runs on
+// settled runs and children, not on an inline outcome.
 fn s3_stop_local_body(ctx: HeadContext) -> Plan {
     let root = ctx.active_root;
     let d = s3_dna_dir(root);
@@ -430,6 +435,8 @@ fn s3_stop_local_body(ctx: HeadContext) -> Plan {
     let org = s3_org_pid(root);
     let org_alive = s3_pid_alive(org);
     if !body_alive && !org_alive { return s3_refuse("body_not_running", s3_reason("body_not_running")); }
+    let record = dna::GitRecord { repo: root };
+    let head_before = record.head("journal");
     // the host's pid: the first line of the fence mandate it wrote
     let mandate = std::io::fs::read_file(d + "/body.fence") or "";
     let nl = std::str::index_of(mandate, "\n");
@@ -471,6 +478,7 @@ fn s3_stop_local_body(ctx: HeadContext) -> Plan {
     b.string_field("released_by", released_by);
     b.int_field("exit_code", code);
     if len(released_text) > 0 { b.string_field("release", released_text); }
+    b.field("record", record_evidence(root, head_before));
     b.end_object();
     return s3_inline(b.result());
 }
@@ -875,6 +883,23 @@ fn s3_connection_to(journal: String, peer: String) -> String {
     return "";
 }
 
+// The classes a row holds comma-joined (as the verb takes them), as
+// the array of names the wire carries — the shape a propose request
+// sends them in.
+fn s3_classes_json(joined: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_array();
+    let mut rest = joined;
+    while len(rest) > 0 {
+        let comma = std::str::index_of(rest, ",");
+        let c = std::str::trim(if comma < 0 { rest } else { rest[0..comma] });
+        rest = if comma < 0 { "" } else { rest[(comma + 1)..len(rest)] };
+        if len(c) > 0 { b.string_value(c); }
+    }
+    b.end_array();
+    return b.result();
+}
+
 fn s3_connections_json(journal: String) -> String {
     let b = std::json::Builder { };
     b.begin_array();
@@ -890,7 +915,7 @@ fn s3_connections_json(journal: String) -> String {
         b.string_field("url", c.url);
         b.string_field("position", c.position);
         b.string_field("purpose", c.purpose);
-        b.string_field("classes", c.classes);
+        b.field("classes", s3_classes_json(c.classes));
         b.string_field("state", s3_connection_state(c));
         b.end_object();
     }

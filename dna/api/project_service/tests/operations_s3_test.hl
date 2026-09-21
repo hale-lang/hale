@@ -533,7 +533,7 @@ locus S3Cases {
         std::test::assert(proposed.external && proposed.run_kind == "run", "a propose crosses to the peer");
         let d1 = head::s3_project_detail_json(c, self.alpha);
         let conn = item_where(std::json::find_field_raw(d1, "connections"), "name", "beta");
-        std::test::assert(len(conn) > 0 && std::json::find_string_field(conn, "url") == beta_url && std::json::find_string_field(conn, "position") == "client" && std::json::find_string_field(conn, "purpose") == "the books" && std::json::find_string_field(conn, "classes") == "internal" && std::json::find_string_field(conn, "state") == "proposed", "the detail lists it as proposed: " + d1);
+        std::test::assert(len(conn) > 0 && std::json::find_string_field(conn, "url") == beta_url && std::json::find_string_field(conn, "position") == "client" && std::json::find_string_field(conn, "purpose") == "the books" && std::json::find_field_raw(conn, "classes") == "[\"internal\"]" && std::json::find_string_field(conn, "state") == "proposed", "the detail lists it as proposed: " + d1);
         std::test::assert_eq_str(std::json::find_field_raw(d1, "handoffs"), "[]", "no handoffs yet");
         // the Board puts it in force: someone other than its proposer
         let rid = word_after(text, "hale dna review ");
