@@ -1301,6 +1301,27 @@ textarea.kd-input { resize: vertical; min-height: 120px; line-height: 1.6; }
   .task-assignment-stop { height: 100%; }
   .task-assignment-facts > div { grid-template-columns: minmax(0, 1fr); gap: .25rem; }
 }
+/* Raising work: the ask sits beside the handed Tasks it will join. */
+.task-create { min-width: 0; margin: .5rem 0 1rem; padding: 1rem 1.1rem; border: 1px solid var(--line); border-radius: 12px; background: radial-gradient(ellipse at 90% 0, #5ad9c909, transparent 60%); }
+.task-create h2 { margin: .4rem 0 .6rem; font-size: 1.15rem; }
+.task-create-form { display: grid; gap: .75rem; margin-top: .9rem; }
+.task-create-field { display: grid; gap: .45rem; font-size: .85rem; }
+.task-create-field textarea, .task-create-field select { width: 100%; min-width: 0; padding: .6rem; background: #10151b; color: inherit; border: 1px solid var(--line-strong, #3c4a57); font: inherit; }
+.task-create-field textarea { min-height: 6rem; resize: vertical; white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-create-field textarea[aria-invalid="true"] { border-color: var(--red); }
+.task-create-field select { min-height: 2.75rem; }
+.task-create-counter { margin: 0; color: var(--muted); font: .75rem var(--mono); }
+.task-create-status { margin: 0; min-height: 1.2em; color: var(--muted); font-size: .85rem; overflow-wrap: anywhere; }
+.task-create-form .button { justify-self: start; }
+.task-create-frame .intervention-panel { margin: 1rem 0; padding: 1rem 1.1rem; border: 1px solid #45616f; border-radius: 2px; background: #141f28; }
+.task-create-frame .outcome-value { white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-create-recovery { padding: 1rem 1.1rem; border: 1px solid #6d5a3e; border-radius: 2px; background: #201e1c; }
+.task-create-recovery[data-intent-state="born"], .task-create-recovery[data-intent-state="offered"] { border-color: #3a7980; background: #14201f; }
+.task-create-recovery[data-intent-state="refused"] { border-color: #dca090; }
+@media (max-width: 650px) {
+  .task-create, .task-create-recovery { padding: .85rem; }
+  .task-create-form .button { justify-self: stretch; }
+}
 /* Person retirement: keep the people and the work visually connected. */
 .person-administration { padding: clamp(20px, 3vw, 40px); min-width: 0; }
 .person-heading { display: flex; align-items: center; gap: 20px; margin-bottom: 32px; }

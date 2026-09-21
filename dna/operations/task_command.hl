@@ -12,7 +12,7 @@ locus TaskCommandCodec {
             && c.target_kind == "dna.task" && common.bounded(c.target_id, 256, true, false) && common.bounded(c.request_id, 128, true, false)
             && dna::digest_well_formed(c.subject_digest) && common.bounded(c.expected_assignee, 256, true, false) && common.bounded(c.new_assignee, 256, true, false)
             && c.expected_assignee != c.new_assignee && c.text == "" && c.rationale == "" && c.expected_review_state == "" && c.verdict == "" && c.comment == ""
-            && c.source_head == "" && c.dependency_source == "" && c.dependency_digest == "" && c.record_head == "" && c.source_text == "";
+            && c.source_head == "" && c.dependency_source == "" && c.dependency_digest == "" && c.record_head == "" && c.source_text == "" && c.outcome == "" && c.to == "";
     }
     fn field(b: std::bytes::BytesBuilder, key: String, value: String) { let common = GovernanceCommandCodec { }; b.append_str(",\""); b.append_str(key); b.append_str("\":"); b.append_str(common.quote(value)); }
     fn canonical(context: GovernanceContext, c: GovernanceCommand) -> String {

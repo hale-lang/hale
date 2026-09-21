@@ -1471,8 +1471,8 @@
       ],
       "post": {
         "operationId": "submitGovernanceCommand",
-        "summary": "Submit a governed Practice, Review, Organization or Task command",
-        "description": "Submit a known typed operation using an explicit native provider. Organization fixed-module preparation has a separate capability and source authority; its availability is disabled until deployment integration is enabled. Source Review uses the historical dna.review.verdict payload with the explicit organization_review_commands capability. Task reassignment uses the separate native Task capability, exact current assignment digest and assignee, and a recipient drawn from its explicit policy. Proposal completion does not establish application or activation.",
+        "summary": "Submit a governed Practice, Review, Organization or Task command, or raise work",
+        "description": "Submit a known typed operation using an explicit native provider. Organization fixed-module preparation has a separate capability and source authority; its availability is disabled until deployment integration is enabled. Source Review uses the historical dna.review.verdict payload with the explicit organization_review_commands capability. Task reassignment uses the separate native Task capability, exact current assignment digest and assignee, and a recipient drawn from its explicit policy. Raising work (dna.task.create) uses the task_create_commands capability, an outcome and a position, and the Record head it was prepared against; it admits the same intent.requested row the CLI writes, and the organism answers separately. Proposal completion does not establish application or activation.",
         "parameters": [
           {
             "name": "Origin",
@@ -1620,7 +1620,7 @@
       "get": {
         "operationId": "recoverPracticeCommand",
         "summary": "Recover a command receipt by caller request identity",
-        "description": "Recover supported operations through one provider-owned application/principal/request namespace. The returned operation-specific receipt is validated without reconstructing a command body. Current read permission is independent of write availability. A missing or unavailable lookup does not authorize resubmission; a Review settlement alone never proves this verdict command succeeded.",
+        "description": "Recover supported operations through one provider-owned application/principal/request namespace. The returned operation-specific receipt is validated without reconstructing a command body. Current read permission is independent of write availability. A missing or unavailable lookup does not authorize resubmission; a Review settlement alone never proves this verdict command succeeded. A raised-work receipt re-derives the organism's answer (requested, offered, refused or born with the Task id) from the Record on every lookup.",
         "parameters": [
           {
             "name": "request_id",

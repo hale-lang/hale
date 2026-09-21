@@ -6,7 +6,7 @@ import { httpFixture } from './runtime-harness.mjs';
 const APP='a'.repeat(40), HEAD='b'.repeat(40), NEXT='c'.repeat(40), EVENT='d'.repeat(40), DIGEST='sha256:'+'e'.repeat(64);
 const WHO='mara / équipe', TO='lee', PRINCIPAL={mode:'local',name:'riley'};
 const test=base.extend({host:async({},use)=>{
-  const names=['index.html','app.js','styles.css','runtime.js','application.js','organization-draft.js','definition-draft.js','knowledge-draft.js','task-administration.js', 'projects.js'];
+  const names=['index.html','app.js','styles.css','runtime.js','application.js','organization-draft.js','definition-draft.js','knowledge-draft.js','task-administration.js', 'projects.js', 'task-create.js'];
   const assets=new Map(await Promise.all(names.map(async n=>[n,await readFile(new URL('../web/'+n,import.meta.url))])));
   const host=await httpFixture((req,res)=>{const name=req.url==='/'?'index.html':req.url.slice(1);if(!assets.has(name)){res.writeHead(404).end();return;}res.setHeader('content-type',name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html');res.end(assets.get(name));});
   try{await use(host);}finally{await host.close();}

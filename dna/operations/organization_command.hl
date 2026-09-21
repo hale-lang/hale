@@ -34,7 +34,8 @@ locus OrganizationCommandCodec {
             && (c.dependency_source == "none" || c.dependency_source == "committed_source" || c.dependency_source == "local_vendor_snapshot")
             && dna::digest_well_formed(c.dependency_digest)
             && common.bounded(c.source_text, 16384, true, true) && common.bounded(c.rationale, 2048, true, true)
-            && c.expected_assignee == "" && c.new_assignee == "" && c.text == "" && c.expected_review_state == "" && c.verdict == "" && c.comment == "";
+            && c.expected_assignee == "" && c.new_assignee == "" && c.text == "" && c.expected_review_state == "" && c.verdict == "" && c.comment == ""
+            && c.outcome == "" && c.to == "";
     }
     fn field(b: std::bytes::BytesBuilder, key: String, value: String) {
         let common = GovernanceCommandCodec { }; b.append_str(",\""); b.append_str(key); b.append_str("\":"); b.append_str(common.quote(value));

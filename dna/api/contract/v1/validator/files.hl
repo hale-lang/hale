@@ -272,6 +272,7 @@ locus ContractFiles {
         let mut draft_request = false; let mut draft_valid = false; let mut draft_invalid = false; let mut draft_rejected = false;
         let mut head_state = false; let mut head_projects = false; let mut head_command_request = false; let mut head_command_receipt = false;
         let mut head_command_refused = false; let mut head_command_unknown = false; let mut head_command_invalid = false; let mut head_log = false;
+        let mut task_create_request = false; let mut task_create_receipt = false; let mut task_create_unknown = false; let mut task_create_invalid = false;
         while !examples.done {
             let example = examples.element;
             let name = std::json::find_string_field(example, "name");
@@ -320,6 +321,7 @@ locus ContractFiles {
                     if state == "refused" { head_command_refused = true; }
                     if state == "outcome_unknown" { head_command_unknown = true; }
                 }
+                if definition == "TaskCreateCommandRequest" { task_create_request = true; }
                 if definition == "CommandResponse" {
                     let data = std::json::find_field_raw(value, "data");
                     let state = std::json::find_string_field(data, "state");
@@ -330,6 +332,10 @@ locus ContractFiles {
                     } else {
                         command_receipt = true;
                         if state == "outcome_unknown" { command_unknown = true; }
+                        if std::json::find_string_field(data, "operation") == "dna.task.create" {
+                            task_create_receipt = true;
+                            if state == "outcome_unknown" { task_create_unknown = true; }
+                        }
                     }
                 }
                 if definition == "ErrorResponse" {
@@ -350,6 +356,7 @@ locus ContractFiles {
                 if definition == "KnowledgeCommandResponse" || definition == "KnowledgeCommandRequest" || definition == "KnowledgeCommandCapabilityResponse" { knowledge_command_invalid = true; }
                 if definition == "PracticeCommandRequest" || definition == "CommandResponse" { command_invalid = true; }
                 if definition == "HeadCommandRequest" || definition == "HeadCommandResponse" || definition == "HeadResponse" { head_command_invalid = true; }
+                if definition == "TaskCreateCommandRequest" || definition == "TaskCreateCommandReceipt" || definition == "TaskCreateCommandCapabilities" { task_create_invalid = true; }
                 if definition == "ReviewCommandRequest" || (definition == "CommandResponse" && std::json::find_string_field(std::json::find_field_raw(value, "data"), "operation") == "dna.review.verdict") { review_invalid = true; }
             }
             examples = std::json::array_next(examples);
@@ -363,6 +370,7 @@ locus ContractFiles {
         if !draft_request || !draft_valid || !draft_invalid || !draft_rejected { return ValidationResult { error: "fixtures: draft needs exact request, native valid/invalid and closed-envelope rejection coverage" }; }
         if !review_capabilities || !review_request || !review_receipt || !review_unknown || !review_independent || !review_invalid { return ValidationResult { error: "fixtures: Review commands need independent capabilities, request, receipt, unknown-outcome, per-command refusal and invalid-envelope coverage" }; }
         if !head_state || !head_projects || !head_command_request || !head_command_receipt || !head_command_refused || !head_command_unknown || !head_command_invalid || !head_log { return ValidationResult { error: "fixtures: the head needs state, projects, request, receipt, refused, unknown-outcome, invalid-shape and log-page coverage" }; }
+        if !task_create_request || !task_create_receipt || !task_create_unknown || !task_create_invalid { return ValidationResult { error: "fixtures: raising work needs request, receipt, unknown-outcome and invalid-shape coverage" }; }
         return ValidationResult { ok: true };
     }
     fn check() -> ValidationResult {

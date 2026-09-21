@@ -10,6 +10,7 @@ import "./commands" as scripted;
 const SUBJECT: String = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const ORIGIN: String = "http://127.0.0.1:8792";
 const HEADERS: String = "Origin: http://127.0.0.1:8792\r\nContent-Type: application/json\r\nX-Hale-Command: 1";
+const RECORD_HEAD: String = "cccccccccccccccccccccccccccccccccccccccc";
 
 locus CommandCases {
     params { f: fixture::Fixture; host: scripted::ScriptedCommands = scripted::ScriptedCommands { }; }
@@ -33,6 +34,119 @@ locus CommandCases {
         b.begin_object_field("arguments"); b.string_field("verdict", verdict); b.string_field("comment", comment); b.end_object();
         b.end_object(); return b.result();
     }
+    fn create_body(id: String, outcome: String, to: String) -> String {
+        let b = std::json::Builder { }; b.begin_object();
+        b.string_field("request_id", id); b.string_field("operation", "dna.task.create"); b.string_field("operation_version", "1");
+        b.begin_object_field("context"); b.string_field("application_id", self.f.identity); b.string_field("position_id", "org"); b.end_object();
+        b.begin_object_field("target"); b.string_field("application_id", self.f.identity); b.string_field("kind", "dna.record"); b.string_field("id", self.f.identity); b.end_object();
+        b.begin_object_field("preconditions"); b.string_field("record_head", RECORD_HEAD);
+        b.begin_object_field("principal"); b.string_field("mode", "local"); b.string_field("name", "alice"); b.end_object(); b.end_object();
+        b.begin_object_field("arguments"); b.string_field("outcome", outcome); b.string_field("to", to); b.end_object();
+        b.end_object(); return b.result();
+    }
+    // Raising work over HTTP: the same envelope, gate, identity and recovery
+    // as the other operations; the organism's answer rides in `task_create`.
+    fn create_cases() {
+        let wire = api::CommandWire { };
+        let service = api::Api { root: self.f.root, local_name: "alice", commands: self.host, command_origin: ORIGIN };
+        let outcome = "  Raise é 🧭\n第二行 <script>literal</script>  ";
+        let body = self.create_body("create-request", outcome, "org/support");
+        let args = wire.raw(body, "arguments"); let conditions = wire.raw(body, "preconditions");
+        let refs = self.f.refs();
+        let data = wire.raw(self.call(service, "GET", "/capabilities", "", "", 200, ""), "data");
+        std::test::assert_eq_str(wire.text(wire.raw(data, "task_create_commands"), "profile"), "dna.task.create.v1", "create profile advertised");
+        std::test::assert_eq_str(wire.text(wire.raw(data, "task_create_commands"), "max_outcome_bytes"), "8192", "outcome bound advertised");
+        std::test::assert_eq_str(wire.raw(wire.raw(data, "writes"), "task_create"), "true", "create write flag");
+        self.host.create_authorized = false;
+        let denied = wire.raw(self.call(service, "GET", "/capabilities", "", "", 200, ""), "data");
+        std::test::assert_eq_str(wire.raw(wire.raw(denied, "writes"), "task_create"), "false", "authorization separate from support");
+        std::test::assert_eq_str(wire.raw(wire.raw(denied, "task_create_commands"), "authorized"), "false", "profile reports denial");
+        self.call(service, "POST", "/commands", HEADERS, body, 403, "forbidden");
+        self.host.create_authorized = true; self.host.create_supported = false;
+        let unsupported = wire.raw(self.call(service, "GET", "/capabilities", "", "", 200, ""), "data");
+        std::test::assert_eq_str(wire.raw(unsupported, "task_create_commands"), "", "unsupported profile omitted");
+        std::test::assert_eq_str(wire.raw(wire.raw(unsupported, "writes"), "task_create"), "", "unsupported flag omitted");
+        self.no_dispatch(service, HEADERS, body, 503, "commands_unsupported");
+        self.host.create_supported = true;
+        let absent = api::Api { root: self.f.root };
+        self.call(absent, "POST", "/commands", HEADERS, body, 405, "method_not_allowed");
+        self.no_dispatch(service, HEADERS, self.field(body, "arguments", "{\"outcome\":\"a\"}"), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "arguments", self.field(args, "by", "\"attacker\"")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "arguments", self.field(args, "outcome", "\"\"")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "arguments", self.field(args, "to", "\"\"")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "arguments", self.field(args, "to", "\"" + self.repeat(257) + "\"")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "arguments", self.field(args, "to", "\"a\\nb\"")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "arguments", self.field(args, "to", "5")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "preconditions", "{\"subject_digest\":\"" + RECORD_HEAD + "\",\"principal\":{\"mode\":\"local\",\"name\":\"alice\"}}"), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "preconditions", self.field(conditions, "record_head", "\"\"")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "preconditions", self.field(conditions, "record_head", "7")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "target", self.field(wire.raw(body, "target"), "kind", "\"dna.task\"")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "target", self.field(wire.raw(body, "target"), "id", "\"another-record\"")), 400, "invalid_command");
+        self.no_dispatch(service, HEADERS, self.field(body, "actor", "\"attacker\""), 400, "invalid_command");
+        let text = self.repeat(8190) + "é";
+        std::test::assert(wire.parse(self.field(body, "arguments", "{\"outcome\":\"" + text + "\",\"to\":\"org\"}"), self.f.identity).valid, "8192 UTF-8 outcome bytes accepted exactly");
+        self.no_dispatch(service, HEADERS, self.field(body, "arguments", "{\"outcome\":\"" + text + "a\",\"to\":\"org\"}"), 400, "invalid_command");
+        let switched = api::Api { root: self.f.root, local_name: "bob", commands: self.host, command_origin: ORIGIN };
+        self.no_dispatch(switched, HEADERS, body, 409, "command_context_changed");
+        let recorded = wire.raw(self.call(service, "POST", "/commands", HEADERS, body, 200, ""), "data");
+        std::test::assert_eq_str(wire.text(recorded, "operation"), "dna.task.create", "receipt selects the create variant");
+        std::test::assert_eq_str(wire.text(wire.raw(recorded, "task_create"), "intent_state"), "requested", "admitted ask is requested until the organism answers");
+        std::test::assert_eq_str(wire.text(wire.raw(recorded, "task_create"), "intent_id"), "i1f4", "the minted intent id");
+        std::test::assert_eq_str(wire.text(wire.raw(recorded, "task_create"), "task_id"), "", "no Task before birth");
+        std::test::assert_eq_str(wire.raw(recorded, "task"), "", "create receipt has no reassignment fields");
+        std::test::assert_eq_str(wire.raw(recorded, "proposal"), "", "create receipt has no proposal fields");
+        std::test::assert_eq_str(wire.text(wire.raw(recorded, "target"), "kind"), "dna.record", "the target is the Record");
+        std::test::assert_eq_str(wire.text(recorded, "subject_digest"), RECORD_HEAD, "the subject is the head the request was prepared against");
+        std::test::assert_eq_str(self.host.last_command.outcome, outcome, "literal outcome preserved");
+        std::test::assert_eq_str(self.host.last_command.to, "org/support", "exact position forwarded");
+        std::test::assert_eq_str(self.host.last_command.record_head, RECORD_HEAD, "head precondition forwarded");
+        std::test::assert_eq_str(self.host.last_command.subject_digest, RECORD_HEAD, "subject mirrors the head");
+        let submitted = self.host.submit_calls;
+        self.host.create_authorized = false;
+        let recovered = wire.raw(self.call(service, "GET", "/commands?request_id=create-request", "", "", 200, ""), "data");
+        std::test::assert_eq_int(self.host.submit_calls, submitted, "lookup after write revocation never submits");
+        std::test::assert_eq_str(wire.text(wire.raw(recovered, "task_create"), "intent_id"), "i1f4", "recovery reads the same ask");
+        self.host.create_authorized = true;
+        self.host.mode = "intent_offered";
+        std::test::assert_eq_str(wire.text(wire.raw(wire.raw(self.call(service, "GET", "/commands?request_id=create-request", "", "", 200, ""), "data"), "task_create"), "intent_state"), "offered", "the organism's offer is observed through lookup");
+        self.host.mode = "task_born";
+        let born = wire.raw(self.call(service, "GET", "/commands?request_id=create-request", "", "", 200, ""), "data");
+        std::test::assert_eq_str(wire.text(wire.raw(born, "task_create"), "intent_state"), "born", "birth observed through lookup");
+        std::test::assert_eq_str(wire.text(wire.raw(born, "task_create"), "task_id"), "org:t1", "the born Task is named");
+        self.host.mode = "intent_refused";
+        let refused = wire.raw(self.call(service, "GET", "/commands?request_id=create-request", "", "", 200, ""), "data");
+        std::test::assert_eq_str(wire.text(refused, "state"), "succeeded", "a refusal by the organism is not a failed command");
+        std::test::assert_eq_str(wire.text(wire.raw(refused, "task_create"), "intent_state"), "refused", "refusal observed through lookup");
+        self.host.mode = "recorded";
+        self.call(service, "POST", "/commands", HEADERS, self.body("create-request", "different operation", "why"), 409, "request_conflict");
+        self.host.mode = "outcome_unknown";
+        let unknown = wire.raw(self.call(service, "POST", "/commands", HEADERS, self.create_body("create-unknown", "Unsure", "org"), 202, ""), "data");
+        std::test::assert_eq_str(wire.text(unknown, "state"), "outcome_unknown", "uncertain admission is non-terminal");
+        std::test::assert_eq_str(wire.text(wire.raw(unknown, "task_create"), "intent_state"), "unknown", "no intent is named for an uncertain ask");
+        std::test::assert_eq_str(wire.text(wire.raw(unknown, "task_create"), "intent_id"), "", "no intent id without a recorded row");
+        self.host.mode = "recorded";
+        let context = self.host.saved_context; let command = self.host.saved_command;
+        let good = self.host.result(context, command);
+        std::test::assert_eq_int(wire.response(context, command, good, true).status, 200, "scripted create receipt is valid");
+        let mut bad = self.host.result(context, command); bad.receipt.task_create.intent_state = "born"; self.bad_receipt(context, command, bad);
+        bad = self.host.result(context, command); bad.receipt.task_create.task_id = "PRIVATE-CANARY"; self.bad_receipt(context, command, bad);
+        bad = self.host.result(context, command); bad.receipt.task_create.event_id = ""; self.bad_receipt(context, command, bad);
+        bad = self.host.result(context, command); bad.receipt.task_create.intent_id = ""; self.bad_receipt(context, command, bad);
+        bad = self.host.result(context, command); bad.receipt.state = "recorded"; self.bad_receipt(context, command, bad);
+        bad = self.host.result(context, command); bad.receipt.state = "refused"; self.bad_receipt(context, command, bad);
+        bad = self.host.result(context, command); bad.receipt.target_kind = "dna.task"; self.bad_receipt(context, command, bad);
+        bad = self.host.result(context, command); bad.receipt.task.state = "applied"; bad.receipt.task.from = "a"; bad.receipt.task.to = "b"; bad.receipt.task.event_id = RECORD_HEAD; self.bad_receipt(context, command, bad);
+        bad = self.host.result(context, command); bad.receipt.proposal_state = "pending"; self.bad_receipt(context, command, bad);
+        bad = self.host.result(context, command); bad.receipt.activation_state = "adopted"; self.bad_receipt(context, command, bad);
+        bad = self.host.result(context, command); bad.receipt.review_state = "pending"; self.bad_receipt(context, command, bad);
+        bad = self.host.result(context, command); bad.receipt.subject_digest = "PRIVATE-CANARY"; self.bad_receipt(context, command, bad);
+        let practice_context = self.host.saved_context; let practice = self.host.saved_command;
+        self.call(service, "POST", "/commands", HEADERS, self.body("practice-then-create", "new proposal", "why"), 202, "");
+        let mut mixed = self.host.result(self.host.saved_context, self.host.saved_command); mixed.receipt.task_create.intent_id = "i1f4"; mixed.receipt.task_create.intent_state = "requested"; mixed.receipt.task_create.event_id = RECORD_HEAD;
+        self.bad_receipt(self.host.saved_context, self.host.saved_command, mixed);
+        self.call(service, "POST", "/commands", HEADERS, self.create_body("practice-then-create", "Raise", "org"), 409, "request_conflict");
+        std::test::assert_eq_str(self.f.refs(), refs, "create adapter conformance never writes native Record");
+    }
     fn review_cases() {
         let wire = api::CommandWire { };
         let reads = api::Wire { };
@@ -49,14 +163,14 @@ locus CommandCases {
         let data = wire.raw(self.call(service, "GET", "/capabilities", "", "", 200, ""), "data");
         std::test::assert_eq_str(wire.text(wire.raw(data, "review_commands"), "profile"), "dna.review.verdict.v1", "optional independent verdict profile");
         std::test::assert_eq_str(wire.raw(wire.raw(data, "writes"), "review_verdict"), "true", "review support independently advertised");
-        self.host.practice_authorized = false;
+        self.host.practice_authorized = false; self.host.create_authorized = false;
         let review_only = wire.raw(self.call(service, "GET", "/capabilities", "", "", 200, ""), "data");
         std::test::assert_eq_str(wire.raw(review_only, "read_only"), "false", "review authorization alone permits writes");
         std::test::assert_eq_str(wire.raw(wire.raw(review_only, "writes"), "practice_propose"), "false", "practice grant remains independent");
         self.host.review_authorized = false;
         let neither = wire.raw(self.call(service, "GET", "/capabilities", "", "", 200, ""), "data");
         std::test::assert_eq_str(wire.raw(neither, "read_only"), "true", "neither authorization grants writes");
-        self.host.practice_authorized = true; self.host.review_authorized = true;
+        self.host.practice_authorized = true; self.host.review_authorized = true; self.host.create_authorized = true;
         self.host.review_supported = false;
         let legacy = wire.raw(self.call(service, "GET", "/capabilities", "", "", 200, ""), "data");
         std::test::assert_eq_str(wire.raw(legacy, "review_commands"), "", "unsupported profile omitted");
@@ -345,5 +459,5 @@ fn main() {
     let made = dna::run_tool("mktemp\n-d\n/tmp/hale-command-api.XXXXXX");
     std::test::assert_eq_int(made.code, 0, made.stderr);
     let f = fixture::Fixture { root: dna::trim_nl(made.stdout), port: 1 };
-    let cases = CommandCases { f: f }; cases.run_cases(); cases.review_cases();
+    let cases = CommandCases { f: f }; cases.run_cases(); cases.review_cases(); cases.create_cases();
 }

@@ -35,6 +35,20 @@ behavior.
   operations without HTTP, and the head over HTTP with a restart. The book's
   run chapter and reference, `spec/dna.md` and the API README describe the
   head, its state directory and the sources directory.
+### Iris: raise work from the cockpit (GH #690)
+
+- `dna.task.create@1` is the command surface's `hale dna ask`. It admits the
+  same `intent.requested` row the CLI writes — entity the minted intent id,
+  author the acting principal, body `outcome`/`from`/`to` first and the command
+  fields after — so the relay and the organism treat a cockpit ask and a CLI
+  ask as one row. No policy grant: the authenticated principal is the
+  authority; the organism judges the position. The receipt succeeds once the
+  row is in the Record and re-derives the organism's answer (requested,
+  offered, refused, born with the Task id) on every lookup.
+- The cockpit's Handed Tasks register gains a "New task" form
+  (`web/task-create.js`) fed from the working-context loci, with the usual
+  identity-before-POST recovery. Contract, scripted HTTP, native API, domain
+  and browser cases cover it; the native browser lane proves the row bytes.
 
 ### Iris: inspect the declared organization (GH #690)
 

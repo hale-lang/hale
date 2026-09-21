@@ -69,7 +69,7 @@ export async function scriptedObserver() {
 
 export async function cockpitHost(observerOrigin = '', configuration = null) {
   const requests = [];
-  const assets = new Map(await Promise.all(['index.html', 'app.js', 'runtime.js', 'application.js', 'definition-draft.js', 'organization-draft.js', 'knowledge-draft.js', 'task-administration.js', 'projects.js', 'styles.css'].map(async name => [name, await readFile(path.join(web, name))])));
+  const assets = new Map(await Promise.all(['index.html', 'app.js', 'runtime.js', 'application.js', 'definition-draft.js', 'organization-draft.js', 'knowledge-draft.js', 'task-administration.js', 'projects.js', 'task-create.js', 'styles.css'].map(async name => [name, await readFile(path.join(web, name))])));
   const server = await httpFixture((req, res) => {
     requests.push(req.url);
     const headers = {

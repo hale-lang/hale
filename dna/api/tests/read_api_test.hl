@@ -316,7 +316,7 @@ locus Cases {
         f.prepare_web();
         std::io::fs::write_file(f.webroot + "/secret.txt", "PRIVATE-ASSET-CANARY") or discard;
         let before = f.refs(); f.start();
-        let paths = "/\n/app.js\n/styles.css\n/runtime.js\n/application.js\n/definition-draft.js\n/organization-draft.js\n/knowledge-draft.js\n/task-administration.js\n/projects.js";
+        let paths = "/\n/app.js\n/styles.css\n/runtime.js\n/application.js\n/definition-draft.js\n/organization-draft.js\n/knowledge-draft.js\n/task-administration.js\n/projects.js\n/task-create.js";
         let mut i = 0;
         while i < dna::count_lines(paths) {
             let response = f.http("GET", dna::line_at(paths, i), "", "");
@@ -326,7 +326,7 @@ locus Cases {
             std::test::assert_eq_str(dna::response_header(response.headers, "X-Content-Type-Options"), "nosniff", "assets are not sniffed");
             let policy = dna::response_header(response.headers, "Content-Security-Policy");
             std::test::assert(std::str::contains(policy, "default-src 'none'") && std::str::contains(policy, "script-src 'self'") && std::str::contains(policy, "style-src 'self'") && std::str::contains(policy, "connect-src 'self'") && std::str::contains(policy, "frame-ancestors 'none'") && !std::str::contains(policy, "unsafe-inline"), "same-origin external asset policy");
-            std::test::assert_eq_str(response.body, if i == 0 { fixture::SHELL_HTML } else if i == 1 { fixture::SHELL_JS } else if i == 2 { fixture::SHELL_CSS } else if i == 3 { fixture::SHELL_RUNTIME_JS } else if i == 4 { fixture::SHELL_APPLICATION_JS } else if i == 5 { fixture::SHELL_DEFINITION_DRAFT_JS } else if i == 6 { fixture::SHELL_ORGANIZATION_DRAFT_JS } else if i == 7 { fixture::SHELL_KNOWLEDGE_DRAFT_JS } else if i == 8 { fixture::SHELL_TASK_ADMINISTRATION_JS } else { fixture::SHELL_PROJECTS_JS }, "exact static asset");
+            std::test::assert_eq_str(response.body, if i == 0 { fixture::SHELL_HTML } else if i == 1 { fixture::SHELL_JS } else if i == 2 { fixture::SHELL_CSS } else if i == 3 { fixture::SHELL_RUNTIME_JS } else if i == 4 { fixture::SHELL_APPLICATION_JS } else if i == 5 { fixture::SHELL_DEFINITION_DRAFT_JS } else if i == 6 { fixture::SHELL_ORGANIZATION_DRAFT_JS } else if i == 7 { fixture::SHELL_KNOWLEDGE_DRAFT_JS } else if i == 8 { fixture::SHELL_TASK_ADMINISTRATION_JS } else if i == 9 { fixture::SHELL_PROJECTS_JS } else { fixture::SHELL_TASK_CREATE_JS }, "exact static asset");
             std::test::assert(!std::str::contains(response.body, p.text) && !std::str::contains(response.body, p.digest) && !std::str::contains(response.body, "PRIVATE-RECORD-NAME"), "static assets have no Record data");
             f.error("POST", dna::line_at(paths, i), 405, "", "{}");
             f.error("HEAD", dna::line_at(paths, i), 405, "", "");
@@ -349,15 +349,15 @@ locus Cases {
     }
     fn web_startup() {
         let mut i = 0;
-        while i < 13 {
+        while i < 14 {
             let f = fixture::Fixture { root: self.root + "/27-" + to_string(i) };
             f.prepare_web();
-            if i < 10 {
-                let filename = if i == 0 { "index.html" } else if i == 1 { "app.js" } else if i == 2 { "styles.css" } else if i == 3 { "runtime.js" } else if i == 4 { "application.js" } else if i == 5 { "definition-draft.js" } else if i == 6 { "organization-draft.js" } else if i == 7 { "knowledge-draft.js" } else if i == 8 { "task-administration.js" } else { "projects.js" };
+            if i < 11 {
+                let filename = if i == 0 { "index.html" } else if i == 1 { "app.js" } else if i == 2 { "styles.css" } else if i == 3 { "runtime.js" } else if i == 4 { "application.js" } else if i == 5 { "definition-draft.js" } else if i == 6 { "organization-draft.js" } else if i == 7 { "knowledge-draft.js" } else if i == 8 { "task-administration.js" } else if i == 9 { "projects.js" } else { "task-create.js" };
                 let removed = dna::run_tool("rm\n" + f.webroot + "/" + filename);
                 std::test::assert_eq_int(removed.code, 0, "remove required asset");
-            } else if i == 10 { f.webroot = f.root + "/absent"; }
-            else if i == 11 { f.webroot = ""; }
+            } else if i == 11 { f.webroot = f.root + "/absent"; }
+            else if i == 12 { f.webroot = ""; }
             else { std::io::fs::write_file(f.webroot + "/index.html", "") or discard; }
             let before = f.refs(); f.startup_refused("iris-webroot");
             std::test::assert_eq_str(f.refs(), before, "invalid webroot preserves refs");

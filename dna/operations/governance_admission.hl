@@ -96,6 +96,9 @@ type GovernanceAdmission {
     sequence: Int = -1;
     event_id: String = "";
     native_body: String = "";
+    // the appended row's entity where it is not the command id: the intent
+    // id of a dna.task.create row
+    entity: String = "";
     recovered: Bool = false;
     unknown: Bool = false;
 }
@@ -113,6 +116,7 @@ type GovernanceReceipt {
     task: TaskCommandOutcome = TaskCommandOutcome { };
     person: PersonRetirementOutcome = PersonRetirementOutcome { };
     organization: OrganizationCommandOutcome = OrganizationCommandOutcome { };
+    task_create: TaskCreateOutcome = TaskCreateOutcome { };
 }
 type GovernanceResult {
     ok: Bool = false; code: String = "commands_unavailable";
@@ -142,30 +146,35 @@ locus GovernanceCommands {
         organization_authority: GovernanceAuthority = NoGovernanceAuthority { };
         organization_inputs: OrganizationAdmissionInputs = NoOrganizationAdmissionInputs { };
     }
+    // Raising work needs no policy: any authenticated principal may ask, as
+    // with `hale dna ask`, so the composed service is the enablement.
     fn supported(operation: String, version: String) -> Bool {
         let codec = GovernanceCommandCodec { }; let org = OrganizationCommandCodec { };
-        let task = TaskCommandCodec { };
+        let task = TaskCommandCodec { }; let create = TaskCreateCommandCodec { };
         let person = PersonRetirementCodec { };
         let source_enabled = if operation == "dna.organization.ownership.propose" { self.organization_ownership_enabled } else { self.organization_enabled };
-        return codec.known(operation, version) || (self.tasks_enabled && task.known(operation, version)) || (self.retirement_enabled && person.known(operation, version)) || (source_enabled && org.known(operation, version));
+        return codec.known(operation, version) || create.known(operation, version) || (self.tasks_enabled && task.known(operation, version)) || (self.retirement_enabled && person.known(operation, version)) || (source_enabled && org.known(operation, version));
     }
     fn command_valid(context: GovernanceContext, command: GovernanceCommand) -> Bool {
         let codec = GovernanceCommandCodec { }; let org = OrganizationCommandCodec { };
-        let task = TaskCommandCodec { };
+        let task = TaskCommandCodec { }; let create = TaskCreateCommandCodec { };
         let person = PersonRetirementCodec { };
         if person.known(command.operation, command.operation_version) { return person.valid(context, command); }
+        if create.known(command.operation, command.operation_version) { return create.valid(context, command); }
         if task.known(command.operation, command.operation_version) { return task.valid(context, command); }
         return if org.known(command.operation, command.operation_version) { org.valid(context, command) } else { codec.valid(context, command) };
     }
     fn fingerprint(context: GovernanceContext, command: GovernanceCommand) -> String {
         let codec = GovernanceCommandCodec { }; let org = OrganizationCommandCodec { };
-        let task = TaskCommandCodec { };
+        let task = TaskCommandCodec { }; let create = TaskCreateCommandCodec { };
         let person = PersonRetirementCodec { };
         if person.known(command.operation, command.operation_version) { return person.fingerprint(context, command); }
+        if create.known(command.operation, command.operation_version) { return create.fingerprint(context, command); }
         if task.known(command.operation, command.operation_version) { return task.fingerprint(context, command); }
         return if org.known(command.operation, command.operation_version) { org.fingerprint(context, command) } else { codec.fingerprint(context, command) };
     }
     fn authorize(context: GovernanceContext, operation: String, recovery: Bool, j: dna::Journal) -> GovernanceGrant {
+        if operation == "dna.task.create" { let create = TaskCreateCommandCodec { }; return create.grant(context); }
         if operation == "dna.task.reassign" || operation == "dna.person.retire" { return self.task_authority.authorize(context, operation, recovery, j); }
         if operation == "dna.organization.propose" || operation == "dna.organization.ownership.propose" { return self.organization_authority.authorize(context, operation, recovery, j); }
         let grant = self.authority.authorize(context, operation, recovery, j);
@@ -294,6 +303,16 @@ locus GovernanceCommands {
                         || fact.context.principal_mode != context.principal_mode || fact.context.principal_name != context.principal_name
                         || codec.string(dna::line_at(s.text, i), "author") != context.principal_name { return GovernanceAdmission { code: "command_history_invalid" }; }
                     found = GovernanceAdmission { ok: true, code: "", command_id: id, fingerprint: task.fingerprint(context, c), context: context, command: c, sequence: i, event_id: e.digest, native_body: e.body, recovered: true };
+                }
+            } else if e.kind == "intent.requested" {
+                // Most intents are `hale dna ask` rows carrying no command
+                // fields; only a row naming this command id is ours to verify.
+                if std::str::starts_with(e.body, "{") && len(e.body) <= 262144 && syntax.valid(e.body) && codec.string(e.body, "command_id") == id {
+                    let create = TaskCreateCommandCodec { }; let fact = create.decode_fact(e); let c = fact.command;
+                    if found.ok || !fact.valid || c.request_id != request_id || fact.context.application_id != context.application_id
+                        || fact.context.principal_mode != context.principal_mode || fact.context.principal_name != context.principal_name
+                        || codec.string(dna::line_at(s.text, i), "author") != context.principal_name { return GovernanceAdmission { code: "command_history_invalid" }; }
+                    found = GovernanceAdmission { ok: true, code: "", command_id: id, fingerprint: create.fingerprint(context, c), context: context, command: c, sequence: i, event_id: e.digest, native_body: e.body, entity: e.entity, recovered: true };
                 }
             } else if e.kind == "organization.source.requested" {
                 if len(e.body) > 262144 || !syntax.valid(e.body) { return GovernanceAdmission { code: "command_history_invalid" }; }
@@ -450,6 +469,10 @@ locus GovernanceCommands {
             }
             return GovernanceResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision, receipt: person.project(admission) };
         }
+        if admission.command.operation == "dna.task.create" {
+            let create = TaskCreateCommandCodec { };
+            return GovernanceResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision, receipt: create.project(j, admission) };
+        }
         if admission.command.operation == "dna.task.reassign" {
             let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::GitRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: j, receipts: receipts };
             let view = TaskProjection { j: j, visibility: queries };
@@ -517,6 +540,26 @@ locus GovernanceCommands {
                 // Once publication was attempted, recover the exact final fact.
                 // Neither a lost acknowledgment nor a later read failure resubmits.
                 uncertain = true;
+                continue;
+            }
+            if command.operation == "dna.task.create" {
+                // The organization.propose precedent: the request is conditioned
+                // on the Record head it was prepared against, and the row lands
+                // at exactly that head or not at all. The row is the ask; the
+                // organism's answer is a later fact the receipt re-derives.
+                if !self.source_supported(j) { return GovernanceResult { code: "commands_unsupported" }; }
+                if command.record_head != s.head { return GovernanceResult { code: "stale_subject" }; }
+                let create = TaskCreateCommandCodec { }; let fact = create.fact(context, command, grant, s.head);
+                let intent = create.intent_id(j, std::time::monotonic_ns() / 1000000);
+                if fact == "" || intent == "" { return GovernanceResult { code: "invalid_command" }; }
+                if !self.unchanged(s) { continue; }
+                let row = dna::Row { kind: "intent.requested", entity: intent, author: context.principal_name, body: fact };
+                let appended = self.record.append("journal", s.head, row, self.sign, "");
+                if appended.ok && len(appended.id) > 0 {
+                    let after = GovernanceSnapshot { ok: true, application_id: s.application_id, head: appended.id, revision: s.revision + 1 };
+                    return self.result(after, j, GovernanceAdmission { ok: true, command_id: id, fingerprint: create.fingerprint(context, command), context: context, command: command, sequence: s.revision, event_id: appended.id, native_body: fact, entity: intent });
+                }
+                if appended.error != "stale" { uncertain = true; }
                 continue;
             }
             if command.operation == "dna.task.reassign" {

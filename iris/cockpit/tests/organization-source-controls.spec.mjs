@@ -25,7 +25,7 @@ test.beforeAll(async () => {
   expect(review?.state).toBe('pending');
   expect(candidate.source).toEqual(reviews.source);
   native = { candidateText, reviewsText, candidate, reviews, review, application: candidate.source.record_id };
-  const assets = new Set(['index.html', 'styles.css', 'app.js', 'runtime.js', 'application.js', 'definition-draft.js', 'organization-draft.js', 'knowledge-draft.js', 'task-administration.js', 'projects.js']);
+  const assets = new Set(['index.html', 'styles.css', 'app.js', 'runtime.js', 'application.js', 'definition-draft.js', 'organization-draft.js', 'knowledge-draft.js', 'task-administration.js', 'projects.js', 'task-create.js']);
   server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url, 'http://localhost');

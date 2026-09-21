@@ -1,6 +1,6 @@
 // dna/api/project_service/tests/fixture — the head under test (GH #965).
 // A private HOME, config and state directory under a scratch root, a
-// ten-file stub webroot, a fixture Record (the real writers; only the
+// eleven-file stub webroot, a fixture Record (the real writers; only the
 // event sequence is synthetic) with a `dna/` seed so the CLI accepts it
 // as a project, and the built head spawned over the plain `dna/api`
 // binary as its API child. Readiness is `GET /api/hale/v1/head`; stop
@@ -114,7 +114,7 @@ locus HeadFixture {
         std::io::fs::write_file(self.webroot + "/index.html", SHELL_HTML) or discard;
         std::io::fs::write_file(self.webroot + "/app.js", SHELL_JS) or discard;
         std::io::fs::write_file(self.webroot + "/styles.css", SHELL_CSS) or discard;
-        let mut rest = "runtime application definition-draft organization-draft knowledge-draft task-administration projects";
+        let mut rest = "runtime application definition-draft organization-draft knowledge-draft task-administration projects task-create";
         while len(rest) > 0 {
             let sp = std::str::index_of(rest, " ");
             let name = if sp < 0 { rest } else { rest[0..sp] };

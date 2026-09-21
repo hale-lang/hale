@@ -105,3 +105,7 @@ dna/api/tests/read_api_test
 dna/api/practice_review/practice_review
 dna/api/project_service/project_service
 dna/api/project_service/tests/*_test
+# Composed command head, its seed and the scripted command provider that the
+# API and cockpit verification recipes build beside their sources.
+dna/api/tests/tasks_seed
+dna/api/tests/commands/commands
