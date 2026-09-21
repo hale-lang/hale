@@ -8,6 +8,58 @@ behavior.
 
 ## Unreleased
 
+### Iris: inspect the declared organization (GH #690)
+
+- The Organization workspace browses exact static instances from a checked
+  compiler artifact, with declared position groups, containment, typed contracts
+  and per-node source locations. Source revision, dependency fingerprint and
+  Record basis remain separate from runtime evidence and authenticated identity.
+- The native read adapter checks an owned snapshot of committed `dna/org`
+  source and its available dependencies. It preserves the existing ownership
+  map separately; compiler instance paths do not invent a position-to-owner or
+  person-to-authority mapping. Source changes invalidate paged reads.
+- Organization reads retain the API's authentication boundary and leave project
+  source and Record refs unchanged. Native and browser regression cases cover
+  exact identities, source changes, unavailable dependencies and mobile/history
+  navigation. Semantic position bindings and governed editing remain work in
+  the full [cockpit scope](https://github.com/hale-lang/hale/issues/690).
+
+### Iris: live read-only cockpit for DNA practices and reviews (GH #690)
+
+- An independently produced browser shell reads the typed DNA API, with paged
+  Practice and Review catalogs, exact-document links, source revisions and
+  explicit content availability. Review approval and practice activation remain
+  separate. Knowledge and Definitions are visible core workspaces awaiting their
+  adapters; Runtime links to the independent existing observer.
+- The Hale API accepts an optional static asset directory and serves the shell,
+  authentication and data on one origin. API-only mode remains available; static
+  assets contain no Record data and all data reads retain their authentication.
+  Native boundary tests and real-browser tests cover serving, navigation,
+  stale snapshots, suppressed content and connection failures. See
+  [`iris/cockpit/README.md`](iris/cockpit/README.md).
+
+### DNA: cadence refresh runs on the organism's owner queue
+
+- Generated organizations use `Dna.request_tick` so journal refresh finishes
+  before queued work reads or appends. A task arriving during a direct tick
+  could otherwise append an effect claim successfully, then reject its own
+  claim as already in flight because the journal's cached view was incomplete.
+  `hale dna upgrade` explains the one-line change for existing organizations;
+  their project-owned source stays intact.
+
+### DNA: first typed read API for the Iris cockpit (GH #690)
+
+- A source-built `dna/api` service exposes versioned application discovery,
+  capabilities and practice/review reads from a checked local Record snapshot.
+  It shares typed governance queries with the CLI, preserves exact identities
+  and attribution, and distinguishes Review decisions from practice activation.
+- The service uses trusted loopback access or the existing OIDC member sessions.
+  Reads return structured errors, bounded pages and source revisions; unavailable
+  receipt text is explicitly withheld. OpenAPI/JSON Schema fixtures and live
+  Git/HTTP/OIDC tests written in Hale cover the boundary. Commands, Compose
+  packaging and the browser cockpit remain subsequent work; see
+  [`dna/api/README.md`](dna/api/README.md).
+
 ### DNA: the workflow resumes from accepted human completion (workflow card 17)
 
 - `dna/core/completion.hl` (new), `dna/core/assembly.hl`: a human Work's case (card 16) completed by its person through the tooling of the day — `hale dna task done <case> --as <who>` with the evidence its bound acceptance condition wants (`completion.linked`) or an exception someone else authorized (`completion.excepted`), or a decision someone else made, reported by the assignee and accepted under the bound practice (`decision.reported`) — is the outcome of the attempt the case was admitted for. The assembly reads the completion from the record (`case_completion`) and reports it to the runtime as it reports an edit leaf's outcome (`report_attempt`, the report kept until `attempt.outcome` is seen), and the runtime's own barrier settles it once: the Work is done, the step counts it, an outcome the record holds changes nothing. The completion is judged against what the admission bound — the assignee as reassigned, whether evidence is required, which practice — never a practice in force later: a completion the bound condition refuses (not the assignee's, no evidence under the bound practice where required, a self-authorized exception, a decision reported by someone else) connects nothing and is noted once, a later valid one connects, a duplicate settles nothing twice, and one case's completion advances nothing of another's. Observed wherever the assembly reads the record: live at the tick's refresh, when the record resumes, on `redrive`, at a restart of the assembly, and through the redelivery of a restarted execution, which keeps its step waiting until then. The admission names its performer (`case.admitted` version 2) so the report answers as the human performer. The tooling's gate is unchanged. Review: the tick examines the cases whenever the record is past the revision they were last examined at (`cases_examined`), not when its own refresh moved — a redelivery's refresh read the record without examining every case and hid a completion from the next ticks; a decision counts only when accepted under the bound policy (`policy` = the admission's `acceptance`, and `scope` exactly this case — missing, empty or another refused with its reason) — one accepted under a later, permissive practice closed a strictly bound case; an exception is judged at the completion row — recorded in the closer's name, authorized by someone other than them — so a case reassigned to its exception's authorizer no longer closes under their own authorization. `workflow_case_completion_test.hl` closes cases through `hale dna task done` over a real record (a note refused, the evidence accepted), observes the completion live, restarts the execution twice (the step waits; the redelivery connects a completion that landed while it was down), refuses the wrong person's, the evidence-less and the self-excepted completions and connects the later valid ones on `RecordResumed`, keeps the strict condition through a relaxation of the practice (the assembly restarted connects what the record holds; a reassigned case completes in the new name), closes a case handed after the relaxation on a note, and completes one by an accepted reported decision. Review probes: the decision rows in the tooling's shape (under no policy or another policy nothing closes); a redelivery for the other case before the tick hides nothing; dana's real authorization, the case reassigned to dana, the tooling's refusal of dana's self-authorized close, mirrored by the reading of the record.

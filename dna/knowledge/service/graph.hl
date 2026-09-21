@@ -196,7 +196,7 @@ locus GraphReceipts {
         let kind = record.git("cat-file\n-t\n" + object);
         if kind.code != 0 || dna::trim_nl(kind.stdout) != "blob" { self.error = "knowledge_projection_unavailable"; return ""; }
         let sized = record.git("cat-file\n-s\n" + object);
-        let size = std::str::parse_int(dna::trim_nl(sized.stdout)) or -1;
+        let size = std::str::parse_int(dna::trim_nl(sized.stdout)) or - 1;
         if sized.code != 0 || size < 0 { self.error = "knowledge_projection_unavailable"; return ""; }
         if size > self.remaining { self.error = "knowledge_read_limit"; return ""; }
         let body = record.git("cat-file\nblob\n" + object);

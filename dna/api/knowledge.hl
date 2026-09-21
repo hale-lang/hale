@@ -260,7 +260,7 @@ locus KnowledgeWire {
         if len(snapshot) == 0 || len(snapshot) > 256 || (more != "true" && more != "false") || (more == "false" && cursor != "null") || (more == "true" && (!self.text(cursor) || len(self.string(page, "next_cursor")) == 0 || len(self.string(page, "next_cursor")) > 8192)) { return self.unavailable(); }
         if len(request.query.snapshot) > 0 && snapshot != request.query.snapshot { return http.error(409, "snapshot_changed", "the Knowledge view changed; begin a new page sequence", true); }
         let limit = std::str::parse_int(self.raw(page, "limit")) or 0;
-        let returned = std::str::parse_int(self.raw(page, "returned")) or -1;
+        let returned = std::str::parse_int(self.raw(page, "returned")) or - 1;
         if limit != request.query.limit || returned < 0 || returned > limit || (more == "true" && returned == 0) { return self.unavailable(); }
         if !self.basis(self.raw(data, "basis"), request) { return http.error(503, "knowledge_scope_mismatch", "the Knowledge basis does not match this reader and Record", true); }
         if self.basis_snapshot(self.raw(data, "basis")) != snapshot { return self.unavailable(); }

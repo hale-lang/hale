@@ -148,6 +148,14 @@ locus Wire {
     }
 }
 
+// dna/FRICTION.md F.3 (GH #730): an interface-typed field cannot be
+// written into another locus's interface-typed field directly; the same
+// value reaching the literal through a parameter is admitted and, under
+// ASan, the temporary reader does not free the shared provider when it
+// dissolves. One reader per request, as before.
+fn definition_drafts_over(provider: ops::WorkflowCatalogProvider) -> ops::DefinitionDrafts { return ops::DefinitionDrafts { provider: provider }; }
+fn definitions_over(provider: ops::WorkflowCatalogProvider) -> ops::Definitions { return ops::Definitions { provider: provider }; }
+
 locus Api {
     params {
         root: String = ".";
@@ -314,7 +322,7 @@ locus Api {
         if !request.ok { return wire.error("invalid_definition_draft"); }
         if request.principal_mode != context.principal_mode || request.principal_name != context.principal_name { return wire.error("definition_draft_context_changed"); }
         if !self.definitions.supported() { return wire.error("definition_drafts_unsupported"); }
-        let drafts = ops::DefinitionDrafts { provider: self.definitions };
+        let drafts = definition_drafts_over(self.definitions);
         let result = drafts.validate(request.base_id, request.basis, request.candidate);
         let data = if result.status == 200 { wire.data(request, context.principal_mode, context.principal_name, result) } else { "" };
         let record = dna::GitRecord { repo: self.root };
@@ -402,7 +410,7 @@ locus Api {
         let http = Http { };
         // One provider capture owns this response. Its document, declared
         // policy and loaded-source provenance cannot be mixed across versions.
-        let q = ops::Definitions { provider: self.definitions };
+        let q = definitions_over(self.definitions);
         if !q.load() { return http.error(503, q.code(), q.error(), q.status() == "unavailable"); }
         let snapshot = source.head + ":" + q.snapshot();
         if len(query.snapshot) > 0 && query.snapshot != snapshot {

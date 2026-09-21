@@ -65,8 +65,14 @@ pub const FILES: &[EmbeddedFile] = core![
     "infrastructure",
     "journal",
     "knowledge",
+    "knowledge_binding",
+    "knowledge_edge_review",
+    "knowledge_node_request",
     "models",
+    "native_json",
     "org",
+    "organization_launch",
+    "organization_source_request",
     "ownership",
     "performers",
     "principal",
@@ -82,8 +88,8 @@ pub const FILES: &[EmbeddedFile] = core![
     "workflow_definition",
     "workflow_events",
     "workflow_execution",
-    "workflow_runtime",
     "workflow_projection",
+    "workflow_runtime",
     "workspace",
 ];
 
@@ -128,7 +134,7 @@ macro_rules! host {
 /// person's name, the membrane relay, the supervision — as a Hale
 /// program `hale dna` builds once into the toolchain cache and execs
 /// with the project resolved.
-pub const HOST_FILES: &[EmbeddedFile] = host!["connections", "forge_github", "genome", "host", "infra", "main", "node", "procs", "projection", "record", "record_verbs", "verbs", "writers"];
+pub const HOST_FILES: &[EmbeddedFile] = host!["connections", "forge_github", "genome", "host", "infra", "main", "node", "organization_launch", "procs", "projection", "record", "record_verbs", "verbs", "writers"];
 pub const HOST_SEED: &str = "dna/host";
 pub const HOST_BIN: &str = "dna/host/host";
 
@@ -144,10 +150,53 @@ macro_rules! at {
 /// Typed query operations shared by the host and service API. These must
 /// travel with the host: a source-tree import alone would break the installed CLI.
 pub const OPERATION_FILES: &[EmbeddedFile] = at![
-    "dna/operations/queries.hl",
-    "dna/operations/organization.hl",
-    "dna/operations/organization_json.hl",
+    "dna/operations/definition_drafts.hl",
     "dna/operations/definitions.hl",
+    "dna/operations/governance_admission.hl",
+    "dna/operations/governance_command.hl",
+    "dna/operations/governance_policy.hl",
+    "dna/operations/governance_projection.hl",
+    "dna/operations/knowledge_admission.hl",
+    "dna/operations/knowledge_binding_admission.hl",
+    "dna/operations/knowledge_binding_command.hl",
+    "dna/operations/knowledge_binding_projection.hl",
+    "dna/operations/knowledge_command.hl",
+    "dna/operations/knowledge_edge_admission.hl",
+    "dna/operations/knowledge_edge_command.hl",
+    "dna/operations/knowledge_edge_projection.hl",
+    "dna/operations/knowledge_node_admission.hl",
+    "dna/operations/knowledge_node_command.hl",
+    "dna/operations/knowledge_node_projection.hl",
+    "dna/operations/knowledge_policy.hl",
+    "dna/operations/organization.hl",
+    "dna/operations/organization_admission.hl",
+    "dna/operations/organization_application.hl",
+    "dna/operations/organization_command.hl",
+    "dna/operations/organization_impact.hl",
+    "dna/operations/organization_json.hl",
+    "dna/operations/organization_policy.hl",
+    "dna/operations/organization_projection.hl",
+    "dna/operations/organization_review_command.hl",
+    "dna/operations/person_retirement.hl",
+    "dna/operations/queries.hl",
+    "dna/operations/task_command.hl",
+    "dna/operations/task_policy.hl",
+    "dna/operations/task_projection.hl",
+];
+
+/// The organization's runtime and source seeds (GH #690): what the host
+/// and the service API import beside the core to launch an organization
+/// process under its authority (`dna/organization_runtime`) and to read,
+/// guard and publish its declared source (`dna/organization_source`).
+/// They travel with the host for the same reason `dna/operations` does.
+pub const ORGANIZATION_FILES: &[EmbeddedFile] = at![
+    "dna/organization_runtime/authority.hl",
+    "dna/organization_runtime/launch.hl",
+    "dna/organization_runtime/process.hl",
+    "dna/organization_source/organization_dependencies.hl",
+    "dna/organization_source/organization_source.hl",
+    "dna/organization_source/ownership_syntax.hl",
+    "dna/organization_source/publication_guard.hl",
 ];
 
 /// The knowledge graph as a service (GH #583 K1): the store library
@@ -160,6 +209,8 @@ pub const KNOWLEDGE_FILES: &[EmbeddedFile] = at![
     "dna/knowledge/protected.hl",
     "dna/knowledge/tail.hl",
     "dna/knowledge/ledger.hl",
+    "dna/knowledge/service/commands.hl",
+    "dna/knowledge/service/graph.hl",
     "dna/knowledge/service/main.hl",
     "dna/pond/db/args.hl",
     "dna/pond/db/db.hl",
@@ -178,7 +229,7 @@ pub const KNOWLEDGE_BIN: &str = "dna/knowledge/service/service";
 /// the whole of what `EMBEDDED_DIGEST` names.
 pub fn embedded_pairs() -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
-    for f in FILES.iter().chain(HOST_FILES).chain(KNOWLEDGE_FILES) {
+    for f in FILES.iter().chain(HOST_FILES).chain(OPERATION_FILES).chain(ORGANIZATION_FILES).chain(KNOWLEDGE_FILES) {
         out.push((f.path.to_string(), f.content.to_string()));
     }
     for f in [&MEMBRANE_CLIENT, &UI_MAIN, &UI_HTML] {
@@ -224,6 +275,20 @@ mod tests {
         let mut operations_embedded: Vec<String> = OPERATION_FILES.iter().map(|f| f.path.rsplit('/').next().unwrap().to_string()).collect();
         operations_embedded.sort();
         assert_eq!(operations_embedded, operations_on_disk, "a dna/operations file was added or removed without updating hale-dna");
+        let mut org_on_disk: Vec<String> = Vec::new();
+        for d in ["dna/organization_runtime", "dna/organization_source"] {
+            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(d);
+            for e in std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()) {
+                let n = e.file_name().to_string_lossy().to_string();
+                if n.ends_with(".hl") {
+                    org_on_disk.push(format!("{d}/{n}"));
+                }
+            }
+        }
+        org_on_disk.sort();
+        let mut org_embedded: Vec<String> = ORGANIZATION_FILES.iter().map(|f| f.path.to_string()).collect();
+        org_embedded.sort();
+        assert_eq!(org_embedded, org_on_disk, "a dna/organization_runtime or dna/organization_source file was added or removed without updating hale-dna");
         // the knowledge set: every .hl under dna/knowledge and dna/pond
         let mut know_on_disk: Vec<String> = Vec::new();
         for d in ["dna/knowledge", "dna/knowledge/service", "dna/pond/db", "dna/pond/pq"] {

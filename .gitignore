@@ -97,3 +97,7 @@ dna/tests/*_test
 tests/hale/*_test
 iris/**/upstream-repro/repro[0-9]*
 !iris/**/upstream-repro/*.hl
+# Source-built service API; the read-contract files are tracked.
+dna/api/api
+dna/api/contract/v1/check/check
+dna/api/tests/read_api_test
