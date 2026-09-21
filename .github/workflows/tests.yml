@@ -487,6 +487,13 @@ jobs:
         # The fixtures run through the `hale` binary this builds.
         run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
 
+      - name: Warm the DNA toolchain cache
+        # The first host verb of this binary builds the host and the membrane
+        # client into the cache: paid once here, not inside a test's own
+        # deadline beside seven other organisms on a loaded runner.
+        env:
+          HALE_DNA_DISCOVER: "off"
+        run: ./target/release/hale dna new "$RUNNER_TEMP/warm-cache"
       - name: cargo nextest run (DNA fixture suite, part ${{ matrix.part }}/2)
         # The suite alone on its runner: sixteen slice tests, hashed
         # across two jobs, running four-wide (the `dna-fixtures`
