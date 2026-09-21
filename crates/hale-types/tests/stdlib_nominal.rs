@@ -17,7 +17,10 @@
 //! declaration a conscious act rather than a silent regression to
 //! the old permissiveness.
 
+use hale_syntax::ast::Program;
 use hale_syntax::parse_source;
+use hale_types::Bundle;
+use std::collections::BTreeMap;
 
 fn errors(src: &str) -> Vec<String> {
     let program = parse_source(src).expect("parse");
@@ -173,18 +176,39 @@ fn stdlib_type_annotations_are_real_types() {
 
 #[test]
 fn non_stdlib_qualified_literals_keep_the_historical_tolerance() {
-    // Only `std::` roots gained the unknown-name error; other
-    // qualified literals (cross-seed shapes with no renames in a
-    // single-seed check) stay permissive exactly as before.
+    // Only `std::` roots gained the unknown-name error on the
+    // permissive single-file entry; other qualified literals
+    // (cross-seed shapes with no renames in a one-file check) stay
+    // permissive there exactly as before. The whole-program entry
+    // (`check_program`, GH #911 B1) applies the B2 rule instead: a
+    // qualifier no seed declares is a located error naming the
+    // qualifier — pinned below so the two entries never drift
+    // silently.
     let src = "
         fn main() {
             somelib::Widget {};
         }
     ";
+    let program = parse_source(src).expect("parse");
+    let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
+    programs.insert(String::new(), &program);
+    let permissive: Vec<String> = hale_types::check_bundle(&Bundle::new(programs))
+        .into_iter()
+        .filter(|d| d.is_error())
+        .map(|d| d.message)
+        .collect();
     assert!(
-        errors(src).is_empty(),
-        "non-std qualified literals must stay permissive: {:?}",
-        errors(src)
+        permissive.is_empty(),
+        "non-std qualified literals must stay permissive on the single-file entry: {:?}",
+        permissive
+    );
+    let strict = errors(src);
+    assert!(
+        strict
+            .iter()
+            .any(|m| m.contains("`somelib` is not an import or a type of this seed")),
+        "the whole-program entry must refuse an undeclared qualifier by name: {:?}",
+        strict
     );
 }
 
