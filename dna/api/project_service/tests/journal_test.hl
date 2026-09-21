@@ -1,0 +1,317 @@
+// dna/api/project_service/tests/journal_test.hl — the head's receipt
+// journal and project registry over a fake runner (GH #965). Every run
+// here is a shell script under the same `timeout -k … sh -e` wrapper
+// the head uses, started detached through `children.hl`, so the
+// journal settles from the files a real run leaves: an exit of 0 or 3,
+// a `timeout` exit of 124 (external → outcome_unknown, internal →
+// failed), a deadline the journal enforces itself, and a pid that died
+// without recording an exit. Identity, identical retry,
+// `request_conflict` (an argument changed, or another operation under
+// the same request_id), a refused request replayed, a fresh journal
+// over the same directory (a restart), and the registry's
+// last-line-wins fold and restore are asserted beside them.
+//
+// Silent on stdout: a passing fixture prints nothing.
+
+import ".." as head;
+import "../../../core" as dna;
+
+// The dispatcher's outcome hook, scripted: it sees what the journal saw.
+locus ProbeOutcomes {
+    params { calls: Int = 0; }
+    fn outcome(receipt: head::Receipt, exit_code: Int, log_tail: String) -> String {
+        self.calls = self.calls + 1;
+        return "{\"probe\":true,\"operation\":\"" + receipt.operation + "\",\"code\":" + to_string(exit_code) + "}";
+    }
+}
+
+fn request(request_id: String, operation: String, application_id: String, arguments: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("request_id", request_id); b.string_field("operation", operation); b.string_field("operation_version", "1");
+    b.begin_object_field("context"); b.string_field("head", "local"); b.string_field("application_id", application_id); b.end_object();
+    b.begin_object_field("target"); b.string_field("kind", if len(application_id) > 0 { "dna.project" } else { "dna.head" }); b.string_field("id", if len(application_id) > 0 { application_id } else { "local" }); b.end_object();
+    b.begin_object_field("preconditions"); b.begin_object_field("principal"); b.string_field("mode", "local"); b.string_field("name", "tester"); b.end_object(); b.end_object();
+    b.field("arguments", arguments);
+    b.end_object();
+    return b.result();
+}
+
+// Lines of `receipts.jsonl` carrying `command_id` in `state`.
+fn lines_in(state_dir: String, command_id: String, state: String) -> Int {
+    let text = std::io::fs::read_file(state_dir + "/receipts.jsonl") or "";
+    let mut n = 0;
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::contains(line, "\"command_id\":\"" + command_id + "\"") && std::str::contains(line, "\"state\":\"" + state + "\"") { n = n + 1; }
+    }
+    return n;
+}
+
+fn wait_exit(p: head::Proc, max_ms: Int) -> Int {
+    let mut waited = 0;
+    while waited < max_ms {
+        let code = head::exit_code(p);
+        if code != -2 { return code; }
+        std::time::sleep(20ms);
+        waited = waited + 20;
+    }
+    return -2;
+}
+
+// A journal over `state`: a free function, since a method may not
+// return a locus; every case opens its own and lets it go.
+fn open_journal(state: String) -> head::HeadJournal { return head::HeadJournal { state_dir: state }; }
+
+locus JournalCases {
+    params { state: String = ""; cwd: String = ""; }
+
+    // A run exactly as the head starts one: the script 0600 under
+    // `runs/<id>/`, wrapped in `timeout -k <grace> <secs> sh -e`.
+    fn start_run(command_id: String, script: String, secs: Int, grace: Int) -> head::Proc {
+        let j = open_journal(self.state);
+        let dir = j.run_dir(command_id);
+        std::io::fs::mkdir(j.runs_dir()) or discard;
+        std::io::fs::mkdir(dir) or discard;
+        std::test::assert(head::write_private(dir + "/script.sh", script + "\n"), "script written");
+        std::test::assert_eq_str(head::mode_of(dir + "/script.sh"), "600", "the script is private");
+        let argv = "timeout\n-k\n" + to_string(grace) + "\n" + to_string(secs) + "\nsh\n-e\n" + dir + "/script.sh";
+        head::write_cmd(dir, "run", argv);
+        let p = head::start(dir, "run", self.cwd, "PROBE=1", argv);
+        std::test::assert(p.pid > 0, "the run has a pid");
+        return p;
+    }
+
+    // Submits, admits and starts one run; the receipt is `running`.
+    fn launch(request_id: String, operation: String, arguments: String, allowlist: String, script: String, secs: Int, grace: Int, deadline: Int, external: Bool) -> head::Proc {
+        let j = open_journal(self.state);
+        let s = j.submit("local", "tester", request(request_id, operation, "app-one", arguments), allowlist, "head0");
+        std::test::assert_eq_str(s.code, "", "submitted " + request_id);
+        std::test::assert(!s.replayed && s.receipt.state == "recorded", "recorded " + request_id);
+        std::test::assert(std::str::starts_with(s.receipt.command_id, "command-"), "identity is a governance key");
+        std::test::assert_eq_str(s.receipt.head_before, "head0", "head_before recorded");
+        j.admit(s.receipt.command_id);
+        std::test::assert_eq_str(j.find(s.receipt.command_id).state, "admitted", "admitted " + request_id);
+        let p = self.start_run(s.receipt.command_id, script, secs, grace);
+        j.running(s.receipt.command_id, "run", p.pid, head::cmd_digest("timeout"), deadline, external);
+        let r = j.find(s.receipt.command_id);
+        std::test::assert(r.state == "running" && r.run_kind == "run" && r.pid == p.pid && r.external == external, "running " + request_id);
+        return p;
+    }
+
+    fn id(request_id: String) -> String { let j = open_journal(self.state); return j.identity("local", "tester", request_id); }
+
+    fn runs() {
+        let j = open_journal(self.state);
+        let probe = ProbeOutcomes { };
+        let now = std::time::now();
+        std::test::assert_eq_int(j.settle(now, probe), 0, "nothing to settle in an empty journal");
+
+        // succeeded, failed: exit codes through the files
+        let ok = self.launch("head-ok", "dna.project.sync", "{}", "", "echo fine; exit 0", 10, 2, now + 60, true);
+        let bad = self.launch("head-bad", "dna.forge.sync", "{}", "", "echo boom >&2; exit 3", 10, 2, now + 60, true);
+        std::test::assert_eq_int(wait_exit(ok, 5000), 0, "the ok run ended");
+        std::test::assert_eq_int(wait_exit(bad, 5000), 3, "the bad run ended");
+        let settled = j.settle(now, probe);
+        std::test::assert_eq_int(settled, 2, "both runs settled");
+        let r_ok = j.find(self.id("head-ok"));
+        std::test::assert(r_ok.state == "succeeded" && r_ok.exit_code == 0 && r_ok.reason_code == "", "ok run succeeded");
+        std::test::assert(std::str::contains(r_ok.reason, "fine"), "the log tail is the reason");
+        std::test::assert_eq_str(r_ok.outcome, "{\"probe\":true,\"operation\":\"dna.project.sync\",\"code\":0}", "the outcome hook's JSON is the outcome");
+        let r_bad = j.find(self.id("head-bad"));
+        std::test::assert(r_bad.state == "failed" && r_bad.exit_code == 3 && std::str::contains(r_bad.reason, "boom"), "bad run failed with its log");
+        std::test::assert_eq_int(j.settle(now, probe), 0, "settle is idempotent");
+        std::test::assert_eq_int(lines_in(self.state, r_ok.command_id, "succeeded"), 1, "one terminal line");
+
+        // timed out by the wrapper: 124; external → outcome_unknown, internal → failed
+        let slow_external = self.launch("head-slow-ext", "dna.project.publish", "{\"message\":\"m\"}", "remote message", "sleep 30", 2, 1, now + 60, true);
+        let slow_internal = self.launch("head-slow-int", "dna.project.create", "{\"parent\":\"/tmp\",\"name\":\"x\"}", "parent name profile remote body discover", "sleep 30", 2, 1, now + 60, false);
+        std::test::assert_eq_int(j.settle(now, probe), 0, "a run that has not ended is left running");
+        std::test::assert_eq_str(j.running_ids("run"), self.id("head-slow-ext") + "\n" + self.id("head-slow-int"), "the running ids, in start order");
+        std::test::assert_eq_int(wait_exit(slow_external, 8000), 124, "timeout exit for the external run");
+        std::test::assert_eq_int(wait_exit(slow_internal, 8000), 124, "timeout exit for the internal run");
+        std::test::assert_eq_int(j.settle(now, probe), 2, "both timed-out runs settled");
+        let r_ext = j.find(self.id("head-slow-ext"));
+        std::test::assert(r_ext.state == "outcome_unknown" && r_ext.reason_code == "timed_out" && r_ext.exit_code == 124, "external timeout is outcome_unknown");
+        let r_int = j.find(self.id("head-slow-int"));
+        std::test::assert(r_int.state == "failed" && r_int.reason_code == "timed_out" && r_int.exit_code == 124, "internal timeout is failed");
+
+        // past the journal's own deadline while still running: killed, then by externality
+        let late_external = self.launch("head-late-ext", "dna.project.sync", "{}", "", "sleep 60", 120, 5, now - 1, true);
+        let late_internal = self.launch("head-late-int", "dna.project.sync", "{}", "", "sleep 60", 120, 5, now - 1, false);
+        std::test::assert(head::alive(late_external) && head::alive(late_internal), "the late runs are alive before settle");
+        std::test::assert_eq_int(j.settle(now, probe), 2, "both late runs settled");
+        let r_late_ext = j.find(self.id("head-late-ext"));
+        std::test::assert(r_late_ext.state == "outcome_unknown" && r_late_ext.reason_code == "timed_out", "external past deadline is outcome_unknown");
+        let r_late_int = j.find(self.id("head-late-int"));
+        std::test::assert(r_late_int.state == "failed" && r_late_int.reason_code == "timed_out", "internal past deadline is failed");
+        std::time::sleep(100ms);
+        std::test::assert(!head::alive(late_external) && !head::alive(late_internal), "the late runs were killed");
+
+        // dead pid without an exit: outcome_unknown
+        let gone = self.launch("head-gone", "dna.project.sync", "{}", "", "exit 0", 10, 2, now + 60, false);
+        std::test::assert_eq_int(wait_exit(gone, 5000), 0, "the run ended");
+        std::io::fs::unlink(j.run_dir(self.id("head-gone")) + "/run.exit") or discard;
+        std::test::assert_eq_int(j.settle(now, probe), 1, "the exitless run settled");
+        let r_gone = j.find(self.id("head-gone"));
+        std::test::assert(r_gone.state == "outcome_unknown" && r_gone.reason_code == "exit_unrecorded" && std::str::contains(r_gone.reason, "without recording an exit"), "a dead pid without an exit is outcome_unknown");
+        std::test::assert_eq_int(probe.calls, 7, "the outcome hook ran once per settled run");
+        std::test::assert_eq_str(j.running_ids(""), "", "nothing left running");
+    }
+
+    fn identity_and_replay() {
+        let j = open_journal(self.state);
+        let ok_id = self.id("head-ok");
+        // identical retry: the stored receipt, no new line, one run dir
+        let again = j.submit("local", "tester", request("head-ok", "dna.project.sync", "app-one", "{}"), "", "head9");
+        std::test::assert(again.code == "" && again.replayed && again.receipt.command_id == ok_id && again.receipt.state == "succeeded", "identical retry returns the stored terminal receipt");
+        std::test::assert_eq_int(lines_in(self.state, ok_id, "recorded"), 1, "an identical retry records nothing");
+        std::test::assert_eq_str(again.receipt.head_before, "head0", "the stored receipt keeps its own evidence");
+        // an argument changed under the same request_id: request_conflict
+        let changed = j.submit("local", "tester", request("head-slow-ext", "dna.project.publish", "app-one", "{\"message\":\"other\"}"), "remote message", "");
+        std::test::assert(changed.code == "request_conflict" && changed.receipt.command_id == self.id("head-slow-ext"), "a changed argument conflicts");
+        // key order and spacing do not change the fingerprint; an absent optional key equals an empty one
+        let reordered = j.submit("local", "tester", request("head-slow-ext", "dna.project.publish", "app-one", "{ \"remote\" : \"\" , \"message\" : \"m\" }"), "remote message", "");
+        std::test::assert(reordered.code == "" && reordered.replayed, "canonical order and empty-for-absent make the fingerprint");
+        // another operation under the same request_id: request_conflict
+        let other = j.submit("local", "tester", request("head-ok", "dna.forge.sync", "app-one", "{}"), "", "");
+        std::test::assert_eq_str(other.code, "request_conflict", "one request namespace across operations");
+        // another principal under the same request_id is another identity
+        let alien = j.submit("local", "someone-else", request("head-ok", "dna.project.sync", "app-one", "{}"), "", "");
+        std::test::assert(alien.code == "" && !alien.replayed && alien.receipt.command_id != ok_id, "the principal is part of the identity");
+        // refused after recorded: the refusal replays
+        let refused = j.submit("local", "tester", request("head-refused", "dna.project.attach", "", "{\"root\":\"/nowhere\"}"), "root", "");
+        std::test::assert_eq_str(refused.receipt.state, "recorded", "recorded before the refusal");
+        j.refuse(refused.receipt.command_id, "no_seed", "no dna/ directory under /nowhere");
+        let replay = j.submit("local", "tester", request("head-refused", "dna.project.attach", "", "{\"root\":\"/nowhere\"}"), "root", "");
+        std::test::assert(replay.replayed && replay.receipt.state == "refused" && replay.receipt.reason_code == "no_seed", "a refused request replays its refusal");
+        // bounds: an empty request_id has no identity
+        let empty = j.submit("local", "tester", request("", "dna.project.sync", "app-one", "{}"), "", "");
+        std::test::assert_eq_str(empty.code, "invalid_command", "no identity without a request_id");
+        // the wire form
+        let wire = j.json(j.find(ok_id));
+        std::test::assert(std::json::valid(wire) && std::json::find_string_field(wire, "state") == "succeeded" && std::json::find_string_field(wire, "request_id") == "head-ok", "receipt JSON");
+        let run_obj = std::json::find_field_raw(wire, "run");
+        std::test::assert(std::json::find_string_field(run_obj, "kind") == "run" && std::json::find_string_field(run_obj, "log") == "/head/logs?run=" + ok_id, "run object on the wire");
+        std::test::assert_eq_str(std::json::find_string_field(std::json::find_field_raw(wire, "target"), "kind"), "dna.project", "target from the recorded request");
+        std::test::assert(std::json::find_bool_field(std::json::find_field_raw(wire, "outcome"), "probe"), "outcome on the wire");
+        // per-project ids
+        std::test::assert(std::str::contains(j.ids("app-one"), ok_id) && !std::str::contains(j.ids("app-one"), refused.receipt.command_id), "ids are per project");
+        std::test::assert(std::str::contains(j.ids(""), refused.receipt.command_id), "ids without a project list everything");
+    }
+
+    // A fresh journal over the same directory: what a restarted head reads.
+    fn restart_lookup() {
+        let fresh = head::HeadJournal { state_dir: self.state };
+        let found = fresh.lookup("local", "tester", "head-ok");
+        std::test::assert(found.ok && found.state == "succeeded" && found.command_id == self.id("head-ok") && found.exit_code == 0, "restart lookup returns the terminal receipt");
+        std::test::assert(!fresh.lookup("local", "other", "head-ok").ok, "another principal finds nothing");
+        std::test::assert(!fresh.lookup("local", "tester", "head-never").ok, "an unknown request_id finds nothing");
+        std::test::assert(!fresh.lookup("local", "tester", "").ok, "an empty request_id finds nothing");
+        let probe = ProbeOutcomes { };
+        std::test::assert_eq_int(fresh.settle(std::time::now(), probe), 0, "nothing to settle after a restart");
+    }
+
+    // A body/observer receipt settles from what the dispatcher saw.
+    fn child_receipts() {
+        let j = open_journal(self.state);
+        let probe = ProbeOutcomes { };
+        let now = std::time::now();
+        let s = j.submit("local", "tester", request("head-body", "dna.body.local.start", "app-one", "{\"mode\":\"run\"}"), "mode owner", "");
+        j.admit(s.receipt.command_id); j.running(s.receipt.command_id, "body", 4242, "", now + 600, false);
+        std::test::assert_eq_str(j.running_ids("body"), s.receipt.command_id, "a body receipt is running");
+        std::test::assert_eq_str(j.running_ids("run"), "", "no run receipt is running");
+        std::test::assert(!j.settle_child(s.receipt.command_id, true, false, -2, "", now, probe), "alive and not ready stays running");
+        std::test::assert(j.settle_child(s.receipt.command_id, true, true, -2, "", now, probe), "ready settles");
+        std::test::assert_eq_str(j.find(s.receipt.command_id).state, "succeeded", "a ready child succeeded");
+        let e = j.submit("local", "tester", request("head-observer", "dna.observer.start", "app-one", "{}"), "", "");
+        j.admit(e.receipt.command_id); j.running(e.receipt.command_id, "observer", 4243, "", now + 30, false);
+        std::test::assert(j.settle_child(e.receipt.command_id, false, false, 2, "refused: no membrane", now, probe), "an exited child settles");
+        let r = j.find(e.receipt.command_id);
+        std::test::assert(r.state == "failed" && r.exit_code == 2 && r.reason_code == "child_exited" && r.reason == "refused: no membrane", "an exited child failed with its log");
+        std::test::assert(!j.settle_child(e.receipt.command_id, false, false, 2, "", now, probe), "a terminal receipt does not settle twice");
+    }
+
+    // The registry: last event wins, one active, restore.
+    fn registry() {
+        let reg = head::Registry { state_dir: self.state };
+        std::test::assert(!reg.active().ok && !reg.restore().ok && reg.ids() == "", "empty registry");
+        std::test::assert(reg.register("aaaa", "/tmp/a", "a", "command-1"), "register a");
+        std::test::assert(reg.register("bbbb", "/tmp/b", "b", "command-2"), "register b");
+        std::test::assert(!reg.register("aaaa", "/tmp/elsewhere", "a2", "command-3"), "registering twice writes nothing");
+        std::test::assert_eq_str(reg.find("aaaa").root, "/tmp/a", "the first registration holds");
+        std::test::assert(!reg.activate("cccc", "command-4"), "an unknown project cannot be activated");
+        std::test::assert(reg.activate("aaaa", "command-4"), "activate a");
+        std::test::assert(reg.active().application_id == "aaaa" && reg.find("aaaa").active, "a is active");
+        std::test::assert(reg.activate("bbbb", "command-5"), "activate b");
+        std::test::assert(reg.active().application_id == "bbbb" && !reg.find("aaaa").active && reg.find("aaaa").last_event == "deactivated", "b is active and a was deactivated");
+        std::test::assert(!reg.deactivate("aaaa", "command-6"), "deactivating an inactive project writes nothing");
+        std::test::assert(reg.forget("aaaa", "command-7"), "forget a");
+        std::test::assert_eq_str(reg.ids(), "bbbb", "a forgotten project is not listed");
+        std::test::assert(reg.find("aaaa").forgotten && !reg.find("aaaa").active, "forgotten fold");
+        std::test::assert(reg.register("aaaa", "/tmp/a-again", "a", "command-8"), "a forgotten project can be registered again");
+        std::test::assert(reg.find("aaaa").root == "/tmp/a-again" && !reg.find("aaaa").forgotten, "the new registration wins");
+        std::test::assert_eq_str(reg.ids(), "aaaa\nbbbb", "listed once, in first-registration order");
+        // restore from a fresh registry over the same file
+        let fresh = head::Registry { state_dir: self.state };
+        std::test::assert(fresh.restore().application_id == "bbbb" && fresh.restore().root == "/tmp/b", "restore names the last activated project");
+        std::test::assert(reg.deactivate("bbbb", "command-9"), "deactivate b");
+        std::test::assert(!fresh.restore().ok && !fresh.active().ok, "nothing to restore once deactivated");
+        // a torn last line is dropped, with a notice on stderr
+        std::io::fs::write_file_append(self.state + "/projects.jsonl", "{\"seq\":99,\"at\":1,\"event\":\"activated\",\"application_id\":\"bbbb\"") or discard;
+        std::test::assert(!fresh.restore().ok && fresh.ids() == "aaaa\nbbbb", "a torn line is not folded");
+        // the next append closes the torn tail; the fragment stays its own dropped line
+        std::test::assert(reg.activate("aaaa", "command-10"), "activate after a torn tail");
+        let text = std::io::fs::read_file(self.state + "/projects.jsonl") or "";
+        std::test::assert(std::str::contains(text, "\"application_id\":\"bbbb\"\n{\"seq\":") && std::str::ends_with(text, "}\n"), "the torn tail was closed before the append");
+        std::test::assert(fresh.restore().application_id == "aaaa" && !fresh.find("bbbb").active, "the fragment is not folded even though it names an activation");
+        std::test::assert_eq_int(fresh.find("aaaa").seq, 9, "seq continues from the last whole line, not from the fragment");
+        let json = reg.json(reg.find("bbbb"));
+        std::test::assert(std::json::valid(json) && std::json::find_string_field(json, "name") == "b" && !std::json::find_bool_field(json, "active"), "registry item JSON");
+    }
+
+    // children.hl beyond the host's copy: cmd digest, log pages, private files.
+    fn child_files() {
+        let dir = self.state + "/children";
+        std::io::fs::mkdir(dir) or discard;
+        let argv = "sleep\n7";
+        head::write_cmd(dir, "probe", argv);
+        let p = head::start(dir, "probe", self.cwd, "", argv);
+        std::test::assert(p.pid > 0 && head::alive(p), "the probe child runs");
+        std::test::assert(head::cmd_matches(dir, "probe", p.pid), "a live pid running the recorded argv is re-adoptable");
+        head::write_cmd(dir, "probe", "sleep\n8");
+        std::test::assert(!head::cmd_matches(dir, "probe", p.pid), "another argv is not");
+        std::test::assert(!head::cmd_matches(dir, "nothing", p.pid), "no .cmd, no match");
+        head::stop_proc(p);
+        std::test::assert(!head::alive(p) && !head::cmd_matches(dir, "probe", p.pid), "a stopped child is not re-adoptable");
+        std::test::assert(head::write_private(dir + "/page.log", "abcdef"), "private write");
+        std::test::assert_eq_str(head::mode_of(dir + "/page.log"), "600", "private mode");
+        let page = head::read_log(dir + "/page.log", 2, 3);
+        std::test::assert(page.text == "cde" && page.offset == 2 && page.next_offset == 5 && !page.complete, "a page in the middle");
+        let last = head::read_log(dir + "/page.log", 5, 10);
+        std::test::assert(last.text == "f" && last.next_offset == 6 && last.complete, "the last page");
+        let past = head::read_log(dir + "/page.log", 40, 10);
+        std::test::assert(past.text == "" && past.offset == 6 && past.complete, "past the end");
+        std::test::assert_eq_str(head::mode_of(dir + "/missing"), "", "no mode for a missing file");
+    }
+}
+
+fn main() {
+    let root = dna::scratch_root("head-journal");
+    let state = root + "/state";
+    let cwd = root + "/work";
+    std::io::fs::mkdir(state) or discard;
+    std::io::fs::mkdir(cwd) or discard;
+    let cases = JournalCases { state: state, cwd: cwd };
+    cases.runs();
+    cases.identity_and_replay();
+    cases.restart_lookup();
+    cases.child_receipts();
+    cases.registry();
+    cases.child_files();
+    dna::scratch_done(root);
+    eprintln("head journal cases passed");
+}

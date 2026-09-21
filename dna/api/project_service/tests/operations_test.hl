@@ -1,0 +1,259 @@
+// dna/api/project_service/tests/operations_test.hl — S2's operations
+// without HTTP (GH #965): the request-shape check every operation
+// passes through, the plans of the nine operations (their refusal
+// codes, scripts, working directories, deadlines and externality),
+// an attach and a detach through the framework against a project
+// `hale dna new` made (the API child starts, the policies land, the
+// registry folds), the outcome parsers over the logs the verbs print,
+// and the `record` evidence over rows the Record gained.
+//
+// Silent on stdout: a passing fixture prints nothing.
+
+import ".." as head;
+import "../../../core" as dna;
+import "../../../operations" as ops;
+
+fn config(root: String, api_port: Int) -> head::HeadConfig {
+    return head::HeadConfig { port: 1, api_port: api_port, api_binary: std::env::var("HALE_API_BIN"), hale: std::env::var("HALE_BIN"), state_dir: root + "/state", sources_dir: root + "/sources", principal_mode: "local", principal_name: "tester" };
+}
+
+fn git(repo: String, argv: String) -> String {
+    let r = dna::run_tool("env\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\ngit\n-C\n" + repo + "\n" + argv);
+    std::test::assert_eq_int(r.code, 0, "git " + argv + ": " + r.stderr);
+    return dna::trim_nl(r.stdout);
+}
+
+// A Record (one row) in a fresh repository at `dir`, with or without a seed.
+fn make_record(dir: String, seed: Bool) -> String {
+    std::io::fs::mkdir(dir) or discard;
+    git(dir, "init\n-q\n-b\nmain");
+    git(dir, "config\nuser.name\nops-fixture");
+    git(dir, "config\nuser.email\nops-fixture@example.invalid");
+    git(dir, "config\ncommit.gpgsign\nfalse");
+    if seed { std::io::fs::mkdir(dir + "/dna") or discard; }
+    let journal = dna::GitJournal { repo: dir };
+    let refreshed = journal.refresh();
+    let result = journal.append(journal.revision(), "org.born", "org", "ops fixture " + dir);
+    std::test::assert(result.ok, "fixture append: " + result.error);
+    let record = dna::GitRecord { repo: dir };
+    return record.identity();
+}
+
+locus OperationCases {
+    params { root: String = ""; cfg: head::HeadConfig = head::HeadConfig { }; project: String = ""; identity: String = ""; }
+
+    fn ctx() -> head::HeadContext { return head::context_of(self.cfg); }
+
+    fn shape() {
+        let create = head::own_arguments("dna.project.create");
+        std::test::assert_eq_str(head::arguments_shape("{\"parent\":\"/tmp\",\"name\":\"x\",\"discover\":true}", create), "", "a create request in shape");
+        std::test::assert(len(head::arguments_shape("{\"parent\":\"tmp\"}", create)) > 0, "paths are absolute");
+        std::test::assert(len(head::arguments_shape("{\"value\":\"x\"}", create)) > 0, "an unknown key is refused");
+        std::test::assert(len(head::arguments_shape("{\"discover\":\"yes\"}", create)) > 0, "a flag is a boolean");
+        std::test::assert(len(head::arguments_shape("{\"profile\":\"cloud\"}", create)) > 0, "profile is an enumeration");
+        std::test::assert(len(head::arguments_shape("{\"name\":\"-rf\"}", create)) > 0, "no leading dash");
+        std::test::assert(len(head::arguments_shape("{\"name\":\"a\\u0001b\"}", create)) > 0, "no control characters");
+        std::test::assert(len(head::arguments_shape("[]", create)) > 0, "arguments is an object");
+        std::test::assert_eq_str(head::arguments_shape("{}", ""), "", "an empty object for an operation without arguments");
+        std::test::assert(len(head::arguments_shape("{\"root\":\"/tmp\"}", "")) > 0, "no key admitted without an allowlist");
+        let publishing = head::own_arguments("dna.project.publish");
+        std::test::assert_eq_str(head::arguments_shape("{\"message\":\"" + std::str::repeat("m", 512) + "\"}", publishing), "", "a message may be 512 bytes");
+        std::test::assert(len(head::arguments_shape("{\"message\":\"" + std::str::repeat("m", 513) + "\"}", publishing)) > 0, "a message is at most 512 bytes");
+        let forge = head::own_arguments("dna.forge.configure");
+        std::test::assert_eq_str(head::arguments_shape("{\"github\":\"a/b\",\"board\":[\"x\",\"y\"]}", forge), "", "a board is an array of strings");
+        std::test::assert(len(head::arguments_shape("{\"board\":\"x\"}", forge)) > 0, "a board is not a string");
+        std::test::assert(len(head::arguments_shape("{\"board\":[1]}", forge)) > 0, "a board holds strings");
+        // S3's keys through the same check, so the wire is one shape
+        std::test::assert_eq_str(head::arguments_shape("{\"name\":\"OPENAI_API_KEY\",\"source\":{\"kind\":\"file\",\"name\":\"OPENAI_API_KEY\"}}", "name source body"), "", "a secret source object");
+        std::test::assert(len(head::arguments_shape("{\"name\":\"K\",\"source\":{\"kind\":\"stdin\",\"name\":\"K\"}}", "name source body")) > 0, "a source is file or env");
+        std::test::assert(len(head::arguments_shape("{\"name\":\"K\",\"source\":{\"kind\":\"file\",\"name\":\"K\",\"value\":\"v\"}}", "name source body")) > 0, "a value inside a source is refused");
+        std::test::assert(len(head::arguments_shape("{\"mode\":\"prod\"}", "mode owner")) > 0, "mode is run or dev");
+        std::test::assert(head::own_known("dna.project.sync") && !head::own_known("dna.body.start") && head::head_scoped("dna.project.forget") && !head::head_scoped("dna.project.detach"), "the operation tables");
+        std::test::assert(head::writes_rows("dna.secret.set") && head::writes_rows("dna.project.sync") && !head::writes_rows("dna.project.attach"), "the row-writing list");
+        let mut n = 0;
+        let mut rest = head::all_operations();
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            rest = if sp < 0 { "" } else { rest[(sp + 1)..len(rest)] };
+            n = n + 1;
+        }
+        std::test::assert_eq_int(n, 25, "twenty-five operations");
+    }
+
+    fn create_and_init() {
+        let parent = self.root + "/projects";
+        std::io::fs::mkdir(parent) or discard;
+        let occupied = head::own_plan(self.cfg, self.ctx(), "command-c1", "dna.project.create", "{\"parent\":\"" + parent + "\",\"name\":\"alpha\"}");
+        std::test::assert_eq_str(occupied.refused, "directory_not_empty", "a made project is not remade: " + occupied.reason);
+        let bad_name = head::own_plan(self.cfg, self.ctx(), "command-c2", "dna.project.create", "{\"parent\":\"" + parent + "\",\"name\":\"Alpha!\"}");
+        std::test::assert_eq_str(bad_name.refused, "name_invalid", "the name grammar");
+        let bad_parent = head::own_plan(self.cfg, self.ctx(), "command-c3", "dna.project.create", "{\"parent\":\"" + self.root + "/missing\",\"name\":\"beta\"}");
+        std::test::assert_eq_str(bad_parent.refused, "path_invalid", "the parent must exist");
+        let plan = head::own_plan(self.cfg, self.ctx(), "command-c4", "dna.project.create", "{\"parent\":\"" + parent + "\",\"name\":\"beta\",\"profile\":\"remote-body\",\"remote\":\"git@example.invalid:x/y.git\",\"body\":\"me@host\",\"discover\":false}");
+        std::test::assert(plan.ok && plan.kind == "run" && plan.refused == "", "a create plan: " + plan.reason);
+        std::test::assert_eq_str(plan.script, "exec \"$HALE_BIN\" dna new '" + parent + "/beta' --profile 'remote-body' --remote 'git@example.invalid:x/y.git' --body 'me@host'", "the create script");
+        std::test::assert(plan.cwd == parent && plan.deadline_secs == 600 && !plan.external, "create runs in the parent, 600 s, internal");
+        std::test::assert(std::str::contains(plan.envs, "HALE_DNA_DISCOVER=off"), "discover:false exports off");
+        let discovering = head::own_plan(self.cfg, self.ctx(), "command-c5", "dna.project.create", "{\"parent\":\"" + parent + "\",\"name\":\"gamma\",\"discover\":true}");
+        std::test::assert_eq_str(discovering.envs, "HALE_DNA_DISCOVER=" + std::env::var("HALE_DNA_DISCOVER") + "\n", "discover:true exports the head's own value, whatever it is");
+        let init = head::own_plan(self.cfg, self.ctx(), "command-i1", "dna.project.init", "{\"root\":\"" + self.project + "\"}");
+        std::test::assert(init.ok && init.script == "exec \"$HALE_BIN\" dna init '" + self.project + "'" && init.cwd == self.project && init.deadline_secs == 600, "an init plan");
+        std::test::assert_eq_str(head::own_plan(self.cfg, self.ctx(), "command-i2", "dna.project.init", "{\"root\":\"" + self.root + "/missing\"}").refused, "path_invalid", "init needs a directory");
+        // the create outcome names the project and reports the attach it made
+        let receipt = head::Receipt { command_id: "command-c9", operation: "dna.project.create", request: "{\"arguments\":{\"parent\":\"" + parent + "\",\"name\":\"alpha\"}}" };
+        let failed = head::own_outcome(self.cfg, receipt, 2, "boom");
+        std::test::assert(std::json::find_string_field(failed, "root") == parent + "/alpha" && !std::json::find_bool_field(failed, "attached") && std::json::find_string_field(failed, "application_id") == "", "a failed create is not attached: " + failed);
+    }
+
+    fn attach_refusals() {
+        std::test::assert_eq_str(head::attach_project(self.cfg, "relative", "command-a0").refused, "path_invalid", "a relative root");
+        std::test::assert_eq_str(head::attach_project(self.cfg, self.root + "/missing", "command-a0").refused, "path_invalid", "a missing root");
+        let plain = self.root + "/plain";
+        std::io::fs::mkdir(plain) or discard;
+        std::test::assert_eq_str(head::attach_project(self.cfg, plain, "command-a1").refused, "not_a_toplevel", "a directory outside a worktree");
+        let bare = self.root + "/bare";
+        std::io::fs::mkdir(bare) or discard;
+        git(bare, "init\n-q\n-b\nmain");
+        std::test::assert_eq_str(head::attach_project(self.cfg, bare, "command-a2").refused, "no_record", "a repository without a Record");
+        std::io::fs::mkdir(bare + "/sub") or discard;
+        std::test::assert_eq_str(head::attach_project(self.cfg, bare + "/sub", "command-a3").refused, "not_a_toplevel", "a subdirectory of a worktree");
+        let seedless = self.root + "/seedless";
+        let id = make_record(seedless, false);
+        std::test::assert(len(id) == 40, "the seedless Record has a genesis");
+        std::test::assert_eq_str(head::attach_project(self.cfg, seedless, "command-a4").refused, "no_seed", "a Record without dna/");
+        let hosted = self.root + "/hosted";
+        let hosted_id = make_record(hosted, true);
+        git(hosted, "config\ndna.principal\noidc");
+        std::test::assert_eq_str(head::attach_project(self.cfg, hosted, "command-a5").refused, "principal_unsupported", "an OIDC project");
+        git(hosted, "config\ndna.principal\nlocal");
+        git(hosted, "config\ndna.trust\nsigned");
+        std::test::assert_eq_str(head::attach_project(self.cfg, hosted, "command-a6").refused, "trust_unsupported", "a signed-trust project");
+        let reg = head::Registry { state_dir: self.cfg.state_dir };
+        std::test::assert(!reg.active().ok && reg.ids() == "", "no refusal touched the registry");
+        std::test::assert(!std::io::fs::file_exists(hosted + "/.hale/dna/iris/authority.json"), "no refusal wrote a policy");
+    }
+
+    fn attach_and_detach() {
+        let attached = head::attach_project(self.cfg, self.project, "command-b1");
+        std::test::assert(attached.ok && attached.refused == "", "attach the made project: " + attached.reason);
+        std::test::assert(attached.application_id == self.identity && attached.name == "alpha" && attached.authority_written, "the attach result");
+        std::test::assert(head::child_view(self.cfg, "api").alive, "the API child is alive");
+        std::test::assert(head::api_ready(self.cfg.api_port, self.identity), "the API child answers with the project's Record");
+        let policies = head::policies_of(self.project, self.identity);
+        std::test::assert(policies.command && policies.task && !policies.organization && !policies.organization_present, "the two synthesized policies decode");
+        std::test::assert(std::str::contains(head::policy_env(self.project), "HALE_DNA_COMMAND_POLICY=" + self.project + "/.hale/dna/iris/authority.json\n") && !std::str::contains(head::policy_env(self.project), "ORGANIZATION"), "the policy environment names the files that exist");
+        std::test::assert_eq_str(head::mode_of(self.project + "/.hale/dna/iris/authority.json"), "600", "policies are private");
+        let reg = head::Registry { state_dir: self.cfg.state_dir };
+        std::test::assert(reg.active().application_id == self.identity && reg.find(self.identity).root == self.project, "the registry folds the attach");
+        let ctx = self.ctx();
+        std::test::assert(ctx.active_id == self.identity && ctx.active_root == self.project && ctx.active_name == "alpha", "the context sees the active project");
+        std::test::assert_eq_str(head::own_available(ctx, "dna.project.sync"), "", "sync is available");
+        // the active project cannot be forgotten
+        std::test::assert_eq_str(head::own_plan(self.cfg, ctx, "command-b2", "dna.project.forget", "{\"application_id\":\"" + self.identity + "\"}").refused, "project_active", "forget refuses the active project");
+        std::test::assert_eq_str(head::own_plan(self.cfg, ctx, "command-b3", "dna.project.forget", "{\"application_id\":\"nope\"}").refused, "project_unknown", "forget refuses an unknown project");
+        // a second attach of the same project keeps the child
+        let pid = head::child_view(self.cfg, "api").pid;
+        let again = head::attach_project(self.cfg, self.project, "command-b4");
+        std::test::assert(again.ok && !again.authority_written && head::child_view(self.cfg, "api").pid == pid, "an attach of the active project is idempotent");
+        // sync, publish and forge plans against the attached project
+        let sync = head::own_plan(self.cfg, ctx, "command-s1", "dna.project.sync", "{}");
+        std::test::assert(sync.ok && sync.kind == "run" && sync.script == "exec \"$HALE_BIN\" dna sync '" + self.project + "'" && sync.cwd == self.project && sync.deadline_secs == 180 && sync.external, "the sync plan");
+        let no_remote = head::own_plan(self.cfg, ctx, "command-p1", "dna.project.publish", "{\"message\":\"m\"}");
+        std::test::assert_eq_str(no_remote.refused, "no_remote", "publish without any remote");
+        let first = head::own_plan(self.cfg, ctx, "command-p2", "dna.project.publish", "{\"remote\":\"/tmp/nowhere.git\",\"message\":\"first\"}");
+        std::test::assert(first.ok && std::str::contains(first.script, "git remote add origin '/tmp/nowhere.git'\n") && std::str::contains(first.script, "git push -u origin HEAD") && std::str::contains(first.script, "commit -q -m 'first'") && std::str::ends_with(first.script, "dna sync '" + self.project + "'") && first.external && first.deadline_secs == 180, "the first publish adds origin: " + first.script);
+        git(self.project, "remote\nadd\norigin\n/tmp/elsewhere.git");
+        std::test::assert_eq_str(head::own_plan(self.cfg, ctx, "command-p3", "dna.project.publish", "{\"remote\":\"/tmp/nowhere.git\",\"message\":\"m\"}").refused, "remote_mismatch", "another url than origin's");
+        let same = head::own_plan(self.cfg, ctx, "command-p4", "dna.project.publish", "{\"remote\":\"/tmp/elsewhere.git\",\"message\":\"m\"}");
+        std::test::assert(same.ok && !std::str::contains(same.script, "remote add"), "origin's own url adds nothing");
+        let implicit = head::own_plan(self.cfg, ctx, "command-p5", "dna.project.publish", "{\"message\":\"it's; rm -rf /\"}");
+        std::test::assert(implicit.ok && std::str::contains(implicit.script, "commit -q -m 'it'\\''s; rm -rf /'"), "values are single-quoted: " + implicit.script);
+        git(self.project, "remote\nremove\norigin");
+        let forge = head::own_plan(self.cfg, ctx, "command-f1", "dna.forge.configure", "{\"github\":\"owner/repo\",\"board\":[\"riley\"]}");
+        std::test::assert(forge.ok && forge.kind == "inline" && std::json::find_string_field(forge.outcome, "github") == "owner/repo", "forge configure: " + forge.outcome);
+        std::test::assert(git(self.project, "config\ndna.github") == "owner/repo" && git(self.project, "config\ndna.github.board") == "riley", "the settings landed");
+        std::test::assert_eq_str(head::own_plan(self.cfg, ctx, "command-f2", "dna.forge.configure", "{\"github\":\"owner\",\"board\":[]}").refused, "name_invalid", "github is owner/repo");
+        std::test::assert_eq_str(head::own_plan(self.cfg, ctx, "command-f3", "dna.forge.configure", "{\"github\":\"\",\"board\":[\"not a login\"]}").refused, "name_invalid", "a login grammar");
+        let cleared = head::own_plan(self.cfg, ctx, "command-f4", "dna.forge.configure", "{\"github\":\"\",\"board\":[]}");
+        std::test::assert(cleared.ok && dna::run_tool("git\n-C\n" + self.project + "\nconfig\ndna.github").code != 0, "empty values unset");
+        let forge_sync = head::own_plan(self.cfg, ctx, "command-f5", "dna.forge.sync", "{}");
+        std::test::assert(forge_sync.ok && forge_sync.script == "exec \"$HALE_BIN\" dna github sync" && std::str::contains(forge_sync.envs, "GH_PROMPT_DISABLED=1") && forge_sync.external, "the forge sync plan");
+        // detach stops the child and deactivates
+        let detached = head::detach_project(self.cfg, "command-d1");
+        std::test::assert(detached.ok, "detach: " + detached.reason);
+        std::test::assert(!head::child_view(self.cfg, "api").alive, "the API child was stopped");
+        std::test::assert(!reg.active().ok && reg.find(self.identity).last_event == "deactivated", "deactivated");
+        std::test::assert_eq_str(head::detach_project(self.cfg, "command-d2").refused, "detached", "nothing to detach twice");
+        std::test::assert_eq_str(head::own_available(self.ctx(), "dna.project.sync"), "detached", "sync is unavailable again");
+        std::test::assert_eq_str(head::own_plan(self.cfg, self.ctx(), "command-s2", "dna.project.sync", "{}").refused, "detached", "no plan without a project");
+        let forgot = head::own_plan(self.cfg, self.ctx(), "command-d3", "dna.project.forget", "{\"application_id\":\"" + self.identity + "\"}");
+        std::test::assert(forgot.ok && reg.find(self.identity).forgotten, "forgotten");
+    }
+
+    fn outcomes_and_evidence() {
+        let ctx = self.ctx();
+        let sync_log = "hale dna: something first\nrecord refs/dna/journal: no remote: the record is local; 23 event(s)\n";
+        let sync = head::own_outcome(self.cfg, head::Receipt { operation: "dna.project.sync" }, 0, sync_log);
+        std::test::assert_eq_str(std::json::find_string_field(sync, "summary"), "record refs/dna/journal: no remote: the record is local; 23 event(s)", "the sync summary is the verb's line");
+        let publish_log = "head: committed\nhead: pushed refs/heads/main\nrecord refs/dna/journal: up to date; 23 event(s)\n";
+        let published = head::own_outcome(self.cfg, head::Receipt { operation: "dna.project.publish" }, 0, publish_log);
+        std::test::assert(std::json::find_bool_field(published, "committed") && std::json::find_string_field(published, "pushed_ref") == "refs/heads/main" && std::str::starts_with(std::json::find_string_field(published, "sync_summary"), "record refs/dna/journal: up to date"), "the publish outcome: " + published);
+        let nothing = head::own_outcome(self.cfg, head::Receipt { operation: "dna.project.publish" }, 0, "head: nothing to commit\nhead: pushed refs/heads/main\n");
+        std::test::assert(!std::json::find_bool_field(nothing, "committed"), "nothing committed");
+        // the record evidence: rows beyond head_before
+        let record = dna::GitRecord { repo: self.project };
+        let before = record.head("journal");
+        let journal = dna::GitJournal { repo: self.project };
+        let refreshed = journal.refresh();
+        let appended = journal.append(journal.revision(), "secret.rotated", "OPENAI_API_KEY", "{\"where\":\"local\",\"by\":\"tester\"}");
+        std::test::assert(appended.ok, "append a row: " + appended.error);
+        let evidence = head::record_evidence(self.project, before);
+        std::test::assert(std::json::find_string_field(evidence, "head_before") == before && std::json::find_string_field(evidence, "head_after") == record.head("journal") && before != record.head("journal"), "heads: " + evidence);
+        let rows = std::json::find_field_raw(evidence, "rows");
+        let first = std::json::array_first(rows);
+        std::test::assert(!first.done && std::json::find_string_field(first.element, "kind") == "secret.rotated" && std::json::find_string_field(first.element, "entity") == "OPENAI_API_KEY" && std::json::array_next(first).done, "exactly the new row: " + rows);
+        let with = head::with_field("{\"text\":\"t\"}", "record", evidence);
+        std::test::assert(std::json::valid(with) && std::json::find_string_field(with, "text") == "t" && len(std::json::find_field_raw(with, "record")) > 0, "the evidence merges into an outcome");
+        std::test::assert(std::json::valid(head::with_field("{}", "record", "{}")) && std::json::valid(head::with_field("nonsense", "record", "{}")), "merging tolerates an empty or invalid base");
+        let none = head::record_evidence(self.project, "");
+        std::test::assert(std::json::find_string_field(none, "head_before") == "" && std::json::array_first(std::json::find_field_raw(none, "rows")).done == false, "without a head_before every row is new");
+        // credentials from the catalog the generated project carries
+        let needed = head::catalog_credentials(self.project);
+        std::test::assert(len(needed) > 0 && !std::str::contains(needed, "\""), "the catalog names credentials: " + needed);
+        std::test::assert_eq_str(head::catalog_credentials(self.root + "/plain"), "", "no catalog, no names");
+        let json = head::credentials_json(self.cfg, self.project);
+        std::test::assert(std::json::valid(json) && len(std::json::find_field_raw(json, "needed")) > 2, "the credentials object: " + json);
+        std::io::fs::mkdir(self.cfg.sources_dir) or discard;
+        std::test::assert(head::write_private(self.cfg.sources_dir + "/SOME_KEY", "value\n"), "a source file");
+        std::test::assert(std::str::contains(head::credentials_json(self.cfg, self.project), "\"file_sources\": [\"SOME_KEY\"]"), "file sources are listed by name: " + head::credentials_json(self.cfg, self.project));
+    }
+}
+
+fn main() {
+    std::test::assert(std::str::starts_with(std::env::var("HALE_BIN"), "/"), "HALE_BIN must be absolute");
+    std::test::assert(std::io::fs::file_exists(std::env::var("HALE_API_BIN")), "build dna/api and set absolute HALE_API_BIN");
+    let root = dna::scratch_root("head-operations");
+    let cfg = config(root, dna::free_port(3));
+    std::io::fs::mkdir(cfg.state_dir) or discard;
+    std::io::fs::mkdir(cfg.state_dir + "/children") or discard;
+    std::io::fs::mkdir(cfg.state_dir + "/runs") or discard;
+    let parent = root + "/projects";
+    std::io::fs::mkdir(parent) or discard;
+    // the project the CLI makes (600 s budget for a cold host build)
+    let made = dna::run_tool("env\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\ntimeout\n600\n" + std::env::var("HALE_BIN") + "\ndna\nnew\n" + parent + "/alpha");
+    std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stderr);
+    git(parent + "/alpha", "config\nuser.name\nops-fixture");
+    git(parent + "/alpha", "config\nuser.email\nops-fixture@example.invalid");
+    git(parent + "/alpha", "config\ncommit.gpgsign\nfalse");
+    let record = dna::GitRecord { repo: parent + "/alpha" };
+    let cases = OperationCases { root: root, cfg: cfg, project: parent + "/alpha", identity: record.identity() };
+    std::test::assert(len(cases.identity) == 40, "the made project has a Record");
+    cases.shape();
+    cases.create_and_init();
+    cases.attach_refusals();
+    cases.attach_and_detach();
+    cases.outcomes_and_evidence();
+    head::stop_child(cfg, "api");
+    dna::scratch_done(root);
+    eprintln("head operation cases passed");
+}

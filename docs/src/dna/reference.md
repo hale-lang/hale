@@ -96,6 +96,17 @@ nodes](./run.md)). `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` are what
 `HostedCredential` sources it names. Git config: `dna.remote` (default
 `origin`), `dna.github` (`owner/repo`), `dna.github.board` (logins).
 
+The cockpit head (`iris/cockpit/start.sh`) reads `HALE_BIN` (the
+compiler every operation execs, absolute), `HALE_IRIS_HEAD_STATE`
+(its state directory, default
+`${XDG_STATE_HOME:-~/.local/state}/hale/iris/head`: registry, receipt
+journal, runs, children) and `HALE_IRIS_OBSERVER_ORIGIN` (the observer
+origin the shell connects to; the launcher derives it from
+`HALE_IRIS_OBSERVER_PORT`, default 8787). Secret sources live under
+`${XDG_CONFIG_HOME:-~/.config}/hale-dna/sources/<NAME>`, one line,
+mode `0600`, beside the `.env` file `hale dna secret set` writes; the
+head passes the name, the run's shell reads the value.
+
 ## The record's vocabulary
 
 One commit per event on `refs/dna/journal`; `journal.jsonl` in the

@@ -23231,5 +23231,1287 @@
         "transferred": "1"
       }
     }
+  },
+  {
+    "name": "head-detached",
+    "schema": "HeadResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "head": {
+        "profile": "dna.head.v1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "active": ""
+      },
+      "data": {
+        "state": "detached",
+        "active": null,
+        "state_dir": "/home/riley/.local/state/hale/iris/head",
+        "sources_dir": "/home/riley/.config/hale-dna/sources",
+        "projects_dir": "/home/riley/dna",
+        "children": {
+          "body": {
+            "state": "stopped",
+            "pid": -1,
+            "since": 0,
+            "command_id": "",
+            "membrane_up": false,
+            "mode": "",
+            "exit_code": -1
+          },
+          "observer": {
+            "state": "stopped",
+            "pid": -1,
+            "since": 0,
+            "command_id": "",
+            "origin": "http://127.0.0.1:8787"
+          }
+        },
+        "credentials": {
+          "needed": [],
+          "file_sources": [],
+          "env_present": []
+        },
+        "busy": "",
+        "operations": [
+          {
+            "name": "dna.project.create",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.project.init",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.project.attach",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.project.detach",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.project.forget",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.project.sync",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.project.publish",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.forge.configure",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.forge.sync",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.body.local.start",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.body.local.stop",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.body.provision",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.body.start",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.body.stop",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.body.logs",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.secret.set",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.secret.rotate",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.models.probe",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.connection.propose",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.connection.close",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.handoff.publish",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.handoff.accept",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.handoff.sync",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.observer.start",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.observer.stop",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "head-attached",
+    "schema": "HeadResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "head": {
+        "profile": "dna.head.v1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "active": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "data": {
+        "state": "attached",
+        "active": {
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "root": "/home/riley/dna/example",
+          "name": "example",
+          "api": {
+            "port": 8793,
+            "state": "ready",
+            "pid": 4242
+          }
+        },
+        "state_dir": "/home/riley/.local/state/hale/iris/head",
+        "sources_dir": "/home/riley/.config/hale-dna/sources",
+        "projects_dir": "/home/riley/dna",
+        "children": {
+          "body": {
+            "state": "running",
+            "pid": 4300,
+            "since": 1758470400,
+            "command_id": "command-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "membrane_up": true,
+            "mode": "run",
+            "exit_code": -2
+          },
+          "observer": {
+            "state": "stopped",
+            "pid": -1,
+            "since": 0,
+            "command_id": "",
+            "origin": "http://127.0.0.1:8787"
+          }
+        },
+        "credentials": {
+          "needed": [
+            "OPENAI_API_KEY"
+          ],
+          "file_sources": [
+            "OPENAI_API_KEY"
+          ],
+          "env_present": []
+        },
+        "busy": "",
+        "operations": [
+          {
+            "name": "dna.project.create",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.project.init",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.project.attach",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.project.detach",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.project.forget",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.project.sync",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.project.publish",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.forge.configure",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.forge.sync",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.body.local.start",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.body.local.stop",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.body.provision",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.body.start",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.body.stop",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.body.logs",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.secret.set",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.secret.rotate",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.models.probe",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.connection.propose",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.connection.close",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.handoff.publish",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.handoff.accept",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.handoff.sync",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.observer.start",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.observer.stop",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "head-projects-list",
+    "schema": "HeadProjectsResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "head": {
+        "profile": "dna.head.v1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "active": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "data": {
+        "items": [
+          {
+            "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "name": "example",
+            "root": "/home/riley/dna/example",
+            "attached_at": 1758470400,
+            "active": true,
+            "record": {
+              "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "revision": 23
+            },
+            "body": {
+              "state": "stopped",
+              "pid": -1,
+              "since": 0,
+              "command_id": "",
+              "membrane_up": false,
+              "mode": "",
+              "exit_code": -1
+            },
+            "forge": {
+              "github": "example/example",
+              "board": [
+                "riley"
+              ]
+            },
+            "recent": [
+              {
+                "command_id": "command-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "request_id": "head-1",
+                "operation": "dna.project.sync",
+                "state": "succeeded",
+                "updated_at": 1758470500
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "head-project-detail",
+    "schema": "HeadProjectsResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "head": {
+        "profile": "dna.head.v1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "active": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "data": {
+        "items": [
+          {
+            "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "name": "example",
+            "root": "/home/riley/dna/example",
+            "attached_at": 1758470400,
+            "active": true,
+            "record": {
+              "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "revision": 23
+            },
+            "body": {
+              "state": "stopped",
+              "pid": -1,
+              "since": 0,
+              "command_id": "",
+              "membrane_up": false,
+              "mode": "",
+              "exit_code": -1
+            },
+            "forge": {
+              "github": "example/example",
+              "board": [
+                "riley"
+              ]
+            },
+            "recent": [
+              {
+                "command_id": "command-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "request_id": "head-1",
+                "operation": "dna.project.sync",
+                "state": "succeeded",
+                "updated_at": 1758470500
+              }
+            ],
+            "authority": {
+              "command": true,
+              "task": true,
+              "organization": false
+            },
+            "connections": [
+              {
+                "name": "peer",
+                "url": "git@example.invalid:peer/record.git",
+                "position": "supplier",
+                "purpose": "parts",
+                "classes": [
+                  "task",
+                  "receipt"
+                ],
+                "state": "proposed"
+              }
+            ],
+            "handoffs": [
+              {
+                "id": "handoff-1",
+                "connection": "peer",
+                "kind": "task",
+                "subject": "task-1",
+                "state": "published"
+              }
+            ],
+            "secrets": [
+              "OPENAI_API_KEY"
+            ],
+            "receipts": []
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "head-create-request",
+    "schema": "HeadCommandRequest",
+    "valid": true,
+    "value": {
+      "request_id": "head-create-1",
+      "operation": "dna.project.create",
+      "operation_version": "1",
+      "context": {
+        "head": "local",
+        "application_id": ""
+      },
+      "target": {
+        "kind": "dna.head",
+        "id": "local"
+      },
+      "preconditions": {
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "parent": "/home/riley/dna",
+        "name": "example",
+        "profile": "local",
+        "discover": false
+      }
+    }
+  },
+  {
+    "name": "head-attach-request",
+    "schema": "HeadCommandRequest",
+    "valid": true,
+    "value": {
+      "request_id": "head-attach-1",
+      "operation": "dna.project.attach",
+      "operation_version": "1",
+      "context": {
+        "head": "local",
+        "application_id": ""
+      },
+      "target": {
+        "kind": "dna.head",
+        "id": "local"
+      },
+      "preconditions": {
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "root": "/home/riley/dna/example"
+      }
+    }
+  },
+  {
+    "name": "head-sync-request",
+    "schema": "HeadCommandRequest",
+    "valid": true,
+    "value": {
+      "request_id": "head-sync-1",
+      "operation": "dna.project.sync",
+      "operation_version": "1",
+      "context": {
+        "head": "local",
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "target": {
+        "kind": "dna.project",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "preconditions": {
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {}
+    }
+  },
+  {
+    "name": "head-publish-request",
+    "schema": "HeadCommandRequest",
+    "valid": true,
+    "value": {
+      "request_id": "head-publish-1",
+      "operation": "dna.project.publish",
+      "operation_version": "1",
+      "context": {
+        "head": "local",
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "target": {
+        "kind": "dna.project",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "preconditions": {
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "remote": "git@example.invalid:example/example.git",
+        "message": "first commit"
+      }
+    }
+  },
+  {
+    "name": "head-secret-by-source-request",
+    "schema": "HeadCommandRequest",
+    "valid": true,
+    "value": {
+      "request_id": "head-secret-1",
+      "operation": "dna.secret.set",
+      "operation_version": "1",
+      "context": {
+        "head": "local",
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "target": {
+        "kind": "dna.project",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "preconditions": {
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "name": "OPENAI_API_KEY",
+        "source": {
+          "kind": "file",
+          "name": "OPENAI_API_KEY"
+        }
+      }
+    }
+  },
+  {
+    "name": "head-models-confirmed-request",
+    "schema": "HeadCommandRequest",
+    "valid": true,
+    "value": {
+      "request_id": "head-models-1",
+      "operation": "dna.models.probe",
+      "operation_version": "1",
+      "context": {
+        "head": "local",
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "target": {
+        "kind": "dna.project",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "preconditions": {
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "confirm_spend": true
+      }
+    }
+  },
+  {
+    "name": "head-command-running",
+    "schema": "HeadCommandResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "head": {
+        "profile": "dna.head.v1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "active": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "data": {
+        "command_id": "command-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "request_id": "head-sync-1",
+        "operation": "dna.project.sync",
+        "operation_version": "1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "context": {
+          "head": "local",
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "target": {
+          "kind": "dna.project",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "state": "running",
+        "reason_code": "",
+        "reason": "",
+        "submitted_at": 1758470400,
+        "updated_at": 1758470401,
+        "run": {
+          "kind": "run",
+          "pid": 4400,
+          "deadline": 1758470580,
+          "external": true,
+          "exit_code": -1,
+          "log": "/head/logs?run=command-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "outcome": {}
+      }
+    }
+  },
+  {
+    "name": "head-command-succeeded",
+    "schema": "HeadCommandResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "head": {
+        "profile": "dna.head.v1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "active": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "data": {
+        "command_id": "command-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "request_id": "head-sync-1",
+        "operation": "dna.project.sync",
+        "operation_version": "1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "context": {
+          "head": "local",
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "target": {
+          "kind": "dna.project",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "state": "succeeded",
+        "reason_code": "",
+        "reason": "",
+        "submitted_at": 1758470400,
+        "updated_at": 1758470401,
+        "run": {
+          "kind": "run",
+          "pid": 4400,
+          "deadline": 1758470580,
+          "external": true,
+          "exit_code": 0,
+          "log": "/head/logs?run=command-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "outcome": {
+          "summary": "record refs/dna/journal: no remote: the record is local; 23 event(s)",
+          "record": {
+            "head_before": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "head_after": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "rows": []
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "head-command-refused",
+    "schema": "HeadCommandResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "head": {
+        "profile": "dna.head.v1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "active": ""
+      },
+      "data": {
+        "command_id": "command-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "request_id": "head-attach-1",
+        "operation": "dna.project.attach",
+        "operation_version": "1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "context": {
+          "head": "local",
+          "application_id": ""
+        },
+        "target": {
+          "kind": "dna.head",
+          "id": "local"
+        },
+        "fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "state": "refused",
+        "reason_code": "no_record",
+        "reason": "the project has no DNA Record; create or initialize it first",
+        "submitted_at": 1758470400,
+        "updated_at": 1758470401,
+        "run": null,
+        "outcome": {}
+      }
+    }
+  },
+  {
+    "name": "head-command-outcome-unknown",
+    "schema": "HeadCommandResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "head": {
+        "profile": "dna.head.v1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "active": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "data": {
+        "command_id": "command-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "request_id": "head-sync-1",
+        "operation": "dna.project.sync",
+        "operation_version": "1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "context": {
+          "head": "local",
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "target": {
+          "kind": "dna.project",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "state": "outcome_unknown",
+        "reason_code": "timed_out",
+        "reason": "the run passed its deadline and was killed",
+        "submitted_at": 1758470400,
+        "updated_at": 1758470401,
+        "run": {
+          "kind": "run",
+          "pid": 4400,
+          "deadline": 1758470580,
+          "external": true,
+          "exit_code": 124,
+          "log": "/head/logs?run=command-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "outcome": {
+          "summary": "",
+          "record": {
+            "head_before": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "head_after": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "rows": []
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "head-log-page",
+    "schema": "HeadLogResponse",
+    "valid": true,
+    "value": {
+      "api_version": "hale.v1",
+      "head": {
+        "profile": "dna.head.v1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "active": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "data": {
+        "name": "command-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "offset": 0,
+        "next_offset": 58,
+        "text": "record refs/dna/journal: no remote: the record is local; 23 event(s)\n",
+        "complete": true
+      }
+    }
+  },
+  {
+    "name": "head-secret-request-with-value",
+    "schema": "HeadCommandRequest",
+    "valid": false,
+    "value": {
+      "request_id": "head-secret-2",
+      "operation": "dna.secret.set",
+      "operation_version": "1",
+      "context": {
+        "head": "local",
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "target": {
+        "kind": "dna.project",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "preconditions": {
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {
+        "name": "OPENAI_API_KEY",
+        "source": {
+          "kind": "file",
+          "name": "OPENAI_API_KEY"
+        },
+        "value": "sk-never"
+      }
+    }
+  },
+  {
+    "name": "head-command-unknown-state",
+    "schema": "HeadCommandResponse",
+    "valid": false,
+    "value": {
+      "api_version": "hale.v1",
+      "head": {
+        "profile": "dna.head.v1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "active": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "data": {
+        "command_id": "command-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "request_id": "head-sync-1",
+        "operation": "dna.project.sync",
+        "operation_version": "1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "context": {
+          "head": "local",
+          "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "target": {
+          "kind": "dna.project",
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "state": "published",
+        "reason_code": "",
+        "reason": "",
+        "submitted_at": 1758470400,
+        "updated_at": 1758470401,
+        "run": {
+          "kind": "run",
+          "pid": 4400,
+          "deadline": 1758470580,
+          "external": true,
+          "exit_code": -1,
+          "log": "/head/logs?run=command-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "outcome": {}
+      }
+    }
+  },
+  {
+    "name": "head-envelope-with-source",
+    "schema": "HeadResponse",
+    "valid": false,
+    "value": {
+      "api_version": "hale.v1",
+      "head": {
+        "profile": "dna.head.v1",
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        },
+        "active": ""
+      },
+      "data": {
+        "state": "detached",
+        "active": null,
+        "state_dir": "/home/riley/.local/state/hale/iris/head",
+        "sources_dir": "/home/riley/.config/hale-dna/sources",
+        "projects_dir": "/home/riley/dna",
+        "children": {
+          "body": {
+            "state": "stopped",
+            "pid": -1,
+            "since": 0,
+            "command_id": "",
+            "membrane_up": false,
+            "mode": "",
+            "exit_code": -1
+          },
+          "observer": {
+            "state": "stopped",
+            "pid": -1,
+            "since": 0,
+            "command_id": "",
+            "origin": "http://127.0.0.1:8787"
+          }
+        },
+        "credentials": {
+          "needed": [],
+          "file_sources": [],
+          "env_present": []
+        },
+        "busy": "",
+        "operations": [
+          {
+            "name": "dna.project.create",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.project.init",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.project.attach",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.project.detach",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.project.forget",
+            "version": "1",
+            "available": true,
+            "reason_code": ""
+          },
+          {
+            "name": "dna.project.sync",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.project.publish",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.forge.configure",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.forge.sync",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.body.local.start",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.body.local.stop",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.body.provision",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.body.start",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.body.stop",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.body.logs",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.secret.set",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.secret.rotate",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.models.probe",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.connection.propose",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.connection.close",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.handoff.publish",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.handoff.accept",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.handoff.sync",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.observer.start",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          },
+          {
+            "name": "dna.observer.stop",
+            "version": "1",
+            "available": false,
+            "reason_code": "detached"
+          }
+        ]
+      },
+      "source": {
+        "record_id": "record-opaque-identity",
+        "record_head": "head-opaque-identity",
+        "record_revision": "12"
+      }
+    }
+  },
+  {
+    "name": "head-request-injected-actor",
+    "schema": "HeadCommandRequest",
+    "valid": false,
+    "value": {
+      "request_id": "head-sync-2",
+      "operation": "dna.project.sync",
+      "operation_version": "1",
+      "context": {
+        "head": "local",
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "target": {
+        "kind": "dna.project",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "preconditions": {
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {},
+      "actor": "caller-selected"
+    }
+  },
+  {
+    "name": "head-request-version-number",
+    "schema": "HeadCommandRequest",
+    "valid": false,
+    "value": {
+      "request_id": "head-sync-3",
+      "operation": "dna.project.sync",
+      "operation_version": 1,
+      "context": {
+        "head": "local",
+        "application_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "target": {
+        "kind": "dna.project",
+        "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "preconditions": {
+        "principal": {
+          "mode": "local",
+          "name": "riley"
+        }
+      },
+      "arguments": {}
+    }
   }
 ]

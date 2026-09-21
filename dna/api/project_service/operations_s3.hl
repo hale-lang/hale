@@ -1,0 +1,34 @@
+// dna/api/project_service/operations_s3.hl — STUB (GH #965, §2.9 of
+// the head's contract). Lane S3 replaces this file wholesale with the
+// sixteen operations it owns (body start/stop/logs/provision, secrets,
+// models probe, connections, handoffs, observer). Until then every
+// function is present with the agreed signature and every operation
+// is unknown, so the dispatcher's `if s3_known(op) { … } else { own
+// table }` compiles and falls through. Nothing else under
+// `dna/api/project_service/` is S3's to edit.
+
+// The sixteen S3 operation names; none yet.
+fn s3_known(operation: String) -> Bool { return false; }
+
+// The closed argument allowlist, space-separated, in fingerprint order.
+fn s3_arguments(operation: String) -> String { return ""; }
+
+// "" = available; else the reason_code (detached, body_running, …).
+fn s3_available(ctx: HeadContext, operation: String) -> String { return ""; }
+
+// Validates the raw arguments JSON; inline operations perform the
+// effect here.
+fn s3_plan(ctx: HeadContext, operation: String, arguments: String) -> Plan { return Plan { refused: "invalid_command", reason: "no such operation" }; }
+
+// The outcome JSON for a settled run or child.
+fn s3_outcome(ctx: HeadContext, operation: String, exit_code: Int, log_tail: String) -> String { return "{}"; }
+
+// body: the membrane sockets exist; observer: GET / answers.
+fn s3_child_ready(ctx: HeadContext, name: String) -> Bool { return false; }
+
+// The GET /head "children" object (adds membrane_up, mode, external).
+fn s3_children_json(ctx: HeadContext, body: ChildView, observer: ChildView) -> String { return "{}"; }
+
+// {"connections":[…],"handoffs":[…],"secrets":[…]} projected from the
+// project's journal rows.
+fn s3_project_detail_json(ctx: HeadContext, root: String) -> String { return "{}"; }
